@@ -8,7 +8,7 @@ import { sessionOps } from "./reference/ops-sessions.ts";
 import { Readers } from "../src/read/pool.ts";
 import { LAST_MESSAGE_RECENT_EDIT, LAST_MESSAGE_WITH_EDIT, lastSaid, makeStore } from "./reference/store.ts";
 import { searchChats, type RecentChatList } from "../src/store/chat-list.ts";
-import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

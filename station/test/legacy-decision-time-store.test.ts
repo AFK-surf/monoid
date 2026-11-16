@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { DecisionSessionsUnavailable } from "../src/store/legacy-decision-session.ts";
-import { decisionTimeIndexStep } from "../src/store/legacy-decision-time.ts";
+import { decisionTimeIndexStep } from "./reference/backfill/legacy-decision-time.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { LEGACY_LATEST_DECISIONS_SCOPED, Store } from "../src/store/store.ts";
 import { endsOnce } from "./programs.ts";

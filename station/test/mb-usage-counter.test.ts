@@ -14,7 +14,7 @@ import { iso, rememberCodexRollout } from "../src/read/transcript.ts";
 import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
 import { ReferenceUsageCounter, claudeProject } from "./usage-counter-reference.ts";
 import { keepUsage } from "../src/usage/module.ts";

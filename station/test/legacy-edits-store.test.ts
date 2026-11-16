@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutSaidState } from "./legacy-message-fixture.ts";

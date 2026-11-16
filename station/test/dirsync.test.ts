@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { describe, test } from "node:test";
-import { LOOK_MS } from "../src/jobs/admit.ts";
+import { LOOK_MS } from "./reference/admit.ts";
 import { STOP_LOOK_MS } from "../src/jobs/jobs.ts";
 import { RAW, blobId } from "../src/jobs/dirsync.ts";
 import { MIRROR_IDLE_MS, MIRROR_RECENT_MS, hash, readJson, written } from "../src/jobs/remote.ts";

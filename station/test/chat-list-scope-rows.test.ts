@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { RECENT_CHAT_LIST } from "../src/store/chat-list.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "../src/store/chat-list-scope-build.ts";
-import { installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { putRecentScopeSource, readPreparedRecentWorkspace, removeRecentScopeSource } from "../src/store/chat-list-scope-rows.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { putRecentScopeSource, readPreparedRecentWorkspace, removeRecentScopeSource } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 test("workspace contributions keep the original ordering and count once per shared chat", () => {

@@ -17,7 +17,7 @@ import type { Hub } from "./hub.ts";
 import { INTERNAL_CONNECT } from "./internal.ts";
 import { type NewChat, newSession } from "./lifecycle.ts";
 import { chatNamed, postFrom, sender } from "./messages.ts";
-import { Refused } from "./neighbours.ts";
+import { Refused } from "../jobs/remote.ts";
 import { fromBefore, linkedStation, peersOf, sessionThreadOf } from "./others.ts";
 import { sendable, sendAlong } from "./peer-files.ts";
 import { RUNTIME_KINDS, type RuntimeKind } from "../agents/runtime.ts";

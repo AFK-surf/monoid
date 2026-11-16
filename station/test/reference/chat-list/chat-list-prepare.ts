@@ -8,9 +8,10 @@ import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentW
 import { installRecentScopeJournal, trackRecentScope } from "./chat-list-scope-journal.ts";
 import { dispatchRecentScopeOrderStep, settleRecentWorkspaceOrderStep } from "./chat-list-scope-order.ts";
 import { readPreparedRecentWorkspace } from "./chat-list-scope-rows.ts";
+import type { RecentChatScope } from "../../../src/read/recent-chat-builder.ts";
 import { settleRecentScopeVisibilityStep } from "./chat-list-scope-visibility.ts";
 
-export type RecentChatScope = { ws: string | null; home: string | null };
+export type { RecentChatScope };
 type Lane = { pending: () => boolean; step: () => number };
 
 /// One worker can interleave requests by calling step once per scope and putting unfinished scopes back in line.

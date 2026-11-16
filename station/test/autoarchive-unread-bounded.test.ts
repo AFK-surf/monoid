@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { autoArchive, startAutoArchiveTimer } from "../src/sessions/lifecycle.ts";
 import { installSaidState, SAID_LATEST, SAID_SCAN, saidScanStep, type SaidScan } from "../src/store/said-state.ts";
-import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 

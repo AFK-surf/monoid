@@ -1,7 +1,7 @@
 import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { hasProcessJobs, installProcessJobs, processJobs, processJobsReady, processJobsStep, refreshProcessJobs, type ProcessJob } from "../store/process-jobs.ts";
+import { hasProcessJobs, processJobs, processJobsReady, refreshProcessJobs, type ProcessJob } from "../store/process-jobs.ts";
 import type { Store } from "../store/store.ts";
 
 /// Memory protection answers immediately while one builder prepares an older station's running groups: the MoonBit
@@ -40,14 +40,6 @@ export class ProcessJobsBuilder {
     catch (error) { log.warn("memory", "the process job lookup could not be checked", { error: (error as Error).message }); return; }
     const work = (async () => {
       if (!await Promise.race([this.previous, this.cancelled.promise]) || this.stopped) return false;
-      if (this.store.db.location() === null) {
-        installProcessJobs(this.store.db);
-        while (!this.stopped && !processJobsReady(this.store.db)) {
-          processJobsStep(this.store.db);
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-        return !this.stopped;
-      }
       return this.runWorker();
     })().catch((error) => {
       log.warn("memory", "the process job lookup could not be prepared", { error: (error as Error).message });
@@ -60,7 +52,10 @@ export class ProcessJobsBuilder {
 
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
-    if (path === null) return Promise.resolve(false);
+    if (path === null) {
+      log.warn("memory", "the process job backfill requires a file-backed store");
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       let worker: MbBackfill;
       try { worker = new MbBackfill(this.binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20); }

@@ -1,7 +1,7 @@
 import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { disableSandboxIndex, enableSandboxIndex, runnerNameSessions, runnerTakeUpSessions, sandboxIndexEnabled, sandboxIndexReady, sandboxIndexStep, sandboxSessions } from "../store/sandbox-index.ts";
+import { runnerNameSessions, runnerTakeUpSessions, sandboxIndexEnabled, sandboxIndexReady, sandboxSessions } from "../store/sandbox-index.ts";
 import type { SessionRow, Store } from "../store/store.ts";
 
 /// Prepare the session-name lookup only when an idle sandbox or a runner needs it. Old sessions and old writers'
@@ -114,13 +114,10 @@ export class SandboxNameBuilder {
     if (this.needed()) return;
     if (this.pending !== null && this.previousReady) await this.pending;
     if (this.stopped || this.needed() || !sandboxIndexEnabled(this.store.db)) return;
-    if (this.store.db.location() === null) disableSandboxIndex(this.store.db);
-    else {
-      const work = this.disabling ??= this.runWorker("sandbox-off");
-      try { await work; } finally { if (this.disabling === work) this.disabling = null; }
-      // A runner or sandbox may have appeared while the worker turned journalling off.
-      if (!this.stopped && this.needed()) void this.prepare();
-    }
+    const work = this.disabling ??= this.runWorker("sandbox-off");
+    try { await work; } finally { if (this.disabling === work) this.disabling = null; }
+    // A runner or sandbox may have appeared while the worker turned journalling off.
+    if (!this.stopped && this.needed()) void this.prepare();
   }
 
   private prepare(): Promise<boolean> {
@@ -139,21 +136,15 @@ export class SandboxNameBuilder {
   }
 
   private async build(): Promise<boolean> {
-    const path = this.store.db.location();
-    if (path === null) {
-      enableSandboxIndex(this.store.db);
-      while (!this.stopped && this.needed() && !sandboxIndexReady(this.store.db)) {
-        sandboxIndexStep(this.store.db);
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      return !this.stopped && this.needed();
-    }
     return this.runWorker("sandbox");
   }
 
   private runWorker(kind: "sandbox" | "sandbox-off"): Promise<boolean> {
     const path = this.store.db.location();
-    if (path === null) return Promise.resolve(false);
+    if (path === null) {
+      log.warn("hub", "the sandbox name backfill requires a file-backed store");
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       // (by the MoonBit builder, station/mb's src/activity sandbox.mbt: `MbBackfill`)
       let current: MbBackfill;

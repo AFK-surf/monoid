@@ -1,7 +1,7 @@
 import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { chatShareIndexReady, chatShareIndexStep, hasChatShareIndex, installChatShareIndex, refreshChatShareIndex, SHARE_MANY } from "../store/chat-share-index.ts";
+import { chatShareIndexReady, hasChatShareIndex, refreshChatShareIndex, SHARE_MANY } from "../store/chat-share-index.ts";
 import type { Store } from "../store/store.ts";
 
 /// Sharing continues to answer the old way while the preceding station is up or a worker prepares its old grants.
@@ -35,14 +35,6 @@ export class ChatShareIndexBuilder {
     }
     const work = (async () => {
       if (!await Promise.race([this.previous, this.cancelled.promise]) || this.stopped) return false;
-      if (this.store.db.location() === null) {
-        installChatShareIndex(this.store.db);
-        while (!this.stopped && !chatShareIndexReady(this.store.db)) {
-          chatShareIndexStep(this.store.db);
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-        return !this.stopped;
-      }
       return this.runWorker();
     })().catch((error) => {
       log.warn("xshare", "the share lookup could not be prepared", { error: (error as Error).message });
@@ -55,7 +47,10 @@ export class ChatShareIndexBuilder {
 
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
-    if (path === null) return Promise.resolve(false);
+    if (path === null) {
+      log.warn("xshare", "the share lookup's backfill requires a file-backed store");
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       // (by the MoonBit builder, station/mb's src/activity, share.mbt: `MbBackfill`)
       let worker: MbBackfill;

@@ -1,9 +1,9 @@
 // The TypeScript reads the station answered before its reader moved to the MoonBit program, kept for the tests
 // to compare the program with; what the station itself still runs of it is station/src/read/recent-chat.ts's.
 import type { DatabaseSync } from "node:sqlite";
-import { readPreparedRecentHome } from "../../src/store/chat-list-home-overlap.ts";
-import { readGlobalRecentChatIndex, type RecentChatPage } from "../../src/store/chat-list-index.ts";
-import { readPreparedRecentWorkspace } from "../../src/store/chat-list-scope-rows.ts";
+import { readPreparedRecentHome } from "./chat-list/chat-list-home-overlap.ts";
+import { readGlobalRecentChatIndex, type RecentChatPage } from "./chat-list/chat-list-index.ts";
+import { readPreparedRecentWorkspace } from "./chat-list/chat-list-scope-rows.ts";
 import { RECENT_CHAT_PENDING } from "../../src/read/recent-chat.ts";
 
 export * from "../../src/read/recent-chat.ts";

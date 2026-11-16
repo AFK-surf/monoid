@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { recentChatPage, RECENT_CHAT_PENDING } from "./reference/recent-chat.ts";
-import { installRecentHomeIndex } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap } from "../src/store/chat-list-home-overlap.ts";
-import { installRecentChatIndex } from "../src/store/chat-list-index.ts";
-import { installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { RECENT_CHAT_SCHEMA_VERSION, recentChatIndexInstalled } from "../src/store/chat-list-schema.ts";
+import { installRecentHomeIndex } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { installRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
+import { installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { RECENT_CHAT_SCHEMA_VERSION, recentChatIndexInstalled } from "./reference/chat-list/chat-list-schema.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const part of ["global", "scope", "home", "overlap"] as const) test(`a recent ${part} index with another version is not read or built`, () => {

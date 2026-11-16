@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { makeStore, saidOf, SaidUnavailable } from "./reference/store.ts";
-import { installLegacySaid, legacySaidDrain, legacySaidDrainThread, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidDrain, legacySaidDrainThread, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { installSaidState, saidScanStep, type SaidScan } from "../src/store/said-state.ts";
 import { Store } from "../src/store/store.ts";
 

@@ -25,7 +25,7 @@ import { FETCHED, fileForPeer, putForPeer } from "../src/sessions/peer-files.ts"
 import { packWorkspaceIf } from "../src/sessions/archive.ts";
 import { roomOf } from "../src/sessions/footprint.ts";
 import { claudeProject } from "../src/read/transcript.ts";
-import { Refused } from "../src/sessions/neighbours.ts";
+import { Refused } from "../src/jobs/remote.ts";
 import { archive, newSession, say as sayIn } from "../src/sessions/lifecycle.ts";
 import { review, reviewUndecided, startReview } from "../src/sessions/review.ts";
 import { cleanTitle, nameChat } from "../src/sessions/titles.ts";

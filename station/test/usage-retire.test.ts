@@ -9,8 +9,9 @@ import { makeStore, usageGroups } from "./reference/store.ts";
 import { usageHistory } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { installUsageDetail } from "../src/store/usage-detail.ts";
-import { dropUsageIndexStep, stopUsageIndexes, usageIndexBatchSql } from "../src/store/usage-retire.ts";
+import { dropUsageIndexStep, stopUsageIndexes, usageIndexBatchSql } from "./reference/backfill/usage-retire.ts";
 import { retireAfterPrevious } from "../src/usage/module.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("installing compact statistics tells a waiting page even with no calls", async () => {
   const store = Store.open(":memory:");
@@ -30,7 +31,7 @@ const write = (store: Store, id: string, input: number) => store.recordUsage("/a
 const session = (store: Store) => store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 1, lastActiveAt: 1 });
 
 test("retirement waits for handover, removes the large indexes and keeps recording calls", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("usage-retire-wait-"));
   try {
     session(store);
     write(store, "old", 2);
@@ -47,13 +48,14 @@ test("retirement waits for handover, removes the large indexes and keeps recordi
     assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n, 3);
     assert.deepEqual(store.usageOfSession("a").map((r) => [r.calls, r.input, r.output]), [[3, 9, 3]]);
     assert.equal(store.lastContexts("a", 5).length, 1);
-    assert.deepEqual(usageGroups(makeStore(store.db, "."), 0n, 9_223_372_036_854_775_807n, 0n).map((r) => [r.calls, r.input]), [[1, 4]]);
+    // (the retirement program took the calls from before handover into the compact statistics too)
+    assert.deepEqual(usageGroups(makeStore(store.db, "."), 0n, 9_223_372_036_854_775_807n, 0n).map((r) => [r.calls, r.input]), [[3, 9]]);
     assert.deepEqual(usageHistory(makeStore(store.db, "."), 0n, null)!.days.map((r: { calls: number; tokens: number }) => [r.calls, r.tokens]), [[3, 12]]);
   } finally { store.close(); }
 });
 
 test("retirement also removes the separate live index of an incomplete old database", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("usage-retire-live-"));
   try {
     session(store);
     write(store, "old", 2);
@@ -123,7 +125,7 @@ test("stopping index writers yields to another database writer and retries", asy
 });
 
 test("a failed compact installation still stops the old index writers", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("usage-retire-failed-"));
   try {
     session(store);
     write(store, "before", 2);
@@ -133,7 +135,7 @@ test("a failed compact installation still stops the old index writers", async ()
     store.db.setAuthorizer(null);
     assert.ok(table(store, "usage_retired_detail"));
     assert.equal(table(store, "usage_compact"), undefined);
-    assert.equal(table(store, "usage_detail"), undefined, "in-memory cleanup still removes the old index");
+    assert.equal(table(store, "usage_detail"), undefined, "the program still removes the old index");
     write(store, "after", 3);
     assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n, 2);
     assert.deepEqual(store.usageOfSession("a").map((r) => [r.calls, r.input]), [[2, 5]]);

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PAGE_LETTER_KEYS, pageLetterGcNeedsWork, pageLetterGcStep, pageLetterReady,
-  pageLetterStep } from "../src/store/page-letter-index.ts";
+  pageLetterStep } from "./reference/backfill/page-letter-index.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 

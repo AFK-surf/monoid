@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
-import { pageLetterStep } from "../src/store/page-letter-index.ts";
+import { pageLetterStep } from "./reference/backfill/page-letter-index.ts";
 import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();

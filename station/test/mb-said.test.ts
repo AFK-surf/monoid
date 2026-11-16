@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SaidBuilder } from "../src/read/said-builder.ts";
-import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { saidScanStep, type SaidScan } from "../src/store/said-state.ts";
 import { Store } from "../src/store/store.ts";
 

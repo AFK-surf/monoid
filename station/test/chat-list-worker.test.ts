@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { RecentChatBuilder } from "../src/read/recent-chat-builder.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 import { endsOnce } from "./programs.ts";
 

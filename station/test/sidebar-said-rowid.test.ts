@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { makeStore, saidOf } from "./reference/store.ts";
-import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { installSaidState } from "../src/store/said-state.ts";
 import { Store } from "../src/store/store.ts";
 

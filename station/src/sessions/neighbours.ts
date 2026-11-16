@@ -1,6 +1,6 @@
 // What the hub needs of the parts beside it that are ported elsewhere (src/jobs/): background jobs and the
-// station transport to the workspace's other stations. Minimal: the hub and its tools call these, the
-// composition root gives them; until it does, what needs one says it is not there.
+// station transport to the workspace's other stations (a refusal of theirs is jobs/remote.ts's `Refused`). Minimal:
+// the hub and its tools call these, the composition root gives them; until it does, what needs one says it is not there.
 import type { JobRow } from "../store/store.ts";
 
 type Json = any;
@@ -24,6 +24,3 @@ export interface Remote {
   /// A session was archived or deleted: what it left on other stations goes too.
   closeSession(session: string): void;
 }
-
-/// An answer another station gave: it refused the request. The transport's own.
-export { Refused } from "../jobs/remote.ts";

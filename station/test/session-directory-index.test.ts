@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
-import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectory } from "../src/store/session-directory.ts";
+import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectory } from "./reference/backfill/session-directory.ts";
 import { Store } from "../src/store/store.ts";
 import { endsAlways, theProgram } from "./programs.ts";
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { chatShareIndexReady, chatShareIndexStep, dueChatShareRows, installChatShareIndex, lapsedChatShareWorkspaces, liveChatShareRows } from "../src/store/chat-share-index.ts";
+import { chatShareIndexReady, chatShareIndexStep, dueChatShareRows, installChatShareIndex, lapsedChatShareWorkspaces, liveChatShareRows } from "./reference/backfill/chat-share-index.ts";
 import { XSHARE_IDLE_MS, liveShare, shareLive, toChatShare } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 import { ChatShareIndexBuilder } from "../src/xshare/index-builder.ts";

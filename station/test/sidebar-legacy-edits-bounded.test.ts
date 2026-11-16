@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { sessionOps } from "./reference/ops-sessions.ts";
 import { firstText, lastSaid, LAST_MESSAGE_RECENT_EDIT, makeStore } from "./reference/store.ts";
-import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

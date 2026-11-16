@@ -3,7 +3,7 @@ import { setMaxListeners } from "node:events";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, releaseStoppedBackfill } from "../store/backfill.ts";
-import { postBlocksCoverage, postBlocksReady, postBlocksStep } from "../store/post-blocks.ts";
+import { postBlocksCoverage, postBlocksReady } from "../store/post-blocks.ts";
 import type { Store } from "../store/store.ts";
 
 type Waiter = { after: number; resolve: () => void; reject: (error: Error) => void; done: () => void };
@@ -141,14 +141,7 @@ export class PostBlockBuilder {
     const current = { thread, after };
     this.#current = current;
     const path = this.#store.db.location();
-    if (path === null) {
-      this.#retry = this.#timers.after(20, () => {
-        this.#retry = null;
-        try { this.#answer(postBlocksStep(this.#store.db, thread, current.after)); }
-        catch (error) { this.#answer({ done: false, error: (error as Error).message }); }
-      });
-      return;
-    }
+    if (path === null) { this.#answer({ done: false, error: "post block backfill requires a file-backed store" }); return; }
     if (this.#worker === null) {
       // (by the MoonBit builder, station/mb's src/posts: `MbBackfill`)
       let worker: MbBackfill;

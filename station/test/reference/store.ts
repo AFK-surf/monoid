@@ -27,9 +27,9 @@ import { WORKSPACE_UP_JOBS, workspaceUpJobsReady } from "../../src/store/workspa
 import { JOB_NAME_FIRST_LARGE, JOB_NAME_FIRST_PENDING, JOB_NAME_FIRST_ROW, checkJobNameFirst } from "../../src/store/job-name-first.ts";
 import { SAID_BATCH_SIZE, SAID_LATEST, SAID_SCAN, SAID_STATE, saidBoundary } from "../../src/store/said-state.ts";
 import { archiveLastKey } from "../../src/store/archive-last.ts";
-import { PAGE_LETTER_KEYS, PAGE_LETTER_KEYS_AFTER, pageLetterReady } from "../../src/store/page-letter-index.ts";
+import { PAGE_LETTER_KEYS, PAGE_LETTER_KEYS_AFTER, pageLetterReady } from "./backfill/page-letter-index.ts";
 import { legacyMergedReadReady } from "../../src/store/legacy-edits-build.ts";
-import { legacySaidPageState, legacySaidReadBoundary, legacySaidReadHead, legacySaidThreadNeedsDrain, LEGACY_HAS_UNREAD, LEGACY_SAID_SCAN, LEGACY_UNREAD } from "../../src/store/legacy-said-build.ts";
+import { legacySaidPageState, legacySaidReadBoundary, legacySaidReadHead, legacySaidThreadNeedsDrain, LEGACY_HAS_UNREAD, LEGACY_SAID_SCAN, LEGACY_UNREAD } from "./backfill/legacy-said-build.ts";
 import { LEGACY_ASKED_DURING } from "../../src/store/legacy-agent-build.ts";
 import { TURN_COUNT_BATCH } from "./turn-state.ts";
 import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";

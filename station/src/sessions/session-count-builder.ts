@@ -2,7 +2,7 @@ import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { sessionCountsReady, sessionCountsStep } from "../store/session-counts.ts";
+import { sessionCountsReady } from "../store/session-counts.ts";
 import type { Store } from "../store/store.ts";
 
 /// Wait for the previous station before reading old rows; a stopped builder resumes at its committed cursor. By the
@@ -21,19 +21,13 @@ export function buildSessionCounts(store: Store, previous: Promise<void>, binary
     retryMs = Math.min(retryMs * 2, 30_000);
     cancel = retries.after(ms, () => { cancel = null; start(); });
   };
-  const memoryStep = () => {
-    if (closed || complete) return;
-    try {
-      if (sessionCountsStep(store.db).done) { finish(); return; }
-      cancel = retries.after(20, () => { cancel = null; memoryStep(); });
-    } catch (error) {
-      log.warn("hub", "a session count batch stopped", { error: (error as Error).message });
-      retry();
-    }
-  };
   const start = () => {
     if (closed || complete || worker !== null) return;
-    if (path === null) { memoryStep(); return; }
+    if (path === null) {
+      log.warn("hub", "the session count backfill requires a file-backed store");
+      resolve(false);
+      return;
+    }
     let current: MbBackfill;
     try {
       current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);

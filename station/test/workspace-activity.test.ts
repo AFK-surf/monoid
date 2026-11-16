@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { installWorkspaceActivity, workspaceActivityReady, workspaceActivityStep, WORKSPACE_ACTIVITY } from "../src/store/workspace-activity.ts";
+import { installWorkspaceActivity, workspaceActivityReady, workspaceActivityStep, WORKSPACE_ACTIVITY } from "./reference/backfill/workspace-activity.ts";
 import { endsOnce } from "./programs.ts";
 
 function fixture() {

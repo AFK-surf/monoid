@@ -12,7 +12,7 @@ import { PEOPLE_MS, SlackSurface } from "../src/slack/surface.ts";
 import { SlackClient } from "../src/slack/web.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { Readers } from "../src/read/pool.ts";
-import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, message, settle, testClock, type Setup } from "./hub-fakes.ts";

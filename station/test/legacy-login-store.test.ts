@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { installLegacyLoginCards, LEGACY_LOGIN_CARDS, legacyLoginCardsStep } from "../src/store/legacy-login-cards.ts";
+import { installLegacyLoginCards, LEGACY_LOGIN_CARDS, legacyLoginCardsStep } from "./reference/backfill/legacy-login-cards.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { withoutLoginKeys } from "./legacy-login-fixture.ts";
@@ -185,7 +185,8 @@ test("a stopped login-card worker settles handover and retries saved work", asyn
 });
 
 test("a completed login-card worker does not recheck its finished scan on later writes", async () => {
-  const store=Store.open(":memory:");
+  const dir=mkdtempSync(join(tmpdir(),"legacy-login-done-"));
+  const store=Store.open(join(dir,"station.db"));
   let builder: ReturnType<typeof buildLegacyEntryLookups> | null=null;
   try {
     populate(store,80);
@@ -211,7 +212,7 @@ test("a completed login-card worker does not recheck its finished scan on later 
     checks=0;
     builder.wake(); builder.wake(); builder.wake();
     assert.equal(checks,0,`a completed lookup rechecked its metadata ${checks} times`);
-  } finally { await builder?.close(); store.close(); }
+  } finally { await builder?.close(); store.close(); rmSync(dir,{recursive:true,force:true}); }
 });
 
 

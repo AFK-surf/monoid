@@ -16,7 +16,7 @@ import { Fibers } from "../ops/fibers.ts";
 import type { Store as StationStore } from "../store/store.ts";
 import type { InWorkspace } from "../store/rows.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import { retireUsageIndexes, stopUsageIndexes } from "../store/usage-retire.ts";
+import { stopUsageIndexes, usageIndexesLeft } from "../store/usage-retire.ts";
 import { hasCompactUsage, installCompactUsage, installUsageSummaryChanges } from "../store/usage-compact.ts";
 import { hasUsageSummaryBlocks, installUsageSummaryBlocks, type UsageSummaryKey, type UsageSummaryRange } from "../store/usage-summary-blocks.ts";
 import { installUsageHistory } from "../store/usage-history.ts";
@@ -95,7 +95,10 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       store.usageChanged([], undefined, true);
     }
     const path = store.db.location();
-    if (path === null) { retireUsageIndexes(store.db); return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db); }
+    if (path === null) {
+      if (usageIndexesLeft(store.db)) log.warn("usage", "the usage retirement requires a file-backed store");
+      return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db);
+    }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
     yield* Effect.tryPromise({ try: () => retireByProgram(store, binary ?? readerBinary(), path), catch: (error) => error });
     return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db);

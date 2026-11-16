@@ -10,14 +10,13 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { anyBaseName, clean, samePath } from "../ops/paths.ts";
 import { iso } from "../read/transcript.ts";
 import type { Attachment } from "../store/store.ts";
-import { CHUNK, hash } from "../jobs/remote.ts";
+import { CHUNK, hash, Refused } from "../jobs/remote.ts";
 import { NoBytes, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, writeBytes } from "../mesh/files.ts";
 import { withLock, workspaceFile } from "./archive.ts";
 import { roomOfSoon } from "./footprint.ts";
 import type { Hub } from "./hub.ts";
 import { shownFactsSoon } from "./image-size.ts";
-import { Refused } from "./neighbours.ts";
 import { fromBefore, named, reachable } from "./others.ts";
 
 type Json = any;

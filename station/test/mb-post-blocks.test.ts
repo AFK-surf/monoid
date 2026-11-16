@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { postBlocksStep } from "../src/store/post-blocks.ts";
+import { postBlocksStep } from "./reference/backfill/post-blocks.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

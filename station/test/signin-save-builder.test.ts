@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { SigninSaveBuilder } from "../src/vault/signin-save-builder.ts";
-import { installSigninSaveIndex, queueSigninSave, signinSaveComplete, stepSigninSaveIndex } from "../src/vault/signin-save-index.ts";
+import { installSigninSaveIndex, queueSigninSave, signinSaveComplete, stepSigninSaveIndex } from "./reference/backfill/signin-save-index.ts";
 import { endsOnce } from "./programs.ts";
 
 function fixture() {

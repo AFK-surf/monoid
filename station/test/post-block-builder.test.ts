@@ -54,7 +54,8 @@ test("deliveries wait for the previous station and only index their requested su
 });
 
 test("concurrent requests share progress, and closing releases waiters", async () => {
-  const store = Store.open(":memory:");
+  const dir = mkdtempSync(join(tmpdir(), "post-builder-shared-"));
+  const store = Store.open(join(dir, "station.db"));
   const builder = new PostBlockBuilder(store, Promise.resolve());
   try {
     const thread = fromBefore(store);
@@ -65,7 +66,7 @@ test("concurrent requests share progress, and closing releases waiters", async (
     assert.equal(postBlocksReady(store.db, thread, 0), false);
     await long;
     assert.deepEqual(store.postAfter("wanted", thread, 0), { n: 180, ts: "m180" });
-  } finally { await builder.close(); store.close(); }
+  } finally { await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 
   const other = Store.open(":memory:");
   const previous = Promise.withResolvers<void>();

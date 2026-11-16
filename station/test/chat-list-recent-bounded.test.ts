@@ -4,7 +4,7 @@ import { sessionOps } from "./reference/ops-sessions.ts";
 import { makeStore } from "./reference/store.ts";
 import type { Hub } from "../src/sessions/hub.ts";
 import { chatList } from "../src/sessions/others.ts";
-import { RecentChatPreparation } from "../src/store/chat-list-prepare.ts";
+import { RecentChatPreparation } from "./reference/chat-list/chat-list-prepare.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const reader of [false, true]) test(`a recent chat list reads details only for its displayed chats (reader ${reader})`, async () => {

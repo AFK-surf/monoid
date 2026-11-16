@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { cardAt, LAST_MESSAGE_RECENT_EDIT, makeStore, pendingCard } from "./reference/store.ts";
 import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
-import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

@@ -7,10 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbBackfill, MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { awakeWaitsStep } from "../src/store/awake-waits.ts";
-import { recoverWaitsStep } from "../src/store/recover-waits.ts";
+import { awakeWaitsStep } from "./reference/backfill/awake-waits.ts";
+import { recoverWaitsStep } from "./reference/backfill/recover-waits.ts";
 import { Store } from "../src/store/store.ts";
-import { workspaceActivityStep } from "../src/store/workspace-activity.ts";
+import { workspaceActivityStep } from "./reference/backfill/workspace-activity.ts";
 
 const binary = mbReaderBinary();
 

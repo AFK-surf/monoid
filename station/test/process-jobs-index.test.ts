@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { watchedJobs } from "../src/jobs/memory.ts";
 import { ProcessJobsBuilder } from "../src/jobs/process-jobs-builder.ts";
-import { installProcessJobs, processJobs, processJobsReady, processJobsStep } from "../src/store/process-jobs.ts";
+import { installProcessJobs, processJobs, processJobsReady, processJobsStep } from "./reference/backfill/process-jobs.ts";
 import { Store } from "../src/store/store.ts";
 import { endsAlways, theProgram } from "./programs.ts";
 

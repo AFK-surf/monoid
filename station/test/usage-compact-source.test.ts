@@ -12,9 +12,10 @@ import { makeStore, USAGE_CALLS_EARLIER, USAGE_CALLS_SAME, usageCallsPage, usage
 import { usage, usageHistory, usageNow } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { compactQuery, compactScopeReady, compactTotal, compactTotalsStep, installCompactUsage, moveCompactStep } from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { keepUsage, retireAfterPrevious, watchCompactMoves } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
+import { dbFile } from "./temp-dir.ts";
 
 const compactUsage = (store: Store) => { installCompactUsage(store.db, () => store.now()); retireUsageIndexes(store.db); };
 
@@ -700,7 +701,7 @@ test("a recent context compaction does not add a discarded legacy event", () => 
 
 test("after handover old per-call indexes are removed and new statistics remain readable", async () => {
   const time = testClock();
-  const store = Store.open(":memory:", null, time.clock);
+  const store = Store.open(dbFile("usage-handover-"), null, time.clock);
   try {
     store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: -100_000, lastActiveAt: 0 });
     const owner = { turn: null, thread: null, person: "p", profile: "cc" };

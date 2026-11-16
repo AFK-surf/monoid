@@ -7,7 +7,7 @@ import { test } from "node:test";
 import * as compact from "../src/store/usage-compact.ts";
 import { Store } from "../src/store/store.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { watchCompactMoves } from "../src/usage/module.ts";
 
 test("recording calls does not rewrite the workspace total in every transaction", () => {

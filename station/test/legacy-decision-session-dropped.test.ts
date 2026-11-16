@@ -6,8 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { overview } from "../src/api/overview.ts";
 import { DecisionSessionsUnavailable, decisionSessionIndexStep, decisionSessionRepairStep,
-  installDecisionSessionIndex } from "../src/store/legacy-decision-session.ts";
-import { decisionTimeIndexStep } from "../src/store/legacy-decision-time.ts";
+  installDecisionSessionIndex } from "./reference/backfill/legacy-decision-session.ts";
+import { decisionTimeIndexStep } from "./reference/backfill/legacy-decision-time.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 

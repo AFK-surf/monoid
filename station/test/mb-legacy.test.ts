@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { legacyEditsMaintenanceStep, legacyMergedReadReady } from "../src/store/legacy-edits-build.ts";
-import { hasLegacySaid, installLegacySaid, legacySaidMaintenanceStep, legacySaidScanReady, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { legacyEditsMaintenanceStep, legacyMergedReadReady } from "./reference/backfill/legacy-edits-build.ts";
+import { hasLegacySaid, installLegacySaid, legacySaidMaintenanceStep, legacySaidScanReady, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

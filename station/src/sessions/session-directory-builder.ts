@@ -1,7 +1,7 @@
 import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectory, sessionDirectoryArguments, SESSION_DIR_LIVE_MANY, type DirectorySession } from "../store/session-directory.ts";
+import { sessionDirectoriesReady, sessionDirectory, sessionDirectoryArguments, SESSION_DIR_LIVE_MANY, type DirectorySession } from "../store/session-directory.ts";
 import type { Store } from "../store/store.ts";
 
 /// A memory check answers immediately while one shared worker prepares the directory lookup after handover.
@@ -61,14 +61,6 @@ export class SessionDirectoryBuilder {
     const work = (async () => {
       const previous = await Promise.race([this.previous, this.cancelled.promise]);
       if (!previous || this.stopped) return false;
-      if (this.store.db.location() === null) {
-        installSessionDirectories(this.store.db);
-        while (!this.stopped && !sessionDirectoriesReady(this.store.db)) {
-          sessionDirectoriesStep(this.store.db);
-          await new Promise<void>((resolve) => setImmediate(resolve));
-        }
-        return !this.stopped;
-      }
       return this.runWorker();
     })().catch((error) => {
       log.warn("memory", "the session directory lookup could not be prepared", { error: (error as Error).message });
@@ -80,7 +72,10 @@ export class SessionDirectoryBuilder {
 
   private runWorker(): Promise<boolean> {
     const path = this.store.db.location();
-    if (path === null) return Promise.resolve(false);
+    if (path === null) {
+      log.warn("memory", "the session directory backfill requires a file-backed store");
+      return Promise.resolve(false);
+    }
     return new Promise<boolean>((resolve) => {
       // (by the MoonBit builder, station/mb's src/activity, directory.mbt: `MbBackfill`)
       let current: MbBackfill;

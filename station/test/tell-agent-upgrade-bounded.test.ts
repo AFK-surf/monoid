@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { setTimeout as pause } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { askingMessage, makeStore } from "./reference/store.ts";
-import { legacyAgentDrain, legacyAgentStep } from "../src/store/legacy-agent-build.ts";
+import { legacyAgentDrain, legacyAgentStep } from "./reference/backfill/legacy-agent-build.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { addTellIndexes } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";

@@ -9,7 +9,7 @@ import { type Attachment, STILLFAIL_SURFACE, type SessionRow, type SessionThread
 import { type Args, jsString, slackWithFiles } from "./args.ts";
 import { attach } from "./conversations.ts";
 import type { Hub } from "./hub.ts";
-import { Refused } from "./neighbours.ts";
+import { Refused } from "../jobs/remote.ts";
 import { fromBefore, linkedSession, linkedStation, named, peersOf, reachable, scopeOf, sessionThreadOf } from "./others.ts";
 import { claim, sendable, sendAlong } from "./peer-files.ts";
 import { dir as thumbsDir, keep } from "../drive/thumbs.ts";

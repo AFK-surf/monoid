@@ -8,7 +8,7 @@ import { openJobs } from "./reference/jobs.ts";
 import { firstText, lastSaid, makeStore } from "./reference/store.ts";
 import { chats } from "./reference/views.ts";
 import { worded } from "../../client/core-ts/src/chat-row.ts";
-import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 

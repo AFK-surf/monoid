@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recentChatPage, RECENT_CHAT_PENDING } from "./reference/recent-chat.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { RecentChatPreparation, type RecentChatScope } from "../src/store/chat-list-prepare.ts";
+import { RecentChatPreparation, type RecentChatScope } from "./reference/chat-list/chat-list-prepare.ts";
 import { Store } from "../src/store/store.ts";
 
 const scopes: { name: string; scope: RecentChatScope }[] = [

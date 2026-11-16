@@ -2,10 +2,10 @@ import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { workspaceActivityReady, workspaceActivityStep } from "../store/workspace-activity.ts";
-import { recoverWaitsReady, recoverWaitsStep } from "../store/recover-waits.ts";
-import { awakeWaitsReady, awakeWaitsStep } from "../store/awake-waits.ts";
-import { activeJobUpgradeReady, activeJobUpgradeStep } from "../store/active-jobs-upgrade.ts";
+import { workspaceActivityReady } from "../store/workspace-activity.ts";
+import { recoverWaitsReady } from "../store/recover-waits.ts";
+import { awakeWaitsReady } from "../store/awake-waits.ts";
+import { activeJobUpgradeReady } from "../store/active-jobs-upgrade.ts";
 import type { Store } from "../store/store.ts";
 
 type Kind = "activity" | "recovery" | "awake" | "active-jobs";
@@ -46,22 +46,14 @@ export function buildWorkspaceActivity(store: Store, previous: Promise<void>, bi
     retryMs = Math.min(retryMs * 2, 30_000);
     cancel = retries.after(ms, () => { cancel = null; start(); });
   };
-  const memoryStep = () => {
-    if (closed || complete()) return;
-    const kind = next();
-    try {
-      const result = kind === "activity" ? workspaceActivityStep(store.db) : kind === "recovery" ? recoverWaitsStep(store.db)
-        : kind === "awake" ? awakeWaitsStep(store.db) : activeJobUpgradeStep(store.db);
-      if (result.done) finish(kind);
-      if (!complete()) cancel = retries.after(20, () => { cancel = null; memoryStep(); });
-    } catch (error) {
-      log.warn("hub", "a session recovery batch stopped", { error: (error as Error).message });
-      retry();
-    }
-  };
   const start = () => {
     if (closed || complete() || worker !== null) return;
-    if (path === null) { memoryStep(); return; }
+    if (path === null) {
+      log.warn("hub", "the session recovery backfill requires a file-backed store");
+      activity.resolve(false);
+      activeJobs.resolve(false);
+      return;
+    }
     let current: MbBackfill;
     try { current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20); }
     catch (error) {

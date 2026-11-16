@@ -8,7 +8,7 @@ import { Readers } from "../src/read/pool.ts";
 import * as reads from "./reference/store.ts";
 import { usage } from "./reference/usage.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a large usage summary gives other work a turn without mixing database snapshots", async () => {

@@ -9,6 +9,7 @@ import { keyPart, sandboxName } from "../src/agents/sandbox-name.ts";
 import { SandboxNameBuilder } from "../src/sessions/sandbox-name-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { endsAlways, theProgram } from "./programs.ts";
+import { dbFile } from "./temp-dir.ts";
 
 const add = `INSERT INTO sessions(key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at)
   VALUES (?,'connected','thread','claude','default','.',?,0,0)`;
@@ -79,7 +80,7 @@ test("closing a sandbox lookup while the previous station is up settles its wait
 });
 
 test("switching sandbox mode off during preparation stops it and a later sweep repairs the lookup", async () => {
-  const store = Store.open(":memory:");
+  const store = Store.open(dbFile("sandbox-off-"));
   let enabled = true;
   const builder = new SandboxNameBuilder(store, Promise.resolve(), () => enabled);
   try {

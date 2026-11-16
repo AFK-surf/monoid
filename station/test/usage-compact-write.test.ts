@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { keepUsage } from "../src/usage/module.ts";
 
 test("keeping a main call's recent context does not add a page write to each transaction", () => {

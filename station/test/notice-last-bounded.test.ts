@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { LAST_MESSAGE_KEYED, LastMessageUnavailable, lastMessage, makeStore } from "./reference/store.ts";
 import { archiveLastKey, archiveLastRead, archiveLastStep } from "../src/store/archive-last.ts";
-import { installLegacySaid, legacySaidStep } from "../src/store/legacy-said-build.ts";
+import { installLegacySaid, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
 import { installSaidState } from "../src/store/said-state.ts";
 import { newMessage, Store } from "../src/store/store.ts";
 

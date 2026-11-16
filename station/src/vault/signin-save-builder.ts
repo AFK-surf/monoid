@@ -3,7 +3,7 @@ import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { forgetSigninSave, installSigninSaveIndex, nextPendingSigninSave, queueSigninSave, signinForSave, signinSaveComplete, stepSigninSaveIndex, type PendingSigninSave } from "./signin-save-index.ts";
+import { forgetSigninSave, installSigninSaveIndex, nextPendingSigninSave, queueSigninSave, signinForSave, signinSaveComplete, type PendingSigninSave } from "./signin-save-index.ts";
 
 /// Older undecided saves are indexed only when needed. The queue survives a restart while an old session is indexed.
 export class SigninSaveBuilder {
@@ -80,12 +80,8 @@ export class SigninSaveBuilder {
       return;
     }
     if (this.#path === null) {
-      try { stepSigninSaveIndex(this.#db, pending.session); this.#retryMs = 250; this.#schedule(0); }
-      catch (error) {
-        log.warn("signin", "an older sign-in index batch stopped", { error: (error as Error).message });
-        this.#schedule(this.#retryMs);
-        this.#retryMs = Math.min(this.#retryMs * 2, 30_000);
-      }
+      // (left queued: no step in TypeScript to fall back to)
+      log.warn("signin", "signin-save backfill requires a file-backed store");
       return;
     }
     if (this.#worker === null) {

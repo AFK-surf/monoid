@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { FIRST_HOME_CHAT_MEMBERS, NEXT_HOME_CHAT_MEMBERS, recentHomeChatStep, type HomeChatCursor } from "../src/store/chat-list-home-source.ts";
+import { FIRST_HOME_CHAT_MEMBERS, NEXT_HOME_CHAT_MEMBERS, recentHomeChatStep, type HomeChatCursor } from "./reference/chat-list/chat-list-home-source.ts";
 import { Store } from "../src/store/store.ts";
 
 test("the default home source agrees with the original home visibility rules", () => {

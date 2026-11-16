@@ -11,7 +11,7 @@ import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { fillUsageStep } from "./reference/usage-fill.ts";
 import { installUsageHistory } from "../src/store/usage-history.ts";
-import { dropUsageIndexStep, stopUsageIndexes } from "../src/store/usage-retire.ts";
+import { dropUsageIndexStep, stopUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 
 const binary = mbReaderBinary();

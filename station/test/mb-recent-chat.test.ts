@@ -9,10 +9,10 @@ import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { RecentChatBuilder } from "../src/read/recent-chat-builder.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { readPreparedRecentHome } from "../src/store/chat-list-home-overlap.ts";
-import { readGlobalRecentChatIndex } from "../src/store/chat-list-index.ts";
-import { RecentChatPreparation, type RecentChatScope } from "../src/store/chat-list-prepare.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { readPreparedRecentHome } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { readGlobalRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
+import { RecentChatPreparation, type RecentChatScope } from "./reference/chat-list/chat-list-prepare.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

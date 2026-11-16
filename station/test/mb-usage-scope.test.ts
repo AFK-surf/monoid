@@ -12,7 +12,7 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { installUsageSummaryBlocks } from "../src/store/usage-summary-blocks.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import type { UsageCall, UsageFor } from "../src/store/usage.ts";
 
 const binary = mbReaderBinary();

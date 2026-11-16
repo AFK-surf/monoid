@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { archivePolicyIndexStep, LEGACY_ARCHIVE_POLICY } from "../src/store/archive-policy-index.ts";
+import { archivePolicyIndexStep, LEGACY_ARCHIVE_POLICY } from "./reference/backfill/archive-policy-index.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
 import { endsOnce } from "./programs.ts";
