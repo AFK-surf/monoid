@@ -1551,6 +1551,53 @@ sim("ways_a_workspace_turned_off_are_not_gone", async (s) => {
   await close(s, station, mesh);
 });
 
+/// One of still.fail's relays turned off alone keeps the device off the main endpoint (at home on it), but not off the
+/// paths iroh punches: the station is dialled on the fence of the relays left as well, at home on those alone, and goes
+/// direct through them (2026-11-16: a workspace turned its relays in China off, and its station in Tokyo was reached
+/// through a relay alone from a device behind a proxy in Japan). Direct turned off too, no fence.
+sim("a_relay_turned_off_alone_leaves_the_punched_paths_on", async (s) => {
+  const { station, mesh, id } = await onLan(s);
+  const [a, b] = mesh.relays;
+  const ask = (off: string[]) => s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, off));
+  const offA = (l: Link) => l.pinned === null || sameRelay(l.via(), a!);
+  const open = () => [mesh.current(id), ...mesh.ways(id).map((w) => w.link)].filter((l): l is Link => l !== null && l.usable());
+  await ask([a!]);
+  await s.until(() => direct(mesh, id), MIN_STAY_MS + 2 * 60_000);
+  assert.ok(mesh.current(id)!.pinned!.startsWith("fenced:"), `${mesh.current(id)!.pinned}`);
+  for (let t = 0; t < 5 * 60_000; t += TICK_MS) {
+    await s.time.pass(TICK_MS);
+    await ask([a!]);
+    assert.ok(!open().some(offA), JSON.stringify(mesh.measured(id)));
+  }
+  assert.equal((await request(s, await ask([a!]), head("/admin/api/overview"))).status, 200);
+  // Direct off as well: the fence is let go, the requests through b's own endpoint.
+  await ask([a!, DIRECT]);
+  assert.ok(!open().some((l) => l.pinned?.startsWith("fenced:") === true || offA(l)), JSON.stringify(mesh.measured(id)));
+  assert.ok(sameRelay(via(mesh, id), b!), `${via(mesh, id)}`);
+  await close(s, station, mesh);
+});
+
+/// An entry is let go with the relay it leads to or the relay whose machine it is on turned off, and kept with any other
+/// turned off (each turned off alone took every entry with it).
+sim("an_entry_goes_with_its_relays_turned_off_alone", async (s) => {
+  const hongKong = s.relay("https://hong-kong.relay.test/", { device: { ms: 500 }, station: { ms: 40 } });
+  const beijing = s.relay("https://beijing.relay.test/", { device: { ms: 600 }, station: { ms: 600 } });
+  const other = s.relay("https://other.relay.test/", { device: { ms: 700 }, station: { ms: 700 } });
+  const beijingEntry = s.net.entry("https://beijing.relay.test:8443/", hongKong, { device: { ms: 20 }, station: { ms: 40 } });
+  const station = await s.stationOn(hongKong, [beijing, other]);
+  const mesh = await s.run(Mesh.make(env(s), [hongKong, beijing, other], [beijingEntry], { [beijingEntry]: hongKong }));
+  const id = station.id();
+  const ask = (off: string[]) => s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, off));
+  await ask([other]);
+  await s.time.pass(3 * EXPLORE_MS);
+  assert.ok(sameRelay(via(mesh, id), beijingEntry), `through ${via(mesh, id)}: ${JSON.stringify(mesh.measured(id))}`);
+  await ask([beijing]);
+  await s.time.pass(3 * EXPLORE_MS);
+  assert.ok(sameRelay(via(mesh, id), hongKong), `through ${via(mesh, id)}: ${JSON.stringify(mesh.measured(id))}`);
+  assert.equal((await request(s, await ask([beijing]), head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
 /// While the app keeps its record, each tick of a station's ways (more than one to choose between) is a line: what went
 /// over each since the last, in and out, and each path's packets sent and lost.
 sim("each_tick_of_a_stations_ways_is_a_line_of_the_record_while_it_is_kept", async (s) => {

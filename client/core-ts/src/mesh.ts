@@ -75,6 +75,19 @@ export const LAN = "lan";
 /// through relays of its own when it could not punch through). So it is not taken over the others as a LAN way is: it
 /// is compared by how it answers, as a relay's way is.
 export const TAILNET = "tailnet";
+/// The `pinned` of a link on the endpoint fenced to the relays a workspace left on, before them (`fencedOf`): at home on
+/// those alone, never a relay it turned off, and punching holes through them as the main endpoint does. While a workspace
+/// turns some of still.fail's relays off, the main endpoint (at home on every one) is not dialled, and without this
+/// nothing went direct: a workspace that turned its relays in China off reached its station in Tokyo through a relay
+/// alone, seconds a round trip, from a device behind a proxy in Japan (2026-11-16).
+const FENCED = "fenced:";
+/// The fence of `relays` as a link's `pinned` says it: the same for the same relays, whatever their order.
+export function fencedOf(relays: string[]): string {
+  return FENCED + relays.map(relayKey).sort().join(" ");
+}
+function isFenced(pinned: string | null): pinned is string {
+  return pinned !== null && pinned.startsWith(FENCED);
+}
 /// The ways dialled at addresses the station said, each on an endpoint of its own.
 export const AT_ADDRESSES = [LAN, TAILNET] as const;
 export type AtAddresses = (typeof AT_ADDRESSES)[number];
@@ -200,6 +213,15 @@ function relayKey(relay: string): string {
   }
 }
 
+/// The machine a relay or an entry is on: its URL's hostname, whatever the port; null where it is no URL.
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
 /// A relay as people see it named (views.ts relayName): its host, with its port when that is not the default one, so an
 /// entry on a relay's machine (`https://39.105.157.122:8443`) is not taken for that relay.
 export function relayHost(relay: string): string {
@@ -321,6 +343,7 @@ export class Way {
     const via = this.link.via();
     if (via !== null) return relayKey(via);
     if (this.link.path() === "direct") return "direct";
+    if (isFenced(this.link.pinned)) return "fenced";
     return this.link.pinned !== null ? relayKey(this.link.pinned) : "main";
   }
 }
@@ -765,6 +788,8 @@ export class Mesh {
   readonly #hedges = new Map<string, Hedge>();
   #serials = 0;
   readonly #pinned = new Map<string, Deferred.Deferred<IrohEndpoint | null>>();
+  /// The relays of each fence a station was dialled in (`#fence`), by the fence.
+  readonly #fences = new Map<string, string[]>();
   /// By address: the ways open to it (the link requests go on among them), each pinged every TICK_MS while it has any.
   readonly #ways = new Map<string, Way[]>();
   readonly #steering = new Set<string>();
@@ -1163,13 +1188,36 @@ export class Mesh {
     return [...this.relays, ...theirs.filter((r) => !this.relays.some((o) => sameRelay(o, r)))].filter((r) => !this.#isOff(addr, r));
   }
 
-  /// Every way a station is dialled through: its relays (`relaysFor`), then the entries (`entries`). Not the entries
-  /// while its workspace turned any of still.fail's relays off: an entry goes through two of their machines, and which
-  /// is not known here.
+  /// Every way a station is dialled through: its relays (`relaysFor`), then the entries (`entries`) but those through
+  /// a relay its workspace turned off (`#entryOff`); none while it turned all of still.fail's off.
   #waysFor(addr: string): string[] {
     const relays = this.relaysFor(addr);
-    if (this.#isOff(addr, "ours") || this.relays.some((r) => this.#isOff(addr, r))) return relays;
-    return [...relays, ...this.entries.filter((e) => !relays.some((r) => sameRelay(r, e)))];
+    if (this.#isOff(addr, "ours")) return relays;
+    return [...relays, ...this.entries.filter((e) => !relays.some((r) => sameRelay(r, e)) && !this.#entryOff(addr, e))];
+  }
+
+  /// Whether an entry goes through a relay the station's workspace turned off: the one it leads to
+  /// (`entryTargets`), or the one whose machine it is on (an entry is a port of a relay's machine: `https://<its
+  /// host>:8443`). Those turned off alone took every entry with them, and a workspace that turned its relays in China
+  /// off lost Beijing's way into Hong Kong's as well as the punched paths (2026-11-16).
+  #entryOff(addr: string, entry: string): boolean {
+    const target = Object.entries(this.entryTargets).find(([url]) => sameRelay(url, entry))?.[1];
+    if (target !== undefined && this.#isOff(addr, target)) return true;
+    const host = hostOf(entry);
+    return this.relays.some((r) => this.#isOff(addr, r) && host !== null && hostOf(r) === host);
+  }
+
+  /// The fence the station is dialled in (`FENCED`) while it is not dialled on the main endpoint, where its workspace
+  /// leaves paths punched through on: the relays it is dialled through, the entries not among them (each a way to a
+  /// relay's own endpoint, which iroh does not take as a home). Null where it does not (the main endpoint dialled,
+  /// direct ways turned off, a mesh through relays alone, no relay left).
+  #fence(addr: string): string | null {
+    if (this.#mainOn(addr) || this.#isOff(addr, DIRECT) || this.#env.relayOnly === true) return null;
+    const relays = this.relaysFor(addr);
+    if (relays.length === 0) return null;
+    const fence = fencedOf(relays);
+    if (!this.#fences.has(fence)) this.#fences.set(fence, relays);
+    return fence;
   }
 
   /// Whether the station's workspace turned `way` off (a relay, or a kind of way: LAN, TAILNET, DIRECT, or `ours` for
@@ -1194,6 +1242,7 @@ export class Mesh {
     const pinned = link.pinned;
     if (pinned === null) return !this.#mainOn(addr);
     if (pinned === LAN || pinned === TAILNET) return this.#isOff(addr, pinned);
+    if (isFenced(pinned)) return pinned !== this.#fence(addr);
     return !this.#waysFor(addr).some((r) => sameRelay(r, pinned));
   }
 
@@ -1491,21 +1540,25 @@ export class Mesh {
   /// The ways a station is dialled on each on an endpoint of its own: every relay and entry but still.fail's own relay
   /// (the first, on Cloudflare), which the main endpoint reaches already. It holds few connections, each a cost: one
   /// more a device filled it (2026-10-08: 429 to bft's keeper and to devices). None while there is one way or none.
-  /// Off the main endpoint (`#mainOn`), every relay left is, still.fail's own too.
+  /// Off the main endpoint (`#mainOn`), every relay left is, still.fail's own too, and the fence of them (`#fence`).
   #pinnable(addr: string): string[] {
     const ways = this.#waysFor(addr);
-    if (!this.#mainOn(addr)) return ways;
+    if (!this.#mainOn(addr)) {
+      const fence = this.#fence(addr);
+      return fence === null ? ways : [...ways, fence];
+    }
     if (ways.length < 2) return [];
     const own = this.relays[0];
     return ways.filter((r) => own === undefined || !sameRelay(own, r));
   }
 
-  /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`).
+  /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
+  /// punched through them, on the fence's.
   #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       this.#dialing++;
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) =>
-        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, [relay], endpointId(addr), credentials, fresh, relay, ctx),
+        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx),
       ).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
     });
   }
@@ -2047,7 +2100,15 @@ export class Mesh {
       this.#pinned.set(relay, d);
       // The LAN endpoint, the Tailscale one: on no relay, so each looks nothing up and punches no hole; it dials
       // addresses alone.
-      const bound = yield* Effect.result(relay === LAN || relay === TAILNET ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), []) : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true));
+      // A fence's: at home on its relays alone, with IP transports (paths punched through them), looking nothing up.
+      const fence = this.#fences.get(relay);
+      const bound = yield* Effect.result(
+        relay === LAN || relay === TAILNET
+          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [])
+          : fence !== undefined
+            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence)
+            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true),
+      );
       const endpoint = bound._tag === "Success" ? bound.success : null;
       Deferred.doneUnsafe(d, Effect.succeed(endpoint));
       if (endpoint === null) this.#pinned.delete(relay);
@@ -2336,7 +2397,7 @@ function open(
   // the DHT's lines kept from the dial's start: a lookup it asks, a socket failing as it does (the record turned on, or
   // a first dial, after none was kept)
   const dialFrom = Effect.andThen(Effect.sync(() => recordDht(env.host, endpoint)), dial);
-  const via = pinned === null ? (ips.length > 0 ? "main+addresses" : "main") : pinned === LAN ? "lan" : pinned === TAILNET ? "tailnet" : `relay:${relayHost(pinned)}`;
+  const via = pinned === null ? (ips.length > 0 ? "main+addresses" : "main") : pinned === LAN ? "lan" : pinned === TAILNET ? "tailnet" : isFenced(pinned) ? "fenced" : `relay:${relayHost(pinned)}`;
   return Effect.onExit(dialFrom, (exit) =>
     Effect.sync(() => {
       // what the DHT went through as it dialled (a lookup of this station's address among them, if one was asked)
