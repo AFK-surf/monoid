@@ -635,7 +635,7 @@ fn side_tab_names(src : Source, r : ChatRef, v : ChatView?, tab : String) -> (St
   }
   let agent = v.bind(fn(v) { v.agents.iter().find_first(fn(a) { a.key == tab }) })
   let service = match tab_service(tab) {
-    Some(job) => Some(src.topic("job", { "station": Json::string(r.station), "id": Json::string(job) }).get().value)
+    Some(job) => Some(job_now(src, r.station, job).0)
     None => None
   }
   let file = tab_file(tab)

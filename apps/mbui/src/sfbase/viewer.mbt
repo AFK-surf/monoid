@@ -3085,7 +3085,7 @@ pub fn Viewer::player_stage(self : Viewer, c : @ui.Ctx, src : Source, stage : In
     // (closed by its fade: its controls away at once, the page showing through as it goes; flown back into its
     // thumbnail they go with it as it shrinks, its ground whole till they are gone: bars_share)
     going=v.closing && !v.flies,
-    move_beside=if !v.beside && beside_offered(v.file.path, v.file.name) { Some(fn() { v.move_beside() }) } else { None },
+    move_beside=if !v.beside && beside_offered(v.file.path, v.file.name) { Some(fn() { v.move_beside(src) }) } else { None },
     // (a tab's: in its stage under the tab's tools, which have its name, 下载 and 全屏)
     embedded=v.beside,
     margin=if v.beside { tab_picture_margin } else { 0.0 },

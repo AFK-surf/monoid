@@ -1469,7 +1469,7 @@ fn image_tools(
       fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
       ink,
       corner,
-      fn() { vw.move_beside() },
+      fn() { vw.move_beside(src) },
       tip=tips,
     )
     |> ignore
@@ -2077,7 +2077,7 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
             vw.said_flying()
             vw.closing && !vw.flies
           },
-          move_beside=fn() { if beside_offered(vw.file.path, vw.file.name) { Some(fn() { vw.move_beside() }) } else { None } },
+          move_beside=fn() { if beside_offered(vw.file.path, vw.file.name) { Some(fn() { vw.move_beside(src) }) } else { None } },
         )
         |> ignore
       }

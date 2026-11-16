@@ -10,14 +10,10 @@
 // what it shows otherwise is laid out as the web's, narrower under 640 (viewer.mbt).
 
 ///|
-/// Where it is among those it steps through and how many they are (an image's: its chat's, as the core tells them,
-/// imageNear's index and count; a folder's); (-1, 0) when it steps through none.
-pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
-  if vw.shown_kind() != Some(KImage) {
-    return (-1, 0)
-  }
+/// What viewer `vw` asks of the core for where its picture is among its chat's (`imageNear`), where it steps through
+/// its chat's pictures (None: it steps through none of them, or a folder's).
+fn image_near_params(vw : Viewer) -> Map[String, Json]? {
   match vw.steps {
-    NoSteps => (-1, 0)
     InChat(thread, session) => {
       let p : Map[String, Json] = { "station": Json::string(vw.station), "path": Json::string(vw.file.path) }
       let at = vw.gallery_at()
@@ -28,7 +24,23 @@ pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
         Some(th) => p["thread"] = Json::number(th)
         None => p["session"] = Json::string(session)
       }
-      let told = src.topic("imageNear", p).get().value
+      Some(p)
+    }
+    _ => None
+  }
+}
+
+///|
+/// Where it is among those it steps through and how many they are (an image's: its chat's, as the core tells them,
+/// imageNear's index and count; a folder's); (-1, 0) when it steps through none.
+pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
+  if vw.shown_kind() != Some(KImage) {
+    return (-1, 0)
+  }
+  match vw.steps {
+    NoSteps => (-1, 0)
+    InChat(_, _) => {
+      let told = src.topic("imageNear", image_near_params(vw).unwrap_or({})).get().value
       let at = match field(told, "index") {
         Some(Number(n, ..)) => n.to_int()
         _ => -1

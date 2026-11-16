@@ -108,6 +108,8 @@ fn jobs_tab_node(
                 // (one up or restarting opens its tab; else it does nothing)
                 let opens = fn() { text(job(), "tone") == "up" || text(job(), "tone") == "restart" }
                 jobs_tab_row(row, job, fn() { if opens() { "arrow-right" } else { "" } }, fn() { false }, opens, fn() {
+                  // (its tab opens on the job as this row has it: job_now)
+                  job_handed(station, id, job())
                   service(id)
                 })
               }

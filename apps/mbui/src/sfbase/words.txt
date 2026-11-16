@@ -143,6 +143,7 @@ android-chat.link.failed
 android-chat.load.failed
 android-chat.load.label
 android-chat.load.label.failed
+android-chat.load.name
 android-chat.load.note
 android-chat.load.waiting
 android-chat.marks.arrow.where

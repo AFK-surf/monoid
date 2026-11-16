@@ -214,7 +214,9 @@ fn service_page_bar(
       gone.push(Some(bar_line(@sf.t("web-main.preview.reload"), "refresh", disabled=false, on_press=fn() { site.reload() })))
     }
     let load = load_of(src, station, port, fixed)
-    if load is Some(Object(_)) {
+    // (its place in the bar from the page's first frame, whatever has come of it: how far it came, as the station
+    // says, only its ring and its value, never a key coming into the bar a moment after the page opens)
+    if !fixed {
       let slot = c.id("service/load-slot")
       c.box(id=slot, taps=false, drop=bar_drop_load, fn() { load_key(c, src, station, port, load) }) |> ignore
       if c.left_out(slot) {
@@ -394,11 +396,20 @@ fn load_key(c : @ui.Ctx, src : Source, station : String, port : Int, load : Json
     service_load_panel(src, station, port, Of(ring))
   })
   let color = if number(load, "failed") > 0.0 { t.p.red } else { t.p.muted }
-  // (in words, to a screen reader)
-  c.box(style=ring_box.then(@ui.style(w=Fixed(t.bars.key), h=Fixed(t.bars.key))), id=ring, label=load_label(load), fn() {
+  let node = c.box(style=ring_box.then(@ui.style(w=Fixed(t.bars.key), h=Fixed(t.bars.key))), id=ring, fn() {
     @sf.progress_ring(c, 20.0, number(load, "percent") / 100.0, color) |> ignore
   })
-  |> ignore
+  // (to a screen reader one key whatever has come: its name, and how far it came as its value, said as that changes;
+  // none said till the station says)
+  c.semantics(
+    node,
+    Button,
+    id=ring,
+    label=svc("android-chat.load.name"),
+    value=if load is Some(Object(_)) { load_label(load) } else { "" },
+    range=(0.0, number(load, "percent"), 100.0),
+    actions=[Activate],
+  )
 }
 
 ///|

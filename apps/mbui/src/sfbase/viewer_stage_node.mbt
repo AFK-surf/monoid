@@ -98,7 +98,7 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
               move_beside=if vw.beside {
                 None
               } else {
-                Some((fn() { beside_offered(vw.file.path, vw.file.name) }, fn() { vw.move_beside() }))
+                Some((fn() { beside_offered(vw.file.path, vw.file.name) }, fn() { vw.move_beside(src) }))
               },
             )
             |> ignore

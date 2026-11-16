@@ -150,6 +150,7 @@ let zh : Map[String, String] = {
   "android-chat.load.failed": "失败",
   "android-chat.load.label": "资源加载 {percent}% · {finished}/{total}",
   "android-chat.load.label.failed": "资源加载 {percent}% · {finished}/{total} · {failed} 个失败",
+  "android-chat.load.name": "资源加载",
   "android-chat.load.note": "按已发现的服务请求计算 · 新资源出现时更新",
   "android-chat.load.waiting": "等待页面请求",
   "android-chat.marks.arrow.where": "箭头 · 从 ({ax}, {ay}) 指向 ({bx}, {by})",

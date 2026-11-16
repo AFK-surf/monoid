@@ -204,8 +204,21 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
             None => ("", chat)
           }
           let station = if f.station != "" { f.station } else { chat_station }
-          let steps = if chat_session != "" { InChat(None, chat_session) } else { NoSteps }
-          let v = new_viewer(station, f.key, f.file, f.drive, steps, named=f.named, beside=true)
+          // (moved here from the whole window (移到侧边): what it stepped through and how big its picture is, as it
+          // showed them, so the tab comes in saying what the window said; else stepping through its chat's pictures)
+          let (steps, file) = match tab_moved.get(tab) {
+            Some(m) => {
+              tab_moved.remove(tab)
+              // (what the window read held till the tab, made in this frame, has read it: let go at its end)
+              match m.near {
+                Some(l) => @ui.after_frame(fn() { l.release() })
+                None => ()
+              }
+              (m.steps, { ..f.file, width: m.width, height: m.height })
+            }
+            None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file)
+          }
+          let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, beside=true)
           tab_viewers[id] = { viewer: v, drawn: 0, closing: false }
           Some(v)
         }
@@ -251,7 +264,36 @@ fn tab_viewers_reset() -> Unit {
   tab_viewers.each(fn(_, t) { t.viewer.let_go() })
   tab_viewers.clear()
   tab_asked.clear()
+  tab_moved.each(fn(_, m) { m.release() })
+  tab_moved.clear()
 }
+
+///|
+/// What a file moved beside held for its tab let go (its tab never made).
+fn TabMoved::release(self : TabMoved) -> Unit {
+  match self.near {
+    Some(l) => l.release()
+    None => ()
+  }
+}
+
+///|
+/// What a file moved beside from the whole window (移到侧边) was shown with there: what its picture stepped through and
+/// how big it is (0: not known), for its tab's viewer as it is made (tab_viewer).
+priv struct TabMoved {
+  steps : Stepping
+  width : Double
+  height : Double
+  /// where its picture is among its chat's, as the window read it (imageNear), held for the tab till it reads it
+  near : TopicLease?
+}
+
+///|
+/// The files moved beside from the whole window just now, by their tab, till the tab's viewer is made (tab_viewer):
+/// a press opens the tab saying what the window said of the file, never the tab's own asks answered a moment later
+/// (main's switches sweep, 2026-11-16: 「1 / 2 · … · 400×300」 came 800 ms after the press).
+// kept across runs: put back by tab_viewers_reset (file_viewer_reset)
+let tab_moved : Map[String, TabMoved] = Map([])
 
 ///|
 /// The files the person asked beside the page just now (a press with the command key held, a menu's 在侧边打开, the
@@ -334,13 +376,41 @@ pub fn tab_players_pause(chat? : String = "") -> Unit {
 ///|
 /// 移到侧边 (the whole window's bar): viewer `vw`'s file beside the page, it closed at once (no flight back: it goes to
 /// the tab); a film or a song played there from where it was. Where the shell has nowhere to put it, it stays.
-pub fn Viewer::move_beside(self : Viewer) -> Unit {
+pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
   let at = match self.media {
     Some(m) => m.position()
     None => 0.0
   }
-  if beside_open(self.view_tab(), at) {
+  // (what the window showed of it, handed to the tab's viewer: what it stepped through, its picture's size)
+  let (width, height) = if self.file.width > 0.0 && self.file.height > 0.0 {
+    (self.file.width, self.file.height)
+  } else if self.image != "" {
+    @ui.image_natural(self.image).unwrap_or((0.0, 0.0))
+  } else {
+    (0.0, 0.0)
+  }
+  let tab = self.view_tab()
+  // (none where its tab is open already: its viewer is kept as it is)
+  if !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
+    let near = if self.shown_kind() == Some(KImage) {
+      image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
+    } else {
+      None
+    }
+    match tab_moved.get(tab) {
+      Some(was) => was.release()
+      None => ()
+    }
+    tab_moved[tab] = { steps: self.steps, width, height, near }
+  }
+  if beside_open(tab, at) {
     close_now()
+  } else {
+    match tab_moved.get(tab) {
+      Some(m) => m.release()
+      None => ()
+    }
+    tab_moved.remove(tab)
   }
 }
 
