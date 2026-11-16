@@ -278,12 +278,13 @@ export function agyLentFile(lent: { token: Json; email?: string | null; auth_met
   const stored = lent.stored !== null && typeof lent.stored === "object" && !Array.isArray(lent.stored) ? lent.stored : {};
   return JSON.stringify({ ...stored, token, auth_method: lent.auth_method ?? stored.auth_method ?? "consumer", ...(lent.email ? { id_token_email: lent.email } : {}) });
 }
-/// How many bytes of the station's tools a session's model is declared (tools/mcp.ts `fitted`). `agy` 1.5.6 in ACP
-/// declares an MCP server's tools only while all of them together stay within about 57-60 KB, dropping the largest
-/// beyond that, and offers no call_mcp_tool for those it dropped: measured 2026-11-12 with the station's 42 tools
-/// (73 KB; chat_post, station_task and secret_save were dropped, so its sessions could not post) and with subsets of
-/// them (57 KB declared whole). Kept well under it, for its own tools' growth.
-export const AGY_TOOL_BUDGET = 45_000;
+/// How many bytes of the station's tools a session's model is declared (tools/mcp.ts `fitted`). `agy` in ACP adds its
+/// own `toolSummary` field (~340 B per tool) to each MCP schema and shares one customization budget across skills,
+/// workflows, subagents and eager MCP tools, demoting the largest MCP tools beyond it with no `call_mcp_tool` in ACP:
+/// at 45 KB (57.5 KB after `toolSummary`), loading a workspace's 31 skills (#6685, 2026-11-16) pushed the total past
+/// that budget and dropped `chat_post` (4.7 KB), leaving `agy` sessions unable to post. 28 KB (~36.8 KB with
+/// `toolSummary`) keeps `chat_post` and every core tool declared alongside a full skill catalog (`side/agy-real.test.ts`).
+export const AGY_TOOL_BUDGET = 28_000;
 
 /// Where the station keeps its sessions' transcripts.
 export const SESSIONS = "sessions";
