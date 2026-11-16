@@ -1890,6 +1890,18 @@ pub fn Viewer::shut(self : Viewer, c : @ui.Ctx) -> Unit {
         self.tree_back.set(true)
         self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
       }
+      // a film of a chat's page made as nodes, its thumbnail drawn: the frame it shows grabbed first (the thumbnail
+      // keeps it, Viewer::left_with_picture), then let go of, the thumbnail flown back from where its player drew it
+      // by the window's tree (viewer_tree.mbt's film_shared); none to grab, at once with its still
+      (None, Some(KVideo), _) if self.in_tree && self.chat_file() && tree_thumb_seen(self.thumb_id()) =>
+        match self.view() {
+          Some(n) if n.here() && n.shown() && !n.grabbing() => {
+            self.grab_set(true)
+            self.left_at = n.position()
+            c.tell("preview-grab", fn() { n.grab_shown(kept_frame_side) })
+          }
+          _ => self.tree_film_back(viewer_moment(c))
+        }
       // the way in played backwards (web's fp: ease-out on the way in, the same curve run back on the way out): the
       // ground and the picture stay nearly whole at first, then go
       _ => self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
@@ -1921,6 +1933,11 @@ fn viewer_moment(c : @ui.Ctx) -> Double {
 /// moment `at`, in a window `window` (w, h): from where its player draws it now (flung, it went on while its frame was
 /// grabbed).
 pub fn Viewer::fly_home(self : Viewer, picture : String, at : Double, window : (Double, Double)) -> Unit {
+  // (its thumbnail a node of the window's tree: flown back into by the tree, viewer_tree.mbt's film_shared)
+  if self.fly_from is None && self.in_tree && self.shown_kind() == Some(KVideo) {
+    self.tree_film_back(at)
+    return
+  }
   self.fly_pic = picture
   if self.player_place() is Some(r) {
     self.fly_to = Some(r)
@@ -1931,6 +1948,14 @@ pub fn Viewer::fly_home(self : Viewer, picture : String, at : Double, window : (
     None => ()
   }
   pv_hidden.set(self.thumb_id())
+}
+
+///|
+/// A film whose thumbnail is a node of the window's tree let go of from the moment `at` (its frame grabbed and kept for
+/// that thumbnail, or none to grab): flown back into it by the tree (viewer_tree.mbt's film_shared) as the rest fades.
+fn Viewer::tree_film_back(self : Viewer, at : Double) -> Unit {
+  self.tree_back.set(true)
+  self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at~)
 }
 
 ///|

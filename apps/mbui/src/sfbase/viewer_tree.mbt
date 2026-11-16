@@ -1914,6 +1914,93 @@ fn film_flight(
 }
 
 ///|
+/// A chat's film viewer `vw` opened from a thumbnail that is a node of the window's tree (a chat's page made as nodes:
+/// message_video_node's, the end of the flight that stays), in node `n`: its still where the player draws its picture,
+/// under the player, flown by the tree from that thumbnail as it opens and, let go of as it closes (Viewer::tree_back,
+/// once the frame it shows is grabbed: the thumbnail keeps it), the thumbnail flown back from where it was (View::shared,
+/// as an image's picture is: image_layer). Whether its picture is the flight's now: on its way in (the tree's flight of
+/// its thumbnail's id, Tree::flight_ends_at), or let go of; its thumbnail no such node shown as it opens, never.
+fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
+  let id = vw.thumb_id()
+  guard @signals.untracked(fn() { vw.in_tree && vw.chat_file() && vw.shown_kind() == Some(KVideo) }) &&
+    tree_thumb_seen(id) else {
+    return fn() { false }
+  }
+  // (paired as it is made, its thumbnail shown then: its flight's end said once the change is committed, Tree's
+  // flight_ends_at; meanwhile as long as a flight may take at most)
+  let made = n.cause_at()
+  let goes = fn(t : Double) {
+    match @ui.view_tree().bind(fn(tree) { tree.flight_ends_at(id) }) {
+      Some(end) => t < end
+      None => t < made + flight_most_ms
+    }
+  }
+  n.show(at_once=true, fn() { !vw.tree_back.get() }, fn(p) {
+    let place = fn() {
+      // (where the player draws its picture: as it was last drawn once it has been, zoomed, moved, read again as it
+      // closes (its frame asked for, pv_leaving); else, or where it has read no size of the film yet (a point in its
+      // middle), as it fits it by the film's size its message says: never from a point)
+      pv_leaving.get() |> ignore
+      vw.grab_told.get() |> ignore
+      match vw.player_place() {
+        Some(r) if r.2 > 1.0 && r.3 > 1.0 => Some(r)
+        _ => {
+          let (w, h) = p.window()
+          vw.video_target(src, player_width(w), h, p.cause_at())
+        }
+      }
+    }
+    p
+    .over(Is(true))
+    .presses(Is(false))
+    .offset(By(fn() {
+      match place() {
+        Some((x, y, _, _)) => (x, y)
+        None => (0.0, 0.0)
+      }
+    }))
+    .width(By(fn() { place().map(fn(r) { r.2 }) }))
+    .height(By(fn() { place().map(fn(r) { r.3 }) }))
+    // (its still on the black, as the thumbnail draws it: none, the black alone)
+    .ground(Is(0x000000FFL))
+    .image(By(fn() {
+      match vw.still(src) {
+        "" | "!" => None
+        k => Some((k, "", stage_px))
+      }
+    }))
+    .image_covers(Is(true))
+    .shared(Is(id), @motion.flight_by(@motion.moved()), with_stays=true)
+    |> ignore
+    // (closing, the frame its player showed, grabbed, over the still: asked for here to be decoded under the player,
+    // which goes back once it is (Viewer::left_with_picture), the still seen till it is)
+    p.box(fn(f) {
+      f
+      .over(Is(true))
+      .width(By(fn() { place().map(fn(r) { r.2 }) }))
+      .height(By(fn() { place().map(fn(r) { r.3 }) }))
+      .image(By(fn() {
+        vw.grab_told.get() |> ignore
+        if vw.leaving_pic != "" {
+          Some((vw.leaving_pic, "", stage_px))
+        } else {
+          None
+        }
+      }))
+      .image_covers(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+  fn() {
+    vw.tree_back.get() || {
+      let t = n.drawn_while(goes)
+      goes(t)
+    }
+  }
+}
+
+///|
 /// What viewer `vw` shows of a film or a song, in node `n`: the player as nodes (@sf.player_node: its picture, its bars
 /// and controls, its keys, the full screen and turning sideways), as far in as its fade has come and, while the
 /// picture flies, as far as its bars come with it (bars_share: none till its ground is whole); in flight its still the
@@ -1926,6 +2013,9 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
   // its flight, in its own layer once it is out from under the bar of the page it flies from (that page's slot draws
   // it till then, the bar over it: viewer_flight_slot)
   film_flight(n, src, vw, fn(t) { vw.flies_from_page() == 0 || vw.lifted_at(t) >= 1.0 })
+  // its thumbnail a node of the window's tree (a chat's page made as nodes): its picture flown by the tree from it and
+  // back into it (film_shared)
+  let tree_flies = film_shared(n, src, vw)
   // (the player over its flight, its bars coming as its ground is whole)
   n.box(fn(s) {
     s
@@ -1981,10 +2071,11 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
           on_back=fn() { vw.shut_tree() },
           // (the chat's still where its picture will be, until its first frame shows)
           still=fn() { if vw.shown_kind() == Some(KVideo) { vw.still(src) } else { "" } },
-          // (flying in, or back into its thumbnail once the frame it shows is grabbed: its picture the flight's)
+          // (flying in, or back into its thumbnail once the frame it shows is grabbed: its picture the flight's, the old
+          // one's or the tree's)
           flying=fn() {
             vw.said_flying()
-            vw.flies && (!vw.closing || !vw.leaving_grab)
+            (vw.flies && (!vw.closing || !vw.leaving_grab)) || tree_flies()
           },
           // (closed by its fade: its controls away at once, the page showing through as it goes)
           going=fn() {

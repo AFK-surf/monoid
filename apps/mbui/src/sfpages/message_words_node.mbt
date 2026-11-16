@@ -151,13 +151,19 @@ fn mine_said_node(
   flying? : () -> Bool = fn() { false },
 ) -> MessageRowNode {
   let said = fn() { out() is None }
+  // (sent from here a moment ago: its bubble flies from where its words stood in the composer's field (mine_bubble_node),
+  // landing then; what did not go is said under it once they have, never under them on their way)
+  let flies_from = @sfbase.sent_from_take(key)
+  let lands = flies_from.map(fn(_) { v.cause_at() + @sfbase.flight_desk_ms })
+  // (and its quotes' cards from where they stood in the composer: message_quotes_node's)
+  let quotes_from = @sfbase.sent_quotes_from_take(key)
   message_row_frame_node(v, key, side, top, over~, fn(r) {
     r.box(fn(col) {
       @sf.style_node(col, fn() { mine_column })
       // (what it quotes ahead of its files and words, in the order the composer held them: mine_message's; its place
       // the row's as it was made, what was sent from here its key's)
       let at = if @signals.untracked(said) { message_place(@signals.untracked(m)) } else { key }
-      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said })
+      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from)
       message_files_node(
         col,
         src,
@@ -186,7 +192,7 @@ fn mine_said_node(
           fn() { if said() { found_at() } else { None } },
           lit=fn() { if said() { lit() } else { ("", 0L) } },
           cards=(here.tips, fn(l) { if said() { cards(l) } else { None } }),
-          flies_from=@sfbase.sent_from_take(key),
+          flies_from~,
         )
         // (offered once it is the chat's, by the message it is then)
         match share {
@@ -248,7 +254,21 @@ fn mine_said_node(
                 flying,
               )
               |> ignore
-            MineUnsent => outbox_unsent_node(u, src, here, fn() { out().unwrap_or(chat_body_no_out) })
+            MineUnsent =>
+              u.box(fn(n) {
+                // (seen as its words land, coming in over a part's leave_ms: failed at once, it was under their way)
+                match lands {
+                  Some(at) =>
+                    n.alpha(By(fn() {
+                      let t = n.drawn_while(fn(now) { now < at + msg_part_leave_ms })
+                      @sf.dclamp((t - at) / msg_part_leave_ms, 0.0, 1.0)
+                    }))
+                    |> ignore
+                  None => ()
+                }
+                outbox_unsent_node(n, src, here, fn() { out().unwrap_or(chat_body_no_out) })
+              })
+              |> ignore
           }
         })
       })
