@@ -11,7 +11,8 @@ import { after, test } from "node:test";
 import { linkSiteSkills, linkTranscripts, unlinkAgentHome, workspaceAgentHome, workspaceAgentHomePath, writeBuiltinSkills } from "../src/sessions/agent-home.ts";
 import { Presets, keepCopy } from "../src/sessions/presets.ts";
 import { handoverFile } from "../src/sessions/hub.ts";
-import { Rig } from "./hub-fakes.ts";
+import { newSession } from "../src/sessions/lifecycle.ts";
+import { Rig, message, settle } from "./hub-fakes.ts";
 import { syncCalls } from "./main-thread-sync.ts";
 
 const dirs: string[] = [];
@@ -144,6 +145,64 @@ test("a handover's file written and taken up waits on no file", async () => {
     });
     assert.deepEqual(taken, []);
     assert.ok(!existsSync(handoverFile(r.dir)), "taken away once read");
+  } finally {
+    await r.close();
+  }
+});
+
+test("a new chat asked twice at once with its client's key and a preset is made once, waiting on no file; one naming no preset makes no directory", async () => {
+  const r = new Rig();
+  try {
+    const app = temp("presets-chat-app-");
+    writeFileSync(join(app, "AGENTS.md"), "# app\n");
+    const p = await r.hub.presets.add(null, { name: "App", dirs: [app], instructions: "go" }, "local");
+    let picked = 0;
+    const pick = r.hub.accounts.pick.bind(r.hub.accounts);
+    r.hub.accounts.pick = (...args: Parameters<typeof pick>) => {
+      picked++;
+      return pick(...args);
+    };
+    // (the sessions' program found and opened once, by a chat before: mb-reader.ts's, not what is measured here)
+    await newSession(r.hub, { runtime: "claude", createdBy: "local" });
+    await settle();
+    picked = 0;
+    const asked = { runtime: "claude" as const, createdBy: "local", clientKey: "retry-1", preset: p.id };
+    let made: Awaited<ReturnType<typeof newSession>>[] = [];
+    const calls = await syncCalls(async () => {
+      made = await Promise.all([newSession(r.hub, asked), newSession(r.hub, asked)]);
+    });
+    assert.deepEqual(calls, []);
+    assert.equal(made[0]![0], made[1]![0]);
+    assert.equal(made[0]![1].id, made[1]![1].id);
+    assert.equal(picked, 1, "an account picked once");
+    const copy = JSON.parse(readFileSync(join(r.session(made[0]![0]).workspace, ".stillfail-preset.json"), "utf8"));
+    assert.equal(copy.id, p.id);
+    assert.deepEqual(readdirSync(r.session(made[0]![0]).workspace).filter((n) => n.startsWith(".stillfail-preset.json.")), [], "no file left beside it");
+    const sessions = join(r.dir, "sessions");
+    const before = readdirSync(sessions, { recursive: true }).length;
+    await assert.rejects(newSession(r.hub, { ...asked, clientKey: "retry-2", preset: "p-none" }), /no preset p-none/);
+    assert.equal(readdirSync(sessions, { recursive: true }).length, before, "no directory made");
+  } finally {
+    await r.close();
+  }
+});
+
+test("a connect's first message making its session waits on no file", async () => {
+  const r = new Rig();
+  try {
+    // (the sessions' program found and opened once, by a chat before: mb-reader.ts's, not what is measured here)
+    await r.accept(message({ text: "<@UBOT> first", addressed: true, threadTs: "8.000001", ts: "8.000001" }));
+    await settle();
+    const calls = await syncCalls(async () => {
+      await r.accept(message({ text: "<@UBOT> hi", addressed: true, threadTs: "9.000001", ts: "9.000001" }));
+    });
+    assert.deepEqual(calls, []);
+    await settle();
+    assert.ok(r.thread(message().channel, "9.000001"));
+    // A single-session connect asked from two channels at once: one session, bound once.
+    await Promise.all([r.accept(message({ channel: "C1", text: "<@UBOT> a", addressed: true, threadTs: "10.000001", ts: "10.000001" }), "team"), r.accept(message({ channel: "C2", text: "<@UBOT> b", addressed: true, threadTs: "11.000001", ts: "11.000001" }), "team")]);
+    await settle();
+    assert.equal(r.store.listSessions().filter((s) => s.connect === "team").length, 1);
   } finally {
     await r.close();
   }

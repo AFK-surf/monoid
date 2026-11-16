@@ -20,7 +20,6 @@
 // file (`takeUp`), and from the runners a crashed station left (no snapshot), then `recover` resumes the turns marked
 // running that nothing took up.
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -886,6 +885,18 @@ export class Hub {
     }
   }
 
+  /// A single-session connect's session being made, by the connect: one at a time.
+  private readonly singles = new Map<string, Promise<unknown>>();
+  private oneSingle<T>(connect: string, f: () => Promise<T>): Promise<T> {
+    const run = (this.singles.get(connect) ?? Promise.resolve()).then(f, f);
+    const done = run.then(() => {}, () => {});
+    this.singles.set(connect, done);
+    void done.then(() => {
+      if (this.singles.get(connect) === done) this.singles.delete(connect);
+    });
+    return run;
+  }
+
   private async acceptInTurn(connectId: string, message: InboundMessage) {
     const config = this.config();
     // What a bot of this station posted is its agent's, recorded and handed to the thread as it was posted: Slack's
@@ -908,7 +919,7 @@ export class Hub {
     const own = single ? null : sessionKey(connect.id, message.channel, message.threadTs);
     const sameBot = single ? [] : members.filter((m) => m.connect === connect.id);
     const taken = sameBot.find((m) => m.leftAt === null) ?? sameBot.find((m) => m.session === own) ?? sameBot[0];
-    const key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
+    let key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
     const exists = this.store.getSession(key) !== null;
     // Left (chat_leave): it hears the thread again only once someone mentions it.
     const left = members.some((m) => m.session === key && m.leftAt !== null);
@@ -926,8 +937,19 @@ export class Hub {
     const createdBy = `slack:${connect.id}:${message.user}`;
     if (wanted && !exists) {
       try {
-        this.createSession(config, key, connect, single ? "all" : "thread", message, null, createdBy);
-        if (single) this.store.setBinding(connect.id, key);
+        if (!single) await this.createSession(config, key, connect, "thread", message, null, createdBy);
+        else {
+          // A single-session connect's one session, made once: messages of two channels at once (each its own
+          // thread's turn) find the one the first made and bound.
+          const making = key;
+          key = await this.oneSingle(connect.id, async () => {
+            const now = this.store.binding(connect.id);
+            if (now !== null && this.store.getSession(now) !== null) return now;
+            await this.createSession(config, making, connect, "all", message, null, createdBy);
+            this.store.setBinding(connect.id, making);
+            return making;
+          });
+        }
       } catch (error) {
         log.error("hub", "cannot create session", { session: key, error: (error as Error).message });
         await chat.post(here, markNotice(`⚠️ ${tr(stationLang(), "station.slack.sessionFailed", { error: (error as Error).message })}`), []);
@@ -1614,7 +1636,7 @@ export class Hub {
   /// A session for a connect: the connect's own profile when it keeps to one (and it still can run it); else any of its
   /// runtime, the model's first (pool.ts). A message sent to a model (`model`) starts one on that model instead, on any
   /// profile of the connect's workspace that runs it.
-  createSession(config: HubConfig, key: string, connect: Connect, scope: "thread" | "all", message: InboundMessage | null, title: string | null, createdBy: string | null) {
+  async createSession(config: HubConfig, key: string, connect: Connect, scope: "thread" | "all", message: InboundMessage | null, title: string | null, createdBy: string | null): Promise<void> {
     const home = this.workspaces()[0] ?? null;
     const chosen = message?.model ?? null;
     const runtime = chosen === null ? connect.bind.runtime : runtimeNamed(chosen.runtime);
@@ -1633,8 +1655,9 @@ export class Hub {
     const profile = boundFits.length === 1 ? boundFits[0]! : this.accounts.pick(boundFits.length > 0 ? boundFits : fits, model, false);
     const dir = scope === "thread" && message ? `${message.channel}-${message.threadTs.replace(".", "-")}` : key.slice(connect.id.length + 1);
     const workspace = join(config.dataDir, "sessions", connect.id, dir, "workspace");
-    mkdirSync(workspace, { recursive: true });
-    mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+    await Promise.all([mkdir(workspace, { recursive: true }), mkdir(join(config.dataDir, "repos"), { recursive: true })]);
+    // (made meanwhile by what was waiting on the same key: as it is)
+    if (this.store.getSession(key) !== null) return;
     const now = this.now();
     this.store.insertSession({
       key,

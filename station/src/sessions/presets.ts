@@ -622,7 +622,11 @@ export async function keepCopy(workspace: string, copy: PresetCopy): Promise<Pre
     dirs.push({ ...d, ...(guides.length > 0 ? { guides } : {}), ...(skills.length > 0 ? { skills } : {}) });
   }
   const kept = { ...copy, dirs };
-  await writeFile(join(workspace, COPY), `${JSON.stringify(kept, null, 2)}\n`);
+  // (whole, put in its place: a turn reading it meanwhile, `presetCopyOf`, reads none or all of it)
+  const path = join(workspace, COPY);
+  const temp = `${path}.${randomBytes(4).toString("hex")}`;
+  await writeFile(temp, `${JSON.stringify(kept, null, 2)}\n`);
+  await rename(temp, path);
   return kept;
 }
 

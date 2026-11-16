@@ -185,7 +185,7 @@ test("in a thread with two agents of the same bot, the one that left stays out w
   // As stations before the fix did: the bot mentioned there made a session of the connect's own for the thread.
   const there = r.thread("C1", "1700.000100");
   const own = "cl:C1:1700.000100";
-  r.hub.createSession(r.hub.config(), own, r.config.connects.find((c) => c.id === "cl")!, "thread", null, null, "slack:cl:UBO");
+  await r.hub.createSession(r.hub.config(), own, r.config.connects.find((c) => c.id === "cl")!, "thread", null, null, "slack:cl:UBO");
   r.store.joinThread(there.id, own, "cl");
   r.store.leaveThread(there.id, own);
   const before = r.store.sessionKeys().length;

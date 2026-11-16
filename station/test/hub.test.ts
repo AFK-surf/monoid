@@ -1713,7 +1713,7 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.accept(say("<@UTEAM> one"), "team");
   await settle();
   const old = r.store.binding("team")!;
-  const fresh = bindSingle(r.hub, "team", null, "值班", null);
+  const fresh = await bindSingle(r.hub, "team", null, "值班", null);
   assert.notEqual(fresh, old);
   assert.equal(r.session(fresh).title, "值班");
   await r.accept(say("<@UTEAM> two"), "team");
@@ -1726,7 +1726,7 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.accept(m);
   await settle();
   const clKey = sessionKey("cl", "C1", m.threadTs);
-  bindSingle(r.hub, "team", clKey, null, null);
+  await bindSingle(r.hub, "team", clKey, null, null);
   const t = say("<@UTEAM> via team", { channel: "C7" });
   await r.accept(t, "team");
   await settle();
@@ -1742,8 +1742,8 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.call(clKey, "chat_post", { to: `C1/${m.threadTs}`, text: "to cl thread" });
   assert.deepEqual(r.teamChat.texts(), ["to team thread"]);
   assert.deepEqual(r.chat.texts(), ["to cl thread"]);
-  assert.throws(() => bindSingle(r.hub, "team", sessionKey("gpt", "C1", "1.1"), null, null), /unknown session/);
-  assert.throws(() => bindSingle(r.hub, "cl", null, null, null), /not single-session/);
+  await assert.rejects(async () => await bindSingle(r.hub, "team", sessionKey("gpt", "C1", "1.1"), null, null), /unknown session/);
+  await assert.rejects(async () => await bindSingle(r.hub, "cl", null, null, null), /not single-session/);
   await r.close();
 });
 

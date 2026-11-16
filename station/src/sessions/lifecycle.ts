@@ -2,7 +2,7 @@
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
+import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -59,13 +59,13 @@ const trimmed = (v: string | null | undefined) => {
 
 /// Points a single-session connect at a session: an existing one (any session on the same runtime, whichever connect
 /// started it) or, with null, a new empty one. The bound session's key.
-export function bindSingle(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): string {
+export async function bindSingle(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): Promise<string> {
   const config = hub.config();
   const connect = connectOf(config, connectId);
   if (connect.mode !== "single-session") throw new Error(`connect ${connectId} is not single-session`);
   if (target === null) {
     const key = newSingleSessionKey(connect.id);
-    hub.createSession(config, key, connect, "all", null, trimmed(title), createdBy);
+    await hub.createSession(config, key, connect, "all", null, trimmed(title), createdBy);
     hub.store.setBinding(connect.id, key);
     return key;
   }
@@ -134,11 +134,31 @@ export function say(hub: Hub, thread: number, user: string, text: string, attach
 /// rather than a connect's, and the profile: one given keeps it there; else the pool picks one with the model on. Only
 /// the profiles allowed in its workspace.
 export async function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): Promise<[string, ThreadRow]> {
-  const config = hub.config();
   const client = trimmed(options.clientKey);
   // A reply can be lost when the station restarts. The same request must find the rows already made, including when
   // the process stopped between inserting the session, the thread and its membership.
   const key = client === null ? newChatKey() : chatKey(`c-${createHash("sha256").update(JSON.stringify([options.ws ?? null, options.createdBy, client])).digest("hex").slice(0, 32)}`, (k) => hub.store.getSession(k) !== null);
+  // The same request again while this one waits on the disk (a retry): it waits for this one, then finds what it made,
+  // picking no account and writing nothing.
+  return client === null ? sessionMade(hub, key, client, options, lang) : oneByKey(hub, key, () => sessionMade(hub, key, client, options, lang));
+}
+
+/// The new sessions being made by their keys, of each hub (`newSession`).
+const making = new WeakMap<Hub, Map<string, Promise<unknown>>>();
+function oneByKey<T>(hub: Hub, key: string, f: () => Promise<T>): Promise<T> {
+  let mine = making.get(hub);
+  if (mine === undefined) making.set(hub, (mine = new Map()));
+  const run = (mine.get(key) ?? Promise.resolve()).then(f, f);
+  const done = run.then(() => {}, () => {});
+  mine.set(key, done);
+  void done.then(() => {
+    if (mine.get(key) === done) mine.delete(key);
+  });
+  return run;
+}
+
+async function sessionMade(hub: Hub, key: string, client: string | null, options: NewChat, lang: Lang): Promise<[string, ThreadRow]> {
+  const config = hub.config();
   const made = (): [string, ThreadRow] | null => {
     const existing = hub.store.getSession(key);
     if (existing === null) return null;
@@ -169,6 +189,8 @@ export async function newSession(hub: Hub, options: NewChat, lang: Lang = statio
   const bound = options.presetCopy ?? (preset !== null ? await hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
   const refused = bound === null ? null : presetRefusal(bound, hub.station(), { runtime, model }, lang);
   if (refused !== null) throw new Error(refused);
+  // (one that names no preset of its workspace makes no chat, nor its directory)
+  if (!options.presetCopy && preset !== null && bound === null) throw new NoPreset(preset);
   let profile;
   if (wantedProfiles !== null) {
     const subset = [];
@@ -195,9 +217,6 @@ export async function newSession(hub: Hub, options: NewChat, lang: Lang = statio
   if (options.presetCopy) await keepCopy(workspace, options.presetCopy);
   else if (preset !== null) await hub.presets.keepFor(workspace, options.ws ?? hub.workspaces()[0] ?? null, preset);
   await mkdir(join(config.dataDir, "repos"), { recursive: true });
-  // The same request again (its client's key) while this one waited on the disk: what that one made, once.
-  const meanwhile = made();
-  if (meanwhile !== null) return meanwhile;
   const now = hub.now();
   // Known before its rows are (their events can reach the client before this answers), and for a while after.
   if (client !== null) {
