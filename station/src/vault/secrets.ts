@@ -218,6 +218,9 @@ export type Listed = { vault: string; item: string; owner: string | null; listin
 /// A use of a secret, as the pages list them: a request decided, in the chat that asked.
 export type Use = { item: string; at: number; session: string; chatTitle: string | null; mode: Mode; command: string | null; hosts: string[]; denied: boolean };
 
+/// What a station from before a method answers it with: as a method it does not know, or as one of its remote tasks.
+const FROM_BEFORE = /unknown method|task key are required|unknown task/;
+
 export class Secrets {
   readonly keeper: Keeper;
   readonly proxy: Proxy;
@@ -2286,7 +2289,7 @@ export class Secrets {
           stop();
           const why = (e as Error).message;
           // A station from before this answers what it does not know as one of its remote tasks.
-          const old = /unknown method|task key are required|unknown task/.test(why) ? " (a station from before this cannot: update it)" : "";
+          const old = FROM_BEFORE.test(why) ? " (a station from before this cannot: update it)" : "";
           reject(new Refused(`${on.name} did not start it: ${why}${old}`));
         },
       );
@@ -2297,7 +2300,12 @@ export class Secrets {
   async #runOn(on: { id: string; name: string }, session: string, held: Held, a: { command: string; under: string; timeoutMs: number; env?: string }): Promise<Ran> {
     const { ws } = this.#placeOf(session);
     if (held.grant.timeout) {
-      const answer = await this.#d.ask?.(on.id, { method: "vault.capabilities", workspace: ws }).catch(() => null) as { timeouts?: unknown } | null | undefined;
+      // Only a station that answers and does not know the question is too old; one not reached is not (2026-11-16: a
+      // link that dropped was said to be an old version, and an agent moved that station to the beta to "update" it).
+      const answer = await this.#d.ask?.(on.id, { method: "vault.capabilities", workspace: ws }).catch((e: Error) => {
+        if (FROM_BEFORE.test(e.message)) return null;
+        throw new Refused(`${on.name} could not be reached (${e.message}): try again once it is back online`);
+      }) as { timeouts?: unknown } | null | undefined;
       if (answer?.timeouts !== true) throw new Refused(`${on.name} needs an update before a timed grant can run there`);
     }
     const result = (await this.#elsewhere(on, {
