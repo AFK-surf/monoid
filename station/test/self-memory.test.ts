@@ -1,7 +1,7 @@
 // The station's watch over its own memory (ops/self-memory.ts) and what it stands on: the MoonBit programs it runs
 // counted as they start and end (MbProcess.live), one that stops reading its stdin ended (STDIN_MOST), what is idle let
-// go at once and nothing under way (Readers.trimIdle), and when the launcher is asked to hand over. Node's memory, the
-// programs' and the machine's pressure are the test's; time is a TestClock.
+// go at once and nothing under way (Readers.trimIdle), when the launcher is asked to hand over, and the front counted
+// apart. Node's memory, the programs', the front's and the machine's pressure are the test's; time is a TestClock.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,10 +10,10 @@ import { after, test } from "node:test";
 import { Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import type { Pressure } from "../src/jobs/admit.ts";
-import { type NodeMemory, SelfMemoryGovernor, hardRssOf, softLimitOf } from "../src/ops/self-memory.ts";
+import { type NodeMemory, SelfMemoryGovernor, hardFrontOf, hardRssOf, softLimitOf } from "../src/ops/self-memory.ts";
 import { MbProcess, MbReader, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { sep } from "node:path";
-import { programsIn } from "../src/resources/module.ts";
+import { frontIn, programsIn } from "../src/resources/module.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 
@@ -141,20 +141,41 @@ test("the limits follow the machine's memory, within their bounds", () => {
   assert.equal(hardRssOf(8 * GiB), 3 * GiB);
   assert.equal(hardRssOf(16 * GiB), Math.floor(16 * GiB * 0.3));
   assert.equal(hardRssOf(128 * GiB), 8 * GiB);
+  assert.equal(hardFrontOf(4 * GiB), 1 * GiB);
+  assert.equal(hardFrontOf(16 * GiB), Math.floor(16 * GiB * 0.1));
+  assert.equal(hardFrontOf(128 * GiB), 3 * GiB);
 });
 
-function rig(o: { launcher: boolean }) {
+test("the front is the launcher's child that runs the program, by the table's name of it", () => {
+  const table = [
+    { pid: 1, ppid: 0, pgid: 1, bytes: 10 * MiB, command: "/Applications/still.fail.app/Contents/MacOS/stillfail-station" },
+    { pid: 2, ppid: 1, pgid: 2, bytes: 200 * MiB, command: "node" },
+    { pid: 3, ppid: 1, pgid: 3, bytes: 300 * MiB, command: "node" },
+    { pid: 4, ppid: 1, pgid: 4, bytes: 4 * GiB, command: "/Applications/still.fail.app/Contents/Resources/station/stillfail-reader" },
+    { pid: 5, ppid: 2, pgid: 5, bytes: 6 * GiB, command: "/Applications/still.fail.app/Contents/Resources/station/stillfail-reader" },
+  ];
+  assert.equal(frontIn(table, 1, 2), 4 * GiB, "not the programs Node itself runs");
+  // (Linux's ps: the name cut to 15 bytes)
+  assert.equal(frontIn([{ pid: 4, ppid: 1, pgid: 4, bytes: 1 * GiB, command: "stillfail-reade" }], 1, 2), 1 * GiB);
+  assert.equal(frontIn(table.filter((p) => p.pid !== 4), 1, 2), null, "none running");
+  assert.equal(frontIn(table, null, 2), null, "no launcher");
+  assert.equal(frontIn(null, 1, 2), null, "no table");
+});
+
+function rig(o: { launcher: boolean; restartFront?: boolean }) {
   const scope = Effect.runSync(Scope.make());
   scopes.push(scope);
   const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
-  const state = { node: { rss: 500 * MiB, heapUsed: 200 * MiB, external: 0, arrayBuffers: 0 } as NodeMemory, children: 300 * MiB, pressure: "normal" as Pressure | null };
-  const calls = { trims: 0, evicts: 0, handovers: 0, asked: 0 };
+  const state = { node: { rss: 500 * MiB, heapUsed: 200 * MiB, external: 0, arrayBuffers: 0 } as NodeMemory, children: 300 * MiB, front: null as number | null, pressure: "normal" as Pressure | null };
+  const calls = { trims: 0, evicts: 0, handovers: 0, asked: 0, fronts: 0 };
   const governor = new SelfMemoryGovernor({
     clock,
     totalBytes: 32 * GiB,
     startedAt: clock.currentTimeMillisUnsafe(),
     memory: () => state.node,
     children: async () => ({ bytes: state.children, count: 4 }),
+    front: async () => state.front,
+    ...(o.restartFront ? { restartFront: async () => void calls.fronts++ } : {}),
     pressure: async () => state.pressure,
     trimIdle: () => (calls.trims++, 2),
     evictWarm: () => (calls.evicts++, 3),
@@ -165,6 +186,7 @@ function rig(o: { launcher: boolean }) {
     softBytes: 4 * GiB,
     hardRssBytes: 6 * GiB,
     hardHeapBytes: 2.5 * GiB,
+    hardFrontBytes: 2 * GiB,
   });
   const at = (ms: number) => Effect.runPromise(clock.adjust(`${ms} millis`));
   return { governor, state, calls, at };
@@ -172,8 +194,8 @@ function rig(o: { launcher: boolean }) {
 
 test("a station within its limits does nothing", async () => {
   const r = rig({ launcher: true });
-  for (let i = 0; i < 5; i++) assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null });
-  assert.deepEqual(r.calls, { trims: 0, evicts: 0, handovers: 0, asked: 0 });
+  for (let i = 0; i < 5; i++) assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null, front: null });
+  assert.deepEqual(r.calls, { trims: 0, evicts: 0, handovers: 0, asked: 0, fronts: 0 });
 });
 
 test("over the soft limit or under the machine's pressure, what is idle is let go, at most once a minute", async () => {
@@ -181,39 +203,39 @@ test("over the soft limit or under the machine's pressure, what is idle is let g
   // The whole (Node's and its programs') past the soft limit, Node's own well within its hard one.
   r.state.node = { ...r.state.node, rss: 3 * GiB };
   r.state.children = 1.5 * GiB;
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: null });
   await r.at(30_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null }, "not again within the minute");
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null, front: null }, "not again within the minute");
   await r.at(30_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: null });
   assert.equal(r.calls.evicts, 0, "the station past its own limit leaves the sessions' processes warm");
   // Within its limits, but the machine under pressure: the idle sessions' processes go too.
   r.state.node = { ...r.state.node, rss: 500 * MiB };
   r.state.children = 0;
   r.state.pressure = "high";
   await r.at(60_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null, front: null });
   assert.equal(r.calls.asked, 0, "never a handover for the soft limit");
 });
 
 test("under the machine's high or critical pressure every idle session's process is let go, at most once a minute; normal, none", async () => {
   const r = rig({ launcher: true });
   r.state.pressure = "normal";
-  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null, front: null });
   r.state.pressure = "critical";
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null, front: null });
   await r.at(30_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null }, "not again within the minute");
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null, front: null }, "not again within the minute");
   await r.at(30_000);
   r.state.pressure = "high";
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: 3, handover: null, front: null });
   // Pressure gone, the station past its soft limit: only what is idle of its own.
   r.state.pressure = "normal";
   r.state.node = { ...r.state.node, rss: 3 * GiB };
   r.state.children = 1.5 * GiB;
   await r.at(60_000);
-  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null });
-  assert.deepEqual(r.calls, { trims: 3, evicts: 2, handovers: 0, asked: 0 });
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: null });
+  assert.deepEqual(r.calls, { trims: 3, evicts: 2, handovers: 0, asked: 0, fronts: 0 });
 });
 
 test("one moment over the hard limit is no leak: nothing is handed over", async () => {
@@ -267,4 +289,74 @@ test("with no launcher it is only said and what is idle let go: the process neve
   } finally {
     process.exit = exit;
   }
+});
+
+test("Node small but its programs held past the hard limit: what is idle goes first, then the launcher is asked to hand over", async () => {
+  const r = rig({ launcher: true });
+  await r.at(20 * 60_000);
+  // (Node's own 200 MiB, far under the hard limit: `--sessions` and `--serve` grew)
+  r.state.node = { ...r.state.node, rss: 200 * MiB };
+  r.state.children = 7 * GiB;
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: null }, "the first sample lets what is idle go");
+  await r.at(30_000);
+  assert.deepEqual(await r.governor.sample(), { trimmed: null, evictedWarm: null, handover: null, front: null }, "held: not yet");
+  await r.at(30_000);
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: "asked", front: null }, "held three samples");
+  assert.deepEqual(r.calls, { trims: 2, evicts: 0, handovers: 1, asked: 1, fronts: 0 });
+});
+
+test("past the hard limit only by what was idle: let go, the whole is under it again and nothing is handed over", async () => {
+  const r = rig({ launcher: true });
+  await r.at(20 * 60_000);
+  r.state.node = { ...r.state.node, rss: 200 * MiB };
+  r.state.children = 7 * GiB;
+  assert.equal((await r.governor.sample()).trimmed, 2);
+  // (the idle readers and builders gone)
+  r.state.children = 1 * GiB;
+  for (let i = 0; i < 6; i++) {
+    await r.at(30_000);
+    assert.equal((await r.governor.sample()).handover, null);
+    // (an idle reader past it again a moment, counted from nothing)
+    r.state.children = i === 2 ? 7 * GiB : 1 * GiB;
+  }
+  assert.equal(r.calls.asked, 0);
+});
+
+test("the front held past its own limit is said and asked to start again; Node is never handed over for it", async () => {
+  const r = rig({ launcher: true, restartFront: true });
+  r.state.front = 3 * GiB;
+  // Within the first ten minutes: not yet.
+  for (let i = 0; i < 4; i++) {
+    assert.equal((await r.governor.sample()).front, null);
+    await r.at(30_000);
+  }
+  await r.at(10 * 60_000);
+  const v = await r.governor.sample();
+  assert.equal(v.front, "asked");
+  assert.equal(v.handover, null);
+  assert.equal(r.calls.fronts, 1);
+  // Held on: asked again a SUSTAINED samples later, and Node never handed over (its whole is 800 MiB).
+  for (let i = 0; i < 9; i++) {
+    await r.at(30_000);
+    assert.equal((await r.governor.sample()).handover, null);
+  }
+  assert.equal(r.calls.fronts, 4);
+  assert.equal(r.calls.asked, 0, "no handover asked for the front");
+});
+
+test("the front counts towards the soft limit, and without a way to start it again it is only said", async () => {
+  const r = rig({ launcher: true });
+  await r.at(20 * 60_000);
+  // (Node and its programs 800 MiB, the front 3.5 GiB: past the soft limit together)
+  r.state.front = 3.5 * GiB;
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: null });
+  await r.at(30_000);
+  await r.governor.sample();
+  await r.at(30_000);
+  assert.deepEqual(await r.governor.sample(), { trimmed: 2, evictedWarm: null, handover: null, front: "said" });
+  assert.equal(r.calls.asked, 0);
+  // Under its limit again: counted from nothing.
+  r.state.front = 500 * MiB;
+  await r.at(30_000);
+  assert.equal((await r.governor.sample()).front, null);
 });

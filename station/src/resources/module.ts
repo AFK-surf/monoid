@@ -79,6 +79,15 @@ export function programsIn(table: readonly ProcessInfo[] | null, pids: readonly 
   return { bytes, count: pids.length };
 }
 
+/// The resident bytes of the front in `table` (the MoonBit program the launcher keeps the station's endpoint in,
+/// native/launcher/src/front.rs): the launcher's child that runs the program, which no other is (its others are Nodes);
+/// null where there is no launcher, no table or no front. Linux's ps cuts a command's name to 15 bytes.
+export function frontIn(table: readonly ProcessInfo[] | null, launcher: number | null, self: number): number | null {
+  if (table === null || launcher === null) return null;
+  const front = table.find((p) => p.ppid === launcher && p.pid !== self && basename(p.command).startsWith("stillfail-reade"));
+  return front?.bytes ?? null;
+}
+
 /// Whether this process's parent is its launcher (stillfail-station), not a shell or launchd, whose all under it is not
 /// the station's.
 async function launcher(): Promise<boolean> {
@@ -96,15 +105,19 @@ export const ResourcesLive = Layer.effectDiscard(
     const store = yield* Store;
     const { hub } = yield* Agents;
     const readers = yield* Readers;
+    const underLauncher = yield* Effect.promise(() => launcher());
     // The station's own memory (ops/self-memory.ts), wherever it runs: on Windows only Node's own is read.
     yield* Effect.acquireRelease(
       Effect.sync(() => {
+        // One table a sample: the one `children` read, the governor asking `front` after it.
+        let table: Promise<ProcessInfo[] | null> | null = null;
         const governor = new SelfMemoryGovernor({
           clock: hub.clock,
           totalBytes: totalmem(),
           startedAt: hub.clock.currentTimeMillisUnsafe() - Math.round(process.uptime() * 1000),
           memory: () => process.memoryUsage(),
-          children: async () => programsIn(await platform.processTable(false), MbProcess.live().map((p) => p.pid)),
+          children: async () => programsIn(await (table = platform.processTable(false)), MbProcess.live().map((p) => p.pid)),
+          front: async () => frontIn(await (table ?? platform.processTable(false)), underLauncher ? process.ppid : null, process.pid),
           pressure: () => platform.memoryPressure(),
           trimIdle: () => readers.trimIdle(),
           evictWarm: () => hub.evictAllIdle(),
@@ -124,7 +137,6 @@ export const ResourcesLive = Layer.effectDiscard(
     const mesh = loadMesh();
     const isApp = appBundles();
     const whose = runnerSessions(store, (runners) => hub.runnerNameSessions(runners));
-    const underLauncher = yield* Effect.promise(() => launcher());
     const watch = yield* Effect.acquireRelease(
       Effect.sync(() => new ResourceWatch({
         clock: hub.clock,
