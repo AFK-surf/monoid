@@ -394,6 +394,7 @@ export const unix: Platform = {
   },
   runnable: (command, args) => ({ file: command, args }),
   posixShell: () => "/bin/sh",
+  posixShellSoon: async () => "/bin/sh",
   grouped: (program, args) => [program, args],
   lowered: (program, args, by) => (by === 0 || !niceThere() ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
   backgrounded: (program, args) => backgroundedOn(background(), program, args),

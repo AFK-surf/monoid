@@ -158,13 +158,18 @@ export class Scheduler {
   /// The items stopped here whose need is here (its module lists it here, not moved, or it is usable here) let go:
   /// as the station starts, and as a station an item came from is heard again (a tell of its coming that was lost).
   /// `from`: only what waits for what is at that station (it was heard from): each need looked at once, however many
-  /// wait for it.
-  async settleStopped(from?: string): Promise<Need[]> {
-    if (this.#settling !== null) return await this.#settling;
+  /// wait for it. `module`: only what waits for that module's items (a login that came by another route, a share a
+  /// third station widened: move/station.ts `loginsChanged`), looked at after a look under way, not folded into it.
+  async settleStopped(from?: string, module?: string): Promise<Need[]> {
+    while (this.#settling !== null) {
+      if (module === undefined) return await this.#settling;
+      await this.#settling.catch(() => {});
+    }
     const run = (async () => {
       const going: Need[] = [];
       const plans = new Map<string, Items<Planned> | null>();
       for (const { waitsFor, ws } of this.#stopped.needs(from)) {
+        if (module !== undefined && waitsFor.module !== module) continue;
         // (a need the turn under way is moving is not settled meanwhile: here still as it leaves, what it stopped would
         // go on with it gone; the turn lets go of what waits for it itself, as it ends either way)
         if (this.#current !== null && named(this.#current) === named(waitsFor)) continue;
@@ -213,6 +218,11 @@ export class Scheduler {
   /// Whether anything is stopped here (waiting for what is at `at`, where given).
   hasStopped(at?: string): boolean {
     return this.#stopped.needs(at).length > 0;
+  }
+
+  /// Whether anything stopped here waits for an item of module `module`.
+  waitsOn(module: string): boolean {
+    return this.#stopped.needs().some((n) => n.waitsFor.module === module);
   }
 
   /// What waits for what here.

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { endCommand, startCommand } from "../ops/processes.ts";
+import { platform } from "../platform/index.ts";
 import { type Held, accountOf, valueOf } from "./keeper.ts";
 import { type Proxy, placeholder } from "./proxy.ts";
 import { Scrubber, scrub } from "./scrub.ts";
@@ -41,6 +42,16 @@ class Kept {
   text(): string {
     return this.cut ? `${this.head.toString("utf8")}\n…(cut)…\n${this.tail.toString("utf8")}` : Buffer.concat([this.head, this.tail]).toString("utf8");
   }
+}
+
+/// The shell a command is run by (platform.posixShell: Git's sh on Windows, which its installer leaves off PATH), found
+/// by the run's environment and the station's for what that leaves out (the vault's drops CLAUDE_CODE_GIT_BASH_PATH and
+/// ProgramFiles stays the station's): only to find it, the command given `env` alone. None: what to do, as an error.
+async function shellFor(env: Record<string, string>): Promise<string> {
+  const given = new Set(Object.keys(env).map((k) => k.toUpperCase()));
+  const by: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) if (!given.has(k.toUpperCase())) by[k] = v;
+  return platform.posixShellSoon({ ...by, ...env });
 }
 
 /// Runs `ask.command` (by sh -c) with grant `held`; `env`: the environment it starts from; `used` is told each use of
@@ -117,9 +128,15 @@ function fileHidden(bytes: Buffer, b64: string): string[] {
   return Buffer.from(text, "utf8").equals(bytes) ? [text.replace(/\r?\n$/, ""), b64] : [b64];
 }
 
-function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Promise<Ran> {
+async function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Promise<Ran> {
+  let shell: string;
+  try {
+    shell = await shellFor(env);
+  } catch (e) {
+    return { code: null, signal: null, output: (e as Error).message, cut: false, timedOut: false };
+  }
   return new Promise((resolve) => {
-    const child = startCommand("sh", ["-c", ask.command], { cwd: ask.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = startCommand(shell, ["-c", ask.command], { cwd: ask.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     const kept = new Kept();
     const out = new Scrubber(hidden);
     const err = new Scrubber(hidden);
@@ -133,7 +150,7 @@ function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Pr
     });
     child.on("error", (e) => {
       stop();
-      resolve({ code: null, signal: null, output: `could not start sh: ${e.message}`, cut: false, timedOut: false });
+      resolve({ code: null, signal: null, output: `could not start ${shell}: ${e.message}`, cut: false, timedOut: false });
     });
     child.on("close", (code, signal) => {
       stop();
@@ -154,9 +171,15 @@ const CAPTURE_MAX = 64 * 1024;
 
 /// Runs `command` (by sh -c) in `cwd` and takes what it prints as a secret: none of it is shown, its standard error only
 /// with the output hidden in it.
-export function capture(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<Captured> {
+export async function capture(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<Captured> {
+  let shell: string;
+  try {
+    shell = await shellFor(env);
+  } catch (e) {
+    return { code: null, signal: null, out: "", err: (e as Error).message, timedOut: false, tooLong: false };
+  }
   return new Promise((resolve) => {
-    const child = startCommand("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = startCommand(shell, ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let size = 0;
     let tooLong = false;
@@ -175,7 +198,7 @@ export function capture(command: string, cwd: string, env: Record<string, string
     });
     child.on("error", (e) => {
       stop();
-      resolve({ code: null, signal: null, out: "", err: `could not start sh: ${e.message}`, timedOut: false, tooLong: false });
+      resolve({ code: null, signal: null, out: "", err: `could not start ${shell}: ${e.message}`, timedOut: false, tooLong: false });
     });
     child.on("close", (code, signal) => {
       stop();

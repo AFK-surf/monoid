@@ -3,12 +3,6 @@
 // but takes its host a while to decode comes on top with that face, never on its initial a frame or more before.
 
 ///|
-fn init {
-  // (the faces' bytes, a small picture each, handed to the host for their decodes)
-  @ui.host_image_bytes_known([("src/sfapp/page_pictures_wbtest.mbt", 128336)])
-}
-
-///|
 /// The key a face at `url` is put up as (core_pictures').
 fn face_key(url : String) -> String {
   "mem:picture/\{@ui.stable_hash(url)}/\{url.length()}"

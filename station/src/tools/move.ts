@@ -66,6 +66,13 @@ export type MoveAsksDeps = {
   refusal?: (ws: string, station: string) => Promise<string | null>;
   /// What a move to that station would send of chats `ids` and what is free there (move/station.ts `room`).
   room?: (ws: string, station: string, ids: string[]) => Promise<Json>;
+  /// The move's told steps (move/told.ts `Told`): a move or a move back asked of another station waits on its end, not
+  /// on one answer (mesh/peer.ts ANSWER_MS: a chat of 265 MB in a turn, 2026-11-16, was told "peer request timed out"
+  /// though it moved), and one asked here runs as a step.
+  told?: {
+    asked: (to: string, key: string, make: () => Json) => Promise<Json>;
+    run: (origin: string, key: string, work: () => Promise<Json>) => Json;
+  };
 };
 
 export class MoveAsks {
@@ -109,10 +116,26 @@ export class MoveAsks {
         if (args.all === true) throw new Refused(`moving all of station ${at.name} is confirmed on a card in a chat on that station: ask from one there (chat_create opens one)`);
         if (this.#d.ask === undefined) throw new Refused("other stations cannot be asked from here");
         const { station: _, ...rest } = args;
+        // (a move or a move back is a told step there: waited on to its end however long; a station from before told
+        // steps answers the request with its outcome, as before)
+        const told = this.#d.told;
+        if (told !== undefined && (args.action === "move" || args.action === "back")) {
+          const key = `tool:${args.action}:${randomBytes(6).toString("hex")}`;
+          return await told.asked(at.id, key, () => ({ method: "move.tool", workspace: ws, args: rest, told: key }));
+        }
         return await this.#d.ask(at.id, { method: "move.tool", workspace: ws, args: rest });
       }
     }
     return await this.toolIn(ws, session, args);
+  }
+
+  /// station_move asked by another station (`move.tool`, `workspace` its chat's): a move or a move back as a told step
+  /// where it asks so (`told`, its key), else answered with its outcome as before.
+  async answer(peer: string, workspace: string, request: Json): Promise<Json> {
+    const args = request?.args ?? {};
+    const key = typeof request?.told === "string" && request.told.length <= 300 ? request.told : null;
+    if (key === null || this.#d.told === undefined) return await this.toolIn(workspace, null, args);
+    return this.#d.told.run(peer, key, () => this.toolIn(workspace, null, args));
   }
 
   /// The tool's work for workspace `ws` (`session`: the chat asking here; null: asked by another station).

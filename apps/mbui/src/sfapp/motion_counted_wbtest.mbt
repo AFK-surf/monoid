@@ -24,7 +24,6 @@ fn init {
     "src/sfapp/kept_rows_kinds_wbtest.mbt",
     "src/sfapp/menu_node_wbtest.mbt",
     "src/sfapp/motion_wbtest.mbt",
-    "src/sfapp/place_first_wbtest.mbt",
     "src/sfapp/preview_tree_wbtest.mbt",
     "src/sfapp/preview_wbtest.mbt",
     "src/sfapp/publish_wbtest.mbt",
@@ -36,7 +35,6 @@ fn init {
     "src/sfapp/tape_moment_wbtest.mbt",
     "src/sfapp/tape_wbtest.mbt",
     "src/sfapp/viewer_flight_wbtest.mbt",
-    "src/sfapp/viewer_media_over_wbtest.mbt",
     "src/sfapp/wide_rail_wbtest.mbt",
     "src/sfapp/wide_wbtest.mbt",
   ])

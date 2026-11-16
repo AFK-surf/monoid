@@ -138,6 +138,9 @@ export const MovesLive = Layer.effectDiscard(
     bus.on("move.", answers);
     // (a login home again, by any route: the share a trip made for it undone)
     agents.sharing.onHosted = (share, from) => void moves.shareCameHome(share, from).catch(() => {});
+    // (the logins changed: what is stopped here for one looked at again, one that came by no move among them)
+    const offLogins = agents.config.listen(() => moves.loginsChanged());
+    yield* Effect.addFinalizer(() => Effect.sync(offLogins));
     const asks = new MoveAsks({
       data, scheduler: moves.scheduler,
       here: () => key.id,
@@ -149,10 +152,11 @@ export const MovesLive = Layer.effectDiscard(
       setWait: (w) => void (moves.wait = w),
       refusal: (ws, station) => moves.refusal(ws, station),
       room: (ws, station, ids) => moves.room(ws, station, ids),
+      told: moves.told,
     });
     bus.on("move.tool", async (peer, request, workspace) => {
       if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");
-      return asks.toolIn(workspace, null, request?.args ?? {});
+      return asks.answer(peer, workspace, request);
     });
     parts.routes(moveRoutes({
       scheduler: moves.scheduler,
