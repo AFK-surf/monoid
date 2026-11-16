@@ -667,6 +667,39 @@ export class SlackSurface extends ConnectedSurface {
     return out;
   }
 
+  /// Whether the bot may join a public channel itself: its token granted channels:join, as Slack last said.
+  joins(): boolean {
+    return this.client.hasScope(this.botToken, "channels:join");
+  }
+
+  /// The public channels the bot is not in (conversations.list, is_member false), at most a couple of thousand.
+  async openPlaces(): Promise<Place[]> {
+    const out: Place[] = [];
+    let cursor = "";
+    for (let page = 0; page < 10; page++) {
+      const params: Params = [
+        ["types", "public_channel"],
+        ["exclude_archived", "true"],
+        ["limit", "200"],
+      ];
+      if (cursor !== "") params.push(["cursor", cursor]);
+      const d = await this.client.api("conversations.list", params, this.botToken);
+      for (const c of Array.isArray(d?.channels) ? d.channels : []) {
+        const id = text(c?.id);
+        if (id === "" || c?.is_member === true) continue;
+        out.push({ id, name: text(c?.name) || id, kind: "channel" });
+      }
+      cursor = text(d?.response_metadata?.next_cursor);
+      if (cursor === "") break;
+    }
+    return out;
+  }
+
+  /// The bot joins a public channel (conversations.join).
+  async join(channel: string): Promise<void> {
+    await this.client.api("conversations.join", [["channel", channel]], this.botToken);
+  }
+
   /// The people in a channel (conversations.members), named as users.list says (bots, deactivated accounts and
   /// Slackbot left out): their display name, their full name beside it where it differs. Who is in a channel is kept
   /// for MEMBERS_MS, the workspace's people for PEOPLE_MS (users.list is all of it, page by page, and Slack lets a bot

@@ -1052,7 +1052,7 @@ fn sheet_node(
                   // (what it says, under its title, as it is now)
                   let said = fn(s : @view.View) {
                     s.show(fn() { now().2 != "" }, fn(w) {
-                      style_node(w, fn() { sheet_words_at })
+                      style_node(w, fn() { sheet_lead_at })
                       words_node(w, fn() { now().2 }, fn() { sheet_lead }) |> ignore
                     })
                   }

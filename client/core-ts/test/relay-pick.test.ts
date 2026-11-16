@@ -1,8 +1,8 @@
-// What a chat's relay picker shows (src/relay-pick.ts, `chat.relayView`): the bot gone on through, the places offered
-// and in what order, a Slack message's link typed instead.
+// What a chat's relay picker shows (src/relay-pick.ts, `chat.relayView`): every bot's places once each and in what
+// order, a Slack message's link typed instead, and who replies in the place picked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MENTIONS, arrange, mentionQuery, mentionView, readConnects, readPeople, relayBot, relayView, slackLink, type RelayConnect, type RelayPlace } from "../src/relay-pick.ts";
+import { MENTIONS, arrange, mentionQuery, mentionView, readConnects, readPeople, relayBot, relayVia, relayView, slackLink, type RelayConnect, type RelayPlace } from "../src/relay-pick.ts";
 import { parseCall } from "../src/core/calls.ts";
 import { tr } from "../src/i18n.ts";
 import { answers, call, cloudCore } from "./helpers.ts";
@@ -42,23 +42,62 @@ test("a_slack_messages_link_typed_is_its_thread", () => {
   assert.equal(slackLink("release"), null);
 });
 
-test("the_view_names_the_places_and_the_bots_among_several", () => {
-  const cs = [bot("a", [channel("dev"), { id: "g", name: "设计组", kind: "group" }, { id: "p", name: "core", kind: "channel", private: true }]), bot("b", [], { team: "Cue", error: "token revoked" })];
+test("the_view_lists_every_bots_places_once_each_the_workspace_at_its_end_among_several", () => {
+  const cs = [
+    bot("a", [channel("dev"), { id: "g", name: "设计组", kind: "group" }, { id: "p", name: "core", kind: "channel", private: true }]),
+    bot("b", [channel("dev", 7)], { preferred: true }),
+    bot("c", [], { team: "Cue", error: "token revoked" }),
+  ];
   const v = relayView(cs, "", false, null, zh);
-  assert.equal(v.bot, "a");
-  assert.deepEqual(v.bots, [{ id: "a", label: "a · AFK" }, { id: "b", label: "b · Cue" }]);
-  assert.deepEqual(v.rows.map((r) => [r.name, r.aside]), [["🔒 #core", null], ["#dev", null], ["设计组", zh("web-main.relay.kind.group")]]);
-  assert.equal(v.rows[1]!.note, zh("web-main.relay.kind.channel"), "what relaying there does, said once it is picked");
-  assert.equal(v.empty, null);
-  const other = relayView(cs, "", false, "b", zh);
-  assert.deepEqual([other.empty, other.unread], ["noPlaces", ["token revoked"]]);
+  assert.deepEqual(v.bots, [], "the bot is a step after the place");
+  // #dev once, though two bots are in it, relayed to before by b: first; its replier the chat's own (b)
+  assert.deepEqual(v.rows.map((r) => [r.name, r.connect, r.aside]), [["#dev", "b", "AFK"], ["🔒 #core", "a", "AFK"], ["设计组", "a", zh("web-main.relay.kind.group")]]);
+  assert.equal(v.rows[0]!.note, zh("web-main.relay.kind.channel"), "what relaying there does, said once it is picked");
+  assert.deepEqual([v.empty, v.unread], [null, ["token revoked"]]);
   assert.equal(relayView(cs, "zzz", false, null, zh).empty, "noMatch");
-  assert.deepEqual(relayView([bot("a", [])], "", false, null, zh).bots, [], "one bot: none to pick from");
+  assert.equal(relayView([bot("a", [])], "", false, null, zh).empty, "noPlaces");
+  assert.equal(relayView([bot("a", [channel("dev")])], "", false, null, zh).rows[0]!.aside, null, "one workspace: none said");
+});
+
+test("public_channels_no_bot_is_in_are_offered_where_a_bot_may_join_them_after_the_rest", () => {
+  const cs = [bot("a", [channel("dev")]), bot("b", [], { joins: true, open: [channel("general"), channel("dev")] })];
+  const v = relayView(cs, "", false, null, zh);
+  assert.deepEqual(v.rows.map((r) => [r.name, r.connect, r.aside]), [["#dev", "a", null], ["#general", "b", zh("web-main.relay.unjoined")]]);
+  assert.deepEqual(relayView([bot("a", [channel("dev")]), bot("b", [], { open: [channel("general")] })], "", false, null, zh).rows.length, 1, "none may join: not offered");
+});
+
+test("who_replies_in_the_place_picked_and_where_each_bot_of_its_workspace_stands_there", () => {
+  const priv: RelayPlace = { id: "p", name: "core", kind: "channel", private: true };
+  const cs = [
+    bot("a", [channel("dev"), priv]),
+    bot("b", [], { joins: true, open: [channel("dev")], preferred: true }),
+    bot("c", []),
+    bot("d", [channel("dev")], { team: "Cue" }),
+  ];
+  const dev = relayView(cs, "", false, null, zh).rows.find((r) => r.name === "#dev" && r.connect !== "d")!.key;
+  // The chat's own (b) is not in it: one that is replies, unless b is picked, which joins it as it relays
+  assert.deepEqual(relayVia(cs, dev, null), {
+    bot: "a",
+    joins: false,
+    bots: [
+      { id: "a", label: "a", state: "in" },
+      { id: "b", label: "b", state: "join" },
+      { id: "c", label: "c", state: "out" },
+    ],
+  });
+  assert.deepEqual([relayVia(cs, dev, "b")!.bot, relayVia(cs, dev, "b")!.joins], ["b", true]);
+  assert.equal(relayVia(cs, dev, "c")!.bot, "a", "one that cannot reply there is not taken");
+  // A private channel: only a person there can invite a bot
+  const core = relayView(cs, "", false, null, zh).rows.find((r) => r.name === "🔒 #core")!.key;
+  assert.deepEqual(relayVia(cs, core, null)!.bots.map((x) => [x.id, x.state, x.invite ?? null]), [["a", "in", null], ["b", "invite", "/invite @b"], ["c", "invite", "/invite @c"]]);
+  // Asked with the place picked, the view says it
+  assert.equal(relayView(cs, "", false, "b", zh, dev).via?.bot, "b");
+  assert.equal(relayVia(cs, "nowhere", null), null);
 });
 
 test("a_client_asks_the_core_what_the_picker_shows", async () => {
   const connects = [bot("a", [channel("dev")])];
-  assert.deepEqual(parseCall("chat.relayView", { connects, query: "d" }), { kind: "relayView", connects: readConnects(connects), query: "d", all: false, bot: null });
+  assert.deepEqual(parseCall("chat.relayView", { connects, query: "d" }), { kind: "relayView", connects: readConnects(connects), query: "d", all: false, bot: null, place: null });
   const { host, core } = await cloudCore();
   const ui = core.connect();
   call(core, ui, 1, "chat.relayView", { connects, query: "", all: false });

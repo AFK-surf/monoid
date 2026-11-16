@@ -102,7 +102,7 @@ export const PARAMS: Record<string, string> = {
   "chat.regenerateTitle": "thread:number",
   "chat.pin": "pinned?:boolean session:string",
   "chat.relayPlaces": "thread:number",
-  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string",
+  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string join?:boolean",
   "chat.relayPeople": "thread:number connect?:string channel?:string link?:string",
   "decision.dismiss": "thread:number seq:number",
   "decision.close": "thread:number seq:number option:string",
@@ -459,11 +459,11 @@ function stationOp(name: string, params: unknown): Request | null {
       const thread = p.u64("thread");
       return op("GET", () => `/threads/${thread}/relay`, null, NONE);
     }
-    // The chat relayed to one of them (`connect`, `channel`) or to the Slack thread of a message's `link`, the person's
-    // note said with it: where it went on.
+    // The chat relayed to one of them (`connect`, `channel`; `join`: its bot joins that public channel first) or to the
+    // Slack thread of a message's `link`, the person's note said with it: where it went on.
     case "chat.relay": {
       const thread = p.u64("thread");
-      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note"]), { kind: "thread", archived: false });
+      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note", "join"]), { kind: "thread", archived: false });
     }
     // The people of where it would be relayed (a connect's channel or group, or the thread of a message's `link`), for
     // the note to mention, read as asked.
