@@ -15,6 +15,9 @@ concurrency:
   cancel-in-progress: false
 permissions:
   contents: read
+# (Farview's client, apps/mbui/scripts/farview.sh: ci-1 has no GitHub credentials of git's own, as Mini1 had)
+env:
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   side:
     strategy:

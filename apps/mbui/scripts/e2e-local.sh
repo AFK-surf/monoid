@@ -153,8 +153,11 @@ sources() {
   fi
   if [ "$(git -C $E rev-parse HEAD)" != "$want" ]; then
     # (the revision wanted alone: a checkout that shares its repository with others has branches whose objects it may
-    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before)
-    git -C $E fetch -q "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
+    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before. Its tree
+    # alone, --depth 1: a checkout made as a partial clone (ci-1's, whose work directory the pipeline's jobs check out
+    # with `filter: blob:none`) has only that tree's blobs, and its upload-pack fetches no others: the history between
+    # what $E holds and it was what side 43803791237's locks and rigs could not have, 2026-11-16)
+    git -C $E fetch -q --depth 1 "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
     git -C $E -c advice.detachedHead=false checkout -q --detach $want || die "no source revision $want in $E"
     rm -f $WORK/stillfail.ready
   fi
