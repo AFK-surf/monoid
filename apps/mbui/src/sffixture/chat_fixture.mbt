@@ -18,6 +18,21 @@ pub fn by_person(name : String) -> Json {
 }
 
 ///|
+/// Ana's face as the first row's chat names her among its people (its bytes the core's `picture`: none here, fixture.mbt
+/// shows no picture; a test that gives them, sfapp's page_pictures_wbtest).
+pub let ana_face : String = "https://example.com/faces/ana.png"
+
+///|
+/// Ana as the first row's chat names her among its people: with her face (ana_face).
+let ana_faced : Json = {
+  "id": "ana@example.com",
+  "name": "Ana",
+  "email": "ana@example.com",
+  "via": "cloud",
+  "shown": { "name": "Ana", "display": "Ana", "mine": false, "picture": ana_face },
+}
+
+///|
 /// When a message (an outgoing one, one said elsewhere) was said, as a chat says it (SaidAt).
 pub fn ago(s : String, full : String) -> Json {
   { "createdAt": { "ago": Json::string(s), "full": Json::string(full) } }
@@ -247,7 +262,7 @@ pub fn rich_chat(older : Int) -> Json {
     "me": { "email": "lin@example.com" },
     "thread": { "id": 7, "unread": 0 },
     "title": "整理发布清单",
-    "people": [me, ana],
+    "people": [me, ana_faced],
     "agents": [
       {
         "session": {
@@ -425,6 +440,8 @@ pub fn fixture_file_png(name : String) -> Bytes {
     "peek.png" => (160, 100, (0xFF, 0xFF, 0xFF), (0x5B, 0x7B, 0xB2))
     // a video's still (its poster: a frame of a screen recording, 16:9)
     "演示录屏.mp4" => (160, 90, (0x1E, 0x2A, 0x3A), (0x5B, 0x7B, 0xB2))
+    // a person's face (ana_face, as a test or a film gives it): small, as the core keeps one
+    "face.png" => (22, 22, (0xF2, 0xB0, 0x1E), (0xC2, 0x41, 0x6B))
     _ => (120, 80, (0x2F, 0x8F, 0x5B), (0xE8, 0xE4, 0xDC))
   }
   let rgba = FixedArray::make(w * h * 4, b'\x00')

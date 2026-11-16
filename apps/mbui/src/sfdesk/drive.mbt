@@ -729,7 +729,13 @@ fn row_items(
 /// What can be done to the folder (FolderView's actions), for the bar it is shown under (the files' page's while it
 /// is in front, or its own): the views, preview, upload and new folder. Its ⋯ holds refresh, favorite, order and path
 /// actions. Short of room the bar's actions go into the ⋯, what is needed least first.
-pub fn folder_actions(c : @ui.Ctx, src : Source, f : FolderOf, style? : @ui.Style = actions_row()) -> Unit {
+pub fn folder_actions(
+  c : @ui.Ctx,
+  src : Source,
+  f : FolderOf,
+  style? : @ui.Style = actions_row(),
+  others? : Array[FolderOf] = [],
+) -> Unit {
   let at = f.at
   let root = at.root.unwrap_or("")
   let st = f.st
@@ -745,17 +751,31 @@ pub fn folder_actions(c : @ui.Ctx, src : Source, f : FolderOf, style? : @ui.Styl
     go: fn(_, _) {  },
     remove: fn(_) {  },
   })
+  // (the files' page's other sides, as they are shown: another way pressed is theirs too, view_press)
+  let sides = others.map(fn(o) -> Browse {
+    {
+      key: o.key,
+      owner: "page",
+      view,
+      at: o.at,
+      root: o.at.root.unwrap_or(""),
+      write: o.rights.write,
+      does: b.does,
+      shown: None,
+      count_text: None,
+    }
+  })
   let lit = @sf.theme().p.accent
   let on = fn(yes : Bool) -> Int64? { if yes { Some(lit) } else { None } }
   let tools : Array[@sf.Tool] = [
     // (short of room, the preview leaves first, then the view, a new folder and uploading)
     @sf.tool_of(
       "view",
-      fn() { view_switch(c, "files/view", view, fn(v) { set_drive_view(src, "page", v) }, ways~) },
+      fn() { view_switch(c, "files/view", view_pressed("page", view), fn(v) { view_press(c, src, b, v, others=sides) }, ways~) },
       drop=folder_drop_view,
       instead=view_icons
-        .filter(fn(w) { w.0 != view && ways.contains(w.0) })
-        .map(fn(w) { @sf.menu_item_of(@sf.t("web-pages.drive.view." + w.0), fn() { set_drive_view(src, "page", w.0) }, icon=w.1) }),
+        .filter(fn(w) { w.0 != view_pressed("page", view) && ways.contains(w.0) })
+        .map(fn(w) { @sf.menu_item_of(@sf.t("web-pages.drive.view." + w.0), fn() { view_press(c, src, b, w.0, others=sides) }, icon=w.1) }),
     ),
   ]
   if pane_fits(f.room) {

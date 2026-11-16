@@ -135,6 +135,11 @@ pub(all) struct Source {
   /// a picture by its URL (a person's, a station's icon) as it is put up on its page's time on top `stint`
   /// (Ctx::page_stint): an image's src once it is here, "" until then (the core's `picture`: core_pictures.mbt)
   picture : (String, Int) -> String
+  /// whether a page opening waits for the picture at a URL (sfbase's pictures_in): one the device holds, asked of the
+  /// core as it holds it by this if it was not, while the core reads it or it is not decoded yet. False of one the device
+  /// has not (the network's to bring), one that could not be had, and where pages wait for no picture
+  /// (core_pictures.mbt's `waits`)
+  picture_waits : (String) -> Bool
   /// what the core said when it stopped, if it did
   fatal : () -> String?
   /// a file of a chat as its messages show it (`station.file`, an image's thumbnail): by its station, the session
@@ -869,6 +874,7 @@ pub fn made_source(
     signing_in: fn() { false },
     sign_in_step: fn() { Idle },
     picture: fn(_, _) { "" },
+    picture_waits: fn(_) { false },
     fatal: fn() { None },
     file: fn(_, _, _) { "" },
     poster: fn(_, _, _) { "" },

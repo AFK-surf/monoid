@@ -45,6 +45,26 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           @sffixture.failed_topics(s, failed.split(",").map(fn(x) { x.to_owned() }).collect(), arg("MBUI_FAILED_WHY"))
         } else { s }
         let s = if arg("MBUI_SAID") == "1" { @sffixture.said_longest_source(s) } else { s }
+        // MBUI_FILM_FACE_MS=N: the people's faces the core gives at once (the fixture's ana_face among them), the host
+        // decoding each N ms after it is asked; MBUI_FILM_FACE_WAITS=1: a page opening waits for them, as the app does
+        // (Source.picture_waits; sfapp's page_pictures_wbtest)
+        let s = if arg("MBUI_FILM_FACE_MS") != "" {
+          let bytes = @sffixture.fixture_file_png("face.png")
+          @ui.fake_decode_bytes_after.val.push((bytes, whole_ms(arg("MBUI_FILM_FACE_MS"))))
+          let faces = @sfapp.core_pictures_waited(fn(_, done) { done(Some(bytes)) }, fn(_, done) { done(Some(bytes)) })
+          let waits = arg("MBUI_FILM_FACE_WAITS") == "1"
+          {
+            ..s,
+            picture: fn(url, stint) {
+              let key = (faces.shown)(url, stint)
+              @sfbase.picture_gated(key)
+              key
+            },
+            picture_waits: fn(url) { waits && (faces.waits)(url) },
+          }
+        } else {
+          s
+        }
         if dark { @sf.set_dark(Some(true)) }
         @sf.give_faces()
         src.val = Some(s)

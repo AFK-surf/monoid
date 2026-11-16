@@ -32,40 +32,78 @@ static int go_back(void) {
   return 1;
 }
 
-static GtkWidget *win, *area, *under;  // the window, its canvas, the native views' GtkFixed under it
-static GtkIMContext *im;
-static GtkEventController *keys;
-static int want_frame;
-static guint tick_id;
 static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
-static double scale = 1;
+
+// ---- the windows of one run (@hostapi.windows_in_process: mb_host_windows) ----
+// Each window the app opens beside its first is a window of this run: its own GtkWindow, its canvas (drawn with the
+// first canvas's GL context, into pictures of its own: canvas_snapshot), its native views' GtkFixed (linux_views.c: a
+// view is the window's it is placed in), its input method, its events; drawn by the same program, the same context,
+// atlases, pictures, streams and players. The window drawn or handing input now is put in place for it (win_use: `ws`,
+// and the renderer's frame kept, linux_render.c mb_render_use) and the first put back after: what the app asks of the
+// window then (its size, its scale, a frame, its input method, a drag) is that window's, and the app is told which it
+// is (mb_host_windows' 4). Closed by the person, the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes
+// on; the first put away, they close with it.
+typedef struct WinSlot {
+  // the window, its canvas, the native views' GtkFixed under it (NULL win: no window of that number)
+  GtkWidget *win, *area, *under;
+  GtkIMContext *im;
+  GtkEventController *keys;
+  int want_frame;
+  guint tick_id;
+  double scale;
+  int fb_pw, fb_ph;         // the area's framebuffer in pixels, as GTK last sized it
+  double frame_w, frame_h;  // the last frame's size in points
+  int ime_active;
+  double caret[4];  // x, y, w, h in points, from set_ime
+  char *ime_words;  // the field's words (UTF-8) and its selection's ends in them, for the input method
+  int ime_sel_a, ime_sel_b;
+  int marked_len;
+  int right_down, left_down;  // whether the right (left) button is down
+  // the last press, for a move of the window it starts (mb_host_window_drag), in the surface's coordinates
+  GdkDevice *press_device;
+  double press_x, press_y;
+  guint32 press_time;
+  int press_button;
+  // the last press that moved the window: when and where, for the second of a double click there
+  guint32 drag_time;
+  double drag_x, drag_y;
+} WinSlot;
+static WinSlot win_slots[MB_WINS] = {{.scale = 1}};
+static WinSlot *ws = &win_slots[0];
+static int win_active;  // the window in place (0, the first, between frames and input)
+static int win_of_area(GtkWidget *a) {
+  for (int k = 0; k < MB_WINS; k++)
+    if (a && win_slots[k].area == a) return k;
+  return -1;
+}
+// Window `wid` put in place: its slot and its frame's drawing.
+static void win_use(int wid) {
+  if (wid == win_active || wid < 0 || wid >= MB_WINS || (wid > 0 && !win_slots[wid].win)) return;
+  win_active = wid;
+  ws = &win_slots[wid];
+  mb_render_use(wid);
+}
+// The window in place before put back (the first where it has closed meanwhile).
+static void win_put_back(int wid) {
+  if (wid > 0 && !win_slots[wid].win) wid = 0;
+  win_use(wid);
+}
+// The window a handler is of (its data: the window's number) put in place, the one before given back to put back.
+static int win_in(gpointer data) {
+  int back = win_active;
+  win_use(GPOINTER_TO_INT(data));
+  return back;
+}
 static int context_asked, context_new;  // the canvas's context asked anew, and made so (mb_host_drive 10, 11)
-static int fb_pw, fb_ph;          // the area's framebuffer in pixels, as GTK last sized it
-static double frame_w, frame_h;   // the last frame's size in points
-static int ime_active;
-static double caret[4];  // x, y, w, h in points, from set_ime
-static char *ime_words;  // the field's words (UTF-8) and its selection's ends in them, for the input method
-static int ime_sel_a, ime_sel_b;
-static int marked_len;
 static const char *script;
 static const char *shot_dir;
-// the window as the app asks for it (@hostapi.window_setup), the pointer's shape (@hostapi.set_cursor), whether the
-// right button is down
+// the window as the app asks for it (@hostapi.window_setup)
 static double setup_w, setup_h, setup_min_w, setup_min_h;
-static int right_down, left_down;
 static int frames_drawn;
 static mb_outside_fn outside_cb;  // who is told as what the host does for the app is done (mb_host_set_outside)
 static void (*state_cb)(int32_t);  // the app in front or not (@hostapi.set_app_state)
-// the last press, for a move of the window it starts (mb_host_window_drag)
-static GdkDevice *press_device;
-static double press_x, press_y;  // in the surface's coordinates
-static guint32 press_time;
-static int press_button;
 // an inset window (@hostapi.window_setup's inset): no title bar of the system's, the app's top row is it
 static int setup_inset;
-// the last press that moved the window: when and where, for the second of a double click there
-static guint32 drag_time;
-static double drag_x, drag_y;
 
 double mb_now_ms(void) {
   struct timespec t;
@@ -106,19 +144,51 @@ double mb_host_mem_bytes(void);
 
 static void canvas_queue_render(GtkWidget *w);
 
+// (each window's frame clock its own: data, the window's number)
 static gboolean on_tick(GtkWidget *w, GdkFrameClock *clock, gpointer data) {
-  (void)w, (void)clock, (void)data;
-  if (want_frame) {
-    canvas_queue_render(area);
+  (void)w, (void)clock;
+  WinSlot *o = &win_slots[GPOINTER_TO_INT(data)];
+  if (o->want_frame) {
+    canvas_queue_render(o->area);
     return G_SOURCE_CONTINUE;
   }
-  tick_id = 0;
+  o->tick_id = 0;
   return G_SOURCE_REMOVE;
 }
 
+// The window held out of sight as it opens (@hostapi.window_hold, said before mb_host_run): realized, not shown (its
+// canvas's context made, nothing of it on the screen), its frames drawn meanwhile into the canvas's picture at the size
+// it is to have (held_w × held_h points: held_frame, as each is asked), till the app shows it (mb_host_window_show): then it is presented
+// as that frame ends, its first picture on the screen the app's page drawn (at its size as laid out: drawn again in the
+// snapshot where that is another), not its ground for the page's first moments.
+static int window_held, window_shown, window_to_show;
+static int held_w, held_h;
+static guint held_source;
+static gboolean held_frame(gpointer data);
+// (a frame asked of the first window while it is held: no frame clock ticks for a window not shown, so it is drawn as
+// the loop is next idle, once however often it was asked; a held window is held for its first page's few moments)
+static void held_tick(void) {
+  if (!window_held || window_shown || held_source) return;
+  held_source = g_idle_add(held_frame, NULL);
+}
+
+// A frame of the window in place asked for.
 static void schedule(void) {
-  want_frame = 1;
-  if (!tick_id && area) tick_id = gtk_widget_add_tick_callback(area, on_tick, NULL, NULL);
+  ws->want_frame = 1;
+  if (!ws->tick_id && ws->area)
+    ws->tick_id = gtk_widget_add_tick_callback(ws->area, on_tick, GINT_TO_POINTER(win_active), NULL);
+  if (win_active == 0) held_tick();
+}
+
+// A frame of every window of the run asked for (what changed may be any's: each draws only what changed of its own).
+static void schedule_all(void) {
+  int back = win_active;
+  for (int k = 0; k < MB_WINS; k++)
+    if (win_slots[k].win) {
+      win_use(k);
+      schedule();
+    }
+  win_put_back(back);
 }
 
 // asked for from any thread (an image decoded, a message posted): its frame on the main thread
@@ -127,7 +197,7 @@ static gint posting;  // a told of what was posted asked of the main loop, not y
 static gboolean wake_idle(gpointer data) {
   (void)data;
   g_atomic_int_set(&waking, 0);
-  schedule();
+  schedule_all();
   return G_SOURCE_REMOVE;
 }
 
@@ -152,9 +222,11 @@ static void mb_post_wake(void) {
   if (g_atomic_int_compare_and_exchange(&posting, 0, 1)) g_idle_add_full(G_PRIORITY_HIGH_IDLE, posted_idle, NULL, NULL);
 }
 
-double mb_app_scale(void) { return scale; }
+double mb_app_scale(void) { return ws->scale; }
 
-void *mb_app_under(void) { return under; }
+void *mb_app_under(void) { return ws->under; }
+void *mb_app_under_of(int wid) { return wid >= 0 && wid < MB_WINS ? win_slots[wid].under : NULL; }
+int mb_app_wid(void) { return win_active; }
 
 // the app's widgets for the system's accessibility (@hostapi.a11y_on, a11y_tree): accessibles under the canvas
 #include "linux_a11y.h"
@@ -210,7 +282,66 @@ static double canvas_scale(GtkWidget *w) {
   return k > 0 ? k : gtk_widget_get_scale_factor(w);
 }
 
-static void canvas_snapshot(GtkWidget *w, GtkSnapshot *snap) {
+// The size the frame being drawn is drawn at (points), the area's as GTK lays it out, or the window's as it is to be
+// while it is held out of sight (held_frame: not laid out yet)
+static int draw_lw, draw_lh;
+
+// A frame of canvas `w` drawn (its window in place) at lw × lh points, k pixels a point, into a texture of its own:
+// the picture GTK is handed (c->last). 0 where it could not be.
+static int canvas_draw(GtkWidget *w, int lw, int lh, double k) {
+  Canvas *c = (Canvas *)w;
+  GdkGLContext *ctx = gtk_gl_area_get_context(GTK_GL_AREA(w));
+  int pw = (int)lround(lw * k), ph = (int)lround(lh * k);
+  gtk_gl_area_make_current(GTK_GL_AREA(w));
+  CanvasTex *t = NULL;
+  for (guint i = 0; i < c->texs->len && !t; i++) {
+    CanvasTex *u = g_ptr_array_index(c->texs, i);
+    if (!u->held) t = u;
+  }
+  if (!t) {
+    t = g_new0(CanvasTex, 1);
+    glGenTextures(1, &t->id);
+    g_ptr_array_add(c->texs, t);
+  }
+  if (t->sync) glDeleteSync(t->sync), t->sync = NULL;
+  glBindTexture(GL_TEXTURE_2D, t->id);
+  if (t->w != pw || t->h != ph) {
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pw, ph, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    t->w = pw, t->h = ph;
+  }
+  if (!c->fbo) glGenFramebuffers(1, &c->fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, c->fbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->id, 0);
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    fprintf(stderr, "mbui: the canvas's framebuffer is not complete (%dx%d)\n", pw, ph);
+    return 0;
+  }
+  canvas_resized(pw, ph);
+  c->needs_render = 0;
+  draw_lw = lw, draw_lh = lh;
+  on_render(GTK_GL_AREA(w), ctx, NULL);
+  glBindFramebuffer(GL_FRAMEBUFFER, c->fbo);
+  GdkGLTextureBuilder *b = gdk_gl_texture_builder_new();
+  gdk_gl_texture_builder_set_context(b, ctx);
+  gdk_gl_texture_builder_set_id(b, t->id);
+  gdk_gl_texture_builder_set_width(b, pw);
+  gdk_gl_texture_builder_set_height(b, ph);
+  gdk_gl_texture_builder_set_format(b, GDK_MEMORY_R8G8B8A8_PREMULTIPLIED);
+  // (GTK draws it once GL is done with it: a fence, which OpenGL ES 3 has)
+  t->sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+  gdk_gl_texture_builder_set_sync(b, t->sync);
+  t->held = 1;
+  g_clear_object(&c->last);
+  c->last = gdk_gl_texture_builder_build(b, canvas_tex_released, t);
+  g_object_unref(b);
+  return 1;
+}
+
+// Drawn as GTK draws the window: the frame asked for drawn now, in the snapshot (so a window's first picture on the
+// screen is the app's: a window of the run beside the first comes up with its page), else the last drawn again.
+static void canvas_snapshot_here(GtkWidget *w, GtkSnapshot *snap) {
   Canvas *c = (Canvas *)w;
   GdkGLContext *ctx = gtk_gl_area_get_context(GTK_GL_AREA(w));
   int lw = gtk_widget_get_width(w), lh = gtk_widget_get_height(w);
@@ -222,56 +353,23 @@ static void canvas_snapshot(GtkWidget *w, GtkSnapshot *snap) {
   double k = canvas_scale(w);
   int pw = (int)lround(lw * k), ph = (int)lround(lh * k);
   if (c->last && (gdk_texture_get_width(c->last) != pw || gdk_texture_get_height(c->last) != ph)) c->needs_render = 1;
-  if (c->needs_render || !c->last) {
-    gtk_gl_area_make_current(GTK_GL_AREA(w));
-    CanvasTex *t = NULL;
-    for (guint i = 0; i < c->texs->len && !t; i++) {
-      CanvasTex *u = g_ptr_array_index(c->texs, i);
-      if (!u->held) t = u;
-    }
-    if (!t) {
-      t = g_new0(CanvasTex, 1);
-      glGenTextures(1, &t->id);
-      g_ptr_array_add(c->texs, t);
-    }
-    if (t->sync) glDeleteSync(t->sync), t->sync = NULL;
-    glBindTexture(GL_TEXTURE_2D, t->id);
-    if (t->w != pw || t->h != ph) {
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, pw, ph, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      t->w = pw, t->h = ph;
-    }
-    if (!c->fbo) glGenFramebuffers(1, &c->fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, c->fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t->id, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-      fprintf(stderr, "mbui: the canvas's framebuffer is not complete (%dx%d)\n", pw, ph);
-      return;
-    }
-    canvas_resized(pw, ph);
-    c->needs_render = 0;
-    on_render(GTK_GL_AREA(w), ctx, NULL);
-    glBindFramebuffer(GL_FRAMEBUFFER, c->fbo);
-    GdkGLTextureBuilder *b = gdk_gl_texture_builder_new();
-    gdk_gl_texture_builder_set_context(b, ctx);
-    gdk_gl_texture_builder_set_id(b, t->id);
-    gdk_gl_texture_builder_set_width(b, pw);
-    gdk_gl_texture_builder_set_height(b, ph);
-    gdk_gl_texture_builder_set_format(b, GDK_MEMORY_R8G8B8A8_PREMULTIPLIED);
-    // (GTK draws it once GL is done with it: a fence, which OpenGL ES 3 has)
-    t->sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    gdk_gl_texture_builder_set_sync(b, t->sync);
-    t->held = 1;
-    g_clear_object(&c->last);
-    c->last = gdk_gl_texture_builder_build(b, canvas_tex_released, t);
-    g_object_unref(b);
-  }
+  if ((c->needs_render || !c->last) && !canvas_draw(w, lw, lh, k)) return;
+  if (!c->last) return;
   gtk_snapshot_save(snap);
   gtk_snapshot_translate(snap, &GRAPHENE_POINT_INIT(0, lh));
   gtk_snapshot_scale(snap, 1, -1);
   gtk_snapshot_append_texture(snap, c->last, &GRAPHENE_RECT_INIT(0, 0, lw, lh));
   gtk_snapshot_restore(snap);
+}
+
+// (with its window in place)
+static void canvas_snapshot(GtkWidget *w, GtkSnapshot *snap) {
+  int k = win_of_area(w);
+  if (k < 0) return;
+  int back = win_active;
+  win_use(k);
+  canvas_snapshot_here(w, snap);
+  win_put_back(back);
 }
 
 // its scale changing (to another monitor's, the desktop's setting changed): drawn anew at it
@@ -327,12 +425,12 @@ void mb_host_set_cursor(int32_t kind);
 static void gl_current(void) {
   if (!mb_views_webkit()) return;
   gdk_gl_context_clear_current();
-  gtk_gl_area_make_current(GTK_GL_AREA(area));
+  gtk_gl_area_make_current(GTK_GL_AREA(win_slots[0].area));
 }
 
 static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
   (void)c, (void)data;
-  want_frame = 0;
+  ws->want_frame = 0;
   gl_current();
   // what was decoded meanwhile made textures, then told: the app finds them ready
   mb_images_upload();
@@ -342,29 +440,38 @@ static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
   device_tell(outside_cb);
   update_tell(outside_cb);
   mb_views_tell(outside_cb);
-  int w = gtk_widget_get_width(GTK_WIDGET(a)), h = gtk_widget_get_height(GTK_WIDGET(a));
-  if (w <= 0 || h <= 0 || fb_pw <= 0 || fb_ph <= 0) return TRUE;
-  double was = scale;
-  scale = fb_pw / (double)w;
-  if (scale != was) mb_views_rescale();
-  frame_w = w;
-  frame_h = h;
-  mb_text_set_scale(scale);
-  mb_render_target(fb_pw, fb_ph, w, h, scale);
+  int w = draw_lw, h = draw_lh;
+  if (w <= 0 || h <= 0 || ws->fb_pw <= 0 || ws->fb_ph <= 0) return TRUE;
+  double was = ws->scale;
+  ws->scale = ws->fb_pw / (double)w;
+  if (ws->scale != was) mb_views_rescale();
+  ws->frame_w = w;
+  ws->frame_h = h;
+  mb_text_set_scale(ws->scale);
+  mb_render_target(ws->fb_pw, ws->fb_ph, w, h, ws->scale);
   GdkFrameClock *clock = gtk_widget_get_frame_clock(GTK_WIDGET(a));
   double now = clock ? gdk_frame_clock_get_frame_time(clock) / 1000.0 : mb_now_ms();
-  mb_cb.frame(w, h, scale, now);
-  frames_drawn++;
-  if (script) run_script_step(frames_drawn);
-  if (want_frame) schedule();
+  mb_cb.frame(w, h, ws->scale, now);
+  // (a scripted run's steps go by the first window's frames)
+  if (win_active == 0) {
+    frames_drawn++;
+    if (script) run_script_step(frames_drawn);
+    // (shown, as the frame it was shown in ends: presented, its picture that frame's)
+    if (window_to_show && !window_shown) {
+      window_to_show = 0;
+      window_shown = 1;
+      gtk_window_present(GTK_WINDOW(ws->win));
+    }
+  }
+  if (ws->want_frame) schedule();
   return TRUE;
 }
 
 // the framebuffer's size in pixels (the canvas's, at the window's scale), as it changes
 static void canvas_resized(int pw, int ph) {
-  if (pw == fb_pw && ph == fb_ph) return;
-  fb_pw = pw;
-  fb_ph = ph;
+  if (pw == ws->fb_pw && ph == ws->fb_ph) return;
+  ws->fb_pw = pw;
+  ws->fb_ph = ph;
   schedule();
 }
 
@@ -382,7 +489,7 @@ static void on_realize(GtkWidget *w, gpointer data) {
 }
 
 // maximized or back, full screen or back: the app's top row and its buttons as it now is
-static void on_window_state(GObject *o, GParamSpec *p, gpointer data) {
+static void on_window_state_here(GObject *o, GParamSpec *p, gpointer data) {
   (void)o, (void)p, (void)data;
   schedule();
 }
@@ -390,22 +497,22 @@ static void on_window_state(GObject *o, GParamSpec *p, gpointer data) {
 // ---- the input method ----
 
 static void ime_place(void) {
-  if (!ime_active) return;
-  GdkRectangle r = {(int)lround(caret[0]), (int)lround(caret[1]), (int)lround(caret[2] > 1 ? caret[2] : 1),
-                    (int)lround(caret[3])};
-  gtk_im_context_set_cursor_location(im, &r);
+  if (!ws->ime_active) return;
+  GdkRectangle r = {(int)lround(ws->caret[0]), (int)lround(ws->caret[1]), (int)lround(ws->caret[2] > 1 ? ws->caret[2] : 1),
+                    (int)lround(ws->caret[3])};
+  gtk_im_context_set_cursor_location(ws->im, &r);
 }
 
-static void on_commit(GtkIMContext *c, const char *s, gpointer data) {
+static void on_commit_here(GtkIMContext *c, const char *s, gpointer data) {
   (void)c, (void)data;
-  marked_len = 0;
-  if (!ime_active) return;
+  ws->marked_len = 0;
+  if (!ws->ime_active) return;
   // control characters come as keys (Enter, Backspace) or shortcuts
   if ((unsigned char)s[0] < 0x20 && !s[1]) return;
   send_text(0, s, 0, 0);
 }
 
-static void on_preedit(GtkIMContext *c, gpointer data) {
+static void on_preedit_here(GtkIMContext *c, gpointer data) {
   (void)data;
   char *s = NULL;
   int cursor = 0;
@@ -416,27 +523,27 @@ static void on_preedit(GtkIMContext *c, gpointer data) {
   const char *p = s;
   for (int i = 0; i < cursor && *p; i++, p = g_utf8_next_char(p)) at += g_utf8_get_char(p) >= 0x10000 ? 2 : 1;
   g_free(u);
-  marked_len = (int)n;
+  ws->marked_len = (int)n;
   send_text(1, s, (int)at, 0);
   g_free(s);
   ime_place();
 }
 
-static void on_preedit_end(GtkIMContext *c, gpointer data) {
+static void on_preedit_end_here(GtkIMContext *c, gpointer data) {
   (void)c, (void)data;
-  if (marked_len) send_text(1, "", 0, 0);
-  marked_len = 0;
+  if (ws->marked_len) send_text(1, "", 0, 0);
+  ws->marked_len = 0;
 }
 
-static gboolean on_surrounding(GtkIMContext *c, gpointer data) {
+static gboolean on_surrounding_here(GtkIMContext *c, gpointer data) {
   (void)data;
-  const char *w = ime_words ? ime_words : "";
-  gtk_im_context_set_surrounding_with_selection(c, w, -1, ime_sel_b, ime_sel_a);
+  const char *w = ws->ime_words ? ws->ime_words : "";
+  gtk_im_context_set_surrounding_with_selection(c, w, -1, ws->ime_sel_b, ws->ime_sel_a);
   return TRUE;
 }
 
 // the input method deleting round the caret (n characters from `offset`): the field's Backspace or Delete
-static gboolean on_delete_surrounding(GtkIMContext *c, int offset, int n, gpointer data) {
+static gboolean on_delete_surrounding_here(GtkIMContext *c, int offset, int n, gpointer data) {
   (void)c, (void)data;
   int before = offset < 0 ? -offset : 0, after = offset + n > 0 ? offset + n : 0;
   if (before > n) before = n;
@@ -446,7 +553,13 @@ static gboolean on_delete_surrounding(GtkIMContext *c, int offset, int n, gpoint
 
 // ---- the clipboard ----
 
+static void paste_done_here(GObject *src, GAsyncResult *res, gpointer data);
 static void paste_done(GObject *src, GAsyncResult *res, gpointer data) {
+  int back = win_in(data);
+  paste_done_here(src, res, data);
+  win_put_back(back);
+}
+static void paste_done_here(GObject *src, GAsyncResult *res, gpointer data) {
   (void)data;
   char *s = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(src), res, NULL);
   if (s && *s) {
@@ -469,11 +582,11 @@ static int mods_of(GdkModifierType m) {
 
 // ---- keys ----
 
-static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, GdkModifierType state, gpointer data) {
+static gboolean on_key_here(GtkEventControllerKey *k, guint keyval, guint keycode, GdkModifierType state, gpointer data) {
   (void)k, (void)keycode, (void)data;
   int mods = mods_of(state);
   // a key catcher's focus (linux_device.h): its keys (a composition under way keeps them)
-  if (key_catching && ime_active && marked_len == 0 && catch_key(keyval, mods)) return TRUE;
+  if (key_catching && ws->ime_active && ws->marked_len == 0 && catch_key(keyval, mods)) return TRUE;
   if ((mods & 4) && !(mods & 2) && keyval == GDK_KEY_Left && go_back()) return TRUE;
   // Alt+Right: forward, the app's key (key_forward)
   if ((mods & 4) && !(mods & 2) && keyval == GDK_KEY_Right) {
@@ -494,7 +607,7 @@ static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, Gd
                   gdk_content_formats_contain_gtype(f, GDK_TYPE_TEXTURE);
         gdk_content_formats_unref(f);
         if (app) mb_cb.key(1000 + 'v', mods);
-        else gdk_clipboard_read_text_async(gtk_widget_get_clipboard(area), NULL, paste_done, NULL);
+        else gdk_clipboard_read_text_async(gtk_widget_get_clipboard(ws->area), NULL, paste_done, GINT_TO_POINTER(win_active));
         return TRUE;
       }
     }
@@ -506,13 +619,13 @@ static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, Gd
   }
   int code = named_key(keyval);
   // without a field to type in, these scroll the list under the pointer
-  if ((code == 15 || code == 16) && ime_active) code = 0;
+  if ((code == 15 || code == 16) && ws->ime_active) code = 0;
   if (code) {
     mb_cb.key(code, mods);
     return TRUE;
   }
   // a character with no field to take it (Space, a letter): the app's, as 1000 + it
-  if (!ime_active) {
+  if (!ws->ime_active) {
     int ch = key_char(keyval);
     if (ch) {
       mb_cb.key(1000 + ch, mods);
@@ -528,10 +641,10 @@ static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, Gd
 static void area_point(GdkEvent *ev, double *x, double *y) {
   double sx = 0, sy = 0, nx = 0, ny = 0;
   gdk_event_get_position(ev, &sx, &sy);
-  GtkNative *native = gtk_widget_get_native(area);
+  GtkNative *native = gtk_widget_get_native(ws->area);
   gtk_native_get_surface_transform(native, &nx, &ny);
   graphene_point_t p = GRAPHENE_POINT_INIT((float)(sx - nx), (float)(sy - ny)), out;
-  if (gtk_widget_compute_point(GTK_WIDGET(native), area, &p, &out)) {
+  if (gtk_widget_compute_point(GTK_WIDGET(native), ws->area, &p, &out)) {
     *x = out.x;
     *y = out.y;
   } else {
@@ -596,18 +709,26 @@ static void touch(GdkEvent *ev, GdkEventType t, double x, double y) {
     if (touch_next <= 0) touch_next = 1;
     g_hash_table_insert(touch_ids, s, GINT_TO_POINTER(id));
   }
-  if (kind == 10) gtk_widget_grab_focus(area);
+  if (kind == 10) gtk_widget_grab_focus(ws->area);
   mb_cb.pointer(kind, x, y, id);
   if (kind == 12 || kind == 13) g_hash_table_remove(touch_ids, s);
 }
 
+// (with the window it came to in place: a view's, of whichever window it is in)
 void mb_app_scroll(void *event) {
+  GdkSurface *at = gdk_event_get_surface(event);
+  int k = 0;
+  for (int i = 0; i < MB_WINS; i++)
+    if (win_slots[i].win && at && gtk_native_get_surface(GTK_NATIVE(win_slots[i].win)) == at) k = i;
+  int back = win_active;
+  win_use(k);
   double x = 0, y = 0;
   area_point(event, &x, &y);
   scroll(event, x, y);
+  win_put_back(back);
 }
 
-static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer data) {
+static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer data) {
   (void)c, (void)data;
   GdkEventType t = gdk_event_get_event_type(ev);
   // a pointer the system made of a touch: the touch is had already
@@ -618,16 +739,16 @@ static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer dat
     case GDK_BUTTON_PRESS: {
       area_point(ev, &x, &y);
       guint b = gdk_button_event_get_button(ev);
-      press_device = gdk_event_get_device(ev);
-      gdk_event_get_position(ev, &press_x, &press_y);
-      press_time = gdk_event_get_time(ev);
-      press_button = (int)b;
-      gtk_widget_grab_focus(area);
+      ws->press_device = gdk_event_get_device(ev);
+      gdk_event_get_position(ev, &ws->press_x, &ws->press_y);
+      ws->press_time = gdk_event_get_time(ev);
+      ws->press_button = (int)b;
+      gtk_widget_grab_focus(ws->area);
       if (b == 1) {
-        left_down = 1;
+        ws->left_down = 1;
         mb_cb.pointer(0, x, y, 0);
       } else if (b == 3) {
-        right_down = 1;
+        ws->right_down = 1;
         mb_cb.pointer(0, x, y, 2);
       }
       return TRUE;
@@ -635,11 +756,11 @@ static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer dat
     case GDK_BUTTON_RELEASE: {
       area_point(ev, &x, &y);
       guint b = gdk_button_event_get_button(ev);
-      if (b == 1 && left_down) {
-        left_down = 0;
+      if (b == 1 && ws->left_down) {
+        ws->left_down = 0;
         mb_cb.pointer(2, x, y, 0);
-      } else if (b == 3 && right_down) {
-        right_down = 0;
+      } else if (b == 3 && ws->right_down) {
+        ws->right_down = 0;
         mb_cb.pointer(2, x, y, 2);
       } else if (b == 8) {
         go_back();
@@ -653,7 +774,7 @@ static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer dat
       mb_cb.pointer(1, x, y, 0);
       return TRUE;
     case GDK_LEAVE_NOTIFY:
-      if (!left_down) mb_cb.pointer(7, -1, -1, 0);
+      if (!ws->left_down) mb_cb.pointer(7, -1, -1, 0);
       return FALSE;
     case GDK_SCROLL:
       area_point(ev, &x, &y);
@@ -671,21 +792,83 @@ static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer dat
   }
 }
 
-static void on_focus_in(GtkEventControllerFocus *f, gpointer data) {
+static void on_focus_in_here(GtkEventControllerFocus *f, gpointer data) {
   (void)f, (void)data;
-  if (ime_active) gtk_im_context_focus_in(im);
+  if (ws->ime_active) gtk_im_context_focus_in(ws->im);
 }
 
-static void on_focus_out(GtkEventControllerFocus *f, gpointer data) {
+static void on_focus_out_here(GtkEventControllerFocus *f, gpointer data) {
   (void)f, (void)data;
-  if (ime_active) gtk_im_context_focus_out(im);
+  if (ws->ime_active) gtk_im_context_focus_out(ws->im);
+}
+
+
+// ---- each window's handlers: what they handle done with their window in place (their data: its number) ----
+
+static void on_window_state(GObject *o, GParamSpec *p, gpointer data) {
+  int back = win_in(data);
+  on_window_state_here(o, p, data);
+  win_put_back(back);
+}
+static void on_commit(GtkIMContext *c, const char *s, gpointer data) {
+  int back = win_in(data);
+  on_commit_here(c, s, data);
+  win_put_back(back);
+}
+static void on_preedit(GtkIMContext *c, gpointer data) {
+  int back = win_in(data);
+  on_preedit_here(c, data);
+  win_put_back(back);
+}
+static void on_preedit_end(GtkIMContext *c, gpointer data) {
+  int back = win_in(data);
+  on_preedit_end_here(c, data);
+  win_put_back(back);
+}
+static gboolean on_surrounding(GtkIMContext *c, gpointer data) {
+  int back = win_in(data);
+  gboolean r = on_surrounding_here(c, data);
+  win_put_back(back);
+  return r;
+}
+static gboolean on_delete_surrounding(GtkIMContext *c, int offset, int n, gpointer data) {
+  int back = win_in(data);
+  gboolean r = on_delete_surrounding_here(c, offset, n, data);
+  win_put_back(back);
+  return r;
+}
+static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, GdkModifierType state, gpointer data) {
+  int back = win_in(data);
+  gboolean r = on_key_here(k, keyval, keycode, state, data);
+  win_put_back(back);
+  return r;
+}
+static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer data) {
+  int back = win_in(data);
+  gboolean r = on_event_here(c, ev, data);
+  win_put_back(back);
+  return r;
+}
+static void on_focus_in(GtkEventControllerFocus *f, gpointer data) {
+  int back = win_in(data);
+  on_focus_in_here(f, data);
+  win_put_back(back);
+}
+static void on_focus_out(GtkEventControllerFocus *f, gpointer data) {
+  int back = win_in(data);
+  on_focus_out_here(f, data);
+  win_put_back(back);
 }
 
 // the window shown and in front (is-active) or not: 1 while shown, | 2 while in front
 static void app_state(void) {
-  if (!state_cb || !win) return;
-  int shown = gtk_widget_get_mapped(win);
-  int front = shown && gtk_window_is_active(GTK_WINDOW(win));
+  GtkWidget *first = win_slots[0].win;
+  if (!state_cb || !first) return;
+  int shown = gtk_widget_get_mapped(first);
+  // (in front: any window of the run's, a window beside the first among them)
+  int front = 0;
+  for (int k = 0; k < MB_WINS && shown; k++)
+    if (win_slots[k].win && gtk_window_is_active(GTK_WINDOW(win_slots[k].win))) front = 1;
   // (told only as it changes: the same said again tells the app nothing, and draws nothing)
   static int told = -1;
   int s = (shown ? 1 : 0) | (front ? 2 : 0);
@@ -777,7 +960,7 @@ static void shot(const char *name) {
 }
 
 static void run_script_step(int step) {
-  double h = frame_h;
+  double h = ws->frame_h;
   if (strcmp(script, "ime") == 0) {
     switch (step) {
       case 20: shot("01-start"); break;
@@ -785,13 +968,13 @@ static void run_script_step(int step) {
         mb_cb.pointer(0, 120, h - 30, 0);
         mb_cb.pointer(2, 120, h - 30, 0);
         break;
-      case 30: marked_len = 6; send_text(1, "ni'hao", 6, 0); break;
+      case 30: ws->marked_len = 6; send_text(1, "ni'hao", 6, 0); break;
       case 40: shot("02-composing"); break;
-      case 41: marked_len = 0; send_text(0, "\xe4\xbd\xa0\xe5\xa5\xbd", 0, 0); break;  // 你好
+      case 41: ws->marked_len = 0; send_text(0, "\xe4\xbd\xa0\xe5\xa5\xbd", 0, 0); break;  // 你好
       case 42: send_text(0, "\xef\xbc\x8cMoonBit ", 0, 0); break;                     // ，MoonBit
-      case 43: marked_len = 7; send_text(1, "shi'jie", 3, 0); break;
+      case 43: ws->marked_len = 7; send_text(1, "shi'jie", 3, 0); break;
       case 50: shot("03-composing-2"); break;
-      case 51: marked_len = 0; send_text(0, "\xe4\xb8\x96\xe7\x95\x8c \xf0\x9f\x91\x8b", 0, 0); break;  // 世界 👋
+      case 51: ws->marked_len = 0; send_text(0, "\xe4\xb8\x96\xe7\x95\x8c \xf0\x9f\x91\x8b", 0, 0); break;  // 世界 👋
       case 60: shot("04-typed"); break;
       case 61: mb_cb.key(7, 0); break;
       case 100: shot("05-sent"); break;
@@ -801,7 +984,7 @@ static void run_script_step(int step) {
       case 140: shot("06-scrolled"); break;
       case 141: exit(0);
     }
-    want_frame = 1;
+    ws->want_frame = 1;
   } else if (strcmp(script, "shot") == 0) {
     // from the 30th frame
     static int done;
@@ -811,7 +994,7 @@ static void run_script_step(int step) {
     } else if (done && step > done) {
       exit(0);
     }
-    want_frame = 1;
+    ws->want_frame = 1;
   }
 }
 
@@ -825,7 +1008,7 @@ static void run_loop(void) {
   for (;;) {
     if (wake_at >= 0 && mb_now_ms() >= wake_at) {
       wake_at = -1;
-      schedule();
+      schedule_all();
     }
     gint prio = 0, timeout = -1, n;
     g_main_context_prepare(ctx, &prio);
@@ -847,6 +1030,67 @@ static void run_loop(void) {
 // ---------------------------------------------------------------------------
 // The host API MoonBit calls
 
+// The window in place's parts (its GtkWindow made): an inset window's title bar of nothing, its canvas (the first's
+// GL context its, every window's: canvas_context), its input method and events (their data its number), its native
+// views' GtkFixed under the canvas.
+static GdkGLContext *canvas_context(GtkGLArea *a, gpointer data) {
+  (void)a, (void)data;
+  GdkGLContext *c = gtk_gl_area_get_context(GTK_GL_AREA(win_slots[0].area));
+  return c ? g_object_ref(c) : NULL;
+}
+static void win_parts(void) {
+  gpointer wid = GINT_TO_POINTER(win_active);
+  // an inset window: its decorations GTK's own (its shadow and the edges it is resized by), a title bar of nothing,
+  // the app's top row its title bar and its buttons the app's (@ui.window_keys_own), as Windows' is
+  if (setup_inset) {
+    GtkWidget *none = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_visible(none, FALSE);
+    gtk_window_set_titlebar(GTK_WINDOW(ws->win), none);
+  }
+  g_signal_connect(ws->win, "notify::maximized", G_CALLBACK(on_window_state), wid);
+  g_signal_connect(ws->win, "notify::fullscreened", G_CALLBACK(on_window_state), wid);
+  ws->area = g_object_new(canvas_get_type(), NULL);
+  if (win_active > 0) g_signal_connect(ws->area, "create-context", G_CALLBACK(canvas_context), NULL);
+  gtk_gl_area_set_allowed_apis(GTK_GL_AREA(ws->area), GDK_GL_API_GLES);
+  gtk_gl_area_set_required_version(GTK_GL_AREA(ws->area), 3, 0);
+  gtk_gl_area_set_auto_render(GTK_GL_AREA(ws->area), FALSE);
+  gtk_gl_area_set_has_depth_buffer(GTK_GL_AREA(ws->area), FALSE);
+  gtk_gl_area_set_has_stencil_buffer(GTK_GL_AREA(ws->area), FALSE);
+  gtk_widget_set_focusable(ws->area, TRUE);
+  gtk_widget_set_hexpand(ws->area, TRUE);
+  gtk_widget_set_vexpand(ws->area, TRUE);
+  if (setup_min_w > 0 || setup_min_h > 0)
+    gtk_widget_set_size_request(ws->area, (int)lround(setup_min_w), (int)lround(setup_min_h));
+
+  ws->im = gtk_im_multicontext_new();
+  gtk_im_context_set_client_widget(ws->im, ws->area);
+  gtk_im_context_set_use_preedit(ws->im, TRUE);
+  g_signal_connect(ws->im, "commit", G_CALLBACK(on_commit), wid);
+  g_signal_connect(ws->im, "preedit-changed", G_CALLBACK(on_preedit), wid);
+  g_signal_connect(ws->im, "preedit-end", G_CALLBACK(on_preedit_end), wid);
+  g_signal_connect(ws->im, "retrieve-surrounding", G_CALLBACK(on_surrounding), wid);
+  g_signal_connect(ws->im, "delete-surrounding", G_CALLBACK(on_delete_surrounding), wid);
+
+  GtkEventController *events = gtk_event_controller_legacy_new();
+  g_signal_connect(events, "event", G_CALLBACK(on_event), wid);
+  gtk_widget_add_controller(ws->area, events);
+  ws->keys = gtk_event_controller_key_new();
+  g_signal_connect(ws->keys, "key-pressed", G_CALLBACK(on_key), wid);
+  gtk_widget_add_controller(ws->area, ws->keys);
+  GtkEventController *focus = gtk_event_controller_focus_new();
+  g_signal_connect(focus, "enter", G_CALLBACK(on_focus_in), wid);
+  g_signal_connect(focus, "leave", G_CALLBACK(on_focus_out), wid);
+  gtk_widget_add_controller(ws->area, focus);
+
+  // the native views under the canvas (linux_views.c): the overlay's child, the canvas over it, as big as the canvas
+  ws->under = gtk_fixed_new();
+  GtkWidget *overlay = gtk_overlay_new();
+  gtk_overlay_set_child(GTK_OVERLAY(overlay), ws->under);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), ws->area);
+  gtk_overlay_set_measure_overlay(GTK_OVERLAY(overlay), ws->area, TRUE);
+  gtk_window_set_child(GTK_WINDOW(ws->win), overlay);
+}
+
 void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointer_fn, mb_wheel_fn wheel_fn,
                  mb_key_fn key, mb_text_fn text) {
   mb_cb = (mb_callbacks){frame, pointer_fn, wheel_fn, key, text};
@@ -866,75 +1110,146 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   }
   settings_watch();
 
-  win = gtk_window_new();
+  ws->win = gtk_window_new();
   window_front_listen();
   char *t = utf8(title);
-  gtk_window_set_title(GTK_WINDOW(win), t);
-  // an inset window: its decorations GTK's own (its shadow and the edges it is resized by), a title bar of nothing,
-  // the app's top row its title bar and its buttons the app's (@ui.window_keys_own), as Windows' is
-  if (setup_inset) {
-    GtkWidget *none = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_visible(none, FALSE);
-    gtk_window_set_titlebar(GTK_WINDOW(win), none);
-  }
-  g_signal_connect(win, "notify::maximized", G_CALLBACK(on_window_state), NULL);
-  g_signal_connect(win, "notify::fullscreened", G_CALLBACK(on_window_state), NULL);
+  gtk_window_set_title(GTK_WINDOW(ws->win), t);
   // MBUI_WIN=<w>x<h>: the area's size in points (a phone's, for the narrow layouts); else the app's own
   // (@hostapi.window_setup); 900 x 720 by default
   double ww = setup_w > 0 ? setup_w : 900, wh = setup_h > 0 ? setup_h : 720;
   const char *size = getenv("MBUI_WIN");
   if (size) sscanf(size, "%lfx%lf", &ww, &wh);
-  gtk_window_set_default_size(GTK_WINDOW(win), (int)lround(ww), (int)lround(wh));
-  g_signal_connect(win, "notify::is-active", G_CALLBACK(on_active), NULL);
-  g_signal_connect(win, "notify::visible", G_CALLBACK(on_active), NULL);
+  held_w = (int)lround(ww), held_h = (int)lround(wh);
+  gtk_window_set_default_size(GTK_WINDOW(ws->win), held_w, held_h);
+  g_signal_connect(ws->win, "notify::is-active", G_CALLBACK(on_active), NULL);
+  g_signal_connect(ws->win, "notify::visible", G_CALLBACK(on_active), NULL);
   life_start(t);
   g_free(t);
-
-  area = g_object_new(canvas_get_type(), NULL);
-  gtk_gl_area_set_allowed_apis(GTK_GL_AREA(area), GDK_GL_API_GLES);
-  gtk_gl_area_set_required_version(GTK_GL_AREA(area), 3, 0);
-  gtk_gl_area_set_auto_render(GTK_GL_AREA(area), FALSE);
-  gtk_gl_area_set_has_depth_buffer(GTK_GL_AREA(area), FALSE);
-  gtk_gl_area_set_has_stencil_buffer(GTK_GL_AREA(area), FALSE);
-  gtk_widget_set_focusable(area, TRUE);
-  gtk_widget_set_hexpand(area, TRUE);
-  gtk_widget_set_vexpand(area, TRUE);
-  if (setup_min_w > 0 || setup_min_h > 0)
-    gtk_widget_set_size_request(area, (int)lround(setup_min_w), (int)lround(setup_min_h));
-  g_signal_connect(area, "realize", G_CALLBACK(on_realize), NULL);
-
-  im = gtk_im_multicontext_new();
-  gtk_im_context_set_client_widget(im, area);
-  gtk_im_context_set_use_preedit(im, TRUE);
-  g_signal_connect(im, "commit", G_CALLBACK(on_commit), NULL);
-  g_signal_connect(im, "preedit-changed", G_CALLBACK(on_preedit), NULL);
-  g_signal_connect(im, "preedit-end", G_CALLBACK(on_preedit_end), NULL);
-  g_signal_connect(im, "retrieve-surrounding", G_CALLBACK(on_surrounding), NULL);
-  g_signal_connect(im, "delete-surrounding", G_CALLBACK(on_delete_surrounding), NULL);
-
-  GtkEventController *events = gtk_event_controller_legacy_new();
-  g_signal_connect(events, "event", G_CALLBACK(on_event), NULL);
-  gtk_widget_add_controller(area, events);
-  keys = gtk_event_controller_key_new();
-  g_signal_connect(keys, "key-pressed", G_CALLBACK(on_key), NULL);
-  gtk_widget_add_controller(area, keys);
-  GtkEventController *focus = gtk_event_controller_focus_new();
-  g_signal_connect(focus, "enter", G_CALLBACK(on_focus_in), NULL);
-  g_signal_connect(focus, "leave", G_CALLBACK(on_focus_out), NULL);
-  gtk_widget_add_controller(area, focus);
+  win_parts();
+  g_signal_connect(ws->area, "realize", G_CALLBACK(on_realize), NULL);
   drop_start();
-
-  // the native views under the canvas (linux_views.c): the overlay's child, the canvas over it, as big as the canvas
-  under = gtk_fixed_new();
-  GtkWidget *overlay = gtk_overlay_new();
-  gtk_overlay_set_child(GTK_OVERLAY(overlay), under);
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), area);
-  gtk_overlay_set_measure_overlay(GTK_OVERLAY(overlay), area, TRUE);
-  gtk_window_set_child(GTK_WINDOW(win), overlay);
-  gtk_window_present(GTK_WINDOW(win));
-  gtk_widget_grab_focus(area);
+  // (held: out of sight till the app shows it, its frames drawn meanwhile: held_frame)
+  if (window_held && !window_shown) {
+    gtk_widget_realize(ws->area);
+  } else {
+    window_shown = 1;
+    gtk_window_present(GTK_WINDOW(ws->win));
+  }
+  gtk_widget_grab_focus(ws->area);
   schedule();
   run_loop();
+}
+
+// The first window's frame while it is held (held_tick): drawn as GTK would draw it, at the size it is to have, its
+// scale the display's first monitor's, the window not laid out yet.
+static gboolean held_frame(gpointer data) {
+  (void)data;
+  held_source = 0;
+  WinSlot *o = &win_slots[0];
+  if (window_shown || !o->want_frame || !o->area || !gtk_widget_get_realized(o->area)) return G_SOURCE_REMOVE;
+  GdkDisplay *d = gdk_display_get_default();
+  GListModel *ms = d ? gdk_display_get_monitors(d) : NULL;
+  GdkMonitor *m = ms && g_list_model_get_n_items(ms) ? g_list_model_get_item(ms, 0) : NULL;
+  double k = m ? gdk_monitor_get_scale(m) : 1;
+  if (m) g_object_unref(m);
+  int back = win_active;
+  win_use(0);
+  canvas_draw(o->area, held_w, held_h, k > 0 ? k : 1);
+  win_put_back(back);
+  return G_SOURCE_REMOVE;
+}
+
+// ---- the windows of one run (win_use, above) ----
+
+// Window `wid` gone (closed by the person, or by the app: mb_host_windows' 3; its GtkWindow destroyed): its views taken
+// off it, what it drew let go of (in the canvases' context), the app told between frames (MB_OUTSIDE_WINDOW; one the
+// app closed itself it knows of already).
+static gboolean win_closed_told(gpointer data) {
+  if (outside_cb) outside_cb(MB_OUTSIDE_WINDOW, GPOINTER_TO_INT(data), -1);
+  return G_SOURCE_REMOVE;
+}
+static void win_closed(GtkWidget *w, gpointer data) {
+  (void)w;
+  int wid = GPOINTER_TO_INT(data);
+  if (wid <= 0 || wid >= MB_WINS || !win_slots[wid].win) return;
+  if (win_active == wid) win_use(0);
+  mb_views_forget(wid);
+  WinSlot *o = &win_slots[wid];
+  if (win_slots[0].area && gtk_widget_get_realized(win_slots[0].area)) {
+    gtk_gl_area_make_current(GTK_GL_AREA(win_slots[0].area));
+    mb_render_forget(wid);
+  }
+  g_free(o->ime_words);
+  if (o->im) g_object_unref(o->im);
+  memset(o, 0, sizeof *o);
+  o->scale = 1;
+  g_idle_add(win_closed_told, GINT_TO_POINTER(wid));
+}
+
+// The windows beside the first closed (the first put away: linux_life.h put_away), as the person closes them.
+static void wins_close_beside(void) {
+  for (int k = 1; k < MB_WINS; k++)
+    if (win_slots[k].win) gtk_window_destroy(GTK_WINDOW(win_slots[k].win));
+}
+
+// A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, its title the
+// first's, its top row the app's as the first's; its first picture on the screen its first frame (canvas_snapshot,
+// drawn in the snapshot of the window's first frame).
+static int win_open(void) {
+  WinSlot *first = &win_slots[0];
+  if (!first->win || !first->area || !gtk_widget_get_realized(first->area)) return 0;
+  int wid = 0;
+  for (int k = 1; k < MB_WINS; k++)
+    if (!win_slots[k].win) {
+      wid = k;
+      break;
+    }
+  if (!wid) return 0;
+  int back = win_active;
+  WinSlot *o = &win_slots[wid];
+  memset(o, 0, sizeof *o);
+  o->scale = first->scale;
+  o->win = gtk_window_new();
+  win_use(wid);
+  gtk_window_set_title(GTK_WINDOW(o->win), gtk_window_get_title(GTK_WINDOW(first->win)));
+  int w = gtk_widget_get_width(first->win), h = gtk_widget_get_height(first->win);
+  gtk_window_set_default_size(GTK_WINDOW(o->win), w > 0 ? w : held_w, h > 0 ? h : held_h);
+  if (life_app) gtk_window_set_application(GTK_WINDOW(o->win), life_app);
+  g_signal_connect(o->win, "notify::is-active", G_CALLBACK(on_active), NULL);
+  g_signal_connect(o->win, "destroy", G_CALLBACK(win_closed), GINT_TO_POINTER(wid));
+  win_parts();
+  gtk_window_present(GTK_WINDOW(o->win));
+  gtk_widget_grab_focus(o->area);
+  schedule();
+  win_put_back(back);
+  return wid;
+}
+
+// The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a run
+// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now.
+static gboolean win_close_later(gpointer data) {
+  int wid = GPOINTER_TO_INT(data);
+  if (wid > 0 && wid < MB_WINS && win_slots[wid].win) gtk_window_destroy(GTK_WINDOW(win_slots[wid].win));
+  return G_SOURCE_REMOVE;
+}
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)what;
+  GtkWidget *w = wid > 0 && wid < MB_WINS ? win_slots[wid].win : NULL;
+  switch (op) {
+    case 0: return !window_run();
+    case 1: return win_open();
+    case 2:
+      if (!w) return 0;
+      gtk_window_unminimize(GTK_WINDOW(w));
+      gtk_window_present(GTK_WINDOW(w));
+      return 1;
+    // (closed after the frame the app asked it in: never in the middle of drawing it)
+    case 3:
+      if (w) g_idle_add(win_close_later, GINT_TO_POINTER(wid));
+      return 0;
+    case 4: return win_active;
+    default: return 0;
+  }
 }
 
 double mb_host_now(void) { return mb_now_ms(); }
@@ -963,7 +1278,8 @@ double mb_host_frame_late(void) { return 0; }
 
 int32_t mb_host_platform(void) { return 5; }
 
-void mb_host_request_frame(void) { schedule(); }
+// A frame asked for: of every window of the run where there are several, else the one.
+void mb_host_request_frame(void) { schedule_all(); }
 
 // A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): not paced here, the next drawn.
 void mb_host_frames_paced(double hz) {
@@ -986,31 +1302,31 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text, int32_t a,
                      int32_t b) {
-  int was = ime_active;
-  ime_active = active != 0;
-  caret[0] = x;
-  caret[1] = y;
-  caret[2] = w;
-  caret[3] = h;
+  int was = ws->ime_active;
+  ws->ime_active = active != 0;
+  ws->caret[0] = x;
+  ws->caret[1] = y;
+  ws->caret[2] = w;
+  ws->caret[3] = h;
   // the field's words and its selection, in UTF-8's bytes, for the input method's surrounding text
-  g_free(ime_words);
-  ime_words = utf8(text);
+  g_free(ws->ime_words);
+  ws->ime_words = utf8(text);
   int32_t n = Moonbit_array_length(text);
-  ime_sel_a = ime_sel_b = 0;
-  const char *p = ime_words;
+  ws->ime_sel_a = ws->ime_sel_b = 0;
+  const char *p = ws->ime_words;
   for (int32_t i = 0; i < n && *p; p = g_utf8_next_char(p)) {
-    if (i < a) ime_sel_a = (int)(g_utf8_next_char(p) - ime_words);
-    if (i < b) ime_sel_b = (int)(g_utf8_next_char(p) - ime_words);
+    if (i < a) ws->ime_sel_a = (int)(g_utf8_next_char(p) - ws->ime_words);
+    if (i < b) ws->ime_sel_b = (int)(g_utf8_next_char(p) - ws->ime_words);
     i += g_utf8_get_char(p) >= 0x10000 ? 2 : 1;
   }
-  if (ime_active && !was) {
-    gtk_event_controller_key_set_im_context(GTK_EVENT_CONTROLLER_KEY(keys), im);
-    if (gtk_widget_has_focus(area)) gtk_im_context_focus_in(im);
-  } else if (!ime_active && was) {
-    gtk_im_context_reset(im);
-    gtk_im_context_focus_out(im);
-    gtk_event_controller_key_set_im_context(GTK_EVENT_CONTROLLER_KEY(keys), NULL);
-    marked_len = 0;
+  if (ws->ime_active && !was) {
+    gtk_event_controller_key_set_im_context(GTK_EVENT_CONTROLLER_KEY(ws->keys), ws->im);
+    if (gtk_widget_has_focus(ws->area)) gtk_im_context_focus_in(ws->im);
+  } else if (!ws->ime_active && was) {
+    gtk_im_context_reset(ws->im);
+    gtk_im_context_focus_out(ws->im);
+    gtk_event_controller_key_set_im_context(GTK_EVENT_CONTROLLER_KEY(ws->keys), NULL);
+    ws->marked_len = 0;
   }
   ime_place();
 }
@@ -1032,7 +1348,7 @@ static int secret_on;
 
 void mb_host_clipboard_set(moonbit_string_t s) {
   char *u = utf8(s);
-  gdk_clipboard_set_text(gtk_widget_get_clipboard(area), u);
+  gdk_clipboard_set_text(gtk_widget_get_clipboard(ws->area), u);
   g_free(u);
   secret_on = 0;
 }
@@ -1045,7 +1361,7 @@ void mb_host_clipboard_secret(moonbit_string_t s, double clear_ms) {
 
 // The last secret copied taken off (@hostapi.clipboard_secret_off), unless something else was copied since.
 void mb_host_clipboard_secret_off(void) {
-  GdkClipboard *cb = gtk_widget_get_clipboard(area);
+  GdkClipboard *cb = gtk_widget_get_clipboard(ws->area);
   if (secret_on && gdk_clipboard_is_local(cb)) gdk_clipboard_set_content(cb, NULL);
   secret_on = 0;
 }
@@ -1057,7 +1373,7 @@ void mb_host_clipboard_image(moonbit_bytes_t data) {
   GdkTexture *t = gdk_texture_new_from_bytes(b, NULL);
   g_bytes_unref(b);
   if (!t) return;
-  gdk_clipboard_set_texture(gtk_widget_get_clipboard(area), t);
+  gdk_clipboard_set_texture(gtk_widget_get_clipboard(ws->area), t);
   secret_on = 0;
   g_object_unref(t);
 }
@@ -1215,13 +1531,13 @@ void mb_host_set_dark(int32_t dark) {
 // again, which comes after it is put back: its next layout's)
 static gboolean context_again(gpointer data) {
   (void)data;
-  GtkWidget *overlay = gtk_widget_get_parent(area);
-  g_object_ref(area);
-  gtk_overlay_remove_overlay(GTK_OVERLAY(overlay), area);
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), area);
-  gtk_overlay_set_measure_overlay(GTK_OVERLAY(overlay), area, TRUE);
-  g_object_unref(area);
-  gtk_widget_grab_focus(area);
+  GtkWidget *overlay = gtk_widget_get_parent(ws->area);
+  g_object_ref(ws->area);
+  gtk_overlay_remove_overlay(GTK_OVERLAY(overlay), ws->area);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), ws->area);
+  gtk_overlay_set_measure_overlay(GTK_OVERLAY(overlay), ws->area, TRUE);
+  g_object_unref(ws->area);
+  gtk_widget_grab_focus(ws->area);
   schedule();
   return G_SOURCE_REMOVE;
 }
@@ -1253,7 +1569,7 @@ int32_t mb_host_drive(int32_t kind, moonbit_string_t text) {
   } else if (kind == 8) {
     double cw = 0, ch = 0;
     if (sscanf(u, "%lfx%lf", &cw, &ch) == 2 && cw > 0 && ch > 0) {
-      gtk_window_set_default_size(GTK_WINDOW(win), (int)lround(cw), (int)lround(ch));
+      gtk_window_set_default_size(GTK_WINDOW(ws->win), (int)lround(cw), (int)lround(ch));
       fprintf(stdout, "RESIZED %.0fx%.0f\n", cw, ch);
       fflush(stdout);
       schedule();
@@ -1264,9 +1580,11 @@ int32_t mb_host_drive(int32_t kind, moonbit_string_t text) {
   return done;
 }
 
-// The window held till the app shows it (@hostapi.window_hold): the system shows the app's own here, as it opens.
-void mb_host_window_hold(void) {}
-void mb_host_window_show(void) {}
+void mb_host_window_hold(void) { window_held = 1; }
+
+void mb_host_window_show(void) {
+  if (window_held && !window_shown) window_to_show = 1;
+}
 
 // The window as the app wants it, asked before `run` (@hostapi.window_setup): with `inset`, no title bar of the
 // system's, the app's top row is it, its buttons the app's.
@@ -1279,14 +1597,14 @@ void mb_host_window_setup(double min_w, double min_h, double w, double h, int32_
 }
 
 // Whether the window's buttons are in the app's top row now: an inset window, not full screen.
-int32_t mb_host_window_inset(void) { return setup_inset && !(win && gtk_window_is_fullscreen(GTK_WINDOW(win))); }
+int32_t mb_host_window_inset(void) { return setup_inset && !(ws->win && gtk_window_is_fullscreen(GTK_WINDOW(ws->win))); }
 
 // A window filling the screen (@hostapi.full_screen).
-int32_t mb_host_full_screen(void) { return win && gtk_window_is_fullscreen(GTK_WINDOW(win)) ? 1 : 0; }
+int32_t mb_host_full_screen(void) { return ws->win && gtk_window_is_fullscreen(GTK_WINDOW(ws->win)) ? 1 : 0; }
 void mb_host_set_full_screen(int32_t on) {
-  if (!win) return;
-  if (on) gtk_window_fullscreen(GTK_WINDOW(win));
-  else gtk_window_unfullscreen(GTK_WINDOW(win));
+  if (!ws->win) return;
+  if (on) gtk_window_fullscreen(GTK_WINDOW(ws->win));
+  else gtk_window_unfullscreen(GTK_WINDOW(ws->win));
 }
 
 // The app's own top row draws Linux's buttons (window_keys_own): nothing of the system's to move.
@@ -1303,32 +1621,32 @@ void mb_host_window_act(int32_t what);
 // click there (the desktop's own time and distance for one), what the title bar's double click does: maximized, or
 // back as it was.
 void mb_host_window_drag(void) {
-  GdkSurface *s = win ? gtk_native_get_surface(GTK_NATIVE(win)) : NULL;
-  if (!s || !GDK_IS_TOPLEVEL(s) || !press_device) return;
-  left_down = 0;
+  GdkSurface *s = ws->win ? gtk_native_get_surface(GTK_NATIVE(ws->win)) : NULL;
+  if (!s || !GDK_IS_TOPLEVEL(s) || !ws->press_device) return;
+  ws->left_down = 0;
   int dt = 400, dd = 5;
   GtkSettings *gs = gtk_settings_get_default();
   if (gs) g_object_get(gs, "gtk-double-click-time", &dt, "gtk-double-click-distance", &dd, NULL);
-  if (drag_time && press_time - drag_time <= (guint32)dt && fabs(press_x - drag_x) <= dd && fabs(press_y - drag_y) <= dd) {
-    drag_time = 0;
+  if (ws->drag_time && ws->press_time - ws->drag_time <= (guint32)dt && fabs(ws->press_x - ws->drag_x) <= dd && fabs(ws->press_y - ws->drag_y) <= dd) {
+    ws->drag_time = 0;
     mb_host_window_act(2);
     return;
   }
-  drag_time = press_time, drag_x = press_x, drag_y = press_y;
-  gdk_toplevel_begin_move(GDK_TOPLEVEL(s), press_device, press_button, press_x, press_y, press_time);
+  ws->drag_time = ws->press_time, ws->drag_x = ws->press_x, ws->drag_y = ws->press_y;
+  gdk_toplevel_begin_move(GDK_TOPLEVEL(s), ws->press_device, ws->press_button, ws->press_x, ws->press_y, ws->press_time);
 }
 
 // The window's own buttons, the app's in an inset window (@hostapi.window_act, window_zoomed): minimized, maximized or
 // back as it was, closed as the system's close button closes it (put away to its icon among the desktop's:
 // linux_life.h); no Snap Layouts here (window_snap, window_snap_state: Windows').
 void mb_host_window_act(int32_t what) {
-  if (!win) return;
-  if (what == 1) gtk_window_minimize(GTK_WINDOW(win));
-  else if (what == 2 && gtk_window_is_maximized(GTK_WINDOW(win))) gtk_window_unmaximize(GTK_WINDOW(win));
-  else if (what == 2) gtk_window_maximize(GTK_WINDOW(win));
-  else if (what == 3) gtk_window_close(GTK_WINDOW(win));
+  if (!ws->win) return;
+  if (what == 1) gtk_window_minimize(GTK_WINDOW(ws->win));
+  else if (what == 2 && gtk_window_is_maximized(GTK_WINDOW(ws->win))) gtk_window_unmaximize(GTK_WINDOW(ws->win));
+  else if (what == 2) gtk_window_maximize(GTK_WINDOW(ws->win));
+  else if (what == 3) gtk_window_close(GTK_WINDOW(ws->win));
 }
-int32_t mb_host_window_zoomed(void) { return win && gtk_window_is_maximized(GTK_WINDOW(win)) ? 1 : 0; }
+int32_t mb_host_window_zoomed(void) { return ws->win && gtk_window_is_maximized(GTK_WINDOW(ws->win)) ? 1 : 0; }
 void mb_host_window_snap(double x, double y, double w, double h) { (void)x, (void)y, (void)w, (void)h; }
 int32_t mb_host_window_snap_state(void) { return 0; }
 
@@ -1345,12 +1663,12 @@ int32_t mb_host_mods_held(void) {
 // The pointer's shape (@hostapi.set_cursor): CSS's names, as GTK takes them.
 void mb_host_set_cursor(int32_t kind) {
   static int now = -1;
-  if (!area || kind == now) return;
+  if (!ws->area || kind == now) return;
   now = kind;
   static const char *names[] = {"default", "pointer", "text", "ew-resize", "ns-resize", "move", "grabbing",
                                 "crosshair", "not-allowed", "nwse-resize", "nesw-resize"};
   int count = (int)(sizeof names / sizeof names[0]);
-  gtk_widget_set_cursor_from_name(area, names[kind >= 0 && kind < count ? kind : 0]);
+  gtk_widget_set_cursor_from_name(ws->area, names[kind >= 0 && kind < count ? kind : 0]);
 }
 
 moonbit_string_t mb_host_env(moonbit_string_t name) {
@@ -1438,7 +1756,7 @@ static void pick_done(GObject *src, GAsyncResult *res, gpointer data) {
 
 int32_t mb_host_pick_start(int32_t kind) {
   int what = kind & 15;
-  if (!win || (what != 1 && what != 2)) return 0;
+  if (!ws->win || (what != 1 && what != 2)) return 0;
   picks = realloc(picks, sizeof(pick) * (size_t)(npicks + 1));
   int id = npicks++;
   picks[id] = (pick){0, 0, g_ptr_array_new_with_free_func(g_free),
@@ -1471,7 +1789,7 @@ int32_t mb_host_pick_start(int32_t kind) {
     g_object_unref(filters);
     g_object_unref(f);
   }
-  gtk_file_dialog_open_multiple(d, GTK_WINDOW(win), NULL, pick_done, GINT_TO_POINTER(id));
+  gtk_file_dialog_open_multiple(d, GTK_WINDOW(ws->win), NULL, pick_done, GINT_TO_POINTER(id));
   return id;
 }
 
@@ -1662,8 +1980,8 @@ static void drop_files_at(GPtrArray *files, double x, double y) {
   drop_post(m->str, m->len);
   g_string_free(m, TRUE);
   g_string_free(paths, TRUE);
-  gtk_window_present(GTK_WINDOW(win));
-  gtk_widget_grab_focus(area);
+  gtk_window_present(GTK_WINDOW(ws->win));
+  gtk_widget_grab_focus(ws->area);
 }
 
 static int drag_has_files(GtkDropTarget *t) {
@@ -1703,8 +2021,8 @@ static gboolean on_dropped(GtkDropTarget *t, const GValue *v, double x, double y
   g_string_append(m, "\"}");
   drop_post(m->str, m->len);
   g_string_free(m, TRUE);
-  gtk_window_present(GTK_WINDOW(win));
-  gtk_widget_grab_focus(area);
+  gtk_window_present(GTK_WINDOW(ws->win));
+  gtk_widget_grab_focus(ws->area);
   return TRUE;
 }
 
@@ -1717,7 +2035,7 @@ static void drop_start(void) {
   g_signal_connect(t, "motion", G_CALLBACK(on_drag_over), NULL);
   g_signal_connect(t, "leave", G_CALLBACK(on_drag_left), NULL);
   g_signal_connect(t, "drop", G_CALLBACK(on_dropped), NULL);
-  gtk_widget_add_controller(area, GTK_EVENT_CONTROLLER(t));
+  gtk_widget_add_controller(ws->area, GTK_EVENT_CONTROLLER(t));
 }
 
 // A scripted run's drop (mb_host_drive 13): "<x> <y> <path>|<path>…", the files let go there as a file manager's are.

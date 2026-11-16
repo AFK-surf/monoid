@@ -13,26 +13,37 @@ let images : @sfbase.ChatImages = @sfbase.ChatImages::new()
 /// Pictures by their address as the app's own are (src/stillfail: @sfapp.core_pictures, one that could not be had
 /// asked again when its page is put up anew), so a run that asked again is asked again here; made anew in each
 /// Tester.
-let pictures : Ref[((String, Int) -> String)?] = Ref(None)
+let pictures : Ref[@sfapp.CorePictures?] = Ref(None)
 
 ///|
-fn picture(url : String, stint : Int) -> String {
-  let f = match pictures.val {
+fn pictures_now() -> @sfapp.CorePictures {
+  match pictures.val {
     Some(f) => f
     None => {
-      let f = @sfapp.core_pictures(fn(url, done) {
-        @core.call_bytes("picture", params=Json::object({ "url": Json::string(url) }), on_done=fn(r) {
-          match r {
-            Ok((_, bytes)) => done(bytes)
-            Err(_) => done(None)
+      let asked = fn(kept : Bool) {
+        fn(url : String, done : (Bytes?) -> Unit) {
+          let params : Map[String, Json] = { "url": Json::string(url) }
+          if kept {
+            params["kept"] = Json::boolean(true)
           }
-        })
-      })
+          @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
+            match r {
+              Ok((_, bytes)) => done(bytes)
+              Err(_) => done(None)
+            }
+          })
+        }
+      }
+      let f = @sfapp.core_pictures_waited(asked(false), asked(true))
       pictures.val = Some(f)
       f
     }
   }
-  f(url, stint)
+}
+
+///|
+fn picture(url : String, stint : Int) -> String {
+  (pictures_now().shown)(url, stint)
 }
 
 ///|
@@ -573,6 +584,8 @@ pub fn source() -> @sfapp.Source {
       }
       key
     },
+    // (a page opening waits for the pictures it shows the device holds, as the app has it since MBUI_PAGE_PICTURES)
+    picture_waits: fn(url) { @sfcore.trace_switch("MBUI_PAGE_PICTURES") && (pictures_now().waits)(url) },
     fatal: fn() { @core.fatal() },
     file: fn(station, key, name) {
       let params : Map[String, Json] = {

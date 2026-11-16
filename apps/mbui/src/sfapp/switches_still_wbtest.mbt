@@ -5,7 +5,8 @@
 // subscription 400 ms late: each switch found by its role and pressed in turn (a radio not chosen, a choice row not
 // chosen, a toggle, an opener's every choice not chosen, a switch, a checkbox, a tab of the page), and the screen
 // looked at on each frame till its answers have all come: each run of frames in which a named node moves, sizes
-// otherwise, comes or goes is one change. A press seen to change more than once is a row of `switches_known`
+// otherwise, comes or goes is one change, a frame in which one goes on moving by less than a point carrying it on (a way
+// that eases into its end is one change to its end, not one more where its last step is past a point's threshold). A press seen to change more than once is a row of `switches_known`
 // (switches_known_wbtest.mbt) with how many times: one more or fewer than its row, or a press with no row, fails its
 // test, saying the line to write. Run on main alone, after a merge, in three parts (mbui-check.yml's `switches`; it
 // is too long for a branch's pushes); its tests at a rate are none (a sweep: scripts/test.sh).
@@ -312,16 +313,24 @@ fn switch_measure(
     }
     let here = switch_places(t)
     let what = []
+    // (a named node still on its way by less than a point this frame: what moves goes on, never a change apart)
+    let mut going = false
     for k, r in here {
       if skip.contains(k) {
         continue
       }
       match last.get(k) {
-        Some(was) =>
-          if (r.0 - was.0).abs() > 1.0 || (r.1 - was.1).abs() > 1.0 || (r.2 - was.2).abs() > 1.0 ||
-            (r.3 - was.3).abs() > 1.0 {
+        Some(was) => {
+          let step = @cmp.maximum(
+            @cmp.maximum((r.0 - was.0).abs(), (r.1 - was.1).abs()),
+            @cmp.maximum((r.2 - was.2).abs(), (r.3 - was.3).abs()),
+          )
+          if step > 1.0 {
             what.push("\{k} \{Repr(was)} -> \{Repr(r)}")
+          } else if step > 0.01 {
+            going = true
           }
+        }
         None => what.push("\{k} came \{Repr(r)}")
       }
     }
@@ -348,6 +357,8 @@ fn switch_measure(
           run_what.push(x)
         }
       }
+    } else if run_from >= 0.0 && going {
+      run_to = now
     } else if run_from >= 0.0 {
       changes.push({ from: run_from, to: run_to, bones: run_bones, what: run_what, running: run_running, why: run_why })
       run_from = -1.0

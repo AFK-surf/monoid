@@ -1109,6 +1109,15 @@ pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, 
   if !opens_answered(t) {
     return t.waiting && all
   }
+  // (the faces of its people in its bar, sfapp's chat.mbt people_stack, and each person's over their messages:
+  // sfpages' message.mbt person_avatar, message_head_node.mbt's)
+  let faces = items(t.value, "people").map(fn(p) { person_of(p).picture })
+  for m in items(t.value, "messages") {
+    if !["agent", "station", "ember", "stillfail"].contains(text(Some(m), "authorKind")) {
+      faces.push(by_of(Some(m)).picture)
+    }
+  }
+  all = pictures_in(opening_pictures.val, faces) && all
   for m in items(t.value, "messages") {
     // (each link's card in a post's words, as the message tells them, its tree or its runs: a screen's a capsule or,
     // previewed, the screen across its top. None of still.fail's notices, whose words are read as no post's; none

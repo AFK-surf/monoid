@@ -1541,8 +1541,8 @@ pub fn window_setup(min_w : Double, min_h : Double, w : Double, h : Double, inse
 ///|
 /// The desktop's window kept out of sight as it opens, till the app shows it (window_show), said before `run`: its
 /// frames drawn meanwhile, it comes up with what the app has drawn by then, not its ground before that. Nothing where
-/// the system shows the app's window itself (iOS, Android, a browser's page) or a host keeps it as it was (Windows,
-/// Linux: shown at once).
+/// the system shows the app's window itself (iOS, Android, a browser's page). Each desktop's host keeps its own way
+/// (the Mac's see-through, Windows' cloaked by its compositor, Linux's made and not shown till then).
 pub fn window_hold() -> Unit {
   current.val.window_hold()
 }
@@ -1681,7 +1681,8 @@ pub fn window_front(what : String) -> Bool {
 ///|
 /// Whether a window of the app's own opens in this run, beside its first (window_open_id), rather than as another run
 /// of the program (window_open): one app, one process, every window drawn by the same program and the same core. A
-/// host that has not that (Windows', Linux's, a phone's, the web's) says false, and window_open is still its way.
+/// host that has not that (a phone's, the web's), or a run that is itself a window of its own (MBUI_WINDOW), says
+/// false, and window_open is still its way.
 pub fn windows_in_process() -> Bool {
   current.val.windows_in_process()
 }

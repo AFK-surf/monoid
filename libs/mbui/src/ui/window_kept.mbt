@@ -1,4 +1,4 @@
-// The windows of one run (@hostapi.windows_in_process: the Mac's): each window its own tree, its own frames and
+// The windows of one run (@hostapi.windows_in_process: the desktops'): each window its own tree, its own frames and
 // input, drawn by the same program over the same state of the app. What the window's runtime keeps of a window (its
 // context, its tree and what the frames keep of it, the hand on it) is kept apart for each: the window the host draws
 // or hands input from now is put in place for that (window_use) and the first one, 0, put back after, so that what

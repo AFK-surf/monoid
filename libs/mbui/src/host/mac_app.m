@@ -52,6 +52,8 @@ static void go_back(void) {
 @property(nonatomic) BOOL wantFrame;
 @property(nonatomic) CFTimeInterval drawnWithWindowAt;  // drawWithWindow's last frame (CACurrentMediaTime)
 @property(nonatomic) int wid;  // its window of the run's (0 the first: win_open)
+// a window of the run beside the first, out of sight till its first frame is drawn (win_open: held_shown)
+@property(nonatomic) BOOL held;
 @end
 
 // The view of the window drawn or handing input now (win_use: the first's between them), and its box below.
@@ -221,6 +223,7 @@ static void paste_now(int mods) {
 
 static void run_script_step(int step);
 static void window_shown_now(void);
+static void held_shown(MBView *v);
 static double window_content_zoom = 1.0;
 static int32_t (*window_key)(int32_t, int32_t);
 
@@ -416,12 +419,22 @@ static const char *record_dir;
 static int record_n, record_from = 0, record_frames = 600;
 static double record_t0 = -1;
 
-// A frame of its window, put in place for it (win_use), the window in place before put back after.
+// A frame of its window, put in place for it (win_use), the window in place before put back after. A window held out
+// of sight (win_open) has its first frame presented in the frame's Core Animation transaction, not after it as the GPU
+// gets to it, and is shown once that is committed: the first the window server composes of it is the app's page.
 - (void)drawFrame {
   int back = win_active;
+  BOOL first = self.held;
+  CAMetalLayer *l = (CAMetalLayer *)self.layer;
+  BOOL was = l.presentsWithTransaction;
+  if (first) l.presentsWithTransaction = YES;
   win_use(self.wid);
   [self drawFrameHere];
   win_use(back);
+  if (first) {
+    l.presentsWithTransaction = was;
+    held_shown(self);
+  }
 }
 
 - (void)drawFrameHere {
@@ -1453,10 +1466,31 @@ static int win_open(NSString *what) {
                                                                             usingBlock:^(NSNotification *n) {
                                                                               [seen requestFrame];
                                                                             }]];
-  [w makeKeyAndOrderFront:nil];
+  // (out of sight till its first frame is drawn, on the screen so that it is drawn at its size and scale there: a
+  // frame of the window on its own, as soon as the app has said what it shows, the run's frames not waited for; never
+  // in the call that opens it, from the app's own handler or frame, which has not yet said what the window shows)
+  v.held = YES;
+  w.alphaValue = 0;
+  w.ignoresMouseEvents = YES;
+  [w orderFront:nil];
   [w makeFirstResponder:v];
-  [v requestFrame];
+  if (settle) [v requestFrame];
+  else
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (seen.held && seen.window) [seen drawFrame];
+    });
   return wid;
+}
+
+// Window `v`'s held first frame drawn (drawFrame, its transaction committed): the window shown, key and taking the
+// pointer. A frame that drew nothing on it (its size none yet) keeps it held for the next.
+static void held_shown(MBView *v) {
+  NSWindow *w = v.window;
+  if (!v.held || !w || NSIsEmptyRect(v.bounds)) return;
+  v.held = NO;
+  w.ignoresMouseEvents = NO;
+  w.alphaValue = 1;
+  [w makeKeyAndOrderFront:nil];
 }
 
 // The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a

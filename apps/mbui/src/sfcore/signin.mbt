@@ -609,6 +609,10 @@ pub let trace_switches : Array[String] = [
   // open_hold_ms at most), and a station's or a connect's page opened by a press once what it shows is (sfbase's
   // route_open_asks). A trace without it opens each at once, as its run's app did)
   "MBUI_OPEN_WHOLE",
+  // (a chat's page opening waits as well for the faces it shows that the device holds: on their way from the core, or
+  // not decoded yet (sfbase's pictures_in, Source.picture_waits). A trace without it opens each chat as what it reads is
+  // answered, as its run's app did)
+  "MBUI_PAGE_PICTURES",
 ]
 
 ///|

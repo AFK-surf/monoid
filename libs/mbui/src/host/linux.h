@@ -14,7 +14,10 @@ typedef void (*mb_outside_fn)(int32_t, int32_t, int32_t);
 // marks or update of its own yet)
 enum { MB_OUTSIDE_IMAGE = 1, MB_OUTSIDE_VIEW = 2, MB_OUTSIDE_PICK = 3, MB_OUTSIDE_GRAB = 6, MB_OUTSIDE_UPDATE = 7,
        MB_OUTSIDE_STREAM = 8, MB_OUTSIDE_CLIP = 9, MB_OUTSIDE_POSTED = 11,
-       MB_OUTSIDE_STOOD = 13 };
+       MB_OUTSIDE_STOOD = 13, MB_OUTSIDE_WINDOW = 17 };
+
+// The windows of one run (linux_app.c: mb_host_windows), the first 0: at most this many open at once
+#define MB_WINS 16
 
 typedef struct {
   mb_frame_fn frame;
@@ -32,6 +35,11 @@ void mb_render_setup(void);
 // what the frame is drawn into: the framebuffer bound, pw × ph pixels, w × h points at `scale`
 void mb_render_target(int pw, int ph, double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+// The frame each window of the run keeps (its size and scale, its last frame's instances, the canvas it is drawn into
+// and what of it differs: linux_app.c's windows, all drawn in the first canvas's context): window `wid`'s put in place
+// for what mb_render_* do next; let go of as it closes (the context current)
+void mb_render_use(int wid);
+void mb_render_forget(int wid);
 // the frame presented last drawn again and written as a PNG: 1 when written
 int mb_render_snapshot(const char *path);
 // a glyph's picture put in its atlas (colour: the colour glyphs' RGBA one, else the words' one byte a pixel), uploaded
@@ -80,8 +88,11 @@ void mb_yuv_lost(void);
 void mb_app_wake(void);
 double mb_app_scale(void);
 double mb_now_ms(void);
-// the native views' GtkFixed, under the canvas (NULL before the window is made)
+// the native views' GtkFixed, under the canvas, of the window in place (NULL before the window is made), and of window
+// `wid`; the window in place (0 the first)
 void *mb_app_under(void);
+void *mb_app_under_of(int wid);
+int mb_app_wid(void);
 // a GdkEvent of a view's, a scroll the app takes (a page that gives it the wheel's upright scroll), as the canvas's own
 void mb_app_scroll(void *event);
 
@@ -92,6 +103,8 @@ int mb_views_webkit(void);
 int mb_views_pass_through(double x, double y);
 // each view placed again on the window's new scale
 void mb_views_rescale(void);
+// window `wid` closing: its views taken off it (hidden, under none till the app closes them or places them elsewhere)
+void mb_views_forget(int wid);
 // what was done for the app told: f(MB_OUTSIDE_VIEW or MB_OUTSIDE_GRAB, id, state)
 void mb_views_tell(mb_outside_fn f);
 // a player's (linux_player.h): whether a view is one, its picture's texture (GL context current; 0 none yet), the

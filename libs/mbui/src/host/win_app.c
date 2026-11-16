@@ -49,36 +49,94 @@ static int go_back(void) {
   return 1;
 }
 
+// The run's first window: its life (win_life.h: put away, brought back, its icon, its state told), its notifications,
+// what is posted to the run's thread
 static HWND hwnd;
-static int want_frame;
 static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
-static double scale = 1;
-static double window_content_zoom = 1.0;
+
+// ---- the windows of one run (@hostapi.windows_in_process: mb_host_windows) ----
+// Each window the app opens beside its first is a window of this run: its own HWND, its swap chain, composition target
+// and canvas (win_render.cpp RenderWin), its native views (win_views.cpp: each view the window's it is placed in),
+// drawn by the same program, the same device, pipelines, atlas, pictures and stream decoders, one button in the
+// taskbar for each. The window drawn or handing input now is put in place for it (win_use: `ws`, and the renderer's)
+// and the first put back after: what the app asks of the window then (its size, its scale, a frame, its input method,
+// a drag, its cursor) is that window's, and the app is told which it is (mb_host_windows' 4). Closed by the person,
+// the app is told (an outside event, MB_OUTSIDE_WINDOW) and the run goes on; the first put away, they close with it.
+typedef struct WinSlot {
+  HWND h;  // NULL: no window of that number
+  int want_frame;
+  // its scale (pixels per point), its content's zoom (@hostapi.set_window_zoom), the last frame's size in points
+  double scale, window_content_zoom, frame_w, frame_h;
+  // the input method: a field taking it, its caret (x, y, w, h in points, from set_ime), what is composed, a key's
+  // first half
+  int ime_active;
+  double caret[4];
+  int marked_len;
+  WCHAR high_surrogate;
+  // the pointer's shape (@hostapi.set_cursor), whether its leaving is asked to be told (TrackMouseEvent), whether the
+  // right button is down
+  int cursor_kind, tracking_leave, right_down;
+  // an inset window's maximize button where the app says (window_snap, in the client's pixels) hit as the title bar's
+  // own, so Windows 11's Snap Layouts open from it; how the pointer stands on it (0 off, 1 on, 2 pressing it, its press
+  // held: snap_held), the non-client area's leaving asked to be told
+  RECT snap_px;
+  int snap_state, snap_held, tracking_nc_leave;
+  // the fingers down that it takes (0: a free place), the first of them down while it is (what may move the window),
+  // its place on the screen (pixels); a finger moving the window from the app's top row (mb_host_window_drag in its
+  // press): where it and the window were then, the window following it till it lifts (Windows' own move goes by the
+  // mouse)
+  UINT32 touch_taken[10], touch_first;
+  POINT touch_screen, touch_move_from;
+  RECT touch_move_rect;
+  int touch_moving;
+  // a window beside the first, out of sight (cloaked) till its first frame is presented (win_open, held_shown)
+  int held;
+} WinSlot;
+// (each beside the first made fresh as it opens: win_slot_fresh)
+static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0}};
+static WinSlot *ws = &win_slots[0];
+static int win_active;  // the window in place (0, the first, between frames and input)
+static void win_slot_fresh(WinSlot *w) {
+  memset(w, 0, sizeof *w);
+  w->scale = 1;
+  w->window_content_zoom = 1.0;
+}
+static int win_of(HWND h) {
+  if (!h) return -1;
+  for (int k = 0; k < MB_WINS; k++)
+    if (win_slots[k].h == h) return k;
+  return -1;
+}
+void mb_host_request_frame(void);
+// Window `wid` put in place: its slot and its drawing.
+static void win_use(int wid) {
+  if (wid == win_active || wid < 0 || wid >= MB_WINS || (wid > 0 && !win_slots[wid].h)) return;
+  win_active = wid;
+  ws = &win_slots[wid];
+  mb_render_use(wid);
+}
+// The window in place before put back (the first where it has closed meanwhile).
+static void win_put_back(int wid) {
+  if (wid > 0 && !win_slots[wid].h) wid = 0;
+  win_use(wid);
+}
+// the window being made (CreateWindowExW: its first messages, before its HWND is known), -1 none; the windows' class
+static int win_making = -1;
+static WCHAR win_class[300];
 static int32_t (*window_key)(int32_t, int32_t);
 
 void mb_host_set_window_zoom(double zoom) {
-  if (zoom > 0) window_content_zoom = zoom;
+  if (zoom > 0) ws->window_content_zoom = zoom;
 }
 void mb_host_set_window_key(int32_t (*f)(int32_t, int32_t)) { window_key = f; }
 int32_t mb_host_window_key(int32_t code, int32_t mods) { return window_key ? window_key(code, mods) : 0; }
-static double frame_w, frame_h;  // the last frame's size in points
-static int ime_active;
-static double caret[4];  // x, y, w, h in points, from set_ime
-static int marked_len;
-static WCHAR high_surrogate;
 static const char *script;
 static const wchar_t *shot_dir;
-// The window as the app asks for it (@hostapi.window_setup), the pointer's shape (@hostapi.set_cursor), whether the
-// pointer's leaving is asked to be told (TrackMouseEvent), whether the right button is down
+// The window as the app asks for it (@hostapi.window_setup)
 static double setup_w, setup_h, setup_min_w, setup_min_h;
-static int cursor_kind, tracking_leave, right_down;
 // An inset window (@hostapi.window_setup's inset): no title bar of the system's, the app's top row its title bar, the
-// window's buttons the app's to draw (@ui's window_keys_own): its maximize button where the app says (window_snap, in
-// the client's pixels) hit as the title bar's own, so Windows 11's Snap Layouts open from it; how the pointer stands on
-// it (0 off, 1 on, 2 pressing it, its press held: snap_held), the non-client area's leaving asked to be told
+// window's buttons the app's to draw (@ui's window_keys_own; each window's: WinSlot's snap_*)
 static int setup_inset;
-static RECT snap_px;
-static int snap_state, snap_held, tracking_nc_leave;
 // the last press that asked to drag the window (mb_host_window_drag): when and where, for the second of a double click;
 // the move itself begun once the app's handling of the press is over (WM_MB_DRAG: Windows' move is a loop of its own,
 // which draws frames as it goes)
@@ -151,9 +209,9 @@ static int frame_top(HWND h) {
 
 // How the pointer stands on the app's maximize button (snap_state), told the app at once as it changes
 static void snap_set(int state) {
-  if (state == snap_state) return;
-  snap_state = state;
-  want_frame = 1;
+  if (state == ws->snap_state) return;
+  ws->snap_state = state;
+  ws->want_frame = 1;
 }
 double mb_host_mem_bytes(void);
 
@@ -175,97 +233,155 @@ static int outside_asked;  // a frame asked for from outside since the last one
 // something is left for one. Before the app has said who is told: a frame, which takes it.
 static void told_between(int kind, int id) {
   if (!outside_cb) {
-    want_frame = 1;
+    ws->want_frame = 1;
     outside_asked = 1;
     return;
   }
-  int was = want_frame;
-  want_frame = 0;
+  int was = ws->want_frame;
+  ws->want_frame = 0;
   outside_cb(kind, id, 0);
-  if (want_frame) outside_asked = 1;
-  want_frame |= was;
+  if (ws->want_frame) outside_asked = 1;
+  ws->want_frame |= was;
 }
 
 // The picks read since the app was last told, told now, between frames (pick_tell, each with how it went): what was
 // picked taken into what reads it as it comes (ui's outside_take), a frame asked for only where something reads it.
 static void picks_between(void) {
   if (!outside_cb) {
-    want_frame = 1;
+    ws->want_frame = 1;
     outside_asked = 1;
     return;
   }
-  int was = want_frame;
-  want_frame = 0;
+  int was = ws->want_frame;
+  ws->want_frame = 0;
   pick_tell(outside_cb);
-  if (want_frame) outside_asked = 1;
-  want_frame |= was;
+  if (ws->want_frame) outside_asked = 1;
+  ws->want_frame |= was;
 }
 static int presenting = 1;  // the frame under way is put on the screen
 
+// A frame drawn: a scripted run's steps (MBUI_SCRIPT) go by the first window's.
+static void frame_counted(void) {
+  if (win_active != 0) return;
+  frames_drawn++;
+  if (script) run_script_step(frames_drawn);
+}
+
 static void draw_frame(void) {
   RECT rc;
-  GetClientRect(hwnd, &rc);
-  want_frame = 0;
+  GetClientRect(ws->h, &rc);
+  ws->want_frame = 0;
   int outside = outside_asked;
   outside_asked = 0;
   mb_images_tell(outside_cb);
   mb_views_tell(outside_cb);
   device_tell(outside_cb);
   update_tell(outside_cb);
-  int away = rc.right <= 0 || rc.bottom <= 0 || !IsWindowVisible(hwnd) || IsIconic(hwnd);
+  int away = rc.right <= 0 || rc.bottom <= 0 || !IsWindowVisible(ws->h) || IsIconic(ws->h);
   if (away) {
     // (none drawn yet: nothing to build at)
-    if (!outside || frame_w <= 0) return;
+    if (!outside || ws->frame_w <= 0) return;
     presenting = 0;
-    mb_cb.frame(frame_w, frame_h, scale, mb_now_ms());
+    mb_cb.frame(ws->frame_w, ws->frame_h, ws->scale, mb_now_ms());
     presenting = 1;
-    frames_drawn++;
-    if (script) run_script_step(frames_drawn);
+    frame_counted();
     return;
   }
-  double was = scale;
-  scale = GetDpiForWindow(hwnd) / 96.0;
-  if (scale != was) {
+  double was = ws->scale;
+  ws->scale = GetDpiForWindow(ws->h) / 96.0;
+  if (ws->scale != was) {
     ime_place();  // the candidate window is placed in pixels
     mb_views_rescale();
   }
-  frame_w = rc.right / scale;
-  frame_h = rc.bottom / scale;
-  mb_text_set_scale(scale * window_content_zoom);
-  mb_render_set_size(rc.right, rc.bottom, frame_w / window_content_zoom, frame_h / window_content_zoom,
-                     scale * window_content_zoom);
+  ws->frame_w = rc.right / ws->scale;
+  ws->frame_h = rc.bottom / ws->scale;
+  mb_text_set_scale(ws->scale * ws->window_content_zoom);
+  mb_render_set_size(rc.right, rc.bottom, ws->frame_w / ws->window_content_zoom, ws->frame_h / ws->window_content_zoom,
+                     ws->scale * ws->window_content_zoom);
   double begins = mb_now_ms();
   frame_late = last_begin >= 0 && !script ? fmax(0, begins - last_begin - display_period()) : 0;
   last_begin = begins;
-  mb_cb.frame(frame_w, frame_h, scale, begins);
-  frames_drawn++;
-  if (script) run_script_step(frames_drawn);
+  mb_cb.frame(ws->frame_w, ws->frame_h, ws->scale, begins);
+  frame_counted();
+}
+
+// The window held out of sight as it opens (@hostapi.window_hold, said before mb_host_run): cloaked (DWM's: shown, its
+// frames drawn and presented at its size and scale on its screen, none of it composed onto the screen) till the app
+// shows it (mb_host_window_show), then uncloaked once the compositor has taken the frame it was shown in: it comes up
+// with the app's page drawn, not with nothing for the page's first moments. So is each window beside the first, till
+// its first frame is (win_open: held).
+static int window_held, window_shown, window_to_show;
+
+static int cloak(HWND h, BOOL on) { return SUCCEEDED(DwmSetWindowAttribute(h, DWMWA_CLOAK, &on, sizeof on)); }
+
+void mb_host_window_hold(void) { window_held = 1; }
+
+void mb_host_window_show(void) {
+  if (window_held && !window_shown) window_to_show = 1;
+}
+
+// After a round of frames, the compositor's beat waited for (mb_render_pace: what they presented taken by it): a window
+// held whose frame is there uncloaked, the first window once the app has shown it.
+static void held_shown_now(void) {
+  for (int k = 1; k < MB_WINS; k++) {
+    WinSlot *w = &win_slots[k];
+    if (!w->h || w->held != 2) continue;
+    w->held = 0;
+    cloak(w->h, FALSE);
+  }
+  if (window_to_show && !window_shown && hwnd) {
+    window_to_show = 0;
+    window_shown = 1;
+    cloak(hwnd, FALSE);
+  }
+}
+
+// What the frames presented since the last round owe the compositor waited for, and what was held shown then.
+static void frames_paced(void) {
+  mb_render_pace();
+  held_shown_now();
+}
+
+// The windows of the run that want a frame each drawn, put in place for it, then the compositor's beat waited for once
+// (mb_render_pace): 1 when any was drawn.
+static int frames_round(void) {
+  int any = 0;
+  for (int k = 0; k < MB_WINS; k++) {
+    if (!win_slots[k].h || !win_slots[k].want_frame) continue;
+    any = 1;
+    int back = win_active;
+    win_use(k);
+    draw_frame();
+    win_put_back(back);
+  }
+  if (any) frames_paced();
+  return any;
 }
 
 // ---- input method ----
 
 static void ime_place(void) {
-  if (!ime_active) return;
-  int x = (int)lround(caret[0] * scale), y = (int)lround(caret[1] * scale);
-  int b = (int)lround((caret[1] + caret[3]) * scale);
+  if (!ws->ime_active) return;
+  int x = (int)lround(ws->caret[0] * ws->scale), y = (int)lround(ws->caret[1] * ws->scale);
+  int b = (int)lround((ws->caret[1] + ws->caret[3]) * ws->scale);
   SetCaretPos(x, y);  // some input methods follow the system caret
-  HIMC imc = ImmGetContext(hwnd);
+  HIMC imc = ImmGetContext(ws->h);
   if (!imc) return;
   COMPOSITIONFORM cf = {CFS_POINT, {x, y}, {0, 0, 0, 0}};
   ImmSetCompositionWindow(imc, &cf);
   CANDIDATEFORM cand = {0, CFS_EXCLUDE, {x, b}, {x, y, x + 1, b}};
   ImmSetCandidateWindow(imc, &cand);
-  ImmReleaseContext(hwnd, imc);
+  ImmReleaseContext(ws->h, imc);
 }
 
 static void ime_compose(const WCHAR *s, int n, int cursor) {
-  marked_len = n;
+  ws->marked_len = n;
   if (n == 0) send_text(1, L"", 0, 0, 0);
   else send_text(1, s, n, cursor, 0);
 }
 
 static void ime_commit(const WCHAR *s, int n) {
-  marked_len = 0;
+  ws->marked_len = 0;
   send_text(0, s, n, 0, 0);
 }
 
@@ -282,7 +398,7 @@ static WCHAR *ime_string(HIMC imc, DWORD which, int *n) {
 }
 
 static void ime_composition(LPARAM lp) {
-  HIMC imc = ImmGetContext(hwnd);
+  HIMC imc = ImmGetContext(ws->h);
   if (!imc) return;
   int n;
   if (lp & GCS_RESULTSTR) {
@@ -295,10 +411,10 @@ static void ime_composition(LPARAM lp) {
     int cursor = (lp & GCS_CURSORPOS) ? (int)ImmGetCompositionStringW(imc, GCS_CURSORPOS, NULL, 0) : n;
     ime_compose(s, n, cursor < 0 || cursor > n ? n : cursor);
     free(s);
-  } else if (!(lp & GCS_RESULTSTR) && marked_len) {
+  } else if (!(lp & GCS_RESULTSTR) && ws->marked_len) {
     ime_compose(NULL, 0, 0);  // composition cancelled
   }
-  ImmReleaseContext(hwnd, imc);
+  ImmReleaseContext(ws->h, imc);
   ime_place();
 }
 
@@ -328,7 +444,17 @@ static void paste(void) {
 // files from outside: the system's dialog, let go on the window
 #include "win_files.h"
 // the device beyond the window (device.mbt): a key catcher's keys, the clipboard, awake
+// (a key catcher's windows: each of the run's, its own field and composition: win_keys.h)
+static int keys_typing(HWND h) {
+  int k = win_of(h);
+  return k >= 0 && win_slots[k].ime_active && !win_slots[k].marked_len;
+}
+#define KEYS_OURS(h) (win_of(h) >= 0)
+#define KEYS_TYPING(h) keys_typing(h)
+// (its frame the window in place's, as a test of it has its one)
+#define want_frame ws->want_frame
 #include "win_device.h"
+#undef want_frame
 // its log files: what it says on stderr, its performance record
 #include "win_logs.h"
 // the app's life: once for its person, put away to the notification area, links, in front or not, light or dark
@@ -351,7 +477,7 @@ static void paste_key(int mods) {
 
 static void key_down(WPARAM vk) {
   // a key catcher's focus (win_device.h): its keys (a composition under way keeps them)
-  if (key_catching && ime_active && marked_len == 0 && catch_vk(vk)) return;
+  if (key_catching && ws->ime_active && ws->marked_len == 0 && catch_vk(vk)) return;
   int mods = mods_now(), code = 0;
   // Shift+Insert: the system's other key for a paste, what a clipboard manager may press for one (Raycast does): as
   // Ctrl+V
@@ -389,15 +515,15 @@ static void key_down(WPARAM vk) {
     case VK_HOME: code = 8; break;
     case VK_END: code = 9; break;
     // without a field to type in, these scroll the list under the pointer
-    case VK_PRIOR: code = ime_active ? 0 : 15; break;
-    case VK_NEXT: code = ime_active ? 0 : 16; break;
+    case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
+    case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
   }
   if (code) {
     mb_cb.key(code, mods);
     return;
   }
   // a character with no field to take it (Space, a letter): the app's, as 1000 + it
-  if (!ime_active) {
+  if (!ws->ime_active) {
     UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR) & 0x7FFF;
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
     if (ch >= 32) mb_cb.key(1000 + (int)ch, mods);
@@ -406,18 +532,18 @@ static void key_down(WPARAM vk) {
 
 static void char_in(WCHAR c) {
   if (IS_HIGH_SURROGATE(c)) {
-    high_surrogate = c;
+    ws->high_surrogate = c;
     return;
   }
   if (IS_LOW_SURROGATE(c)) {
-    WCHAR pair[2] = {high_surrogate, c};
-    if (high_surrogate) send_text(0, pair, 2, 0, 0);
-    high_surrogate = 0;
+    WCHAR pair[2] = {ws->high_surrogate, c};
+    if (ws->high_surrogate) send_text(0, pair, 2, 0, 0);
+    ws->high_surrogate = 0;
     return;
   }
-  high_surrogate = 0;
+  ws->high_surrogate = 0;
   // control characters arrive as keys (Enter, Backspace) or shortcuts; with no field, characters are keys (key_down)
-  if (c < 0x20 || c == 0x7F || !ime_active) return;
+  if (c < 0x20 || c == 0x7F || !ws->ime_active) return;
   send_text(0, &c, 1, 0, 0);
 }
 
@@ -434,10 +560,10 @@ static void pointer_by(int by, int kind, double x, double y, int button) {
   event_by = -1;
 }
 
-static void pointer(int kind, LPARAM lp) { pointer_by(0, kind, GET_X_LPARAM(lp) / scale, GET_Y_LPARAM(lp) / scale, 0); }
+static void pointer(int kind, LPARAM lp) { pointer_by(0, kind, GET_X_LPARAM(lp) / ws->scale, GET_Y_LPARAM(lp) / ws->scale, 0); }
 
 static void pointer_button(int kind, LPARAM lp, int button) {
-  pointer_by(0, kind, GET_X_LPARAM(lp) / scale, GET_Y_LPARAM(lp) / scale, button);
+  pointer_by(0, kind, GET_X_LPARAM(lp) / ws->scale, GET_Y_LPARAM(lp) / ws->scale, button);
 }
 
 // A touch screen's fingers (WM_POINTER*), each by its pointer id, handed on as they come (pointer kinds 10 down, 11
@@ -445,17 +571,10 @@ static void pointer_button(int kind, LPARAM lp, int button) {
 // to work out (touches.mbt: two of them its, the first let go the second the first, one called off all of it); not a
 // mouse the system makes of them (its press and hold a right click, its drag a selection). A finger that goes down on
 // a web view with none down is left to the system, its mouse the page's (mb_views_input).
-static UINT32 touch_taken[10];  // the fingers down that this window takes (0: a free place)
-static UINT32 touch_first;      // the first of them down, while it is (what may move the window)
-// the first finger's place on the screen (pixels); a finger moving the window from the app's top row
-// (mb_host_window_drag in its press): where it and the window were then, the window following it till it lifts
-// (Windows' own move goes by the mouse)
-static POINT touch_screen, touch_move_from;
-static RECT touch_move_rect;
-static int touch_moving;
+// (the fingers down that a window takes, the first of them, where it is and whether it moves the window: WinSlot's)
 static int touch_at(UINT32 id) {
   for (int i = 0; i < 10; i++)
-    if (touch_taken[i] == id) return i;
+    if (ws->touch_taken[i] == id) return i;
   return -1;
 }
 // 1: taken (the system makes no mouse of it)
@@ -465,28 +584,28 @@ static int touch(HWND h, UINT msg, WPARAM wp) {
   POINTER_INFO info;
   if (!id || !GetPointerType(id, &type) || type != PT_TOUCH || !GetPointerInfo(id, &info)) return 0;
   POINT p = info.ptPixelLocation;
-  if (id == touch_first || (msg == WM_POINTERDOWN && !touch_first)) touch_screen = p;
+  if (id == ws->touch_first || (msg == WM_POINTERDOWN && !ws->touch_first)) ws->touch_screen = p;
   // (the window moved by the finger: its moves the window's, its lift calls the press off for the app)
-  if (touch_moving && id == touch_first && msg == WM_POINTERUPDATE) {
-    SetWindowPos(h, NULL, touch_move_rect.left + p.x - touch_move_from.x, touch_move_rect.top + p.y - touch_move_from.y, 0,
+  if (ws->touch_moving && id == ws->touch_first && msg == WM_POINTERUPDATE) {
+    SetWindowPos(h, NULL, ws->touch_move_rect.left + p.x - ws->touch_move_from.x, ws->touch_move_rect.top + p.y - ws->touch_move_from.y, 0,
                  0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     return 1;
   }
   ScreenToClient(h, &p);
-  double x = p.x / scale, y = p.y / scale;
+  double x = p.x / ws->scale, y = p.y / ws->scale;
   int at = touch_at(id), kind;
   if (msg == WM_POINTERDOWN) {
     if (at < 0) {
       int none = 1;
       for (int i = 0; i < 10; i++)
-        if (touch_taken[i]) none = 0;
+        if (ws->touch_taken[i]) none = 0;
       if (none && mb_views_pass_through(x, y)) return 0;
       int free = touch_at(0);
       if (free < 0) return 0;
-      touch_taken[free] = id;
+      ws->touch_taken[free] = id;
     }
-    if (!touch_first) {
-      touch_first = id;
+    if (!ws->touch_first) {
+      ws->touch_first = id;
       SetFocus(h);
     }
     kind = 10;
@@ -495,9 +614,9 @@ static int touch(HWND h, UINT msg, WPARAM wp) {
     if (msg == WM_POINTERUPDATE) {
       kind = 11;
     } else {  // WM_POINTERUP, WM_POINTERCAPTURECHANGED
-      touch_taken[at] = 0;
-      int moved = touch_moving && id == touch_first;
-      if (id == touch_first) touch_first = 0, touch_moving = 0;
+      ws->touch_taken[at] = 0;
+      int moved = ws->touch_moving && id == ws->touch_first;
+      if (id == ws->touch_first) ws->touch_first = 0, ws->touch_moving = 0;
       // (let go: up; cancelled, the capture taken from it, or it moved the window (the press the app's no more):
       // called off)
       kind = msg == WM_POINTERUP && !IS_POINTER_CANCELED_WPARAM(wp) && !moved ? 12 : 13;
@@ -515,7 +634,7 @@ static int touch(HWND h, UINT msg, WPARAM wp) {
           POINT q = past[i].ptPixelLocation;
           ScreenToClient(h, &q);
           event_t = past[i].PerformanceCount ? qpc_ms((LONGLONG)past[i].PerformanceCount) : -1;
-          pointer_by(1, kind, q.x / scale, q.y / scale, (int)id);
+          pointer_by(1, kind, q.x / ws->scale, q.y / ws->scale, (int)id);
         }
       }
     }
@@ -544,7 +663,7 @@ static LPCSTR cursor_name(int kind) {
 
 static void wheel(WPARAM wp, LPARAM lp, int horizontal) {
   POINT p = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-  ScreenToClient(hwnd, &p);
+  ScreenToClient(ws->h, &p);
   UINT lines = 3;
   SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
   if (lines == WHEEL_PAGESCROLL) lines = 20;
@@ -555,17 +674,32 @@ static void wheel(WPARAM wp, LPARAM lp, int horizontal) {
   // pinch comes as the wheel with MK_CONTROL and no Ctrl key down, so the keyboard's state would never see it
   WORD keys = GET_KEYSTATE_WPARAM(wp);
   int mods = ((keys & MK_SHIFT) ? 1 : 0) | ((keys & MK_CONTROL) ? 2 : 0) | (GetKeyState(VK_MENU) < 0 ? 4 : 0);
-  if (horizontal) mb_cb.wheel(p.x / scale, p.y / scale, d, 0, 4 | (mods << 4));
-  else mb_cb.wheel(p.x / scale, p.y / scale, 0, -d, 4 | (mods << 4));
+  if (horizontal) mb_cb.wheel(p.x / ws->scale, p.y / ws->scale, d, 0, 4 | (mods << 4));
+  else mb_cb.wheel(p.x / ws->scale, p.y / ws->scale, 0, -d, 4 | (mods << 4));
 }
 
+static void win_closed(int wid);
+
+// A message of window `h`'s, handled with that window in place (win_use), the one in place before put back after.
+static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+  int k = win_of(h);
+  if (k < 0 && win_making >= 0 && !win_slots[win_making].h) win_slots[k = win_making].h = h;
+  if (k < 0) return DefWindowProcW(h, msg, wp, lp);
+  int back = win_active;
+  win_use(k);
+  LRESULT r = wndproc_here(h, msg, wp, lp);
+  win_put_back(back);
+  return r;
+}
+
+static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   // the app's maximize button pressed (snap_held): the mouse the host's till it is let go, there or elsewhere
-  if (snap_held && (msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)) {
+  if (ws->snap_held && (msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)) {
     POINT p = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-    int on = PtInRect(&snap_px, p);
+    int on = PtInRect(&ws->snap_px, p);
     if (msg == WM_LBUTTONUP) {
-      snap_held = 0;
+      ws->snap_held = 0;
       ReleaseCapture();
       snap_set(on ? 1 : 0);
       if (on) ShowWindow(h, IsZoomed(h) ? SW_RESTORE : SW_MAXIMIZE);
@@ -576,14 +710,24 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   }
   // the mouse over a web view (win_views.cpp) is its page's
   if (((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) || msg == WM_MOUSELEAVE) && mb_views_input(msg, wp, lp)) {
-    if (msg == WM_MOUSEMOVE && !tracking_leave) {
+    if (msg == WM_MOUSEMOVE && !ws->tracking_leave) {
       TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, h, 0};
-      tracking_leave = TrackMouseEvent(&t) ? 1 : 0;
+      ws->tracking_leave = TrackMouseEvent(&t) ? 1 : 0;
     }
     return 0;
   }
   LRESULT taken = 0;
-  if (life_message(msg, wp, lp, &taken)) return taken;
+  // (the run's life is its first window's: a window beside it only closes, and tells the run its state may have changed)
+  if (h != hwnd) {
+    switch (msg) {
+      case WM_ACTIVATE:
+      case WM_SHOWWINDOW:
+      case WM_SIZE: PostMessageW(hwnd, WM_MB_STATE, 0, 0); break;
+      case WM_DESTROY: win_closed(win_active); return 0;
+    }
+  } else if (life_message(msg, wp, lp, &taken)) {
+    return taken;
+  }
   // the taskbar's button made anew (the window shown again from its tray): its number put on it again
   static UINT button_made;
   if (!button_made) button_made = RegisterWindowMessageW(L"TaskbarButtonCreated");
@@ -620,7 +764,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
           GetClientRect(h, &c);
           return p.x < band ? HTTOPLEFT : p.x >= c.right - band ? HTTOPRIGHT : HTTOP;
         }
-        if (snap_px.right > snap_px.left && PtInRect(&snap_px, p)) return HTMAXBUTTON;
+        if (ws->snap_px.right > ws->snap_px.left && PtInRect(&ws->snap_px, p)) return HTMAXBUTTON;
         return HTCLIENT;
       }
       break;
@@ -629,21 +773,21 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     // draw a button of its own there)
     case WM_NCMOUSEMOVE:
       if (setup_inset) {
-        if (!tracking_nc_leave) {
+        if (!ws->tracking_nc_leave) {
           TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE | TME_NONCLIENT, h, 0};
-          tracking_nc_leave = TrackMouseEvent(&t) ? 1 : 0;
+          ws->tracking_nc_leave = TrackMouseEvent(&t) ? 1 : 0;
         }
-        if (!snap_held) snap_set(wp == HTMAXBUTTON ? 1 : 0);
+        if (!ws->snap_held) snap_set(wp == HTMAXBUTTON ? 1 : 0);
       }
       break;
     case WM_NCMOUSELEAVE:
-      tracking_nc_leave = 0;
-      if (!snap_held) snap_set(0);
+      ws->tracking_nc_leave = 0;
+      if (!ws->snap_held) snap_set(0);
       break;
     case WM_NCLBUTTONDOWN:
     case WM_NCLBUTTONDBLCLK:
       if (setup_inset && wp == HTMAXBUTTON) {
-        snap_held = 1;
+        ws->snap_held = 1;
         SetCapture(h);
         snap_set(2);
         return 0;
@@ -653,8 +797,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (setup_inset && wp == HTMAXBUTTON) return 0;
       break;
     case WM_CAPTURECHANGED:
-      if (snap_held && (HWND)lp != h) {
-        snap_held = 0;
+      if (ws->snap_held && (HWND)lp != h) {
+        ws->snap_held = 0;
         snap_set(0);
       }
       break;
@@ -662,11 +806,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       PAINTSTRUCT ps;
       BeginPaint(h, &ps);
       EndPaint(h, &ps);
-      want_frame = 1;
+      ws->want_frame = 1;
       return 0;
     }
     case WM_ERASEBKGND: return 1;
-    case WM_APP: want_frame = 1; outside_asked = 1; return 0;  // mb_app_wake
+    case WM_APP: ws->want_frame = 1; outside_asked = 1; return 0;  // mb_app_wake
     case WM_MB_POSTED: told_between(MB_OUTSIDE_POSTED, 0); return 0;
     case WM_MB_STREAMED: told_between(MB_OUTSIDE_STREAMED, (int)wp); return 0;
     case WM_MB_PICKED: picks_between(); return 0;
@@ -679,28 +823,36 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_SIZE:
-      want_frame = 1;
-      if (sizing) draw_frame();
+      ws->want_frame = 1;
+      if (sizing) {
+        draw_frame();
+        frames_paced();
+      }
       return 0;
     case WM_ENTERSIZEMOVE: sizing = 1; SetTimer(h, 1, 16, NULL); return 0;
     case WM_EXITSIZEMOVE: sizing = 0; KillTimer(h, 1); return 0;
     case WM_TIMER:
+      // (inside the system's move or size loop, its window's frames: the others' as the loop ends)
       if (wake_at >= 0 && mb_now_ms() >= wake_at) {
         wake_at = -1;
-        want_frame = 1;
+        mb_host_request_frame();
       }
-      if (want_frame) draw_frame();
+      if (ws->want_frame) {
+        draw_frame();
+        frames_paced();
+      }
       return 0;
     case WM_DPICHANGED: {
       RECT *r = (RECT *)lp;
       SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
                    SWP_NOZORDER | SWP_NOACTIVATE);
-      want_frame = 1;
+      ws->want_frame = 1;
       return 0;
     }
     case WM_GETOBJECT: {
+      // (the app's widgets are its first window's to read: a window beside it is read as the system reads any)
       intptr_t r;
-      if (mb_a11y_object(h, wp, lp, &r)) return (LRESULT)r;
+      if (h == hwnd && mb_a11y_object(h, wp, lp, &r)) return (LRESULT)r;
       break;
     }
     case WM_POINTERDOWN:
@@ -711,20 +863,20 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     case WM_LBUTTONDOWN: SetCapture(h); SetFocus(h); pointer(0, lp); return 0;
     case WM_MOUSEMOVE:
-      if (!tracking_leave) {
+      if (!ws->tracking_leave) {
         TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, h, 0};
-        tracking_leave = TrackMouseEvent(&t) ? 1 : 0;
+        ws->tracking_leave = TrackMouseEvent(&t) ? 1 : 0;
       }
       pointer(1, lp);
       return 0;
     case WM_MOUSELEAVE:
-      tracking_leave = 0;
+      ws->tracking_leave = 0;
       pointer_by(0, 7, -1, -1, 0);
       return 0;
-    case WM_RBUTTONDOWN: SetFocus(h); right_down = 1; pointer_button(0, lp, 2); return 0;
+    case WM_RBUTTONDOWN: SetFocus(h); ws->right_down = 1; pointer_button(0, lp, 2); return 0;
     case WM_RBUTTONUP:
-      if (right_down) pointer_button(2, lp, 2);
-      right_down = 0;
+      if (ws->right_down) pointer_button(2, lp, 2);
+      ws->right_down = 0;
       return 0;
     case WM_CONTEXTMENU: return 0;
     case WM_SETCURSOR:
@@ -732,8 +884,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         POINT p;
         GetCursorPos(&p);
         ScreenToClient(h, &p);
-        HCURSOR page = (HCURSOR)mb_views_cursor(p.x / scale, p.y / scale);
-        SetCursor(page ? page : LoadCursor(NULL, cursor_name(cursor_kind)));
+        HCURSOR page = (HCURSOR)mb_views_cursor(p.x / ws->scale, p.y / ws->scale);
+        SetCursor(page ? page : LoadCursor(NULL, cursor_name(ws->cursor_kind)));
         return TRUE;
       }
       break;
@@ -759,7 +911,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_SYSKEYDOWN:
       // Alt with a key: a key catcher's shortcut (win_device.h)
-      if (key_catching && ime_active && catch_vk(wp)) return 0;
+      if (key_catching && ws->ime_active && catch_vk(wp)) return 0;
       if (wp == VK_LEFT && go_back()) return 0;
       // Alt+Right: forward, the app's key (key_forward)
       if (wp == VK_RIGHT) {
@@ -774,8 +926,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CHAR: char_in((WCHAR)wp); return 0;
     case WM_SETFOCUS:
       catch_keys_focus(1);
-      if (ime_active) {
-        CreateCaret(h, NULL, 1, (int)lround(caret[3] * scale));
+      if (ws->ime_active) {
+        CreateCaret(h, NULL, 1, (int)lround(ws->caret[3] * ws->scale));
         ime_place();
       }
       return 0;
@@ -787,7 +939,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_IME_STARTCOMPOSITION: ime_place(); return 0;
     case WM_IME_COMPOSITION: ime_composition(lp); return 0;
     case WM_IME_ENDCOMPOSITION:
-      if (marked_len) ime_compose(NULL, 0, 0);
+      if (ws->marked_len) ime_compose(NULL, 0, 0);
       return 0;
     case WM_DESTROY: exit(0);
   }
@@ -818,7 +970,7 @@ static void shot(const char *name) {
 }
 
 static void run_script_step(int step) {
-  double h = frame_h;
+  double h = ws->frame_h;
   if (strcmp(script, "ime") == 0) {
     switch (step) {
       case 20: shot("01-start"); break;
@@ -842,7 +994,7 @@ static void run_script_step(int step) {
       case 140: shot("06-scrolled"); break;
       case 141: exit(0);
     }
-    want_frame = 1;
+    ws->want_frame = 1;
   } else if (strcmp(script, "photos") == 0) {
     // decodes take a while: a shot once they have had some, then the keys
     // that scroll the list under the pointer, as a keyboard sends them
@@ -863,7 +1015,7 @@ static void run_script_step(int step) {
       if (phase == 2) exit(0);
       phase++;
     }
-    want_frame = 1;
+    ws->want_frame = 1;
   } else if (strcmp(script, "shot") == 0) {
     // from the 30th frame, once the native views have opened (loaded or failed) and their pictures are taken anew;
     // 30 s at most
@@ -885,7 +1037,7 @@ static void run_script_step(int step) {
     } else if (done && step > done) {
       exit(0);
     }
-    want_frame = 1;
+    ws->want_frame = 1;
   }
 }
 
@@ -903,7 +1055,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   // (OLE's, for the drop target: COM's single-threaded apartment with it)
   OleInitialize(NULL);
 
-  WCHAR cls[300];
+  WCHAR *cls = win_class;
   window_class(cls, 300);
   WNDCLASSEXW wc = {sizeof wc};
   wc.lpfnWndProc = wndproc;
@@ -925,22 +1077,27 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   double ww = setup_w > 0 ? setup_w : 900, wh = setup_h > 0 ? setup_h : 720;
   const char *win = getenv("MBUI_WIN");
   if (win) sscanf(win, "%lfx%lf", &ww, &wh);
+  win_making = 0;
   hwnd = CreateWindowExW(0, cls, t, style, CW_USEDEFAULT, CW_USEDEFAULT, (int)ww, (int)wh, NULL, NULL,
                          wc.hInstance, NULL);
+  win_making = -1;
+  win_slots[0].h = hwnd;
   // that client area at the monitor's scale
   UINT dpi = GetDpiForWindow(hwnd);
-  scale = dpi / 96.0;
-  RECT r = {0, 0, (LONG)lround(ww * scale), (LONG)lround(wh * scale)};
+  ws->scale = dpi / 96.0;
+  RECT r = {0, 0, (LONG)lround(ww * ws->scale), (LONG)lround(wh * ws->scale)};
   window_for_client(&r, dpi);
   // (SWP_FRAMECHANGED: its frame asked for again, an inset window's without the title bar: WM_NCCALCSIZE)
   SetWindowPos(hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
   ImmAssociateContextEx(hwnd, NULL, 0);  // no input method until an editor has focus
   if (!mb_render_init(hwnd)) exit(1);
+  // (held: out of sight till the app shows it, mb_host_window_show; shown at once where DWM cannot cloak it)
+  if (window_held && !window_shown && !cloak(hwnd, TRUE)) window_shown = 1;
   ShowWindow(hwnd, SW_SHOW);
   life_start(t);
   files_start();
   free(given);
-  want_frame = 1;
+  ws->want_frame = 1;
 
   for (;;) {
     MSG m;
@@ -952,12 +1109,10 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     double now = mb_now_ms();
     if (wake_at >= 0 && now >= wake_at) {
       wake_at = -1;
-      want_frame = 1;
+      mb_host_request_frame();
     }
-    if (want_frame) {
-      draw_frame();  // its present waits for the display (win_render.cpp mb_render_present)
-      continue;
-    }
+    // (each window's that wants one, then the display waited for: win_render.cpp mb_render_pace)
+    if (frames_round()) continue;
     DWORD timeout = wake_at < 0 ? INFINITE : (DWORD)ceil(wake_at - now);
     // (the frames stopped: the next is no later than its time for what the one before took)
     last_begin = -1;
@@ -991,7 +1146,12 @@ double mb_host_frame_late(void) { return frame_late; }
 
 int32_t mb_host_platform(void) { return 3; }
 
-void mb_host_request_frame(void) { want_frame = 1; }
+// A frame asked for: of every window of the run where there are several (what changed may be any's: each draws only
+// what changed of its own), else the one.
+void mb_host_request_frame(void) {
+  for (int k = 0; k < MB_WINS; k++)
+    if (k == 0 || win_slots[k].h) win_slots[k].want_frame = 1;
+}
 
 void mb_app_wake(void) { PostMessageW(hwnd, WM_APP, 0, 0); }
 
@@ -1006,8 +1166,97 @@ void mb_app_told(int kind, int id) { PostMessageW(hwnd, WM_MB_TOLD, (WPARAM)kind
 void mb_app_call(void (*fn)(void *), void *arg) { PostMessageW(hwnd, WM_MB_CALL, (WPARAM)fn, (LPARAM)arg); }
 
 void *mb_app_hwnd(void) { return hwnd; }
+int mb_app_wid(void) { return win_active; }
+void *mb_app_hwnd_now(void) { return ws->h; }
+void *mb_app_hwnd_of(int wid) { return wid >= 0 && wid < MB_WINS ? win_slots[wid].h : NULL; }
 
-double mb_app_scale(void) { return scale; }
+// ---- the windows of one run (win_use, above) ----
+
+// Window `wid` gone (closed by the person, or by the app: mb_host_windows' 3; its WM_DESTROY): its views taken off it,
+// what it drew let go of, the app told between frames (MB_OUTSIDE_WINDOW; one the app closed itself it knows of
+// already).
+static void win_closed(int wid) {
+  if (wid <= 0 || wid >= MB_WINS || !win_slots[wid].h) return;
+  if (win_active == wid) win_use(0);
+  mb_views_forget(wid);
+  mb_render_forget(wid);
+  win_slot_fresh(&win_slots[wid]);
+  PostMessageW(hwnd, WM_MB_TOLD, (WPARAM)MB_OUTSIDE_WINDOW, (LPARAM)wid);
+}
+
+// The windows beside the first closed (the first put away: win_life.h put_away), as the person closes them.
+static void wins_close_beside(void) {
+  for (int k = 1; k < MB_WINS; k++)
+    if (win_slots[k].h) DestroyWindow(win_slots[k].h);
+}
+
+// A window of this run (@hostapi.window_open_id): its id, 0 where none. As large as the first is now, down and to the
+// right of it, its title the first's, its top row the app's as the first's; out of sight (cloaked) till its first
+// frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
+static int win_open(void) {
+  if (!hwnd || !*win_class) return 0;
+  int wid = 0;
+  for (int k = 1; k < MB_WINS; k++)
+    if (!win_slots[k].h) {
+      wid = k;
+      break;
+    }
+  if (!wid) return 0;
+  WinSlot *w = &win_slots[wid];
+  win_slot_fresh(w);
+  RECT fr;
+  GetWindowRect(hwnd, &fr);
+  WCHAR title[256];
+  if (!GetWindowTextW(hwnd, title, 256)) title[0] = 0;
+  int off = (int)lround(32 * wid * (GetDpiForWindow(hwnd) / 96.0));
+  win_making = wid;
+  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, fr.left + off, fr.top + off, fr.right - fr.left,
+                           fr.bottom - fr.top, NULL, NULL, GetModuleHandleW(NULL), NULL);
+  win_making = -1;
+  if (!h) {
+    win_slot_fresh(w);
+    return 0;
+  }
+  w->h = h;
+  w->scale = GetDpiForWindow(h) / 96.0;
+  // (an inset window's frame without the title bar, as the first's: WM_NCCALCSIZE)
+  SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  ImmAssociateContextEx(h, NULL, 0);
+  if (!mb_render_open(wid, h)) {
+    win_slot_fresh(w);
+    DestroyWindow(h);
+    return 0;
+  }
+  title_dark_of(h);
+  w->held = cloak(h, TRUE) ? 1 : 0;
+  ShowWindow(h, SW_SHOW);
+  w->want_frame = 1;
+  return wid;
+}
+
+// The windows of this run (host_native.mbt's `windows`): 0 whether they open in it (yes, but in a window that is a run
+// of its own, MBUI_WINDOW), 1 one opened, 2 one to the front, 3 one closed by the app, 4 the window in place now.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)what;
+  HWND h = wid > 0 && wid < MB_WINS ? win_slots[wid].h : NULL;
+  switch (op) {
+    case 0: return !window_run();
+    case 1: return win_open();
+    case 2:
+      if (!h) return 0;
+      if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+      SetForegroundWindow(h);
+      return 1;
+    // (closed after the frame the app asked it in: never in the middle of drawing it)
+    case 3:
+      if (h) PostMessageW(h, WM_CLOSE, 0, 0);
+      return 0;
+    case 4: return win_active;
+    default: return 0;
+  }
+}
+
+double mb_app_scale(void) { return ws->scale; }
 
 // A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): not paced here, the next drawn.
 void mb_host_frames_paced(double hz) {
@@ -1025,29 +1274,30 @@ void mb_host_wake_after(double ms) {
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a frame built while the window is not shown: nothing of it on the screen)
   if (!presenting) return;
-  mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
+  // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
+  if (mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b) && ws->held) ws->held = 2;
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
                      int32_t a, int32_t b) {
-  int was = ime_active;
-  ime_active = active != 0;
-  caret[0] = x;
-  caret[1] = y;
-  caret[2] = w;
-  caret[3] = h;
-  if (ime_active && !was) {
-    ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT);
-    if (GetFocus() == hwnd) CreateCaret(hwnd, NULL, 1, (int)lround(h * scale));
-  } else if (!ime_active && was) {
-    HIMC imc = ImmGetContext(hwnd);
+  int was = ws->ime_active;
+  ws->ime_active = active != 0;
+  ws->caret[0] = x;
+  ws->caret[1] = y;
+  ws->caret[2] = w;
+  ws->caret[3] = h;
+  if (ws->ime_active && !was) {
+    ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
+    if (GetFocus() == ws->h) CreateCaret(ws->h, NULL, 1, (int)lround(h * ws->scale));
+  } else if (!ws->ime_active && was) {
+    HIMC imc = ImmGetContext(ws->h);
     if (imc) {
       ImmNotifyIME(imc, NI_COMPOSITIONSTR, CPS_CANCEL, 0);
-      ImmReleaseContext(hwnd, imc);
+      ImmReleaseContext(ws->h, imc);
     }
-    ImmAssociateContextEx(hwnd, NULL, 0);
+    ImmAssociateContextEx(ws->h, NULL, 0);
     DestroyCaret();
-    marked_len = 0;
+    ws->marked_len = 0;
   }
   ime_place();
 }
@@ -1354,12 +1604,12 @@ int32_t mb_host_drive(int32_t kind, moonbit_string_t text) {
     double cw = 0, ch = 0;
     if (swscanf(w, L"%lfx%lf", &cw, &ch) != 2 || cw <= 0 || ch <= 0) return 0;
     UINT dpi = GetDpiForWindow(hwnd);
-    RECT r = {0, 0, (LONG)lround(cw * scale), (LONG)lround(ch * scale)};
+    RECT r = {0, 0, (LONG)lround(cw * ws->scale), (LONG)lround(ch * ws->scale)};
     window_for_client(&r, dpi);
     SetWindowPos(hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
     fprintf(stdout, "RESIZED %.0fx%.0f\n", cw, ch);
     fflush(stdout);
-    want_frame = 1;
+    ws->want_frame = 1;
     return 1;
   }
   return 0;
@@ -1367,9 +1617,6 @@ int32_t mb_host_drive(int32_t kind, moonbit_string_t text) {
 
 // The window as the app wants it, asked before `run` (@hostapi.window_setup): with `inset`, no title bar of the
 // system's (WM_NCCALCSIZE), the app's top row is it, its buttons the app's.
-// The window held till the app shows it (@hostapi.window_hold): the system shows the app's own here, as it opens.
-void mb_host_window_hold(void) {}
-void mb_host_window_show(void) {}
 
 void mb_host_window_setup(double min_w, double min_h, double w, double h, int32_t inset) {
   setup_inset = inset != 0;
@@ -1399,7 +1646,7 @@ double mb_host_window_corner(void) {
     OSVERSIONINFOW v = {sizeof v};
     if (get && get(&v) == 0) build = (int)v.dwBuildNumber;
   }
-  if (build < 22000 || !hwnd || IsZoomed(hwnd)) return 0;
+  if (build < 22000 || !ws->h || IsZoomed(ws->h)) return 0;
   return 8;
 }
 
@@ -1416,54 +1663,54 @@ void mb_host_window_drag(void) {
   DWORD now = GetTickCount();
   POINT at;
   // (a finger's: where it is, not the cursor, which it does not move)
-  if (event_by == 1) at = touch_screen;
+  if (event_by == 1) at = ws->touch_screen;
   else GetCursorPos(&at);
   if (drag_time && now - drag_time <= GetDoubleClickTime() &&
       abs(at.x - drag_at.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
       abs(at.y - drag_at.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2) {
     drag_time = 0;
     ReleaseCapture();
-    ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+    ShowWindow(ws->h, IsZoomed(ws->h) ? SW_RESTORE : SW_MAXIMIZE);
     return;
   }
   drag_time = now;
   drag_at = at;
   if (event_by == 1) {
     // (a maximized window stays: its title bar's drag would make it as it was first)
-    if (!IsZoomed(hwnd)) touch_moving = 1, touch_move_from = at, GetWindowRect(hwnd, &touch_move_rect);
+    if (!IsZoomed(ws->h)) ws->touch_moving = 1, ws->touch_move_from = at, GetWindowRect(ws->h, &ws->touch_move_rect);
     return;
   }
-  PostMessageW(hwnd, WM_MB_DRAG, 0, 0);
+  PostMessageW(ws->h, WM_MB_DRAG, 0, 0);
 }
 
 // The window's own buttons, the app's in an inset window (@hostapi.window_act): minimized, maximized or back as it was,
 // closed as its close button closes it (put away to the notification area: win_life.h).
 void mb_host_window_act(int32_t what) {
-  if (!hwnd) return;
-  if (what == 1) ShowWindow(hwnd, SW_MINIMIZE);
-  else if (what == 2) ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-  else if (what == 3) PostMessageW(hwnd, WM_CLOSE, 0, 0);
+  if (!ws->h) return;
+  if (what == 1) ShowWindow(ws->h, SW_MINIMIZE);
+  else if (what == 2) ShowWindow(ws->h, IsZoomed(ws->h) ? SW_RESTORE : SW_MAXIMIZE);
+  else if (what == 3) PostMessageW(ws->h, WM_CLOSE, 0, 0);
 }
 
 // Whether the window is maximized now (@hostapi.window_zoomed).
-int32_t mb_host_window_zoomed(void) { return hwnd && IsZoomed(hwnd) ? 1 : 0; }
+int32_t mb_host_window_zoomed(void) { return ws->h && IsZoomed(ws->h) ? 1 : 0; }
 
 // Where the app draws the window's maximize button this frame, in points (@hostapi.window_snap): hit there as the
 // title bar's own (WM_NCHITTEST); w 0, none.
 void mb_host_window_snap(double x, double y, double w, double h) {
   if (w <= 0 || h <= 0) {
-    SetRectEmpty(&snap_px);
-    if (!snap_held) snap_set(0);
+    SetRectEmpty(&ws->snap_px);
+    if (!ws->snap_held) snap_set(0);
     return;
   }
-  snap_px.left = (LONG)lround(x * scale);
-  snap_px.top = (LONG)lround(y * scale);
-  snap_px.right = (LONG)lround((x + w) * scale);
-  snap_px.bottom = (LONG)lround((y + h) * scale);
+  ws->snap_px.left = (LONG)lround(x * ws->scale);
+  ws->snap_px.top = (LONG)lround(y * ws->scale);
+  ws->snap_px.right = (LONG)lround((x + w) * ws->scale);
+  ws->snap_px.bottom = (LONG)lround((y + h) * ws->scale);
 }
 
 // How the pointer stands on it, which the host has (@hostapi.window_snap_state).
-int32_t mb_host_window_snap_state(void) { return snap_state; }
+int32_t mb_host_window_snap_state(void) { return ws->snap_state; }
 
 // The pointer's shape (@hostapi.set_cursor), shown at once where it is over the window.
 // The number on the app's icon (@hostapi.set_badge): its taskbar button's overlay (win_notify.cpp).
@@ -1472,9 +1719,9 @@ void mb_host_set_badge(int32_t n) { mb_win_badge(hwnd, n); }
 int32_t mb_host_mods_held(void) { return mods_now(); }
 
 void mb_host_set_cursor(int32_t kind) {
-  cursor_kind = kind;
+  ws->cursor_kind = kind;
   POINT p;
-  if (GetCursorPos(&p) && WindowFromPoint(p) == hwnd) SetCursor(LoadCursor(NULL, cursor_name(kind)));
+  if (GetCursorPos(&p) && WindowFromPoint(p) == ws->h) SetCursor(LoadCursor(NULL, cursor_name(kind)));
 }
 
 // Windows' transparency effects (Settings > Personalization > Colors) turned off: glass drawn solid.
@@ -1657,7 +1904,7 @@ void mb_host_keep_finish(int32_t id) {
       if (GetFileAttributesW(k->where) != INVALID_FILE_ATTRIBUTES) continue;
       if (MoveFileExW(k->tmp, k->where, MOVEFILE_COPY_ALLOWED)) {
         k->state = 1;
-        want_frame = 1;
+        ws->want_frame = 1;
         return;
       }
       if (GetLastError() != ERROR_ALREADY_EXISTS && GetLastError() != ERROR_FILE_EXISTS) break;
@@ -1665,7 +1912,7 @@ void mb_host_keep_finish(int32_t id) {
   }
   k->where[0] = 0;
   keep_fail(k);
-  want_frame = 1;
+  ws->want_frame = 1;
 }
 
 int32_t mb_host_keep_state(int32_t id) {

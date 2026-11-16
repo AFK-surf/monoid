@@ -1,8 +1,8 @@
-// A page in a window of its own (a desktop's), beside the app's. On the Mac it is a window of this run
+// A page in a window of its own (a desktop's), beside the app's. On the Mac, Windows and Linux it is a window of this run
 // (@ui.window_open_here: the same program, the same core and the accounts it holds, the page shown in the window's first
-// frame, what it was showing handed over, never asked for again); elsewhere another run of the app (@ui.window_open),
-// started with what it shows (MBUI_WINDOW, as window_text writes it), that shows that page alone over the same account
-// and ends as its window closes or the app's run ends. A station's screen is the page that goes there now: from the
+// frame, what it was showing handed over, never asked for again); where the host has none (a run that is itself such a
+// window), another run of the app (@ui.window_open), started with what it shows (MBUI_WINDOW, as window_text writes
+// it), that shows that page alone over the same account and ends as its window closes or the app's run ends. A station's screen is the page that goes there now: from the
 // side panel's bar beside a chat (sfdesk's panel.mbt) and from its viewer's 控制中心 (sfpages' screen_center_node.mbt),
 // the screen leaving where it was (its view kept open for the window: window_has_screen).
 // While its window is open, every way to that screen (a chat's link, its card, the station's page) brings the window

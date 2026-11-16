@@ -1141,8 +1141,29 @@ test("the pool skips broken, spent and unfit profiles, then prefers headroom, th
   assert.equal(pickProfile([a, c], "m9", signals(), false).id, "c", "a connect's binding still runs on its healthy profiles");
   // A used-up window whose refill is due runs again, before its allowance is read again.
   health.b = { check: ok("ok"), quota: { ...quota(100), windows: [{ label: "5 小时", usedPercent: 100, resetsAt: 10 }] } };
-  assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 9 }, true).id, "a", "neither can run: still one");
+  assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 9 }, true).id, "b", "neither can run: one that signs in before one whose check failed");
   assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 10 }, true).id, "b");
+});
+
+test("with no usable account, the pool prefers one that signs in over stale headroom on a broken login", () => {
+  const broken = profile("broken", ["m"]);
+  const spent = profile("spent", ["m"]);
+  const other = profile("other", ["other-model"]);
+  for (const state of ["failed", "login"]) {
+    for (const limit of [{ quota: quota(100) }, { quota: quota(10), spent: true }]) {
+      const health: Record<string, any> = {
+        broken: { check: ok(state), quota: quota(0) },
+        spent: { check: ok("ok"), ...limit },
+        other: { check: ok("ok"), quota: quota(0) },
+      };
+      const signals = { health: (id: string) => health[id], load: () => 0, lastPicked: () => 0, now: () => 0 };
+      assert.equal(pickProfile([broken, spent, other], "m", signals, true).id, "spent");
+      assert.equal(pickProfile([broken, spent], "old-model", signals, false).id, "spent", "legacy bindings use the same fallback");
+      assert.equal(pickProfile([broken, other], "m", signals, true).id, "broken", "fallback still respects the chosen model");
+      health.broken.check = ok("ok");
+      assert.equal(pickProfile([broken, spent], "m", signals, true).id, "broken", "a recovered account with quota is usable again");
+    }
+  }
 });
 
 test("the pool runs sessions on subscriptions, however full, and on an account billed per use only when none can", () => {

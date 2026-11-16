@@ -28,7 +28,11 @@ enum {
   MB_OUTSIDE_STOOD = 13,
   MB_OUTSIDE_PERF = 14,
   MB_OUTSIDE_OP = 15,
+  MB_OUTSIDE_WINDOW = 17,
 };
+
+// The windows of one run (win_app.c: mb_host_windows), the first 0: at most this many open at once
+#define MB_WINS 16
 
 typedef struct {
   mb_frame_fn frame;
@@ -44,9 +48,19 @@ int32_t mb_host_mods_held(void);
 
 // renderer (win_render.cpp)
 int mb_render_init(void *hwnd);
+// Each window of the run its own swap chain, composition target and canvas (the device, its pipelines, the atlas and the
+// composition's device are all the windows'): window `wid`'s made for its HWND (1 made), put in place for the frames
+// drawn in it (mb_render_use: what mb_render_* do is of the window in place), let go of as it closes
+int mb_render_open(int wid, void *hwnd);
+void mb_render_use(int wid);
+void mb_render_forget(int wid);
+// the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
+// presented, not after each window's: two windows drawing on did not halve their rate
+void mb_render_pace(void);
 // pw, ph: the client area in pixels; w, h: the same in points
 void mb_render_set_size(int pw, int ph, double w, double h, double scale);
-void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
+// 1 when presented (0: nothing drawn, no swap chain)
+int mb_render_present(const double *inst, int32_t count, double r, double g, double b);
 int mb_frame_beats(void);
 // renders the last presented frame again into a texture and writes a PNG
 int mb_render_snapshot(const wchar_t *path);
@@ -67,6 +81,8 @@ void *mb_render_context(void);  // ID3D11DeviceContext *, the UI thread's
 // (IDCompositionVisual *); NULL where the canvas is the window's own swap chain (no native views)
 void *mb_render_dcomp(void);
 void *mb_render_views_visual(void);
+// window `wid`'s (NULL: none, or no composition)
+void *mb_render_views_visual_of(int wid);
 void mb_render_commit(void);  // the composition's changes shown
 // the composition's changes shown with the next frame presented (just after its Present): a view moved as the hole
 // the canvas paints for it moves, not a frame before it
@@ -113,12 +129,19 @@ int32_t mb_notice_drive(int32_t tap, const wchar_t *text);
 // makes the button anew
 void mb_win_badge(void *hwnd, int n);
 void mb_win_badge_again(void *hwnd);
-// the window (HWND) and its scale (pixels per point)
+// the run's first window (HWND: its life, its notifications), and the scale (pixels per point) of the window in place
 void *mb_app_hwnd(void);
 double mb_app_scale(void);
+// the window of the run in place now (0 the first: drawn, or handing input), its HWND; window `wid`'s HWND (NULL:
+// not open)
+int mb_app_wid(void);
+void *mb_app_hwnd_now(void);
+void *mb_app_hwnd_of(int wid);
 
 // native views (win_views.cpp): web pages in WebView2 under the canvas, seen through its holes (kind 9)
 int mb_views_count(void);
+// window `wid` closing: its views taken off it (each hidden, held by the first window till the app closes it)
+void mb_views_forget(int wid);
 int mb_views_pass_through(double x, double y);
 // a mouse message (WM_*) handed to the web view under it: 1 when it took it
 int mb_views_input(unsigned msg, uintptr_t wp, intptr_t lp);

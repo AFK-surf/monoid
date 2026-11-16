@@ -37,8 +37,6 @@ int mb_atlas_size = 4096;
 
 static ID3D11Device *dev;
 static ID3D11DeviceContext *ctx;
-static IDXGISwapChain1 *chain;
-static ID3D11RenderTargetView *rtv;
 static ID3D11VertexShader *vs;
 static ID3D11PixelShader *ps;
 // a ground's flat middle (bands.h mb_pieces)
@@ -50,34 +48,92 @@ static ID3D11Texture2D *atlas;
 static ID3D11ShaderResourceView *atlas_srv;
 static ID3D11SamplerState *sampler;
 static ID3D11BlendState *blend;
-// the composition: its root, the native views' visual under the canvas's (NULL: the swap chain is the window's own)
+// the composition's device, the windows' (NULL: each swap chain is its window's own)
 static IDCompositionDevice *dcomp;
-static IDCompositionTarget *dtarget;
-static IDCompositionVisual *droot, *dunder, *dcanvas;
+// what makes a window's swap chain, kept for the windows of the run opened after the first (mb_render_open)
+static IDXGIFactory2 *dxgi_factory;
 static ID3D11RasterizerState *raster, *raster_cut;
-static int fb_w, fb_h;
 // the swap chain is a flip model's (its Present1 takes the part that changed)
 static int flip_chain;
-static double vw = 800, vh = 600, vscale = 1;
 // glass (src/ui/glass.mbt): its passes, their constants, the copies they work in (level j 1/2^j of the largest
 // capture yet, the glass and the blur's margin round it, not of the target: a composer's strip, not the window; [4] a
 // Gaussian's first half), the glass's own constants, the blurred copy in view
 static ID3D11VertexShader *pvs;
 static ID3D11PixelShader *pps, *edge_ps;
 static ID3D11Buffer *pbuf, *gbuf;
-struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rtv; ID3D11ShaderResourceView *srv; int w, h; };
+struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResourceView *srv; int w, h; };
 static level lv[5];
 static MBContained post_edge;
 static int lv_w, lv_h;
 struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; };
 static GU gu;
 static ID3D11ShaderResourceView *gsrv;
-// the last frame, kept for snapshots (the vertex buffer still holds it) and
-// to find the runs of each image
-static int32_t last_count;
-static float *last_inst;
-static size_t last_cap;
-static float last_bg[3];
+// What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
+// target, root, the native views' visual under the canvas's and the canvas's (NULL: the swap chain is the window's own),
+// its buffer's size in pixels and its size in points and scale (mb_render_set_size's); the last frame, kept for
+// snapshots (the vertex buffer still holds it) and to find the runs of each image; the canvas its frames are drawn
+// into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
+#define MB_PARTS 8
+struct RenderWin {
+  IDXGISwapChain1 *chain;
+  ID3D11RenderTargetView *rtv;
+  IDCompositionTarget *dtarget;
+  IDCompositionVisual *droot, *dunder, *dcanvas;
+  int fb_w, fb_h;
+  double vw, vh, vscale;
+  int32_t last_count;
+  float *last_inst;
+  size_t last_cap;
+  float last_bg[3];
+  ID3D11Texture2D *canvas;
+  ID3D11RenderTargetView *canvas_rtv;
+  int canvas_w, canvas_h, canvas_ok;
+  double dirty[MB_PARTS][4];
+  int dirty_n, dirty_whole, dirty_told;
+  // a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
+  int pictures_missing;
+};
+static RenderWin render_wins[MB_WINS];
+static RenderWin *rw = &render_wins[0];
+static void render_win_fresh(RenderWin *w) {
+  memset(w, 0, sizeof *w);
+  w->vw = 800, w->vh = 600, w->vscale = 1;
+}
+static struct RenderWinsMade {
+  RenderWinsMade() {
+    for (int k = 0; k < MB_WINS; k++) render_win_fresh(&render_wins[k]);
+  }
+} render_wins_made;
+#define chain (rw->chain)
+#define rtv (rw->rtv)
+#define dtarget (rw->dtarget)
+#define droot (rw->droot)
+#define dunder (rw->dunder)
+#define dcanvas (rw->dcanvas)
+#define fb_w (rw->fb_w)
+#define fb_h (rw->fb_h)
+#define vw (rw->vw)
+#define vh (rw->vh)
+#define vscale (rw->vscale)
+#define last_count (rw->last_count)
+#define last_inst (rw->last_inst)
+#define last_cap (rw->last_cap)
+#define last_bg (rw->last_bg)
+#define canvas (rw->canvas)
+#define canvas_rtv (rw->canvas_rtv)
+#define canvas_w (rw->canvas_w)
+#define canvas_h (rw->canvas_h)
+#define canvas_ok (rw->canvas_ok)
+#define dirty (rw->dirty)
+#define dirty_n (rw->dirty_n)
+#define dirty_whole (rw->dirty_whole)
+#define dirty_told (rw->dirty_told)
+#define pictures_missing (rw->pictures_missing)
+
+// The window of the run drawn now (win_app.c's win_use): its swap chain, its size, its last frame and its canvas.
+void mb_render_use(int wid) {
+  if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
 
 // the numbers of an instance (src/ui/scene.mbt)
 #define MB_INST 60
@@ -553,9 +609,10 @@ static HRESULT make_device(D3D_DRIVER_TYPE type, UINT flags) {
                            D3D11_SDK_VERSION, &dev, NULL, &ctx);
 }
 
-// The canvas as a composition swap chain (premultiplied alpha) on top of a DirectComposition tree whose other visual,
-// under it, holds the native views; 0 (nothing made) where that cannot be had. MBUI_NO_DCOMP=1: not tried.
-static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) {
+// The window in place's canvas as a composition swap chain (premultiplied alpha) on top of a DirectComposition tree whose
+// other visual, under it, holds the native views, the composition's device made with the first; 0 (nothing made) where
+// that cannot be had. MBUI_NO_DCOMP=1: not tried.
+static int make_composed(IDXGIDevice1 *xdev, HWND hwnd) {
   const char *no = getenv("MBUI_NO_DCOMP");
   if (no && *no && *no != '0') return 0;
   RECT rc;
@@ -570,9 +627,10 @@ static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) 
   sd.Scaling = DXGI_SCALING_STRETCH;
   sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   sd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-  HRESULT hr = DCompositionCreateDevice(xdev, __uuidof(IDCompositionDevice), (void **)&dcomp);
+  int made_device = !dcomp;
+  HRESULT hr = dcomp ? S_OK : DCompositionCreateDevice(xdev, __uuidof(IDCompositionDevice), (void **)&dcomp);
   if (SUCCEEDED(hr)) hr = dcomp->CreateTargetForHwnd(hwnd, TRUE, &dtarget);
-  if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &chain);
+  if (SUCCEEDED(hr)) hr = dxgi_factory->CreateSwapChainForComposition(dev, &sd, NULL, &chain);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&droot);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&dunder);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&dcanvas);
@@ -592,12 +650,30 @@ static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) 
   if (droot) droot->Release();
   if (chain) chain->Release();
   if (dtarget) dtarget->Release();
-  if (dcomp) dcomp->Release();
+  if (dcomp && made_device) dcomp->Release(), dcomp = NULL;
   dcanvas = dunder = droot = NULL;
   chain = NULL;
   dtarget = NULL;
-  dcomp = NULL;
   return 0;
+}
+
+// The window in place's swap chain, its own where there is no composition: a flip model's, or before Windows 10 a
+// blit model's (flip_chain says which, the first window's for all)
+static int make_own_chain(HWND hwnd) {
+  DXGI_SWAP_CHAIN_DESC1 sd = {};
+  sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  sd.SampleDesc.Count = 1;
+  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  sd.BufferCount = 2;
+  sd.Scaling = DXGI_SCALING_NONE;
+  sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  if (flip_chain && SUCCEEDED(dxgi_factory->CreateSwapChainForHwnd(dev, hwnd, &sd, NULL, NULL, &chain))) return 1;
+  // before Windows 10
+  sd.Scaling = DXGI_SCALING_STRETCH;
+  sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+  sd.BufferCount = 1;
+  flip_chain = 0;
+  return SUCCEEDED(dxgi_factory->CreateSwapChainForHwnd(dev, hwnd, &sd, NULL, NULL, &chain));
 }
 
 static void make_pipeline(void);
@@ -611,36 +687,81 @@ int mb_render_init(void *hwnd) {
   }
   IDXGIDevice1 *xdev = NULL;
   IDXGIAdapter *adapter = NULL;
-  IDXGIFactory2 *factory = NULL;
   dev->QueryInterface(__uuidof(IDXGIDevice1), (void **)&xdev);
   xdev->SetMaximumFrameLatency(1);  // input to photon over throughput
   xdev->GetAdapter(&adapter);
-  adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&factory);
-  DXGI_SWAP_CHAIN_DESC1 sd = {};
-  sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  sd.SampleDesc.Count = 1;
-  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  sd.BufferCount = 2;
-  sd.Scaling = DXGI_SCALING_NONE;
-  sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
   flip_chain = 1;
-  if (make_composed(xdev, factory, (HWND)hwnd)) {
+  if (make_composed(xdev, (HWND)hwnd)) {
     // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
     fb_w = fb_h = 0;
-  } else if (FAILED(factory->CreateSwapChainForHwnd(dev, (HWND)hwnd, &sd, NULL, NULL, &chain))) {
-    // before Windows 10
-    sd.Scaling = DXGI_SCALING_STRETCH;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-    sd.BufferCount = 1;
-    flip_chain = 0;
-    factory->CreateSwapChainForHwnd(dev, (HWND)hwnd, &sd, NULL, NULL, &chain);
+  } else {
+    make_own_chain((HWND)hwnd);
   }
-  factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
-  factory->Release();
+  dxgi_factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
   adapter->Release();
   xdev->Release();
   make_pipeline();
   return chain != NULL;
+}
+
+// Window `wid` of the run beside the first (win_app.c win_open), its HWND made: its swap chain as the first's is (in the
+// composition, the views under it, where the first's is), nothing drawn in it yet. Window 0 put back in place after.
+int mb_render_open(int wid, void *hwnd) {
+  if (wid <= 0 || wid >= MB_WINS || !dev || !dxgi_factory) return 0;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  render_win_fresh(rw);
+  int ok;
+  if (dcomp) {
+    ok = make_composed(NULL, (HWND)hwnd);
+    if (ok) fb_w = fb_h = 0;
+  } else {
+    ok = make_own_chain((HWND)hwnd);
+  }
+  if (ok) dxgi_factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
+  rw = back;
+  return ok;
+}
+
+// What window `wid` kept let go of, as it closes (its views taken off it first: win_views.cpp mb_views_forget): the
+// next window given its number starts as none was drawn.
+void mb_render_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  if (canvas_rtv) canvas_rtv->Release();
+  if (canvas) canvas->Release();
+  if (rtv) rtv->Release();
+  if (dtarget) dtarget->SetRoot(NULL);
+  if (dcanvas) dcanvas->SetContent(NULL);
+  if (droot) {
+    droot->RemoveAllVisuals();
+    droot->Release();
+  }
+  if (dunder) {
+    dunder->RemoveAllVisuals();
+    dunder->Release();
+  }
+  if (dcanvas) dcanvas->Release();
+  if (chain) chain->Release();
+  if (dtarget) dtarget->Release();
+  if (dcomp) dcomp->Commit();
+  free(last_inst);
+  // (the device's state left naming none of its views)
+  ctx->OMSetRenderTargets(0, NULL, NULL);
+  ctx->Flush();
+  render_win_fresh(rw);
+  rw = back == &render_wins[wid] ? &render_wins[0] : back;
+}
+
+void *mb_render_views_visual_of(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return NULL;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  IDCompositionVisual *v = dunder;
+  rw = back;
+  return v;
 }
 
 // The kinds drawn by a pixel shader of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
@@ -831,7 +952,7 @@ static level level_tex(DXGI_FORMAT format, int w, int h) {
   td.Usage = D3D11_USAGE_DEFAULT;
   td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
   dev->CreateTexture2D(&td, NULL, &l.t);
-  dev->CreateRenderTargetView(l.t, NULL, &l.rtv);
+  dev->CreateRenderTargetView(l.t, NULL, &l.rt);
   dev->CreateShaderResourceView(l.t, NULL, &l.srv);
   return l;
 }
@@ -841,7 +962,7 @@ static void ensure_levels(int w, int h) {
   for (int j = 0; j < 5; j++)
     if (lv[j].t) {
       lv[j].srv->Release();
-      lv[j].rtv->Release();
+      lv[j].rt->Release();
       lv[j].t->Release();
     }
   lv_w = w > lv_w ? w : lv_w;
@@ -855,7 +976,7 @@ static void ensure_levels(int w, int h) {
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
-  ctx->OMSetRenderTargets(1, &dst->rtv, NULL);
+  ctx->OMSetRenderTargets(1, &dst->rt, NULL);
   D3D11_VIEWPORT vp = {0, 0, (float)w, (float)h, 0, 1};
   ctx->RSSetViewports(1, &vp);
   struct { float a[4], b[4]; MBContained edge; } u = {
@@ -871,17 +992,12 @@ static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int 
 // parts differ from the frame before (@hostapi.render_dirty), only those parts of the canvas are drawn again, each cut
 // to it (the scissor, `cut`, while `cut_on`), the frame's ground over it first (the instance after the frame's,
 // submit's), then every instance. Without a window the offscreen target is the canvas.
-static ID3D11Texture2D *canvas;
-static ID3D11RenderTargetView *canvas_rtv;
-static int canvas_w, canvas_h;
-// what the canvas holds is the last frame given; what the offscreen target holds, the frame drawn last
-static int canvas_ok, off_ok;
-// the parts of the next frame that differ (points: x, y, w, h), all of it (`dirty_whole`), and whether any was said
-#define MB_PARTS 8
-static double dirty[MB_PARTS][4];
-static int dirty_n, dirty_whole, dirty_told;
-// a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
-static int pictures_missing, encode_missing;
+// (the canvas, its size and whether it holds the last frame given are the window's: RenderWin above) what the offscreen
+// target holds, the frame drawn last
+static int off_ok;
+// (the parts of the next frame that differ, points: x, y, w, h, all of it, `dirty_whole`, and whether any was said, the
+// window's) a picture the frame being drawn has none of yet
+static int encode_missing;
 static int cut_on;
 static D3D11_RECT cut;
 
@@ -1319,12 +1435,16 @@ int mb_frame_beats(void) {
   return beats;
 }
 
-void mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
+// what the frames presented since the last mb_render_pace owe the compositor's beat: 0 nothing, 1 the wait, 2 a window
+// occluded (a hidden or minimized window does not wait for vsync: paced as if it did)
+static int pace_owed;
+
+int mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
   int n = -1;
   D3D11_RECT parts[MB_PARTS];
   if (!submit(inst, count, r, g, b, &n, parts) || !chain) {
     commit_presented();
-    return;
+    return 0;
   }
   // a hidden or minimized window does not wait for vsync; pace it as if it did. A flip model's swap chain is told the
   // parts that changed (what the compositor takes again; none: a pixel's), all of its buffer the canvas's
@@ -1341,8 +1461,13 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     hr = chain->Present(1, 0);
   }
   commit_presented();
-  // A composition's swap chain is not held to the display by its Present, so each frame waits here for the compositor
-  // to compose (DwmFlush): a frame for each of the display's, none between that no one sees. Without it a window that
+  pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
+  return SUCCEEDED(hr);
+}
+
+// A composition's swap chain is not held to the display by its Present, so each round of frames (win_app.c: every
+// window of the run that wanted one presented its, then this, once: each waiting after its own, two windows drew at
+// half the display's rate) waits here for the compositor to compose (DwmFlush): a frame for each of the display's, none between that no one sees. Without it a window that
   // moves something every frame (a playhead going, a motion) drew as many as the machine could: 1759 to 1794 a second
   // whole in view on a 240 Hz display, 118% of a core, and 238 to 240 a second, 24% of one, waiting so (measured on
   // ScreenReplay's viewer, an RTX 5080's machine, 2026-11-13; partly covered 461 to 484 and 212 to 217). A waitable
@@ -1353,7 +1478,11 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   // for the next alone. Waiting them all after the work, a frame whose work took 4.2 to 8.3 ms at 240 Hz (a fast drag
   // of ScreenReplay's playhead over a 4K picture) came every 12.5 ms instead of 8.3, half its frames so, 92 to 97 a
   // second in an uneven step; counted from the last, 118 to 120 a second, 8.3 ms apart (2026-11-15).
-  if (hr == DXGI_STATUS_OCCLUDED) Sleep(16);
+void mb_render_pace(void) {
+  int owed = pace_owed;
+  pace_owed = 0;
+  if (!owed) return;
+  if (owed == 2) Sleep(16);
   else if (dcomp) {
     static LARGE_INTEGER last_beat;
     int beats = mb_frame_beats();

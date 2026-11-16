@@ -179,6 +179,7 @@ fn reset_globals() -> Unit {
   messages_reset()
   drop_reset()
   fake_op.val = None
+  fake_decode_bytes_after.val = []
   fake_op_runs.clear()
   fake_op_pending.val = false
   fake_autofill.val = false
@@ -2941,6 +2942,14 @@ pub fn Tester::tap_run(self : Tester, s : String) -> Unit {
 /// is. Where the test says when itself (Tester::finish), that.
 pub fn Tester::decode_after(self : Tester, src : String, ms : Double) -> Unit {
   self.fake.decode_after[src] = ms
+}
+
+///|
+/// Bytes `data` handed over for a decode (an image added by its bytes: `add_image`) take `ms` to decode, as
+/// Tester::decode_after's source does: its host says each decode of them is done `ms` after it is asked for.
+pub fn Tester::decode_bytes_after(self : Tester, data : Bytes, ms : Double) -> Unit {
+  ignore(self)
+  fake_decode_bytes_after.val.push((data, ms))
 }
 
 ///|

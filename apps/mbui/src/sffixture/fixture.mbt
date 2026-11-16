@@ -2474,6 +2474,7 @@ pub fn fixture(mode : String) -> Source {
     signing_in: fn() { false },
     sign_in_step: fn() { Idle },
     picture: fn(_, _) { "" },
+    picture_waits: fn(_) { false },
     fatal: fn() { None },
     // (chat-image-coming: its pictures asked of their station, so much of each heard, never here)
     file: fn(station, key, name) {
