@@ -825,12 +825,12 @@ pub fn fixture_page(mode : String) -> String {
     // the run's models listed (model_list.mbt): more than 8, by series, one of another station's to borrow
     "settings-run-models" => {
       fx_many_models.val = true
-      run_list["session:s-c1"] = "model"
+      run_list.set("session:s-c1", "model")
     }
     // 本机缓存 with many chats kept (a card of 200 rows)
     "settings-kept-many" => fx_many_kept.val = true
     // the run's accounts listed (run_more.mbt account_list)
-    "settings-run-accounts" => run_list["session:s-c1"] = "account"
+    "settings-run-accounts" => run_list.set("session:s-c1", "account")
     // the fonts page at code's faces
     "settings-fonts-code" => fonts_at.set(2)
     "settings-new-connect-platform" => fx_connect_step.val = "platform"

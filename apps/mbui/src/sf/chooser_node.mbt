@@ -88,7 +88,8 @@ fn chooser_by(
         (x, 0.0, x, 0.0)
       }))
       .gap(Is(chooser_gap_in))
-      .radius(By(fn() { if capsule { chooser_h / 2.0 } else { @ui.tree_theme().corner(Lg) } }))
+      // (a capsule: a pill as the app's others are, not a corner of its own its height comes to)
+      .radius(By(fn() { if capsule { 1.0e6 } else { @ui.tree_theme().corner(Lg) } }))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore

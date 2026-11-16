@@ -1370,34 +1370,39 @@ fn station_cold_amount(words : String) -> Double? {
 /// A custom threshold is entered in its own editor, keeping the words being typed there.
 fn station_cold_custom(core : Core, address : String, cost : Double) -> Unit {
   let field_ = @ui.Field::new(text=cost.to_string())
-  let key = "context-cost-custom/" + (desk_dialogs.val + 1).to_string()
   let title = @sf.t("web-pages.stations.context.threshold")
-  open_dialog(
+  let amount = fn() { station_cold_amount(field_.text()) }
+  open_dialog_nodes(
     @sf.t("web-pages.stations.context.customAmount"),
-    fn(c, _) {
-      @sf.field(c, title, hint=@sf.t("web-pages.stations.context.amountHint"), fn() {
-        @sf.input(c, key, placeholder=title, field=field_) |> ignore
+    fn(v, _) {
+      @sf.field_node(v, fn() { title }, hint=fn() { @sf.t("web-pages.stations.context.amountHint") }, fn(f) {
+        @sf.input_node(f, field_, placeholder=title, label=title) |> ignore
       })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let amount = station_cold_amount(field_.text())
-      let changed = match amount {
-        Some(v) => v != cost
-        None => false
-      }
-      let busy = is_doing(core, ["context.setAfresh"], [("station", address)])
-      @sf.button(c, @sf.t("common.save"), key=key + "/save", tone=Primary, busy~, disabled=!changed, on_press=fn() {
-        match amount {
-          Some(v) => {
-            @settings.act(core, @sf.t("web-pages.stations.context.what"), "context.setAfresh", obj([("station", str(address)), ("afreshAbove", Json::number(v))]))
-            shut()
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.save") },
+        fn() {
+          match amount() {
+            Some(a) => {
+              @settings.act(core, @sf.t("web-pages.stations.context.what"), "context.setAfresh", obj([("station", str(address)), ("afreshAbove", Json::number(a))]))
+              shut()
+            }
+            None => ()
           }
-          None => ()
-        }
-      }) |> ignore
+        },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["context.setAfresh"], [("station", address)]) },
+        disabled=fn() {
+          match amount() {
+            Some(a) => a == cost
+            None => true
+          }
+        },
+      )
+      |> ignore
     },
   )
 }

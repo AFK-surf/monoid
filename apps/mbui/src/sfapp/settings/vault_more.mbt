@@ -203,23 +203,6 @@ fn vault_item_left(item : String) -> Unit {
 }
 
 ///|
-/// An item being written (Editor's state): its kind, whether agents may ask for it, how, the error said under it.
-pub(all) struct VaultEditing {
-  mut kind : Int
-  mut agent : Bool
-  mut mode : String
-  /// its longest grant (vault_lasts: 跟随默认 first)
-  mut lasts : Int
-  mut error : String
-  mut saving : Bool
-  /// the fields shown in the clear (by field)
-  reveal : Map[String, Bool]
-  serial : Int
-  /// a file's: its bytes in base64 and its name, as picked (or as it was)
-  file : @signals.Signal[(String, String)]
-}
-
-///|
 pub let vault_serial : Ref[Int] = Ref(0)
 
 ///|

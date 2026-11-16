@@ -67,7 +67,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "viewer": [7],
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
   "settings-connect": [7],
-  "settings-vault-item": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.
   // shareIn is read by the share sheet's old view as its frame builds (src/sfapp/share.mbt:445, share_parts,
@@ -290,6 +289,13 @@ let strict_known : Map[String, (String, String)] = Map([
     (
       "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: Anim \"ripple\" to 0.5, told at src/motion/ripple.mbt:180:5-180:56@mbui (at rest at 2400 ms)",
       "untraced: a press's ripple still moving as the run's next step came (mbui/src/motion/ripple.mbt:180)",
+    ),
+  ),
+  (
+    "settings-vault-item",
+    (
+      "its motion at rest at 3178.962890625 ms, 84.2900390625 ms after the run's next step (3094.6728515625 ms; its timeline 47.491943359375 ms later from its first step); said since the last step that acted: ",
+      "traced: the stack's slide from 密钥 to 全部密钥 (src/ui/nav.mbt:368), as long as before (2829.9 to 3180.3 ms, the same at main); 密钥 made as nodes (sfpages' vault_node) takes 全部密钥's press between frames, its slide said at once from the press's moment, where the old view's was told as a frame built it and not yet said as the run's next step came: the run took that step before the slide was over",
     ),
   ),
   (

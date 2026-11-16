@@ -1006,13 +1006,23 @@ fn sheet_node(
                   |> ignore
                   // (its title, none where what it holds heads itself (`heads_itself`): its own title's row there; one as
                   // it is now (`live`), there while it has one)
+                  // (its title's words, and its step's count beside them where it says one (step_head's: 1 / 4))
+                  let title_words = fn(at : @view.View) {
+                    at.box(fn(l) {
+                      style_node(l, fn() { dialog_title_line })
+                      l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                      words_node(l, fn() { now().0 }, fn() { sheet_title_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                      l.show(fn() { now().1 != "" }, fn(n) { words_node(n, fn() { now().1 }, fn() { dialog_step }) |> ignore })
+                    })
+                    |> ignore
+                  }
                   let title_row = fn(r : @view.View) {
                     style_node(r, fn() { sheet_title_row })
                     // (its words on as many lines as they take, in the room the row leaves them, as the host's title)
                     r.box(fn(at) {
                       style_node(at, fn() { sheet_title_room }, in_row=true)
                       at.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                      words_node(at, fn() { now().0 }, fn() { sheet_title_words }) |> ignore
+                      title_words(at)
                     })
                     |> ignore
                   }
@@ -1031,7 +1041,7 @@ fn sheet_node(
                     r.box(fn(at) {
                       style_node(at, fn() { sheet_title_room }, in_row=true)
                       at.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                      words_node(at, fn() { now().0 }, fn() { sheet_title_words }) |> ignore
+                      title_words(at)
                     })
                     |> ignore
                   }

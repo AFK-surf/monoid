@@ -363,3 +363,44 @@ pub fn labelled_field_node(
   })
   |> ignore
 }
+
+///|
+/// What a page does at its head's end (`actions`: each its mark, what it is called and its press), in `parent`, by the
+/// page's width: wide, side by side, each the quiet button with its mark and its words, each a spinner while `busy`;
+/// narrow, each a button of its mark alone (icon_action_node), one spinner in their place while `busy`.
+#callsite(autofill(loc))
+pub fn head_actions_node(
+  parent : @view.View,
+  actions : Array[(String, () -> String, () -> Unit)],
+  busy? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(row) {
+    row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+    match look_node(row) {
+      Wide => {
+        row.gap(Is(head_actions_wide_gap)) |> ignore
+        for a in actions {
+          button_node(row, a.1, a.2, tone=Ghost, icon=a.0, busy~) |> ignore
+        }
+      }
+      Narrow =>
+        row.pick(busy, fn(p, busy) {
+          p.row(Is(true)).gap(Is(head_actions_narrow_gap)).lines_up(Is(Some(Middle))) |> ignore
+          if busy {
+            spinner_node(p, size=spinner_inline) |> ignore
+          } else {
+            p.each_of(fn() { actions }, fn(e, a) { icon_action_node(e, a.0, a.1, a.2) |> ignore })
+          }
+        })
+    }
+  })
+  |> ignore
+}
+
+///|
+/// A head's actions apart: wide, its quiet buttons 8 (a head's row's gap=S2); narrow, its marks 12 (gap=S3).
+let head_actions_wide_gap : Double = 8.0
+
+///|
+let head_actions_narrow_gap : Double = 12.0

@@ -31,8 +31,9 @@ fn steps_centred_node(
     }
     all
   }
-  // (back: a step back where it is past its first; a step further in from another presenter's panel, back to that one)
-  let back = fn() { panel_pop(keyed) || back_under(keyed) }
+  // (back: told to the flow its steps follow where they follow one (flow_back); a step back where it is past its first;
+  // a step further in from another presenter's panel, back to that one)
+  let back = fn() { flow_back(keyed) || panel_pop(keyed) || back_under(keyed) }
   dialog_layer_node(parent, open, cancel, outside=true, shown~, gone~, dims~, covered~, within=back, fn(across, layer, look, veil) {
     let w = fn() { dmin(if x.wide { dialog_wide_w } else { dialog_w }, over_room(layer).0 - dialog_margin) }
     let words_in = panel_words - dialog_pad

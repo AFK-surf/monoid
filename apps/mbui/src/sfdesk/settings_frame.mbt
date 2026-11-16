@@ -15,44 +15,9 @@ fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, route : Route) -> Unit
   settings_deep.val = deep
   // (the settings' pages not ported yet read it too)
   @settings.wide_deep.val = deep
-  // a page merged for every frame: back over it only under another settings page or a place of the rail's (a connect's
-  // under 连接; the sidebar is the way to the others)
-  let frame : PageFrame = {
-    back: match under {
-      Some(u) if u is (Setting(_) | Place(_)) => Some(@sfbase.back_label(u))
-      _ => None
-    },
-    top: 0.0,
-    foot: 0.0,
-    named: false,
-  }
-  if setting_route(c, src, w, route, frame) {
-    return
-  }
   @settings.frame(core, here)
   settings_fixture(src, core)
   @settings.page(c, core, here, route)
-}
-
-///|
-/// The settings' pages, one for every frame, by route: drawn in the frame it is shown in (the Small stack's, the wide
-/// frame's pane: back, the room over and under it). False for a route whose page every frame makes once in its place
-/// (关于, 更新日志, 记忆, 一台 station 的记忆, 用量, 价目表, 账号, 字体, 下方栏: pane_made, tape_made, narrow_made), and for one whose
-/// pages are not one yet (its frame draws its own copy).
-pub fn setting_route(c : @ui.Ctx, src : Source, w : Workspace, route : Route, frame : PageFrame) -> Bool {
-  if !(route is (Vault | VaultItem(_, _))) {
-    return false
-  }
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  @settings.frame(core, here)
-  settings_fixture(src, core)
-  match route {
-    Vault => @sfpages.vault_page(c, core, here, frame)
-    VaultItem(v, item) => @sfpages.vault_item_page(c, core, here, frame, v, item)
-    _ => ()
-  }
-  true
 }
 
 ///|

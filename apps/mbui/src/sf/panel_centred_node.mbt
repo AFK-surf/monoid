@@ -125,6 +125,18 @@ fn panel_centred_node(
       // (one that heads itself (`heads_itself`, its body nodes: its own head row in the title's place, clear of the
       // close button over its corner) as one with a title row of its own)
       // (one at a share of the window down (`top_share`): no head over it, what it holds at its room's top)
+      // (how far its close button stands out under a titled head with nothing said under it (dialog_close_at's `up`):
+      // the body's box starts that much lower and its column's top room is that much less, so what scrolls in it stops
+      // clear of the button and what it holds stands where it did)
+      let close_under = fn() {
+        if steps is None && top_share == 0.0 && x.title_row is None && !(x.nodes is Some({ heads: true, .. })) &&
+          !untitled() &&
+          now().2 == "" {
+          dmax(0.0, @ui.capsule_in(dialog_r, dialog_close) - (dialog_pad + dialog_head_over))
+        } else {
+          0.0
+        }
+      }
       let body_top = fn() {
         if top_share > 0.0 {
           top_share_body
@@ -186,7 +198,9 @@ fn panel_centred_node(
           // (as wide as the dialog, out to its sides: the old frame's head's room)
           h.width(By(fn() { Some(w()) })) |> ignore
           h.box(fn(part) {
-            style_node(part, fn() { centred_part_in(dialog_pad, 0.0) })
+            // (as far over what it holds as its close button stands out under its line (close_under), so what scrolls
+            // under it stops clear of the button)
+            style_node(part, fn() { centred_part_in(dialog_pad, 0.0).then(@ui.style(pb=room(close_under()))) })
             part.alpha(By(fn() { look().words })) |> ignore
             // (its title's line, there while it has a title: its title, its step beside it, its close button at its end)
             part.box(fn(line) {
@@ -307,7 +321,7 @@ fn panel_centred_node(
           |> ignore
           b.box(fn(col) {
             style_node(col, fn() {
-              (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in))).then(body_top())
+              (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in), pt=room(@ui.Space::S4_5.px() - close_under()))).then(body_top())
             })
             col.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             // (its rows out across the room the dialog leaves them, as far as an old body's: rows_out's)
@@ -383,17 +397,24 @@ fn panel_centred_node(
         d.box(fn(b) {
           let scroll = @view.Scroll::new()
           b.shrink(Is(1.0)).min_height(Is(Some(0.0))).margin(Is((-dialog_pad, 0.0, -dialog_pad, 0.0))) |> ignore
+          // (holding nothing laid out, none of its room, its margin over it with it: what it holds gone_empty below)
+          if x.nodes is Some(_) {
+            b.gone_empty(Is(true)) |> ignore
+          }
           b.scrolls(scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+            if x.nodes is Some(_) {
+              s.gone_empty(Is(true)) |> ignore
+            }
             match x.nodes {
               // (what it holds nodes: in a column on its words' line as the old frame's body is laid out, its words as
               // far in as its look says)
               Some(n) =>
                 s.box(fn(outer) {
                   style_node(outer, fn() { centred_part_in(0.0, 0.0) })
-                  outer.alpha(By(fn() { look().words })) |> ignore
+                  outer.alpha(By(fn() { look().words })).gone_empty(Is(true)) |> ignore
                   outer.box(fn(col) {
                     style_node(col, fn() {
-                      (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in))).then(body_top())
+                      (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in), pt=room(@ui.Space::S4_5.px() - close_under()))).then(body_top())
                     })
                     // (holding nothing laid out, none of its room: its title and what it says straight over its foot,
                     // as the old body's box gone_empty)

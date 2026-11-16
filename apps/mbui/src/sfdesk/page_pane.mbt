@@ -398,6 +398,28 @@ fn pane_made(
       made("vault-items", fn(a, core, here, _stint, frame, width) {
         @sfpages.vault_items_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
       })
+    Setting(KeptFiles) =>
+      made("kept", fn(a, core, _here, _stint, frame, width) { @settings.kept_node(a, core, on_back=core.pop, frame~, width~, tips~) })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) =>
+      made("kept/" + station + "/" + thread.to_string(), fn(a, core, _here, _stint, frame, width) {
+        @settings.kept_chat_node(a, core, station, thread, on_back=core.pop, frame~, width~, tips~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) =>
+      made("run/" + station + "/" + key, fn(a, core, _here, _stint, frame, width) {
+        @settings.run_settings_node(a, core, station, key, on_back=core.pop, frame~, width~, tips~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) =>
+      made("adb/" + focus, fn(a, core, _here, _stint, frame, width) { @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~) })
+    Setting(Vault) =>
+      made("vault", fn(a, core, here, _stint, frame, width) { @sfpages.vault_node(a, core, here, on_back=core.pop, frame~, width~, tips~) })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) =>
+      made("vault-item/" + vault + "/" + item, fn(a, core, here, _stint, frame, width) {
+        @sfpages.vault_item_node(a, core, here, vault, item, on_back=core.pop, frame~, width~, tips~)
+      })
     // (by its station and id: another's another page)
     Setting(Connects(only)) =>
       made("connects/" + only, fn(a, core, here, stint, frame, width) {

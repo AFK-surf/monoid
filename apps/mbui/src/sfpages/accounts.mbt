@@ -1501,23 +1501,18 @@ fn move_dialog(core : Core, s : Json?, p : Json?, targets : Array[Json]) -> Unit
   let address = text(s, "station")
   let id = text(p, "id")
   let shared = field(p, "share") is Some(Object(_))
-  open_dialog(
+  open_dialog_bare_nodes(
     @sf.t("web-pages.profiles.share.moveTo"),
     description=@sf.t(if shared { "web-pages.profiles.share.moveShared" } else { "web-pages.profiles.share.moveOwn" }, args=[("station", text(s, "name"))]),
-    fn(c, shut) {
-      @sf.group(c, fn() {
-        for x in targets {
-          let xv = Some(x)
+    fn(v, shut) {
+      @sf.group_node(v, fn(g) {
+        g.each(fn() { targets.mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
+          let xv = Some(x.untracked().1)
           let online = flag(xv, "online")
-          @sf.link_row(
-            c,
-            "profile-move-to/" + text(xv, "id"),
-            text(xv, "name"),
-            value=if online { "" } else { @sf.t("web-pages.stations.offline") },
-            chevron=false,
-            goes=online,
-            lead=fn() { @sf.status_dot(c, if online { "online" } else { "offline" }) },
-            on_press=fn() {
+          @sf.link_row_node(
+            row,
+            fn() { text(xv, "name") },
+            fn() {
               shut()
               if !shared {
                 (core.pop)()
@@ -1530,11 +1525,14 @@ fn move_dialog(core : Core, s : Json?, p : Json?, targets : Array[Json]) -> Unit
                 done=@sf.t("web-pages.profiles.share.moved", args=[("station", text(xv, "name"))]),
               )
             },
-          ) |> ignore
-        }
+            value=fn() { if online { "" } else { @sf.t("web-pages.stations.offline") } },
+            chevron=false,
+            goes=online,
+            lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { if online { "online" } else { "offline" } }) }),
+          )
+        })
       })
     },
-    fn(_, _) {  },
   )
 }
 
@@ -1544,56 +1542,66 @@ fn move_dialog(core : Core, s : Json?, p : Json?, targets : Array[Json]) -> Unit
 /// in several: they are said as what it was chosen among (`among`), so that only theirs change and a choice made in
 /// another workspace stands (share/index.ts shareProfile).
 fn pick_stations(core : Core, address : String, id : String, stations : Array[Json], own : String, allowed : Array[String]?) -> Unit {
-  let ticked : Map[String, Bool] = Map([])
+  let ticked : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
   for x in stations {
     let xid = text(Some(x), "id")
-    ticked[xid] = match allowed {
+    ticked.put(xid, match allowed {
       None => true
       Some(a) => a.contains(xid)
-    }
+    })
   }
   let all = fn() { stations.iter().all(fn(x) { text(Some(x), "id") == own || ticked.get(text(Some(x), "id")).unwrap_or(false) }) }
-  open_dialog(
+  open_dialog_nodes(
     @sf.t("web-pages.profiles.share.stations"),
-    fn(c, _) {
-      @sf.page_note(c, if all() { @sf.t("web-pages.profiles.share.futureIn") } else { @sf.t("web-pages.profiles.share.futureOut") })
-      @sf.group(c, fn() {
-        for x in stations {
-          let xv = Some(x)
+    fn(v, _) {
+      @sf.page_note_node(v, fn() { if all() { @sf.t("web-pages.profiles.share.futureIn") } else { @sf.t("web-pages.profiles.share.futureOut") } })
+      @sf.group_node(v, fn(g) {
+        g.each(fn() { stations.mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
+          let xv = Some(x.untracked().1)
           let xid = text(xv, "id")
           let self = xid == own
-          let on = self || ticked.get(xid).unwrap_or(false)
-          let now = @sf.switch_row(
-            c,
-            "profile-pick/" + xid,
-            text(xv, "name"),
-            on,
-            note=if self { @sf.t("web-pages.profiles.share.here") } else if flag(xv, "online") { "" } else { @sf.t("web-pages.stations.offline") },
-            disabled=self,
+          @sf.switch_row_node(
+            row,
+            fn() { text(xv, "name") },
+            fn() { self || ticked.get(xid).unwrap_or(false) },
+            fn(now) { if !self { ticked.set(xid, now) } },
+            note=fn() {
+              if self {
+                @sf.t("web-pages.profiles.share.here")
+              } else if flag(xv, "online") {
+                ""
+              } else {
+                @sf.t("web-pages.stations.offline")
+              }
+            },
+            disabled=fn() { self },
           )
-          if !self && now != on {
-            ticked[xid] = now
-          }
-        }
+        })
       })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("web-pages.profiles.share.done"), key="profile-pick-done/" + address + "/" + id, tone=Primary, on_press=fn() {
-        shut()
-        let params = [("station", str(address)), ("id", str(id)), ("on", Json::boolean(true))]
-        if !all() {
-          let allow : Array[Json] = [str(own)]
-          for x in stations {
-            let xid = text(Some(x), "id")
-            if xid != own && ticked.get(xid).unwrap_or(false) {
-              allow.push(str(xid))
+    fn(v, shut) {
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.profiles.share.done") },
+        fn() {
+          shut()
+          let params = [("station", str(address)), ("id", str(id)), ("on", Json::boolean(true))]
+          if !all() {
+            let allow : Array[Json] = [str(own)]
+            for x in stations {
+              let xid = text(Some(x), "id")
+              if xid != own && ticked.get(xid).unwrap_or(false) {
+                allow.push(str(xid))
+              }
             }
+            params.push(("allow", Json::array(allow)))
           }
-          params.push(("allow", Json::array(allow)))
-        }
-        params.push(("among", Json::array(stations.map(fn(x) { str(text(Some(x), "id")) }))))
-        @settings.act(core, @sf.t("web-pages.profiles.share.stations"), "profile.share", obj(params))
-      }) |> ignore
+          params.push(("among", Json::array(stations.map(fn(x) { str(text(Some(x), "id")) }))))
+          @settings.act(core, @sf.t("web-pages.profiles.share.stations"), "profile.share", obj(params))
+        },
+        tone=Primary,
+      )
+      |> ignore
     },
   )
 }

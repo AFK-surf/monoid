@@ -27,6 +27,7 @@ fn side_node_tab(front : String) -> Bool {
   side_history_tab(front) ||
   @sfbase.view_tab_file(front) is Some(_) ||
   side_farview_tab(front) is Some(_) ||
+  side_adb_tab(front) is Some(_) ||
   side_own_tab(front)
 }
 
@@ -248,6 +249,8 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           side_view_node(q, src, r, agent, island)
         } else if side_farview_tab(agent) is Some((station, screen)) {
           side_farview_node(q, src, station, screen)
+        } else if side_adb_tab(agent) is Some(station) {
+          side_adb_node(q, src, station)
         } else if side_own_tab(agent) {
           side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
         } else {
@@ -336,6 +339,32 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
     g.over(Is(true)) |> ignore
     @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() })
     |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The station of `front` where it is a station's 共享调试 tab (the settings' page of it, focused on that station).
+fn side_adb_tab(front : String) -> String? {
+  match station_tab(front) {
+    Some(("adb", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// A station's 共享调试 tab in a chat's panel, in node `q` (as large as the panel under its bar): the settings' page of
+/// it (@settings.adb_node), its step for `station` first, in the workspace in view, its head with no back (the tab is
+/// the way to close it).
+fn side_adb_node(q : @view.View, src : Source, station : String) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+      guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      let core = settings_core(src, w)
+      @settings.adb_node(p, core, station, on_back=fn() {  }, frame=fn() { { back: None, top: 0.0, foot: 0.0, named: false } })
+    })
   })
   |> ignore
 }

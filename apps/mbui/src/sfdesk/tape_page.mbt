@@ -514,6 +514,40 @@ fn tape_made(
         context_node(p)
         @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
+    Setting(KeptFiles) if pane_makes.val =>
+      made("kept", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) if pane_makes.val =>
+      made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) if pane_makes.val =>
+      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) if pane_makes.val =>
+      made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    Setting(Vault) if pane_makes.val =>
+      made("vault", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) if pane_makes.val =>
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
     // (by its station and id: another's another page; 添加连接 in the bar)
     Setting(Connects(only)) if pane_makes.val =>
       made("connects/" + only, fn(p, core, here, stint, told, acts) {

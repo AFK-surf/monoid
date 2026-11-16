@@ -25,6 +25,14 @@ let corners_everywhere_known : Map[String, Int] = {
   // words' and the window's, no place it is stood at: the rule holds what does not scroll to the corner, and nothing
   // here stands it elsewhere. Gone as the page's height is any other (English's has none).
   known["touch-zh lock-security"] = 3
+  // 密钥 with a vault waiting to be keyed anew, in the tablet's window, in English: the rail's one, off the window's
+  // side as the page shows (made as nodes: its old view was not swept).
+  known["touch-en settings-vault-waits"] = 1
+  // The same in Chinese: the rail's one, and its page, which does not fill its panel, ending with 删除此库's card 26 over
+  // the panel's foot, 16 in, its foot corners where the panel's 42 would want them 16 (全部密钥 a card of its own over
+  // how it keeps its secrets, as its old view had it). Where it ends is its words' and the window's, as 安全's above:
+  // gone as the page's height is any other (English's has none).
+  known["touch-zh settings-vault-waits"] = 3
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the

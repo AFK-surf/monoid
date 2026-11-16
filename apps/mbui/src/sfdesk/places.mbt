@@ -1,8 +1,8 @@
 // The rail's places beyond the chats and the files, as the web's (still.fail web/src/cloud/workspace.tsx StationsSidebar,
 // ProfilesSidebar; cloud/StationPage.tsx StationsNav, StationRow; ProfilesNav.tsx): Station and Profile each a list of
 // their own in the sidebar (添加 in the band over it), the one picked its page beside it (the first to begin with); 连接
-// and 用量 a page across the pane, no sidebar. A page merged for every frame is setting_route's (连接's, 用量's), the
-// others still the settings' package's (@settings.page).
+// and 用量 a page across the pane, no sidebar. A page merged for every frame is made once as nodes in its place
+// (pane_made); the others still the settings' package's (@settings.page).
 
 ///|
 /// A place of the rail's in the pane: Station's and Profile's the page picked in their list, 连接's its page, the
@@ -20,10 +20,7 @@ fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit 
     _ =>
       c.box(style=place_across, fn() {
         match @settings.route_of(place) {
-          Some(r) =>
-            if !setting_route(c, src, w, r, { back: None, top: 0.0, foot: 0.0, named: false }) {
-              @settings.page(c, core, here, r, root=true)
-            }
+          Some(r) => @settings.page(c, core, here, r, root=true)
           None => ()
         }
       })

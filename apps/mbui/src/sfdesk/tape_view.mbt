@@ -1303,6 +1303,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         side_view_node(s, src, r, agent, behind)
       } else if side_farview_tab(agent) is Some((station, screen)) {
         side_farview_node(s, src, station, screen)
+      } else if side_adb_tab(agent) is Some(station) {
+        side_adb_node(s, src, station)
       } else if side_own_tab(agent) {
         side_own_node(s, src, r, agent, tips, fn() {
           @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))

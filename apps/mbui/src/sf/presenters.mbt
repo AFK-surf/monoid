@@ -781,13 +781,18 @@ pub fn panel_go(
 /// (each given what closes the panel), as tall as the panel's first step says (its `tall`, `hugs`): it slides in over
 /// the step it is in, back (its back key, Escape, the system's back) taking it off again, back to the step before as it
 /// was left; a press outside, the sheet dragged down, its close button close the panel, all its steps with it. `left`:
-/// what is let go of as it is left for good (gone back from, or the panel closed), once.
+/// what is let go of as it is left for good (gone back from, or the panel closed), once. `back`: where the steps follow
+/// a flow kept elsewhere (the core's wizard), what back does on it in place of taking it off (told to that flow, which
+/// takes the step off as it goes: panel_back), as panel_go's; `live`: its title, which of the flow's steps it is and
+/// what it is about as they are now, where they change while it shows.
 pub fn panel_go_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
   description? : String = "",
   foot? : (@view.View, () -> Unit) -> Unit,
   left? : () -> Unit = fn() {  },
+  back? : () -> Unit,
+  live? : () -> (String, String, String),
 ) -> Unit {
   let steps_of = fn(q : Presented) {
     match q.shows {
@@ -801,7 +806,7 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live: None, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0 }) }
+              let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0 }) }
               // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
               panel_page(p, step, p.from, left)
             }
@@ -1604,6 +1609,29 @@ fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> U
   p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
   presented_told()
   @signals.end_batch()
+}
+
+///|
+/// Back on the page of `p` that shows where its steps follow a flow kept elsewhere (its `on_back`: panel_nodes' and
+/// panel_go_nodes' `back`): told to that flow, which takes the page off as it goes (panel_back), or closes it. Whether
+/// it was told.
+fn flow_back(p : Presented) -> Bool {
+  let more = p.more.untracked()
+  let top = if more.length() > 0 {
+    Some(more[more.length() - 1].x)
+  } else {
+    match p.shows {
+      Panel(x) => Some(x)
+      _ => None
+    }
+  }
+  match top.bind(fn(x) { if x.nodes is Some(_) { x.on_back } else { None } }) {
+    Some(f) => {
+      f()
+      true
+    }
+    None => false
+  }
 }
 
 ///|

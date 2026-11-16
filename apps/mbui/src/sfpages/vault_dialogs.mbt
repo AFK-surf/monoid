@@ -1,5 +1,5 @@
-// The desktop's 密钥's dialogs, the library's
-// (open_dialog; 添加's a pick): what 添加 offers, an item written (a new one, or one opened, changed or deleted), the recovery words
+// 密钥's dialogs, the library's
+// (open_dialog_nodes; 添加's a pick): what 添加 offers, an item written (a new one, or one opened, changed or deleted), the recovery words
 // typed in.
 
 ///|
@@ -101,226 +101,279 @@ pub fn vault_editor_dialog(
     Some(p) => text(Some(p), "kind")
     None => kind
   }
-  vault_serial.val += 1
-  let e : VaultEditing = {
-    kind: vault_item_kinds.search(start_kind).unwrap_or(0),
-    agent: flag(row, "listed"),
-    mode: match strings(row, "modes").iter().find_first(fn(m) { m == "proxy" || m == "env" }) {
+  let chosen_kind : @signals.Signal[Int] = @signals.signal(vault_item_kinds.search(start_kind).unwrap_or(0))
+  let k = fn() { vault_item_kinds[chosen_kind.get()] }
+  let agent : @signals.Signal[Bool] = @signals.signal(flag(row, "listed"))
+  let mode : @signals.Signal[String] = @signals.signal(
+    match strings(row, "modes").iter().find_first(fn(m) { m == "proxy" || m == "env" }) {
       Some(m) => m
       None => "proxy"
     },
-    lasts: vault_lasts.search(text(row, "lasts")).unwrap_or(0),
-    error: "",
-    saving: false,
-    reveal: {},
-    serial: vault_serial.val,
-    file: @signals.signal((text(field(was, "fields"), "content"), text(field(was, "fields"), "filename"))),
-  }
-  let key = fn(part : String) { "vault-editor/" + e.serial.to_string() + "/" + part }
-  let filled : Map[String, Bool] = Map([])
-  // a field's words put in once, as it opens
-  let field_for = fn(part : String, value : String) -> @ui.Field {
-    let f = field_of(key(part))
-    if !filled.contains(part) {
-      filled[part] = true
-      if value != "" {
-        f.set(value)
-      }
+  )
+  let lasts : @signals.Signal[Int] = @signals.signal(vault_lasts.search(text(row, "lasts")).unwrap_or(0))
+  let error : @signals.Signal[String] = @signals.signal("")
+  let saving : @signals.Signal[Bool] = @signals.signal(false)
+  let file : @signals.Signal[(String, String)] = @signals.signal(
+    (text(field(was, "fields"), "content"), text(field(was, "fields"), "filename")),
+  )
+  // its fields, each with what it holds already as it opens
+  let fields : Map[String, @ui.Field] = Map([])
+  for part in ["name", "about", "value", "private_key", "public_key", "username", "password", "totp", "hosts", "env"] {
+    let value = match part {
+      "name" => text(was, "name")
+      "about" => text(was, "notes")
+      "hosts" => join(strings(row, "hosts"), ", ")
+      "env" => text(row, "env")
+      _ => text(field(was, "fields"), part)
     }
-    f
+    fields[part] = @ui.Field::new(text=value)
   }
-  // the fields' words as last typed: the foot's 保存 reads them
-  let words : Map[String, String] = Map([])
-  // a field of its: its label, its line (or lines: `area`), a secret's dotted, what is wrong under it
-  let input = fn(c : @ui.Ctx, part : String, label : String, placeholder : String, secret : Bool, area : Bool, error : String) {
-    let value = if part == "name" || part == "about" || part == "hosts" || part == "env" {
-      match part {
-        "name" => text(was, "name")
-        "about" => text(was, "notes")
-        "hosts" => join(strings(row, "hosts"), ", ")
-        _ => text(row, "env")
-      }
-    } else {
-      text(field(was, "fields"), part)
+  let of = fn(part : String) { fields.get(part).unwrap_or(@ui.Field::new()) }
+  // the fields' words as they are now (what 保存 writes and what it waits for): a file's picked, a sign-in's cookies as
+  // they were kept, never typed or shown here
+  let words = fn() -> Map[String, String] {
+    let out : Map[String, String] = Map([])
+    for part, f in fields {
+      out[part] = f.text()
     }
-    // (its about: that agents are shown it, so no secret goes in it)
-    let hint = if part == "about" { @sf.t("web-pages.vault.editor.aboutNote") } else { "" }
-    @sf.field(c, label, error~, hint~, fn() {
-      words[part] = if area {
-        @sf.textarea(c, key(part), rows=if part == "about" { 3 } else { 5 }, placeholder~, field=field_for(part, value))
-      } else {
-        @sf.input(c, key(part), placeholder~, secret~, field=field_for(part, value)).text
-      }
-    })
+    let (content, name) = file.get()
+    out["content"] = content
+    out["filename"] = name
+    out["cookies"] = text(field(was, "fields"), "cookies")
+    out
   }
+  let input = fn(b : @view.View, part : String, label : () -> String, placeholder : () -> String) {
+    vd_input_node(b, of(part), part, label, placeholder)
+  }
+  let said = fn(key : String) { fn() { @sf.t(key) } }
   let title = match was {
     None => @sf.t("web-pages.vault.editor.new")
     Some(p) => text(Some(p), "name")
   }
-  open_dialog(
+  open_dialog_nodes(
     title,
-    fn(c, _) {
-      let k = vault_item_kinds[e.kind]
+    fn(v, _) {
       if plain {
-        c.text(@sf.t("web-pages.vault.risk.editor"), style=vt_warn_lines) |> ignore
+        @sf.words_node(v, said("web-pages.vault.risk.editor"), fn() { vt_warn_lines }) |> ignore
       }
       if was is None && kinds {
-        c.box(fn() {
-          e.kind = @sf.segmented(c, key("kind"), vault_kinds.map(fn(x) { @sf.t("web-pages.vault.kind." + x) }), e.kind)
+        v.box(fn(s) {
+          @sf.segmented_node(s, fn() { vault_kinds.map(fn(x) { @sf.t("web-pages.vault.kind." + x) }) }, fn() { chosen_kind.get() }, fn(i) {
+            chosen_kind.set(i)
+          })
         })
         |> ignore
       }
-      input(c, "name", @sf.t("web-pages.vault.editor.name"), @sf.t(if k == "file" { "web-pages.vault.editor.fileNamePlaceholder" } else { "web-pages.vault.editor.namePlaceholder" }), false, false, "")
+      input(v, "name", said("web-pages.vault.editor.name"), fn() {
+        @sf.t(if k() == "file" { "web-pages.vault.editor.fileNamePlaceholder" } else { "web-pages.vault.editor.namePlaceholder" })
+      })
       // a new one's: what it is for and how it is used (agents are shown it with its name, so never a secret in it);
       // one there already has its own, on its page (vault_about_dialog)
       if was is None {
-        input(c, "about", @sf.t("web-pages.vault.editor.about"), @sf.t("web-pages.vault.editor.aboutPlaceholder"), false, false, "")
+        input(v, "about", said("web-pages.vault.editor.about"), said("web-pages.vault.editor.aboutPlaceholder"))
       }
-      match k {
-        "token" => input(c, "value", @sf.t("web-pages.vault.editor.value"), "ghp_…", true, false, "")
-        "ssh_key" => {
-          input(c, "private_key", @sf.t("web-pages.vault.editor.privateKey"), "-----BEGIN OPENSSH PRIVATE KEY-----", false, true, "")
-          input(c, "public_key", @sf.t("web-pages.vault.editor.publicKey"), "ssh-ed25519 AAAA…", false, false, "")
+      v.pick(fn() { if k() == "token" || k() == "ssh_key" || k() == "browser" || k() == "file" { k() } else { "login" } }, fn(p, what) {
+        match what {
+          "token" => vd_input_node(p, of("value"), "value", said("web-pages.vault.editor.value"), fn() { "ghp_…" }, secret=true)
+          "ssh_key" => {
+            vd_input_node(p, of("private_key"), "private_key", said("web-pages.vault.editor.privateKey"), fn() { "-----BEGIN OPENSSH PRIVATE KEY-----" }, area=true)
+            input(p, "public_key", said("web-pages.vault.editor.publicKey"), fn() { "ssh-ed25519 AAAA…" })
+          }
+          // a sign-in: its cookies as they were kept, never typed or shown here
+          "browser" => ()
+          "file" =>
+            @sf.field_node(p, said("web-pages.vault.editor.file"), fn(f) {
+              // (the button the same before and after: what was picked comes in beside it, the row no higher)
+              f.box(fn(r) {
+                @sf.style_node(r, fn() { vd_file })
+                @sf.button_node(r, said("web-pages.vault.editor.pickFile"), fn() {
+                  pick_vault_file(core, fn(content, name) { file.set((content, name)) })
+                })
+                |> ignore
+                r.show(fn() { file.get().0 != "" }, fn(n) {
+                  n.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  @sf.words_node(n, fn() {
+                    let (content, name) = file.get()
+                    (if name != "" { name } else { @sf.t("web-pages.vault.kind.file") }) + " · " + file_size(content)
+                  }, fn() { vd_file_name })
+                  |> ignore
+                })
+              })
+              |> ignore
+            })
+          _ => {
+            input(p, "username", said("web-pages.vault.editor.username"), fn() { "name@example.com" })
+            vd_input_node(p, of("password"), "password", said("web-pages.vault.editor.password"), fn() { "" }, secret=true)
+            vd_input_node(p, of("totp"), "totp", said("web-pages.vault.editor.totp"), fn() { "" }, secret=true)
+          }
         }
-        // a sign-in: its cookies as they were kept, never typed or shown here
-        "browser" => words["cookies"] = text(field(was, "fields"), "cookies")
-        "file" => {
-          let (file_content, file_name) = e.file.get()
-          @sf.field(c, @sf.t("web-pages.vault.editor.file"), fn() {
-            // (the button the same before and after: what was picked fades in beside it, the row no higher)
-            c.box(style=vd_file, fn() {
-              @sf.button(c, @sf.t("web-pages.vault.editor.pickFile"), key=key("file"), tone=Plain, on_press=fn() {
-                pick_vault_file(core, fn(content, name) { e.file.set((content, name)) })
-              }) |> ignore
-              if file_content != "" {
-                let name = if file_name != "" { file_name } else { @sf.t("web-pages.vault.kind.file") }
-                // (faded in as it is drawn)
-                let shown = @kit.presence(c, key("file/" + name), true).t
-                let i = c.rich([@ui.span(name + " · " + file_size(file_content), color=@sf.theme().p.text)], style=vd_file_name)
-                c.look_by(i, fn() { @ui.look(alpha=@sf.dmax(0.0, @sf.dmin(1.0, shown.get(c)))) })
+      })
+      // how agents may ask for it (agentBox)
+      v.box(fn(a) {
+        @sf.style_node(a, fn() { vd_agent })
+        @sf.switch_row_node(a, said("web-pages.vault.editor.agent"), fn() { agent.get() }, fn(on) { agent.set(on) }, note=said(
+            "web-pages.vault.editor.agentNote",
+          ), in_words=true)
+        a.show(fn() { agent.get() }, fn(o) {
+          @sf.field_node(o, said("web-pages.vault.editor.how"), fn(f) {
+            f.pick(fn() { k() == "ssh_key" || k() == "file" || k() == "browser" }, fn(p, one_way) {
+              if one_way {
+                @sf.words_node(p, fn() { mode_name(if k() == "file" { "file" } else if k() == "browser" { "browser" } else { "ssh" }) }, fn() {
+                  desk_words
+                })
+                |> ignore
+              } else {
+                p.box(fn(s) {
+                  @sf.segmented_node(s, fn() { [mode_name("proxy"), mode_name("env")] }, fn() { if mode.get() == "env" { 1 } else { 0 } }, fn(i) {
+                    mode.set(if i == 1 { "env" } else { "proxy" })
+                  })
+                })
+                |> ignore
               }
             })
-            |> ignore
           })
-          words["content"] = file_content
-          words["filename"] = file_name
-        }
-        _ => {
-          input(c, "username", @sf.t("web-pages.vault.editor.username"), "name@example.com", false, false, "")
-          input(c, "password", @sf.t("web-pages.vault.editor.password"), "", true, false, "")
-          input(c, "totp", @sf.t("web-pages.vault.editor.totp"), "", true, false, "")
-        }
-      }
-      // how agents may ask for it (agentBox)
-      c.box(style=vd_agent, fn() {
-        e.agent = @sf.switch_row(c, key("agent"), @sf.t("web-pages.vault.editor.agent"), e.agent, note=@sf.t("web-pages.vault.editor.agentNote"))
-        if e.agent {
-          @sf.field(c, @sf.t("web-pages.vault.editor.how"), fn() {
-            if k == "ssh_key" || k == "file" || k == "browser" {
-              c.text(mode_name(if k == "file" { "file" } else if k == "browser" { "browser" } else { "ssh" }), style=desk_words) |> ignore
-            } else {
-              let i = @sf.segmented(c, key("mode"), [mode_name("proxy"), mode_name("env")], if e.mode == "env" { 1 } else { 0 })
-              e.mode = if i == 1 { "env" } else { "proxy" }
-            }
-          })
-          c.text(
+          @sf.words_node(o, fn() {
             @sf.t(
-              if k == "ssh_key" {
+              if k() == "ssh_key" {
                 "web-pages.vault.editor.sshNote"
-              } else if k == "file" {
+              } else if k() == "file" {
                 "web-pages.vault.editor.fileNote"
-              } else if k == "browser" {
+              } else if k() == "browser" {
                 "web-pages.vault.editor.browserNote"
-              } else if e.mode == "proxy" {
+              } else if mode.get() == "proxy" {
                 "web-pages.vault.editor.proxyNote"
               } else {
                 "web-pages.vault.editor.envNote"
               },
-            ),
-            style=desk_note,
-          )
+            )
+          }, fn() { desk_note })
           |> ignore
-          if (k != "ssh_key" && k != "file" && e.mode == "proxy") || k == "browser" {
-            let typed = words.get("hosts").unwrap_or("")
-            input(c, "hosts", @sf.t("web-pages.vault.editor.hosts"), @sf.t("web-pages.vault.editor.hostsPlaceholder"), false, false, if typed != "" && vault_hosts(words).length() == 0 { @sf.t("web-pages.vault.editor.hostsNeeded") } else { "" })
-          }
-          if k != "ssh_key" && k != "browser" {
-            input(c, "env", @sf.t("web-pages.vault.editor.env"), @sf.t(if k == "file" { "web-pages.vault.editor.fileEnvPlaceholder" } else { "web-pages.vault.editor.envPlaceholder" }), false, false, "")
-          }
-          @sf.field(c, @sf.t("web-pages.vault.editor.lasts"), fn() {
-            e.lasts = @sf.segmented(c, key("lasts"), vault_lasts.map(lasts_choice), e.lasts)
+          o.show(fn() { (k() != "ssh_key" && k() != "file" && mode.get() == "proxy") || k() == "browser" }, fn(h) {
+            vd_input_node(h, of("hosts"), "hosts", said("web-pages.vault.editor.hosts"), said("web-pages.vault.editor.hostsPlaceholder"), bad=fn() {
+              let w = words()
+              if w.get("hosts").unwrap_or("") != "" && vault_hosts(w).length() == 0 {
+                @sf.t("web-pages.vault.editor.hostsNeeded")
+              } else {
+                ""
+              }
+            })
           })
-          c.text(@sf.t("web-pages.vault.editor.lastsNote"), style=desk_note) |> ignore
-        }
+          o.show(fn() { k() != "ssh_key" && k() != "browser" }, fn(e) {
+            input(e, "env", said("web-pages.vault.editor.env"), fn() {
+              @sf.t(if k() == "file" { "web-pages.vault.editor.fileEnvPlaceholder" } else { "web-pages.vault.editor.envPlaceholder" })
+            })
+          })
+          @sf.field_node(o, said("web-pages.vault.editor.lasts"), fn(f) {
+            f.box(fn(s) {
+              @sf.segmented_node(s, fn() { vault_lasts.map(lasts_choice) }, fn() { lasts.get() }, fn(i) { lasts.set(i) })
+            })
+            |> ignore
+          })
+          @sf.words_node(o, said("web-pages.vault.editor.lastsNote"), fn() { desk_note }) |> ignore
+        })
       })
       |> ignore
-      if e.error != "" {
-        c.text(e.error, style=desk_note_bad) |> ignore
-      }
+      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { desk_note_bad }) |> ignore })
     },
-    fn(c, shut) {
-      let k = vault_item_kinds[e.kind]
-      if k == "file" {
-        let (file_content, file_name) = e.file.get()
-        words["content"] = file_content
-        words["filename"] = file_name
-      }
+    fn(v, shut) {
       match row {
         Some(r) => {
-          let removing = is_doing(core, ["vault.deleteItem"], [("workspace", ws), ("vault", vault)])
-          @sf.button(c, @sf.t("common.delete"), key=key("delete"), tone=GhostDanger, busy=removing, on_press=fn() {
-            confirm(
-              @sf.t("web-pages.vault.deleteTitle", args=[("name", text(was, "name"))]),
-              @sf.t("web-pages.vault.deleteBody"),
-              @sf.t("common.delete"),
-              danger=true,
-              fn() {
-                shut()
-                vault_act(core, ws, "deleteItem", [("vault", str(vault)), ("item", str(text(Some(r), "id")))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t("web-pages.vault.deleted"), then=fn(
-                  _,
-                ) {
-                  (core.pop)()
-                })
-              },
-            )
-          }) |> ignore
+          let on = [("workspace", ws), ("vault", vault)]
+          @sf.button_node(
+            v,
+            said("common.delete"),
+            fn() {
+              confirm(
+                @sf.t("web-pages.vault.deleteTitle", args=[("name", text(was, "name"))]),
+                @sf.t("web-pages.vault.deleteBody"),
+                @sf.t("common.delete"),
+                danger=true,
+                fn() {
+                  shut()
+                  vault_act(core, ws, "deleteItem", [("vault", str(vault)), ("item", str(text(Some(r), "id")))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t(
+                      "web-pages.vault.deleted",
+                    ), then=fn(_) { (core.pop)() })
+                },
+              )
+            },
+            tone=GhostDanger,
+            busy=fn() { is_doing(core, ["vault.deleteItem"], on) },
+          )
+          |> ignore
         }
         None => ()
       }
-      c.spacer()
-      @sf.button(c, @sf.t("common.cancel"), key=key("cancel"), tone=Ghost, on_press=fn() {
-        c.blur()
-        shut()
-      }) |> ignore
-      let ready = vault_problem(k, words, e.agent, e.mode) == ""
-      @sf.button(c, @sf.t("common.save"), key=key("save"), tone=Primary, busy=e.saving, disabled=!ready, on_press=fn() {
-        e.saving = true
-        e.error = ""
-        c.blur()
-        vault_act(
-          core,
-          ws,
-          "putItem",
-          vault_put_params(vault, row, was, k, words, e.agent, e.mode, vault_lasts[e.lasts]),
-          @sf.t("web-pages.vault.saveWhat"),
-          done=@sf.t("web-pages.vault.saved"),
-          then=fn(_) {
-            e.saving = false
-            shut()
-          },
-          failed=fn(err) {
-            e.saving = false
-            // written elsewhere first: the vault was read again; what is here was written over that, so it goes
-            if text(Some(err), "code") == "vault_conflict" {
+      @sf.foot_spacer_node(v)
+      @sf.button_node(
+        v,
+        said("common.cancel"),
+        fn() {
+          v.focus_let_go()
+          shut()
+        },
+        tone=Ghost,
+      )
+      |> ignore
+      @sf.button_node(
+        v,
+        said("common.save"),
+        fn() {
+          saving.set(true)
+          error.set("")
+          v.focus_let_go()
+          vault_act(
+            core,
+            ws,
+            "putItem",
+            vault_put_params(vault, row, was, k(), words(), agent.get(), mode.get(), vault_lasts[lasts.get()]),
+            @sf.t("web-pages.vault.saveWhat"),
+            done=@sf.t("web-pages.vault.saved"),
+            then=fn(_) {
+              saving.set(false)
               shut()
-            } else {
-              e.error = vault_said(err).unwrap_or("")
-            }
-          },
-        )
-      }) |> ignore
+            },
+            failed=fn(err) {
+              saving.set(false)
+              // written elsewhere first: the vault was read again; what is here was written over that, so it goes
+              if text(Some(err), "code") == "vault_conflict" {
+                shut()
+              } else {
+                error.set(vault_said(err).unwrap_or(""))
+              }
+            },
+          )
+        },
+        tone=Primary,
+        busy=fn() { saving.get() },
+        disabled=fn() { vault_problem(k(), words(), agent.get(), mode.get()) != "" },
+      )
+      |> ignore
     },
   )
+}
+
+///|
+/// A field of an item being written (vault_editor_dialog's) in `b`: its label, its line (or lines: `area`; a secret's
+/// dotted), `field` what it holds; what is wrong under it (`bad`, as it says now), or, for its about, that agents are
+/// shown it (so no secret goes in it).
+fn vd_input_node(
+  b : @view.View,
+  field : @ui.Field,
+  part : String,
+  label : () -> String,
+  placeholder : () -> String,
+  secret? : Bool = false,
+  area? : Bool = false,
+  bad? : () -> String = fn() { "" },
+) -> Unit {
+  let hint = fn() { if part == "about" { @sf.t("web-pages.vault.editor.aboutNote") } else { "" } }
+  @sf.field_node(b, label, hint~, error=bad, fn(f) {
+    if area {
+      @sf.textarea_node(f, field, rows=if part == "about" { 3 } else { 5 }, placeholder_by=placeholder, label=@signals.untracked(label)) |> ignore
+    } else {
+      @sf.input_node(f, field, placeholder_by=placeholder, secret~, label=@signals.untracked(label)) |> ignore
+    }
+  })
 }
 
 ///|
@@ -419,59 +472,66 @@ pub fn vault_about_dialog(core : Core, ws : String, vault : String, row : Json, 
 /// The recovery words typed in (Recover): this device keyed into the person's vaults again (`vault.recover`); how many
 /// typed of 24 at the foot.
 pub fn vault_recover_dialog(core : Core, ws : String) -> Unit {
-  vault_serial.val += 1
-  let key = "vault-recover/" + vault_serial.val.to_string()
-  let state : @signals.Signal[(Bool, String)] = @signals.signal((false, ""))
-  let words = Ref("")
-  let count_of = fn() { words.val.replace_all(old="\n", new=" ").split(" ").filter(fn(w) { w != "" }).count() }
-  open_dialog(
+  let typed = @ui.Field::new()
+  let busy : @signals.Signal[Bool] = @signals.signal(false)
+  let error : @signals.Signal[String] = @signals.signal("")
+  let count_of = fn() { typed.text().replace_all(old="\n", new=" ").split(" ").filter(fn(w) { w != "" }).count() }
+  open_dialog_nodes(
     @sf.t("web-pages.vault.recover"),
     description=@sf.t("web-pages.vault.recoverLead"),
-    fn(c, _) {
-      words.val = @sf.textarea(c, key, rows=4, field=field_of(key))
-      let (_, error) = state.get()
-      if error != "" {
-        c.text(error, style=desk_note_bad) |> ignore
-      }
+    fn(v, _) {
+      @sf.textarea_node(v, typed, rows=4, label=@sf.t("web-pages.vault.recover")) |> ignore
+      v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { desk_note_bad }) |> ignore })
     },
-    fn(c, shut) {
-      let n = count_of()
-      c.text("\{n} / 24", style=desk_note) |> ignore
-      c.spacer()
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        c.blur()
-        shut()
-      }) |> ignore
-      let (busy, _) = state.get()
+    fn(v, shut) {
+      @sf.words_node(v, fn() { "\{count_of()} / 24" }, fn() { desk_note }) |> ignore
+      @sf.foot_spacer_node(v)
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.cancel") },
+        fn() {
+          v.focus_let_go()
+          shut()
+        },
+        tone=Ghost,
+      )
+      |> ignore
       // (its button's words short beside the count and 取消 on a phone: the dialog's title says what it is)
-      @sf.button(c, @sf.t("web-pages.vault.recoverGo"), key=key + "/go", tone=Primary, busy~, disabled=n != 24, on_press=fn() {
-        state.set((true, ""))
-        (core.call)("vault.recover", obj([("workspace", str(ws)), ("words", str(words.val.trim(chars=" \n").to_lower().to_owned()))]), fn(
-          r,
-        ) {
-          match r {
-            Ok(v) => {
-              state.set((false, ""))
-              let got = count(Some(v), "recovered")
-              (core.say)(
-                if got > 0 {
-                  @sf.t("web-pages.vault.recovered", args=[("n", got.to_string())])
-                } else {
-                  @sf.t("web-pages.vault.recoveredNone")
-                },
-              )
-              if got > 0 {
-                shut()
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.vault.recoverGo") },
+        fn() {
+          busy.set(true)
+          error.set("")
+          let words = typed.text().trim(chars=" \n").to_lower().to_owned()
+          (core.call)("vault.recover", obj([("workspace", str(ws)), ("words", str(words))]), fn(r) {
+            busy.set(false)
+            match r {
+              Ok(got) => {
+                let n = count(Some(got), "recovered")
+                (core.say)(
+                  if n > 0 {
+                    @sf.t("web-pages.vault.recovered", args=[("n", n.to_string())])
+                  } else {
+                    @sf.t("web-pages.vault.recoveredNone")
+                  },
+                )
+                if n > 0 {
+                  shut()
+                }
               }
+              Err(e) => error.set(vault_said(e).unwrap_or(""))
             }
-            Err(e) => state.set((false, vault_said(e).unwrap_or("")))
-          }
-        })
-      }) |> ignore
+          })
+        },
+        tone=Primary,
+        busy=fn() { busy.get() },
+        disabled=fn() { count_of() != 24 },
+      )
+      |> ignore
     },
   )
 }
-
 
 ///|
 /// (a file: its name and size, then the button that picks another, 12 apart)

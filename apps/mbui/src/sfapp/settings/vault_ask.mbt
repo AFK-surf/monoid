@@ -118,6 +118,7 @@ let ask_describe_part : @ui.Style = @ui.css("w=Full gap=S0_5 pt=S3")
 ///|
 /// A secret to keep that the person types in here (`save.typed`: the agent has none): its kind, and the account the
 /// agent named (empty: a login's is asked for too).
+#derive(Eq)
 pub(all) struct Typed {
   kind : String
   username : String

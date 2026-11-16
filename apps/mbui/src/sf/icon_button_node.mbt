@@ -25,9 +25,10 @@ pub fn icon_button_node(
   linked? : () -> @ui.CornerOf?,
   shortcut? : String = "",
   ink? : () -> Int64,
+  grounded? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
-  icon_button_by(loc~, parent, icon, label, fn(_) { press() }, tips, size, icon_size, icon_now, disabled, linked?=linked, shortcut~, ink?)
+  icon_button_by(loc~, parent, icon, label, fn(_) { press() }, tips, size, icon_size, icon_now, disabled, linked?=linked, shortcut~, ink?, grounded~)
 }
 
 ///|
@@ -60,6 +61,7 @@ fn icon_button_by(
   linked? : () -> @ui.CornerOf?,
   shortcut? : String = "",
   ink? : () -> Int64,
+  grounded? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
@@ -90,8 +92,10 @@ fn icon_button_by(
       .width(Is(Some(size)))
       .height(Is(Some(size)))
       .padding(Is((pad, pad, pad, pad)))
+      // (none where it has no ground: nothing of it is round to stand in a corner)
       .radius(
         match linked {
+          _ if !grounded => Is(0.0)
           Some(f) =>
             By(fn() {
               match f() {
@@ -103,8 +107,9 @@ fn icon_button_by(
         },
       )
       .alpha(By(fn() { if disabled() { icon_button_disabled_alpha } else { 1.0 } }))
-      // (the page's hover, as a tint of the ink it sits with: icon_button's)
-      .ground(By(fn() { alpha(theme().p.text, 0.065 * hand.shown(v)) }))
+      // (the page's hover, as a tint of the ink it sits with: icon_button's; none where it is `grounded=false`, the
+      // hand shown by its icon's ink alone: one at a row's end in a card's corner, where no circle is concentric with it)
+      .ground(By(fn() { if grounded { alpha(theme().p.text, 0.065 * hand.shown(v)) } else { 0L } }))
       |> ignore
       // (its icon the ink once the hand's ground is half way there: `ink`, where said (a star lit while starred, quiet
       // while not: icon_button's `ink`), else the words'; the muted ink before)

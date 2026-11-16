@@ -555,35 +555,42 @@ fn cd_group_node(b : @view.View, core : Core, station : String, cv : () -> Json?
 /// kept, then it connects again; the dialog stays while it is saved, why it was refused under the field.
 fn cd_rebind_dialog(core : Core, station : String, cv : Json?) -> Unit {
   let id = text(cv, "id")
-  let key = "connect-rebind/" + (desk_dialogs.val + 1).to_string()
-  let code = field_of(key + "/code")
-  let error : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
-  open_dialog(
+  let code = @ui.Field::new()
+  let error : @signals.Signal[String] = @signals.signal("")
+  let typed = fn() { code.text().trim(chars=" \t\n").to_owned() }
+  open_dialog_nodes(
     @sf.t("web-pages.connect.group.rebind"),
     description=@sf.t("web-pages.connect.group.rebindLead"),
-    fn(c, _) {
-      @sf.field(c, @sf.t("web-pages.connect.group.code"), error=error.get(), fn() {
-        @sf.input(c, key + "/code-input", placeholder="XXXX-XXXX-XXXX-XXXX", field=code) |> ignore
+    fn(v, _) {
+      @sf.field_node(v, fn() { @sf.t("web-pages.connect.group.code") }, error=fn() { error.get() }, fn(m) {
+        @sf.input_node(m, code, placeholder="XXXX-XXXX-XXXX-XXXX", label=@sf.t("web-pages.connect.group.code")) |> ignore
       })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let typed = code.text().trim(chars=" \t\n").to_owned()
-      let saving = is_doing(core, ["connect.put"], [("station", station), ("id", id)])
-      @sf.button(c, @sf.t("web-pages.connect.saveReconnect"), key=key + "/save", tone=Primary, busy=saving, disabled=typed == "", on_press=fn() {
-        error.set("")
-        (core.call)("connect.put", obj([("station", str(station)), ("id", str(id)), ("input", obj([("group", obj([("code", str(typed))]))]))]), fn(r) {
-          match r {
-            Ok(_) => {
-              (core.say)(@sf.t("web-pages.connect.group.rebound"))
-              shut()
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.connect.saveReconnect") },
+        fn() {
+          error.set("")
+          let typed = @signals.untracked(typed)
+          (core.call)("connect.put", obj([("station", str(station)), ("id", str(id)), ("input", obj([("group", obj([("code", str(typed))]))]))]), fn(
+            r,
+          ) {
+            match r {
+              Ok(_) => {
+                (core.say)(@sf.t("web-pages.connect.group.rebound"))
+                shut()
+              }
+              Err(e) => error.set(error_text(e))
             }
-            Err(e) => error.set(error_text(e))
-          }
-        })
-      }) |> ignore
+          })
+        },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["connect.put"], [("station", station), ("id", id)]) },
+        disabled=fn() { typed() == "" },
+      )
+      |> ignore
     },
   )
 }
@@ -770,7 +777,6 @@ fn cd_station_name(core : Core, here : Here, address : String) -> String {
 /// going there, its chats staying where they run).
 fn cd_station_dialog(core : Core, here : Here, station : String, cv : Json?, moving : Bool) -> Unit {
   let id = text(cv, "id")
-  let key = "connect-station/" + (desk_dialogs.val + 1).to_string()
   let starts = text(cv, "startsOn")
   let choices = fn() -> Array[(String, String)] {
     let all = match @settings.stations_of(core, here).value {
@@ -789,7 +795,7 @@ fn cd_station_dialog(core : Core, here : Here, station : String, cv : Json?, mov
     }
     out
   }
-  let picked : Ref[String] = Ref(
+  let picked : @signals.Signal[String] = @signals.signal(
     if moving {
       match choices().get(0) {
         Some(o) => o.0
@@ -799,33 +805,49 @@ fn cd_station_dialog(core : Core, here : Here, station : String, cv : Json?, mov
       starts
     },
   )
-  open_dialog(
+  open_dialog_nodes(
     @sf.t(if moving { "web-pages.connect.move" } else { "web-pages.connect.startsOn" }),
     description=@sf.t(if moving { "web-pages.connect.moveLead" } else { "web-pages.connect.startsOnLead" }),
-    fn(c, _) {
-      let options = choices()
-      if options.length() == 0 {
-        c.text(@sf.t("web-pages.connect.moveNone"), style=cn_note) |> ignore
-      } else {
-        @sf.field(c, @sf.t("web-pages.connect.station"), fn() {
-          @sf.select(c, key + "/select", picked.val, options, fn(v) { picked.val = v }, label=@sf.t("web-pages.connect.station"), w=cd_select_w)
-        })
-      }
+    fn(v, _) {
+      v.pick(fn() { choices().length() == 0 }, fn(p, none) {
+        if none {
+          @sf.words_node(p, fn() { @sf.t("web-pages.connect.moveNone") }, fn() { cn_note }) |> ignore
+        } else {
+          @sf.field_node(p, fn() { @sf.t("web-pages.connect.station") }, fn(f) {
+            @sf.select_node(f, fn() { picked.get() }, choices, fn(s) { picked.set(s) }, label=fn() { @sf.t("web-pages.connect.station") })
+          })
+        }
+      })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() { shut() }) |> ignore
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
       if moving {
-        @sf.button(c, @sf.t("web-pages.connect.moveDo"), key=key + "/save", tone=Primary, disabled=picked.val == "", on_press=fn() {
-          // back to the list: the connect is the other station's from now on
-          (core.pop)()
-          cd_act(core, station, id, @sf.t("web-pages.connect.move"), "connect.move", [("to", str(picked.val))], done=@sf.t("web-pages.connect.moved"))
-          shut()
-        }) |> ignore
+        @sf.button_node(
+          v,
+          fn() { @sf.t("web-pages.connect.moveDo") },
+          fn() {
+            let to = picked.get()
+            // back to the list: the connect is the other station's from now on
+            (core.pop)()
+            cd_act(core, station, id, @sf.t("web-pages.connect.move"), "connect.move", [("to", str(to))], done=@sf.t("web-pages.connect.moved"))
+            shut()
+          },
+          tone=Primary,
+          disabled=fn() { picked.get() == "" },
+        )
+        |> ignore
       } else {
-        @sf.button(c, @sf.t("common.save"), key=key + "/save", tone=Primary, disabled=picked.val == starts, on_press=fn() {
-          cd_put(core, station, id, obj([("station", str(picked.val))]), done=@sf.t("web-pages.connect.startsOnSaved"))
-          shut()
-        }) |> ignore
+        @sf.button_node(
+          v,
+          fn() { @sf.t("common.save") },
+          fn() {
+            cd_put(core, station, id, obj([("station", str(picked.get()))]), done=@sf.t("web-pages.connect.startsOnSaved"))
+            shut()
+          },
+          tone=Primary,
+          disabled=fn() { picked.get() == starts },
+        )
+        |> ignore
       }
     },
   )
@@ -896,112 +918,111 @@ fn cd_slack_node(b : @view.View, core : Core, station : String, id : String, cv 
 }
 
 ///|
-/// Its Slack tokens replaced (TokenDialog: either one, the other kept), checked before they are saved; it closes as
-/// they go, said done or not by a toast.
+/// Its Slack tokens replaced (TokenDialog: either one, the other kept, what is saved said in each while it is left
+/// blank), checked before they are saved; it closes as they go, said done or not by a toast.
 fn cd_token_dialog(core : Core, station : String, cv : Json?) -> Unit {
   let id = text(cv, "id")
   let key = "connect-tokens/" + (desk_dialogs.val + 1).to_string()
   let slack = field(cv, "slack")
-  open_dialog(
+  let tk = slack_tokens_draft(core, station, key, id, "", "", fn(_, open) { open() })
+  open_dialog_nodes(
     @sf.t("web-pages.connect.replaceTitle"),
     description=@sf.t("web-pages.connect.replaceLead"),
-    fn(c, _) {
-      let tk = slack_tokens(c, core, station, key, connect=id)
-      token_fields(c, core, tk, masked=(text(slack, "appToken"), text(slack, "botToken")))
-    },
-    fn(c, shut) {
-      let tk = slack_tokens(c, core, station, key, connect=id)
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-        tokens_drop(core, key)
-      }) |> ignore
-      let saving = is_doing(core, ["connect.put"], [("station", station), ("id", id)])
-      @sf.button(
-        c,
-        @sf.t("web-pages.connect.saveReconnect"),
-        key=key + "/save",
-        tone=Primary,
-        busy=tokens_busy(core, tk) || saving,
-        disabled=!tokens_ready(core, tk),
-        on_press=fn() {
+    fn(v, _) { token_fields_node(v, core, tk, masked=(text(slack, "appToken"), text(slack, "botToken"))) },
+    fn(v, shut) {
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.cancel") },
+        fn() {
+          shut()
+          tokens_drop(core, key)
+        },
+        tone=Ghost,
+      )
+      |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.connect.saveReconnect") },
+        fn() {
           tokens_check(core, tk, fn() {
             cd_put(core, station, id, obj([("slack", tokens_input(tk))]), done=@sf.t("web-pages.connect.tokenSavedReconnecting"))
             shut()
             tokens_drop(core, key)
           })
         },
-      ) |> ignore
+        tone=Primary,
+        busy=fn() { tokens_busy(core, tk) || is_doing(core, ["connect.put"], [("station", station), ("id", id)]) },
+        disabled=fn() { !tokens_ready(core, tk) },
+      )
+      |> ignore
     },
+    on_gone=fn() { tokens_drop(core, key) },
   )
 }
 
 ///|
-/// How its conversations become sessions, to choose from (ModeChoices; the core's ModeWords, as its kind says them):
-/// one each (a Feishu connect's by its group or its thread) or all in one, the latter with whether it waits for an @.
-/// What is chosen now: the mode, the @, thread mode.
-fn mode_choices(c : @ui.Ctx, key : String, words : Json?, mode : String, mention : Bool, threads : Bool) -> (String, Bool, Bool) {
-  let multi = field(words, "multi")
-  let by_thread = field(words, "threads")
-  let single = field(words, "single")
-  let out = Ref((mode, mention, threads))
-  let now = if threads { "threads" } else { mode }
-  let ways = [("multi-session", text(multi, "label"), text(multi, "description"))]
-  if text(by_thread, "label") != "" {
-    ways.push(("threads", text(by_thread, "label"), text(by_thread, "description")))
+/// How its conversations become sessions, to choose from (ModeChoices; the core's ModeWords, as its kind says them,
+/// `words` as they are now) in `parent`: one each (a Feishu connect's by its group or its thread) or all in one, the
+/// latter with whether it waits for an @. `now`: the mode, the @, thread mode chosen now; `set` told those a choice
+/// makes them.
+fn mode_choices_node(
+  parent : @view.View,
+  words : () -> Json?,
+  now : () -> (String, Bool, Bool),
+  set : ((String, Bool, Bool)) -> Unit,
+) -> Unit {
+  let ways = fn() {
+    let w = words()
+    let multi = field(w, "multi")
+    let by_thread = field(w, "threads")
+    let single = field(w, "single")
+    let out = [("multi-session", text(multi, "label"), text(multi, "description"))]
+    if text(by_thread, "label") != "" {
+      out.push(("threads", text(by_thread, "label"), text(by_thread, "description")))
+    }
+    out.push(("single-session", text(single, "label"), text(single, "description")))
+    out
   }
-  ways.push(("single-session", text(single, "label"), text(single, "description")))
-  let picked = @sf.choices(
-    c,
-    key,
-    now,
+  @sf.choices_node(
+    parent,
+    fn() {
+      let (mode, _, threads) = now()
+      if threads {
+        "threads"
+      } else {
+        mode
+      }
+    },
     ways,
-    label=@sf.t("web-pages.connect.mode"),
+    fn(picked) {
+      let (_, mention, _) = @signals.untracked(now)
+      // (one each always waits for an @)
+      set(
+        match picked {
+          "threads" => ("multi-session", true, true)
+          "multi-session" => ("multi-session", true, false)
+          _ => (picked, mention, false)
+        },
+      )
+    },
+    label=fn() { @sf.t("web-pages.connect.mode") },
     extra=fn(v) {
       guard v == "single-session" else { None }
-      Some(fn() {
-        let waits = @sf.switch_row(
-          c,
-          key + "/mention",
-          @sf.t("web-pages.connect.mentionOnly"),
-          mention,
-          note=text(words, if mention { "mentionOn" } else { "mentionOff" }),
+      Some(fn(x) {
+        @sf.switch_row_node(
+          x,
+          fn() { @sf.t("web-pages.connect.mentionOnly") },
+          fn() { now().1 },
+          fn(waits) {
+            let (mode, _, _) = @signals.untracked(now)
+            set((mode, waits, false))
+          },
+          note=fn() { text(words(), if now().1 { "mentionOn" } else { "mentionOff" }) },
+          in_words=true,
         )
-        if waits != mention {
-          out.val = (mode, waits, false)
-        }
       })
     },
   )
-  if picked != now {
-    // (one each always waits for an @)
-    out.val = match picked {
-      "threads" => ("multi-session", true, true)
-      "multi-session" => ("multi-session", true, false)
-      _ => (picked, mention, false)
-    }
-  }
-  out.val
-}
-
-///|
-/// Words to press beside a row's (the ui's 13 muted); `on_press`, what pressing them does, as it is let go.
-fn cd_text_button(c : @ui.Ctx, key : String, label : String, disabled? : Bool = false, on_press~ : () -> Unit) -> Unit {
-  let id = c.id(key)
-  let b = c.box(style=cd_text_button_box, id=if disabled { 0 } else { id }, disabled~, fn() {
-    c.rich([@ui.span(label, underline=true)], style=if c.hovered(id) { cd_text_button_lit } else { cd_text_button_words })
-    |> ignore
-  })
-  c.semantics(b, Button, id~, label~, disabled~)
-  @sf.press_does(c, id, !disabled, Some(on_press))
-}
-
-///|
-/// A link in its words (underlined); `on_press`, what pressing it does, as it is let go.
-fn cd_link(c : @ui.Ctx, key : String, label : String, on_press~ : () -> Unit) -> Unit {
-  let id = c.id(key)
-  let b = c.box(style=cd_link_box, id~, fn() { c.rich([@ui.span(label, underline=true)], style=cd_link_words) |> ignore })
-  c.semantics(b, Link, id~, label~)
-  c.on_press(id, on_press)
 }
 
 ///|
@@ -1010,60 +1031,68 @@ fn cd_link(c : @ui.Ctx, key : String, label : String, on_press~ : () -> Unit) ->
 pub fn cd_mode_dialog(core : Core, station : String, item : Json?) -> Unit {
   let cv = field(item, "connect")
   let id = text(cv, "id")
-  let key = "connect-mode/" + (desk_dialogs.val + 1).to_string()
-  let next : Ref[(String, Bool, Bool)] = Ref((text(cv, "mode"), flag(cv, "requireMention"), flag(field(cv, "feishu"), "threads")))
+  let next : @signals.Signal[(String, Bool, Bool)] = @signals.signal(
+    (text(cv, "mode"), flag(cv, "requireMention"), flag(field(cv, "feishu"), "threads")),
+  )
   let change = fn() -> Json? {
-    let (mode, mention, threads) = next.val
+    let (mode, mention, threads) = next.get()
     items(item, "changes")
     .iter()
     .find_first(fn(ch) {
       text(Some(ch), "mode") == mode && flag(Some(ch), "threads") == threads && (mode == "multi-session" || flag(Some(ch), "requireMention") == mention)
     })
   }
-  open_dialog(
+  let effects = fn() { strings(change(), "effects") }
+  open_dialog_nodes(
     @sf.t("web-pages.connect.modeTitle"),
     description=@sf.t("web-pages.connect.modeLead"),
     wide=true,
-    fn(c, _) {
-      next.val = mode_choices(c, key + "/choices", field(cv, "modeWords"), next.val.0, next.val.1, next.val.2)
-      let effects = strings(change(), "effects")
-      if effects.length() > 0 {
-        c.box(style=cd_amber.then(@ui.style(bg=Data(@sf.theme().p.amber_bg))), fn() {
-          c.text(@sf.t("web-pages.connect.afterChange"), style=cd_amber_title) |> ignore
-          c.box(style=cd_effects, fn() {
-            for e in effects {
-              c.box(style=cd_effect, fn() {
-                c.text("•", style=cd_bullet) |> ignore
-                c.box(style=cd_effect_words, fn() { c.text(e, style=cd_words) |> ignore }) |> ignore
+    fn(v, _) {
+      mode_choices_node(v, fn() { field(cv, "modeWords") }, fn() { next.get() }, fn(n) { next.set(n) })
+      // (what switching does, one notice for the way chosen: another way's comes in its place whole, none when it does
+      // nothing)
+      v.show(fn() { effects().length() > 0 }, fn(sh) {
+        sh.pick(effects, fn(s, list) {
+        s.box(fn(a) {
+          @sf.style_node(a, fn() { cd_amber.then(@ui.style(bg=Data(@sf.theme().p.amber_bg))) })
+          @sf.words_node(a, fn() { @sf.t("web-pages.connect.afterChange") }, fn() { cd_amber_title }) |> ignore
+          a.box(fn(l) {
+            @sf.style_node(l, fn() { cd_effects })
+            l.each(fn() { list }, fn(x) { x }, at_once=true, fn(e, x) {
+              @sf.style_node(e, fn() { cd_effect })
+              @sf.words_node(e, fn() { "•" }, fn() { cd_bullet }) |> ignore
+              e.box(fn(w) {
+                @sf.style_node(w, fn() { cd_effect_words }, in_row=true)
+                let words = x.untracked()
+                @sf.words_node(w, fn() { words }, fn() { cd_words }) |> ignore
               })
               |> ignore
-            }
+            })
           })
           |> ignore
         })
         |> ignore
-      }
+        })
+      })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let ch = change()
-      @sf.button(c, text(ch, "action"), key=key + "/save", tone=Primary, disabled=!flag(ch, "changed"), on_press=fn() {
-        let (mode, mention, threads) = next.val
-        let input = [("mode", str(mode)), ("requireMention", Json::boolean(mention))]
-        if text(cv, "kind") == "feishu" {
-          input.push(("feishu", obj([("threads", Json::boolean(threads))])))
-        }
-        cd_put(
-          core,
-          station,
-          id,
-          obj(input),
-          done=@sf.t("web-pages.connect.modeChanged"),
-        )
-        shut()
-      }) |> ignore
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { text(change(), "action") },
+        fn() {
+          let (mode, mention, threads) = next.get()
+          let input = [("mode", str(mode)), ("requireMention", Json::boolean(mention))]
+          if text(cv, "kind") == "feishu" {
+            input.push(("feishu", obj([("threads", Json::boolean(threads))])))
+          }
+          cd_put(core, station, id, obj(input), done=@sf.t("web-pages.connect.modeChanged"))
+          shut()
+        },
+        tone=Primary,
+        disabled=fn() { !flag(change(), "changed") },
+      )
+      |> ignore
     },
   )
 }
@@ -1074,53 +1103,46 @@ pub fn cd_mode_dialog(core : Core, station : String, item : Json?) -> Unit {
 fn cd_choose_dialog(core : Core, here : Here, station : String, item : Json?) -> Unit {
   let cv = field(item, "connect")
   let id = text(cv, "id")
-  let key = "connect-session/" + (desk_dialogs.val + 1).to_string()
-  let choice : Ref[String] = Ref(
+  let choice : @signals.Signal[String] = @signals.signal(
     match opt_text(cv, "session") {
       Some(s) => s
       None => "new"
     },
   )
-  let title = field_of(key + "/title")
-  open_dialog(
+  let title = @ui.Field::new()
+  let options = fn() {
+    let out = [("new", @sf.t("web-pages.connect.newSession"), @sf.t("web-pages.connect.newSessionLead"))]
+    // (the sessions it could go into: asked ahead by its page while 更换 shows (cd_run_node), here as it opens)
+    for s in @settings.connect_candidates(core, here, station, id).unwrap_or([]) {
+      let sv = Some(s)
+      let named = if flag(sv, "current") {
+        text(sv, "titleText") + " · " + @sf.t("web-pages.connect.current")
+      } else {
+        text(sv, "titleText")
+      }
+      out.push((text(sv, "key"), named, text(sv, "description")))
+    }
+    out
+  }
+  open_dialog_nodes(
     @sf.t("web-pages.connect.chooseTitle"),
     description=@sf.t("web-pages.connect.chooseLead", args=[("name", text(cv, "name"))]),
     wide=true,
-    fn(c, _) {
-      let options = [("new", @sf.t("web-pages.connect.newSession"), @sf.t("web-pages.connect.newSessionLead"))]
-      // (the sessions it could go into: asked ahead by its page while 更换 shows (cd_run_node), here as it opens)
-      for s in @settings.connect_candidates(core, here, station, id).unwrap_or([]) {
-        let sv = Some(s)
-        let named = if flag(sv, "current") {
-          text(sv, "titleText") + " · " + @sf.t("web-pages.connect.current")
-        } else {
-          text(sv, "titleText")
-        }
-        options.push((text(sv, "key"), named, text(sv, "description")))
-      }
-      c.box(style=cd_session_choices, fn() {
-        choice.val = @sf.choices(c, key + "/choices", choice.val, options, label=@sf.t("web-pages.connect.session"), extra=fn(v) {
-          guard v == "new" else { None }
-          Some(fn() {
-            @sf.input(c, key + "/title-input", placeholder=@sf.t("web-pages.connect.newSessionPlaceholder"), field=title)
-            |> ignore
-          })
-        })
+    fn(v, _) {
+      @sf.choices_node(v, fn() { choice.get() }, options, fn(c) { choice.set(c) }, label=fn() { @sf.t("web-pages.connect.session") }, extra=fn(
+        k,
+      ) {
+        guard k == "new" else { None }
+        Some(fn(x) { @sf.input_node(x, title, placeholder=@sf.t("web-pages.connect.newSessionPlaceholder")) |> ignore })
       })
-      |> ignore
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let fresh = choice.val == "new"
-      @sf.button(
-        c,
-        @sf.t(if fresh { "web-pages.connect.createUse" } else { "web-pages.connect.useThis" }),
-        key=key + "/use",
-        tone=Primary,
-        disabled=opt_text(cv, "session") == Some(choice.val),
-        on_press=fn() {
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t(if choice.get() == "new" { "web-pages.connect.createUse" } else { "web-pages.connect.useThis" }) },
+        fn() {
+          let fresh = choice.get() == "new"
           @settings.act(
             core,
             @sf.t("web-pages.connect.switch"),
@@ -1128,14 +1150,17 @@ fn cd_choose_dialog(core : Core, here : Here, station : String, item : Json?) ->
             obj([
               ("station", str(station)),
               ("connect", str(id)),
-              ("session", if fresh { Json::null() } else { str(choice.val) }),
+              ("session", if fresh { Json::null() } else { str(choice.get()) }),
               ("title", str(title.text())),
             ]),
             done=@sf.t(if fresh { "web-pages.connect.sessionCreated" } else { "web-pages.connect.sessionSwitched" }),
           )
           shut()
         },
-      ) |> ignore
+        tone=Primary,
+        disabled=fn() { opt_text(cv, "session") == Some(choice.get()) },
+      )
+      |> ignore
     },
   )
 }
@@ -1154,65 +1179,75 @@ let cd_all_sessions : Map[String, Bool] = Map([])
 /// read; 保存 once it is another, closing as it goes.
 fn cd_owner_dialog(core : Core, here : Here, station : String, cv : Json?) -> Unit {
   let id = text(cv, "id")
-  let key = "connect-owner/" + (desk_dialogs.val + 1).to_string()
-  let people = items(workspace_view(core, here).value, "members")
+  let people = fn() { items(workspace_view(core, here).value, "members") }
   let current = text(field(cv, "createdBy"), "id")
-  let owner : Ref[String] = Ref(
+  let first = people()
+  let owner : @signals.Signal[String] = @signals.signal(
     if current != "" {
       current
     } else {
-      match people.get(0) {
+      match first.get(0) {
         Some(p) => text(Some(p), "email")
         None => ""
       }
     },
   )
-  let email = field_of(key + "/email")
-  if people.length() == 0 {
-    email.set(owner.val)
+  let email = @ui.Field::new()
+  if first.length() == 0 {
+    email.set(owner.get())
   }
-  open_dialog(
+  // (the one picked, or the email typed while the members are not read)
+  let to = fn() {
+    let o = if people().length() > 0 { owner.get() } else { email.text() }
+    o.trim(chars=" \t\n").to_owned()
+  }
+  open_dialog_nodes(
     @sf.t("web-pages.connect.changeOwner"),
     description=@sf.t("web-pages.connect.ownerLead"),
-    fn(c, _) {
-      let people = items(workspace_view(core, here).value, "members")
-      if people.length() > 0 {
-        @sf.field(c, @sf.t("web-pages.connect.ownerLabel"), fn() {
-          @sf.select(
-            c,
-            key + "/select",
-            owner.val,
-            people.map(fn(p) {
-              let pv = Some(p)
-              let mail = text(pv, "email")
-              (mail, if text(pv, "name") != "" { @sf.t("web-pages.connect.person", args=[("name", text(pv, "name")), ("email", mail)]) } else { mail })
-            }),
-            fn(v) { owner.val = v },
-            label=@sf.t("web-pages.connect.ownerLabel"),
-            w=cd_select_w,
-          )
-        })
-      } else {
-        @sf.field(c, @sf.t("web-pages.connect.ownerEmail"), fn() {
-          owner.val = @sf.input(c, key + "/email-input", placeholder="name@example.com", field=email).text
-        })
-      }
-    },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let to = owner.val.trim(chars=" \t\n").to_owned()
-      @sf.button(c, @sf.t("common.save"), key=key + "/save", tone=Primary, disabled=to == "" || owner.val == current, on_press=fn() {
-        let people = items(workspace_view(core, here).value, "members")
-        let chosen = people.iter().find_first(fn(p) { text(Some(p), "email").to_lower() == to.to_lower() })
-        let name = match chosen {
-          Some(p) if text(Some(p), "name") != "" => text(Some(p), "name")
-          _ => to
+    fn(v, _) {
+      v.pick(fn() { people().length() > 0 }, fn(p, listed) {
+        if listed {
+          @sf.field_node(p, fn() { @sf.t("web-pages.connect.ownerLabel") }, fn(f) {
+            @sf.select_node(
+              f,
+              fn() { owner.get() },
+              fn() {
+                people().map(fn(m) {
+                  let pv = Some(m)
+                  let mail = text(pv, "email")
+                  (mail, if text(pv, "name") != "" { @sf.t("web-pages.connect.person", args=[("name", text(pv, "name")), ("email", mail)]) } else { mail })
+                })
+              },
+              fn(s) { owner.set(s) },
+              label=fn() { @sf.t("web-pages.connect.ownerLabel") },
+            )
+          })
+        } else {
+          @sf.field_node(p, fn() { @sf.t("web-pages.connect.ownerEmail") }, fn(f) {
+            @sf.input_node(f, email, placeholder="name@example.com") |> ignore
+          })
         }
-        cd_put(core, station, id, obj([("owner", obj([("id", str(to)), ("name", str(name))]))]), done=@sf.t("web-pages.connect.ownerChanged"))
-        shut()
-      }) |> ignore
+      })
+    },
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.save") },
+        fn() {
+          let to = to()
+          let chosen = people().iter().find_first(fn(p) { text(Some(p), "email").to_lower() == to.to_lower() })
+          let name = match chosen {
+            Some(p) if text(Some(p), "name") != "" => text(Some(p), "name")
+            _ => to
+          }
+          cd_put(core, station, id, obj([("owner", obj([("id", str(to)), ("name", str(name))]))]), done=@sf.t("web-pages.connect.ownerChanged"))
+          shut()
+        },
+        tone=Primary,
+        disabled=fn() { to() == "" || to() == current },
+      )
+      |> ignore
     },
   )
 }
@@ -1222,36 +1257,39 @@ fn cd_owner_dialog(core : Core, here : Here, station : String, cv : Json?) -> Un
 /// reconnects; the dialog stays while it is, why it was refused under the field.
 fn cd_secret_dialog(core : Core, station : String, cv : Json?) -> Unit {
   let id = text(cv, "id")
-  let key = "connect-secret/" + (desk_dialogs.val + 1).to_string()
-  let secret = field_of(key + "/secret")
-  let error : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
-  open_dialog(
+  let secret = @ui.Field::new()
+  let error : @signals.Signal[String] = @signals.signal("")
+  let typed = fn() { secret.text().trim(chars=" \t\n").to_owned() }
+  open_dialog_nodes(
     @sf.t("web-pages.connect.feishu.replace"),
     description=@sf.t("web-pages.connect.feishu.replaceLead"),
-    fn(c, _) {
-      @sf.field(c, "App Secret", error=error.get(), fn() {
-        @sf.input(c, key + "/secret-input", placeholder=text(field(cv, "feishu"), "appSecret"), secret=true, field=secret)
-        |> ignore
+    fn(v, _) {
+      @sf.field_node(v, fn() { "App Secret" }, error=fn() { error.get() }, fn(f) {
+        @sf.input_node(f, secret, placeholder=text(field(cv, "feishu"), "appSecret"), secret=true, label="App Secret") |> ignore
       })
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key=key + "/cancel", tone=Ghost, on_press=fn() {
-        shut()
-      }) |> ignore
-      let typed = secret.text().trim(chars=" \t\n").to_owned()
-      let saving = is_doing(core, ["feishu.putSecret"], [("station", station), ("id", id)])
-      @sf.button(c, @sf.t("web-pages.connect.saveReconnect"), key=key + "/save", tone=Primary, busy=saving, disabled=typed == "", on_press=fn() {
-        error.set("")
-        (core.call)("feishu.putSecret", obj([("station", str(station)), ("id", str(id)), ("appSecret", str(typed))]), fn(r) {
-          match r {
-            Ok(_) => {
-              (core.say)(@sf.t("web-pages.connect.feishu.secretSaved"))
-              shut()
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.connect.saveReconnect") },
+        fn() {
+          error.set("")
+          (core.call)("feishu.putSecret", obj([("station", str(station)), ("id", str(id)), ("appSecret", str(typed()))]), fn(r) {
+            match r {
+              Ok(_) => {
+                (core.say)(@sf.t("web-pages.connect.feishu.secretSaved"))
+                shut()
+              }
+              Err(e) => error.set(error_text(e))
             }
-            Err(e) => error.set(error_text(e))
-          }
-        })
-      }) |> ignore
+          })
+        },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["feishu.putSecret"], [("station", station), ("id", id)]) },
+        disabled=fn() { typed() == "" },
+      )
+      |> ignore
     },
   )
 }
@@ -1264,9 +1302,6 @@ let cd_icon : Double = 14.0
 
 ///|
 let cd_kind_icon : Double = 13.0
-
-///|
-let cd_select_w : Double = 280.0
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1302,30 +1337,12 @@ let cd_effect_words : @ui.Style = @ui.style(w=@sf.grow)
 let cd_bullet : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Fg, wrap=false)
 
 ///|
-/// textButton: underlined (here the muted ink, the words' under the pointer); inlineLink: the accent's ink.
-// kept across runs: a value (no field of it changes)
-let cd_text_button_box : @ui.Style = @ui.css("disabled{opacity=O55}")
-
-///|
 // kept across runs: a value (no field of it changes)
 let cd_text_button_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
 let cd_text_button_lit : @ui.TextStyle = cd_text_button_words.then(@ui.text_style(color=Fg))
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_link_box : @ui.Style = @ui.css("")
-
-///|
-// kept across runs: a value (no field of it changes)
-let cd_link_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=AccentText)
-
-///|
-/// The sessions to choose from (sessionChoices: 52vh at most, scrolling).
-// kept across runs: a value (no field of it changes)
-let cd_session_choices : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// What is wrong on its callout (the ui's 13, the words' ink).

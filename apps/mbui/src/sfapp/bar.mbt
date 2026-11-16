@@ -2554,11 +2554,8 @@ fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit 
         Some(r) => {
           // under the top bar, which names it; over the bottom bar
           let top = status_top() + bar_h + 8.0
-          let frame : PageFrame = { back: None, top, foot: nav_foot() + bar_room_now(), named: true }
-          if !@sfdesk.setting_route(c, src, w, r, frame) {
-            let core = settings_core(src, w)
-            @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
-          }
+          let core = settings_core(src, w)
+          @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
         }
         None => ()
       }

@@ -386,7 +386,27 @@ fn narrow_page_node(
   v.box(made_for=loc, fn(sc) {
     sc.grow(Is(1.0)) |> ignore
     // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-    sc.scrolls_window(scroll, items, bar=@ui.tree_scroll_bar(), est=pg_block_est, at_once=true, near_foot?, fn(s, item) {
+    // (what stands over it (a status bar) coming to another height after the page is laid out while it is at its top:
+    // its top brought to the top again, back and its title under it, never held where it was read, under the bar)
+    let place : @view.ListPlace[PageItem] = @view.ListPlace::new()
+    let top_was = Ref(@signals.untracked(fn() { frame().top }))
+    sc.reacts(fn() { frame().top }, fn(top) {
+      if top != top_was.val {
+        top_was.val = top
+        if top > 0.0 && scroll.at(sc.tree) <= 0.5 {
+          place.bring(Top)
+        }
+      }
+    })
+    sc.scrolls_window(
+      scroll,
+      items,
+      bar=@ui.tree_scroll_bar(),
+      est=pg_block_est,
+      at_once=true,
+      near_foot?,
+      place~,
+      fn(s, item) {
       with_look(Narrow, fn() {
         match item {
           // under what stands over it (a status bar)
@@ -746,7 +766,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 /// middle; `below` under that while `below_open` says it is any of the way open (a room opening on it, its row growing
 /// round it: @motion.reveal's). One that `acts` (does something at once where it is): its title in the link's ink, no
 /// chevron. Lit under the hand, rippling under a finger, `press` done as it is pressed; going nowhere where not `goes`
-/// (a value said: none of that). `note_cut`: its note one line, cut short (what is in a memory). `title_after` after its
+/// (a value said: none of that). `note_cut`: its note one line, cut short (what is in a memory); `note_own_width`: that
+/// line as wide as its words (the row's width at most), clear of what is at the row's end over it. `title_after` after its
 /// title on its line while `title_after_shown` says (a tag: whose it is), its title cut short where the line has not
 /// the room for both. `folds`: it
 /// folds open what follows it, its chevron down, up while that is open (as it says), read out so. `tail` after what it
@@ -787,6 +808,7 @@ pub fn link_row_node(
   below? : (@view.View) -> Unit,
   below_open? : () -> Double = fn() { 0.0 },
   note_cut? : Bool = false,
+  note_own_width? : Bool = false,
   title_after? : (@view.View) -> Unit,
   title_after_shown? : () -> Bool = fn() { true },
   folds? : () -> Bool,
@@ -825,6 +847,7 @@ pub fn link_row_node(
     below?,
     below_open~,
     note_cut~,
+    note_own_width~,
     title_after?,
     title_after_shown~,
     folds?,
@@ -869,6 +892,7 @@ pub fn link_row_opens_node(
   below? : (@view.View) -> Unit,
   below_open? : () -> Double = fn() { 0.0 },
   note_cut? : Bool = false,
+  note_own_width? : Bool = false,
   title_after? : (@view.View) -> Unit,
   title_after_shown? : () -> Bool = fn() { true },
   folds? : () -> Bool,
@@ -907,6 +931,7 @@ pub fn link_row_opens_node(
     below?,
     below_open~,
     note_cut~,
+    note_own_width~,
     title_after?,
     title_after_shown~,
     folds?,
@@ -948,6 +973,7 @@ fn link_row_made(
   below? : (@view.View) -> Unit,
   below_open? : () -> Double = fn() { 0.0 },
   note_cut? : Bool = false,
+  note_own_width? : Bool = false,
   title_after? : (@view.View) -> Unit,
   title_after_shown? : () -> Bool = fn() { true },
   folds? : () -> Bool,
@@ -1170,7 +1196,18 @@ fn link_row_made(
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
-        styled_words(n, note, fn() { note_look(if note_cut_now() { pg_link_note.then(cut_words) } else { pg_link_note }) }) |> ignore
+        // (`note_own_width`, one line cut short: as wide as its words, the row's width at most, cut there (an old view's
+        // line of words its own width), so nothing at the row's end over it is over its box)
+        if note_own_width {
+          n.row(Is(true)).min_width(Is(Some(0.0))) |> ignore
+          n.box(fn(w) {
+            w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            styled_words(w, note, fn() { note_look(pg_link_note.then(cut_words)) }) |> ignore
+          })
+          |> ignore
+        } else {
+          styled_words(n, note, fn() { note_look(if note_cut_now() { pg_link_note.then(cut_words) } else { pg_link_note }) }) |> ignore
+        }
       })
       // (what is wrong, in red under it: link_row's `trouble`)
       words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { pg_link_note.then(bad) }) |> ignore })
@@ -2058,4 +2095,60 @@ pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.V
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// A figure (a code to scan, a picture) and the words about it (figure_words', as nodes) in `parent`: wide, the words
+/// beside it across their middle, 24 apart; narrow, under it, 16 apart, as wide as the page. `figure` makes the one,
+/// `words` the other, each in the box given.
+#callsite(autofill(loc))
+pub fn figure_words_node(
+  parent : @view.View,
+  figure : (@view.View) -> Unit,
+  words : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  let narrow = look_node(parent) is Narrow
+  parent.box(made_for=loc, fn(b) {
+    style_node(b, fn() { if narrow { figure_under } else { figure_beside } })
+    figure(b)
+    b.box(fn(w) {
+      style_node(w, fn() { if narrow { figure_words_under } else { figure_words_beside } }, in_row=!narrow)
+      words(w)
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// What stands beside the first line of a block of words (an icon, a mark, a number in its circle, a radio), made by
+/// `make` in `parent`: as tall as a line of words `size` (its `leading` where it says one) at the system's size of
+/// words, what it holds across that line's middle both ways, so it sits on that line whatever is under it (the user,
+/// 2026-11-14: 「不应该一个图标或者一行内容跟多行做垂直居中对齐」). The node.
+#callsite(autofill(loc))
+pub fn first_line_node(
+  parent : @view.View,
+  size : @ui.TextSize,
+  make : (@view.View) -> Unit,
+  leading? : @ui.Leading,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(l) {
+    l
+    .shrink(Is(0.0))
+    .lies_along(Is(Middle))
+    .lines_up(Is(Some(Middle)))
+    .height(By(fn() {
+      l.words_redone() |> ignore
+      let th = @ui.tree_theme()
+      let line = match leading {
+        Some(d) => th.leading(d).unwrap_or(th.text_size(size).1)
+        None => th.text_size(size).1
+      }
+      Some(node_sp(l, line))
+    }))
+    |> ignore
+    make(l)
+  })
 }

@@ -26,15 +26,6 @@ fn page_rows_of(key : String) -> @ui.ListRows[(String, () -> Unit)] {
 }
 
 ///|
-/// What a block of a page shows, said as its data (its version on its page's list: scroll_page's `versions`).
-fn json_sign(v : Json?) -> String {
-  match v {
-    Some(j) => j.stringify()
-    None => ""
-  }
-}
-
-///|
 /// Theme.kt's `warn`, the same in light and dark.
 let warn : Int64 = 0xD9962BFFL
 
@@ -303,47 +294,6 @@ fn gap(c : @ui.Ctx, h : Double) -> Unit {
 }
 
 ///|
-/// Back, a chevron in the accent and where it goes back to in a link's ink. `on_press` as it is pressed.
-fn nav_back(c : @ui.Ctx, label : String, on_press~ : () -> Unit) -> Unit {
-  @sf.nav_back(c, "settings-back", label, on_press~)
-}
-
-///|
-/// Back at the top of a large-title page: `on_back` when it is said, else the page popped;
-/// `trailing` at its other end (a ＋).
-fn top_back(c : @ui.Ctx, core : Core, label : String, trailing? : () -> Unit, on_back? : () -> Unit) -> Unit {
-  if wide.val {
-    // (the large title under it is the head's: large_title)
-    top_trailing.val = trailing
-    top_on_back.val = on_back
-    top_label.val = label
-    return
-  }
-  // under the status bar (TopBack: windowInsetsPadding(statusBars))
-  if status_top.val > 0.0 {
-    gap(c, status_top.val)
-  }
-  c.box(style=top_back_line, fn() {
-    nav_back(c, label, on_press=fn() {
-      match on_back {
-        Some(f) => f()
-        None => (core.pop)()
-      }
-    })
-    match trailing {
-      Some(f) => f()
-      None => ()
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Back's line at the top of a large-title page: 18 in, 6 over, 4 under (with its title, page_node's pg_back_x).
-// kept across runs: a value (no field of it changes)
-let top_back_line : @ui.Style = @ui.css("row w=Full pl=S4_5 pr=S2_5 pt=S1_5 pb=S1 align=ACenter justify=JBetween")
-
-///|
 /// What a large-title page's top had (top_back), for its head in the wide frame (large_title).
 let top_trailing : Ref[(() -> Unit)?] = Ref(None)
 
@@ -553,57 +503,6 @@ let place_body : @ui.Style = page_fill.then(@ui.css("pt=S1"))
 let root_body : @ui.Style = page_fill.then(@ui.css("pt=S2"))
 
 ///|
-/// A page's large title: `small`'s line over the big word when it is said, the word after `lead`
-/// when there is one (a workspace's mark). (LargeTitle's letterSpacing -0.6sp: mbui's words have no spacing.)
-fn large_title(
-  c : @ui.Ctx,
-  big : String,
-  small? : String = "",
-  lead? : () -> Unit,
-  about? : String = "",
-  says? : String = "",
-  trailing? : () -> Unit,
-) -> Unit {
-  if wide.val {
-    ignore(lead)
-    // what stands at the title's end: given here (a desktop page's actions), else as top_back left it
-    let trailing = match trailing {
-      Some(f) => Some(f)
-      None => top_trailing.val
-    }
-    match frame_core.val {
-      Some(core) =>
-        wide_head(c, core, top_label.val, big, trailing?, inside=true, on_back?=top_on_back.val, about~, lead=says)
-      None => ()
-    }
-    top_trailing.val = None
-    top_on_back.val = None
-    return
-  }
-  c.box(style=large_title_box, fn() {
-    if small != "" {
-      // Parts.kt:558 (13sp)
-      c.text(small, style=@sf.secondary) |> ignore
-    }
-    c.box(style=title_line, fn() {
-      match lead {
-        Some(f) => f()
-        None => ()
-      }
-      // Parts.kt:559 (32sp)
-      c.text(big, style=@sf.large_title) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// LargeTitle: 24 in (where the page's words under it start), 6 under it; its small line over its word's.
-// kept across runs: a value (no field of it changes)
-let large_title_box : @ui.Style = @ui.css("w=Full pl=S6 pr=S4 pb=S1_5")
-
-///|
 /// A wide page's own words over its cards (a section's heading, its large title) in a panel of its own: on the panel's
 /// words' line (panel_words), its cards 16 in; their 16 elsewhere.
 fn wide_words_in_pane() -> @ui.Style {
@@ -732,52 +631,12 @@ let wide_section_title : @ui.TextStyle = @ui.text_style(size=Xl2, weight=Semibol
 let wide_section_sub : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)
 
 ///|
-/// A page's note under its title, in a line or two.
-fn page_note(c : @ui.Ctx, words : String) -> Unit {
-  if wide.val {
-    c.box(style=wide_page_note, fn() { c.text(words, style=wide_lead) |> ignore }) |> ignore
-    return
-  }
-  c.box(style=page_note_box, fn() {
-    // SettingParts.kt:266 (13sp)
-    c.text(words, style=@sf.secondary.then(@sf.full_words)) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// The wide frame's lead under the title (pages.css.ts pageHead p: 13, muted).
-// kept across runs: a value (no field of it changes)
-let wide_page_note : @ui.Style = @ui.css("w=Full px=S4 pb=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let wide_lead : @ui.TextStyle = @ui.text_style(size=Body, color=Muted, w=Full)
-
-///|
-/// PageNote's room: 24 in, 10 under it.
-// kept across runs: a value (no field of it changes)
-let page_note_box : @ui.Style = @ui.css("w=Full px=S6 pb=S2_5")
-
-///|
-/// What stands in a card's foot corners (the ladder's: @sf.pane_corner), so how far in its foot is: a
-/// capsule (a library button of its own height), concentric with the card's corner; or nothing with a ground, its
-/// words card_pad in.
-priv enum Foot {
-  Words
-  UiCapsule
-}
-
-///|
 /// A card on the page: 12 in from the sides, 10 under it, its words 20 in; round by the ladder's card
-/// corner, whatever stands in its corners concentric with it (`foot`: what stands in its foot corners); tapped when
-/// `key` is given, `on_press` what tapping it does, as it is let go (@sf.press_does).
-fn card(c : @ui.Ctx, body : () -> Unit, key? : String = "", foot? : Foot = Words, on_press? : () -> Unit) -> Unit {
+/// corner, its words in its foot corners; tapped when `key` is given, `on_press` what tapping it does, as it is let go
+/// (@sf.press_does).
+fn card(c : @ui.Ctx, body : () -> Unit, key? : String = "", on_press? : () -> Unit) -> Unit {
   let id = if key == "" { 0 } else { c.id(key) }
-  let ground = match foot {
-    Words => card_ground
-    UiCapsule => card_ui_foot_ground
-  }
+  let ground = card_ground
   c.box(style=if wide.val { wide_card_room } else { card_room_now() }, fn() {
     c.box(style=ground, id~, fn() {
       body()
@@ -817,11 +676,6 @@ pub let settings_button_h : Double = 38.0
 /// words after it: its words where they were).
 // kept across runs: a value (no field of it changes)
 pub let foot_across : @ui.Style = @sf.foot_across(settings_button_h)
-
-///|
-/// A card with a library button in its foot corners, in from the card by its own height.
-// kept across runs: a value (no field of it changes)
-let card_ui_foot_ground : @ui.Style = card_ground.then(@sf.foot_pad(@sf.button_height()))
 
 ///|
 /// Rows on one rounded card, no lines between them (RowsCard): its rows know they are on one
@@ -1303,67 +1157,6 @@ fn place_empty(c : @ui.Ctx, words : String, note? : String = "") -> Unit {
 /// PlaceEmpty's room: 32 in, 40 over and under, its lines 8 apart in its middle.
 // kept across runs: a value (no field of it changes)
 let place_empty_box : @ui.Style = @ui.css("w=Full px=S8 py=S10 gap=S2 align=ACenter")
-
-///|
-/// A main action as wide as where it is: 46 high; primary in ink (red when `danger`), the
-/// other the ink at 8%.
-fn wide_button(
-  c : @ui.Ctx,
-  key : String,
-  label : String,
-  primary : Bool,
-  busy? : Bool = false,
-  enabled? : Bool = true,
-  danger? : Bool = false,
-  on_press? : () -> Unit,
-) -> Unit {
-  let t = @sf.theme()
-  let id = c.id(key)
-  let ground = if !primary {
-    @sf.alpha(t.p.text, 0.08)
-  } else if danger {
-    if enabled {
-      t.p.red
-    } else {
-      @sf.alpha(t.p.red, 0.4)
-    }
-  } else if !enabled {
-    t.p.line
-  } else {
-    t.p.text
-  }
-  let ink = if primary && danger {
-    0xFFFFFFFFL
-  } else if primary {
-    t.p.bg
-  } else {
-    t.p.text
-  }
-  // (46 high, off the scale; its ground and ink from what it is)
-  c.box(style=wide_button_box, h=Px(wide_button_h), bg=ground, id~, fn() {
-    if busy {
-      @sf.spinner(c, size=14.0, ring=@sf.alpha(ink, 0.3), arc=ink) |> ignore
-    }
-    // Security.kt:127 (15sp)
-    c.text(label, style=@sf.body.then(@sf.strong).then(@sf.one_line), color=ink) |> ignore
-    // Security.kt WideButton: clickable over its capsule
-    if enabled && !busy {
-      @motion.ripple(c, id, wide_button_h / 2.0)
-    }
-  })
-  |> ignore
-  @sf.press_does(c, id, enabled && !busy, on_press)
-}
-
-///|
-/// A wide button's height.
-let wide_button_h : Double = 46.0
-
-///|
-/// WideButton: a capsule as wide as where it is, its words in its middle, 20 from its ends however narrow it is
-/// (Security.kt WideButton: padding(horizontal = 20.dp)).
-// kept across runs: a value (no field of it changes)
-let wide_button_box : @ui.Style = @ui.css("row w=Full px=S5 radius=Full gap=S2 align=ACenter justify=JCenter")
 
 ///|
 /// A text button's ground under the finger past its words (Controls.kt pressText: PRESS_OUT on each side, half that

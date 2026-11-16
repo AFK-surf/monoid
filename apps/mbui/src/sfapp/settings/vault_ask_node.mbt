@@ -56,6 +56,7 @@ pub fn vault_foot_node(
   foot~ : Bool,
   describe? : () -> Bool = fn() { false },
   remove? : () -> Bool = fn() { false },
+  extra? : (@view.View) -> Unit,
 ) -> Unit {
   let lasts = fn() {
     match answer() {
@@ -362,6 +363,11 @@ pub fn vault_foot_node(
       acts(f)
       if beside {
         choice(f)
+      }
+      // (after the buttons: the vault page's 打开对话)
+      match extra {
+        Some(x) => x(f)
+        None => ()
       }
     })
     |> ignore
@@ -689,4 +695,42 @@ pub fn vault_outcome_node(
   history? : ((@view.View) -> Unit)? = None,
 ) -> Unit {
   ask_outcome_node(v, fn() { status() == "granted" }, fn() { vault_outcome_words(ask(), status(), scope()) }, inline, history~)
+}
+
+///|
+/// Request `request()` in workspace `ws()` as a card in `v` (vault_ask's, as nodes), as the vaults topic lists it (the
+/// vault page's waiting requests, the viewer's to answer): what is asked (`ask()`), and its answer at its foot as that
+/// topic says it, `extra` after its buttons (its chat's way there).
+pub fn vault_request_node(
+  v : @view.View,
+  core : Core,
+  ws : () -> String,
+  request : () -> String,
+  ask : () -> Asked,
+  extra? : (@view.View) -> Unit,
+) -> Unit {
+  // (how it is answered here, worked out once for each change of the vaults' view: what its foot shows reads that alone,
+  // not the view whole as another request or a vault's count changes)
+  let said_now = @signals.computed(fn(_) { topic_answer(core, ws(), request(), true, None) })
+  let said = fn() { said_now.get() }
+  // (in its card's foot corners where it is answered here: vault_ask's `foot`)
+  let foot = @signals.untracked(said) is Some((Approve(_) | SetUp, _, _))
+  @sf.ask_card_node(v, fn(k) {
+    vault_asked_node(k, ask, false)
+    vault_foot_node(
+      k,
+      core,
+      ws,
+      request,
+      fn() { said().map(fn(s) { s.0 }) },
+      fn() { said().map(fn(s) { s.1 }).unwrap_or(false) },
+      fn() { said().bind(fn(s) { s.2 }) },
+      fn() { (ask().timeout_kind, ask().timeout_seconds) },
+      foot~,
+      describe=fn() { ask().describe },
+      remove=fn() { ask().remove },
+      extra?,
+    )
+  })
+  |> ignore
 }

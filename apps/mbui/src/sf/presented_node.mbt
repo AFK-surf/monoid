@@ -244,7 +244,8 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             // (a step further in from another presenter's panel: back from it back to that one)
             step_back?=if p.under is Some(_) { Some(fn() { dismissed_now(serial, back=true) }) } else { None },
             // (a page back, where it is past its first)
-            page_back=fn() { panel_pop(p) },
+            // (where its steps follow a flow kept elsewhere, told to that flow: flow_back)
+            page_back=fn() { flow_back(p) || panel_pop(p) },
             stood=fn() { p.stands },
             // (how tall it stands as it closes, for what comes in its place: close_from)
             stands_by=fn(f) { p.stands_now = Some(f) },

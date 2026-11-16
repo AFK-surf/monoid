@@ -1229,51 +1229,64 @@ fn open_sample() -> Json {
 /// 关闭安全模式？: what turning it off gives up, a line each, and the workspace's name typed
 /// before it can go (`lock.disable`, Enter too); written in as it opens.
 pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
-  let key = "lock-off/" + (desk_dialogs.val + 1).to_string()
-  let named = fn() { field_of(key).text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
-  let typed_in = Ref(false)
-  let go = fn(c : @ui.Ctx, shut : () -> Unit) {
-    c.blur()
+  let typed = @ui.Field::new()
+  let named = fn() { typed.text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
+  let go = fn(v : @view.View, shut : () -> Unit) {
+    v.focus_let_go()
     shut()
     @settings.act(core, @sf.t("web-pages.security.turnOff"), "lock.disable", obj([("workspace", str(ws))]))
   }
-  open_dialog(
+  open_dialog_nodes(
     @sf.t("web-pages.security.turnOffTitle"),
     description=@sf.t("web-pages.security.turnOffBody"),
-    fn(c, shut) {
-      c.box(style=sec_points, fn() {
-        sec_off_point(c, "server", @sf.t("web-pages.security.nowRisk"))
-        sec_off_point(c, "devices", @sf.t("web-pages.security.turnOffApproval"))
-        sec_off_point(c, "key", @sf.t("web-pages.security.turnOffVault"))
+    fn(v, shut) {
+      v.box(fn(l) {
+        @sf.style_node(l, fn() { sec_points })
+        sec_off_point_node(l, "server", fn() { @sf.t("web-pages.security.nowRisk") })
+        sec_off_point_node(l, "devices", fn() { @sf.t("web-pages.security.turnOffApproval") })
+        sec_off_point_node(l, "key", fn() { @sf.t("web-pages.security.turnOffVault") })
       })
       |> ignore
-      @sf.field(c, @sf.t("web-pages.security.turnOffType", args=[("name", name)]), fn() {
-        @sf.input(c, key, field=field_of(key), on_submit=fn(_) { if named() { go(c, shut) } }) |> ignore
+      let label = @sf.t("web-pages.security.turnOffType", args=[("name", name)])
+      @sf.field_node(v, fn() { label }, fn(f) {
+        // (written in as it opens: the keyboard's focus on it, on a sheet too, as the old dialog's focus_editor)
+        @sf.panel_opens_in_node(@sf.input_node(f, typed, label~, submitted=fn(_) { if named() { go(f, shut) } }))
       })
-      if !typed_in.val {
-        typed_in.val = true
-        c.focus_editor(key)
-      }
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key="off-cancel", tone=Ghost, on_press=fn() {
-        c.blur()
-        shut()
-      }) |> ignore
-      @sf.button(c, @sf.t("web-pages.security.turnOff"), key="off-go", tone=DangerSolid, disabled=!named(), on_press=fn() {
-        go(c, shut)
-      }) |> ignore
+    fn(v, shut) {
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.cancel") },
+        fn() {
+          v.focus_let_go()
+          shut()
+        },
+        tone=Ghost,
+      )
+      |> ignore
+      @sf.button_node(v, fn() { @sf.t("web-pages.security.turnOff") }, fn() { go(v, shut) }, tone=DangerSolid, disabled=fn() { !named() })
+      |> ignore
     },
   )
 }
 
 ///|
-/// One thing turning it off gives up: its icon, muted, beside a line of it.
-fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
-  let t = @sf.theme()
-  c.box(style=sec_point_line, fn() {
-    c.box(style=sec_point_icon, fn() { @sf.icon(c, icon, size=sec_point_glyph, color=t.p.muted) |> ignore }) |> ignore
-    c.box(style=sec_point_words, fn() { c.text(words, style=sec_point_text) |> ignore }) |> ignore
+/// One thing turning it off gives up (sec_point_node's, its words alone): its icon, muted, on its first line, beside
+/// a line of it.
+fn sec_off_point_node(parent : @view.View, icon : String, words : () -> String) -> Unit {
+  parent.box(fn(l) {
+    @sf.style_node(l, fn() { sec_point_line })
+    // (on its first line, across its middle: sec_point_text's)
+    @sf.first_line_node(l, Body, leading=L7, fn(i) {
+      i.width(Is(Some(sec_point_column))) |> ignore
+      @sf.icon_node(i, icon, sec_point_glyph, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
+    |> ignore
+    l.box(fn(w) {
+      @sf.style_node(w, fn() { sec_point_words }, in_row=true)
+      @sf.words_node(w, words, fn() { sec_point_text }) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -1281,6 +1294,10 @@ fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
 ///|
 /// The sizes: what it changes, its marks 18 in a column of 20; a device's mark 16.
 let sec_point_glyph : Double = 18.0
+
+///|
+/// The column a mark of what it changes stands in (sec_point_icon's w=S5).
+let sec_point_column : Double = 20.0
 
 ///|
 let sec_device_glyph : Double = 16.0

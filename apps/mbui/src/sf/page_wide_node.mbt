@@ -421,14 +421,26 @@ pub fn narrow_heading_node(parent : @view.View, title : () -> String, loc~ : Sou
 /// heads a section, narrow heading_node's, wide its title on its line, as far over the card as it stands there.
 /// `title_after`: what its title holds after its words, wide (section_node's: a count). `note`: what it holds said,
 /// under its title as section_node has it (narrow a page's note under the heading, wide under the title's words).
+/// `trailing`: how many or how much it holds, narrow at its title's line's end, wide as its note.
 #callsite(autofill(loc))
 pub fn section_heading_node(
   parent : @view.View,
   title : () -> String,
   title_after? : (@view.View) -> Unit,
   note? : () -> String,
+  trailing? : () -> String,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (`trailing`: how many, how much, narrow at its title's line's end in the meta's muted (SectionHeader's trailing),
+  // wide under its title as what it holds said)
+  let note = match (look_node(parent), trailing) {
+    (Narrow, Some(t)) => {
+      heading_node(loc~, parent, title, ends=fn(e) { words_node(e, t, fn() { heading_trailing }) |> ignore })
+      return
+    }
+    (Wide, Some(t)) => Some(t)
+    _ => note
+  }
   match (look_node(parent), note) {
     (Narrow, None) => heading_node(loc~, parent, title)
     (Narrow, Some(note)) =>
@@ -836,3 +848,84 @@ fn list_row_corner(v : @view.View) -> Double {
 /// How far a pressed row's ground reaches past it over and under on a panel's card (desk_list_link's): to the card's
 /// rows' inset (corner_inset) from its edge where it is first or last, its words card_pad in.
 let link_pane_out : Double = card_pad - @ui.Space::S2_5.px() - corner_inset
+
+///|
+/// What a heading says at its line's end (SectionHeader's trailing: 13, muted, one line).
+// kept across runs: a value (no field of it changes)
+let heading_trailing : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+
+///|
+/// What a section holds (`body`) in `parent`, laid out as a page's frame has it by its width: narrow on a card of the
+/// page's, wide as it is, on the page's ground (an old section's `Narrow => page_card`).
+#callsite(autofill(loc))
+pub fn narrow_card_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  match part_of(parent).look {
+    Narrow => page_card_node(parent, body, loc~)
+    Wide => body(parent)
+  }
+}
+
+///|
+/// A section whose title says how many it holds (`count`), in `parent`: narrow after its title, quieter (待批准 · 1);
+/// wide the accent's count beside it, as security's sec_section has it.
+#callsite(autofill(loc))
+pub fn count_section_node(
+  parent : @view.View,
+  title : () -> String,
+  count : () -> Int,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  match part_of(parent).look {
+    Narrow => section_node(parent, fn() { title() + " · " + count().to_string() }, body, loc~)
+    Wide =>
+      section_node(parent, title, body, title_after=fn(a) {
+        a.box(fn(n) {
+          style_node(n, fn() { section_count })
+          words_node(n, fn() { count().to_string() }, fn() { section_count_words }) |> ignore
+        })
+        |> ignore
+      }, loc~)
+  }
+}
+
+///|
+/// A section's count beside its title, wide (count_section_node's): the accent's, round.
+// kept across runs: a value (no field of it changes)
+let section_count : @ui.Style = @ui.css("px=S1_5 radius=Full bg=AccentBg")
+
+///|
+// kept across runs: a value (no field of it changes)
+let section_count_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=AccentText, wrap=false)
+
+///|
+/// What a page is for, by its ⓘ at the end of its narrow title's line (`about`; a page's actions there): wide none, the
+/// page's own about (page_node's `about`) beside its title there.
+#callsite(autofill(loc))
+pub fn narrow_about_node(parent : @view.View, about : () -> String, tips : TipLayer, loc~ : SourceLoc) -> Unit {
+  if part_of(parent).look is Narrow {
+    about_mark_node(parent, about, fn() { t("web-main.about") }, tips, loc~) |> ignore
+  }
+}
+
+///|
+/// What stands on the page's ground under a section's heading (section_heading_node's), not on a card, made by `body` in
+/// `parent`: narrow as far in as the heading's words (12 in from the page's block) with 16 under it; wide flush with the
+/// heading, the section's foot (28) under it.
+#callsite(autofill(loc))
+pub fn under_heading_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let wide = part_of(parent).look is Wide
+  parent.box(made_for=loc, fn(u) {
+    style_node(u, fn() { if wide { under_heading_wide } else { under_heading_narrow } })
+    body(u)
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let under_heading_narrow : @ui.Style = @ui.css("w=Full px=S3 pb=S4")
+
+///|
+// kept across runs: a value (no field of it changes)
+let under_heading_wide : @ui.Style = @ui.css("w=Full pb=S7")
