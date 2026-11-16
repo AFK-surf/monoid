@@ -1796,6 +1796,7 @@ mod tar {
         };
         let mut dirs: Vec<(PathBuf, Vec<u8>, u64)> = Vec::new();
         let mut refused: Vec<Value> = Vec::new();
+        let mut links: Vec<(PathBuf, Vec<u8>)> = Vec::new();
         let mut entries = Entries::new(&mut stream);
         while let Some(entry) = entries.next()? {
             if let Some(prefix) = prefix
@@ -1837,9 +1838,15 @@ mod tar {
                     set_mode(&path, entry.mode)?;
                 }
                 Kind::Symlink => {
-                    let link = entry.link.as_deref().unwrap_or_default();
-                    if !symlink(link, &path)? {
-                        refused.push(json!([path.to_string_lossy(), String::from_utf8_lossy(link)]));
+                    let link = entry.link.as_deref().unwrap_or_default().to_vec();
+                    // (On Windows a link is a file's or a directory's, by what it leads to: made once every directory of
+                    // the archive is, a link to one written after it (the walk's reverse order: `z -> a`) or to an empty
+                    // one is a directory's. Until then nothing is there to be written through: a later entry under its
+                    // path makes a directory there, and the link is refused as the path is taken.)
+                    if cfg!(windows) {
+                        links.push((path, link));
+                    } else if !symlink(&link, &path)? {
+                        refused.push(json!([path.to_string_lossy(), String::from_utf8_lossy(&link)]));
                     }
                 }
                 Kind::Hardlink => {
@@ -1873,20 +1880,30 @@ mod tar {
         drop(entries);
         drain(&mut stream)?;
         dirs.sort_by(|a, b| b.1.cmp(&a.1));
-        for (path, key, mode) in dirs {
-            match fs::symlink_metadata(&path) {
+        // Every directory there first, then the links held back (Windows'), then the directories' modes: a read-only one
+        // written into no more after.
+        for (path, key, _) in &dirs {
+            match fs::symlink_metadata(path) {
                 Ok(there) if !there.is_dir() => {
-                    return Err(format!("{} is not a directory in the archive's tree", String::from_utf8_lossy(&key)));
+                    return Err(format!("{} is not a directory in the archive's tree", String::from_utf8_lossy(key)));
                 }
                 Ok(_) => {}
                 Err(_) => {
                     let parent = path.parent().unwrap_or(dest);
                     fs::create_dir_all(parent).map_err(|e| at(parent, e))?;
                     inside(parent)?;
-                    fs::create_dir(&path).map_err(|e| at(&path, e))?;
+                    fs::create_dir(path).map_err(|e| at(path, e))?;
                 }
             }
-            set_mode(&path, mode)?;
+        }
+        for (path, link) in links {
+            inside(path.parent().unwrap_or(dest))?;
+            if !symlink(&link, &path)? {
+                refused.push(json!([path.to_string_lossy(), String::from_utf8_lossy(&link)]));
+            }
+        }
+        for (path, _, mode) in &dirs {
+            set_mode(path, *mode)?;
         }
         Ok(json!({ "refused": refused }))
     }
@@ -2092,6 +2109,32 @@ mod tar {
             let clash = root.join("clash.zst");
             archive_of(&clash, &[entry(b"d", b'0', b"file", None), entry(b"d", b'5', b"", None)]);
             assert_eq!(unpack(&clash, &dest, None).unwrap_err(), "d is not a directory in the archive's tree");
+            fs::remove_dir_all(&root).unwrap();
+        }
+
+        /// A link to a directory written before it (the walk's reverse order) or to an empty one is a directory's link on
+        /// Windows, where the machine makes links at all.
+        #[cfg(windows)]
+        #[test]
+        fn a_link_to_a_directory_after_it_is_a_directorys() {
+            let root = temp("winlinks");
+            let path = root.join("a.zst");
+            archive_of(&path, &[
+                entry(b"z_link", b'2', b"", Some(b"a_dir")),
+                entry(b"to_empty", b'2', b"", Some(b"empty")),
+                entry(b"a_dir/f.txt", b'0', b"in a", None),
+                entry(b"a_dir", b'5', b"", None),
+                entry(b"empty", b'5', b"", None),
+            ]);
+            let dest = root.join("dest");
+            fs::create_dir(&dest).unwrap();
+            let made = unpack(&path, &dest, None).unwrap();
+            if made["refused"].as_array().unwrap().is_empty() {
+                assert_eq!(fs::read_to_string(dest.join("z_link").join("f.txt")).unwrap(), "in a");
+                assert!(fs::metadata(dest.join("to_empty")).unwrap().is_dir());
+            } else {
+                assert_eq!(made["refused"].as_array().unwrap().len(), 2);
+            }
             fs::remove_dir_all(&root).unwrap();
         }
 

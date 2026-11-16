@@ -384,14 +384,19 @@ test("a workspace the shell packs is the tar the reference packed, byte for byte
   // What the reference packed, the shell restores as it was.
   writeFileSync(mine, readFileSync(theirs));
   put(join(ws, "uploads/new.txt"), "new while archived");
+  // (what a read left as its process ended goes with the archive)
+  writeFileSync(`${mine}.reading-7`, "left");
   await restoreWorkspace(room);
   assert.equal(existsSync(mine), false);
+  assert.deepEqual(readdirSync(room).filter((n) => n.includes("reading")), []);
   assert.deepEqual(manifest(ws).filter((l) => !l.startsWith("uploads")), before.filter((l) => !l.startsWith("uploads")));
   assert.equal(readFileSync(join(ws, "uploads/new.txt"), "utf8"), "new while archived");
   assert.deepEqual(readFileSync(join(ws, "uploads/截图 1.png")), UPLOAD);
   // And empties it, its uploads out of the archive the reference made.
   await packTree(ws, mine);
+  writeFileSync(`${mine}.reading-8`, "left");
   await emptyWorkspace(room);
+  assert.deepEqual(readdirSync(room).filter((n) => n.includes("reading")), []);
   assert.deepEqual(readdirSync(ws), ["uploads"]);
   assert.deepEqual(readdirSync(join(ws, "uploads")).sort(), ["new.txt", "截图 1.png"]);
   assert.deepEqual(readFileSync(join(ws, "uploads/截图 1.png")), UPLOAD);

@@ -253,7 +253,8 @@ async function* tarOf(dir: string): AsyncGenerator<Buffer> {
       yield gnuHeader(name.length > 100 ? truncated(name) : name, kind, common(size), linkName && linkName.length > 100 ? truncated(linkName) : linkName, device);
     };
     if (meta.isDirectory()) {
-      const children: Dirent[] = await readdir(path, { withFileTypes: true });
+      // (by their names' bytes, whatever order the file system lists them in: as the shell's `tar.pack`)
+      const children: Dirent[] = (await readdir(path, { withFileTypes: true })).sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)));
       for (const child of children) stack.push([join(path, child.name), rel === "" ? child.name : `${rel}/${child.name}`]);
       yield* head("5", 0);
     } else if (meta.isSymbolicLink()) {

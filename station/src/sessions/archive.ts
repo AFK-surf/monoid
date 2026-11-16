@@ -453,6 +453,7 @@ export async function restoreWorkspace(room: string): Promise<void> {
   if (await exists(retiring)) await removeTree(retiring);
   if (await exists(old)) await removeTree(old);
   await unlink(archive);
+  await readingsGone(room);
   await unlockWorktrees(room);
 }
 
@@ -484,6 +485,7 @@ export async function emptyWorkspace(room: string): Promise<void> {
   for (const entry of await readdir(workspace)) {
     if (entry !== "uploads") await removeTree(join(workspace, entry), { force: true });
   }
+  await readingsGone(room);
   await unlockWorktrees(room);
 }
 
@@ -525,3 +527,10 @@ export async function workspaceFile(room: string, relative: string): Promise<Buf
 }
 
 let reads = 0;
+
+/// What a `workspaceFile` left beside the archive as its process ended (a crash between its write and its removal).
+async function readingsGone(room: string): Promise<void> {
+  for (const name of await readdir(room)) {
+    if (name.startsWith("workspace.tar.zst.reading-")) await rm(join(room, name), { force: true });
+  }
+}

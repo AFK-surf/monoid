@@ -88,7 +88,7 @@ test("links the machine refuses come back where the restored workspace ends up, 
   const room = temp();
   const ws = join(room, "workspace");
   write(join(ws, "project/main.rs"), "fn main() {}");
-  symlinkSync("project", join(ws, "lib"), "dir");
+  symlinkSync("project", join(ws, "z-lib"), "dir");
   symlinkSync(join("project", "main.rs"), join(ws, "entry"));
   const release = await lock(room);
   await packWorkspace(room);
@@ -107,10 +107,11 @@ test("links the machine refuses come back where the restored workspace ends up, 
     syncBuiltinESMExports();
   }
   release();
+  // (`z-lib` after `project`: packed before it, so a directory's link made before its directory is: still one.)
   // The directory's stand-in (a junction) leads into the workspace at its final path: the tree was made beside it
   // (workspace.restoring) and moved.
-  assert.equal(realpathSync(join(ws, "lib")), realpathSync(join(ws, "project")));
-  assert.equal(readFileSync(join(ws, "lib", "main.rs"), "utf8"), "fn main() {}");
+  assert.equal(realpathSync(join(ws, "z-lib")), realpathSync(join(ws, "project")));
+  assert.equal(readFileSync(join(ws, "z-lib", "main.rs"), "utf8"), "fn main() {}");
   assert.equal(readFileSync(join(ws, "entry"), "utf8"), "fn main() {}");
   assert.ok(!existsSync(join(room, "workspace.restoring")));
   rmSync(room, { recursive: true });
