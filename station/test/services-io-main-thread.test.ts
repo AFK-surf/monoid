@@ -7,7 +7,7 @@
 // learned, a Feishu or Comma message came, a lock was brought, a report was sent or a rig was asked to run something.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,6 +115,21 @@ test("a person's lock brought is kept in memory at once and written off the main
   assert.equal((await json(path)).chains[genesis].length, 2);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.deepEqual(new PersonChains(path).heardIn("w1").map(([g, c]) => [g, c.length]), [[genesis, 2]]);
+});
+
+test("a person's lock that could not be written is not said kept", async () => {
+  const path = join(dir, "unwritable", "person-chains.json");
+  // (a directory where the file would go: the rename onto it fails)
+  mkdirSync(path, { recursive: true });
+  const chains = new PersonChains(path);
+  const key = ed(), base = ed();
+  const e = { v: 1, ws: "person:dan", seq: 0, prev: null, at: 1000, kind: "genesis", body: { sub: "dan", device: { key: key.id, id: base.hex, label: "first" } } } as Omit<Entry, "sig">;
+  const genesis = { ...e, sig: { key: key.id, alg: "Ed25519", sig: key.sign(signedBytes(entryHash(e as Entry))) } } as Entry;
+  chains.keep(entryHash(genesis), [genesis], "w1");
+  await assert.rejects(chains.written());
+  // Kept in memory all the same, and nothing waits on a write that is over.
+  assert.equal(chains.kept(entryHash(genesis))?.length, 1);
+  await chains.written();
 });
 
 test("a bug report reads the log's end off the main thread", async () => {

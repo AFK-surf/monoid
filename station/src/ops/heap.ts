@@ -41,6 +41,7 @@ export function answerHeapRequests(data: string): () => void {
     asked = true;
     looking = looking.then(async () => {
       asked = false;
+      if (stopped) return;
       // One asked for while this one was being taken.
       if (await take()) look();
     });

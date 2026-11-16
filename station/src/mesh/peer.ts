@@ -650,7 +650,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
           : typeof method === "string" && method.startsWith("stationMarks.") ? answerMarks(stationMarksOf(cloud), envelope.request, envelope.workspace ?? cloud.home() ?? "")
           : await remote.handle(envelope.workspace, peer, envelope.request ?? null);
         // (a person's chain it took answered once it is on disk: person-chains.ts `written`)
-        if (typeof method === "string" && method.startsWith("lock.")) await personChainsOf(cloud).written();
+        if (method === "lock.person.put" || method === "lock.person.offer") await personChainsOf(cloud).written();
       } else {
         if (cloud.membership(envelope.workspace) === null) throw new Error("station is outside this workspace");
         result = await remote.handleOutside(peer, envelope.request ?? null, envelope.workspace);

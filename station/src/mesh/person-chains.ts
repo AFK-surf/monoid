@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { type Entry, LockRefusal, asEntry, personChain } from "../cloud/lock.ts";
 import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "../cloud/log-keep.ts";
-import { PrivateFile } from "../ops/files.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 
 /// At most this many chains of one person (a lock begun anew when all their devices were lost): the oldest go.
@@ -50,12 +50,16 @@ export class PersonChains {
   readonly #aside = new Map<string, Entry[]>();
   /// The workspaces each chain was heard in (`""`: none said).
   readonly #heard = new Map<string, Set<string>>();
-  readonly #file: PrivateFile | null;
+  readonly #path: string | null;
+  /// What is to be written next (the latest only), and the writes on their way, which end once the latest asked of them
+  /// is written: a write that failed with a newer one after it is made good by that one.
+  #latest: string | null = null;
+  #writing: Promise<void> | null = null;
   readonly #told = new Set<(genesis: string) => void>();
   readonly #changed = new Set<(genesis: string) => void>();
 
   constructor(path: string | null = null) {
-    this.#file = path === null ? null : new PrivateFile(path);
+    this.#path = path;
     if (path === null) return;
     try {
       const read = JSON.parse(readFileSync(path, "utf8")); // sync: read once, before the station serves
@@ -224,21 +228,46 @@ export class PersonChains {
     if (newly) this.#heard.set(genesis, heard.add(ws));
     // Kept in memory at once, so what is taken next is judged by it; written off the main thread, the latest only after
     // a write on its way. What answers that it was kept waits for it first (`written`).
-    if (this.#file !== null) {
+    if (this.#path !== null) {
       const heardOut = Object.fromEntries([...this.#heard].filter(([g]) => this.#kept.has(g)).map(([g, s]) => [g, [...s]]));
       const asideOut = this.#aside.size === 0 ? {} : { aside: Object.fromEntries([...this.#aside].filter(([g]) => this.#kept.has(g))) };
-      this.#file.write(JSON.stringify({ chains: Object.fromEntries(this.#kept), heard: heardOut, ...asideOut })).catch((error) => {
-        log.warn("mesh", "person chains not written", { error: (error as Error).message });
-      });
+      this.#latest = JSON.stringify({ chains: Object.fromEntries(this.#kept), heard: heardOut, ...asideOut });
+      if (this.#writing === null) {
+        const writing = this.#flush(this.#path);
+        this.#writing = writing;
+        // (what answers nobody, a hello's chain, does not wait for it: said here)
+        writing.catch((error) => log.warn("mesh", "person chains not written", { error: (error as Error).message }));
+      }
     }
     if (moved) for (const f of [...this.#told]) f(genesis);
     for (const f of [...this.#changed]) f(genesis);
   }
 
-  /// Once what was kept so far is on disk (or its write failed): what answers a device or a station that it was kept
-  /// waits for it, so a restart does not forget what it was told was kept.
+  /// Once what was kept so far is on disk; rejects where it could not be written. What answers a device or a station
+  /// that it was kept waits for it, so a restart does not forget what it was told was kept.
   written(): Promise<void> {
-    return this.#file?.written() ?? Promise.resolve();
+    return this.#writing ?? Promise.resolve();
+  }
+
+  /// Writes the latest asked until none is left; fails only where the last written failed (as `writeFileSync` threw
+  /// here before: nobody is told what is not on disk was kept).
+  async #flush(path: string): Promise<void> {
+    try {
+      let failed: unknown = null;
+      while (this.#latest !== null) {
+        const data = this.#latest;
+        this.#latest = null;
+        try {
+          await writePrivateSoon(path, data);
+          failed = null;
+        } catch (error) {
+          failed = error;
+        }
+      }
+      if (failed !== null) throw failed;
+    } finally {
+      this.#writing = null;
+    }
   }
 
   /// Told each time the chain gone by of a lock moves, on or to another branch (its genesis); returns what stops it.

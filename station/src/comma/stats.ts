@@ -333,6 +333,7 @@ export class CommaStats {
 
   /// The directories the indexes are kept in (`at`'s and `inWorkspace`'s), made once off the main thread before either.
   static async makeDirs(data: string): Promise<void> {
+    await mkdir(data, { recursive: true });
     await mkdir(join(data, "comma-indexes"), { recursive: true, mode: 0o700 });
   }
 
