@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 2.17 | 3.02 | 13.08 | 34.22 | 51.84 | 30 | 60.29 | 99.44 | 122.36 |
 | [2a3f5f3fd](https://github.com/AFK-surf/monoid/commit/2a3f5f3fd45b63eecfdbe034c4f54e220f555251) Farview Stage 3: the app draws a chat's Farview ta | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 | [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 2.12 | 2.95 | 12.73 | 33.8 | 50.33 | 29.19 | 57.93 | 99.35 | 119.61 |
 | [5b9c3734d](https://github.com/AFK-surf/monoid/commit/5b9c3734daa8026f03201693ef05c1dc47b44195) app: a station its safe mode does not name offers  | 2.12 | 2.95 | 12.73 | 33.8 | 50.33 | 29.19 | 57.93 | 99.35 | 119.61 |
-| [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 119.09 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c3a71b2c](https://github.com/AFK-surf/monoid/commit/4c3a71b2c304250c8162f233b2c0f56243d61968) fix(mbui,station): compact side-panel screen toolb | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [2a3f5f3fd](https://github.com/AFK-surf/monoid/commit/2a3f5f3fd45b63eecfdbe034c4f54e220f555251) Farview Stage 3: the app draws a chat's Farview ta | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab2d43d71](https://github.com/AFK-surf/monoid/commit/ab2d43d7171aef455fa393b8c4d2fbaf9f848bc7) mbui: the Mac's windows of one run; a screen's vie | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
 | [4e8f3be07](https://github.com/AFK-surf/monoid/commit/4e8f3be0765d37e5c73938f1ffa138746294f43c) app: farview.pin to f082e8d (a window dragged wide | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.52 | 4.06 | 57.48 |
 | [5b9c3734d](https://github.com/AFK-surf/monoid/commit/5b9c3734daa8026f03201693ef05c1dc47b44195) app: a station its safe mode does not name offers  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
-| [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
