@@ -1296,7 +1296,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         .min_height(Is(Some(0.0)))
         |> ignore
       } else if @sfbase.view_tab_file(agent) is Some(_) {
-        side_view_node(s, src, r, agent, behind)
+        side_view_node(s, src, r, agent)
       } else if tab_service(agent) is Some(job) {
         // (alone on the tape: its bar the panel's, its × closing the panel, in the panel's corners)
         let round = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))

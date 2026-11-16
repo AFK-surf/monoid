@@ -92,7 +92,7 @@ let corners_tape_rail : Array[String] = [
   "newchat-preset-new-clone", "newchat-preset-new-clones",
   // (the presets' menu and its level further in: the rail behind them, not the menu)
   "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
-    "newchat-preset-theirs-long", "player-audio", "player-ended",
+    "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
   "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized",
   "service-stopped", "share-in", "share-in-files", "share-in-stations", "lock-security", "lock-upgrade", "lock-needs-app-security",
   "screen-agent-driving",

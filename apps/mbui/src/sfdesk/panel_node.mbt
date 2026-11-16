@@ -248,7 +248,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           .min_height(Is(Some(0.0)))
           |> ignore
         } else if @sfbase.view_tab_file(agent) is Some(_) {
-          side_view_node(q, src, r, agent, island)
+          side_view_node(q, src, r, agent)
         } else if tab_service(agent) is Some(job) {
           service_tab_node(q, src, r, job, None, None, tips)
         } else if tab_file(agent) is Some((session, path, name)) {
@@ -294,18 +294,17 @@ fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, 
 
 ///|
 /// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): the file's
-/// tools and its stage (sfbase's viewer_tab_node, what it hosts of the old view in `island`); its picture over the whole
+/// tools and its stage (sfbase's viewer_tab_node); its picture over the whole
 /// window (its 全屏) stepping through the chat's.
 fn side_view_node(
   q : @view.View,
   src : Source,
   r : ChatRef,
   tab : String,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
 ) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, island, fn() {
+    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, fn() {
       let thread = match view_of_chat(src, r).0 {
         Some(v) => v.thread
         None => None

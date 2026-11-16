@@ -60,7 +60,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       body: fn(col, _) {
         col.box(fn(head) {
           style_node(head, fn() { layout_sheet_head })
-          // (its words' own line, as the host's sheet sets its title: dv_sheet_frame's, no line of the size's)
+          // (its words' own line, as the old host's sheet set its title, no line of the size's)
           head.box(fn(w) {
             w
             .words(By(fn() { t("web-pages.drive.reader.layout") }))
@@ -561,6 +561,6 @@ let slider_rest : Double = 0.16
 let slider_thumb_room : Double = 22.0
 
 ///|
-/// The layout's sheet's title's row (the host's reader sheet's, dv_sheet_frame: 18 in, 4 over, 10 under).
+/// The layout's sheet's title's row (the old host's reader sheet's: 18 in, 4 over, 10 under).
 // kept across runs: a value (no field of it changes)
 let layout_sheet_head : @ui.Style = @ui.css("row w=Full px=S4_5 pt=S1 pb=S2_5 align=ACenter")

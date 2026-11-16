@@ -438,7 +438,7 @@ pub fn Viewer::full_window(self : Viewer, steps : Stepping) -> Unit {
 /// The file of tab `tab` beside the chat whose tabs are kept by `chat`, in node `q` (the panel under its bar): its tools
 /// (tab_tools_node), then its stage, the rest: a picture its nodes (tab_picture_node), anything else as the whole
 /// window's stage shows it (viewer_stage_node), told of, coming or failed its nodes
-/// (viewer_note_node); a film or a song its player embedded (Viewer::player_stage, hosted in `island` too). What it reads
+/// (viewer_note_node); a film or a song its player embedded (tab_player_node). What it reads
 /// asked of the core as what it needs comes; 下载 told the core as it is asked. Made as the person asked the file beside
 /// just now (tab_asked), its film or song plays at once; let go (the tab no longer shown), it is paused. `steps`: what
 /// its picture steps through over the whole window (全屏); `width()`, how wide the tab is.
@@ -447,7 +447,6 @@ pub fn viewer_tab_node(
   src : Source,
   chat : String,
   tab : String,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
   steps : () -> Stepping,
   width : () -> Double,
 ) -> Unit {
@@ -481,8 +480,11 @@ pub fn viewer_tab_node(
   })
   |> ignore
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed, 下载 asked)
+  // (its film's or song's player made as it is asked for: what plays it there from then)
+  let media_made = @signals.signal(false)
   q.reacts(fn() { (vw.sniffed.get(), vw.bytes.get() is Some(_), vw.error.get() is Some(_), vw.fetching.get(), vw.asked_told.get()) }, fn(_) {
     vw.fetch(src)
+    media_made.set(vw.media is Some(_))
   })
   // 下载 asked: a chat's file's download said to the core at that change; what was asked before it was here saved, or
   // installed, as its whole comes; each once
@@ -513,25 +515,13 @@ pub fn viewer_tab_node(
     .min_height(Is(Some(0.0)))
     .clips(Is(true))
     |> ignore
-    // a film or a song: the one player embedded, hosted in the panel's island (no keys, nothing of the window's)
+    // a film or a song: the one player embedded (no keys, nothing of the window's)
     let played = vw.played()
     if played {
-      s.box(fn(h) {
+      s.show(fn() { media_made.get() }, fn(h) {
         h.over(Is(true)) |> ignore
-        island(
-          h,
-          fn(c) {
-            src_now.val = src.now
-            let stage = c.id("preview/beside-player")
-            c.cursor(stage, Arrow)
-            c.box(style=stage_whole, id=stage, fn() { vw.player_stage(c, src, stage) }) |> ignore
-          },
-          false,
-        )
-        .over(Is(true))
-        |> ignore
+        tab_player_node(h, src, vw)
       })
-      |> ignore
     }
     let picture = fn() { vw.markable() }
     s.show(picture, fn(p) { tab_picture_node(p, src, vw) })
@@ -692,6 +682,49 @@ fn tab_words(size : @ui.TextSize, line : @ui.Leading, weight : Int) -> @view.Wor
   let th = @ui.tree_theme()
   let (px, own) = th.text_size(size)
   { size: px, weight, line: th.leading(line).unwrap_or(own), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+}
+
+///|
+/// A tab's film or song in `h` (its stage, all of it), in the one player embedded in it as part of the pane
+/// (@sf.player_node's `embedded`: on the pane's own ground, its picture or a song's cover fitted in the room over its
+/// controls as far in as a tab's picture is, tab_picture_margin, the controls always there under it in the pane's
+/// colours, laid out by the stage's size as it is given): its own player and view, not the whole window's; no keys, no
+/// flight, nothing to close (the tab's tools have its name, 下载 and 全屏).
+fn tab_player_node(h : @view.View, src : Source, vw : Viewer) -> Unit {
+  guard vw.media is Some(m) else { return }
+  // (a fixture's: how it stands pinned, the same on every run)
+  match vw.pinned {
+    Some(p) => m.pin(p)
+    None => ()
+  }
+  h.by_room(fn(held, room) {
+    // (as wide as the stage is given and as tall; the window's till it is first laid out)
+    let size = fn() { (room.width(), room.height().unwrap_or(held.window().1)) }
+    held.box(fn(k) {
+      k.height(By(fn() { Some(size().1) })) |> ignore
+      @sf.player_node(
+        k,
+        m,
+        vw.player_file(),
+        size,
+        back_label=fn() { "" },
+        on_back=fn() {  },
+        // (a song has no picture: no still of it is asked for)
+        still=fn() { if vw.shown_kind() == Some(KVideo) { vw.still(src) } else { "" } },
+        flying=fn() { false },
+        going=fn() { false },
+        move_beside=fn() { None },
+        embedded=true,
+        margin=tab_picture_margin,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  .grow(Is(1.0))
+  .basis(Is(Some(0.0)))
+  .min_height(Is(Some(0.0)))
+  |> ignore
 }
 
 ///|

@@ -221,34 +221,37 @@ pub fn drive_reader_node(parent : @view.View, src : Source, at : DriveAt, back :
 
 ///|
 /// The file `at.path` of `at.root` on `at.station`, played (the web's Player: opened where it was left on this device,
-/// the subtitle beside it), its folder's others to go to (`go`: by name), back to its folder by name (`back`).
-pub fn drive_player(c : @ui.Ctx, src : Source, at : DriveAt, back : () -> Unit, go : (DriveAt) -> Unit) -> Unit {
+/// the subtitle beside it) as nodes in `parent` (all of its room), its folder's others to go to (`go`: by name, as its
+/// folder lists them), back to its folder by name (`back`). The file as its folder lists it as the player is made.
+pub fn drive_player_node(parent : @view.View, src : Source, at : DriveAt, back : () -> Unit, go : (DriveAt) -> Unit) -> Unit {
   let root = at.root.unwrap_or("")
   let dir = dv_parent(at.path)
-  let file = drive_viewer_file(src, at)
-  let entries = dv_entries(src, at.station, root, dir).unwrap_or([])
-  let siblings : Array[@sf.ViewerEntry] = entries.map(fn(e) {
-    { name: e.name, size: e.size, mtime: e.mtime, mime: e.mime, kind: e.kind, dir: e.dir }
-  })
-  @sf.player(
-    c,
-    reader_key(at),
+  let file = @signals.untracked(fn() { drive_viewer_file(src, at) })
+  let siblings = fn() -> Array[@sf.ViewerEntry] {
+    dv_entries(src, at.station, root, dir)
+    .unwrap_or([])
+    .map(fn(e) { { name: e.name, size: e.size, mtime: e.mtime, mime: e.mime, kind: e.kind, dir: e.dir } })
+  }
+  let m = @sf.player_opened(parent, reader_key(at), file, siblings)
+  @sf.player_node(
+    parent,
+    m,
     file,
-    siblings,
-    back_label=viewer_folder_label(src, at.station, root, dir),
+    fn() { parent.window() },
+    back_label=fn() { viewer_folder_label(src, at.station, root, dir) },
     on_back=back,
+    still=fn() { "" },
+    flying=fn() { false },
+    going=fn() { false },
+    move_beside=fn() { None },
+    list=fn() { @sf.playlist_for(file, siblings()) },
     on_go=fn(other) { go({ station: at.station, root: at.root, path: dv_join(dir, other) }) },
   )
+  |> ignore
 }
 
 ///|
 /// A drive's text read, left: where it was, kept.
 pub fn reader_left(at : DriveAt) -> Unit {
   @sf.reader_let_go(reader_key(at))
-}
-
-///|
-/// A drive's file played, left: where it was kept, the player stopped.
-pub fn play_left(at : DriveAt) -> Unit {
-  @sf.player_let_go(reader_key(at))
 }

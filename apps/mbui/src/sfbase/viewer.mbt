@@ -1688,7 +1688,7 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
     return
   }
   match v.shown_kind() {
-    // a film or a song: the one player (@sf.player_node; a tab's @sf.player_view), read through the core a part at a time (never the whole file
+    // a film or a song: the one player (@sf.player_node, a tab's embedded), read through the core a part at a time (never the whole file
     // first, a seek far ahead one more ranged read), from the frame it was left at (the thumbnail's)
     // (a tab's its own, by its viewer: its view and what its player's view holds not the whole window's, nor another
     // tab's)
@@ -2984,112 +2984,12 @@ fn Viewer::video_target(
 }
 
 ///|
-/// Esc closes the viewer, while nothing in it reads Esc of its own first (the player's menus and its list, once it is
-/// up; marking's marks).
-fn Viewer::shut_on_escape(self : Viewer, c : @ui.Ctx) -> Unit {
-  // (the keymap's viewer.escape where it is up, at its key's moment)
-  if !self.closing {
-    c.key_context("Viewer")
-    c.on_action("viewer.escape", fn() {
-      if self.closing {
-        return false
-      }
-      self.shut(c)
-      true
-    })
-  }
-}
-
-///|
 /// The player's view of a film or a song (the system's player in a native view), while one is open.
 pub fn Viewer::view(self : Viewer) -> @ui.NativeView? {
   match self.media {
     Some(m) => m.native()
     None => None
   }
-}
-
-///|
-/// A film or a song in the one player (@sf.player_view, as a drive's plays), back to where it was opened from, its
-/// 下载 the preview's. Where its picture is (edge to edge, as the player puts it) is worked out here too: what it flies
-/// to from its thumbnail and back into it from (its still flying, the player's picture not placed meanwhile), and where
-/// the chat's still of it shows until its first frame does. A tab's beside a chat embedded in the tab's stage
-/// (@sf.player_view's `embedded`: on the page's ground, its picture in the room over its controls as far in as a tab's
-/// picture is, tab_picture_margin), not flying, no keys.
-pub fn Viewer::player_stage(self : Viewer, c : @ui.Ctx, src : Source, stage : Int) -> Unit {
-  let v = self
-  let m = match v.media {
-    Some(m) => m
-    // (a tab's: nothing of its own till its player is made, no keys)
-    None => {
-      if !v.beside {
-        tap_stage(c, v, stage)
-        v.shut_on_escape(c)
-      }
-      return
-    }
-  }
-  // (a fixture's: how it stands pinned, the same on every run)
-  match v.pinned {
-    Some(p) => m.pin(p)
-    None => ()
-  }
-  // (a song has no picture: no still of it is asked for)
-  let still = if v.shown_kind() == Some(KVideo) { v.still(src) } else { "" }
-  let z = v.vzoom
-  // (clear of the bar and the controls as the player fits it: player_room)
-  let (top, foot) = @sf.player_room(c.width, embedded=v.beside)
-  z.boxed(c.width, c.height - top - foot, at=c.moment())
-  // (as big as its player says, else as sent, else as its still: Viewer::video_natural, what its flight goes to too)
-  let (nw, nh) = v.video_natural(src)
-  if nw > 0.0 && nh > 0.0 {
-    z.natural(nw, nh, at=c.moment())
-  }
-  z.step(c)
-  // flying (from the thumbnail's box to the picture's place, or back from where the player last drew it: the window's
-  // tree's, viewer_tree.mbt's viewer_player, its bars coming with it there): the player not up yet, drawing no ground
-  // of its own, its Esc not read: the viewer's, as it is over an image in flight
-  let flying = v.flies && (!v.closing || !v.leaving_grab)
-  if flying {
-    v.shut_on_escape(c)
-  }
-  let file : @sf.ViewerFile = {
-    name: v.file.name,
-    size: v.file.size,
-    mtime: 0.0,
-    mime: v.mime,
-    kind: if v.shown_kind() == Some(KAudio) { "audio" } else { "video" },
-    title: if v.file.path.has_prefix("draft:") { "" } else { v.file.path },
-    key: "",
-    bytes: None,
-    read: fn(_, _, done) { done(Err("")) },
-    stream: None,
-    direct: "",
-    beside: None,
-    place: fn() { NeverLeft },
-    keep_place: fn(_, _) {  },
-    save: fn() { v.ask_save(c) },
-    facts: { width: v.file.width, height: v.file.height, duration: v.file.duration, frames: v.file.frames },
-  }
-  @sf.player_view(
-    c,
-    m,
-    file,
-    [],
-    back_label=v.desk_back(src),
-    on_back=fn() { v.shut(c) },
-    on_go=fn(_) {  },
-    // (the chat's still where its picture will be, until its first frame shows)
-    still~,
-    flying~,
-    // (closed by its fade: its controls away at once, the page showing through as it goes; flown back into its
-    // thumbnail they go with it as it shrinks, its ground whole till they are gone: bars_share)
-    going=v.closing && !v.flies,
-    move_beside=if !v.beside && beside_offered(v.file.path, v.file.name) { Some(fn() { v.move_beside(src) }) } else { None },
-    // (a tab's: in its stage under the tab's tools, which have its name, 下载 and 全屏)
-    embedded=v.beside,
-    margin=if v.beside { tab_picture_margin } else { 0.0 },
-  )
 }
 
 ///|

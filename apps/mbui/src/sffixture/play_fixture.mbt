@@ -53,7 +53,7 @@ pub fn fixture_play_read(params : Json, done : (Result[(Json, Bytes), Json]) -> 
 }
 
 ///|
-/// The made-up drive's film of a player's mode (player-video, -audio, -ended, -failed, -unsupported, -damaged,
+/// The made-up drive's film of a player's mode (player-video, -audio, -audio-failed, -ended, -failed, -unsupported, -damaged,
 /// -unplayable, -opening): its folder made up, the film and
 /// where its player stands (None: still opening); None for another mode.
 pub fn play_fixture(mode : String) -> (DriveAt, @kit.MediaStatus?)? {
@@ -117,6 +117,22 @@ pub fn play_fixture(mode : String) -> (DriveAt, @kit.MediaStatus?)? {
           ended: false,
           width: 1280.0,
           height: 720.0,
+        }),
+      )
+    // (a song that could not play: its card on the page's own colours)
+    "player-audio-failed" =>
+      (
+        "片尾曲.m4a",
+        Some({
+          state: -1,
+          duration: 214000.0,
+          position: 63000.0,
+          buffered: 63000.0,
+          playing: false,
+          buffering: false,
+          ended: false,
+          width: 0.0,
+          height: 0.0,
         }),
       )
     "player-opening" => ("第10集.mp4", None)

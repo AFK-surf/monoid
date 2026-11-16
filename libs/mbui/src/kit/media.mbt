@@ -133,6 +133,10 @@ pub struct Media {
   priv mut subs_on : Bool
   priv mut subtitle : Bool
   priv mut cues : Array[@codec.Cue]
+  // (the subtitle told and its words shown or not, followed by what reads them: Media::subtitle, Media::cue_now)
+  priv subs_told : @signals.Signal[Int]
+  // (its view opened or let go of, followed by what reads it: Media::native, a player's nodes made before it opened)
+  priv view_told : @signals.Signal[Int]
   priv mut fill : Bool
   // (turned sideways or not, as it is told: what reads it follows it, a frame round the player laid out by it)
   priv sideways : @signals.Signal[Bool]
@@ -252,6 +256,8 @@ pub fn Media::new(
     subs_on: true,
     subtitle: false,
     cues: [],
+    subs_told: @signals.signal(0),
+    view_told: @signals.signal(0),
     fill: false,
     sideways: @signals.signal(false, same=fn(a, b) { a == b }),
     awake: true,
@@ -292,6 +298,7 @@ pub fn Media::open(self : Media, track : MediaTrack, start? : Double = 0.0, play
     n.play()
   }
   self.view = Some(n)
+  self.view_told.set(self.view_told.untracked() + 1)
   self.track = Some(track)
   self.start_at = start
   self.started = false
@@ -320,7 +327,10 @@ fn Media::close_view(self : Media) -> Unit {
     Some(n) => n.close()
     None => ()
   }
-  self.view = None
+  if self.view is Some(_) {
+    self.view = None
+    self.view_told.set(self.view_told.untracked() + 1)
+  }
 }
 
 ///|
@@ -335,6 +345,7 @@ pub fn Media::close(self : Media) -> Unit {
 pub fn Media::set_subtitle(self : Media, there : Bool, cues : Array[@codec.Cue]) -> Unit {
   self.subtitle = there
   self.cues = cues
+  self.subs_told.set(self.subs_told.untracked() + 1)
 }
 
 ///|
@@ -349,6 +360,8 @@ pub fn Media::status(self : Media) -> MediaStatus {
   match self.pinned {
     Some(s) => s
     None => {
+      // (followed as its view is opened or let go of, as its view's own signals are)
+      self.view_told.get() |> ignore
       let s = media_status(self.view)
       if self.decode_failed && self.view is Some(n) && n.state() == 2 {
         { ..s, state: -4 }
@@ -374,6 +387,7 @@ pub fn Media::track(self : Media) -> MediaTrack? {
 ///|
 /// Its native view, while one is open.
 pub fn Media::native(self : Media) -> @ui.NativeView? {
+  self.view_told.get() |> ignore
   self.view
 }
 
@@ -419,7 +433,20 @@ pub fn Media::speed(self : Media) -> Double {
 ///|
 /// Whether there is a subtitle beside it, and whether its words are shown.
 pub fn Media::subtitle(self : Media) -> (Bool, Bool) {
+  self.subs_told.get() |> ignore
   (self.subtitle, self.subs_on)
+}
+
+///|
+/// The subtitle's words where it is now, while they are shown ("" none): followed as it plays, as its subtitle is told
+/// and as its words are turned on or off (Media::frame's `said`, without a Ctx).
+pub fn Media::cue_now(self : Media) -> String {
+  self.subs_told.get() |> ignore
+  if self.subs_on {
+    @codec.cues_at(self.cues, self.status().position)
+  } else {
+    ""
+  }
 }
 
 ///|
@@ -613,6 +640,7 @@ pub fn Media::toggle_mute(self : Media) -> Unit {
 /// The subtitle's words shown, or not.
 pub fn Media::toggle_subtitle(self : Media) -> Unit {
   self.subs_on = !self.subs_on
+  self.subs_told.set(self.subs_told.untracked() + 1)
 }
 
 ///|

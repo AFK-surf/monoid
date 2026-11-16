@@ -484,14 +484,15 @@ fn holes_beside(t : @ui.Tester, left : Double) -> Array[(Double, Double, Double,
 
 ///|
 /// The audit's faults of a press's room or of presses over each other (`room:`, `apart:`) naming something of a file's
-/// tab or of its player (made in viewer_tab.mbt, player.mbt, kit's media.mbt; a tab's player's keys under its own key,
+/// tab or of its player (made in viewer_tab.mbt, player_node.mbt, player_list_node.mbt, kit's media.mbt; a tab's
+/// player's keys under its own key,
 /// `preview-media/…`).
 fn tab_player_faults(t : @ui.Tester) -> Array[String] {
   t
   .audit()
   .filter(fn(f) {
     (f.has_prefix("room:") || f.has_prefix("apart:")) &&
-    (f.contains("viewer_tab.mbt") || f.contains("player.mbt") || f.contains("media.mbt") || f.contains("preview-media/"))
+    (f.contains("viewer_tab.mbt") || f.contains("player_node.mbt") || f.contains("player_list_node.mbt") || f.contains("media.mbt") || f.contains("preview-media/"))
   })
 }
 
@@ -766,7 +767,7 @@ test "中屏 and 大屏: a film's and a song's player in a tab keeps the corner 
   }
 }
 
-// A film or a song in a tab is part of the pane (sf/player.mbt's `embedded`): no ground of its own, its picture in the
+// A film or a song in a tab is part of the pane (sf/player_node.mbt's `embedded`): no ground of its own, its picture in the
 // room over its controls, the controls always there under it in the pane's colours.
 
 ///|

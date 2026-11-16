@@ -2179,11 +2179,6 @@ fn player_width(w : Double) -> Double {
 }
 
 ///|
-/// What an old view hosted on the stage draws in: all of it.
-// kept across runs: a value (no field of it changes)
-let stage_whole : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
 /// What is told of a file shown no other way (FilePreview.tsx fpNote, toldOf: a card with its extension, its name, its
 /// size and kind, why it is told of; how far the core downloads it and its 取消, why that failed, why its read failed;
 /// an APK's 安装 first, then 下载, the one read for saying how far it has come), in `f`, each in the stage's middle.

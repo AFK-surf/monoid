@@ -40,8 +40,6 @@ pub using @sfbase {
   viz_ground,
   viz_mermaid_block,
   viz_open_full,
-  drive_player,
-  play_left,
   reader_key,
   reader_left,
   type Mark,

@@ -1,4 +1,4 @@
-// The drive's player (drive_play.mbt) alone over the made-up core's films (sffixture's play_fixture): the page, which of
+// The drive's player as nodes (drive_play.mbt's play_page_node) alone over the made-up core's films (sffixture's play_fixture): the page, which of
 // the folder's it is, the subtitle read beside it; a song; an episode's end offering the next.
 
 ///|
@@ -16,13 +16,7 @@ fn play_tester(mode : String) -> @ui.Tester {
   let t = @ui.Tester::new(
     fn(c) {
       @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        match app.nav.top() {
-          DrivePlay(at) => play_page(c, src, at)
-          _ => ()
-        }
-        @sf.presented(c)
-      })
+      c.with_theme(@sf.ui_theme(), fn() { @sf.presented(c) })
     },
     w=390.0,
     h=844.0,
@@ -35,6 +29,16 @@ fn play_tester(mode : String) -> @ui.Tester {
       }
     },
   )
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.pick(at_once=true, fn() { app.nav.top() }, fn(n, page) {
+      n.grow(Is(1.0)) |> ignore
+      match page {
+        DrivePlay(at) => play_page_node(n, src, at)
+        _ => ()
+      }
+    })
+  })
   t.draw()
   t
 }

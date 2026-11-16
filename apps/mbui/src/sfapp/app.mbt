@@ -327,7 +327,9 @@ fn pages_left(src : Source) -> Unit {
         }
       }
       DriveRead(at) => reader_left(at)
-      DrivePlay(at) => play_left(at)
+      // (a drive's film played: where it was kept and its player closed as its page's nodes are let go, sfpages'
+      // play_page_node)
+      DrivePlay(_) => ()
       Service(station, job) => service_left(src, station, job)
       PreviewFile(station, key, path, _) => service_left(src, station, "file:" + key + "\n" + path)
       History(r, key, _) => history_left(src, r, key)
@@ -923,7 +925,8 @@ fn page_view(
         Files | Drive(_) => ()
         // (made once: narrow_shell.mbt's reader_page_node)
         DriveRead(_) => ()
-        DrivePlay(at) => @sfpages.play_page(c, src, at)
+        // (made once: narrow_shell.mbt's play_page_node)
+        DrivePlay(_) => ()
         // (made once: narrow_shell.mbt's service_page_node, preview_file_page_node)
         Service(_, _) | PreviewFile(_, _, _, _) => ()
         Archived => setting_page(c, src, w, @settings.Route::Archive)

@@ -1,5 +1,5 @@
-// The app's reader and player (src/sf reader.mbt, player.mbt): what they ask of the page told them as the app's tree is
-// made and as it builds (@sf.set_viewer_host): how far its bars reach in, its (a player's) sheets, what a link in a text's Markdown opens, the reader's layout in the core's prefs (`prefs.reader`, the same on every page that reads), the core
+// The app's reader and player (src/sf reader_node.mbt, player_node.mbt): what they ask of the page told them as the app's tree is
+// made and as it builds (@sf.set_viewer_host): how far its bars reach in, what a link in a text's Markdown opens, the reader's layout in the core's prefs (`prefs.reader`, the same on every page that reads), the core
 // reading a text for the reader (`reader.book`, `reader.text`) and finding words in it (`reader.search`).
 
 ///|
@@ -8,20 +8,6 @@ fn viewer_host_of(src : Source) -> @sf.ViewerHost {
   {
     // (in every tier: a tablet's status bar and navigation bar are over the viewer as a phone's are)
     room: fn() { (status_top(), nav_foot()) },
-    // a phone's: the drive's reader sheet (drive_parts.mbt dv_sheet_frame), a player's
-    sheet: Some(fn(c, s) {
-      dv_sheet_frame(
-        c,
-        s.title,
-        c.height * s.height,
-        s.body,
-        closing=s.closing,
-        reader=true,
-        close=s.close,
-        gone=s.gone,
-        trailing=s.trailing,
-      )
-    }),
     // (at a press: kept then, what the host says of it told as it says)
     keep: fn(name, mime, bytes) { keep_bytes_now(name, mime, bytes) },
     say: fn(words) { toast_later(words) },

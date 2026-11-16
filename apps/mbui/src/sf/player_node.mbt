@@ -1,14 +1,14 @@
-// The one player (player.mbt's head says what it is and how it answers) as nodes of the window's tree, made once:
-// what a viewer over the window plays (a chat's film or song: no folder's others, no subtitle beside it, nothing
-// embedded). What it shows is bound to what it is worked out of (how the player stands, as its host tells it: its
+// The one player (player_parts.mbt's head says what it is and how it answers) as nodes of the window's tree, made once:
+// what a viewer over the window plays (a chat's film or song), a drive's page plays (its folder's others and the
+// subtitle beside it: player_list_node.mbt) and a file's tab beside a chat embeds (`embedded`). What it shows is bound to what it is worked out of (how the player stands, as its host tells it: its
 // native view's signals; what it was told to do: `rev`), and what it does is done in a handler at the moment of its
 // cause: a tap left single after a double tap's time, a note said for its time, what it waits on said once it has
-// waited, its controls coming and going over their times from the moment that changed (what player.mbt's player does
+// waited, its controls coming and going over their times from the moment that changed (what the old player's player does
 // by @kit.Media::frame and Media::stage each frame, by the clock's moments here). Its picture is a native node of the
 // tree's, placed where its zoom has it as each frame is drawn.
 
 ///|
-/// What a player's nodes hold while they live: its player and its view's (player.mbt's PlayerView: its zoom, where
+/// What a player's nodes hold while they live: its player and its view's (player_parts.mbt's PlayerView: its zoom, where
 /// its picture is), what it was told that its player keeps in no signal (`rev`, bumped as it is told), whether it is
 /// ready, its controls (awake, the pointer near the bar or them, how far they show, gone once faded), what a double tap
 /// said, what it waits on said and how fast its bytes come meanwhile, its menus open, a finger's drag on its picture and
@@ -35,6 +35,13 @@ priv struct PlayerNode {
   held : @signals.Signal[Double]
   taken_down : @signals.Signal[Bool]
   grabbing : @signals.Signal[Bool]
+  listing : @signals.Signal[Bool]
+  ended_off : @signals.Signal[String]
+  embedded : Bool
+  /// (embedded: how far in from the stage's edges what takes the hand is, as its picture is: clear of what lies at
+  /// them, the side panel's edge)
+  inset : Double
+  pl : PlayList
   mut pending : Bool
   mut single : () -> Unit
   mut note_end : () -> Unit
@@ -52,7 +59,7 @@ priv struct PlayerNode {
 }
 
 ///|
-fn PlayerNode::new(p : @kit.Media, v : PlayerView) -> PlayerNode {
+fn PlayerNode::new(p : @kit.Media, v : PlayerView, embedded : Bool, inset : Double, pl : PlayList) -> PlayerNode {
   let same_b = fn(a : Bool, b : Bool) { a == b }
   let same_d = fn(a : Double, b : Double) { a == b }
   {
@@ -76,6 +83,11 @@ fn PlayerNode::new(p : @kit.Media, v : PlayerView) -> PlayerNode {
     held: @signals.signal(-1.0, same=same_d),
     taken_down: @signals.signal(false, same=same_b),
     grabbing: @signals.signal(false, same=same_b),
+    listing: @signals.signal(v.listing, same=same_b),
+    ended_off: @signals.signal(v.ended_off),
+    embedded,
+    inset,
+    pl,
     pending: false,
     single: fn() {  },
     note_end: fn() {  },
@@ -154,7 +166,7 @@ fn PlayerNode::audio(self : PlayerNode, s : @kit.MediaStatus) -> Bool {
 }
 
 ///|
-/// Whether it plays (or waits for more), or will once a finger moving it through the time lets go (player.mbt's plays).
+/// Whether it plays (or waits for more), or will once a finger moving it through the time lets go (player_parts.mbt's plays).
 fn PlayerNode::plays(self : PlayerNode) -> Bool {
   let s = self.status()
   let ph = self.phase(s)
@@ -164,8 +176,18 @@ fn PlayerNode::plays(self : PlayerNode) -> Bool {
 ///|
 /// Whether its controls come (Media::frame's target): woken, the pointer near the bar or them, not playing, a song.
 fn PlayerNode::wanted(self : PlayerNode) -> Bool {
+  if self.embedded {
+    return true
+  }
   let s = self.status()
   self.awake.get() || self.near_top.get() || self.near_foot.get() || self.phase(s) != Playing || self.audio(s)
+}
+
+///|
+/// Its speeds' menu open or closed (kept with its view as well, as the old player's view kept it).
+fn PlayerNode::rates_open(self : PlayerNode, on : Bool) -> Unit {
+  self.v.rates = on
+  self.rates.set(on)
 }
 
 ///|
@@ -181,14 +203,14 @@ fn PlayerNode::on(self : PlayerNode) -> Bool {
 }
 
 ///|
-/// Where it is among its frames now (player.mbt's frames_of), followed.
+/// Where it is among its frames now (player_parts.mbt's frames_of), followed.
 fn PlayerNode::frames(self : PlayerNode) -> Frames {
   let s = self.status()
   frames_of(self.p, s, self.p.scrubbing().unwrap_or(s.position))
 }
 
 ///|
-/// Paused at the frame `d` from the one shown (player.mbt's step_frame), at once: a key's, a press's.
+/// Paused at the frame `d` from the one shown (the old player's step_frame), at once: a key's, a press's.
 fn PlayerNode::step(self : PlayerNode, d : Int) -> Unit {
   let fr = @signals.untracked(fn() { self.frames() })
   self.act(fn() {
@@ -214,7 +236,7 @@ fn PlayerNode::play_pause(self : PlayerNode) -> Unit {
 }
 
 ///|
-/// The frame shown asked to be saved (player.mbt's grab): taken as the host answers (PlayerNode::grab_taken), or given
+/// The frame shown asked to be saved (the old player's grab): taken as the host answers (PlayerNode::grab_taken), or given
 /// up once it has been waited on media_grab_wait_ms from when it was asked, in `n`'s time.
 fn PlayerNode::grab(self : PlayerNode, n : @view.View) -> Unit {
   let fr = @signals.untracked(fn() { self.frames() })
@@ -238,7 +260,7 @@ fn PlayerNode::grab(self : PlayerNode, n : @view.View) -> Unit {
 }
 
 ///|
-/// A frame asked to be saved, taken as the host answers (player.mbt's take_grab): kept as a picture
+/// A frame asked to be saved, taken as the host answers (the old player's take_grab): kept as a picture
 /// (`<name>-<frame>.png`, to the device), or said it could not be.
 fn PlayerNode::grab_taken(self : PlayerNode, name : String) -> Unit {
   guard self.grabbing.untracked() && self.p.native() is Some(nv) else { return }
@@ -413,13 +435,19 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
 }
 
 ///|
-/// The player `p` of `file` over a viewer's window as nodes in `parent` (player_view's, its folder's others none):
+/// The player `p` of `file` over a viewer's window as nodes in `parent`, its folder's others `list` (in their order,
+/// `on_go` one of them played in its place: player_list_node.mbt; none, nothing of them shown):
 /// `stage` how wide and tall it is laid out (its zoom fitted to that, clear of its bar and controls: player_room);
 /// `still` (an image's key) shown where its picture will be until its first frame is; `flying`: its picture flown in or
 /// back by the viewer (its bars and controls over that, on no ground of their own, answering nothing, its picture none
 /// of its own); `going`: closed and drawn as it leaves (its controls away at once); back to `back_label` by `on_back`;
 /// `move_beside`: the bar's 移到侧边 while it is offered, as that changes. A phone's or a desktop's, as wide as its stage is laid out.
-/// The node.
+/// `embedded`: in a stage of a page's own (a file's tab beside a chat), which has its name, its 下载 and its 全屏 over
+/// it, as part of the page: no ground of its own; its picture (a song's view out of sight) fitted `margin` clear of the
+/// edges of the room over its controls, seen only there however zoomed; the controls under that room, clear of the
+/// stage's foot corners (player_room), in the page's colours with no ground of their own, always there and taking
+/// presses; no bar, no back, no 选集, nothing that fills the screen or turns it sideways, no keys, no finger's drag down
+/// to close it. The node.
 #callsite(autofill(loc))
 pub fn player_node(
   parent : @view.View,
@@ -432,20 +460,24 @@ pub fn player_node(
   flying~ : () -> Bool,
   going~ : () -> Bool,
   move_beside~ : () -> (() -> Unit)?,
+  list? : () -> Array[String] = fn() { [] },
+  on_go? : (String) -> Unit = fn(_) {  },
+  embedded? : Bool = false,
+  margin? : Double = 0.0,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let v = view_for(p.key())
-  // (what the view holds of the file it shows not held of another's)
+  let v = view_for(p.key(), margin~)
+  // (what the view holds of the file it shows not held of another's; what it holds of the player, 选集 open, stays)
   if v.file != file.key {
     v.file = file.key
-    native_full.set(false)
+    // (the window's player's alone: one embedded fills nothing)
+    if !embedded {
+      native_full.set(false)
+    }
     v.zoom.fit_now(at=parent.cause_at())
-    v.grabbing = false
     v.ended_off = ""
-    v.taken_down = false
-    v.drag_dy = 0.0
   }
-  let pn = PlayerNode::new(p, v)
+  let pn = PlayerNode::new(p, v, embedded, if embedded { margin } else { 0.0 }, { names: list, name: file.name, go: on_go })
   parent.box(made_for=loc, fn(n) {
     n.over(Is(true)) |> ignore
     pn.follow(n, file.name)
@@ -453,7 +485,8 @@ pub fn player_node(
     n.reacts(
       fn() {
         let (w, h) = stage()
-        let (top, foot) = player_room(w)
+        let (top, foot) = pn.room(w)
+        let w = dmax(0.0, w - pn.panel(w))
         let s = pn.status()
         let natural = if s.width > 0.0 && s.height > 0.0 {
           (s.width, s.height)
@@ -485,6 +518,7 @@ pub fn player_node(
       k.over(Is(true)) |> ignore
       if small {
         phone_player_node(k, pn, file, stage, on_back, still, flying, going)
+        play_list_sheet_node(k, pn)
       } else {
         desk_player_node(k, pn, file, stage, back_label, on_back, still, flying, going, move_beside)
       }
@@ -493,7 +527,7 @@ pub fn player_node(
 }
 
 ///|
-/// Where its picture shows in its stage at `t` (player.mbt's picture_place): where its zoom has it then (fitted until
+/// Where its picture shows in its stage at `t` (the old player's picture_place): where its zoom has it then (fitted until
 /// zoomed in), clear of what its room keeps over it, or filling the screen turned sideways (cropped); its size not known
 /// yet, a point in the middle.
 fn PlayerNode::picture_at(
@@ -501,15 +535,38 @@ fn PlayerNode::picture_at(
   stage : () -> (Double, Double),
   t : Double,
 ) -> (Double, Double, Double, Double) {
-  let (w, h) = stage()
+  let (whole, h) = stage()
+  let w = dmax(0.0, whole - self.panel(whole))
   let s = self.status()
   if self.p.fills() && self.p.is_sideways() {
     return self.p.picture_rect(s, w, h)
   }
-  let (top, _) = player_room(w)
+  let (top, foot) = self.room(whole)
   match self.v.zoom.rect_at(t) {
     Some((x, y, pw, ph)) => (x, y + top, pw, ph)
+    None if self.embedded => {
+      let (x, y, pw, ph) = self.p.picture_rect(s, w, dmax(0.0, h - top - foot))
+      (x, y + top, pw, ph)
+    }
     None => self.p.picture_rect(s, w, h)
+  }
+}
+
+///|
+/// How far in from its stage's top and foot its picture is fitted, the stage `w` wide (player_room's, embedded where
+/// it is).
+fn PlayerNode::room(self : PlayerNode, w : Double) -> (Double, Double) {
+  player_room(w, embedded=self.embedded)
+}
+
+///|
+/// How much of its stage `w` wide 选集 takes at its right: docked there while it is open, on a desktop's layout, the
+/// folder's others there to step to; else none.
+fn PlayerNode::panel(self : PlayerNode, w : Double) -> Double {
+  if !self.embedded && !(layout(w) is Small) && self.listing.get() && self.pl.many() {
+    desk_panel_w
+  } else {
+    0.0
   }
 }
 
@@ -529,12 +586,24 @@ fn PlayerNode::picture_on(
 
 ///|
 /// Its picture in `parent`: its native view where its zoom has it as each frame is drawn, the still over it until its
-/// first frame shows (player.mbt's player_still); none of its own while it flies (the viewer's flight draws it), nor a
+/// first frame shows (the old player's player_still); none of its own while it flies (the viewer's flight draws it), nor a
 /// song's (none to show). Kept past its node: the player closes its view.
-fn picture_node(parent : @view.View, pn : PlayerNode, stage : () -> (Double, Double), still : () -> String, flying : () -> Bool) -> Unit {
-  let shows = fn() {
-    let s = pn.status()
-    !flying() && !pn.audio(s)
+fn picture_node(
+  parent : @view.View,
+  pn : PlayerNode,
+  stage : () -> (Double, Double),
+  still : () -> String,
+  flying : () -> Bool,
+  from : Double,
+) -> Unit {
+  let song = fn() { pn.audio(pn.status()) }
+  // (a song embedded in a page: its view placed all the same, its host keeping it as it keeps one shown (Apple's
+  // WebKit plays media only in a view put in the window: apple_views.m's prime_webm_grab), but wholly above the room
+  // over its controls, which clips it, so no hole is cut in the page for it and nothing of it is seen)
+  let shows = fn() { !flying() && (!song() || pn.embedded) }
+  let out_of_sight = fn() {
+    let (w, h) = stage()
+    (dmax(1.0, w), dmax(1.0, h - pn.room(w).1))
   }
   parent.pick(
     at_once=true,
@@ -546,17 +615,22 @@ fn picture_node(parent : @view.View, pn : PlayerNode, stage : () -> (Double, Dou
       }
     },
     fn(k, id) {
-      k.over(Is(true)) |> ignore
+      // (in the stage's own terms: `from` where the node it is in starts, in from the stage's edges)
+      k.over(Is(true)).offset(Is((from, from))) |> ignore
       match pn.p.native() {
         Some(nv) if id >= 0 => {
           @ui.native(k, nv, kept=true)
           .over(Is(true))
           .offset(By(fn() {
-            let (x, y, _, _) = pn.picture_on(k, stage)
-            (x, y)
+            if song() {
+              (0.0, -out_of_sight().1)
+            } else {
+              let (x, y, _, _) = pn.picture_on(k, stage)
+              (x, y)
+            }
           }))
-          .width(By(fn() { Some(pn.picture_on(k, stage).2) }))
-          .height(By(fn() { Some(pn.picture_on(k, stage).3) }))
+          .width(By(fn() { Some(if song() { out_of_sight().0 } else { pn.picture_on(k, stage).2 }) }))
+          .height(By(fn() { Some(if song() { out_of_sight().1 } else { pn.picture_on(k, stage).3 }) }))
           |> ignore
           k.box(fn(s) {
             s
@@ -608,13 +682,15 @@ fn said_words_node(
 }
 
 ///|
-/// What lies in the middle of its stage in `parent` (player.mbt's player_cover, player_waits, player_ask, the phone's
+/// What lies in the middle of its stage in `parent` (the old player's player_cover, player_waits, player_ask, the phone's
 /// pill): a song's mark and its name; what it waits on once it has waited (how fast its bytes come, in a room as wide
 /// as the widest it says); why it failed (a card on the night, its 重试 where trying again may help); a pill of what a
 /// double tap did, a held finger's 2×, where a finger along it has gone (`pill`, "" none).
 fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () -> String) -> Unit {
   let ink = fn() { media_ink(!pn.audio(pn.status())) }
-  parent.show(at_once=true, fn() { pn.audio(pn.status()) }, fn(c) {
+  // (a song's mark and name, but where why it failed is said in their place: its card over them, nothing of them
+  // round it)
+  parent.show(at_once=true, fn() { pn.audio(pn.status()) && pn.phase(pn.status()) != Failed }, fn(c) {
     c
     .over(Is(true))
     .padding(Is((32.0, 0.0, 32.0, 0.0)))
@@ -708,7 +784,7 @@ fn middle_node(parent : @view.View, pn : PlayerNode, name : String, pill : () ->
 }
 
 ///|
-/// Why it failed, a card alone in its stage's middle (player.mbt's player_ask, on the night over a picture): its
+/// Why it failed, a card alone in its stage's middle (the old player's player_ask, on the night over a picture): its
 /// title, the line the answer turns on (its format's, where its media type says which), 重试 across its foot where
 /// trying again may help (not where its format or its file cannot be played).
 #callsite(autofill(loc))
@@ -732,11 +808,34 @@ fn failed_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, 
       _ => ""
     }
   }
+  night_card_node(parent, ink, title, note, fn(foot) {
+    night_button_node(foot, fn() { t("android-misc.drive.player.retry") }, fn() {
+      pn.act(fn() { pn.p.retry() })
+      pn.ready.set(pn.p.started())
+    }, ink)
+    |> ignore
+  }, buttons=fn() { state() != -2 && state() != -3 && state() != -4 }, loc~)
+}
+
+///|
+/// A card that asks over a player's stage in `parent` (the old player's player_ask): a confirming dialog's width whatever
+/// it says (its seconds counting down move nothing), its title and the line the answer turns on (`note`, none while
+/// "") in its middle, its buttons (`foot`'s) across its foot while `buttons()`, concentric with its foot corners.
+#callsite(autofill(loc))
+fn night_card_node(
+  parent : @view.View,
+  ink : () -> MediaInk,
+  title : () -> String,
+  note : () -> String,
+  foot : (@view.View) -> Unit,
+  buttons? : () -> Bool = fn() { true },
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(card) {
+    // (a confirming dialog's width, less where the stage is narrower: in from its sides as what holds it has it)
     card
-    .width(Is(Some(confirm_w)))
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
+    .width_share(Is(1.0))
+    .max_width(Is(Some(confirm_w)))
     .padding(Is((card_pad, card_pad, card_pad, card_pad)))
     .gap(Is(ask_card_gap))
     .radius(Is(card_corner))
@@ -769,16 +868,19 @@ fn failed_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, 
       })
     })
     |> ignore
-    card.show(at_once=true, fn() { state() != -2 && state() != -3 && state() != -4 }, fn(foot) {
-      // (its button concentric with the card's foot corners: ask_buttons_across's foot_reach)
+    card.show(at_once=true, buttons, fn(f) {
+      // (its buttons concentric with the card's foot corners: ask_buttons_across's foot_reach)
       let h = button_height()
       let reach = card_foot_in(h) - card_pad
-      foot.row(Is(true)).margin(Is((reach, 0.0, reach, reach))) |> ignore
-      night_button_node(foot, fn() { t("android-misc.drive.player.retry") }, fn() {
-        pn.act(fn() { pn.p.retry() })
-        pn.ready.set(pn.p.started())
-      })
+      // (each its share across it, going on to another line where it has not the room: ask_buttons_across's)
+      f
+      .row(Is(true))
+      .gap(Is(@ui.Space::S2.px()))
+      .margin(Is((reach, 0.0, reach, reach)))
+      .wraps(By(fn() { Some(ask_foot_lines()) }))
+      .wraps_at_least(Is(true))
       |> ignore
+      foot(f)
     })
   })
   |> ignore
@@ -788,20 +890,42 @@ fn failed_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, 
 /// A button on the night across what holds it (button's `on_night` Primary: the white, its words the night, a step
 /// toward the words under the hand), a button's height and words; `press` as it is pressed. The node.
 #callsite(autofill(loc))
-fn night_button_node(parent : @view.View, label : () -> String, press : () -> Unit, loc~ : SourceLoc) -> @view.View {
+fn night_button_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  ink : () -> MediaInk,
+  ghost? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
+  // (on the night over a picture; a song's card on the page's own ground, the theme's buttons: player_ask's on_the_night)
+  let night = fn() { ink().text == media_dark_text }
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, b) {
     let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
     let hand = EdgeWay::new(0.0)
     v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
     let h = button_height()
+    // (its share of the foot, kept at what it holds where it goes on to another line: button_node's across a foot)
     v
     .grow(Is(1.0))
+    .basis(Is(Some(0.0)))
+    .keeps_held(Is(true))
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .height(Is(Some(h)))
     .padding(Is((button_padx, 0.0, button_padx, 0.0)))
     .radius(Is(h / 2.0))
-    .ground(By(fn() { mix(0xFFFFFFFFL, hand.shown(v), share_ink) }))
+    .focus_ring_theme()
+    .ground(By(fn() {
+      let p = theme().p
+      match (ghost, night()) {
+        // (the night's plain button, as the old view's on the night: a step towards its lit one under the hand)
+        (true, true) => mix(stage_plain_lit, hand.shown(v), stage_plain)
+        (false, true) => mix(0xFFFFFFFFL, hand.shown(v), share_ink)
+        (true, false) => over(p.chip, alpha(p.hover, hand.shown(v)))
+        (false, false) => mix(p.primary_hover, hand.shown(v), p.primary)
+      }
+    }))
     |> ignore
     v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     v.box(fn(w) {
@@ -810,7 +934,14 @@ fn night_button_node(parent : @view.View, label : () -> String, press : () -> Un
       .words_look(By(fn() {
         { size: theme().t.ui, weight: if theme().touch { 600 } else { 500 }, line: theme().t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
       }))
-      .ink(Is(share_ground))
+      .ink(By(fn() {
+        match (ghost, night()) {
+          (true, true) => share_ink
+          (false, true) => share_ground
+          (true, false) => theme().p.text
+          (false, false) => theme().p.bg
+        }
+      }))
       |> ignore
     })
     |> ignore
@@ -819,7 +950,7 @@ fn night_button_node(parent : @view.View, label : () -> String, press : () -> Un
 }
 
 ///|
-/// One of the controls' round keys in `parent` (player.mbt's media_key and phone_key): `side` across, its icon `icon()`
+/// One of the controls' round keys in `parent` (the old player's media_key and phone_key): `side` across, its icon `icon()`
 /// `icon_size` across, in the quieter ink till the hand is on it (`bright`: the words' always; `lit`: on, the words at
 /// 16% under it), the words at 10% under the hand; named `label()` (its tip in `tips` where there are tips), taking no
 /// press while `on()` holds not (faded where `faint`); `press` as it is pressed; `ripples`: a finger's press ripples over
@@ -925,7 +1056,7 @@ fn tool_shapes_sized(name : String, size : Double) -> Array[@ui.Shape] {
 let media_off : Double = 0.35
 
 ///|
-/// The speed as a figure in `parent` (player.mbt's media_rate, a desktop's; phone_speed, a phone's: `phone`): what it
+/// The speed as a figure in `parent` (the old player's media_rate, a desktop's; phone_speed, a phone's: `phone`): what it
 /// plays at in the code face in 600, on the words at 10% (a phone's bare till pressed or while its menu is open); named
 /// `label()`, its menu of speeds over it as it is pressed (speed_menu's: each a choice, the one it plays at checked),
 /// chosen as it closes. The node.
@@ -950,7 +1081,7 @@ fn speed_node(
     label,
     fn() { pn.rates.get() },
     fn(_) {
-      pn.rates.set(!pn.rates.untracked())
+      pn.rates_open(!pn.rates.untracked())
       pn.wake()
     },
     fn(v, d) {
@@ -1027,20 +1158,20 @@ fn speed_node(
       false,
       false,
       fn(item) {
-        pn.rates.set(false)
+        pn.rates_open(false)
         (item.select)()
       },
-      fn() { pn.rates.set(false) },
+      fn() { pn.rates_open(false) },
       min_w=player_speeds_w,
       side=Top,
     )
   })
-  b.owns(fn() { pn.rates.set(false) }) |> ignore
+  b.owns(fn() { pn.rates_open(false) }) |> ignore
   b
 }
 
 ///|
-/// A timeline in `parent` (player.mbt's desk_play_timeline and phone_timeline): `h` high, its track (4, round) in from
+/// A timeline in `parent` (the old player's desk_play_timeline and phone_timeline): `h` high, its track (4, round) in from
 /// its sides by player_track_inset, what has come over it at 22%, what has played and its head (12 round) in the words;
 /// pressed or dragged along, the picture goes with it frame by frame (Media::scrub_to: each time where a frame starts,
 /// where the file's frames are read), sent there once let go (Media::scrub_done). `pointed`: with a mouse over it (or
@@ -1277,7 +1408,7 @@ fn timeline_node(
 }
 
 ///|
-/// Where it is said, in `parent` (player.mbt's where_runs): in the code face, the time in the words' ink in 600, then
+/// Where it is said, in `parent` (player_parts.mbt's where_runs): in the code face, the time in the words' ink in 600, then
 /// its length (paused or moved through, the time to the millisecond and which frame of how many at what rate) in the
 /// quieter ink, at `size`, on one line.
 #callsite(autofill(loc))
@@ -1323,7 +1454,7 @@ fn PlayerNode::is_full(self : PlayerNode) -> Bool {
 }
 
 ///|
-/// 全屏 (player.mbt's desk_player `full`): beside the system's bars the window filled, the bars put away; else the
+/// 全屏 (the old player's desk_player `full`): beside the system's bars the window filled, the bars put away; else the
 /// window filling the screen, or back as it was (and as the player is left).
 fn PlayerNode::full(self : PlayerNode) -> Unit {
   if native_on() {
@@ -1338,7 +1469,7 @@ fn PlayerNode::full(self : PlayerNode) -> Unit {
 }
 
 ///|
-/// Back from it (player.mbt's desk_leave): the window as it was if it made it fill the screen, then `on_back`.
+/// Back from it (the old player's desk_leave): the window as it was if it made it fill the screen, then `on_back`.
 fn PlayerNode::leave(self : PlayerNode, on_back : () -> Unit) -> Unit {
   native_full.set(false)
   if self.v.fulled {
@@ -1351,7 +1482,7 @@ fn PlayerNode::leave(self : PlayerNode, on_back : () -> Unit) -> Unit {
 }
 
 ///|
-/// The keys (player.mbt's head; the keymap's player.*, player_bindings) in `n`, where it is up (not flying): each done
+/// The keys (player_parts.mbt's head; the keymap's player.*, player_bindings) in `n`, where it is up (not flying): each done
 /// at its key's moment.
 fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, flying : () -> Bool) -> Unit {
   let pn = self
@@ -1387,6 +1518,26 @@ fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, fly
   })
   let picture = fn() { @signals.untracked(fn() { !pn.audio(pn.status()) }) }
   able("full", fn(_) { pn.full() }, fn() { picture() && @ui.platform() == 0 })
+  able(
+    "subtitle",
+    fn(_) {
+      pn.act(fn() { pn.p.toggle_subtitle() })
+      pn.wake()
+    },
+    fn() { @signals.untracked(fn() { pn.p.subtitle().0 }) },
+  )
+  let go_to = fn(other : () -> String?) {
+    match @signals.untracked(other) {
+      Some(o) => pn.go(o)
+      None => ()
+    }
+  }
+  able("next", fn(_) { go_to(fn() { pn.pl.next() }) }, fn() {
+    @signals.untracked(fn() { pn.pl.next() }) is Some(_)
+  })
+  able("prev", fn(_) { go_to(fn() { pn.pl.prev() }) }, fn() {
+    @signals.untracked(fn() { pn.pl.prev() }) is Some(_)
+  })
   let zooms = fn() { picture() && z.nw > 0.0 }
   able("zoom_in", fn(at) { z.zoom_to(z.scale * player_zoom_step, z.bw / 2.0, z.bh / 2.0, true, at~) }, zooms)
   able("zoom_out", fn(at) { z.zoom_to(z.scale / player_zoom_step, z.bw / 2.0, z.bh / 2.0, true, at~) }, zooms)
@@ -1394,9 +1545,11 @@ fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, fly
   able("zoom_whole", fn(at) { z.zoom_to(player_whole, z.bw / 2.0, z.bh / 2.0, true, at~) }, zooms)
   on("escape", fn(_) {
     if pn.rates.untracked() {
-      pn.rates.set(false)
+      pn.rates_open(false)
     } else if pn.more.untracked() {
       pn.more.set(false)
+    } else if pn.listing.untracked() {
+      pn.list_open(false)
     } else {
       pn.leave(on_back)
     }
@@ -1412,7 +1565,7 @@ fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, fly
 // ── a desktop's ─────────────────────────────────────────────────────────
 
 ///|
-/// The player over the window as a desktop's layout has it, in `n` (player.mbt's desk_player, its folder's others
+/// The player over the window as a desktop's layout has it, in `n` (the old player's desk_player, its folder's others
 /// none): its ground (a film's black, none while it flies); its stage (a click shows or hides its controls, a double
 /// one plays or pauses in its middle and jumps 15 s on its sides; the wheel with ⌘ or ⌃ zooms round the pointer, alone
 /// moves what is zoomed in) and its picture; what lies in its middle; the bar along the top (beside the system's bars,
@@ -1435,14 +1588,21 @@ fn desk_player_node(
     let z = pn.v.zoom
     let picture = fn() { !pn.audio(pn.status()) }
     let ink = fn() { media_ink(picture()) }
-    let room = fn() { player_room(stage().0) }
+    let room = fn() { pn.room(stage().0) }
+    let panel = fn() { pn.panel(stage().0) }
+    let embedded = pn.embedded
+    // (embedded, the controls in the page's colours on its own ground)
+    let cink = fn() { if embedded { media_pane_ink() } else { ink() } }
     n
     .over(Is(true))
-    .ground(By(fn() { if flying() { no_ground } else { ink().stage } }))
+    .ground(By(fn() { if flying() || embedded { no_ground } else { ink().stage } }))
     |> ignore
-    pn.keys(n, on_back, flying)
+    // (embedded, no keys: what is typed is the page's)
+    if !embedded {
+      pn.keys(n, on_back, flying)
+    }
     // (filling the window beside the system's bars: back leaves that first)
-    n.show(at_once=true, fn() { native_on() && native_full.get() }, fn(b) {
+    n.show(at_once=true, fn() { !embedded && native_on() && native_full.get() }, fn(b) {
       b.width(Is(Some(0.0))).height(Is(Some(0.0))).takes_back(fn() { native_full.set(false) }) |> ignore
     })
     let tips_at : Ref[@view.View?] = Ref(None)
@@ -1453,6 +1613,11 @@ fn desk_player_node(
       .over(Is(true))
       .presses(By(fn() { !flying() }))
       .cursor(Is(Some(Arrow)))
+      // (embedded, the room over its controls alone, what is zoomed in seen only there, what takes the hand in from
+      // its edges as the picture is)
+      .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
+      .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
+      .clips(Is(embedded))
       .on_drag(fn(d) {
         match d.kind {
           Down => {
@@ -1477,7 +1642,7 @@ fn desk_player_node(
         if (w.mods & (@ui.wheel_mod_ctrl | @ui.wheel_mod_cmd)) != 0 {
           let fine = (w.mods & @ui.wheel_mod_ctrl) != 0 && w.dy.abs() < player_pinch_step
           let k = @dmath.exp(-w.dy * (if fine { player_pinch_rate } else { player_wheel_rate }))
-          z.zoom_to(z.scale_at(at) * k, w.x, w.y - room().0, false, at~)
+          z.zoom_to(z.scale_at(at) * k, w.x + pn.inset, w.y + pn.inset - room().0, false, at~)
         } else if z.zoomed_at(at) {
           if (w.mods & @ui.wheel_mod_shift) != 0 && w.dx == 0.0 {
             z.pan(-w.dy, 0.0, at~)
@@ -1487,12 +1652,31 @@ fn desk_player_node(
         }
       })
       |> ignore
-      picture_node(s, pn, stage, still, flying)
+      picture_node(s, pn, stage, still, flying, -pn.inset)
     })
     |> ignore
-    middle_node(n, pn, file.name, fn() { "" })
-    // the bar along the top (beside the system's bars, an iPhone Duo's: its actions in them)
-    n.show(at_once=true, fn() { !native_on() }, fn(b) {
+    // what lies over the picture: in what 选集 leaves of it (embedded, in the room over the controls)
+    n.box(fn(mid) {
+      // (what is over it fills it whole: as wide as what 选集 leaves)
+      mid
+      .over(Is(true))
+      .width(By(fn() { Some(dmax(0.0, stage().0 - panel())) }))
+      .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1)) } else { None } }))
+      |> ignore
+      middle_node(mid, pn, file.name, fn() { "" })
+      cue_node(mid, pn, fn() { embedded || pn.wanted() }, fn() {
+        if embedded {
+          desk_cue_apart
+        } else {
+          desk_cue_over(stage().0, false)
+        }
+      }, fn() { 0.0 })
+      ended_card_node(mid, pn, ink)
+    })
+    |> ignore
+    // the bar along the top (beside the system's bars, an iPhone Duo's: its actions in them; embedded, the page's own
+    // over it)
+    n.show(at_once=true, fn() { !native_on() && !embedded }, fn(b) {
       b.over(Is(true)) |> ignore
       let bar_ink = fn() -> ViewerInk {
         if picture() {
@@ -1512,7 +1696,7 @@ fn desk_player_node(
       let facts = fn() {
         let s = pn.status()
         let f = if picture() { film_facts(file.facts, s, pn.frames()) } else { "" }
-        joined(["", file_size(file.size), f], " · ")
+        joined([pn.pl.which(), file_size(file.size), f], " · ")
       }
       viewer_bar_node(
         b,
@@ -1520,12 +1704,25 @@ fn desk_player_node(
         fn() { file.name },
         facts,
         fn() { file.title },
-        fn() { pn.faded.get() },
+        fn() { pn.faded.get() && !pn.listing.get() },
         fn(_) { 1.0 },
         fn() { (viewer_host().room)().0 },
         fn() { stage().0 },
         bar_ink,
         fn(row, corner) {
+          // 选集, where the folder has others
+          row.show(at_once=true, fn() { pn.pl.many() }, fn(r) {
+            r.row(Is(true)) |> ignore
+            tool_node(
+              r,
+              fn() { { icon: "list", label: t("web-pages.drive.player.list"), on: pn.listing.get(), disabled: false } },
+              bar_ink,
+              corner,
+              fn() { pn.list_open(!pn.listing.untracked()) },
+              tip=tips,
+            )
+            |> ignore
+          })
           row.show(at_once=true, fn() { move_beside() is Some(_) }, fn(r) {
             r.row(Is(true)) |> ignore
             tool_node(
@@ -1558,40 +1755,48 @@ fn desk_player_node(
       )
       |> ignore
     })
-    // the controls over the foot
+    // 选集, docked at the right under the bar
+    n.show(at_once=true, fn() { panel() > 0.0 }, fn(d) {
+      d.over(Is(true)) |> ignore
+      play_list_docked_node(d, pn, picture)
+    })
+    // the controls over the foot (embedded, as far up from the stage's foot as a panel's corner is round, its keys in
+    // no corner of what holds the stage), in the middle of what 选集 leaves
     n.box(fn(l) {
       l
       .over(Is(true))
       .lines_up(Is(Some(Middle)))
-      .padding(By(fn() { (0.0, 0.0, 0.0, media_bar_in + (viewer_host().room)().1) }))
+      .padding(By(fn() { (0.0, 0.0, panel(), if embedded { pane_corner } else { media_bar_in + (viewer_host().room)().1 }) }))
       |> ignore
       l.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       l.box(fn(bar) {
         let narrow = fn() { desk_narrow(stage().0) }
         bar
-        .width(By(fn() { Some(dmin(media_bar_most, dmax(0.0, stage().0 - 2.0 * media_bar_in))) }))
+        .width(By(fn() { Some(dmin(media_bar_most, dmax(0.0, stage().0 - panel() - 2.0 * media_bar_in))) }))
         .padding(By(fn() { (media_bar_pad, if narrow() { desk_time_over } else { media_bar_top }, media_bar_pad, media_bar_foot()) }))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-        .ground(By(fn() { ink().ground }))
+        .ground(By(fn() { if embedded { no_ground } else { ink().ground } }))
         .alpha(By(fn() { if going() { 0.0 } else { pn.shown.shown(bar) } }))
         .presses(By(fn() { pn.on() && !flying() && !going() }))
         |> ignore
-        desk_controls_node(bar, pn, file, ink, narrow, tips)
+        desk_controls_node(bar, pn, file, cink, narrow, tips)
       })
       |> ignore
     })
     |> ignore
     // (a mouse's pointer along the top or over the foot: the controls kept while it is there)
     n.box(fn(top) {
-      top.over(Is(true)).height(By(fn() { Some(room().0) })).points(Is(true)) |> ignore
+      // (taking nothing of the pointer: what is under it, the bar's buttons, still lit under it; whether it is within
+      // it is where it is, whatever is over it, View::pointer_within)
+      top.over(Is(true)).height(By(fn() { Some(room().0) })) |> ignore
       top.reacts(fn() { top.pointer_within() && pointer_rests() }, fn(near) { pn.near_top.set(near) })
     })
     |> ignore
     n.box(fn(foot) {
-      foot.over(Is(true)).points(Is(true)) |> ignore
+      foot.over(Is(true)) |> ignore
       foot.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       foot.box(fn(f) {
-        f.height(By(fn() { Some(room().1) })).points(Is(true)) |> ignore
+        f.height(By(fn() { Some(room().1) })) |> ignore
         f.reacts(fn() { f.pointer_within() && pointer_rests() }, fn(near) { pn.near_foot.set(near) })
       })
       |> ignore
@@ -1603,7 +1808,7 @@ fn desk_player_node(
 }
 
 ///|
-/// The controls in `bar` (player.mbt's desk_play_controls, its folder's others none): under 640 where it is said a line
+/// The controls in `bar` (the old player's desk_play_controls, its folder's others none): under 640 where it is said a line
 /// of its own over the timeline; the timeline; 15 s back, a frame back, play, a frame on, 15 s on; where it is; the
 /// sound, the speed, the frame saved, full screen (a film's, macOS's or beside the system's bars); what left the row
 /// short of room (保存此帧 first, then the speed) in its ⋯.
@@ -1632,6 +1837,21 @@ fn desk_controls_node(
       row.row(Is(true)).height(Is(Some(media_row_h()))).gap(Is(@ui.Space::S3.px())).lines_up(Is(Some(Middle))) |> ignore
       row.box(fn(g) {
         g.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=media_key_d))) |> ignore
+        // (the one before and the one after, where the folder has others)
+        let step_to = fn(other : () -> String?) {
+          fn() {
+            match @signals.untracked(other) {
+              Some(o) => pn.go(o)
+              None => ()
+            }
+          }
+        }
+        g.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
+          media_key_node(k, fn() { "skip-back" }, fn() { t("web-pages.drive.player.prev") }, fn() { on() && pn.pl.prev() is Some(_) }, ink, step_to(
+              fn() { pn.pl.prev() },
+            ), icon_size=viewer_tool_icon, tips~)
+          |> ignore
+        })
         media_key_node(g, fn() { "back-15" }, fn() { t("web-pages.drive.player.back15") }, on, ink, fn() {
           pn.jump(-pn.p.nudge_ms())
         }, tips~)
@@ -1645,7 +1865,17 @@ fn desk_controls_node(
         media_key_node(
           g,
           fn() { if pn.plays() { "pause" } else { "play" } },
-          fn() { t(if pn.plays() { "web-main.video.pauseKey" } else { "web-main.video.playKey" }) },
+          // (its key said where Space plays it: not embedded, where what is typed is the page's)
+          fn() {
+            t(
+              match (pn.plays(), pn.embedded) {
+                (true, false) => "web-main.video.pauseKey"
+                (false, false) => "web-main.video.playKey"
+                (true, true) => "android-chat.video.pause"
+                (false, true) => "android-chat.video.play"
+              },
+            )
+          },
           on,
           ink,
           fn() { pn.play_pause() },
@@ -1663,6 +1893,12 @@ fn desk_controls_node(
           pn.jump(pn.p.nudge_ms())
         }, tips~)
         |> ignore
+        g.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
+          media_key_node(k, fn() { "skip-forward" }, fn() { t("web-pages.drive.player.next") }, fn() { on() && pn.pl.next() is Some(_) }, ink, step_to(
+              fn() { pn.pl.next() },
+            ), icon_size=viewer_tool_icon, tips~)
+          |> ignore
+        })
       })
       |> ignore
       row.box(fn(m) {
@@ -1682,6 +1918,21 @@ fn desk_controls_node(
           speed_node(slot, pn, ink, fn() { t("web-pages.drive.player.rate") }, phone=false, tips~) |> ignore
         })
         |> ignore
+        // the subtitle, where there is one beside it: its words shown or not
+        let subs_on = fn() { pn.p.subtitle().1 }
+        let subs_label = fn() { t(if subs_on() { "web-pages.drive.player.captionsOff" } else { "web-pages.drive.player.captionsOn" }) }
+        let subs_flip = fn() {
+          pn.act(fn() { pn.p.toggle_subtitle() })
+          pn.wake()
+        }
+        let subs_slot : Ref[@view.View?] = Ref(None)
+        g.show(at_once=true, fn() { pn.p.subtitle().0 }, fn(slot) {
+          slot.drops(Is(player_drop_subtitle)) |> ignore
+          subs_slot.val = Some(slot)
+          slot.owns(fn() { subs_slot.val = None }) |> ignore
+          media_key_node(slot, fn() { "captions" }, subs_label, on, ink, subs_flip, icon_size=viewer_tool_icon, lit=subs_on, tips~)
+          |> ignore
+        })
         // 保存此帧: paused, the frame shown at its own size
         let grabs = fn() { on() && !pn.plays() && ready() && !pn.grabbing.get() }
         let save_slot : Ref[@view.View?] = Ref(None)
@@ -1694,7 +1945,7 @@ fn desk_controls_node(
           |> ignore
         })
         // 全屏: the window filling the screen (macOS's), back as it was; beside the system's bars, the window filled
-        g.show(at_once=true, fn() { picture() && (@ui.platform() == 0 || native_on()) }, fn(k) {
+        g.show(at_once=true, fn() { picture() && !pn.embedded && (@ui.platform() == 0 || native_on()) }, fn(k) {
           media_key_node(
             k,
             fn() { if pn.is_full() { "shrink" } else { "expand" } },
@@ -1715,7 +1966,12 @@ fn desk_controls_node(
               Some(s) => s.left_out()
               None => false
             }
-          }, tips)
+          }, fn() {
+            match subs_slot.val {
+              Some(s) => s.left_out()
+              None => false
+            }
+          }, subs_label, subs_flip, tips)
         })
         |> ignore
       })
@@ -1728,7 +1984,7 @@ fn desk_controls_node(
 }
 
 ///|
-/// The ⋯ in `slot` (player.mbt's desk_play_controls' more): what left the row short of room, in its menu over it
+/// The ⋯ in `slot` (the old player's desk_play_controls' more): what left the row short of room, in its menu over it
 /// (保存此帧 where `grab_out` says it left, then the speeds under their name, the one it plays at chosen).
 fn more_node(
   slot : @view.View,
@@ -1737,6 +1993,9 @@ fn more_node(
   on : () -> Bool,
   grabs : () -> Bool,
   grab_out : () -> Bool,
+  subs_out : () -> Bool,
+  subs_label : () -> String,
+  subs_flip : () -> Unit,
   tips : TipLayer,
 ) -> Unit {
   let speed_out = fn() { true }
@@ -1754,6 +2013,9 @@ fn more_node(
       fn() {
         pn.said()
         let gone : Array[MenuItem?] = []
+        if subs_out() {
+          gone.push(Some(more_line(subs_label(), "captions", disabled=!on(), on_press=subs_flip)))
+        }
         if grab_out() {
           gone.push(Some(more_line(t("android-chat.video.saveFrame"), "camera", disabled=!grabs(), on_press=fn() { pn.grab(k) })))
         }
@@ -1792,7 +2054,7 @@ fn more_node(
 }
 
 ///|
-/// The sound in `parent` (player.mbt's desk_volume): a key that mutes, and beside it a line 72 wide to press or drag
+/// The sound in `parent` (the old player's desk_volume): a key that mutes, and beside it a line 72 wide to press or drag
 /// along (in twentieths), how loud on it in the words, a 10 head.
 #callsite(autofill(loc))
 fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips : TipLayer, loc~ : SourceLoc) -> Unit {
@@ -1876,7 +2138,7 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
 // ── a phone's ───────────────────────────────────────────────────────────
 
 ///|
-/// The player as a phone's page has it, in `n` (player.mbt's phone_player, its folder's others none): its ground; its
+/// The player as a phone's page has it, in `n` (the old player's phone_player, its folder's others none): its ground; its
 /// stage, what a finger does on it (phone_fingers) and its picture, taken down with a finger; what lies over it (a
 /// song's cover, what it waits on, a double tap's note, a held finger's 2×, where a finger along it has gone); the bar
 /// at the top (back, its name, 下载: beside the system's bars, theirs); the controls at the foot. Its bar and controls
@@ -1903,13 +2165,23 @@ fn phone_player_node(
         on_back()
       }
     }
+    let embedded = pn.embedded
+    // (embedded, the controls under the room over them, on the page's own ground in its colours, always there)
+    let cink = fn() { if embedded { media_pane_ink() } else { ink() } }
+    let foot = fn() { if embedded { phone_embedded_foot() } else { 0.0 } }
+    let room_h = fn() { if embedded { Some(dmax(0.0, stage().1 - foot())) } else { None } }
+    // (embedded, what takes the hand in from the stage's edges as its picture is)
+    let hand_h = fn() { room_h().map(fn(h) { dmax(0.0, h - pn.inset) }) }
     n
     .over(Is(true))
-    .ground(By(fn() { if flying() { no_ground } else { ink().stage } }))
+    .ground(By(fn() { if flying() || embedded { no_ground } else { ink().stage } }))
     |> ignore
-    pn.keys(n, on_back, flying)
+    // (embedded, no keys: what is typed is the page's)
+    if !embedded {
+      pn.keys(n, on_back, flying)
+    }
     // (turned sideways: back turns it upright first)
-    n.show(at_once=true, fn() { pn.p.is_sideways() }, fn(b) {
+    n.show(at_once=true, fn() { !embedded && pn.p.is_sideways() }, fn(b) {
       b.width(Is(Some(0.0))).height(Is(Some(0.0))).takes_back(fn() { pn.act(fn() { pn.p.upright() }) }) |> ignore
     })
     n.box(fn(s) {
@@ -1917,9 +2189,12 @@ fn phone_player_node(
       .over(Is(true))
       .presses(By(fn() { !flying() }))
       .cursor(Is(Some(Arrow)))
+      .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
+      .height(By(hand_h))
+      .clips(Is(embedded))
       .on_drag(fn(d) { phone_fingers(s, pn, d, stage, back) }, fingers=2, whole=true)
       |> ignore
-      picture_node(s, pn, stage, still, flying)
+      picture_node(s, pn, stage, still, flying, -pn.inset)
     })
     |> ignore
     let pill = fn() {
@@ -1934,7 +2209,16 @@ fn phone_player_node(
         _ => ""
       }
     }
-    middle_node(n, pn, file.name, pill)
+    // what lies over the picture (embedded, in the room over the controls)
+    n.box(fn(mid) {
+      mid.over(Is(true)).height(By(room_h)) |> ignore
+      middle_node(mid, pn, file.name, pill)
+      cue_node(mid, pn, fn() { embedded || pn.wanted() }, fn() { if embedded { desk_cue_apart } else { phone_cue_over() } }, fn() {
+        0.0
+      })
+      ended_card_node(mid, pn, ink)
+    })
+    |> ignore
     // (closed, drawn as it leaves, or dragged down to close: its controls away at once, none of them seen, pressed or
     // read out (View::hides) from that moment, not when it is gone)
     let away = fn() { pn.drag.get() == DownClose || pn.taken_down.get() || going() }
@@ -1942,8 +2226,9 @@ fn phone_player_node(
     let live = fn() { pn.on() && pn.drag.get() != DownClose && !pn.taken_down.get() && !flying() && !going() }
     let tips_at : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { tips_at.val })
-    // the bar at the top: back, the name, 下载 (beside the system's bars, an iPhone Duo's: its actions in them)
-    n.show(at_once=true, fn() { !native_on() }, fn(top) {
+    // the bar at the top: back, the name, which of the folder's it is, 选集, 下载 (beside the system's bars, an iPhone
+    // Duo's: its actions in them; embedded, the page's own over it)
+    n.show(at_once=true, fn() { !native_on() && !embedded }, fn(top) {
       top.over(Is(true)) |> ignore
       top.box(fn(r) { r.height(By(fn() { Some((viewer_host().room)().0) })) |> ignore }) |> ignore
       top.box(fn(place) {
@@ -1973,6 +2258,26 @@ fn phone_player_node(
             said_words_node(nm, fn() { file.name }, Ui, fn() { ink().text }, weight=600) |> ignore
           })
           |> ignore
+          h.show(at_once=true, fn() { pn.pl.which() != "" }, fn(w) {
+            w.row(Is(true)) |> ignore
+            said_words_node(w, fn() { pn.pl.which() }, Meta, fn() { ink().muted }) |> ignore
+          })
+          h.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
+            k.row(Is(true)) |> ignore
+            media_key_node(
+              k,
+              fn() { "list" },
+              fn() { t("web-pages.drive.player.list") },
+              live,
+              ink,
+              fn() { pn.list_open(true) },
+              side=phone_key_side,
+              faint=false,
+              ripples=true,
+              lit=fn() { pn.listing.get() },
+            )
+            |> ignore
+          })
           // 下载, as every file opened has it
           media_key_node(
             h,
@@ -1998,8 +2303,13 @@ fn phone_player_node(
       l.box(fn(place) {
         place
         .padding(By(fn() {
-          let (lp, rp) = sides_clear_of(@ui.Space::S2.px())
-          (lp, @ui.Space::S2.px(), rp, @ui.Space::S2.px())
+          if embedded {
+            // (clear of the corners of what holds the stage, none of the window's bars beside it)
+            (@ui.Space::S2.px(), @ui.Space::S2.px(), @ui.Space::S2.px(), pane_corner)
+          } else {
+            let (lp, rp) = sides_clear_of(@ui.Space::S2.px())
+            (lp, @ui.Space::S2.px(), rp, @ui.Space::S2.px())
+          }
         }))
         .fills_across(Is(true))
         .lines_up(Is(Some(Middle)))
@@ -2012,17 +2322,17 @@ fn phone_player_node(
           .max_width(Is(Some(phone_controls_most)))
                   .padding(Is((phone_keys_in, @ui.Space::S2.px(), phone_keys_in, phone_controls_foot())))
           .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-          .ground(By(fn() { ink().ground }))
+          .ground(By(fn() { if embedded { no_ground } else { ink().ground } }))
           .presses(By(live))
           // (a finger down anywhere on them keeps them a while)
           .on_drag(fn(d) { if d.kind == Down { pn.wake() } })
           |> ignore
-          phone_controls_node(c, pn, ink, live)
+          phone_controls_node(c, pn, cink, live)
         })
         |> ignore
       })
       |> ignore
-      l.box(fn(r) { r.height(By(fn() { Some((viewer_host().room)().1) })) |> ignore }) |> ignore
+      l.box(fn(r) { r.height(By(fn() { Some(if embedded { 0.0 } else { (viewer_host().room)().1 }) })) |> ignore }) |> ignore
     })
     |> ignore
     tips_at.val = Some(n.box(fn(t) { t.over(Is(true)) |> ignore }))
@@ -2040,7 +2350,7 @@ fn sides_clear_of(more : Double) -> (Double, Double) {
 }
 
 ///|
-/// A phone's controls in `c` (player.mbt's phone_controls, its folder's others none): where it is over the timeline;
+/// A phone's controls in `c` (the old player's phone_controls, its folder's others none): where it is over the timeline;
 /// 15 s back or (paused, a film) a frame back, play, 15 s on or a frame on; the speed, the frame saved (paused), fit or
 /// fill (sideways), sideways (a film's). Taking presses while `on()`.
 #callsite(autofill(loc))
@@ -2048,9 +2358,16 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
   parent.box(made_for=loc, fn(c) {
     let picture = fn() { !pn.audio(pn.status()) }
     let inspect = fn() { picture() && !pn.plays() && pn.status().duration > 0.0 }
+    // (embedded, a line as tall as a desktop's said over its timeline, so the room over them is known:
+    // phone_embedded_foot)
     c.box(fn(w) {
       w.padding(Is((@ui.Space::S2_5.px(), 0.0, 0.0, 0.0))).row(Is(true)) |> ignore
-      where_node(w, pn, ink, Meta) |> ignore
+      if pn.embedded {
+        w.min_height(Is(Some(desk_time_h))).lines_up(Is(Some(Middle))) |> ignore
+        where_node(w, pn, ink, Meta, leading=L4) |> ignore
+      } else {
+        where_node(w, pn, ink, Meta) |> ignore
+      }
     })
     |> ignore
     timeline_node(c, pn, phone_timeline_h(), ink, pointed=false)
@@ -2060,6 +2377,20 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
         media_key_node(parent, icon, label, on, ink, press, side=phone_key_side, faint=false, ripples=true, lit~) |> ignore
       }
       let off = fn() { false }
+      // (the one before and the one after, where the folder has others: the first to leave short of room)
+      let step = fn(slot : @view.View, icon : String, label : String, other : () -> String?) {
+        slot.drops(Is(phone_drop_steps)) |> ignore
+        media_key_node(slot, fn() { icon }, fn() { t(label) }, fn() { on() && other() is Some(_) }, ink, fn() {
+          match @signals.untracked(other) {
+            Some(o) => pn.go(o)
+            None => ()
+          }
+        }, side=phone_key_side, faint=false, ripples=true)
+        |> ignore
+      }
+      row.show(at_once=true, fn() { pn.pl.many() }, fn(slot) {
+        step(slot, "skip-back", "android-misc.drive.player.prev", fn() { pn.pl.prev() })
+      })
       key(row, fn() { if inspect() { "chevron-left" } else { "back-15" } }, fn() {
         t(if inspect() { "android-chat.video.prev" } else { "android-misc.drive.player.back15" })
       }, fn() { if @signals.untracked(inspect) { pn.step(-1) } else { pn.jump(-pn.p.nudge_ms()) } }, off)
@@ -2069,8 +2400,20 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
       key(row, fn() { if inspect() { "chevron-right" } else { "forward-15" } }, fn() {
         t(if inspect() { "android-chat.video.next" } else { "android-misc.drive.player.forward15" })
       }, fn() { if @signals.untracked(inspect) { pn.step(1) } else { pn.jump(pn.p.nudge_ms()) } }, off)
+      row.show(at_once=true, fn() { pn.pl.many() }, fn(slot) {
+        step(slot, "skip-forward", "android-misc.drive.player.next", fn() { pn.pl.next() })
+      })
       row.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       speed_node(row, pn, ink, fn() { t("android-misc.drive.player.speed") }, phone=true) |> ignore
+      // the subtitle, where there is one beside it: its words shown or not
+      row.show(at_once=true, fn() { pn.p.subtitle().0 }, fn(slot) {
+        key(slot, fn() { "captions" }, fn() {
+          t(if pn.p.subtitle().1 { "android-misc.drive.player.subtitlesOff" } else { "android-misc.drive.player.subtitlesOn" })
+        }, fn() {
+          pn.act(fn() { pn.p.toggle_subtitle() })
+          pn.wake()
+        }, fn() { pn.p.subtitle().1 })
+      })
       row.show(at_once=true, inspect, fn(slot) {
         slot.drops(Is(phone_drop_grab)) |> ignore
         media_key_node(
@@ -2087,7 +2430,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
         |> ignore
       })
       // turned sideways the picture can fill the screen (cropped) or fit in it
-      row.show(at_once=true, fn() { picture() && pn.p.is_sideways() }, fn(slot) {
+      row.show(at_once=true, fn() { picture() && !pn.embedded && pn.p.is_sideways() }, fn(slot) {
         key(slot, fn() {
           pn.said()
           if pn.p.fills() { "shrink" } else { "expand" }
@@ -2102,7 +2445,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
           pn.p.fills()
         })
       })
-      row.show(at_once=true, picture, fn(slot) {
+      row.show(at_once=true, fn() { picture() && !pn.embedded }, fn(slot) {
         key(slot, fn() { "landscape" }, fn() {
           t(if pn.p.is_sideways() { "android-misc.drive.player.unfull" } else { "android-misc.drive.player.full" })
         }, fn() {
@@ -2117,7 +2460,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
 }
 
 ///|
-/// A finger's event on a phone's stage `s` (player.mbt's phone_gestures, at its own moment): two zoom it round the point
+/// A finger's event on a phone's stage `s` (the old player's phone_gestures, at its own moment): two zoom it round the point
 /// between them; one along it moves through the time (the picture going with it frame by frame, paused meanwhile:
 /// Media::scrub_to), down it takes the picture down and closes it past player_close_dy (`back`: sideways, upright
 /// first), held still it plays at 2× until let go; zoomed in, one moves what is shown (let go moving, it goes on,
@@ -2140,7 +2483,7 @@ fn phone_fingers(
     let (x2, y2) = pts[1]
     ((x1 + x2) / 2.0, (y1 + y2) / 2.0, ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt())
   }
-  let (ox, oy) = (d.x - d.wx, d.y - d.wy)
+  let (ox, oy) = (d.x - d.wx + pn.inset, d.y - d.wy + pn.inset)
   match d.kind {
     Down => {
       pn.fingers[d.finger] = (x, y)
@@ -2196,7 +2539,7 @@ fn phone_fingers(
             MoveZoom
           } else if dx0.abs() > dy0.abs() && s0.duration > 0.0 {
             AlongTime
-          } else if dy0 > 0.0 {
+          } else if dy0 > 0.0 && !pn.embedded {
             DownClose
           } else {
             MoveZoom

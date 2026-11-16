@@ -252,8 +252,8 @@ fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barre
   }
   c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
   // what is the page's own and takes back before it (said with it, in its island: what it reads is what the page
-  // writes): the player sideways turned upright first; words picked in a chat, a link's menu, let go first (pick.mbt)
-  play_back(c)
+  // writes): words picked in a chat, a link's menu, let go first (pick.mbt); the player sideways turned upright first
+  // is the player's own (@sf.player_node)
   pick_back(c)
 }
 
@@ -739,6 +739,12 @@ fn narrow_made_as(
         @sfpages.preview_file_page_node(p, src, station, key, path, name, core.pop, fn() { frame().top }, fn() {
           frame().foot
         })
+      })
+    // a drive's video or song played: the whole window, the player's own bars over it (sfpages' play_page_node)
+    DrivePlay(at) =>
+      made("drive-play/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.play_page_node(p, src, at)
       })
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>

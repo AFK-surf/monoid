@@ -171,7 +171,7 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
       when: Always,
     })
   }
-  // (a player's keys where one is up: its own, the library's, sf/player.mbt)
+  // (a player's keys where one is up: its own, the library's, sf/player_parts.mbt)
   bindings.append(@sf.player_bindings())
   // (a reader's where a text is read: sf/reader.mbt)
   bindings.append(@sf.reader_bindings())

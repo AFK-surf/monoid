@@ -208,11 +208,14 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone newchat-preset-others-none": (451, 509, 92),
   "phone newchat-preset-theirs": (451, 509, 92),
   "phone newchat-preset-theirs-long": (451, 509, 92),
-  "phone player-audio": (310, 361, 56),
-  "phone player-ended": (310, 361, 56),
-  "phone player-failed": (310, 361, 56),
-  "phone player-opening": (310, 361, 56),
-  "phone player-video": (310, 361, 56),
+  // (written again, 2026-11-17: the drive's film and song played as nodes, @sf.player_node, over 文件 made as nodes:
+  // what the old player built as it opened now made, laid out and measured by the window's tree, nothing more shown)
+  "phone player-audio": (409, 457, 66),
+  "phone player-audio-failed": (417, 468, 68),
+  "phone player-ended": (445, 500, 74),
+  "phone player-failed": (441, 492, 70),
+  "phone player-opening": (428, 473, 66),
+  "phone player-video": (437, 489, 68),
   // (written again, 2026-11-17: a service's page on a phone made as nodes, sfpages service_node.mbt: its bar, stage and
   // what marking shows, what its old view built as it opened now made, laid out and measured by the window's tree)
   "phone service": (157, 152, 22),
@@ -590,11 +593,14 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide newchat-preset-others-none": (1466, 1437, 167),
   "wide newchat-preset-theirs": (1387, 1388, 152),
   "wide newchat-preset-theirs-long": (1387, 1388, 152),
-  "wide player-audio": (593, 733, 184),
-  "wide player-ended": (593, 733, 184),
-  "wide player-failed": (593, 733, 184),
-  "wide player-opening": (593, 733, 184),
-  "wide player-video": (593, 733, 184),
+  // (written again, 2026-11-17: the drive's film and song played as nodes, @sf.player_node, over 文件 made as nodes:
+  // what the old player built as it opened now made, laid out and measured by the window's tree, nothing more shown)
+  "wide player-audio": (728, 880, 206),
+  "wide player-audio-failed": (736, 891, 208),
+  "wide player-ended": (763, 922, 212),
+  "wide player-failed": (759, 914, 208),
+  "wide player-opening": (746, 895, 204),
+  "wide player-video": (754, 908, 206),
   "wide service": (1887, 2097, 302),
   "wide service-restart": (1887, 2097, 302),
   "wide service-sized": (1887, 2097, 302),
