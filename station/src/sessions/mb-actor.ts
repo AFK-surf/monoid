@@ -689,7 +689,7 @@ export class MbActor {
         if (!session) return null;
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
-      case "profileId": return deps.runOn(this.key, args[0] === true).id;
+      case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
       case "outlived": {
         const session = this.#agents.get(args[0])?.session;
         return session?.outlived?.() === true;

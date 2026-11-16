@@ -138,8 +138,9 @@ export type SessionDeps = {
   chat(connect: string): Surface | undefined;
   driver(runtime: RuntimeKind): AgentDriver;
   /// The profile a session's runtime starts on now: its own while usable, else another that can take it on (`holding`:
-  /// its process has work going in the background, kept on an account nearly full).
-  runOn(key: string, holding?: boolean): Profile & { spelling?(model: string): string | null };
+  /// its process has work going in the background, kept on an account nearly full; `across`: before a turn, so another
+  /// runtime's when none of its own can run it, accounts.ts `runOn`).
+  runOn(key: string, holding?: boolean, across?: boolean): Profile & { spelling?(model: string): string | null };
   /// A turn ran into the allowance of `ranOn`, the profile its process was started on (null: the session's own), or
   /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved.
   spend(key: string, ranOn: string | null, model?: string | null): [string, string] | null;
@@ -286,11 +287,14 @@ export function lastStationSaid(deps: SessionDeps, key: string): string | null {
 /// Its process takes how its session runs now in place, when it runs on the same profile (`profile`) and can: how it
 /// runs then; else null (actor.ts `catchUp`).
 export async function retuneAgent(deps: SessionDeps, key: string, session: AgentSession, runtime: RuntimeKind, profileNow: string | null, restart: boolean, holding: boolean) {
-  const row = deps.store.getSession(key);
+  const before = deps.store.getSession(key);
   let profile: ReturnType<SessionDeps["runOn"]> | null = null;
   try {
-    profile = row ? deps.runOn(key, holding) : null;
+    profile = before ? deps.runOn(key, holding, true) : null;
   } catch {}
+  // As it is now: moved to another runtime, its process cannot take it in place (it is ended and opened anew).
+  const current = deps.store.getSession(key);
+  const row = current && current.runtime === runtime ? current : undefined;
   const ready = row && profile && !restart && profile.id === profileNow && session.retune ? await deps.linkSkills(row) : "";
   if (!restart && row && profile && profile.id === profileNow && session.retune?.(openOptions(row, profile, deps, ready))) {
     return { runtime, model: (row.model ?? null) as string | null, effort: (row.effort ?? null) as string | null };
@@ -327,13 +331,20 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   const told = { afresh: null as string | null, resumeLost: false, readBackTold: false, stoppedNote: null as string | null };
   if (await deps.archiveIsCold(key)) await deps.restoreArchive(key);
   const store = deps.store;
+  const initial = store.getSession(key);
+  if (!initial) throw new Error(`session ${key} disappeared`);
+  const was = runtimeKind(initial.runtime);
+  if (!was) throw new Error(`session ${key} runs an unknown runtime ${initial.runtime}`);
+  how.runtime(was);
+  // Its account first: none of its runtime's able to run it, it may go on on another runtime's (accounts.ts `runOn`),
+  // whose driver then opens it, afresh.
+  const profile = deps.runOn(key, false, true);
   const row = store.getSession(key);
   if (!row) throw new Error(`session ${key} disappeared`);
   const runtime = runtimeKind(row.runtime);
   if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
-  how.runtime(runtime);
+  if (runtime !== was) how.runtime(runtime);
   const driver = deps.driver(runtime);
-  const profile = deps.runOn(key);
   const memory = await deps.linkSkills(row);
   const base = openOptions(row, profile, deps, memory);
   // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one

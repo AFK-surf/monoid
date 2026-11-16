@@ -16,6 +16,7 @@ import { fakeBrowser } from "./accounts-fakes.ts";
 import { checkQuota } from "../src/accounts/quota.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Accounts as SessionAccounts } from "../src/sessions/accounts.ts";
+import { urgency } from "../src/sessions/pool.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { Store } from "../src/store/store.ts";
 import { tr } from "../src/ops/i18n.ts";
@@ -1047,6 +1048,148 @@ test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on
   }));
   assert.equal(pool.runOn("s-argon").id, "ag2");
   assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+});
+
+/// An Antigravity CLI pool of two accounts over sessions kept in memory, on a clock the test moves.
+function agyPool(models: string[]) {
+  const cfg = hubConfig(
+    {
+      profiles: ["ag1", "ag2"].map((id) => ({ id, name: id.toUpperCase(), runtime: "agy", home: `/${id}`, access: { kind: "subscription" }, model: models[0], models })),
+    },
+    "/x",
+  );
+  const sessions = new Map<string, any>();
+  const t = { now: 2000, compacted: false };
+  const pool = new SessionAccounts({
+    config: () => cfg,
+    store: {
+      getSession: (k: string) => sessions.get(k),
+      setSessionProfile: (k: string, id: string, pinned: boolean) => {
+        const s = sessions.get(k);
+        if (s) {
+          s.profile = id;
+          s.profilePinned = pinned;
+        }
+      },
+      lastTurn: () => ({ endedAt: 1000 }),
+      recentlyCompacted: () => t.compacted,
+      compactionsReady: () => false,
+      lastContexts: () => [],
+      compactionPoints: () => new Map(),
+    } as never,
+    running: () => [],
+    clock: { currentTimeMillisUnsafe: () => t.now } as never,
+  });
+  const session = (key: string, model: string, profile = "ag1") => sessions.set(key, { key, runtime: "agy", profile, profilePinned: false, model, effort: null });
+  return { pool, sessions, t, session, at: (key: string) => sessions.get(key).profile as string };
+}
+
+test("an Antigravity CLI limit that names no model passes over its model's group on the account, a Pro account's own Argon week only Argon; a reset or a newer read lets them run again", () => {
+  const models = ["gemini-4-carbon-medium", "gemini-4-argon-medium", "gemini-4-hydrogen-medium", "gemini-4-flash-medium", "claude-opus-5-5-medium", "claude-sonnet-5-5-medium"];
+  const { pool, t, session, at } = agyPool(models);
+  const quota = (checkedAt: number, scoped?: unknown[]) => ({
+    state: "ok",
+    checkedAt,
+    windows: [
+      { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 50_000, minutes: 300, scope: "gemini" },
+      { label: "每周 · Gemini", usedPercent: 16, resetsAt: 900_000, minutes: 10080, scope: "gemini" },
+      { label: "5 小时 · Claude / GPT", usedPercent: 60, resetsAt: 60_000, minutes: 300, scope: "3p" },
+      { label: "每周 · Claude / GPT", usedPercent: 40, resetsAt: 900_000, minutes: 10080, scope: "3p" },
+    ],
+    ...(scoped ? { scoped } : {}),
+  });
+  let ag1 = quota(1500);
+  pool.setHealth((id) => ({ check: { state: "ok", models }, quota: id === "ag1" ? ag1 : quota(1500) }));
+  session("s-claude", "claude-opus-5-5-medium");
+  session("s-gemini", "gemini-4-carbon-medium");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  // Its Claude turn ran into "Individual quota reached", its allowance not read again since (checkedAt before then):
+  // its Claude / GPT group is passed over there, its Gemini runs on (2026-11-16: the whole account was).
+  assert.deepEqual(pool.spend("s-claude", "ag1"), ["AG1", "AG2"]);
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  assert.equal(at("s-gemini"), "ag1");
+  assert.equal(pool.runOn("s-sonnet").id, "ag2");
+  // Reset by hand, the group runs there again at once.
+  pool.resetAllowance("ag1");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag1");
+  // Spent again, then its allowance read again after it: what that says counts.
+  t.now = 3000;
+  session("s-claude", "claude-opus-5-5-medium");
+  pool.spend("s-claude", "ag1");
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag2");
+  ag1 = quota(3500);
+  t.now = 4000;
+  session("s-sonnet", "claude-sonnet-5-5-medium");
+  assert.equal(pool.runOn("s-sonnet").id, "ag1");
+
+  // A Pro account's own Argon week used up: an Argon turn's limit passes over Argon alone there, its Hydrogen and Flash
+  // run on under the Gemini group.
+  ag1 = quota(3500, [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  session("s-argon", "gemini-4-argon-medium");
+  session("s-hydrogen", "gemini-4-hydrogen-medium");
+  session("s-flash", "gemini-4-flash-medium");
+  pool.spend("s-argon", "ag1");
+  assert.equal(at("s-argon"), "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+  assert.equal(pool.runOn("s-flash").id, "ag1");
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  // Its Argon week read not yet full (95%, the Gemini group's at 16%): still Argon's own, Argon alone passed over until
+  // a newer read or a reset.
+  t.now = 5000;
+  ag1 = quota(4500, [{ label: "每周 · Argon", usedPercent: 95, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  session("s-argon", "gemini-4-argon-medium");
+  pool.spend("s-argon", "ag1");
+  assert.equal(at("s-argon"), "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  pool.resetAllowance("ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag1");
+  // And a read after its limit that says its Argon week has room lets it run there too.
+  t.now = 6000;
+  pool.spend("s-argon", "ag1");
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  ag1 = quota(6500, [{ label: "每周 · Argon", usedPercent: 30, resetsAt: 900_000, minutes: 10080, scope: "Argon" }]);
+  t.now = 7000;
+  session("s-argon", "gemini-4-argon-medium");
+  assert.equal(pool.runOn("s-argon").id, "ag1");
+});
+
+test("an Antigravity CLI account's nearly full Claude / GPT five hours does not move its Gemini sessions off it; a window due to refill counts as refilled", () => {
+  const models = ["gemini-4-carbon-medium", "claude-opus-5-5-medium"];
+  const { pool, t, session } = agyPool(models);
+  const hour = 60 * 60 * 1000;
+  const quota = (gemini5h: number, p5h: number) => ({
+    state: "ok",
+    checkedAt: 1500,
+    windows: [
+      { label: "5 小时 · Gemini", usedPercent: gemini5h, resetsAt: 2 * hour, minutes: 300, scope: "gemini" },
+      { label: "每周 · Gemini", usedPercent: 30, resetsAt: 100 * hour, minutes: 10080, scope: "gemini" },
+      { label: "5 小时 · Claude / GPT", usedPercent: p5h, resetsAt: 2 * hour, minutes: 300, scope: "3p" },
+      { label: "每周 · Claude / GPT", usedPercent: 40, resetsAt: 100 * hour, minutes: 10080, scope: "3p" },
+    ],
+  });
+  pool.setHealth((id) => ({ check: { state: "ok", models }, quota: id === "ag1" ? quota(20, 95) : quota(20, 10) }));
+  t.compacted = true;
+  session("s-gemini", "gemini-4-carbon-medium");
+  session("s-claude", "claude-opus-5-5-medium");
+  assert.equal(pool.runOn("s-gemini").id, "ag1");
+  // Its Claude session, where that five hours does weigh, moves as before (it loses little: just compacted).
+  assert.equal(pool.runOn("s-claude").id, "ag2");
+
+  // Read before its five hours refilled: due by now, it is not crowded and weighs as a whole window again.
+  const now = 10 * hour;
+  const week = { label: "每周", usedPercent: 20, resetsAt: now + 72 * hour, minutes: 10080 };
+  const stale = { state: "ok", windows: [{ label: "5 小时", usedPercent: 90, resetsAt: now - 1, minutes: 300 }, week] };
+  const refilled = { state: "ok", windows: [{ label: "5 小时", usedPercent: 0, resetsAt: now - 1, minutes: 300 }, week] };
+  assert.equal(urgency(stale, now).crowded, false);
+  assert.deepEqual(urgency(stale, now), urgency(refilled, now));
+  const shortOnly = (used: number) => ({ state: "ok", windows: [{ label: "5 小时", usedPercent: used, resetsAt: now - 1, minutes: 300 }] });
+  assert.deepEqual(urgency(shortOnly(90), now), urgency(shortOnly(0), now));
 });
 
 test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had moved into the machine's one keychain item is taken back only by the profile whose account it is", async () => {

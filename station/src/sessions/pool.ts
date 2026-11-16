@@ -42,10 +42,14 @@ const MIN_WEIGHT = 0.01;
 
 export const windowsOf = (quota: Json | null | undefined): Json[] => (quota && quota.state === "ok" && Array.isArray(quota.windows) ? quota.windows : []);
 
+/// A profile's windows, with `now` one whose refill is due (an allowance read before it) as empty.
+const freshWindows = (quota: Json | null | undefined, now?: number): Json[] =>
+  windowsOf(quota).map((w) => (now !== undefined && typeof w.resetsAt === "number" && w.resetsAt <= now ? { ...w, usedPercent: 0 } : w));
+
 /// How much of its tightest window a profile has used, 0–100; unknown counts as half. With `now`, a window whose
 /// refill is due (an allowance read before it) counts as empty.
 function used(quota: Json | null | undefined, now?: number): number {
-  const windows = windowsOf(quota).map((w) => (now !== undefined && typeof w.resetsAt === "number" && w.resetsAt <= now ? { ...w, usedPercent: 0 } : w));
+  const windows = freshWindows(quota, now);
   if (windows.length > 0) return windows.reduce((max: number, w: Json) => Math.max(max, Number(w.usedPercent)), -Number.MAX_VALUE);
   return 50;
 }
@@ -59,9 +63,10 @@ export type Urgency = { crowded: boolean; pace: number; weight: number };
 /// keep a profile from taking more now. A profile with no long window is weighed by the ones it has. Of several, the
 /// slowest counts: the others cannot be spent faster than it lets. A long window refilling within a day counts as a
 /// day away: what is left of it can only be spent five hours at a time, so a few minutes to go does not make it take
-/// every session.
+/// every session. A window whose refill is due counts as refilled (2026-11-16: a five hours full before its refill kept
+/// its account crowded until its allowance was read again).
 export function urgency(quota: Json | null | undefined, now: number): Urgency {
-  const windows = windowsOf(quota).filter((w) => typeof w.minutes === "number" && w.minutes > 0);
+  const windows = freshWindows(quota, now).filter((w) => typeof w.minutes === "number" && w.minutes > 0);
   const long = windows.filter((w) => w.minutes * 60_000 > DAY_MS);
   const short = windows.filter((w) => w.minutes * 60_000 <= DAY_MS);
   const crowded = long.length > 0 && short.some((w) => Number(w.usedPercent) >= CROWDED_PERCENT);
@@ -69,7 +74,7 @@ export function urgency(quota: Json | null | undefined, now: number): Urgency {
   const room = long.length > 0 ? short.reduce((min, w) => Math.min(min, Math.max(0, 100 - Number(w.usedPercent)) / 100), 1) : 1;
   const weighted = (u: Omit<Urgency, "weight">): Urgency => ({ ...u, weight: Math.max(u.pace * room, MIN_WEIGHT) });
   const weighed = (long.length > 0 ? long : short).filter((w) => typeof w.resetsAt === "number");
-  if (weighed.length === 0) return weighted({ crowded, pace: (100 - used(quota)) / 100 });
+  if (weighed.length === 0) return weighted({ crowded, pace: (100 - used(quota, now)) / 100 });
   const paces = weighed.map((w) => {
     const left = Math.max(0, 100 - Number(w.usedPercent)) / 100;
     const length = w.minutes * 60_000;

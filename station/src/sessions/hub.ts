@@ -1716,7 +1716,7 @@ export class Hub {
       },
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
-      runOn: (key, holding) => this.accounts.runOn(key, holding),
+      runOn: (key, holding, across) => this.accounts.runOn(key, holding, false, across),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),

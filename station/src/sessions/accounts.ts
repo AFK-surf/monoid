@@ -60,6 +60,12 @@ export class Accounts {
   /// the model as the runtime named it, as the session ran it (null: its profile's default) and when. That model alone
   /// is passed over there, for SPENT_FOR_MS (the runtime says no refill time); the account's others run on (#4643).
   private modelSpent = new Map<string, { named: string; ran: string | null; at: number }[]>();
+  /// Model groups of an account whose windows are split by them (Antigravity's Gemini vs Claude / GPT) that a turn ran
+  /// into the allowance of, by `${account}\0${group}`, and when: its runtime's words name no model ("Individual quota
+  /// reached"), so the group the turn's model is of is passed over, as `spent` the whole account would be; the other
+  /// group runs on there (2026-11-16: a Claude limit marked the account spent, and its Gemini sessions, its Gemini week
+  /// at 16%, moved off it again and again).
+  private scopeSpent = new Map<string, number>();
   /// Where each model's context is compacted on this station, and when that was learnt.
   private compactions: [number, Map<string, number>] | null = null;
 
@@ -98,7 +104,7 @@ export class Accounts {
     if (windowsOf(this.quotaForModel(id, quota, model)).some(full)) return null;
     const runs = model ?? this.deps.config().profiles.find((p) => p.id === id)?.model ?? null;
     if (runs === null || quota?.state !== "ok" || !Array.isArray(quota.scoped)) return undefined;
-    const own = quota.scoped.find((w: any) => typeof w?.scope === "string" && full(w) && modelWords(w.scope).every((x) => modelWords(modelKey(runs)).includes(x)));
+    const own = quota.scoped.find((w: any) => full(w) && ownedBy(w, runs));
     return own ? (own.scope as string) : undefined;
   }
 
@@ -129,7 +135,16 @@ export class Accounts {
 
   /// An explicit reset supersedes the failure which made this account unavailable to the pool.
   resetAllowance(id: string): void {
-    this.spent.delete(this.accountKey(id));
+    const key = this.accountKey(id);
+    this.spent.delete(key);
+    this.modelSpent.delete(key);
+    for (const scope of ["gemini", "3p"]) this.scopeSpent.delete(`${key}\0${scope}`);
+  }
+
+  /// Whether profile `id`'s windows are split by model group (Antigravity's), so a limit its runtime names no model of
+  /// is its turn's model's group's alone.
+  private hasAgyScopes(id: string, quota: any): boolean {
+    return this.deps.config().profiles.find((p) => p.id === id)?.runtimes.includes("agy") === true || windowsOf(quota).some((w) => w?.scope === "gemini" || w?.scope === "3p");
   }
 
   healthOf(id: string): ProfileHealth {
@@ -162,7 +177,7 @@ export class Accounts {
     const health = this.healthOf(id);
     const quota = this.modelQuota(id, health.quota, model);
     const scoped = quota !== health.quota ? { ...health, quota } : health;
-    return this.modelSpentAt(id, model) !== undefined ? { ...scoped, spent: true } : scoped;
+    return this.scopeSpentAt(id, model, health) !== undefined || this.modelSpentAt(id, model, health) !== undefined ? { ...scoped, spent: true } : scoped;
   }
 
   private quotaForModel(id: string, quota: any, model: string | null | undefined): any {
@@ -181,7 +196,7 @@ export class Accounts {
     const q = this.quotaForModel(id, quota, model);
     const runs = model ?? this.deps.config().profiles.find((p) => p.id === id)?.model ?? null;
     if (runs === null || quota?.state !== "ok" || !Array.isArray(quota.scoped)) return q;
-    const own = quota.scoped.filter((w: any) => typeof w?.scope === "string" && modelWords(w.scope).every((x) => modelWords(modelKey(runs)).includes(x)));
+    const own = quota.scoped.filter((w: any) => ownedBy(w, runs));
     return own.length > 0 ? { ...q, windows: [...windowsOf(q), ...own] } : q;
   }
 
@@ -211,11 +226,33 @@ export class Accounts {
     return all.filter((p) => p.id !== row.profile && (!strict || serves(p, row.model)));
   }
 
-  /// When `model` (null: profile `id`'s default) ran into its own limit on `id`'s account, while it is passed over.
-  private modelSpentAt(id: string, model: string | null | undefined): number | undefined {
-    const key = this.accountKey(id);
+  /// When the model group of `model` (null: profile `id`'s default) ran into its allowance on `id`'s account, while it
+  /// is passed over (as `spent`: until its allowance is read again, or for SPENT_FOR_MS); undefined on an account whose
+  /// windows are not split by group.
+  private scopeSpentAt(id: string, model: string | null | undefined, health = this.healthOf(id)): number | undefined {
+    if (!this.hasAgyScopes(id, health.quota)) return undefined;
+    const chosen = model ?? this.deps.config().profiles.find((p) => p.id === id)?.model ?? null;
+    const k = `${this.accountKey(id, health)}\0${agyScopeForModel(chosen)}`;
+    const at = this.scopeSpent.get(k);
+    if (at === undefined) return undefined;
+    const checked = health.quota?.checkedAt;
+    if ((typeof checked === "number" && checked > at) || this.deps.clock.currentTimeMillisUnsafe() - at > SPENT_FOR_MS) {
+      this.scopeSpent.delete(k);
+      return undefined;
+    }
+    return at;
+  }
+
+  /// When `model` (null: profile `id`'s default) ran into its own limit on `id`'s account, while it is passed over: for
+  /// SPENT_FOR_MS, or until its allowance read again says that model's own window (`scoped`), which then weighs on it
+  /// itself (`modelQuota`).
+  private modelSpentAt(id: string, model: string | null | undefined, health = this.healthOf(id)): number | undefined {
+    const key = this.accountKey(id, health);
     const now = this.deps.clock.currentTimeMillisUnsafe();
-    const kept = (this.modelSpent.get(key) ?? []).filter((s) => now - s.at <= SPENT_FOR_MS);
+    const quota = health.quota;
+    const readSince = (s: { named: string; at: number }) =>
+      quota?.state === "ok" && typeof quota.checkedAt === "number" && quota.checkedAt > s.at && Array.isArray(quota.scoped) && quota.scoped.some((w: any) => typeof w?.scope === "string" && sameWords(w.scope, s.named));
+    const kept = (this.modelSpent.get(key) ?? []).filter((s) => now - s.at <= SPENT_FOR_MS && !readSince(s));
     if (kept.length > 0) this.modelSpent.set(key, kept);
     else this.modelSpent.delete(key);
     const runs = model ?? this.deps.config().profiles.find((p) => p.id === id)?.model ?? null;
@@ -251,8 +288,10 @@ export class Accounts {
   /// to be, and not while its process has work going in the background (`holding`: commands and subagents, which end
   /// with it). Its own unable to run it and no other able either (every allowance used up), it stays where it is and
   /// waits there (`refillsAt`); its own unable even to sign in, it moves once to one that signs in. A move is told
-  /// (`moved`, said in its chat) unless `quiet`: a change by hand says its own.
-  runOn(key: string, holding = false, quiet = false): RunOn {
+  /// (`moved`, said in its chat) unless `quiet`: a change by hand says its own. `across` (before a turn): none of its
+  /// runtime's able to run it now, it goes on on another runtime's that runs its model and can, as `spend` moves it
+  /// when a turn ran into the allowance (`takeAcross`), rather than first running a turn into a limit it knows of.
+  runOn(key: string, holding = false, quiet = false, across = false): RunOn {
     const { store } = this.deps;
     const row = store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -260,6 +299,16 @@ export class Accounts {
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
     const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
     const workspaceCandidates = all.filter((p) => this.allows(key, p));
+    // Left to the station, none of its runtime's able to run its model now: one of another runtime's that can.
+    const elsewhere = (kept: string[] | null): RunOn | null => {
+      if (!across || row.profilePinned || kept !== null || row.model === null) return null;
+      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet);
+      return next ? withSpelling(next) : null;
+    };
+    if (workspaceCandidates.length === 0) {
+      const moved = elsewhere(null);
+      if (moved) return moved;
+    }
     // Profiles there are, none of them for its workspace: said so, for people to allow one.
     if (workspaceCandidates.length === 0 && all.length > 0) throw new Error(tr(stationLang(), "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
     const [candidates, keptProfiles] = this.poolFor(row, workspaceCandidates);
@@ -267,7 +316,8 @@ export class Accounts {
     // enabled.
     const current = candidates.find((p) => p.id === row.profile);
     const now = this.deps.clock.currentTimeMillisUnsafe();
-    const crowded = (p: Profile) => urgency(this.healthOf(p.id).quota, now).crowded;
+    // Of the windows that weigh on its model alone (an Antigravity account's Claude / GPT ones do not on Gemini).
+    const crowded = (p: Profile) => urgency(this.healthFor(p.id, row.model).quota, now).crowded;
     // (Its model counts only where one of them has it enabled, as in `spend` and the pool: else each call would move it
     // to the least loaded, its own process counted where it is, back and forth.)
     const strict = candidates.some((p) => serves(p, row.model));
@@ -293,6 +343,10 @@ export class Accounts {
       const standing = (p: Profile) => (this.can(p.id, row.model) ? 2 : signsIn(this.healthOf(p.id)) ? 1 : 0);
       const fit = candidates.filter(fits);
       const best = Math.max(...fit.map(standing));
+      if (best < 2) {
+        const moved = elsewhere(keptProfiles);
+        if (moved) return moved;
+      }
       if (current && fits(current) && standing(current) >= best) return withSpelling(current);
       if (fit.length > 0) among = fit.filter((p) => standing(p) === best);
     }
@@ -355,10 +409,20 @@ export class Accounts {
     const left = ranOn ?? row.profile;
     const config = this.deps.config();
     const now = this.deps.clock.currentTimeMillisUnsafe();
-    if (model === null) this.spent.set(this.accountKey(left), now);
+    const ran = row.model ?? config.profiles.find((p) => p.id === left)?.model ?? null;
+    const spendModel = (named: string) => this.modelSpent.set(this.accountKey(left), [...(this.modelSpent.get(this.accountKey(left)) ?? []), { named, ran, at: now }]);
+    if (model !== null) spendModel(model);
     else {
-      const ran = row.model ?? config.profiles.find((p) => p.id === left)?.model ?? null;
-      this.modelSpent.set(this.accountKey(left), [...(this.modelSpent.get(this.accountKey(left)) ?? []), { named: model, ran, at: now }]);
+      // Its words name no model (Antigravity's "Individual quota reached"): the model's own week (`scoped`, a Pro
+      // account's Argon) when that is what is used up, else the model's group on an account whose windows are split by
+      // group, else the account.
+      const q = this.healthOf(left).quota;
+      const fresh = (w: any) => (typeof w?.resetsAt === "number" && w.resetsAt <= now ? 0 : Number(w?.usedPercent) || 0);
+      const own = ran !== null && q?.state === "ok" && Array.isArray(q.scoped) ? q.scoped.find((w: any) => ownedBy(w, ran)) : undefined;
+      const baseUsed = Math.max(0, ...windowsOf(this.quotaForModel(left, q, ran)).map(fresh));
+      if (own && (fresh(own) >= 100 || (fresh(own) > baseUsed && baseUsed < 90))) spendModel(own.scope as string);
+      else if (this.hasAgyScopes(left, q)) this.scopeSpent.set(`${this.accountKey(left)}\0${agyScopeForModel(ran)}`, now);
+      else this.spent.set(this.accountKey(left), now);
     }
     const name = (id: string) => config.profiles.find((p) => p.id === id)?.name ?? id;
     if (row.profile !== left) return [name(left), name(row.profile)];
@@ -371,7 +435,11 @@ export class Accounts {
     const [all, keptProfiles] = this.poolFor(row, workspaceAll);
     const strict = all.some((p) => serves(p, row.model));
     const candidates = all.filter((p) => p.id !== left && (!strict || serves(p, row.model)) && this.can(p.id, row.model));
-    if (candidates.length === 0) return keptProfiles === null ? this.spendAcross(key, row, left) : null;
+    if (candidates.length === 0) {
+      if (keptProfiles !== null) return null;
+      const next = this.takeAcross(key, row, left, "allowance ran out; session taken on by another runtime's profile", false);
+      return next ? [name(left), next.name] : null;
+    }
     const next = this.pick(candidates, row.model, false);
     store.setSessionProfile(key, next.id, false, keptProfiles);
     log.info("hub", "allowance ran out; session taken on by another profile", { session: key, from: left, to: next.id });
@@ -379,12 +447,13 @@ export class Accounts {
     return [name(left), next.name];
   }
 
-  /// Session `row`, left to the station, ran into the allowance of `left` and no other profile of its runtime can run its
-  /// model now: it goes on on a profile of another runtime that runs the same model and can now (the user, 2026-11-15:
-  /// 「跨 runtime 自动切」), as a change of runtime by hand does (lifecycle.ts `configure`): its runtime session kept as one
-  /// it ran in, the new one started afresh (afresh.ts). Its effort, speed and most context go along only where the new
-  /// runtime takes them. The names of the one left and the one taken; null when none can.
-  private spendAcross(key: string, row: SessionRow, left: string): [string, string] | null {
+  /// Session `row`, left to the station, with no profile of its runtime able to run its model now (`left` the one whose
+  /// allowance a turn ran into, null: before a turn, `runOn`): it goes on on a profile of another runtime that runs the
+  /// same model and can now (the user, 2026-11-15: 「跨 runtime 自动切」), as a change of runtime by hand does
+  /// (lifecycle.ts `configure`): its runtime session kept as one it ran in, the new one started afresh (afresh.ts). Its
+  /// effort, speed and most context go along only where the new runtime takes them. Told (`moved`) unless `quiet`. The
+  /// profile taken; null when none can.
+  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean): Profile | null {
     const runtime = runtimeNamed(row.runtime);
     const model = row.model;
     if (!runtime || model === null) return null;
@@ -401,21 +470,31 @@ export class Accounts {
     if (row.runtimeSessionId) store.ranIn(key, row.runtimeSessionId, row.profile);
     store.setSessionRuntime(key, target, next.id, false, model, effort, fast, context, null);
     store.setSessionContextBefore(key, null);
-    log.info("hub", "allowance ran out; session taken on by another runtime's profile", { session: key, from: left, to: next.id, runtime: target });
-    this.deps.moved?.(key, row);
-    const name = (id: string) => config.profiles.find((p) => p.id === id)?.name ?? id;
-    return [name(left), next.name];
+    log.info("hub", said, { session: key, from: left ?? row.profile, to: next.id, runtime: target });
+    if (!quiet) this.deps.moved?.(key, row);
+    return next;
+  }
+
+  /// The profiles of other runtimes session `row` could go on on, left to the station and not kept to a set of its
+  /// own: those allowed in its workspace that run its model (`takeAcross`).
+  private acrossOthers(row: SessionRow): Profile[] {
+    const runtime = runtimeNamed(row.runtime);
+    if (!runtime || row.profilePinned || row.model === null) return [];
+    const config = this.deps.config();
+    const workspaceAll = config.profiles.filter((p) => p.runtimes.includes(runtime) && this.allows(row.key, p));
+    if (this.poolFor(row, workspaceAll)[1] !== null) return [];
+    return config.profiles.filter((p) => !p.runtimes.includes(runtime) && this.allows(row.key, p) && runs(p, row.model!));
   }
 
   /// When session `key`, which ran into its allowance (or its model into its own limit), is expected to run again: when
-  /// its own profile is (`refillOf`), or, left to the station, the first of those it could go on on (`runOn` moves it
-  /// there as it wakes): one that can run it now at once, one that cannot sign in never.
+  /// its own profile is (`refillOf`), or, left to the station, the first of those it could go on on, another runtime's
+  /// too (`runOn` moves it there as it wakes): one that can run it now at once, one that cannot sign in never.
   refillsAt(key: string): number {
     const row = this.deps.store.getSession(key);
     const now = this.deps.clock.currentTimeMillisUnsafe();
     if (!row) return now + SPENT_FOR_MS;
     const own = this.refillOf(row.profile, row.model, this.deps.store.lastTurn(key)?.endedAt ?? now);
-    const others = this.others(row).filter((p) => signsIn(this.healthOf(p.id)));
+    const others = [...this.others(row), ...this.acrossOthers(row)].filter((p) => signsIn(this.healthOf(p.id)));
     return Math.min(own, ...others.map((p) => (this.can(p.id, row.model) ? now : this.refillOf(p.id, row.model, now))));
   }
 
@@ -426,13 +505,13 @@ export class Accounts {
     const quota = this.modelQuota(id, this.healthOf(id).quota, model);
     const full = windowsOf(quota).filter((w) => Number(w.usedPercent) >= 100 && typeof w.resetsAt === "number" && w.resetsAt > now);
     if (full.length > 0) return Math.max(...full.map((w) => w.resetsAt as number));
-    return (this.spent.get(this.accountKey(id)) ?? this.modelSpentAt(id, model) ?? since) + SPENT_FOR_MS;
+    return (this.spent.get(this.accountKey(id)) ?? this.scopeSpentAt(id, model) ?? this.modelSpentAt(id, model) ?? since) + SPENT_FOR_MS;
   }
 
   /// Whether session `row`, waiting for an allowance, could go on once profile `id`'s is reset: on its own account, or,
-  /// left to the station, on one it could move to.
+  /// left to the station, on one it could move to, another runtime's too.
   goesOnWith(row: SessionRow, id: string): boolean {
-    return this.sameAccount(id, row.profile) || this.others(row).some((p) => this.sameAccount(id, p.id));
+    return this.sameAccount(id, row.profile) || [...this.others(row), ...this.acrossOthers(row)].some((p) => this.sameAccount(id, p.id));
   }
 
   /// The reasoning levels every eligible account that has said offers for a model (a pinned account or chosen subset may
@@ -556,3 +635,6 @@ export class Accounts {
 
 /// A model's name in words, as a runtime names it ("Fable") and as its id spells it (claude-fable-5-1).
 const modelWords = (m: string) => m.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w !== "");
+const sameWords = (a: string, b: string) => modelWords(a).join(" ") === modelWords(b).join(" ");
+/// A model's own window (`scoped`) that `model` runs under: its words all in the model's ("Argon" for gemini-4-argon).
+const ownedBy = (w: any, model: string) => typeof w?.scope === "string" && modelWords(w.scope).every((x) => modelWords(modelKey(model)).includes(x));
