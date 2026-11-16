@@ -93,6 +93,20 @@ test("keys_given_to_an_action_are_taken_from_the_one_that_had_them_said_so", () 
   assert.deepEqual(change(desktop(false), null, null), { patch: null, moved: [], said: null });
 });
 
+test("restoring_an_actions_defaults_reclaims_all_its_keys_and_keeps_other_bindings", () => {
+  for (const mac of [true, false]) {
+    const prefs = desktop(mac, { "chat.new": [], "chat.history": ["Mod+N", "Alt+Mod+N", "Mod+J"], "chat.stop": [] });
+    const { patch, moved, said } = change(prefs, "chat.new", null);
+    assert.deepEqual(patch, { "chat.new": null, "chat.history": ["Mod+J"] });
+    assert.deepEqual(moved, ["chat.history"]);
+    assert.equal(said, t("web-main.shortcuts.moved", { keys: label("Mod+N", mac), action: t("web-main.keymap.chat.history") }));
+    const km = view(desktop(mac, { ...prefs.keys, ...patch })) as J;
+    assert.deepEqual(of(km, "chat.new").keys, ["Mod+N", "Alt+Mod+N"]);
+    assert.equal(of(km, "chat.new").changed, false);
+    assert.deepEqual(of(km, "chat.stop").keys, []);
+  }
+});
+
 test("the_actions_the_clients_are_told_of_are_the_keymaps", () => {
   const words = SHAPES.KeyActionName as J;
   assert.deepEqual(words.values, Object.keys(ACTIONS));
@@ -118,6 +132,26 @@ async function ask(host: FakeHost, core: Core, ui: number, id: number, name: str
   const [[, m]] = host.emitted.splice(i, 1);
   return m as J;
 }
+
+test("restoring_one_shortcut_after_lending_its_key_leaves_one_action_bound", async () => {
+  const { host, core } = await started();
+  try {
+    const ui = core.connect();
+    subscribe(core, ui, 1, { topic: "prefs" });
+    await ask(host, core, ui, 2, "client.device", { app: "desktop", build: "0.1.9", userAgent: MAC_UA });
+    await ask(host, core, ui, 3, "keys.set", { action: "settings", keys: ["Mod+N"] });
+    const restored = await ask(host, core, ui, 4, "keys.set", { action: "chat.new", keys: null });
+    const values = new Map();
+    apply(host, values);
+    const km = v(values, 1).keymap;
+    assert.deepEqual(km.actions.filter((a: J) => a.keys.includes("Mod+N")).map((a: J) => a.action), ["chat.new"]);
+    assert.equal(of(km, "chat.new").changed, false);
+    assert.deepEqual(restored.ok.moved, ["settings"]);
+    assert.deepEqual(v(values, 1).keys, { settings: [] });
+  } finally {
+    core.close();
+  }
+});
 
 test("the_desktop_app_changes_its_keys_and_the_prefs_say_its_keymap_anew", async () => {
   const { host, core } = await started();

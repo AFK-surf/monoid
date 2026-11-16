@@ -154,7 +154,7 @@ export function change(prefs: unknown, action: string | null, keys: string[] | n
   const patch: Record<string, string[] | null> = { [action]: keys };
   const moved: string[] = [];
   let said: string | null = null;
-  for (const b of keys ?? []) {
+  for (const b of keys ?? keysOf(action, { ...f, changed: {} })) {
     for (const other of Object.keys(ACTIONS)) {
       if (other === action) continue;
       const had = patch[other] ?? keysOf(other, f);
