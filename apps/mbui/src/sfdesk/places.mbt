@@ -48,6 +48,11 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
     // (a station or profile gone from the list: the first, not its page waiting for it)
     Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None =>
       place_route_first(src, w, place)
+    Some(Profiles("")) =>
+      match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
+        Some(_) as v if items(v, "items").length() == 0 => None
+        _ => Some(Route::Profiles(""))
+      }
     Some(Profile(_, _) as r) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
         Some(_) as v if !items(v, "items").iter().any(fn(e) { profile_route(Some(e)) == r }) =>
@@ -60,8 +65,7 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
 }
 
 ///|
-/// The page a place shows with none picked in it: the first station; the first profile that needs a look, else the
-/// first.
+/// The page a place shows with none picked in it: the first station; the profiles' overview once any profile is listed.
 fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.Route? {
   match place {
     "stations" =>
@@ -69,18 +73,21 @@ fn place_route_first(src : Source, w : Workspace, place : String) -> @settings.R
         Some(s) => Some(Route::Station(text(Some(s), "station")))
         None => None
       }
-    // (the first that needs a look, else the first: what its settings' row counts is what shows; once shown, it stays
-    // while the list still has it, the list sorted anew under it (another coming to need a look, one no longer) taking
-    // nothing the person reads away from them)
+    // (the overview by default once any profile is in the list; once a profile is shown, it stays while the list still
+    // has it, the list sorted anew under it taking nothing the person reads away from them)
     "profiles" =>
       profiles_first_kept.read(
         src,
         w.id,
         fn(was) {
           let list = items(src.topic("profiles", { "scope": Json::string(w.id) }).get().value, "items")
+          if list.length() == 0 {
+            return None
+          }
           match was {
+            Some(Some(Profiles(""))) => Some(Route::Profiles(""))
             Some(Some(r)) if list.iter().any(fn(e) { profile_route(Some(e)) == r }) => Some(r)
-            _ => list.get(list.search_by(fn(e) { flag(Some(e), "look") }).unwrap_or(0)).map(fn(e) { profile_route(Some(e)) })
+            _ => Some(Route::Profiles(""))
           }
         },
         same=fn(a, b) { a == b },
@@ -120,7 +127,7 @@ fn place_reads(src : Source, ws : String, place : String) -> @sfbase.OpenReads {
         let routes = all.map(fn(e) { profile_route(Some(e)) })
         let route = match place_pick.get(place_key(ws, place)) {
           Some(r) if routes.contains(r) => Some(r)
-          _ => routes.get(all.search_by(fn(e) { flag(Some(e), "look") }).unwrap_or(0))
+          _ => None
         }
         route.map(fn(r) { @sfbase.route_reads(src, ws, r) })
       })
@@ -227,6 +234,7 @@ fn profiles_place_node(
     match @sfbase.workspace_in_view(src).0 {
       Some(w) =>
         match place_route(src, w, "profiles") {
+          Some(Profiles("")) => Some(("", ""))
           Some(Profile(a, id)) => Some((a, id))
           _ => None
         }
@@ -236,6 +244,26 @@ fn profiles_place_node(
   v.pick(picked, fn(p, at) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     match at {
+      Some(("", "")) =>
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          open_profile=fn(address, id) {
+            let ws = here().workspace
+            let route = Route::Profile(address, id)
+            let at = @sfbase.profile_shown_at(address, id)
+            @sfbase.show_answered(src, @sfbase.route_asks(ws, route), at, fn() {
+              place_pick[place_key(ws, "profiles")] = route
+              @sfbase.show_chosen()
+            })
+          },
+          on_back=core.pop,
+          frame~,
+          said?,
+          width~,
+          tips?,
+        )
       Some((a, id)) => @sfpages.profile_node(p, core, here, a, id, on_back=core.pop, frame~, said?, width~, tips?, stint~)
       None => @sfpages.profiles_first_node(p, core, here, on_back=core.pop, frame~, said?, width~, tips?)
     }
@@ -360,6 +388,28 @@ fn profiles_side(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     side_top(c)
     nav_action(c, "profiles/add", @sf.t("web-pages.settings.profiles.add"), @settings.place_action(core, here, "profiles"), trailing?=update_trailing(c, src), band=update_band(), at=side_at())
     side_scroll(c, "profiles-nav/" + w.id, fn() {
+      if list.length() > 0 {
+        let (sum_line, sum_tone) = @sfpages.profiles_side_summary(list)
+        let ov_label = if @sf.language() == "en" { "Overview" } else { "概览" }
+        nav_item(
+          c,
+          at=side_at(),
+          "profiles/overview",
+          picked == Some(Route::Profiles("")),
+          fn() { @sf.icon(c, "quota", size=nav_mark_side, color=t.p.text) |> ignore },
+          fn() { nav_title(c, ov_label) },
+          lines=fn() {
+            if sum_line != "" {
+              @sf.list_row_line(c, fn() { c.text(sum_line, style=nav_meta().then(trouble_ink(sum_tone)).then(place_fill)) |> ignore })
+            }
+          },
+          more=false,
+          on_press=fn() {
+            place_pick[place_key(w.id, "profiles")] = Route::Profiles("")
+            @sfbase.show_chosen()
+          },
+        )
+      }
       let mut group = ""
       // each station's own logins, not profiles yet (under the profiles: each station up that offers one)
       let offered = @settings.profiles_offers(src.topic("profiles", { "scope": Json::string(w.id) }).get().value).map(fn(o) {

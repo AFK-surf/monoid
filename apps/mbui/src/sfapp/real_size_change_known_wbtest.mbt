@@ -11,6 +11,8 @@
 
 // The chat's sheets' rows written again 2026-11-16, made as nodes (sheets.mbt, sheet.mbt, share.mbt): what their old
 // bodies built and laid out as a change came is made and laid out by the window's tree, and lowered where they did less.
+// The wide profiles' place's rows updated 2026-11-16, opening on 概览 (sfpages profiles_overview.mbt): no single
+// profile's or station's topic held on open, and `profiles/down` mounts the broken accounts' 需处理 rows.
 ///|
 let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone board stations/host": (0, 0, 0, 0, 0, 0),
@@ -1667,18 +1669,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide place-stations resources/sample": (0, 0, 26, 7, 0, 6),
   "wide place-stations stationMove to= module=/moving": (21, 0, 43, 2, 0, 0),
   "wide place-profiles profiles/quota": (0, 0, 0, 0, 2, 41),
-  "wide place-profiles station/updating": (0, 0, 0, 0, 0, 6),
-  "wide place-profiles station/session": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/quota": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/off": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/machine": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/login": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/host": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/decided": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles station/archiving": (0, 0, 0, 0, 0, 0),
-  "wide place-profiles profiles/down": (0, 0, 0, 0, 0, 932),
-  "wide place-profiles profile/quota": (0, 0, 0, 0, 0, 6),
-  "wide place-profiles profile/down": (0, 0, 0, 0, 0, 0),
+  "wide place-profiles profiles/down": (119, 1, 157, 45, 0, 936),
   "wide newchat newChat/host": (0, 0, 0, 0, 0, 15),
   "wide newchat newChat/down": (0, 0, 0, 0, 0, 15),
   "wide newchat-files newChat/host": (0, 0, 0, 0, 0, 29),

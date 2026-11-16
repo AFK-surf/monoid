@@ -676,6 +676,9 @@ pub fn open_mode(mode : String) -> Unit {
     // the profiles' place with Willow's own Codex login offered with its allowance (settings-profiles-offer's)
     @settings.fixture_page("settings-profiles-offer") |> ignore
     app.nav.replace(Place("profiles"))
+  } else if mode == "place-profiles-sum-a" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    app.nav.replace(Place("profiles"))
   } else if mode == "terminal" || mode.has_prefix("terminal-") {
     // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
     // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)

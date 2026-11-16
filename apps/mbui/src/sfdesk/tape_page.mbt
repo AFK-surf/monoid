@@ -437,6 +437,21 @@ fn tape_made(
       made("appearance", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.appearance_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
+      made("profiles-overview", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          on_back=core.pop,
+          frame=fn() { tape_made_frame },
+          said=told,
+          width~,
+          tips~,
+          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
+        )
+      })
     // (by its station and id: another's another page; made in every case, as it has no old view)
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, stint, told, _acts) {

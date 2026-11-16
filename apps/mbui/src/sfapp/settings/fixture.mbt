@@ -146,6 +146,8 @@ priv struct SettingsFixture {
   relays : Array[String]
   /// whether still.fail's relays were turned off (`workspace.setWay` with `way: "ours"`)
   mut ours_off : Bool
+  /// whether the profiles' overview uses the multi-pool summary fixture (`settings-profiles-sum-a`)
+  mut summary : Bool
 }
 
 ///|
@@ -214,6 +216,7 @@ let fx : SettingsFixture = {
   kept_cleared: [],
   relays: [],
   ours_off: false,
+  summary: false,
 }
 
 ///|
@@ -396,6 +399,8 @@ fn fixture_reset() -> Unit {
   fx.no_hours = false
   fx.several = false
   fx.offer_quota = false
+  fx.summary = false
+  profiles_narrow_overview.set(false)
   fx.profile_hosts = false
   fx.profile_unshareable = false
   fx.profile_one_owner = false
@@ -688,6 +693,10 @@ pub fn fixture_page(mode : String) -> String {
     }
     "settings-profiles-several" => fx.several = true
     "settings-profiles-offer" => fx.offer_quota = true
+    "settings-profiles-sum-a" => {
+      fx.summary = true
+      profiles_narrow_overview.set(true)
+    }
     "settings-stations-existing" => up("add-existing", "", 0)
     "settings-stations-command" => up("add-command", "", 0)
     "settings-first-station" => fx.none = true
@@ -885,7 +894,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-me-reading" => "me"
     "settings-usage-details-pending" => "usage"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -928,11 +937,12 @@ fn meter(short : String, left : Int, level : String, remaining : String, big : S
 
 ///|
 fn fx_profile(id : String, name : String, kind : String, tone : String, check : String, group : String, title : String, more : Array[(String, Json)]) -> Json {
+  let rt = if group == "chatgpt" { "codex" } else if group == "agy" { "agy" } else { "claude" }
   let p : Map[String, Json] = {
     "id": str(id),
     "name": str(name),
-    "runtime": str(if group == "chatgpt" { "codex" } else { "claude" }),
-    "runtimes": [str(if group == "chatgpt" { "codex" } else { "claude" })],
+    "runtime": str(rt),
+    "runtimes": [str(rt)],
     "access": obj([("kind", str(kind)), ("key", str(if kind == "subscription" { "" } else { "sk-…a41f" }))]),
     "home": "",
     "homeExists": true,
@@ -1092,7 +1102,133 @@ fn fx_profiles() -> Array[Json] {
   if fx.several {
     fx_several(profiles)
   }
+  if fx.summary {
+    return fx_summary_profiles()
+  }
   profiles
+}
+
+///|
+/// Realistic multi-account pool across four provider groups for the profiles overview designs.
+fn fx_summary_profiles() -> Array[Json] {
+  let win = fn(label : String, mark : String, left : Int, refills : String, scope : String) -> Json {
+    let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
+    let fields : Array[(String, Json)] = [
+      ("label", str(label)),
+      ("usedPercent", Json::number((100 - left).to_double())),
+      ("mark", str(mark)),
+      ("left", Json::number(left.to_double())),
+      ("level", str(level)),
+      ("refills", str(refills)),
+    ]
+    if scope != "" {
+      fields.push(("scope", str(scope)))
+    }
+    obj(fields)
+  }
+  let ok_q = fn(ws : Array[Json]) -> Json {
+    obj([("state", str("ok")), ("windows", Json::array(ws)), ("checkedAt", Json::number(0.0)), ("time", obj([("checkedAt", stamp_of("2 分钟前"))]))])
+  }
+  let ok_q_reset = fn(ws : Array[Json], count : Int, text : String) -> Json {
+    obj([
+      ("state", str("ok")),
+      ("windows", Json::array(ws)),
+      ("resetCount", Json::number(count.to_double())),
+      ("resetText", str(text)),
+      ("checkedAt", Json::number(0.0)),
+      ("time", obj([("checkedAt", stamp_of("2 分钟前"))])),
+    ])
+  }
+  [
+    // Claude 订阅 (5): weighted tight weekly pace (4 days left to reset, heavy usage + 1 weekly dead + 1 expired login)
+    fx_profile("cc", "Claude 主账号", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("planText", str("Max 20x")),
+      (
+        "quota",
+        ok_q_reset(
+          [win("5 小时", "5H", 48, "2 小时后恢复", ""), win("每周", "W", 28, "5 天后恢复", ""), win("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
+          1,
+          "剩余 1 次重置 · 28 小时后过期",
+        ),
+      ),
+    ]),
+    fx_profile("cc2", "afkdev1@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("afkdev1@proton.me")),
+      ("planText", str("Max 20x")),
+      ("quota", ok_q([win("5 小时", "5H", 36, "3 小时后恢复", ""), win("每周", "W", 22, "5 天后恢复", ""), win("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc3", "afkdev2@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("afkdev2@proton.me")),
+      ("planText", str("Max 5x")),
+      ("quota", ok_q([win("5 小时", "5H", 0, "42 分钟后恢复", ""), win("每周", "W", 40, "4 天后恢复", ""), win("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc4", "cuesurf4@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("cuesurf4@proton.me")),
+      ("planText", str("Max 20x")),
+      ("quota", ok_q([win("每周", "W", 0, "2 天后恢复", ""), win("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc5", "cuesurf2@proton.me", "subscription", "red", "需要登录", "claude", "Claude 订阅", [
+      ("email", str("cuesurf2@proton.me")),
+      ("planText", str("Max 20x")),
+      ("trouble", obj([("title", str("需要重新登录")), ("detail", str("登录凭证已过期")), ("next", str("重新登录这个账号后恢复使用")), ("action", str("login")), ("label", str("重新登录"))])),
+      ("quota", obj([("state", str("unavailable")), ("windows", []), ("checkedAt", Json::number(0.0))])),
+    ]),
+    // ChatGPT 订阅 (3): comfortable pace, and jiachen@cue.surf resets in 14h with 84% weekly quota untouched
+    fx_profile("cx", "ChatGPT 团队", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("planText", str("Pro 200")),
+      ("quota", ok_q([win("5 小时", "5H", 82, "3 小时后恢复", ""), win("每周", "W", 68, "3 天后恢复", "")])),
+    ]),
+    fx_profile("cx2", "jiachen@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("email", str("jiachen@cue.surf")),
+      ("planText", str("Pro 200")),
+      ("quota", ok_q([win("5 小时", "5H", 92, "4 小时后恢复", ""), win("每周", "W", 84, "14 小时后恢复", "")])),
+    ]),
+    fx_profile("cx3", "yangjinfei@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("email", str("yangjinfei@cue.surf")),
+      ("planText", str("Plus")),
+      ("quota", ok_q([win("5 小时", "5H", 100, "5 小时后恢复", ""), win("每周", "W", 0, "2 天后恢复", "")])),
+    ]),
+    // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools
+    fx_profile("ag1", "zover.v@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+      ("email", str("zover.v@gmail.com")),
+      ("planText", str("AI Ultra")),
+      ("signInProvider", str("Google")),
+      (
+        "quota",
+        ok_q([
+          win("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
+          win("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
+          win("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
+        ]),
+      ),
+    ]),
+    fx_profile("ag2", "zzj3720@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+      ("email", str("zzj3720@gmail.com")),
+      ("planText", str("AI Ultra")),
+      ("signInProvider", str("Google")),
+      (
+        "quota",
+        ok_q([
+          win("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
+          win("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
+          win("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
+        ]),
+      ),
+    ]),
+    // API key (2): 1 ready with balance, 1 invalid key
+    fx_profile("k1", "OpenRouter", "api-provider", "green", "可用", "key", "API key", [
+      ("providerName", str("OpenRouter")),
+      ("providerMark", str("openrouter")),
+      ("access", obj([("kind", str("api-provider")), ("provider", str("openrouter")), ("key", str("sk-or-…9c2a"))])),
+      ("quota", obj([("state", str("ok")), ("windows", []), ("creditsText", str("余额 $42.80")), ("checkedAt", Json::number(0.0))])),
+      ("usedBy", ["k1"]),
+    ]),
+    fx_profile("k2", "备用 key", "anthropic-api", "red", "key 已失效", "key", "API key", [
+      ("trouble", obj([("title", str("key 已失效")), ("detail", str("服务商拒绝了这个 key")), ("next", str("更换有效 key")), ("action", str("key")), ("label", str("更换 key"))])),
+      ("quota", obj([("state", str("unsupported")), ("windows", []), ("checkedAt", Json::number(0.0))])),
+      ("usedBy", []),
+    ]),
+  ]
 }
 
 ///|
@@ -3070,7 +3206,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           // (as the list is sent it: client/core-ts schema.ts WorkspaceProfile, ListedProfile)
           ("profile", listed_profile_said(p)),
           ("title", str(if text(Some(p), "email") == "" { text(Some(p), "name") } else { text(Some(p), "email") })),
-          ("usable", Json::boolean(true)),
+          ("usable", Json::boolean(if has(pv, "usable") { flag(pv, "usable") } else { true })),
           ("state", state),
           ("look", Json::boolean(look)),
           ("where", str(if fx.trouble == "quota-login" && text(pv, "id") == "cx" { "Willow" } else { "Willow 可用" })),

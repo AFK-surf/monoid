@@ -268,6 +268,10 @@ test "wide, by touch: the profiles' place opens on a page placed as it is laid o
   app.nav.replace(Place("profiles"))
   t.draw()
   assert_eq(t.placed_faults(), [])
+  assert_true(t.find("额度与恢复") is Some(_))
+  t.tap_text("Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.placed_faults(), [])
   // (its sections' titles each across the page's column, none in a box of a few points)
   for words in ["设置"] {
     let wide = t.words().filter(fn(w) { w.0 == words }).map(fn(w) { w.3 })
@@ -470,6 +474,112 @@ test "the add page's station choice opens the other station's page whole, the pa
       assert_true(t.find("使用此账号") is None, msg="\{at}: none of Maple's offered")
       station_pressed(t, at, heard, calls, "ws1/st2", ("Willow", "ws1/st1"), ms)
       assert_true(t.find("使用此账号") is Some(_), msg="\{at}: Willow's offered again")
+    }
+  }
+}
+
+///|
+test "profiles overview: wide defaults to 概览 with pool switching; narrow defaults to 账号 and switches to 概览" {
+  // 1. Wide defaults to 概览 with both charts and switches between model pools and individual accounts
+  let t_wide = wide_tester([], mode="place-profiles-sum-a")
+  @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  app.nav.replace(Place("profiles"))
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is Some(_))
+  assert_true(t_wide.find("消耗速度") is Some(_))
+  assert_true(t_wide.find("-15%/天") is Some(_))
+  assert_true(t_wide.find("3 项需处理") is Some(_))
+  assert_true(t_wide.find("重新登录") is Some(_))
+  assert_true(t_wide.find("更换 key") is Some(_))
+  assert_eq(t_wide.corner_faults(), [])
+  assert_eq(t_wide.lit_all_faults(), [])
+  assert_eq(t_wide.room_faults(), [])
+  assert_eq(t_wide.hover_only_faults(), [])
+  assert_eq(t_wide.height_faults(), [])
+  assert_eq(t_wide.first_line_faults(), [])
+  assert_eq(t_wide.line_start_faults(), [])
+  assert_eq(t_wide.fixed_outgrown(), [])
+  assert_eq(t_wide.hand_moves(), [])
+  assert_eq(t_wide.squeeze_faults(), [])
+  t_wide.click(Button, label="Codex 4/5")
+  t_wide.draw()
+  assert_true(t_wide.find("+27%/天") is Some(_))
+  t_wide.tap_text("ChatGPT 团队")
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is None)
+  t_wide.tap_text("概览")
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is Some(_))
+
+  // 2. Narrow defaults to the original 账号 list and switches cleanly to 概览 and back
+  new_run()
+  let src = fixture_app("settings")
+  let t_phone = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  app.nav.replace(Setting(@settings.Route::Profiles("")))
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+  t_phone.tap_text("概览")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_))
+  assert_true(t_phone.find("消耗速度") is Some(_))
+  assert_eq(t_phone.corner_faults(), [])
+  assert_eq(t_phone.lit_all_faults(), [])
+  assert_eq(t_phone.room_faults(), [])
+  assert_eq(t_phone.hover_only_faults(), [])
+  assert_eq(t_phone.height_faults(), [])
+  assert_eq(t_phone.first_line_faults(), [])
+  assert_eq(t_phone.line_start_faults(), [])
+  assert_eq(t_phone.fixed_outgrown(), [])
+  assert_eq(t_phone.hand_moves(), [])
+  assert_eq(t_phone.squeeze_faults(), [])
+  t_phone.tap_text("账号")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+
+  // 3. Every corner_windows tier (zh & en) + 1.3x font scale on phone for place-profiles and settings-profiles-sum-a
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for mode in ["place-profiles", "place-profiles-sum-a", "settings-profiles", "settings-profiles-sum-a"] {
+        let at = "\{win.0}-\{lang} \{mode}"
+        let t = screen_in(mode, win, lang)
+        let expected_corners = if win.0 == "touch" || win.0 == "desk-win" { 1 } else { 0 }
+        let c_faults = t.corner_faults()
+        for f in t.lit_all_faults() {
+          if !c_faults.contains(f) {
+            c_faults.push(f)
+          }
+        }
+        let c_joined = c_faults.join("; ")
+        assert_eq(c_faults.length(), expected_corners, msg="\{at} corners: \{c_joined}")
+        if lang == "zh" {
+          assert_eq(t.room_faults(), [], msg="\{at} room")
+          assert_eq(t.hover_only_faults(), [], msg="\{at} hover")
+          assert_eq(contrast_wrong("\{win.0}-light \{mode}", t.contrast_faults()), None, msg="\{at} contrast")
+        }
+        assert_eq(t.height_faults(), [], msg="\{at} height")
+        assert_eq(t.first_line_faults(), [], msg="\{at} first_line")
+        assert_eq(t.line_start_faults(), [], msg="\{at} line_start")
+        assert_eq(t.fixed_outgrown(), [], msg="\{at} outgrown")
+        assert_eq(t.hand_moves(), [], msg="\{at} hand_moves")
+        if squeeze_windows.contains(win.0) {
+          assert_eq(t.squeeze_faults(), [], msg="\{at} squeeze")
+        }
+        let g_faults = t.gap_faults()
+        let g_joined = g_faults.join("; ")
+        assert_eq(g_faults.length(), 0, msg="\{at} gaps: \{g_joined}")
+      }
+      if win.0 == "phone" {
+        for mode in ["place-profiles", "settings-profiles", "settings-profiles-sum-a"] {
+          let at = "phone-\{lang}-1.3 \{mode}"
+          let tl = screen_in(mode, win, lang, font_scale=1.3)
+          assert_eq(tl.fixed_outgrown(), [], msg="\{at} outgrown")
+          let wl = tl.squeeze_faults() + tl.words_over_now()
+          let wl_joined = wl.join("; ")
+          assert_eq(wl, [], msg="\{at} words_large: \{wl_joined}")
+        }
+      }
     }
   }
 }

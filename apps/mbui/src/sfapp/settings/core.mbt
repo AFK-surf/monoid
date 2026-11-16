@@ -522,6 +522,7 @@ pub fn left(route : Route) -> Unit {
   match route {
     Archive => archive_reset()
     Connects(_) => connects_mine.val = false
+    Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
     NewProfile(a) =>
       match left_core.val {
@@ -554,6 +555,7 @@ pub fn left(route : Route) -> Unit {
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
   archive_reset()
+  profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0
   page_rows.clear()

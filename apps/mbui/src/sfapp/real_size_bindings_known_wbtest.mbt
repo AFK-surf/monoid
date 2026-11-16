@@ -11,6 +11,8 @@
 
 // Raised once, 2026-11-16: the chat's sheets made as nodes (sheets.mbt): what their old bodies built again as a change
 // came now its bindings, each told only as what it reads changes (an agent, a job, what the chat holds: computeds).
+// Added 2026-11-16: wide place-profiles opens on 概览 (sfpages profiles_overview.mbt): a quota change runs its two
+// charts' shapes bindings (2), and profiles/down mounts the broken accounts' 需处理 rows (224).
 ///|
 let real_size_bindings_known : Map[String, Int] = {
   "phone home chats/down": 36,
@@ -1032,6 +1034,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide place-stations screens/screen": 67,
   "wide place-stations stationNet/sample": 6,
   "wide place-stations resources/sample": 6,
+  "wide place-profiles profiles/quota": 2,
+  "wide place-profiles profiles/down": 224,
   "wide newchat-station stationNet/sample": 1,
   "wide newchat-preset-new-add presets/preset": 40,
   "wide newchat-preset-new-clones newChat/host": 2,

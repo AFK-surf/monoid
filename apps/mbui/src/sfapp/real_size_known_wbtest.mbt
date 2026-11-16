@@ -20,6 +20,8 @@
 // Raised once, 2026-11-16: a new chat's model panel (sfpages model_triple.mbt): its body and foot made as nodes, what its
 // old view built as it opened now made, laid out and measured by the window's tree, nothing more shown; what the old
 // view laid out again at each change of it is none now (real_size_change_known_wbtest.mbt, brought down).
+// Raised once, 2026-11-16: the wide profiles' place opens on 概览 (sfpages profiles_overview.mbt) rather than an
+// unanswered profile's waiting frame, showing the workspace's two-chart quota overview at once.
 
 // Written again, 2026-11-15: 账号, 字体 and 下方栏 made once as nodes, and the settings' sidebar beside every settings
 // page on a medium or large screen (sfdesk settings_frame.mbt settings_side_node): what their old views built is made
@@ -523,7 +525,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide files-transfers": (244, 205, 12),
   "wide files-tree": (205, 180, 8),
   "wide place-stations": (555, 1088, 272),
-  "wide place-profiles": (241, 245, 14),
+  "wide place-profiles": (411, 516, 154),
   "wide reader": (277, 259, 20),
   "wide reader-bars": (285, 292, 25),
   "wide reader-contents": (364, 382, 49),

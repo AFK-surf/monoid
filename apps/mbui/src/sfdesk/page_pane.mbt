@@ -339,6 +339,19 @@ fn pane_made(
       })
     Setting(Appearance) =>
       made("appearance", fn(a, core, _here, _stint, frame, width) { @sfpages.appearance_node(a, core, on_back=core.pop, frame~, width~) })
+    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
+      made("profiles-overview", fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_overview_node(
+          a,
+          core,
+          here,
+          on_back=core.pop,
+          frame~,
+          width~,
+          tips~,
+          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
+        )
+      })
     // (by its station and id: another's another page)
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(a, core, here, stint, frame, width) {

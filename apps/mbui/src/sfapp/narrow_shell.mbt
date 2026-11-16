@@ -716,6 +716,18 @@ fn narrow_made_as(
         )
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
       })
+    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
+      made("profiles-overview", fn(p, core, here, frame, _stint, acts) {
+        @sfpages.profiles_overview_node(
+          p,
+          core,
+          here,
+          on_back=core.pop,
+          frame~,
+          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
+          bar_actions?=if place { Some(acts) } else { None },
+        )
+      })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.profile_node(p, core, here, address, id, on_back=core.pop, frame~, stint~)
