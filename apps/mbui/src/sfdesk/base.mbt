@@ -118,17 +118,8 @@ using @sfbase {
 /// A sidebar's rows, the library's (src/sf side_rows.mbt).
 using @sf {
   nav_fade,
-  
-  
-  nav_item,
-  nav_title,
-  nav_meta,
-  
-  nav_mark_side,
-  nav_action,
   nav_new,
   band_row_h,
-  side_scroll,
 }
 
 ///|

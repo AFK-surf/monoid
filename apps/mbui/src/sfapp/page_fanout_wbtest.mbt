@@ -39,9 +39,13 @@ test "账号's 概览: a quota leaving its pools as they were runs none of its b
   let ran = page_fanout_of("place-profiles", real_size_windows[1], "profiles")
   let quota = ran.get("profiles/quota").unwrap_or(0)
   assert_eq(quota, 0, msg="profiles/quota: ran \{quota} bindings, nothing it shows changed")
-  // (its 需处理 rows come, each made with its bindings, ~6 a row, and the pills whose counts change: none of the rest)
+  // (its 需处理 rows come, each made with its bindings, ~6 a row, and the pills whose counts change: none of the rest;
+  // 156 of them the page's own. Raised 2026-11-17 from 160, the migration's coordinator's: the sidebar beside it made
+  // as nodes (sfdesk places_side_node.mbt), the rows of the accounts gone down that it shows tell their state, their
+  // red line, their allowance and 概览's 需处理 there too, 30 bindings, counted in the tree's now; a quota leaving its
+  // pools as they were still runs none)
   let down = ran.get("profiles/down").unwrap_or(0)
-  assert_true(down <= 160, msg="profiles/down: ran \{down} bindings, over the rows it brings (160)")
+  assert_true(down <= 190, msg="profiles/down: ran \{down} bindings, over the rows it brings (190)")
 }
 
 ///|

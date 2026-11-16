@@ -1,49 +1,6 @@
 // What a station's row says of it wherever the workspace's stations are listed: the
-// stations' sidebar (sfdesk places.mbt station_side_row) and where a new chat runs (new_chat.mbt station_rows), the
-// same in both. The row itself (its mark, its name, its ground) is the list's or the panel's.
-
-///|
-/// At the end of its name's line: up or away (the rail's dot), then its agents at work (in the accent) or, away, when
-/// it was last seen.
-pub fn station_state(c : @ui.Ctx, s : Json?) -> Unit {
-  let online = flag(s, "online")
-  let running = number(field(field(s, "overview"), "counts"), "running")
-  c.box(style=station_state_box, fn() {
-    c.box(style=if online { station_dot_on } else { station_dot_off }, fn() {  }) |> ignore
-    if !online {
-      c.text(text(s, "summary"), style=station_words()) |> ignore
-    } else if running > 0.0 {
-      let busy = @sf.t("web-pages.stations.page.runningShort", args=[("n", running.to_int().to_string())])
-      c.text(busy, style=station_words().then(station_busy)) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Under its name while it is up: a line of what is left of its CPU, memory and disk in small boxes (never onto
-/// another: as short as the line needs, @sf.meter_chips), and a line of how this device reaches it (the core's
-/// `stationNet`, there only while this device holds a connection of its own to it: 未连接 while it does not). Each
-/// line kept whatever comes and goes in it, so a row is as high whichever station is open and whether this device is
-/// connected to it.
-pub fn station_figures(c : @ui.Ctx, src : Source, s : Json?) -> Unit {
-  if !flag(s, "online") {
-    return
-  }
-  let net = src.topic("stationNet", { "station": Json::string(text(s, "station")) }).get().value
-  @sf.list_row_line(c, fn() { @sf.meter_chips(c, items(field(s, "host"), "meters"), brief=true, key="station-facts/" + text(s, "station")) })
-  @sf.list_row_line(c, fn() {
-    let words = match net {
-      Some(Object(_)) =>
-        match text(field(net, "rtt"), "text") {
-          "" => text(net, "path")
-          rtt => text(net, "path") + " · " + rtt
-        }
-      _ => @sf.t("web-pages.stations.netNone")
-    }
-    c.text(words, style=station_words()) |> ignore
-  })
-}
+// stations' sidebar (sfdesk places_side_node.mbt stations_side_node) and where a new chat runs (new_chat.mbt
+// station_rows_node), the same in both. The row itself (its mark, its name, its ground) is the list's or the panel's.
 
 ///|
 /// What it says (end): a chat's second line's words (the theme's chats' list's), as long as
@@ -77,11 +34,13 @@ let station_dot_on : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full bg=Positive"
 let station_dot_off : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full border=B1_5 border_color=Muted")
 
 ///|
-/// Under the name of a station that only runs tasks (rig `r`: the core's `rigs`), in its figures' place: that it only
-/// runs tasks, then whose it is and how it is.
-pub fn rig_figures(c : @ui.Ctx, r : Json?) -> Unit {
-  @sf.list_row_line(c, fn() { c.text(@sf.t("web-pages.rigs.mode.tasks"), style=station_words()) |> ignore })
-  @sf.list_row_line(c, fn() { c.text(@settings.rig_whose(r) + " · " + @settings.rig_state(r), style=station_words()) |> ignore })
+/// Under the name of a station that only runs tasks (rig `r()`: the core's `rigs`, as it is now), in its figures'
+/// place, as nodes in `parent` (the column under its name): that it only runs tasks, then whose it is and how it is.
+pub fn rig_figures_node(parent : @view.View, r : () -> Json?) -> Unit {
+  @sf.list_row_line_node(parent, fn(l) { @sf.words_node(l, fn() { @sf.t("web-pages.rigs.mode.tasks") }, station_words) |> ignore })
+  @sf.list_row_line_node(parent, fn(l) {
+    @sf.words_node(l, fn() { @settings.rig_whose(r()) + " · " + @settings.rig_state(r()) }, station_words) |> ignore
+  })
 }
 
 ///|
@@ -109,10 +68,14 @@ pub fn station_state_node(parent : @view.View, s : () -> Json?) -> Unit {
 ///|
 /// station_figures', as nodes, in `parent` (the column under a station's name), of station `s` as it is now: while it
 /// is up, a line of what is left of its CPU, memory and disk in brief (@sf.meter_chips_brief_node) and a line of how
-/// this device reaches it (the core's `stationNet`, as it says it: 未连接 while there is none).
-pub fn station_figures_node(parent : @view.View, src : Source, s : () -> Json?) -> Unit {
+/// this device reaches it (the core's `stationNet`, as it says it: 未连接 while there is none). `apart`: the two lines as
+/// far apart as a list's row's lines are (the theme's chats' list's `text`: a sidebar's station row).
+pub fn station_figures_node(parent : @view.View, src : Source, s : () -> Json?, apart? : Bool = false) -> Unit {
   let net = src.topic("stationNet", { "station": Json::string(text(@signals.untracked(s), "station")) })
   parent.show(fn() { flag(s(), "online") }, fn(f) {
+    if apart {
+      @sf.style_node(f, fn() { @sf.theme().chat_list.text })
+    }
     @sf.list_row_line_node(f, fn(l) { @sf.meter_chips_brief_node(l, fn() { items(field(s(), "host"), "meters") }) })
     @sf.list_row_line_node(f, fn(l) {
       @sf.words_node(l, fn() {

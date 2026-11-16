@@ -18,13 +18,6 @@ let corners_everywhere_known : Map[String, Int] = {
       }
     }
   }
-  // 安全 with safe mode on, in the tablet's window, in Chinese: the rail's one and two more, the foot corners of its
-  // last card (网页版's, 16 in from the panel's sides, 26 round). Without the row of a lock of one's own at its top
-  // (gone, 2026-11-10) the page is 5 short of its panel, so it does not scroll and its last card stands 21 over the
-  // panel's foot, where its end would stand 16 (page_foot). Where a page that does not fill its panel ends is its
-  // words' and the window's, no place it is stood at: the rule holds what does not scroll to the corner, and nothing
-  // here stands it elsewhere. Gone as the page's height is any other (English's has none).
-  known["touch-zh lock-security"] = 3
   // 密钥 with a vault waiting to be keyed anew, in the tablet's window, in English: the rail's one, off the window's
   // side as the page shows (made as nodes: its old view was not swept).
   known["touch-en settings-vault-waits"] = 1
@@ -52,7 +45,7 @@ let corners_everywhere_known : Map[String, Int] = {
   known["wide-win-en board"] = 4
   // An account on three stations' page in a 中屏 window (desk, desk-win; the rail's one besides it on the tape): its
   // stations' card's foot corners (Birch's row, 16 in from the panel's sides, 26 round; one on the Mac's, both on
-  // Windows'), as lock-security's: the page is shorter than its panel, so it does not scroll and its last card stands
+  // Windows'): the page is shorter than its panel, so it does not scroll and its last card stands
   // 39 over the panel's foot, where its end would stand 16 (page_foot). Where a page that does not fill its panel ends
   // is its words' and the window's, no place it is stood at. Gone as the page's height is any other (a fourth station,
   // a phone's or a wide window).

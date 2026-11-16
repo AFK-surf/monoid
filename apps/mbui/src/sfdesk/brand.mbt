@@ -42,12 +42,6 @@ fn update_in_row(c : @ui.Ctx, src : Source) -> Unit {
 }
 
 ///|
-/// The update key beside another sidebar's action, if one is shown.
-fn update_trailing(c : @ui.Ctx, src : Source) -> (() -> Unit)? {
-  if update_shown() { Some(fn() { update_in_row(c, src) }) } else { None }
-}
-
-///|
 /// A sidebar's action band with the update at its end: on the tape or in the floating pane, the same line and corner
 /// as the chats' filter. With no update, the other sidebars keep their ordinary band.
 fn update_band(at? : BandAt = band_at_old()) -> @ui.Style {

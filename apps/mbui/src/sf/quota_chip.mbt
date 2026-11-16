@@ -254,9 +254,10 @@ let nav_quota_group : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, 
 /// `Claude / GPT`) align their pool name in a left column and their short `[5H %] [W %]` capsules on the right (the
 /// user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同供应商的账号用同一种就行」「感觉极端情况就应该多行」「感觉这
 /// 里还是要分组」「方案 A：左组名列 + 右短胶囊对齐」). Every way stands from the start, its chips the same gap apart, never
-/// spread to the row's ends (the user, 2026-11-10: 「怎么一会儿左对齐一会儿两端对齐」). Its nav_item gives it the whole
+/// spread to the row's ends (the user, 2026-11-10: 「怎么一会儿左对齐一会儿两端对齐」). Its row gives it the whole
 /// row as `foot` and says foot_capsule=fill_chip_small_h so the capsules are at the same inset from the row's foot.
-/// `at`: where its row's list stands (its words' room: band_pad_in).
+/// `at`: where its row's list stands (its words' room: band_pad_in). Held by its tests (quota_chip_wbtest.mbt): the
+/// app's sidebars draw nav_quota_chips_node, its way as nodes.
 pub fn nav_quota_chips(
   c : @ui.Ctx,
   q : Json?,

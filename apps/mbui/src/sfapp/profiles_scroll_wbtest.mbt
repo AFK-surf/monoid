@@ -10,7 +10,7 @@ test "profiles: the sidebar thumb is outside its rows, dragging it scrolls witho
   let t = wide_tester([], mode="settings", h=360.0)
   app.nav.replace(Place("profiles"))
   t.draw()
-  let row = t.boxes().iter().find_first(fn(b) { b.x == 56.0 && b.w == 232.0 && b.h == 54.0 }).unwrap()
+  let row = t.boxes_held().iter().find_first(fn(b) { b.x == 56.0 && b.w == 232.0 && b.h == 54.0 }).unwrap()
   let width = @sfdesk.wide.side_w.get()
   let edge = @sfdesk.rail_w + width
   t.wheel(260.0, 200.0, 100.0)

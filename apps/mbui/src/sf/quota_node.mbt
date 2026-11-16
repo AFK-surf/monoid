@@ -441,3 +441,230 @@ pub fn quota_worded_node(
     |> ignore
   })
 }
+
+///|
+/// The room an allowance's chips need on one line of a sidebar's row (nav_quota_line's, in node `v`'s tree: its words at
+/// the system's size there), as nav_quota_chips_node lays them out: a pool's group's column and its short chips where
+/// the windows come in groups, the widest of those; else every chip; 0 where it shows none.
+pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
+  guard has_quota(q) else { return 0.0 }
+  let windows = match chip_field(q, "windows") {
+    Some(Array(a)) => a
+    _ => []
+  }
+  let chip = nav_quota_chip_w(v)
+  let parts = quota_parts(windows)
+  let label_w = nav_quota_label_w(v, parts)
+  if label_w > 0.0 {
+    return parts.fold(init=0.0, fn(most, p) {
+      let mut sum = if p.0 == "" { 0.0 } else { label_w + @ui.Space::S1_5.px() }
+      for i, w in p.1 {
+        sum += chip(quota_part_mark(p.0, Some(w)), chip_left(Some(w)).to_string() + "%") +
+          (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
+      }
+      dmax(most, sum)
+    })
+  }
+  let mut sum = 0.0
+  for i, w in windows {
+    sum += chip(chip_str(Some(w), "mark"), chip_left(Some(w)).to_string() + "%") +
+      (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
+  }
+  sum
+}
+
+///|
+/// How wide a small chip of `mark` and `words` is in node `v`'s tree (fill_chip_node's: its words' room and theirs, its
+/// mark and figure 5 apart where they do not read as one phrase).
+fn nav_quota_chip_w(v : @view.View) -> (String, String) -> Double {
+  let look = @ui.style_words(chip_text)
+  let size = node_sp(v, look.size)
+  let across = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+  fn(mark, words) {
+    let side = @ui.Space::S1_25.px()
+    let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
+    (2.0 * side + across(mark) + between + across(words)).ceil()
+  }
+}
+
+///|
+/// How wide each of an allowance's chips is (`q`'s windows, every one a marked capsule) in node `v`'s tree, and the room
+/// all of it needs on one line (nav_quota_line_node): what a sidebar's rows of a provider are laid out by
+/// (nav_quota_chips_node's `widest`).
+pub fn nav_quota_room_node(v : @view.View, q : Json?) -> (Double, Array[Double]) {
+  let windows = match chip_field(q, "windows") {
+    Some(Array(a)) => a
+    _ => []
+  }
+  let chip = nav_quota_chip_w(v)
+  (nav_quota_line_node(v, q), windows.map(fn(w) { chip(chip_str(Some(w), "mark"), chip_left(Some(w)).to_string() + "%") }))
+}
+
+///|
+/// How many lines chips `widths` wide take on lines `room` wide, each as many as its line holds, 4 apart: 1 for none.
+fn nav_quota_lines(widths : Array[Double], room : Double) -> Int {
+  let gap = @ui.Space::S1.px()
+  let mut lines = 1
+  let mut used = 0.0
+  for cw in widths {
+    if used > 0.0 && used + gap + cw > room + 0.01 {
+      lines = lines + 1
+      used = cw
+    } else {
+      used = used + (if used > 0.0 { gap } else { 0.0 }) + cw
+    }
+  }
+  lines
+}
+
+///|
+/// How wide the widest of `parts`' group names is in node `v`'s tree (nav_quota_group's words): 0 where none has one.
+fn nav_quota_label_w(v : @view.View, parts : Array[(String, Array[Json])]) -> Double {
+  let look = @ui.style_words(nav_quota_group)
+  let size = node_sp(v, look.size)
+  parts.fold(init=0.0, fn(m, p) { if p.0 == "" { m } else { dmax(m, node_words_w(p.0, size, weight=look.weight).ceil()) } })
+}
+
+///|
+/// An allowance's chips across a sidebar's row (nav_quota_chips', as a node) in `parent`, `q` as the core says it now:
+/// from under the row's mark, every window a marked capsule, all on one line where the room the widest of its
+/// provider's rows needs fits (`widest`: that row's nav_quota_room_node, the one whose line is the longest), the same
+/// for every row of a provider; else on as many lines as that widest one takes, every row of the provider (the user,
+/// 2026-11-13: 「相同供应商的账号用同一种就行」), each line of a row as many of its chips as share them out, a pool's
+/// group's name over its chips. Where its windows come
+/// in pools, one line has the group's name in a column of its own, its short capsules beside it, a pool a line. Its
+/// last capsules as far in from the row's foot corner as makes them concentric with it (the row's `foot_capsule`).
+/// Each says what is left of it and when it fills again over it while it is pointed at, in `tips`. `at`: where its
+/// row's list stands (its words' room: band_pad_in). Nothing while the core cannot say or there is no window.
+#callsite(autofill(loc))
+pub fn nav_quota_chips_node(
+  parent : @view.View,
+  q : () -> Json?,
+  at : ListAt,
+  widest : () -> (Double, Array[Double]),
+  tips? : TipLayer,
+  loc~ : SourceLoc,
+) -> Unit {
+  let windows = fn() {
+    match chip_field(q(), "windows") {
+      Some(Array(a)) => a
+      _ => []
+    }
+  }
+  let parts = fn() { quota_parts(windows()) }
+  let inset = @ui.capsule_in(row_corner, fill_chip_small_h)
+  let side = band_pad_in(at)
+  // (a capsule reaches the corner until it is past the outer corner's circle-equivalent radius)
+  let clear = dmax(0.0, inset + fill_chip_small_h / 2.0 - side)
+  let pad_y = fn() { dmax(0.0, (theme().chat_list.meta_h - fill_chip_small_h) / 2.0) }
+  // (the chips of `ws()`, each the window at its place there, its mark less its pool's name `group()`)
+  let chips = fn(r : @view.View, ws : () -> Array[Json], group : () -> String) {
+    r.each(fn() { Array::makei(ws().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+      let k = i.untracked()
+      // (its window as it is now, told on only as it comes out otherwise: another's changing runs none of this one's)
+      let held = @signals.computed(fn(_) { ws().get(k) })
+      let w = fn() { held.get() }
+      fill_chip_node(
+        c,
+        fn() { chip_left(w()) },
+        fn() { chip_str(w(), "level") },
+        fn() { quota_part_mark(group(), w()) },
+        fn() { chip_left(w()).to_string() + "%" },
+        small=true,
+        said=fn() { quota_said(w()) },
+        tips?,
+      )
+      |> ignore
+    })
+  }
+  // (the pool at `k` of them as it is now)
+  let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
+  let part_keys = fn() { Array::makei(parts().length(), fn(k) { k }) }
+  parent.show(fn() { has_quota(q()) }, fn(x) {
+    // (all of what its line leaves it: the room it is fitted to)
+    x.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    x.by_room(loc~, fn(held, given) {
+      // (on one line where the room the widest of its provider's rows needs fits beside the corner's: else on lines)
+      let room = fn() { given.width() - (inset - side) - clear }
+      let one = fn() { dmax(widest().0, nav_quota_line_node(held, q())) <= room() + 0.01 }
+      // (on lines: as many as the widest of its provider's take, each of this row's as many of its chips as share them)
+      let per = fn() {
+        let n = windows().length()
+        if one() {
+          n
+        } else {
+          let lines = nav_quota_lines(widest().1, room())
+          dmax(1.0, (n.to_double() / lines.to_double()).ceil()).to_int()
+        }
+      }
+      let label_w = fn() { nav_quota_label_w(held, parts()) }
+      held.pick(at_once=true, fn() { label_w() > 0.0 }, fn(b, pooled) {
+        b.width_share(Is(1.0)) |> ignore
+        if pooled {
+          // one line a pool, its name in a column of its own, its short capsules beside it
+          b.box(fn(a) {
+            a
+            .laid_nowhere(By(fn() { !one() }))
+            .width_share(Is(1.0))
+            .margin(By(fn() { (inset - side, pad_y(), 0.0, pad_y()) }))
+            .padding(Is((0.0, 0.0, clear, 0.0)))
+            .gap(Is(@ui.Space::px(S1)))
+            |> ignore
+            a.each(part_keys, fn(k) { k }, fn(p, k) {
+              let k = k.untracked()
+              p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
+              p.show(fn() { part(k).0 != "" }, fn(n) {
+                n.box(fn(l) {
+                  l.width(By(fn() { Some(label_w()) })) |> ignore
+                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                })
+                |> ignore
+              })
+              p.box(fn(r) {
+                style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
+                chips(r, fn() { part(k).1 }, fn() { part(k).0 })
+              })
+              |> ignore
+            })
+          })
+          |> ignore
+          // on lines: a pool's name over its capsules, each pool's on as many lines as they take
+          b.box(fn(a) {
+            a
+            .laid_nowhere(By(one))
+            .width_share(Is(1.0))
+            .margin(By(fn() { (inset - side, pad_y(), clear, pad_y()) }))
+            .gap(Is(@ui.Space::px(S1)))
+            |> ignore
+            a.each(part_keys, fn(k) { k }, fn(p, k) {
+              let k = k.untracked()
+              p.width_share(Is(1.0)).gap(Is(@ui.Space::px(S0_5))) |> ignore
+              p.show(fn() { part(k).0 != "" }, fn(n) {
+                words_node(n, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+              })
+              p.box(fn(r) {
+                style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+                r.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
+                chips(r, fn() { part(k).1 }, fn() { part(k).0 })
+              })
+              |> ignore
+            })
+          })
+          |> ignore
+        } else {
+          // every window a marked capsule, on one line where it has the room, else on as many as per() says
+          b
+          .margin(By(fn() { (inset - side, if one() { 0.0 } else { pad_y() }, clear, if one() { 0.0 } else { pad_y() }) }))
+          .gap(Is(@ui.Space::px(S1)))
+          |> ignore
+          b.each(fn() { Array::makei((windows().length() + per() - 1) / dmax(1.0, per().to_double()).to_int(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(r, i) {
+            let i = i.untracked()
+            style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+            chips(r, fn() { windows().iter().drop(i * per()).take(per()).collect() }, fn() { "" })
+          })
+        }
+      })
+    })
+    |> ignore
+  })
+}

@@ -1,7 +1,8 @@
 // The sidebar made once over the block (pane_view's and tape_view's `sides`): where the block lays its sidebar out
 // (SideAt), the sidebar the block holds now (side_place), each made as nodes of the window's tree: the chats' lists for
 // the chats' places (with 已归档 among them, the band over them and the foot under them), the settings' list for the
-// settings'. Those not made once yet are the block's old view's (lists.mbt sidebar).
+// settings', the stations' and the profiles' lists for the rail's places of theirs (places_side_node.mbt). The files'
+// is not made once yet: the block's old view's (lists.mbt sidebar).
 
 ///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
@@ -30,8 +31,10 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
         match place {
           // (the settings' list beside their pages: settings_frame.mbt)
           "settings" => settings_side_node(s, src, tips, at)
-          // (the files' places: files_side_node.mbt)
+          // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
           "files" => files_side_node(s, src, tips, at)
+          "stations" => stations_side_node(s, src, tips, at)
+          "profiles" => profiles_side_node(s, src, tips, at)
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
@@ -58,8 +61,9 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 
 ///|
 /// Whether the sidebar of `place` (side_place's) is made once over the block, not drawn by its old view (sidebar's).
-fn side_made(place : String) -> Bool {
-  !(place is ("stations" | "profiles"))
+fn side_made(_place : String) -> Bool {
+  // (every place's now: the chats', the files', the stations', the profiles', the settings')
+  true
 }
 
 ///|

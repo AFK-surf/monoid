@@ -553,8 +553,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide files-split": (1093, 1376, 312),
   "wide files-transfers": (965, 1211, 280),
   "wide files-tree": (1066, 1363, 296),
-  "wide place-stations": (555, 1088, 272),
-  "wide place-profiles": (411, 516, 154),
+  // (raised once, 2026-11-17: the stations' and profiles' sidebars made as nodes, sfdesk places_side_node.mbt: what
+  // their old views built as they opened, rows, figures, allowances' chips and marks, made and laid out by the tree)
+  "wide place-stations": (1026, 2394, 596),
+  "wide place-profiles": (1043, 1410, 466),
   "wide reader": (652, 812, 196),
   "wide reader-bars": (666, 826, 199),
   "wide reader-contents": (743, 935, 225),
@@ -755,12 +757,13 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-security-upgrade-other": (670, 828, 168),
   "wide settings-security-upgrade-updating": (670, 828, 168),
   "wide settings-stations-tasks": (859, 1973, 596),
-  "wide place-stations-tasks": (555, 1088, 272),
+  // (raised once, 2026-11-17: Station's sidebar made as nodes, as "wide place-stations" says)
+  "wide place-stations-tasks": (1026, 2394, 596),
   "wide settings-station-tasks": (770, 1688, 468),
   "wide settings-station-tasks-other": (770, 1688, 468),
   "wide settings-station-tasks-locked": (770, 1688, 468),
   "wide settings-stations-devices": (859, 1973, 596),
-  "wide place-stations-devices": (555, 1088, 272),
+  "wide place-stations-devices": (1026, 2394, 596),
   "wide settings-station-devices": (770, 1688, 468),
   "wide settings-run": (562, 723, 160),
   "wide settings-run-models": (727, 910, 146),
