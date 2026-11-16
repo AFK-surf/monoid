@@ -10,6 +10,8 @@ import { DecisionSessionsUnavailable, decisionSessionIndexStep, decisionSessionR
 import { decisionTimeIndexStep } from "./reference/backfill/legacy-decision-time.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
+import { lookupWorker } from "./lookup-backfill.ts";
 
 for (const mode of ["native", "shared", "separate"] as const) test(
   `a missing ${mode} session lookup does not scan unrelated decisions`, () => {
@@ -66,12 +68,13 @@ for (const mode of ["native", "shared", "separate"] as const) test(
       if (mode === "shared") first.db.exec("DROP INDEX decision_checks_lately");
     } finally { first.close(); }
 
-    const store = Store.open(path), old = new DatabaseSync(path, { timeout: 5000 });
+    const time = testClock();
+    const store = Store.open(path, null, time.clock), old = new DatabaseSync(path, { timeout: 5000 });
     if (mode === "shared") while (!decisionTimeIndexStep(store.db).done) { /* prepare */ }
     if (mode === "separate") while (!decisionSessionIndexStep(store.db).done) { /* prepare */ }
     const oldWrite = old.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
     const previous = Promise.withResolvers<void>();
-    const builder = buildLegacyEntryLookups(store, previous.promise);
+    const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
     store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
     try {
       store.db.exec(`DROP INDEX ${mode === "native" ? "decision_checks_session"
@@ -80,12 +83,12 @@ for (const mode of ["native", "shared", "separate"] as const) test(
       assert.throws(() => store.lastDecision("mine"), DecisionSessionsUnavailable);
       let finished = false;
       const waiting = store.prepareDecisionSessions().then(() => { finished = true; });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await settle();
       assert.equal(finished, false, "the old process has not handed over");
       oldWrite.run("mine", 3, '{"later":true}');
       for (let n = 0; n < 65; n++) oldWrite.run("other", 4, '{}');
       previous.resolve();
-      await waiting;
+      await given(waiting, "the decision-session lookup is ready after handover");
       assert.equal(finished, true);
       assert.deepEqual(store.lastDecision("mine"), { later: true });
       assert.equal(store.lastDecision("absent"), null);
@@ -133,9 +136,10 @@ test("a missing time lookup does not hide a missing session lookup", () => {
 
 test("an overview resumes after its session index is removed", { timeout: 5000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "decision-session-dropped-overview-")), path = join(dir, "station.db");
-  const store = Store.open(path), old = new DatabaseSync(path, { timeout: 5000 });
+  const time = testClock();
+  const store = Store.open(path, null, time.clock), old = new DatabaseSync(path, { timeout: 5000 });
   const previous = Promise.withResolvers<void>(), requested = Promise.withResolvers<void>();
-  const builder = buildLegacyEntryLookups(store, previous.promise);
+  const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   store.waitForDecisionSessions = () => { requested.resolve(); return builder.waitForDecisionSessions(); };
   const viewer = { sub: "s", email: "p@example.test", name: "P", role: "admin" as const,
     workspace: "mine", device: "d", home: false };
@@ -147,20 +151,20 @@ test("an overview resumes after its session index is removed", { timeout: 5000 }
     store.insertSession({ key: "mine", ws: "mine", connect: "ember", runtime: "claude", profile: "cc",
       workspace: "/work", token: "mine", createdAt: 1, lastActiveAt: 1 });
     const put = old.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
-    put.run("mine", Date.now(), '{"result":{"selected":"before"}}');
-    for (let n = 0; n < 130; n++) put.run("other", Date.now(), "{}");
+    put.run("mine", store.now(), '{"result":{"selected":"before"}}');
+    for (let n = 0; n < 130; n++) put.run("other", store.now(), "{}");
     old.exec("DROP INDEX decision_checks_session");
     const first = overview(deps, viewer, "en");
     const second = overview(deps, viewer, "en");
-    await requested.promise;
+    await given(requested.promise, "the overview waits for its decision-session lookup");
     let finished = false;
     void first.then(() => { finished = true; });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await settle();
     assert.equal(finished, false);
-    put.run("mine", Date.now(), '{"result":{"selected":"landed"}}');
-    for (let n = 0; n < 65; n++) put.run("other", Date.now(), "{}");
+    put.run("mine", store.now(), '{"result":{"selected":"landed"}}');
+    for (let n = 0; n < 65; n++) put.run("other", store.now(), "{}");
     previous.resolve();
-    for (const result of await Promise.all([first, second]) as any[]) {
+    for (const result of await given(Promise.all([first, second]), "both overviews resume after the lookup is ready") as any[]) {
       assert.equal(result.automaticDecisions.policy.checked, 1);
       assert.equal(result.automaticDecisions.policy.options.find((option: any) => option.id === "landed").count, 1);
     }
@@ -196,17 +200,18 @@ test("a session lookup can be repaired after its repair index is removed", { tim
     for (let n = 0; n < 130; n++) put.run("other", 2, "{}");
     first.db.exec("DROP INDEX decision_checks_session");
   } finally { first.close(); }
-  const store = Store.open(path);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock);
   while (!decisionSessionIndexStep(store.db).done) { /* prepare */ }
-  const builder = buildLegacyEntryLookups(store, Promise.resolve());
+  const builder = buildLegacyEntryLookups(store, Promise.resolve(), "controlled", lookupWorker(store));
   store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
   try {
     store.db.exec("DROP INDEX legacy_decision_session_by_session");
-    await store.prepareDecisionSessions();
+    await given(store.prepareDecisionSessions(), "the removed lookup is rebuilt");
     assert.deepEqual(store.lastDecision("mine"), { mine: true });
     store.db.exec("DROP INDEX legacy_decision_session_repair_by_session");
     assert.equal(store.decisionSessionsReady(), false);
-    await store.prepareDecisionSessions();
+    await given(store.prepareDecisionSessions(), "the removed lookup is rebuilt");
     assert.deepEqual(store.lastDecision("mine"), { mine: true });
   } finally { await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -272,21 +277,21 @@ test("a waiting reader recovers if its session index is removed during handover"
     for (let n = 0; n < 130; n++) put.run("other", 2, "{}");
     first.db.exec("DROP INDEX decision_checks_session");
   } finally { first.close(); }
-  const store = Store.open(path), previous = Promise.withResolvers<void>();
-  const builder = buildLegacyEntryLookups(store, previous.promise);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock), previous = Promise.withResolvers<void>();
+  const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
   try {
     const waiting = store.prepareDecisionSessions();
     void waiting.catch(() => {});
     store.db.exec("DROP INDEX legacy_decision_session_by_session");
     // The next wait probe must discover that the in-progress lookup has disappeared.
-    const deadline = Date.now() + 2000;
-    while (!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_decision_session_repair_by_session'").get()) {
-      if (Date.now() > deadline) throw new Error("the missing lookup was not repaired while the reader waited");
-      await new Promise<void>((resolve) => setTimeout(resolve, 25));
-    }
+    await settle();
+    await time.adjust(250);
+    assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='legacy_decision_session_repair_by_session'").get(),
+      "the missing lookup is repaired at the next wait probe");
     previous.resolve();
-    await waiting;
+    await given(waiting, "the decision-session lookup is ready after handover");
     assert.deepEqual(store.lastDecision("mine"), { mine: true });
   } finally { previous.resolve(); await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

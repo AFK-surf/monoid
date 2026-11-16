@@ -1,3 +1,4 @@
+import type { EventEmitter } from "node:events";
 import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -15,11 +16,20 @@ import type { Store } from "./store.ts";
 
 type Kind = "legacy-said" | "legacy-agent" | "legacy-login" | "legacy-edits" | "legacy-policy" | "legacy-decision-time" | "legacy-decision-session" | "legacy-decision-session-repair" | "page-letter-gc";
 type Lookup = { kind: Kind; needsWork: () => boolean };
+interface LookupWorker extends EventEmitter {
+  readonly threadId: number;
+  postMessage(message: unknown): void;
+  unref(): void;
+  terminate(): Promise<number>;
+}
+type StartLookupWorker = (...args: ConstructorParameters<typeof MbBackfill>) => LookupWorker;
 
 /// Keep an old store readable during handover. One builder takes turns preparing its missing entry lookups, so one
 /// steadily changing lookup cannot starve another and their transactions still yield to foreground writes. By the
 /// MoonBit builder (station/mb, src/legacy; `MbBackfill`; `binary`: the program, a test's own where it gives one).
-function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kind[], binary?: string): {
+/// A test can give `startWorker` to decide when each batch answers without starting a process.
+function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kind[], binary?: string,
+  startWorker: StartLookupWorker = (...args) => new MbBackfill(...args)): {
   ready: Promise<boolean>; waitForDecisionSessions: () => Promise<boolean>;
   wake: () => void; close: () => Promise<void>;
 } {
@@ -66,7 +76,7 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
     finishDecisionSessions(false);
   const path = store.db.location();
   const work = new Fibers("old message lookup", store.clock);
-  let worker: MbBackfill | null = null;
+  let worker: LookupWorker | null = null;
   let retryCancel: (() => void) | null = null;
   let allowed = false, handoverFailed = false, closed = false, requested = false, retryMs = 250, next = 0;
   let off: () => void = () => {}, periodicCancel: () => void = () => {};
@@ -118,8 +128,8 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
       resolve(false);
       return;
     }
-    let current: MbBackfill;
-    try { current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20); }
+    let current: LookupWorker;
+    try { current = startWorker(binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20); }
     catch (error) {
       log.warn("store", "the old message lookup worker could not start", { error: (error as Error).message });
       retry();
@@ -260,6 +270,7 @@ export function buildLegacySaid(store: Store, previous: Promise<void>, binary?: 
 }
 
 /// Prepare the old lookups a store needs after the old station has handed over.
-export function buildLegacyEntryLookups(store: Store, previous: Promise<void>, binary?: string): ReturnType<typeof buildLookups> {
-  return buildLookups(store,previous,["legacy-said","legacy-agent","legacy-login","legacy-edits","legacy-policy","legacy-decision-time","legacy-decision-session","page-letter-gc"],binary);
+export function buildLegacyEntryLookups(store: Store, previous: Promise<void>, binary?: string,
+  startWorker?: StartLookupWorker): ReturnType<typeof buildLookups> {
+  return buildLookups(store,previous,["legacy-said","legacy-agent","legacy-login","legacy-edits","legacy-policy","legacy-decision-time","legacy-decision-session","page-letter-gc"],binary,startWorker);
 }

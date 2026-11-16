@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +9,12 @@ import { PAGE_LETTER_KEYS, pageLetterGcNeedsWork, pageLetterGcStep, pageLetterRe
   pageLetterStep } from "./reference/backfill/page-letter-index.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { Store } from "../src/store/store.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
 
 const MAX = "9223372036854775807";
 
-function make(path = ":memory:") {
-  const store = Store.open(path), db = store.db;
+function make(path = ":memory:", clock?: Store["clock"]) {
+  const store = Store.open(path, null, clock), db = store.db;
   const thread = store.openThread("ember", "CHAT", "page-letters", null, null).id;
   const put = db.prepare(`INSERT INTO entries(thread,n,kind,letter,ts,author_kind,author,text,at)
     VALUES(?,?,?,?,?,'agent','worker','words',1)`);
@@ -190,9 +192,26 @@ test("deleting and recreating a thread isolates and gradually reclaims its forme
 
 test("the background builder reclaims deleted scopes after handover", async () => {
   const dir = mkdtempSync(join(tmpdir(), "page-letter-gc-worker-"));
-  const { store, db, thread, put } = make(join(dir, "stillfail.db"));
+  const time = testClock();
+  const path = join(dir, "stillfail.db");
+  const { store, db, thread, put } = make(path, time.clock);
   const previous = Promise.withResolvers<void>();
-  const builder = buildLegacyEntryLookups(store, previous.promise);
+  const started = Promise.withResolvers<Backfill>(), ended = Promise.withResolvers<void>();
+  const pending: unknown[] = [];
+  class Backfill extends EventEmitter {
+    readonly threadId = 1;
+    postMessage(message: unknown) { pending.push(message); }
+    unref() {}
+    async terminate() { this.emit("exit", 0); ended.resolve(); return 0; }
+  }
+  let worker: Backfill | null = null;
+  const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", (binary, args, priority, pause) => {
+    assert.equal(binary, "controlled");
+    assert.deepEqual(args, ["--builder", "session-backfill", "--db", db.location()]);
+    assert.equal(priority, store.backfillPriority);
+    assert.equal(pause, 20);
+    worker = new Backfill(); started.resolve(worker); return worker;
+  });
   try {
     for (let n = 1; n <= 150; n++) put.run(thread, n, "message", "letter", null);
     finish(db, thread);
@@ -200,11 +219,24 @@ test("the background builder reclaims deleted scopes after handover", async () =
     db.prepare("DELETE FROM threads WHERE id=?").run(thread);
     assert.equal(pageLetterGcNeedsWork(db), true);
     builder.wake();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settle();
+    await time.adjust(10_000);
+    assert.equal(worker, null, "neither a wake nor periodic maintenance starts before handover");
     assert.equal(pageLetterGcNeedsWork(db), true);
     previous.resolve();
-    for (let i = 0; i < 400 && pageLetterGcNeedsWork(db); i++)
-      await new Promise((resolve) => setTimeout(resolve, 25));
+    const running = await given(started.promise, "the lookup worker starts after handover");
+    // The native batches are held to these same steps in mb-legacy-rest.test.ts. Here the test decides when each
+    // response arrives, including a long pause after the worker starts, rather than racing a background process.
+    await time.adjust(60_000);
+    assert.equal(pageLetterGcNeedsWork(db), true, "time passing does not complete an unanswered batch");
+    let batches = 0;
+    while (pending.length > 0) {
+      assert.deepEqual(pending.shift(), { kind: "page-letter-gc" });
+      assert.ok(++batches < 20, "the bounded cleanup finishes");
+      running.emit("message", pageLetterGcStep(db));
+    }
+    await given(ended.promise, "the builder releases its completed worker");
+    assert.ok(batches > 1, "multiple bounded batches are scheduled");
     assert.equal(pageLetterGcNeedsWork(db), false);
   } finally { previous.resolve(); await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

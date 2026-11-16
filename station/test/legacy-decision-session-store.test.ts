@@ -9,6 +9,8 @@ import { DECISION_SESSION_INDEX, DecisionSessionsUnavailable, decisionSessionInd
 import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/backfill/legacy-decision-time.ts";
 import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
 import { LATEST_DECISIONS, RECENT_LAST_DECISION, Store } from "../src/store/store.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
+import { lookupWorker } from "./lookup-backfill.ts";
 
 test("opening an old store bounds the work to install its decision-session lookup", () => {
   const indexed: number[] = [], probed: number[] = [];
@@ -407,21 +409,26 @@ for (const mode of ["shared", "separate"] as const) test(`the ${mode} decision-s
 
 test("another opener finishing during handover wakes the waiting session reads", { timeout: 3000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "decision-session-handover-")), path = join(dir, "station.db");
-  const first = Store.open(path);
+  // Prepare the old schema in memory; the handover still opens the saved database from both connections.
+  const first = Store.open(":memory:");
   try {
     const put = first.db.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
     for (let n = 0; n < 130; n++) put.run("mine", n, JSON.stringify({ n }));
     first.db.exec("DROP INDEX decision_checks_session");
+    first.db.prepare("VACUUM INTO ?").run(path);
   } finally { first.close(); }
-  const store = Store.open(path);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock);
   const previous = Promise.withResolvers<void>();
-  const builder = buildLegacyEntryLookups(store, previous.promise);
+  const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
   const other = new DatabaseSync(path);
   try {
     const waiting = store.prepareDecisionSessions();
     while (!decisionSessionIndexStep(other, 64).done) { /* another opener finished the shared work */ }
-    await waiting;
+    await settle();
+    await time.adjust(250);
+    await given(waiting, "the next probe sees the lookup finished by the other opener");
     assert.deepEqual(store.lastDecision("mine"), { n: 129 });
   } finally { previous.resolve(); await builder.close(); other.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -434,9 +441,10 @@ test("a stopped session lookup settles its wait and resumes saved work", { timeo
     for (let n = 0; n < 130; n++) put.run("mine", n, JSON.stringify({ n }));
     first.db.exec("DROP INDEX decision_checks_session");
   } finally { first.close(); }
-  const store = Store.open(path);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock);
   const previous = Promise.withResolvers<void>();
-  let builder = buildLegacyEntryLookups(store, previous.promise);
+  let builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   try {
     assert.equal(decisionSessionIndexStep(store.db, 7).done, false);
     const cursor = store.db.prepare("SELECT cursor FROM legacy_decision_session_meta").get();
@@ -446,9 +454,9 @@ test("a stopped session lookup settles its wait and resumes saved work", { timeo
     await assert.rejects(waiting, DecisionSessionsUnavailable);
     assert.deepEqual(store.db.prepare("SELECT cursor FROM legacy_decision_session_meta").get(), cursor);
     previous.resolve();
-    builder = buildLegacyEntryLookups(store, Promise.resolve());
+    builder = buildLegacyEntryLookups(store, Promise.resolve(), "controlled", lookupWorker(store));
     store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
-    await store.prepareDecisionSessions();
+    await given(store.prepareDecisionSessions(), "the decision-session lookup is ready");
     assert.deepEqual(store.lastDecision("mine"), { n: 129 });
   } finally { previous.resolve(); await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -479,19 +487,24 @@ test("an already installed native session index does not finish an unused old lo
 
 for (const window of ["small", "large"] as const) test(`a ${window} recent window lets the overview wait only when needed`, { timeout: 3000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "decision-session-overview-")), path = join(dir, "station.db");
-  const first = Store.open(path);
+  const time = testClock();
+  // Timestamp 1 is outside the policy's recent-days window on this fixed test clock.
+  await time.adjust(365 * 86_400_000);
+  // Save the old schema once, keeping the overview and the old writer on real file connections.
+  const first = Store.open(":memory:", null, time.clock);
   try {
     first.insertSession({ key: "mine", ws: "mine", connect: "ember", runtime: "claude", profile: "cc",
       workspace: "/work", token: "mine", createdAt: 1, lastActiveAt: 1 });
     const put = first.db.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
-    for (let n = 0; n < 130; n++) put.run("other", window === "small" ? 1 : Date.now(), '{}');
+    for (let n = 0; n < 130; n++) put.run("other", window === "small" ? 1 : first.now(), '{}');
     first.db.exec("DROP INDEX decision_checks_session");
+    first.db.prepare("VACUUM INTO ?").run(path);
   } finally { first.close(); }
   const old = new DatabaseSync(path, { timeout: 5000 });
-  const store = Store.open(path);
+  const store = Store.open(path, null, time.clock);
   const previous = Promise.withResolvers<void>();
   const requested = Promise.withResolvers<void>();
-  const builder = buildLegacyEntryLookups(store, previous.promise);
+  const builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   let waits = 0;
   store.waitForDecisionSessions = () => { waits++; requested.resolve(); return builder.waitForDecisionSessions(); };
   const viewer = { sub: "s", email: "p@example.test", name: "P", role: "admin" as const,
@@ -507,16 +520,16 @@ for (const window of ["small", "large"] as const) test(`a ${window} recent windo
     assert.equal(waits, 0);
     const owner = window === "large" ? overview(deps, viewer, "en") : null;
     if (owner) {
-      await requested.promise;
+      await given(requested.promise, "the overview waits for its decision-session lookup");
       let settled = false;
       void owner.then(() => { settled = true; });
-      await new Promise((resolve) => setImmediate(resolve));
+      await settle();
       assert.equal(settled, false);
     }
     old.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)")
-      .run("mine", Date.now(), '{"result":{"selected":"landed"}}');
+      .run("mine", store.now(), '{"result":{"selected":"landed"}}');
     if (owner) previous.resolve();
-    const result: any = await (owner ?? overview(deps, viewer, "en"));
+    const result: any = await given(owner ?? overview(deps, viewer, "en"), "the overview resumes after the lookup is ready");
     if (!owner) assert.equal(waits, 0, "a small recent range did not wait for old checks");
     assert.equal(result.automaticDecisions.policy.checked, 1);
     assert.equal(result.automaticDecisions.policy.options.find((o: any) => o.id === "landed").count, 1);
@@ -580,8 +593,9 @@ test("a late native session index works while the shared time lookup is preparin
     for (let n = 0; n < 129; n++) put.run("other", 100, '{}');
     first.db.exec("DROP INDEX decision_checks_session; DROP INDEX decision_checks_lately");
   } finally { first.close(); }
-  const store = Store.open(path), old = new DatabaseSync(path);
-  const previous = Promise.withResolvers<void>(), builder = buildLegacyEntryLookups(store, previous.promise);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock), old = new DatabaseSync(path);
+  const previous = Promise.withResolvers<void>(), builder = buildLegacyEntryLookups(store, previous.promise, "controlled", lookupWorker(store));
   store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
   try {
     assert.equal(decisionTimeIndexStep(store.db, 7).done, false);
@@ -589,9 +603,9 @@ test("a late native session index works while the shared time lookup is preparin
     assert.equal(store.decisionSessionsReady(), true);
     assert.deepEqual(store.lastDecision("mine"), { mine: true });
     assert.equal(store.latestDecisionsSince(0, { workspace: "mine", home: false }).length, 1);
-    await store.prepareDecisionSessions();
+    await given(store.prepareDecisionSessions(), "the decision-session lookup is ready");
     previous.resolve();
-    assert.equal(await builder.ready, true);
+    assert.equal(await given(builder.ready, "the remaining old lookups are ready"), true);
     assert.equal(store.db.prepare("SELECT complete FROM legacy_decision_time_meta").get()?.complete, 1);
   } finally { previous.resolve(); await builder.close(); old.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -599,25 +613,27 @@ test("a late native session index works while the shared time lookup is preparin
 test("a pending session read wakes when another opener installs the native index", { timeout: 3000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "decision-session-native-wait-"));
   const path = join(dir, "station.db");
-  const first = Store.open(path);
+  const first = Store.open(":memory:");
   try {
     const put = first.db.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES('other',?,'{}')");
     for (let n = 0; n < 130; n++) put.run(n);
     first.db.exec("DROP INDEX decision_checks_session");
+    first.db.prepare("VACUUM INTO ?").run(path);
   } finally { first.close(); }
-  const store = Store.open(path);
+  const time = testClock();
+  const store = Store.open(path, null, time.clock);
   const previous = Promise.withResolvers<void>();
   const builder = buildLegacyEntryLookups(store, previous.promise);
   store.waitForDecisionSessions = () => builder.waitForDecisionSessions();
   const old = new DatabaseSync(path);
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const waiting = store.prepareDecisionSessions();
+    await settle();
     old.exec("CREATE INDEX decision_checks_session ON decision_checks(session,id)");
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("still waiting after the native index was installed")), 1500); });
-    await Promise.race([waiting, timeout]);
+    // Run the 250 ms probes within the original deadline, without waiting on wall time.
+    await time.adjust(1500);
+    await given(waiting, "the native index wakes the pending read within 1500 ms");
   } finally {
-    if (timer) clearTimeout(timer);
     previous.resolve();
     await builder.close();
     old.close();
