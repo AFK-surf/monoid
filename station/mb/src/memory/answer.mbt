@@ -1,6 +1,6 @@
 // What the station asks of the memory's program (`--builder memory`, station/src/share/memory-mb.ts): a line of JSON
 // an ask, `{id, op, …}`, answered `{id, …}` (or `{id, error}`), one at a time. Content goes as hex both ways, so that
-// what is no text (or no UTF-8) arrives as it is.
+// what is no text (or no UTF-8) arrives as it is; a shared skill's (share/index.ts) as base64, as the stations send it.
 
 ///|
 fn hex_field(j : Json, key : String) -> Bytes raise {
@@ -177,6 +177,31 @@ pub async fn answer(host : @host.Host, ask : Json, sep : String) -> Json {
         out.push(Json::string(station_tag(name)))
       }
       { "tags": Json::array(out) }
+    }
+    // A shared skill's files (skills.mbt; station/src/share/index.ts).
+    "skillRead" =>
+      skill_read(
+        host,
+        sep,
+        need_str(ask, "dir"),
+        num_field(ask, "maxBytes").unwrap_or(512.0 * 1024.0),
+        num_field(ask, "maxFiles").unwrap_or(200).to_int(),
+        field(ask, "bytes") is Some(True),
+      )
+    "skillWrite" => {
+      skill_write(
+        host,
+        sep,
+        need_str(ask, "dir"),
+        object_field(ask, "files"),
+        num_field(ask, "most"),
+        field(ask, "check") is Some(True),
+      )
+      { "written": true }
+    }
+    "skillConflict" => {
+      skill_conflict(host, sep, need_str(ask, "dir"), need_str(ask, "peer"), need_str(ask, "content"))
+      { "written": true }
     }
     // What the tests hold to the TypeScript of before (station/test/mb-memory-merge.test.ts), each function alone.
     "isText" => { "value": Json::boolean(is_text(hex_field(ask, "bytes"))) }

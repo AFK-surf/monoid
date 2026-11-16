@@ -13,6 +13,8 @@ pub async fn answer(@host.Host, @json.Json, String) -> @json.Json
 
 pub fn aside_of(String, String) -> String?
 
+pub fn base64_bytes(String) -> Bytes
+
 pub fn body_of(String) -> String
 
 pub fn conflict_path(String, String) -> String
@@ -34,6 +36,14 @@ pub fn portable_name(String) -> Bool
 pub fn rec_json(Rec) -> @json.Json
 
 pub fn rec_of(@json.Json) -> Rec?
+
+pub fn sha256_hex(BytesView) -> String
+
+pub fn skill_conflict_path(String, String, String) -> String
+
+pub fn skill_hash(Map[String, String]) -> String
+
+pub fn skill_path(String, String) -> Array[String]?
 
 pub fn station_tag(String) -> String
 

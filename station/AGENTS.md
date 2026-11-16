@@ -228,7 +228,10 @@
   files are read, hashed and kept in blobs/, and two versions merged, by the MoonBit program (`--builder memory`,
   `mb/src/memory`, `src/share/memory-mb.ts`, let go idle), none of their bytes on the main thread but those it writes
   or sends: no merge in TypeScript to fall back to, the one it replaced is `test/reference/memory-merge.ts`, which
-  `test/mb-memory-merge.test.ts` holds it to byte for byte. What is one machine's says which station it is of; the
+  `test/mb-memory-merge.test.ts` holds it to byte for byte. A skill shared on its own (`src/share/index.ts`: its
+  files read and hashed, written whole, an edit made on an older copy kept beside it) is that program's too, none of
+  its bytes on the main thread but those sent: the TypeScript it replaced is `test/reference/share-skills.ts`, which
+  `test/mb-share-skills.test.ts` holds it to. What is one machine's says which station it is of; the
   agents' instructions say so. No CRDT library (it grows, and every station would have to compact it together). With
   no version both came from (each station's memory of before) MEMORY.md's lines, and a file both kept on since it was
   copied, are put together each line once; skills of one name and nothing alike are kept apart as `<name>-<station>`

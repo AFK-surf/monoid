@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Sharing, shareRefusal } from "../src/share/index.ts";
@@ -56,6 +56,9 @@ class FakeCloud {
 }
 
 type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: string[] };
+/// Every station's sharing closed once the file's tests are done (its skills' program let go), a test's own too.
+const made: Sharing[] = [];
+after(() => Promise.all(made.map((s) => s.close())));
 
 function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void> } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
@@ -83,6 +86,7 @@ function station(cloud: FakeCloud, id: string, others: () => Map<string, Station
     changed: () => {},
     ...extra,
   });
+  made.push(sharing);
   return { data, config, sharing, lent };
 }
 

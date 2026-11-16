@@ -1,6 +1,7 @@
 // The agents' memory's files and merges in the MoonBit program (station/mb src/memory, reader `--builder memory`), in
 // place of share/memory.ts's own: a workspace's memory read and hashed, what changed kept in blobs/, and two versions
-// made apart merged (three-way by lines, or each line once) there, none of their bytes on the station's thread. Started
+// made apart merged (three-way by lines, or each line once) there, none of their bytes on the station's thread; and a
+// skill shared on its own (share/index.ts, a program of its own there) read, hashed and written. Started
 // at its first ask, it goes after IDLE_MS with nothing asked of it (or at once: `trimIdle`) and is started again by the
 // next: it keeps nothing between asks. There is no TypeScript to fall back to: what it replaced is
 // station/test/reference/memory-merge.ts, which station/test/mb-memory-merge.test.ts holds it to.

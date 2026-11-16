@@ -623,6 +623,8 @@ export const AgentsLive = (control: Control) =>
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
+      // (the program that reads its skills' files, idle, let go when the station is short of memory)
+      readers.onTrim(() => sharing!.trimIdle());
       // The agents' memory, the same on every station of a workspace (share/memory.ts).
       const memorySync = new MemorySync({
         data, cloud,
