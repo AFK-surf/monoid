@@ -89,9 +89,14 @@ function read(inner: Inner, address: string): Effect.Effect<void, CoreError> {
       order.applied = version;
       if (got._tag === "Success") {
         const transfers = new Map(arr(get(got.success, "transfers")).filter(isObject).map((x) => [x.id, x]));
+        const added: J[] = [];
         // Only updates told since this read began override its rows. Another GET is not such an update.
-        for (const [id, transfer] of changes) transfers.set(id, transfer);
-        hold(inner, address, { supported: true, transfers: [...transfers.values()] });
+        for (const [id, transfer] of changes) {
+          if (transfers.has(id)) transfers.set(id, transfer);
+          else added.push(transfer);
+        }
+        // As with put, new rows go first; updating a row does not change its place.
+        hold(inner, address, { supported: true, transfers: [...added.reverse(), ...transfers.values()] });
       } else {
         if (changes.size > 0) return; // A transfer told meanwhile proves this station supports them.
         hold(inner, address, { supported: false, transfers: [] });

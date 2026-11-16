@@ -128,6 +128,40 @@ test("a transfer list read keeps changes told while its answer was on the way", 
   } finally { s.core.close(); }
 });
 
+test("a transfer list read keeps new events first without moving updated rows", async () => {
+  // Transfers created in the same millisecond keep the order established by their events.
+  const answers = { ...base(), "GET /drive/transfers": { transfers: [transfer(), transfer({ id: "old" })] } };
+  const s = await started(answers);
+  const held: (() => void)[] = [];
+  try {
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => t.id), ["t1", "old"]);
+    stationLater(s.host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      const response = jsonResponse(200, answers["GET /drive/transfers"]);
+      return new Promise((resolve) => held.push(() => resolve(response)));
+    });
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.equal(held.length, 1);
+    s.push("drive-transfers", { transfer: transfer({ id: "new-1" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "new-2" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "old", state: "done" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "new-1", state: "done" }) });
+    await s.host.settle();
+    const expected = [["new-2", "copying"], ["new-1", "done"], ["t1", "copying"], ["old", "done"]];
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), expected, "updates keep existing rows in place");
+    held[0]!();
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), expected,
+      "the delayed list keeps multiple new events newest first and updates old rows in place");
+  } finally { s.core.close(); }
+});
+
 for (const newerFirst of [false, true]) test(`overlapping transfer reads keep the newer list (${newerFirst ? "newer" : "older"} answer first)`, async () => {
   const answers = { ...base(), "GET /drive/transfers": { transfers: [transfer(), transfer({ id: "old", createdAt: 1 })] } };
   const s = await started(answers);
