@@ -543,3 +543,50 @@ test "unfolded: a new chat's long first words sent: the room under the chat's ro
   }
   assert_true(app.nav.top() is Chat(_))
 }
+
+///|
+test "a new chat's first words the station has not taken yet: in its outbox, not back in its composer as well" {
+  let held : Map[String, () -> Unit] = Map([])
+  let session = Ref("")
+  let restored : Array[String] = []
+  new_run()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      match name {
+        "chat.send" => {
+          session.val = text(Some(params), "session")
+          // (the core took it into the chat's outbox, which sends it once the station answers)
+          held[name] = fn() {
+            done(Err({ "code": Json::string("timeout"), "message": Json::string("Willow 没有回应") }))
+          }
+        }
+        "composer.restore" => {
+          restored.push(text(Some(params), "key"))
+          (base.call)(name, params, done)
+        }
+        _ => (base.call)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  let words = "把发布说明写一下"
+  new_chat_sent(t, words) |> ignore
+  t.run_for(new_leave_ms)
+  match held.get("chat.send") {
+    Some(give) => give()
+    None => fail("the message not sent")
+  }
+  t.draw()
+  t.run_for(new_leave_ms)
+  assert_true(app.nav.top() is Chat(_))
+  assert_true(session.val != "")
+  let w = @sfbase.writing(src, "ws1/st1:" + session.val)
+  assert_eq(w.text.get(), "")
+  assert_eq(w.field.text(), "")
+  let (_, field, _, _) = t.ime()
+  assert_eq(field, "")
+  assert_eq(restored, [], msg="its words put back in the composer")
+  assert_true(@sfbase.toast_words().contains("Willow 没有回应"))
+}

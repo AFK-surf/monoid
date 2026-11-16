@@ -1011,10 +1011,24 @@ fn new_send(
         }
         (src.call)("chat.send", Json::object(params), fn(res) {
           match res {
-            Err(e) => {
-              sending.val = true
-              not_sent(text(Some(e), "message"))
-            }
+            Err(e) =>
+              match text(Some(e), "code") {
+                // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
+                "invalid_params" | "core_restarted" | "closed" => {
+                  sending.val = true
+                  not_sent(text(Some(e), "message"))
+                }
+                // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
+                // back in the composer too were sent twice, 2026-11-16)
+                _ => {
+                  @ui.haptic(Reject)
+                  fresh.starting.set(false)
+                  @sfbase.flight_carry_gone(draft)
+                  @sfbase.writing_starting(src, d, false)
+                  @sfbase.sent_local_gone(rk, row)
+                  toast_later(@sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))]))
+                }
+              }
             Ok(_) => {
               fresh.starting.set(false)
               @sfbase.writing_starting(src, d, false)
