@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.63 | 113.3 |
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.83 | 121.21 |
 | [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.91 | 123.5 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.7 | 123.15 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e081fc466](https://github.com/AFK-surf/monoid/commit/e081fc466a18d81ee61a28fc89c8d422e644173a) mbui: Windows' H.265 and AV1 GPU decoders kept by  | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.76 | 119.59 |
 | [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.67 | 116.2 |
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 2.14 | 2.99 | 12.92 | 34.04 | 51.19 | 29.86 | 59.79 | 99.6 | 110.16 |
-| [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.84 | 59.77 | 99.58 | 112.52 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e081fc466](https://github.com/AFK-surf/monoid/commit/e081fc466a18d81ee61a28fc89c8d422e644173a) mbui: Windows' H.265 and AV1 GPU decoders kept by  | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.46 |
 | [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
-| [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
