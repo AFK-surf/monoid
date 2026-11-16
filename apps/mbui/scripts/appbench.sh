@@ -16,6 +16,7 @@ cd "$D/.."
 mkdir -p out/bench bench
 # scene   fixture    window     platform pointing
 table="idle chat-long 1280x800 0 mouse
+edge chat-long 1280x800 2 finger
 fling chat-long 390x844 2 finger
 chat-real chat-real 390x844 2 finger
 backswipe chat 390x844 2 finger

@@ -209,6 +209,7 @@ fn wide_reset() -> Unit {
   wide.side_place = "chats"
   wide.side_key = ""
   board_frame_src.val = None
+  room_held.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
   wide.in_bar = false

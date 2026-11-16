@@ -22,6 +22,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 cd "$A"
 # scene      script                           fixture    window
 table="home scroll-home long 390x844
+edge edge chat-long 1280x800
 home-again home-again long 390x844
 medium scroll-medium chat-long 690x840
 open open long 390x844
