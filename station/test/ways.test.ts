@@ -10,7 +10,7 @@ import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import type { Admitted } from "../src/mesh/credential.ts";
 import { waysRoute } from "../src/mesh/serve.ts";
-import { Ways, WaysRefusal, addRelay, answerWays, followWays, removeRelay, setRelays, setWay, tellWays } from "../src/mesh/ways.ts";
+import { Ways, WaysRefusal, addRelay, answerWays, followWays, removeRelay, setRelays, setWay, stillFails, tellWays } from "../src/mesh/ways.ts";
 import { relayTools } from "../src/tools/relays.ts";
 
 const WS = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
@@ -188,4 +188,28 @@ test("a relay the cloud kept as the workspace's own is not taken for still.fail'
   assert.deepEqual(r.relays.map((x) => x.url), ["https://pvg.test:8445", "https://new.test"]);
   assert.deepEqual(addRelay(ways, WS, "https://pvg.test:8445", null).relays.length, 2, "already the workspace's: stays as it is");
   stop();
+});
+
+test("one of still.fail's relays another workspace of the station's added as its own stays still.fail's here, turned off and on (2026-11-16, Hypershell's 上海: `no such way`)", async () => {
+  const PVG = "https://relay.pvg.test:8445";
+  const OTHER = "01HYYYYYYYYYYYYYYYYYYYYYYY";
+  const data = mkdtempSync(join(tmpdir(), "ways-"));
+  writeState(data, { origin: "https://app.still.fail", station: A, workspace: WS, workspace_name: "Team", name: "s", relay_url: OURS[0]!, relay_urls: OURS, grant_keys: { keys: [] }, peers: [], revocations: [] });
+  const cloud = new Cloud(data, false);
+  // As the control plane tells it: still.fail's said apart, the other workspace (joined) having added one of them.
+  const ours = [...OURS, PVG];
+  applyState(cloud, JSON.stringify({
+    type: "state", workspace: WS, workspace_name: "Team", name: "s", origin: "https://app.still.fail", relay_url: OURS[0], relay_urls: ours, stillfail_relays: ours,
+    peers: [{ id: A, name: "a" }], revocations: [], ways: { relays: [], off: [] },
+    workspaces: [{ workspace: OTHER, workspace_name: "Other", name: "s", peers: [{ id: A, name: "a" }], revocations: [], ways: { relays: [PVG], off: [] } }],
+  }));
+  assert.deepEqual(cloud.memberships().map((m) => m.workspace).sort(), [OTHER, WS].sort(), "the station is in both");
+  const ways = new Ways(cloud, join(data, "mesh", "ways.json"));
+  assert.deepEqual(stillFails(cloud), ours);
+  assert.deepEqual(setWay(ways, WS, PVG, false).off, [PVG]);
+  setWay(ways, WS, OURS[1]!, false);
+  assert.deepEqual(setWay(ways, WS, "ours", true).off, [], "one switch takes every one of them back");
+  // Kept across a restart of the station.
+  await ways.written();
+  assert.deepEqual(new Cloud(data, false).state?.stillfail_relays, ours);
 });

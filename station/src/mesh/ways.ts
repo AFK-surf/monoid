@@ -160,9 +160,13 @@ export class WaysRefusal extends Error {}
 /// Whether still.fail's cloud is on http (a local setup), where a relay on http is taken too.
 const insecure = (cloud: Cloud) => (cloud.state?.origin ?? "").startsWith("http:");
 
-/// still.fail's own relays: what the control plane's `relay_urls` say, but the workspaces' own it puts after them
-/// (as it kept them, `waysSaid`): every workspace has these.
+/// still.fail's own relays: every workspace has these. As the control plane says them apart (`stillfail_relays`), else
+/// what its `relay_urls` say but the workspaces' own it puts after them (as it kept them, `waysSaid`): that guess took
+/// one of still.fail's that some workspace of the station's also added as its own for none of them (2026-11-16, 上海's in
+/// Hypershell: `no such way` as it was turned off).
 export function stillFails(cloud: Cloud): string[] {
+  const said = cloud.state?.stillfail_relays;
+  if (said !== undefined && said.length > 0) return said.filter((u) => URL.canParse(u));
   const theirs = cloud.memberships().flatMap((m) => cloud.waysSaid(m.workspace)?.relays ?? []);
   return cloud.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)));
 }

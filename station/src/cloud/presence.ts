@@ -388,6 +388,8 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
         if (typeof body[k] === "string") st[k] = body[k];
       }
       if (Array.isArray(body.relay_urls)) st.relay_urls = body.relay_urls.filter((u: unknown) => typeof u === "string");
+      if (Array.isArray(body.stillfail_relays)) st.stillfail_relays = body.stillfail_relays.filter((u: unknown): u is string => typeof u === "string");
+      else delete st.stillfail_relays;
       // The home workspace's own relays and ways turned off as the plane kept them: what mesh/ways.ts takes first.
       const ways = waysSaidOf(body.ways);
       if (ways !== null) st.ways = ways;

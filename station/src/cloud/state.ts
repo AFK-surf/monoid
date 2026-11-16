@@ -58,6 +58,9 @@ export type CloudState = {
   relay_url: string;
   /// Every relay, still.fail's (`relay_url`) first; missing from files of before there were several.
   relay_urls: string[];
+  /// still.fail's own relays alone, as the control plane says them apart from the workspaces' own it puts in
+  /// `relay_urls` (mesh/ways.ts `stillFails`); absent from planes of before it.
+  stillfail_relays?: string[];
   grant_keys: any;
   /// The workspace's stations this one may call (peer RPC); none from old clouds.
   peers: any[];
@@ -301,6 +304,7 @@ export function moveFormerHost(data: string) {
   raw.origin = moved(raw.origin);
   if (raw.relay_url !== undefined) raw.relay_url = moved(raw.relay_url);
   if (Array.isArray(raw.relay_urls)) raw.relay_urls = raw.relay_urls.map(moved);
+  if (Array.isArray(raw.stillfail_relays)) raw.stillfail_relays = raw.stillfail_relays.map(moved);
   writePrivate(statePath(data), JSON.stringify(raw, null, 2));
   log.info("cloud", "moved to still.fail cloud's host", { from: FORMER_HOST, to: HOST });
 }
@@ -316,6 +320,8 @@ export function readState(data: string): CloudState | null {
   const ways = waysSaidOf(raw.ways);
   if (ways !== null) state.ways = ways;
   else delete state.ways;
+  if (Array.isArray(raw.stillfail_relays)) state.stillfail_relays = raw.stillfail_relays.filter((u: unknown): u is string => typeof u === "string");
+  else delete state.stillfail_relays;
   const rig = rigSelfOf(raw.rig);
   if (rig !== null) state.rig = rig;
   else delete state.rig;
@@ -355,6 +361,7 @@ export function writeState(data: string, s: CloudState) {
     origin: s.origin, station: s.station, workspace: s.workspace, workspace_name: s.workspace_name, name: s.name,
     relay_url: s.relay_url, relay_urls: s.relay_urls, grant_keys: s.grant_keys, peers: s.peers, revocations: s.revocations,
   };
+  if (s.stillfail_relays !== undefined) out.stillfail_relays = s.stillfail_relays;
   if (s.gateway_keys !== undefined) out.gateway_keys = s.gateway_keys;
   if (s.removed_at !== undefined) out.removed_at = s.removed_at;
   if (s.removed_code !== undefined) out.removed_code = s.removed_code;

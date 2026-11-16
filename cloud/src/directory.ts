@@ -2322,11 +2322,14 @@ export class Directory extends DurableObject<Env> {
     const { peers, revocations, lock: _, locked: __, ...row } = home! as typeof home & { locked?: true };
     // Every workspace's own relays after still.fail's (one endpoint, homed on any of them): a station from before them
     // keeps one more relay as it keeps the rest.
+    // `stillfail_relays`: still.fail's alone, so a station tells them from its workspaces' own where one of those is
+    // also one of still.fail's (station/src/mesh/ways.ts `stillFails`).
     const told = relays(this.env);
+    const stillfail_relays = [...told.relay_urls];
     const relay_urls = [...told.relay_urls];
     for (const url of found.flatMap((w) => parseRelays(w.relays))) if (!relay_urls.map(sameUrl).includes(sameUrl(url))) relay_urls.push(url);
     const lock = this.#lockHead(row.workspace);
-    return JSON.stringify({ type: "state", peers, ...row, origin: this.env.PUBLIC_ORIGIN, ...told, relay_urls, grant_keys: grantKeys(this.env), revocations, lock, workspaces: joined });
+    return JSON.stringify({ type: "state", peers, ...row, origin: this.env.PUBLIC_ORIGIN, ...told, relay_urls, stillfail_relays, grant_keys: grantKeys(this.env), revocations, lock, workspaces: joined });
   }
 
   #offline(station: string): void {
