@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.47 | 65.05 | 100.12 | 112.15 |
 | [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 2.46 | 3.45 | 14.74 | 35.92 | 57.72 | 31.47 | 65.05 | 100.12 | 126.74 |
 | [485803ed9](https://github.com/AFK-surf/monoid/commit/485803ed97c4025c4419ed54860410635e6cdcbc) core, app: fold consecutive identical failure noti | 2.46 | 3.45 | 14.68 | 35.89 | 57.44 | 31.47 | 65.05 | 100.12 | 117.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.07 | 63.6 | 99.78 | 109.34 |
 | [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 121.84 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 119.43 |
-| [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 2.43 | 3.39 | 14.44 | 35.54 | 56.39 | 31.07 | 63.6 | 99.78 | 115.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [485803ed9](https://github.com/AFK-surf/monoid/commit/485803ed97c4025c4419ed54860410635e6cdcbc) core, app: fold consecutive identical failure noti | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
-| [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
