@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.65 | 118.23 |
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.68 | 123.41 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 119.09 |
 | [f8375af62](https://github.com/AFK-surf/monoid/commit/f8375af62631893867e733dc158ffeef7dee247c) mac: the app's terminal stub compiled again where  | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 119.01 |
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 2.12 | 2.95 | 12.72 | 33.79 | 50.29 | 29.19 | 57.93 | 99.35 | 111.54 |
-| [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 2.12 | 2.95 | 12.72 | 33.78 | 50.28 | 29.15 | 57.72 | 99.71 | 117.57 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.41 |
 | [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
 | [99080b0a8](https://github.com/AFK-surf/monoid/commit/99080b0a84f016e8be1554e8b8e4537c0b369e3e) app: unify execution history fold/expand and align | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7574a2a49](https://github.com/AFK-surf/monoid/commit/7574a2a49e0db019a910b3084e7db99aaeb99492) ci: mbui-size's measures uploaded continue-on-erro | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [f8375af62](https://github.com/AFK-surf/monoid/commit/f8375af62631893867e733dc158ffeef7dee247c) mac: the app's terminal stub compiled again where  | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
 | [bb437c67c](https://github.com/AFK-surf/monoid/commit/bb437c67c8db96273a097ec999014f66032bfbcb) base: Reply::tap, tap.opus, forget on closes, a sh | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
-| [1923a7666](https://github.com/AFK-surf/monoid/commit/1923a766606f1d35b0d4b6030bc3217a30ec4a34) fix(mbui): improve Windows ClearType rendering and | 0.41 | 0.53 | 1.99 | 3.1 | 4.58 | 1.47 | 3.83 | 57.08 |
