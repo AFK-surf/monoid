@@ -561,21 +561,36 @@ pub let touch_found : Found = {
 /// at the system's size of words `scale`: by as much as its words' lines are higher there than at the default size, or
 /// than the least its lines are (first_least, second_least) where that is more; none at the default size.
 pub fn found_grown(f : Found, scale : Double, two~ : Bool) -> Double {
-  let line = fn(style : @ui.TextStyle, at : Double) {
-    let look = @ui.style_words(style)
-    if look.line < 0.0 {
-      -look.line * @ui.sp_at(at, look.size)
-    } else {
-      @ui.sp_at(at, look.line)
-    }
-  }
   let grown = fn(style : @ui.TextStyle, least : Double) {
-    dmax(0.0, line(style, scale) - dmax(least, line(style, 1.0)))
+    dmax(0.0, found_words_line(style, scale) - dmax(least, found_words_line(style, 1.0)))
   }
   if two {
     grown(f.title, f.first_least) + grown(f.under, f.second_least)
   } else {
     grown(f.head_words, 0.0)
+  }
+}
+
+///|
+/// How high a line of words in `style` is at the system's size of words `scale`.
+fn found_words_line(style : @ui.TextStyle, scale : Double) -> Double {
+  let look = @ui.style_words(style)
+  if look.line < 0.0 {
+    -look.line * @ui.sp_at(scale, look.size)
+  } else {
+    @ui.sp_at(scale, look.line)
+  }
+}
+
+///|
+/// How high a found line of two's mark is at the system's size of words `scale`, so it stands across the middle of
+/// the first line as that line grows with its words (its least, first_least, at the default size); none where its
+/// first line says no least (its mark as the theme has it).
+pub fn found_mark_h(f : Found, scale : Double) -> Double {
+  if f.first_least <= 0.0 {
+    0.0
+  } else {
+    dmax(f.first_least, found_words_line(f.title, scale))
   }
 }
 

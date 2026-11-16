@@ -679,13 +679,16 @@ fn found_line(
       Chat(ch) => ch.found is Some(_)
       _ => false
     })
+  // (a line of two: its mark as high as its first line, on its middle however large its words, @sf.found_mark_h)
+  let mark_h = if two { @sf.found_mark_h(f, @ui.font_scale()) } else { 0.0 }
+  let mark_look = if mark_h > 0.0 { f.mark.then(@ui.style(min_h=Fixed(mark_h))) } else { f.mark }
   let mark = fn(icon : String) {
-    c.box(style=f.mark, fn() { @sf.icon(c, icon, size=f.icon, color=t.p.muted) |> ignore }) |> ignore
+    c.box(style=mark_look, fn() { @sf.icon(c, icon, size=f.icon, color=t.p.muted) |> ignore }) |> ignore
   }
   // a chat's picture (ChatPicture): its first agent's maker's mark
   let picture = fn(item : ChatItem) {
     match item.agents.get(0) {
-      Some(a) => c.box(style=f.mark, fn() { @sf.maker_mark(c, a.maker, a.runtime, f.logo) |> ignore }) |> ignore
+      Some(a) => c.box(style=mark_look, fn() { @sf.maker_mark(c, a.maker, a.runtime, f.logo) |> ignore }) |> ignore
       None => mark("chat")
     }
   }
@@ -760,7 +763,7 @@ fn found_line(
       }
       Item(it) => {
         if it.kind == "station" {
-          c.box(style=f.mark, fn() {
+          c.box(style=mark_look, fn() {
             @sf.station_mark(c, it.station_emoji, it.station_icon, f.icon, t.p.muted, none="server")
           })
           |> ignore
