@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.7 | 113.72 |
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.8 | 120 |
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 2.42 | 3.35 | 14.22 | 35.34 | 55.45 | 30 | 60.29 | 99.44 | 118.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.6 | 116.04 |
 | [c1b4c36f8](https://github.com/AFK-surf/monoid/commit/c1b4c36f81b511fae126c5f28d66373451cf6f43) mbui: a card's piece changes height on its way; th | 2.14 | 2.98 | 12.9 | 34 | 51.1 | 29.82 | 59.67 | 99.6 | 116.04 |
 | [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 2.14 | 2.98 | 12.89 | 34 | 51.08 | 29.82 | 59.67 | 99.53 | 114.51 |
-| [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.53 | 116.18 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
 | [9bbec280e](https://github.com/AFK-surf/monoid/commit/9bbec280e596425dfd9831a6a0e05736dd1a0c03) fix(mbui): use linear gamma with 6x1 ClearType and | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
 | [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.61 |
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7e846be5b](https://github.com/AFK-surf/monoid/commit/7e846be5b6da2f43a6c4a7d1c10ef0e627d83908) docs: notes for stable 0.1.9229 (#6535) | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
 | [c1b4c36f8](https://github.com/AFK-surf/monoid/commit/c1b4c36f81b511fae126c5f28d66373451cf6f43) mbui: a card's piece changes height on its way; th | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.43 |
 | [21cd703cd](https://github.com/AFK-surf/monoid/commit/21cd703cdd40f5a81abd4768db561bf872f2d4d5) mbui: 预览器的音视频播放器改为节点（@sf.player_node，old-island 39 | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.43 |
-| [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
