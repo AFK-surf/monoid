@@ -833,13 +833,15 @@ async fn Door::take(self : Door, incoming : Incoming) -> Unit {
       write_line(control.out, { "ok": true })
     })))),
   )
-  // Its streams: each a request, or a duplex.
-  while true {
-    let said = attempt(() => incoming.shell.call("conn.acceptBi", { "id": incoming.conn }))
-    guard said is Did({ json: { "id": id, .. }, .. }) else { return }
-    let inbound = inbound_of({ shell: incoming.shell, id }, None)
-    ignore(self.net.rt.fork(() => ignore(attempt(() => self.serve(inbound)))))
+  // Its streams: each a request, or a duplex; taken by two askers side by side, as a door's workers take them.
+  let taking = () => {
+    while true {
+      guard attempt(() => incoming.accept()) is Did(Some(inbound)) else { return }
+      ignore(self.net.rt.fork(() => ignore(attempt(() => self.serve(inbound)))))
+    }
   }
+  ignore(self.net.rt.fork(taking))
+  taking()
 }
 
 ///|
@@ -897,11 +899,9 @@ async fn Door::serve(self : Door, inbound : Inbound) -> Unit {
 ///|
 /// The peer opens a stream on its connection `conn` (one it let in) and sends `bytes` on it, finished.
 async fn push(conn : Incoming, bytes : Bytes) -> Unit {
-  let said = conn.shell.call("conn.openBi", { "id": conn.conn })
-  guard said.json is { "id": id, .. } else { fail("no stream") }
-  let stream : Stream = { shell: conn.shell, id }
-  stream.write(bytes)
-  stream.finish()
+  let opened = conn.open()
+  opened.out.write(bytes)
+  opened.out.finish()
 }
 
 // ── the two meshes ──
@@ -1174,6 +1174,64 @@ test "sim: requests, a body told of as it goes, a duplex, a reply handed to the 
   assert_true(physical_equal(world.client.current(world.server.device_id(), scope="b").unwrap(), b))
   // Held now at each shell: the endpoint, scope b's connection, its control stream; every request's stream and
   // every connection that ended let go of already. Both closed, nothing is left behind at either.
+  assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
+  assert_eq(world.close_all(), (0, 0))
+}
+
+///|
+test "sim: one connection a peer dialled carries many streams at once both ways: requests side by side taken by the door's askers side by side, streams the door opens taken by the device's, an asker given up losing none, and nothing left behind" {
+  let world = World::new(net => ignore(net.relay(sim_r1, ms=10)))
+  let net = world.net
+  let door = world.door
+  let a = world.link()
+  net.pass(1_000)
+  let a = given(a)
+  // Six requests at once, each its own stream on the one connection: each answered its own.
+  for i in 0..<6 {
+    door.replies["/n\{i}"] = (200, @utf8.encode("r\{i}"))
+  }
+  let asked = Array::makei(6, i => net.go(() => @utf8.decode(a.request("GET", "/n\{i}").rest())))
+  net.pass(1_000)
+  assert_eq(asked.map(f => given(f)), ["r0", "r1", "r2", "r3", "r4", "r5"])
+  let served = door.asked.copy()
+  served.sort()
+  assert_eq(served, ["GET /n0 0", "GET /n1 0", "GET /n2 0", "GET /n3 0", "GET /n4 0", "GET /n5 0"])
+  // An asker of the door's that gives up while it waits loses none: the next request is still served.
+  let gave_up = net.go(() => door.conns[0].accept())
+  gave_up.interrupt()
+  net.pass(10)
+  let after = net.go(() => @utf8.decode(a.request("GET", "/n0").rest()))
+  net.pass(1_000)
+  assert_eq((ended_as(gave_up), given(after)), ("interrupted", "r0"))
+  // Three streams the door opens at once, each written and finished, and answered back read to its end: taken by
+  // three askers of the device's side by side, each its own.
+  let taken = Array::makei(3, _ => net.go(() => {
+    let inbound = a.accept().unwrap()
+    let carry = @wire.Carry::new()
+    while inbound.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    let got = @utf8.decode(carry.take())
+    inbound.out.write(@utf8.encode("got " + got))
+    inbound.out.finish()
+    got
+  }))
+  let pushed = Array::makei(3, i => net.go(() => {
+    let opened = door.conns[0].open()
+    opened.out.write(@utf8.encode("p\{i}"))
+    opened.out.finish()
+    let carry = @wire.Carry::new()
+    while opened.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    @utf8.decode(carry.take())
+  }))
+  net.pass(1_000)
+  let got = taken.map(f => given(f))
+  got.sort()
+  assert_eq(got, ["p0", "p1", "p2"])
+  assert_eq(pushed.map(f => given(f)), ["got p0", "got p1", "got p2"])
+  // Every stream let go of at both shells: the endpoint, the connection and its control stream held at each.
   assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
   assert_eq(world.close_all(), (0, 0))
 }

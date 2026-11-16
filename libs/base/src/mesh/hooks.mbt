@@ -1,5 +1,6 @@
 // What a program asks of the mesh beside its links: the way a slow read is asked on as well and when, a read's
-// time counted as a ping (`standby`, `hedgeAfter`, `outran`); what it says signed with the device key (`sign`);
+// time counted as a ping (`standby`, `hedgeAfter`, `outran`); what it says signed with the device key (`sign`), and
+// a signature checked (`verify`, which that mesh leaves to its program);
 // whether a view's sound may be asked as Opus (`decodesOpus`); and the device key taken over (`migrate`): as the
 // TypeScript mesh does them (client/core-ts/src/mesh.ts).
 
@@ -75,6 +76,26 @@ pub fn Mesh::sign(self : Mesh, message : Bytes) -> (Bytes, Bytes) {
       ed25519_sign(self.secret, message)
     }
     _ => ed25519_sign(self.secret, message)
+  }
+}
+
+///|
+/// Whether `signature` (64 bytes) is the Ed25519 key `public_key`'s (32 bytes) over `message`: by the shell where it
+/// checks (`crypto.verify`, the Rust shell's), else here (`ed25519_verify`), which says the same of every signature.
+/// Never fails: what is no signature is false.
+pub fn Mesh::verify(self : Mesh, public_key : Bytes, message : Bytes, signature : Bytes) -> Bool {
+  let asked = self.shell.ask("crypto.verify", {
+    "alg": "Ed25519",
+    "key": Json::string(hex_bytes(public_key)),
+    "signature": Json::string(hex_bytes(signature)),
+    "message": Json::string(hex_bytes(message)),
+  }) catch {
+    _ => Json::null()
+  }
+  match asked {
+    True => true
+    False => false
+    _ => ed25519_verify(public_key, message, signature)
   }
 }
 

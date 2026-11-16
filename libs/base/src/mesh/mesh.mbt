@@ -890,8 +890,7 @@ async fn Mesh::open(
         tailnet: [],
         pin,
         fibers: self.scope,
-        accepts: @effect.Semaphore::new(1),
-        coming: None,
+        accepting: Accepting::new(),
       }
       link
     },

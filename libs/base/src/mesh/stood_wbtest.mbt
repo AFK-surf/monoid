@@ -42,6 +42,7 @@
 //                                          stood.tx[2] what went out; stood.paths_of[2] its ways (`conn.paths`).
 //   stood.dht = Some({"lines": …})        what the shell's DHT says once (`dht.said`), then nothing; none: no op.
 //   stood.signs = Some({…}), stood.opus   what `ed25519.sign` and `tap.opus` answer; none: the shell has no such op.
+//   stood.verifies = Some(true)           what `crypto.verify` answers (asked in `verify_asks`); none: no such op.
 //   stood.on_relay = false                the endpoint is on no relay yet (`iroh.relayStatus`): an opening's time
 //                                          is not counted until it is.
 //   stood.holding = "iroh.bind" … stood.bound()        an endpoint bound again is the test's to answer: the next
@@ -117,6 +118,9 @@ priv struct Stood {
   mut signs : Json?
   sign_asks : Array[String]
   mut opus : Bool?
+  /// What the shell answers `crypto.verify` (none: it has no such op) and what it was asked.
+  mut verifies : Json?
+  verify_asks : Array[String]
   /// The endpoints closed (`iroh.close`).
   unbound : Map[Int, Unit]
   /// What each bind was asked with, where each dial was told its peer is, and the entries told, as written.
@@ -167,6 +171,8 @@ fn Stood::new() -> Stood {
     signs: None,
     sign_asks: [],
     opus: None,
+    verifies: None,
+    verify_asks: [],
     unbound: Map([]),
     binds: [],
     addrs: [],
@@ -279,6 +285,11 @@ fn Stood::new() -> Stood {
         "ed25519.sign" => {
           guard stood.signs is Some(answer) else { raise @shell.ShellError("the stood-in shell has no ed25519.sign") }
           stood.sign_asks.push(args.stringify())
+          answer
+        }
+        "crypto.verify" => {
+          guard stood.verifies is Some(answer) else { raise @shell.ShellError("the stood-in shell has no crypto.verify") }
+          stood.verify_asks.push(args.stringify())
           answer
         }
         "tap.opus" => {

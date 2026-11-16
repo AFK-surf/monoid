@@ -221,10 +221,8 @@ pub struct Link {
   priv pin : String?
   /// The mesh's fibers: where the wait for a stream the peer opens runs (`Link::accept`).
   priv fibers : @effect.Scope
-  /// One asks for the next stream the peer opens at a time; and the shell's answer to the wait under way, kept
-  /// until someone takes it (none: no wait is under way).
-  priv accepts : @effect.Semaphore
-  priv mut coming : @effect.Deferred[Json?]?
+  /// The waits for the streams the peer opens (`Link::accept`).
+  priv accepting : Accepting
 }
 
 ///|
@@ -537,17 +535,23 @@ async fn Link::sent(self : Link, head : String, body : Bytes, finish : Bool, wro
 }
 
 ///|
-/// A stream opened on the link. The shell's wait for it (`conn.openBi`) is a fiber of the mesh's, not the asker's:
-/// the shell opens it whoever waits, so for an asker gone meanwhile the stream that comes is reset there, and none
-/// is left open for nobody. Whoever waits for it waits for the link's end beside it (which the close says of every
-/// link: that fiber, cut before its first step, says nothing).
+/// A stream opened on the link (`open_on`).
 async fn Link::stream(self : Link) -> Stream {
+  open_on(self.shell, self.conn, self.fibers, self.gone)
+}
+
+///|
+/// A stream opened on the connection `conn`, whose end `gone` says. The shell's wait for it (`conn.openBi`) is a
+/// fiber of `fibers` (the mesh's), not the asker's: the shell opens it whoever waits, so for an asker gone meanwhile
+/// the stream that comes is reset there, and none is left open for nobody. Whoever waits for it waits for the
+/// connection's end beside it (which the mesh's close says of every connection: that fiber, cut before its first
+/// step, says nothing).
+async fn open_on(shell : @shell.Shell, conn : Json, fibers : @effect.Scope, gone : @effect.Deferred[Closed]) -> Stream {
   let coming : @effect.Deferred[Json] = @effect.Deferred::new()
   let wanted = Ref(true)
-  let shell = self.shell
   ignore(
-    self.fibers.fork(name="mesh stream", () => {
-      let opened = attempt(() => shell.call("conn.openBi", { "id": self.conn }))
+    fibers.fork(name="mesh stream", () => {
+      let opened = attempt(() => shell.call("conn.openBi", { "id": conn }))
       match opened {
         Did({ json: { "id": id, .. }, .. }) =>
           if wanted.val {
@@ -572,7 +576,7 @@ async fn Link::stream(self : Link) -> Stream {
     }
   }
   let id = @effect.race_first(() => coming.wait(), () => {
-    let why = self.gone.wait()
+    let why = gone.wait()
     raise MeshError(code="mesh", message=say("cut"), cause="connection closed: \{why.reason}")
   })
   taken.val = true
@@ -754,47 +758,89 @@ fn Inbound::let_go(self : Inbound, broke : Bool) -> Unit {
 }
 
 ///|
-/// The next stream the peer opens on the link; None once the connection ended, or the mesh closed. One asker at a
-/// time: another waits its turn.
-///
-/// The shell's wait for it (`conn.acceptBi`) is a fiber of the mesh's, not the asker's, and one is under way at
-/// most: an asker that gives up loses nothing, and the stream that wait brings is the next asker's. With nobody
-/// asking again it is kept at the shell until the connection ends, as every stream of it is.
+/// The next stream the peer opens on the link; None once the connection ended, or the mesh closed (`accept_on`).
 pub async fn Link::accept(self : Link) -> Inbound? {
-  self.accepts.with_permit(() => {
+  accept_on(self.shell, self.conn, self.fibers, self.gone, self.accepting)
+}
+
+///|
+/// The waits for the streams a peer opens on one connection: one asks at a time (`lock`), and the shell's answer to
+/// the wait under way is kept until someone takes it (none: no wait is under way).
+priv struct Accepting {
+  lock : @effect.Semaphore
+  mut coming : @effect.Deferred[Json?]?
+}
+
+///|
+fn Accepting::new() -> Accepting {
+  { lock: @effect.Semaphore::new(1), coming: None }
+}
+
+///|
+/// As the connection's end is told: a stream the wait brought that nobody took is reset, and the wait let go of. A
+/// wait still out is left to its fiber, which resets what it brings once the connection ended (`accept_on`).
+fn Accepting::drop_kept(self : Accepting, shell : @shell.Shell) -> Unit {
+  guard self.coming is Some(coming) else { return }
+  let kept : Json?? = coming.poll() catch { _ => None }
+  guard kept is Some(came) else { return }
+  self.coming = None
+  if came is Some(id) {
+    shell.tell("istream.reset", { "id": id, "code": 0 })
+  }
+}
+
+///|
+/// The next stream the peer opens on the connection `conn`, whose end `gone` says; None once it ended, or the mesh
+/// closed. One asker at a time: another waits its turn.
+///
+/// The shell's wait for it (`conn.acceptBi`) is a fiber of `fibers` (the mesh's), not the asker's, and one is under
+/// way at most: an asker that gives up loses nothing, and the stream that wait brings is the next asker's. With
+/// nobody asking again it is kept at the shell until the connection ends, as every stream of it is; one that comes
+/// after the end was told is reset there.
+async fn accept_on(
+  shell : @shell.Shell,
+  conn : Json,
+  fibers : @effect.Scope,
+  gone : @effect.Deferred[Closed],
+  accepting : Accepting,
+) -> Inbound? {
+  accepting.lock.with_permit(() => {
     // (ended, and the mesh told so: the shell is asked nothing of its connection after)
-    guard self.ended_as_told() is None else { return None }
-    let coming = match self.coming {
+    guard !gone.is_done() else { return None }
+    let coming = match accepting.coming {
       Some(coming) => coming
       None => {
         let coming : @effect.Deferred[Json?] = @effect.Deferred::new()
-        self.coming = Some(coming)
+        accepting.coming = Some(coming)
         // (cut as the mesh closes, before its first step even, it says nothing: whoever waits below is told by
-        // the link's end, which the close says of every link)
+        // the connection's end, which the close says of every one)
         ignore(
-          self.fibers.fork(name="mesh accept", () => {
-            let said = attempt(() => self.shell.call("conn.acceptBi", { "id": self.conn }))
-            ignore(
-              coming.succeed(
-                match said {
-                  Did({ json: { "id": id, .. }, .. }) => Some(id)
-                  _ => None
-                },
-              ),
-            )
+          fibers.fork(name="mesh accept", () => {
+            let said = attempt(() => shell.call("conn.acceptBi", { "id": conn }))
+            let came = match said {
+              Did({ json: { "id": id, .. }, .. }) =>
+                if gone.is_done() {
+                  shell.tell("istream.reset", { "id": id, "code": 0 })
+                  None
+                } else {
+                  Some(id)
+                }
+              _ => None
+            }
+            ignore(coming.succeed(came))
           }),
         )
         coming
       }
     }
     let next = @effect.race_first(() => coming.wait(), () => {
-      ignore(self.gone.wait())
+      ignore(gone.wait())
       None
     })
     guard next is Some(id) else { return None }
     // (taken: the next asker's wait is another)
-    self.coming = None
-    Some(inbound_of({ shell: self.shell, id }, None))
+    accepting.coming = None
+    Some(inbound_of({ shell, id }, None))
   })
 }
 
