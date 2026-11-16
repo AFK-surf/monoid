@@ -85,8 +85,9 @@ priv struct ScreenSess {
   /// 控制 (true) or 只看 as the person chose; None until they do: the core opens it in 只看 while someone else (an
   /// agent at work) drives it, else in 控制, so opening a screen never takes it from whoever is on it
   mut wants_control : Bool?
-  /// a finger drives it as a trackpad (true) or directly, as chosen here before the prefs say
-  mut pad_set : Bool?
+  /// a finger drives it as a trackpad (true) or directly, as chosen here before the prefs say: a signal, so what reads
+  /// how a finger drives it (the pointer drawn over the picture, 控制中心's tile) is built again in the press's frame
+  pad_set : @signals.Signal[Bool?]
   /// the stage it is laid out for (its width and height, and this device's pixels to a point), on a phone or a tablet:
   /// a page of the station's browser is laid out as this device's own browser would; None: as it is
   mut fit : (Double, Double, Double)?
@@ -192,7 +193,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         size: None,
         shown_any: false,
         wants_control: None,
-        pad_set: None,
+        pad_set: @signals.signal(None),
         fit: None,
         call: 0,
         acked: -1.0,
@@ -639,7 +640,7 @@ fn ScreenSess::simulator(self : ScreenSess) -> Bool {
 /// where it is): as chosen here, else directly on a simulator (a touchscreen) or a page laid out for this device (`fit`:
 /// a tap is where it is, as in the device's own browser), else as this device keeps it (`prefs.screenTouch`).
 fn ScreenSess::pad(self : ScreenSess, src : Source) -> Bool {
-  match self.pad_set {
+  match self.pad_set.get() {
     Some(on) => on
     None if self.simulator() => false
     None if self.fit is Some(_) && text(self.state, "kind") == "browser" => false
@@ -870,7 +871,7 @@ fn ScreenSess::choose_pad(
   on : Bool,
   done : (Result[Json, Json]) -> Unit,
 ) -> Unit {
-  self.pad_set = Some(on)
+  self.pad_set.set(Some(on))
   let v = if on { Json::null() } else { Json::string("direct") }
   (src.call)("prefs.set", Json::object({ "screenTouch": v }), done)
 }

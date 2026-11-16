@@ -286,34 +286,38 @@ fn screen_stage(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, key : String, pair? :
           |> ignore
         } else {
           // drawn over the frame at its own size, however zoomed: where the trackpad has it, else where the station says
-          // (on the picture's layer where it is there: screen_pointer_layer)
+          // (on the picture's layer where it is there: screen_pointer_layer); the trackpad's pointer and the station's
+          // two of their own, each where its own says, so the one put in the other's place as the trackpad is chosen or
+          // left is that one coming, never the other moving there
           match pointer_now(s, u) {
             Some((ax, ay)) if on_layer is None =>
-              c.layer(fn() {
-                // in the station's shape, its hot spot where it points (the trackpad's, hidden there, an arrow)
-                let shape = match pointer_shape(s) {
-                  "none" => "default"
-                  sh => sh
-                }
-                let (hx, hy) = @sf.pointer_hotspot(shape)
-                c.box(
-                  tx=shown.x + ax * shown.w - hx,
-                  ty=shown.y + ay * shown.h - hy,
-                  fn() {
-                    c.image(
-                      @sf.pointer_image(c, shape~),
-                      w=Px(@sf.pointer_size),
-                      h=Px(@sf.pointer_size),
-                      fit=FitFill,
-                      bg=0L,
-                      fade=false,
-                    )
-                    |> ignore
-                  },
-                )
+              c.scope(if pad_points(s, u) { 1 } else { 0 }, fn() {
+                c.layer(fn() {
+                  // in the station's shape, its hot spot where it points (the trackpad's, hidden there, an arrow)
+                  let shape = match pointer_shape(s) {
+                    "none" => "default"
+                    sh => sh
+                  }
+                  let (hx, hy) = @sf.pointer_hotspot(shape)
+                  c.box(
+                    tx=shown.x + ax * shown.w - hx,
+                    ty=shown.y + ay * shown.h - hy,
+                    fn() {
+                      c.image(
+                        @sf.pointer_image(c, shape~),
+                        w=Px(@sf.pointer_size),
+                        h=Px(@sf.pointer_size),
+                        fit=FitFill,
+                        bg=0L,
+                        fade=false,
+                      )
+                      |> ignore
+                    },
+                  )
+                  |> ignore
+                })
                 |> ignore
               })
-              |> ignore
             _ => ()
           }
         }

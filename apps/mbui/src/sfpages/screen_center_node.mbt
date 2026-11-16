@@ -114,22 +114,20 @@ fn center_node(
               )
             "pad" =>
               {
-                // (lit as it is chosen: what is chosen is told the core after this press, ScreenSess::choose_pad)
-                let chose = @signals.signal(0)
+                // (lit as it is chosen, by ScreenSess::pad_set: what is chosen is told the core after this press,
+                // ScreenSess::choose_pad)
                 quick_tile_node(
                   row,
                   fn() { @sf.t("android-misc.screen.trackpad") },
                   fn() { "trackpad" },
                   fn() {
-                    chose.get() |> ignore
                     state() |> ignore
                     s.pad(src)
                   },
                   fn() {
                     let on = !s.pad(src)
-                    s.pad_set = Some(on)
+                    s.pad_set.set(Some(on))
                     pad_chosen(c, s, u, on)
-                    chose.set(chose.untracked() + 1)
                   },
                 )
               }
