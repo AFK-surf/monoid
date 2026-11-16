@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 2.47 | 3.45 | 14.76 | 35.95 | 57.87 | 31.5 | 65.24 | 95.57 | 126.45 |
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 2.46 | 3.45 | 14.75 | 35.94 | 57.77 | 31.5 | 65.24 | 95.57 | 113.84 |
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
 | [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 100.11 | 116.99 |
 | [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 99.98 | 121.57 |
-| [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.07 | 63.6 | 99.78 | 109.34 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
-| [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
