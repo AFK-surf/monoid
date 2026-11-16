@@ -260,7 +260,7 @@ export const RigMeshLive = Layer.effectDiscard(
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)
-        arrived: (conn) => { if (!conn.alpn().equals(PEER_HTTP_ALPN)) call.arrived(conn); },
+        arrived: (conn) => call.arrived(conn),
         serve: (conn) =>
           conn.alpn().equals(PEER_HTTP_ALPN)
             ? serveHttp(conn, cloud, {

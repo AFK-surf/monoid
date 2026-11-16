@@ -240,7 +240,7 @@ export const MeshLive = Layer.effectDiscard(
           storms.watch(conn);
           if (conn.alpn().equals(ALPN)) void superseded.arrived(conn);
           // (another station: what this one keeps to it, from before it started again, asked whether it is still there)
-          else if (conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN)) call.arrived(conn);
+          else if (conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) || conn.alpn().equals(PEER_HTTP_ALPN)) call.arrived(conn);
         },
         serve: (conn) =>
           conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) ? servePeer(conn, cloud.state, peers)
