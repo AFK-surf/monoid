@@ -3,7 +3,6 @@
 // build makes again is removed from its own directory, and the rest of its workspace and the transcripts its runtime
 // keeps in station storage are packed (archive.ts); they are restored before its runtime starts again, or when it is
 // shown again. The hub calls it (ColdStorage) from the session's queue, so no turn starts halfway through.
-import { existsSync, statSync } from "node:fs";
 import { access, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -22,18 +21,46 @@ import type { Located } from "./live.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
 import type { SessionRow } from "../store/rows.ts";
 
-/// Links followed, never into a folder macOS protects (a session continued there, a job's directory: ops/places.ts).
-/// Each path is kept for 15 minutes so repeated archive rounds do not follow the same folders on the station's thread.
+/// Links followed off the station's thread, never into a folder macOS protects (a session continued there, a job's
+/// directory: ops/places.ts). Each path is kept for 15 minutes so repeated archive rounds do not follow the same
+/// folders again; one followed already is not followed again by a second asker meanwhile.
 const followed = new Map<string, { at: number; real: string | null }>();
+const following = new Map<string, Promise<string | null>>();
 const FOLLOWED_MS = 15 * 60_000;
-const canonical = (path: string): string | null => {
-  const now = wall.now();
+const canonical = (path: string): Promise<string | null> => {
   const kept = followed.get(path);
-  if (kept !== undefined && now - kept.at < FOLLOWED_MS) return kept.real;
-  const real = realOutside(path);
-  followed.set(path, { at: now, real });
-  if (followed.size > 1024) followed.delete(followed.keys().next().value!);
-  return real;
+  if (kept !== undefined && wall.now() - kept.at < FOLLOWED_MS) return Promise.resolve(kept.real);
+  const going = following.get(path);
+  if (going) return going;
+  const follow = realOutside(path)
+    .then(
+      (real) => {
+        followed.delete(path);
+        followed.set(path, { at: wall.now(), real });
+        if (followed.size > 1024) followed.delete(followed.keys().next().value!);
+        return real;
+      },
+      // (a link changed as it was followed: not kept, so it is still taken to be in use, and followed again next time)
+      () => null,
+    )
+    .finally(() => following.delete(path));
+  following.set(path, follow);
+  return follow;
+};
+
+/// `path` as last followed, whatever its age (`archiveRoom` is asked again before each piece packed, so it follows
+/// nothing itself: its work follows first, `followInUse`); undefined when it never was, and it is followed in the
+/// background for the next ask.
+const followedNow = (path: string): string | null | undefined => {
+  const kept = followed.get(path);
+  if (kept === undefined || wall.now() - kept.at >= FOLLOWED_MS) void canonical(path);
+  return kept?.real;
+};
+
+/// Whether `path`, followed, is in `dir`; one not followed yet is taken to be (its work waits for the next round).
+const inRoom = (path: string, dir: string): boolean => {
+  const real = followedNow(path);
+  return real === undefined || (real !== null && within(real, dir));
 };
 
 /// Each session's own directory as last found (`roomOfSoon`, off the thread): `archiveRoom` is asked again before each
@@ -64,10 +91,23 @@ export class ColdRooms implements ColdStorage {
     return this.hub().config().dataDir;
   }
 
-  /// Its session's own directory found off the thread, for `archiveRoom` to ask again and again.
+  /// Its session's own directory found off the thread, and the directories of what is in use followed, for
+  /// `archiveRoom` to ask again and again.
   private async findRoom(key: string): Promise<void> {
     const row = this.hub().store.getSession(key);
     if (row) await findRoom(this.dataDir(), row.workspace);
+    await this.followInUse();
+  }
+
+  /// The directories of the sessions in use and the active jobs, followed (off the thread) for `archiveRoom`.
+  private async followInUse(): Promise<void> {
+    const store = this.hub().store;
+    const paths = new Set<string>();
+    for (const s of store.sessionsInUse()) for (const path of [s.workspace, s.cwd ?? s.workspace]) paths.add(path);
+    try {
+      for (const job of store.jobsUp()) paths.add(job.cwd);
+    } catch {}
+    await Promise.all([...paths].map(canonical));
   }
 
   /// An archived session's own directory, while nothing needs it: not back in the lists or at work, and no other
@@ -84,10 +124,7 @@ export class ColdRooms implements ColdStorage {
       .some(
         (s) =>
           s.key !== key &&
-          [s.workspace, s.cwd ?? s.workspace].some((path) => {
-            const cwd = canonical(path);
-            return cwd !== null && within(cwd, dir);
-          }),
+          [s.workspace, s.cwd ?? s.workspace].some((path) => inRoom(path, dir)),
       );
     if (shared || this.hasJobs(key, dir)) return null;
     return dir;
@@ -101,10 +138,7 @@ export class ColdRooms implements ColdStorage {
     } catch {
       return true;
     }
-    return jobs.some((job) => {
-      const cwd = canonical(job.cwd);
-      return job.sessionKey === key || (cwd !== null && within(cwd, dir));
-    });
+    return jobs.some((job) => job.sessionKey === key || inRoom(job.cwd, dir));
   }
 
   /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from

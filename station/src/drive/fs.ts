@@ -1,10 +1,11 @@
 // How the drive (drive.ts) reaches the machine's files: directly, or, for the folders macOS keeps from a station launchd
 // runs, through still.fail Helper (helper/files.ts), which holds the grants. The same few operations either way, on
 // paths the drive has already checked (the helper checks them again against the roots it is told).
-import { constants, createReadStream, lstatSync } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { type FileHandle, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
 import { toTrash } from "./trash.ts";
 
@@ -153,8 +154,31 @@ export function protectedTop(path: string, home = homedir(), mounts = platform.m
 /// null for any other path. The drive reaches the first through the helper; a directory the station is to work in
 /// (ops/places.ts) is never looked at by the station's own thread in any of them. A disk is one by where it is mounted
 /// (`mounts`, the platform's), not by its path's name alone: opening one mounted elsewhere waits on macOS asking the
-/// person as one in /Volumes does.
-export function protectedPlace(path: string, home = homedir(), mounts = platform.mounts()): { top: string; helper: boolean } | null {
+/// person as one in /Volumes does. What is in /Volumes is a disk unless it is the system's own (a link to / there) or
+/// nothing: as last looked at off the thread (`volumes`), a disk while that is not known or may have changed
+/// (`protectedPlaceSoon` looks first).
+export function protectedPlace(path: string, home = homedir(), mounts = platform.mounts()): Where | null {
+  const named = byName(path, home, mounts);
+  return named !== null && "volume" in named ? volumeKept(named.volume) : named;
+}
+
+/// `protectedPlace`, what is in /Volumes looked at first (off the thread).
+export async function protectedPlaceSoon(path: string, home = homedir(), mounts = platform.mounts()): Promise<Where | null> {
+  const named = byName(path, home, mounts);
+  return named !== null && "volume" in named ? volumeAt(named.volume, await lookVolume(named.volume)) : named;
+}
+
+/// `protectedTop`, what is in /Volumes looked at first (off the thread).
+export async function protectedTopSoon(path: string, home = homedir(), mounts = platform.mounts()): Promise<string | null> {
+  const place = await protectedPlaceSoon(path, home, mounts);
+  return place?.helper ? place.top : null;
+}
+
+type Where = { top: string; helper: boolean };
+
+/// The protected folder `path` is in by its name alone, or the place in /Volumes it is in (`volume`), which only what
+/// is there says.
+function byName(path: string, home: string, mounts: string[]): Where | { volume: string } | null {
   const lower = path.toLowerCase();
   const under = (top: string) => lower === top.toLowerCase() || lower.startsWith(`${top.toLowerCase()}/`);
   for (const name of ["Documents", "Desktop", "Downloads"]) {
@@ -171,12 +195,44 @@ export function protectedPlace(path: string, home = homedir(), mounts = platform
   if (mount !== null) return { top: mount, helper: true };
   const disk = /^\/volumes\/([^/]+)/.exec(lower);
   if (disk === null) return null;
-  const top = `/Volumes/${path.split("/")[2]}`;
-  try {
-    return lstatSync(top).isSymbolicLink() ? null : { top, helper: true };
-  } catch {
-    return null;
-  }
+  return { volume: `/Volumes/${path.split("/")[2]}` };
+}
+
+/// What each place in /Volumes was when last looked at (lstat, off the thread), and when: a link (the system's own
+/// disk), a disk, or nothing. Kept for those named since; looked at again once `VOLUME_FRESH_MS` old.
+const volumes = new Map<string, { at: number; is: Volume }>();
+const lookingAt = new Map<string, Promise<Volume>>();
+type Volume = "link" | "disk" | "none";
+const VOLUME_FRESH_MS = 2_000;
+
+/// What is at `top` in /Volumes, looked at off the thread (one look at a time for a place).
+function lookVolume(top: string): Promise<Volume> {
+  const going = lookingAt.get(top);
+  if (going) return going;
+  const look = lstat(top)
+    .then((s): Volume => (s.isSymbolicLink() ? "link" : "disk"), (): Volume => "none")
+    .then((is) => {
+      volumes.delete(top);
+      volumes.set(top, { at: wall.now(), is });
+      if (volumes.size > 256) volumes.delete(volumes.keys().next().value!);
+      return is;
+    })
+    .finally(() => lookingAt.delete(top));
+  lookingAt.set(top, look);
+  return look;
+}
+
+const volumeAt = (top: string, is: Volume): Where | null => (is === "disk" ? { top, helper: true } : null);
+
+/// A place in /Volumes as last looked at, looked at again in the background when not known or no longer fresh: a disk
+/// until it is known not to be (one could have been mounted there since nothing was), so the station never steps into
+/// one; the system's own link stays one.
+function volumeKept(top: string): Where | null {
+  const kept = volumes.get(top);
+  const fresh = kept !== undefined && wall.now() - kept.at <= VOLUME_FRESH_MS;
+  if (!fresh) void lookVolume(top);
+  if (kept?.is === "link" || (fresh && kept.is === "none")) return null;
+  return { top, helper: true };
 }
 
 /// What still.fail Helper says of a protected folder: the grant that opens it, and whether macOS gave it (`unknown`:

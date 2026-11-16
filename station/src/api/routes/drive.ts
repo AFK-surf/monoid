@@ -67,8 +67,8 @@ const text = (v: unknown, name: string): string => {
 
 /// What GET /drive and the overview say: the folders pinned, what the viewer may do, and, for one who reaches every
 /// folder (`anywhere`), the home to start from.
-export const driveView = (drive: Drive, r: { viewer: Request["viewer"] }, home = homedir()) => ({
-  roots: driveOf(drive, r).roots(), manage: manages(r), write: !readOnly(r.viewer), ...(anywhere(r) ? { anywhere: true, home } : {}),
+export const driveView = async (drive: Drive, r: { viewer: Request["viewer"] }, home = homedir()) => ({
+  roots: await driveOf(drive, r).roots(), manage: manages(r), write: !readOnly(r.viewer), ...(anywhere(r) ? { anywhere: true, home } : {}),
   // What is deleted goes to the machine's trash (macOS, Linux); folders are watched for what changes in them, and zipped
   // to download.
   ...(platform.trash ? { trash: true } : {}), watch: true, ...(anywhere(r) ? { zip: true } : {}),

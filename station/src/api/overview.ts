@@ -39,7 +39,7 @@ export type OverviewDeps = {
   permissions?: (viewer: Viewer) => unknown;
   /// A pinned root as the drive shows it (drive.ts `rootViewThrough`: one in a folder macOS protects by what still.fail
   /// Helper's grant is known to be, never listed by the station); default `rootView`.
-  rootView?: (path: string) => RootView;
+  rootView?: (path: string) => Promise<RootView>;
 };
 
 /// This station's link to still.fail cloud, as the pages show it (server.rs MeshFile::status): in the viewer's workspace
@@ -197,7 +197,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     // Whether it sends its log to still.fail (routes/diagnostics.ts).
     diagnostics: diagnosticsView(raw),
     network: networkView(raw),
-    drive: { roots: rootsOf(raw, viewer.home === false ? viewer.workspace : null).map((p) => (d.rootView ?? rootView)(p)), ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) },
+    drive: { roots: await Promise.all(rootsOf(raw, viewer.home === false ? viewer.workspace : null).map((p) => (d.rootView ?? rootView)(p))), ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) },
     // What its search finds of the machine: its files through Spotlight (macOS) or walked as asked, and
     // whether the person's own mail, messages and the like too.
     search: { files: platform.hasSpotlight ? "spotlight" : "walk", personal: raw?.search?.personal === true },

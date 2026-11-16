@@ -5,7 +5,7 @@
 // in /Volumes or iCloud Drive makes macOS put up a prompt for its launcher and hold the call until someone answers:
 // the station's main thread can stop in `opendir`, leaving the whole station silent.
 //
-// On macOS a path is walked here link by link with lstat, never stepping into such a folder: what is outside them is
+// On macOS a path is walked here link by link with lstat (off the station's thread, as everything here), never stepping into such a folder: what is outside them is
 // looked at as before (there, a folder, listable); what is in one (by its name or through a link) is asked of still.fail
 // Helper (`files.stat`, a file copied with `files.read`), which holds the grants, or, where the helper has none for it
 // (iCloud Drive), there is no helper, or the station itself must read it (`self`: a task's folder it syncs), of a child
@@ -18,20 +18,22 @@
 // prompt for them; only the station's own looking is kept off its thread here.
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { lstat, mkdir, readlink, realpath, rm, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Fs, Grant } from "../drive/fs.ts";
-import { protectedPlace } from "../drive/fs.ts";
+import { protectedPlace, protectedPlaceSoon } from "../drive/fs.ts";
 import { platform } from "../platform/index.ts";
 import { type Lang, Said, tr } from "./i18n.ts";
-import { unreadableDir, unreadableDirMessage } from "./files.ts";
+import { unreadableDirAsync, unreadableDirMessage } from "./files.ts";
 import { log } from "./log.ts";
 
 /// How long the child process looking at a protected folder is given before it is killed.
 export const TIMEOUT_MS = 5_000;
 
 type Where = { top: string; helper: boolean };
+/// The protected folder a path is (or is under), null for any other (drive/fs.ts `protectedPlaceSoon`).
+type Locked = (p: string) => Where | null | Promise<Where | null>;
 /// What a look found: a folder the station may use (`real`: its links followed), or why not; `protected`: the walk
 /// stopped at a folder macOS protects (`path`, links followed up to it), to be looked at elsewhere.
 export type Look =
@@ -95,23 +97,23 @@ try {
 const parts = (path: string) => path.split("/").filter((p) => p !== "" && p !== ".");
 const joined = (p: string[]) => `/${p.join("/")}`;
 
-/// `path` walked link by link as the file system follows it, each step looked at with lstat on this thread, but none
-/// at or under a folder `locked` names: there the walk stops (`protected`). At the end, being outside them all, it is
-/// stated and listed (as `unreadableDir`).
-export function walk(path: string, locked: (p: string) => Where | null): Look {
-  const found = follow(path, locked);
+/// `path` walked link by link as the file system follows it, each step looked at with lstat (off the station's thread),
+/// but none at or under a folder `locked` names: there the walk stops (`protected`). At the end, being outside them
+/// all, it is stated and listed (as `unreadableDirAsync`).
+export async function walk(path: string, locked: Locked): Promise<Look> {
+  const found = await follow(path, locked);
   if (found.state !== "ok") return found;
   try {
-    if (!statSync(found.real).isDirectory()) return { state: "not_a_directory" };
+    if (!(await stat(found.real)).isDirectory()) return { state: "not_a_directory" };
   } catch (e) {
     return { state: errState(e) };
   }
-  return unreadableDir(found.real) ? { state: "denied" } : found;
+  return (await unreadableDirAsync(found.real)) ? { state: "denied" } : found;
 }
 
 /// `path` with its links followed as `walk` follows them (nothing at or under a folder `locked` names touched), not
 /// looked at further.
-export function follow(path: string, locked: (p: string) => Where | null): Look {
+export async function follow(path: string, locked: Locked): Promise<Look> {
   let pending = parts(resolve(path));
   let done: string[] = [];
   let hops = 0;
@@ -123,11 +125,11 @@ export function follow(path: string, locked: (p: string) => Where | null): Look 
     }
     const next = [...done, name];
     const at = joined(next);
-    const place = locked(at);
+    const place = await locked(at);
     if (place !== null) return { state: "protected", path: joined([...next, ...pending]), ...place };
     let link: boolean;
     try {
-      link = lstatSync(at).isSymbolicLink();
+      link = (await lstat(at)).isSymbolicLink();
     } catch (e) {
       return { state: errState(e) };
     }
@@ -136,7 +138,7 @@ export function follow(path: string, locked: (p: string) => Where | null): Look 
       continue;
     }
     if (++hops > 40) return { state: "gone" };
-    const target = readlinkSync(at);
+    const target = await readlink(at);
     // A relative target is followed from the link's folder (`..` in it as the system works it out).
     if (target.startsWith("/")) done = [];
     pending = [...parts(target), ...pending];
@@ -144,25 +146,16 @@ export function follow(path: string, locked: (p: string) => Where | null): Look 
   return { state: "ok", real: joined(done) };
 }
 
-/// `path` with its links followed, as realpath has it, on this thread: on macOS without stepping into a folder macOS
-/// protects (one in such a folder is said as far as it was followed, by its name); null when it is not there.
-export function realOutside(path: string, home = homedir()): string | null {
-  if (!platform.hasFolderPermissions) {
-    try {
-      return realpathSync(path);
-    } catch {
-      return null;
-    }
-  }
-  const found = follow(path, (p) => protectedPlace(p, home));
+/// `path` with its links followed, as realpath has it, off the station's thread: on macOS without stepping into a
+/// folder macOS protects (one in such a folder is said as far as it was followed, by its name); null when it is not
+/// there.
+export async function realOutside(path: string, home = homedir()): Promise<string | null> {
+  if (!platform.hasFolderPermissions) return realpath(path).catch(() => null);
+  const found = await follow(path, (p) => protectedPlaceSoon(p, home));
   if (found.state === "protected") return found.path;
   if (found.state !== "ok") return null;
   // Its links followed already, outside them all: as realpath names it (its case as the disk has it).
-  try {
-    return realpathSync(found.real);
-  } catch {
-    return null;
-  }
+  return realpath(found.real).catch(() => null);
 }
 
 const errState = (e: unknown): "gone" | "denied" => {
@@ -212,7 +205,8 @@ export class Places {
     return this.#mac;
   }
 
-  /// Whether `path` is in a folder macOS protects, by its name (nothing looked at).
+  /// Whether `path` is in a folder macOS protects, by its name (nothing looked at: a place in /Volumes not known yet is
+  /// taken for a disk, and `file` looks before it copies anything).
   protects(path: string): boolean {
     return this.#mac && protectedPlace(path, this.#home) !== null;
   }
@@ -221,13 +215,16 @@ export class Places {
   /// still.fail Helper may), or refused (PlaceRefused) saying why in `asker`'s words. Its links followed where known.
   async directory(dir: string, asker: Asker): Promise<string> {
     if (!this.#mac) {
-      const s = statSync(dir, { throwIfNoEntry: false });
+      const s = await stat(dir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT" || e.code === "ENOTDIR") return null;
+        throw e;
+      });
       if (!s) throw this.#refused("gone", dir, asker);
       if (!s.isDirectory()) throw this.#refused("not_a_directory", dir, asker);
-      if (unreadableDir(dir)) throw this.#refused("denied", dir, asker);
+      if (await unreadableDirAsync(dir)) throw this.#refused("denied", dir, asker);
       return dir;
     }
-    let look = walk(dir, (p) => protectedPlace(p, this.#home));
+    let look = await walk(dir, (p) => protectedPlaceSoon(p, this.#home));
     if (look.state === "protected") {
       const at = look;
       look = await this.#once(`${asker.self ? "self" : "dir"}:${asker.agent ? "agent" : asker.lang}:${at.path}`, () => this.#protectedDir(at, dir, asker));
@@ -241,14 +238,14 @@ export class Places {
   /// name) by still.fail Helper or a child process, at most `most` bytes, and that copy given, or refused saying why.
   async file(path: string, into: string, asker: Asker, most: number): Promise<string> {
     if (!this.#mac) return path;
-    const where = this.#fileWhere(path);
+    const where = await this.#fileWhere(path);
     if (where === null) return path;
     const dir = join(into, `.stillfail-staged-${randomUUID()}`);
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     try {
       return await this.#copy(where, join(dir, basename(where.path)), path, asker, most);
     } catch (e) {
-      rmSync(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true });
       throw e;
     }
   }
@@ -278,21 +275,21 @@ export class Places {
   }
 
   /// Where a file is, when that is in a protected folder: its folder walked (links followed outside them), its name.
-  #fileWhere(path: string): ({ path: string } & Where) | null {
-    const named = protectedPlace(path, this.#home);
+  async #fileWhere(path: string): Promise<({ path: string } & Where) | null> {
+    const named = await protectedPlaceSoon(path, this.#home);
     if (named !== null) return { path, ...named };
-    const folder = follow(resolve(path, ".."), (p) => protectedPlace(p, this.#home));
+    const folder = await follow(resolve(path, ".."), (p) => protectedPlaceSoon(p, this.#home));
     if (folder.state === "protected") return { ...folder, path: join(folder.path, basename(path)) };
     if (folder.state !== "ok") return null;
     // The file itself a link into one.
     const own = join(folder.real, basename(path));
     try {
-      if (!lstatSync(own).isSymbolicLink()) return null;
+      if (!(await lstat(own)).isSymbolicLink()) return null;
     } catch {
       return null;
     }
-    const target = resolve(folder.real, readlinkSync(own));
-    const there = protectedPlace(target, this.#home);
+    const target = resolve(folder.real, await readlink(own));
+    const there = await protectedPlaceSoon(target, this.#home);
     return there === null ? null : { path: target, ...there };
   }
 
