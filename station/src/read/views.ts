@@ -3,14 +3,12 @@
 // a chat's title by the core's rule, and entries with their authors' names as the event stream tells them (`said`,
 // services.ts), in the language asked (`spokenIn`). The rest of the pages' views are the MoonBit reader's; the
 // TypeScript that answered them is the tests' (test/reference/views.ts).
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { type Lang, tr as translate } from "../ops/i18n.ts";
 import * as store from "./store.ts";
 import { Refused as HttpError } from "../api/request.ts";
 import { entryJson } from "../store/archive.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
-import { knownPerson } from "./slack-known.ts";
+import type { KnownNames, Person } from "./slack-known.ts";
 import { type AuthorKind, type EntryRow, type Json, type SessionRow, type Store, type ThreadRow, STILLFAIL_SURFACE } from "./store.ts";
 import { STATION_AUTHOR, STILLFAIL_CONNECT } from "../store/rows.ts";
 
@@ -40,42 +38,30 @@ export const untitled = () => tr("station.chat.untitled");
 
 type Connect = { id: string; name: string };
 type Config = { connects: Connect[]; reviews: boolean };
-const configs = new WeakMap<Store, { stamp: string } & Config>();
+const configs = new WeakMap<object, Config>();
 
 /// The config's connects (config.rs), each with what it is called (Connect::name: its bot's name, else its id), and
-/// whether the decision reviews done chats for the archive (automaticDecisions.completion); read again when config.json
-/// changed.
-function configOf(s: Store): Config {
-  const path = join(s.dataDir, "config.json");
-  let stamp = "none";
-  try {
-    const st = statSync(path);
-    stamp = `${st.size}:${st.mtimeMs}:${st.ino}`;
-  } catch {}
-  const had = configs.get(s);
-  if (had && had.stamp === stamp) return had;
+/// whether the decision reviews done chats for the archive (automaticDecisions.completion); made again only for a
+/// config changed (ops/config.ts `raw` gives the same object until then).
+export function configOf(raw: Json): Config {
+  const object = raw !== null && typeof raw === "object" ? raw : null;
+  const had = object === null ? undefined : configs.get(object);
+  if (had !== undefined) return had;
   const connects: Connect[] = [];
-  let reviews = false;
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8"));
-    reviews = raw?.automaticDecisions?.completion?.enabled === true;
-    for (const c of Array.isArray(raw.connects) ? raw.connects : []) {
-      const bot = typeof c?.slack?.botName === "string" && c.slack.botName !== "" ? c.slack.botName : undefined;
-      if (typeof c?.id === "string") connects.push({ id: c.id, name: bot ?? c.id });
-    }
-  } catch {
-    // No config: no connects.
+  const reviews = raw?.automaticDecisions?.completion?.enabled === true;
+  for (const c of Array.isArray(raw?.connects) ? raw.connects : []) {
+    const bot = typeof c?.slack?.botName === "string" && c.slack.botName !== "" ? c.slack.botName : undefined;
+    if (typeof c?.id === "string") connects.push({ id: c.id, name: bot ?? c.id });
   }
-  const config = { stamp, connects, reviews };
-  configs.set(s, config);
+  const config = { connects, reviews };
+  if (object !== null) configs.set(object, config);
   return config;
 }
 
-export type Api = { store: Store; connects: Connect[]; reviews: boolean };
-export const apiOf = (s: Store): Api => {
-  const { connects, reviews } = configOf(s);
-  return { store: s, connects, reviews };
-};
+/// What the views are made with: the store, the config's connects, and who a platform's person is (slack-known.ts).
+export type Api = { store: Store; connects: Connect[]; reviews: boolean; person: (connect: string, user: string) => Person | null };
+/// The views' `Api` from the config the station holds in memory and the names it knows (`KnownNames`): no file read.
+export const apiOf = (s: Store, config: Json, known: KnownNames): Api => ({ store: s, ...configOf(config), person: (connect, user) => known.person(connect, user) });
 
 /// The name a chat has been given: by people, else by its agent.
 export function given(thread: ThreadRow): string | null {
@@ -114,7 +100,7 @@ export function authorNames(api: Api, thread: number, admin: string | null = nul
     } else {
       // A Slack person: by the name their connect's Slack gives them, as far as known.
       const connect = members.map((m) => m.connect).find((c) => c !== STILLFAIL_CONNECT) ?? null;
-      const person = connect === null ? null : knownPerson(api.store, connect, author);
+      const person = connect === null ? null : api.person(connect, author);
       name = person?.name ? person.name : null;
       if (person?.picture) pictures.set(key, person.picture);
     }

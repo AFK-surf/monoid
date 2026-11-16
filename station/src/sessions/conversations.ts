@@ -1,8 +1,7 @@
 // What agents do in their own conversations (the Rust station's hub.rs: chat_post, chat_state, chat_history, slack_api and
 // what they rest on): post (with files and a card, ending the turn or not), record how the turn ends, read a thread,
 // and call Slack as their bot. What a tool says of the turn reaches its session's actor, in turn with the rest.
-import { rmSync } from "node:fs";
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PlaceRefused } from "../ops/places.ts";
 import { wall } from "../ops/fibers.ts";
@@ -238,12 +237,12 @@ export function mayStage(hub: Hub, args: Args, links: boolean): boolean {
 /// ops/places.ts), so that what reads them next (attach, prepare, sendable) never touches such a folder on the
 /// station's thread. The arguments to go on with, and what removes the copies once the message is sent. A grant the
 /// helper lacks refuses it, its window put up on the Mac, telling the agent to ask with the permissions tool.
-export async function staged(hub: Hub, key: string, args: Args, links: boolean): Promise<{ args: Args; done: () => void }> {
+export async function staged(hub: Hub, key: string, args: Args, links: boolean): Promise<{ args: Args; done: () => Promise<void> }> {
   const row = hub.store.getSession(key);
   const places = hub.places;
   const copies: string[] = [];
-  const done = () => {
-    for (const c of copies) rmSync(dirname(c), { recursive: true, force: true });
+  const done = async () => {
+    await Promise.all(copies.map((c) => rm(dirname(c), { recursive: true, force: true })));
   };
   if (!row || (!Array.isArray(args.files) && !(links && typeof args.text === "string"))) return { args, done };
   const into = join(row.workspace, "uploads");
@@ -285,7 +284,7 @@ export async function staged(hub: Hub, key: string, args: Args, links: boolean):
     }
     return { args: next, done };
   } catch (e) {
-    done();
+    await done();
     throw e;
   }
 }

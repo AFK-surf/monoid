@@ -32,12 +32,12 @@ import {
   packed,
   restoreFile,
   restoreWorkspace,
-  storage,
   withExtension,
   withLock,
   workspaceArchive,
   workspaceFile,
 } from "../src/sessions/archive.ts";
+import { storage } from "./reference/transcript-paths.ts";
 import { measureRoom, measured, rebuildableSoon, safeToRemove } from "../src/sessions/footprint.ts";
 import { rebuildableKind, roomOf } from "./footprint-reference.ts";
 import { settle } from "./hub-fakes.ts";

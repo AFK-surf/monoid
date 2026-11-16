@@ -169,7 +169,7 @@ test("the station's search thread finds what the store has as it is asked; the i
   const t = chat(s.store, "k1", null);
   say(s.store, t, "1", "before the start");
   const search = new Search({ data: s.data });
-  search.start();
+  await search.start();
   try {
     assert.equal(existsSync(join(s.data, "search.db")), false);
     assert.deepEqual(kinds((await search.query("before", home, { kinds: ["message"] })).groups), { message: [`m:${t}:1`] });

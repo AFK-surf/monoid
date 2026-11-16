@@ -19,7 +19,6 @@
 // addon (tests), the lock files are made where the Rust makes them but the lock itself is held within
 // this process (one station at a time works on a data directory; only an overlap at a handover would see both).
 import { loadMesh } from "../mesh/native.ts";
-import { existsSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { segments } from "../ops/paths.ts";
@@ -49,9 +48,6 @@ export const workspaceArchive = (room: string) => join(room, "workspace.tar.zst"
 
 /// Where a file is once put away.
 export const packed = (path: string) => `${path}.zst`;
-
-/// The raw path stays the stable identity for readers and their offsets, even while its bytes are compressed.
-export const storage = (path: string) => (existsSync(path) ? path : packed(path));
 
 // ── the lock ───────────────────────────────────────────────────────────────────────────────────────────────────────
 

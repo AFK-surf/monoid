@@ -23,6 +23,7 @@ import { Readers as ReaderPool } from "./read/pool.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
+import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
@@ -259,9 +260,12 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
       // What was just said, made as the pages show it on this thread: over the store's own connection (what it just
       // wrote is in its memory), with the names the readers are given.
       const view = Object.assign(makeStore(store.db, data), { names: readers.names });
+      // and the config and names books as the station holds them, so a message said looks at no file
+      const config = yield* StationConfig;
+      const known = yield* Effect.acquireRelease(Effect.sync(() => new KnownNames(data, () => config.raw())), (known) => Effect.sync(() => known.close()));
       const events = new EventStreams({
         readers,
-        said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view), thread, entries)),
+        said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view, config.raw(), known), thread, entries)),
         subscribe: (listener) => store.subscribe(listener),
         host: () => admin.sample(),
         jobLog: (id) => store.getJob(id)?.log ?? null,

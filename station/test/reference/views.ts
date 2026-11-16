@@ -19,14 +19,41 @@ import { Refused as HttpError } from "../../src/api/request.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
 import { trim } from "../../../client/core-ts/src/whitespace.ts";
 import * as chatRow from "../../../client/core-ts/src/chat-row.ts";
-import { knownChannel, slackCreator, teamName } from "./slack-known.ts";
+import { knownChannel, knownPerson, slackCreator, teamName } from "./slack-known.ts";
 import { log } from "../../src/ops/log.ts";
 import { type AuthorKind, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, STILLFAIL_SURFACE, takeChars } from "./store.ts";
 import { STILLFAIL_CONNECT } from "../../src/store/rows.ts";
-import { tr, untitled, type Api, apiOf, given, titleOf, type Names, authorNames, pictureView, declaredView, entryViews } from "../../src/read/views.ts";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { tr, untitled, type Api, configOf, given, titleOf, type Names, authorNames, pictureView, declaredView, entryViews } from "../../src/read/views.ts";
 
 export * from "../../src/read/views.ts";
-export { HttpError, tr, untitled, type Api, apiOf, given, titleOf, type Names, authorNames, pictureView, declaredView, entryViews };
+export { HttpError, tr, untitled, type Api, given, titleOf, type Names, authorNames, pictureView, declaredView, entryViews };
+
+/// config.json as last read for a store, again when the file changed (by its size, time and inode).
+const configs = new WeakMap<Store, { stamp: string; raw: Json }>();
+/// The views' `Api` as a reader thread made it: config.json and the names books read from the data directory when they
+/// changed (the station's own holds both in memory: src/read/views.ts `apiOf`).
+export function apiOf(s: Store): Api {
+  const path = join(s.dataDir, "config.json");
+  let stamp = "none";
+  try {
+    const st = statSync(path);
+    stamp = `${st.size}:${st.mtimeMs}:${st.ino}`;
+  } catch {}
+  let had = configs.get(s);
+  if (had === undefined || had.stamp !== stamp) {
+    let raw: Json = {};
+    try {
+      raw = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      // No config: no connects.
+    }
+    had = { stamp, raw };
+    configs.set(s, had);
+  }
+  return { store: s, ...configOf(had.raw), person: (connect, user) => knownPerson(s, connect, user) };
+}
 
 export { makeStore, openStore } from "./store.ts";
 

@@ -23,15 +23,23 @@ export type Answer = { id: number; text?: string; body?: Buffer; status?: number
 export type Ready = { ready: { loadedMs: number; openedMs: number } };
 
 /// The program: STILLFAIL_MB_READER, else beside the station's code in a release, else where `moon build` puts it in
-/// a checkout (station/mb/build.sh, for the Mac). None: not built here.
+/// a checkout (station/mb/build.sh, for the Mac). None: not built here. Found once for each STILLFAIL_MB_READER (a
+/// test may set its own): a builder, a measure and the agents' program each started asking it, every time a look at
+/// the disk on the main thread. Not found is looked for again, as a checkout may build it while the station runs.
+const foundBinary = new Map<string, string>();
 export function mbReaderBinary(): string | null {
+  const envKey = process.env.STILLFAIL_MB_READER ?? "";
+  const had = foundBinary.get(envKey);
+  if (had !== undefined) return had;
   const candidates = [
     process.env.STILLFAIL_MB_READER,
     fileURLToPath(new URL(`./${platform.exe("stillfail-reader")}`, import.meta.url)),
     // (from the source only: bundled, this is main.js, beside which the release puts the program)
     import.meta.url.endsWith(".ts") ? fileURLToPath(new URL("../../mb/_build/stillfail-reader-darwin-arm64", import.meta.url)) : undefined,
   ];
-  return candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null;
+  const found = candidates.find((p) => p !== undefined && p !== "" && existsSync(p)) ?? null; // sync: once, as the station opens its readers before it serves
+  if (found !== null) foundBinary.set(envKey, found);
+  return found;
 }
 
 /// The program, which every station has (`mbReaderBinary`); where it is not built (a checkout that has not), what needs

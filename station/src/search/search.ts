@@ -7,7 +7,7 @@
 // too. The machine's files are asked beside it (search/files.ts). There is no search in TypeScript to fall back to: a
 // test may give a reference to look instead (`reference`: the search as the station's thread looked before,
 // test/reference/search-worker.ts).
-import { rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
@@ -68,9 +68,11 @@ export class Search {
     this.#sessionList = new SessionListBuilder(join(options.data, "stillfail.db"), options.backfill);
   }
 
-  /// The index an earlier station kept removed: there is none now. Nothing is started until a search is asked.
-  start(): void {
-    for (const f of ["search.db", "search.db-wal", "search.db-shm"]) rmSync(join(this.#data, f), { force: true });
+  /// The index an earlier station kept removed, off the main thread (nothing reads it: there is none now); done once
+  /// the promise is. Nothing is started until a search is asked.
+  start(): Promise<void> {
+    return Promise.all(["search.db", "search.db-wal", "search.db-shm"].map((f) => rm(join(this.#data, f), { force: true })))
+      .then(() => {}, (error) => log.warn("search", "the index of before was not removed", { error: (error as Error).message }));
   }
 
   /// Whether a looker runs now (the program, or the test's reference).

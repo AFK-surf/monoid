@@ -477,7 +477,7 @@ function stagedRun(hub: Hub, key: string, args: Args, links: boolean, run: (args
     try {
       return await run(given);
     } finally {
-      done();
+      await done();
     }
   })();
 }
