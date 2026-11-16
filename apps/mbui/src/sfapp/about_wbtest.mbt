@@ -265,7 +265,7 @@ test "the update dialog asked again while it is open stays the one: no second ov
 }
 
 ///|
-test "the update dialog while still.fail cloud is asked: its title, this build under it, a bar to and fro; 取消 closes it; answered none newer, 确定; could not ask, why, 重试 asks again" {
+test "the update dialog while still.fail cloud is asked: its title, this build under it, a bar to and fro; 取消 closes it; answered none newer, 好; could not ask, why, 重试 asks again" {
   for s in update_screens {
     let (w, platform) = s
     let at = "\{w} platform \{platform}"
@@ -287,9 +287,9 @@ test "the update dialog while still.fail cloud is asked: its title, this build u
     assert_true(t.find("已是最新版本") is Some(_), msg=at)
     // (holding nothing, none of its room: the line under its title straight over its foot)
     guard t.find("当前版本 0.1.2") is Some((_, lead_y)) else { fail("\{at}: no lead") }
-    let said_gap = t.get(Button, label="确定").rect.1 - lead_y
+    let said_gap = t.get(Button, label="好").rect.1 - lead_y
     assert_true(said_gap < asking_gap, msg="\{at}: none newer, \{said_gap} under its lead, asking \{asking_gap}")
-    update_dialog_closed(t, "确定", at)
+    update_dialog_closed(t, "好", at)
     // could not ask: why, in place of this build; 重试 asks again
     let asked : Array[(Result[Json, String]) -> Unit] = []
     let t = update_dialog_tester(w, platform, asked, newer=false)
