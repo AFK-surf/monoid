@@ -21,6 +21,7 @@
 #pragma comment(lib, "user32.lib")
 
 static const WCHAR *FAMILY = L"Segoe UI";
+static bool has_segoe_var_small, has_segoe_var_display;
 static const WCHAR *MONO = L"Consolas";  // the code face (style & 2)
 static const WCHAR *SERIF = L"SimSun";   // the serif face (style & 4): 宋体, its Latin too
 static const int RT_SIZE = 512;  // largest cluster bitmap, in pixels
@@ -142,9 +143,27 @@ static DWRITE_PIXEL_GEOMETRY detect_pixel_geometry(void) {
 
 static bool use_cleartype(double sc) { return params_ct != NULL && sc < 1.25; }
 
+// The system's font collection's family named `name` (its index), if there is one.
+static bool system_family(const WCHAR *name) {
+  IDWriteFontCollection *fc = NULL;
+  if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return false;
+  UINT32 at = 0;
+  BOOL there = FALSE;
+  fc->FindFamilyName(name, &at, &there);
+  fc->Release();
+  return there;
+}
+
 static void init(void) {
   if (dw) return;
   DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
+  if (system_family(L"Segoe UI Variable")) {
+    FAMILY = L"Segoe UI Variable";
+  } else if (system_family(L"Segoe UI Variable Text")) {
+    FAMILY = L"Segoe UI Variable Text";
+    has_segoe_var_small = system_family(L"Segoe UI Variable Small");
+    has_segoe_var_display = system_family(L"Segoe UI Variable Display");
+  }
   IDWriteFontFallbackBuilder *b = NULL;
   IDWriteFontFallback *sys = NULL;
   dw->CreateFontFallbackBuilder(&b);
@@ -154,6 +173,11 @@ static void init(void) {
   };
   const WCHAR *cjk_fonts[] = {L"Microsoft YaHei UI", L"Microsoft YaHei", L"SimSun"};
   b->AddMapping(cjk, sizeof cjk / sizeof cjk[0], cjk_fonts, 3, NULL, NULL, NULL, 1.0f);
+  if (wcscmp(FAMILY, L"Segoe UI") != 0) {
+    DWRITE_UNICODE_RANGE latin[] = {{0x0020, 0x024F}, {0x1E00, 0x1EFF}, {0x2000, 0x206F}};
+    const WCHAR *latin_fonts[] = {FAMILY, L"Segoe UI"};
+    b->AddMapping(latin, sizeof latin / sizeof latin[0], latin_fonts, 2, NULL, NULL, NULL, 1.0f);
+  }
   dw->GetSystemFontFallback(&sys);
   b->AddMappings(sys);
   b->CreateFontFallback(&fallback);
@@ -318,17 +342,6 @@ extern "C" void mb_host_face_clear(int32_t f) {
   faces_changed();
 }
 
-// The system's font collection's family named `name` (its index), if there is one.
-static bool system_family(const WCHAR *name) {
-  IDWriteFontCollection *fc = NULL;
-  if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return false;
-  UINT32 at = 0;
-  BOOL there = FALSE;
-  fc->FindFamilyName(name, &at, &there);
-  fc->Release();
-  return there;
-}
-
 // Face `f` set in the family installed here named `family`: the system's collection, by its name.
 extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   init();
@@ -337,7 +350,13 @@ extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   WCHAR name[128];
   memcpy(name, family, sizeof(WCHAR) * len);
   name[len] = 0;
-  if (!system_family(name)) return 0;
+  if (!system_family(name)) {
+    if (wcscmp(name, L"Segoe UI Variable") == 0 && system_family(L"Segoe UI Variable Text")) {
+      wcscpy_s(name, 128, L"Segoe UI Variable Text");
+    } else {
+      return 0;
+    }
+  }
   for (int i = 0; i < faces[f].n; i++) {
     free(faces[f].paths[i]);
     free(faces[f].data[i]);
@@ -417,12 +436,24 @@ extern "C" moonbit_string_t mb_host_local_font_families(void) {
   return s;
 }
 
+static const WCHAR *segoe_family_for_size(double size) {
+  if (has_segoe_var_small && size < 10.5) return L"Segoe UI Variable Small";
+  if (has_segoe_var_display && size >= 20.0) return L"Segoe UI Variable Display";
+  return FAMILY;
+}
+
 static IDWriteTextFormat *format_for(double size, int weight, int style) {
   for (int i = 0; i < n_formats; i++)
     if (formats[i].size == size && formats[i].weight == weight && formats[i].style == style) return formats[i].f;
   IDWriteTextFormat *f = NULL;
   int face = face_id(style);
-  dw->CreateTextFormat(face ? faces[face].family : (style & 2) ? MONO : (style & 4) ? SERIF : FAMILY,
+  const WCHAR *fam = face ? (faces[face].system && wcscmp(faces[face].family, L"Segoe UI Variable Text") == 0
+                                 ? segoe_family_for_size(size)
+                                 : faces[face].family)
+                   : (style & 2) ? MONO
+                   : (style & 4) ? SERIF
+                   : segoe_family_for_size(size);
+  dw->CreateTextFormat(fam,
                        face && faces[face].fc ? faces[face].fc : NULL, (DWRITE_FONT_WEIGHT)weight,
                        (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                        DWRITE_FONT_STRETCH_NORMAL, (FLOAT)size, L"zh-cn", &f);

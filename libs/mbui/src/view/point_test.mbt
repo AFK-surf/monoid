@@ -100,10 +100,10 @@ test "pointing: a pointed child inside a pressable row let go when pointed_in tu
         .height(Is(Some(40.0)))
         .on_press(fn() {  })
         .show(
-          By(fn() {
+          fn() {
             changes.val = changes.val + 1
             !row.pointed_in()
-          }),
+          },
           fn(badge) {
             badge.width(Is(Some(40.0))).height(Is(Some(40.0))).points(Is(true)) |> ignore
           },

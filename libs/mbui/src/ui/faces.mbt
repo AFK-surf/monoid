@@ -141,10 +141,13 @@ fn faces_from_env() -> Unit {
       continue
     }
     match digits(parts[0]) {
-      Some(face) => {
-        let weight = if parts.length() > 2 { digits(parts[2]).unwrap_or(0) } else { 0 }
-        ignore(face_add(face, parts[1], weight~))
-      }
+      Some(face) =>
+        if parts[1] == "local" && parts.length() > 2 {
+          ignore(face_add_family(face, parts[2]))
+        } else {
+          let weight = if parts.length() > 2 { digits(parts[2]).unwrap_or(0) } else { 0 }
+          ignore(face_add(face, parts[1], weight~))
+        }
       None => ()
     }
   }
