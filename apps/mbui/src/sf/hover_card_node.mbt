@@ -142,8 +142,15 @@ pub fn hover_card_node(
     })
     |> ignore
     // (a press anywhere in the window but on the card or on what it is of: closed as it goes down, the press what it
-    // lands on's as ever)
-    holder.reacts(fn() { holder.window_downs() }, at_start=false, fn(_) {
+    // lands on's as ever; the window's presses read only while it is open and not kept open, so a card shut again
+    // follows none of them, and its coming to be read is no press)
+    let downs_was : Ref[Int?] = Ref(None)
+    holder.reacts(fn() { if open.get() && !held() { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
+      now,
+    ) {
+      let was = downs_was.val
+      downs_was.val = now
+      guard was is Some(_) && now is Some(_) else { return }
       // (kept open by the app: what the press lands on is what was opened from it)
       guard open.untracked() && !@signals.untracked(held) else { return }
       let (x, y) = holder.window_down_point()

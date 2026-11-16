@@ -3,7 +3,7 @@
 // window's presses and whether it takes input again, closed as it takes none.
 
 ///|
-test "ten hover cards closed on a touch screen: none follows whether a press is held in the window, so a finger's tap on nothing wakes none of them; one held open by a finger closes as its trigger takes no input" {
+test "ten hover cards closed on a touch screen: none follows whether a press is held in the window, so a finger's tap on nothing wakes none of them; one held open by a finger closes as its trigger takes no input, and once closed follows the window's presses no more" {
   let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=500.0, platform=1)
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
@@ -41,7 +41,10 @@ test "ten hover cards closed on a touch screen: none follows whether a press is 
   h.t.run_for(hover_settled_ms)
   assert_true(h.open("甲"), msg="held: open")
   assert_true(@ui.view_tree().unwrap().held_anywhere.watched(), msg="open: the window's presses followed")
+  assert_true(@ui.view_tree().unwrap().pressed_anywhere.watched(), msg="open: a press anywhere followed, to close it")
   takes.set(false)
   h.t.run_for(hover_settled_ms)
   assert_false(h.open("甲"), msg="its trigger taking no input: closed")
+  // (closed again: the card made once is kept, but none of the window's presses followed by it)
+  assert_false(@ui.view_tree().unwrap().pressed_anywhere.watched(), msg="closed again: no press anywhere followed")
 }

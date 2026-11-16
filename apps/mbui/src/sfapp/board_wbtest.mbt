@@ -372,3 +372,38 @@ test "小屏: the list's filter menu offers 看板; on the board its key in the 
   assert_false(@sfbase.board_on_of(src, "ws1"))
   assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
 }
+
+///|
+test "大屏: a card dragged across the board runs a few bindings a move, whatever the board holds: the card in hand where the pointer has it, the column under it lit, no card at rest woken" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_words_at(t, "看一下 Android 冷启动为什么慢了 300ms") is Some((x, y, _, _)) else { fail("no draft") }
+  guard board_words_at(t, "进行中") is Some((rx, ry, _, _)) else { fail("no 进行中") }
+  let (x0, y0) = (x + 10.0, y + 6.0)
+  t.press_at(x0, y0)
+  // (taken past the slop: lifted, the cards' faded one and the board's foot made then)
+  t.move_to(x0 + 20.0, y0 + 20.0)
+  t.move_to(x0 + 24.0, y0 + 24.0)
+  // (ten moves within 待派发, then ten on into 进行中 and along it)
+  let at : Array[(Double, Double)] = []
+  for i in 1..=10 {
+    at.push((x0 + 24.0, y0 + 24.0 + 3.0 * i.to_double()))
+  }
+  for i in 1..=10 {
+    let k = i.to_double() / 10.0
+    at.push((x0 + 24.0 + (rx + 40.0 - x0 - 24.0) * k, y0 + 54.0 + (ry + 200.0 - y0 - 54.0) * k))
+  }
+  let ran : Array[Int] = []
+  for p in at {
+    t.tree_frames_from_now()
+    t.move_to(p.0, p.1)
+    ran.push(t.tree_frames().fold(init=0, fn(a, f) { a + f.bindings }))
+  }
+  // (a move under which nothing changes: the card in hand alone, and what of a column's light is still on its way; one
+  // that comes over a column: that column's light set off, the card in hand's words told what a drop there does, and
+  // the choice of what is under it, at most so many whatever the board holds)
+  assert_true(ran.iter().take(10).all(fn(n) { n <= 2 }), msg="bindings each move within its column: \{Repr(ran)}")
+  assert_true(ran.iter().all(fn(n) { n <= 7 }), msg="bindings each move: \{Repr(ran)}")
+  t.release(rx + 40.0, ry + 200.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_faults(t), [])
+}
