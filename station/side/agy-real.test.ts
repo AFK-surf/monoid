@@ -5,7 +5,10 @@
 //   `Active Workspaces`;
 // - `--gemini-dir/config/hooks.json` stays active on a shared profile home even when an instructions-less session opens
 //   concurrently on the same profile (`STILLFAIL_REPO_RULES=0` silences only that session's hook process), while the
-//   station session fires `PostToolUse` + `PostInvocation` on `read_file` and injects `.claude/CLAUDE.md` + `CLAUDE.md`.
+//   station session fires `PostToolUse` + `PostInvocation` on `read_file` and injects `.claude/CLAUDE.md` + `CLAUDE.md`;
+// - the station's tools, as its MCP endpoint lists them to an `agy` session (AGY_TOOL_BUDGET), are all declared to the
+//   model beside a workspace's 37 skills of their real size: chat_post and every CORE tool, and station_tool for the rest
+//   (agents/agy.ts AGY_TOOL_BUDGET: one pool holds both, and `agy` drops the largest tool beyond it).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -13,8 +16,10 @@ import http from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
-import { AgyDriver } from "../src/agents/agy.ts";
+import { AGY_TOOL_BUDGET, AgyDriver } from "../src/agents/agy.ts";
 import type { RuntimeEvent } from "../src/agents/runtime.ts";
+import { CORE, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
+import { stationTools } from "../test/station-tools.ts";
 
 function findAgy(): string | null {
   const dirs = [
@@ -55,6 +60,12 @@ test(
     mkdirSync(join(shared, "team-skill", "scripts"), { recursive: true });
     writeFileSync(join(shared, "team-skill", "SKILL.md"), "---\nname: team-skill\ndescription: Shared workspace skill ALPHA_SKILL_MARKER\n---\n# Team\n");
     writeFileSync(join(shared, "team-skill", "scripts", "run.sh"), "#!/bin/sh\necho ok\n");
+    // A workspace's skills as #6685 puts them in `.agent/skills`: 37 in all, some 18 KB, as the workspace had (2026-11-16).
+    for (let i = 0; i < 36; i++) {
+      const name = `project-skill-${String(i).padStart(2, "0")}`;
+      mkdirSync(join(shared, name), { recursive: true });
+      writeFileSync(join(shared, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${"Project memory: how this project builds, tests and merges, and what to read first. ".repeat(5).trim()}\n---\n# ${name}\n`);
+    }
     mkdirSync(join(preset, "deploy"), { recursive: true });
     writeFileSync(join(preset, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Preset symlink skill BETA_SKILL_MARKER\n---\n# Deploy\n");
     mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
@@ -74,6 +85,7 @@ test(
     const pageFile = makeRepo(ws);
     const termPageFile = makeRepo(termWs);
 
+    const mcp = new McpEndpoint(() => "s", stationTools(), undefined, () => ({ budget: AGY_TOOL_BUDGET }));
     const mainReqs: any[] = [];
     const termReqs: any[] = [];
     const server = http.createServer(async (req, res) => {
@@ -81,15 +93,9 @@ test(
       for await (const chunk of req) body += chunk;
       const url = req.url ?? "";
       if (url.startsWith("/mcp")) {
-        const rpc = body ? JSON.parse(body) : {};
-        res.writeHead(200, { "Content-Type": "application/json" });
-        if (rpc.method === "initialize") {
-          res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "stillfail", version: "0.1.0" } } }));
-        } else if (rpc.method === "tools/list") {
-          res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, result: { tools: [] } }));
-        } else {
-          res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id ?? null, result: {} }));
-        }
+        const { status, body: out } = await mcp.handle(req.method ?? "POST", req.headers.authorization, body);
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(out === undefined ? "" : JSON.stringify(out));
         return;
       }
       if (!url.includes("streamGenerateContent")) {
@@ -196,5 +202,14 @@ test(
     const secondContents = JSON.stringify(mainReqs[1].contents ?? []);
     assert.match(secondContents, /cc-only\/\.claude\/CLAUDE\.md[\s\S]*ROOT_DOTCLAUDE_FALCON/);
     assert.match(secondContents, /cc-only\/web\/CLAUDE\.md[\s\S]*WEB_CLAUDE_SWIFT/);
+
+    // Every tool the endpoint listed reached the model, chat_post first of all, beside the skills.
+    const declared = new Set<string>((mainReqs[0].tools ?? []).flatMap((t: any) => t.functionDeclarations ?? []).map((f: any) => f.name));
+    const listed: any = await mcp.handle("POST", "Bearer tok", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
+    const names: string[] = listed.body.result.tools.map((t: any) => t.name);
+    for (const name of [...CORE, INDIRECT]) assert.ok(names.includes(name), `${name} is not listed`);
+    const dropped = names.filter((name) => !declared.has(`mcp_stillfail_${name}`));
+    assert.deepEqual(dropped, [], `real agy dropped ${dropped.join(", ")}; it declared ${[...declared].join(", ")}`);
+    assert.match(sys, /project-skill-35/);
   },
 );
