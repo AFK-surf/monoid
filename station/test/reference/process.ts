@@ -5,7 +5,7 @@
 import { log } from "../../src/ops/log.ts";
 import { wall } from "../../src/ops/fibers.ts";
 import { bytesWithin, debug, describeExit, endRunner, groupAlive } from "../../src/agents/process.ts";
-import { RunnerConnection, leave, listening, startRunner, type RunnerInfo } from "../../src/agents/runner.ts";
+import { RunnerConnection, leave, listeningSoon, startRunner, type RunnerInfo } from "../../src/agents/runner.ts";
 
 /// A wait on another process (a grace raced against its exit): the machine's time.
 const sleep = wall.sleep;
@@ -101,8 +101,8 @@ export class AgentProcess {
   }
 
   /// Takes up the process a runner keeps: from its first line not acknowledged.
-  static adopt(info: RunnerInfo, options: ProcessOptions) {
-    if (!listening(info)) throw new Error(`runner ${info.id} has no socket`);
+  static async adopt(info: RunnerInfo, options: ProcessOptions) {
+    if (!(await listeningSoon(info))) throw new Error(`runner ${info.id} has no socket`);
     return new AgentProcess(info, options);
   }
 

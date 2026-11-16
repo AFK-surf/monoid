@@ -13,7 +13,7 @@
 //   tool/result), the model's output as it streams;
 // - the model, its provider and the station's instructions are dsh's configuration: a patch over its acp profile,
 //   written per session.
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -146,19 +146,18 @@ export function patchText(patch: Json[]): string {
 
 /// dsh keeps a session at <root>/<cwd>/<id>/session.v<N>.jsonl (the highest N is the current format): the directory,
 /// if it is there.
-export function sessionDir(home: string, sessionId: string): string | null {
+export async function sessionDir(home: string, sessionId: string): Promise<string | null> {
   const root = join(home, SESSIONS);
   let dirs: string[];
   try {
-    dirs = readdirSync(root);
+    dirs = await readdir(root);
   } catch {
     return null;
   }
   // Its id escaped to one path segment as dsh does: a UUID stays as it is.
   for (const d of dirs) {
-    try {
-      if (statSync(join(root, d, sessionId)).isDirectory()) return join(root, d, sessionId);
-    } catch {}
+    const dir = join(root, d, sessionId);
+    if (await stat(dir).then((s) => s.isDirectory(), () => false)) return dir;
   }
   return null;
 }
@@ -220,8 +219,8 @@ export class DshDriver extends OwnProcessDriver<DshSession> {
 
   async open(options: OpenOptions, events: Events): Promise<DshSession> {
     const home = options.profile.home;
-    mkdirSync(home, { recursive: true });
-    if (options.resume !== undefined && sessionDir(home, options.resume) === null) {
+    await mkdir(home, { recursive: true });
+    if (options.resume !== undefined && (await sessionDir(home, options.resume)) === null) {
       // dsh would refuse it; failing here lets the caller start fresh.
       throw new Error(`no dsh session ${options.resume}`);
     }
@@ -230,9 +229,9 @@ export class DshDriver extends OwnProcessDriver<DshSession> {
     // Per session: its instructions and model are in it. Named by the session's key, so a session started again writes
     // over its own. No secret is in it: keys and the tools' token are in the environment.
     const dir = join(home, "stillfail");
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
     const patchFile = join(dir, `${createHash("sha256").update(options.key).digest("hex").slice(0, 16)}.patch.yml`);
-    writeFileSync(patchFile, patchText(setup.patch), { mode: 0o600 });
+    await writeFile(patchFile, patchText(setup.patch), { mode: 0o600 });
     const args = ["--profile", "acp", "--patch", patchFile];
 
     const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "dsh"), options.route) };

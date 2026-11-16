@@ -6,19 +6,18 @@
 // - per-session settings (the MCP endpoint and token) travel in the thread/start|resume `config`, not the process
 //   environment;
 // - threads need sandbox "danger-full-access" with approvalPolicy "never", or MCP tool calls are refused.
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { access, mkdir, open, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { agentEnv } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { rememberCodexRolloutSoon } from "../read/transcript-soon.ts";
-import { linkCodexAuth, type Env } from "./machine-logins.ts";
+import { linkCodexAuthSoon, type Env } from "./machine-logins.ts";
 import { ackedOffset, bytesWithin, debug, findRunner, outFile, runnerId } from "./process.ts";
 import { AgentsHost, HostedProcess, type Heard, type Router } from "./mb-agents.ts";
 import { accessKind, codexOverrides, expandRoute, isMachine, profileEnv, profileFast, profileModel, profileVia } from "./profiles.ts";
 import { cleanEnv, type AgentDriver, type AgentSession, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
-import { liveRunners, listening, type RunnerInfo } from "./runner.ts";
+import { liveRunners, listeningSoon, type RunnerInfo } from "./runner.ts";
 import { REPO_RULES_COMMAND } from "./repo-rules.ts";
 import { Fibers, wall } from "../ops/fibers.ts";
 import type { Clock } from "effect";
@@ -38,8 +37,9 @@ const SCRUBBED = ["OPENAI_API_KEY", "CODEX_HOME"];
 /// wins.
 const CA_BUNDLE = "/etc/ssl/cert.pem";
 
-export function withCaBundle(env: Record<string, string>, bundle: string) {
-  if (["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"].some((k) => k in env) || !existsSync(bundle)) return;
+export async function withCaBundle(env: Record<string, string>, bundle: string) {
+  if (["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"].some((k) => k in env)) return;
+  if (!(await access(bundle).then(() => true, () => false))) return;
   env.SSL_CERT_FILE = bundle;
 }
 
@@ -285,12 +285,12 @@ class Host {
   /// `cwd`: where it runs, its profile's home.
   /// `id`: its runner's (`runnerId`, or another while one of the same key is being replaced: `runnerFor`).
   static async start(profile: Profile, key: string, command: string, data: string, env: Env, caBundle: string, lent: CodexDriverOptions["lent"], cwd = profile.home, id: string, agents: AgentsHost): Promise<Host> {
-    mkdirSync(profile.home, { recursive: true });
-    if (isMachine(profile)) linkCodexAuth(profile.home, env);
+    await mkdir(profile.home, { recursive: true });
+    if (isMachine(profile)) await linkCodexAuthSoon(profile.home, env);
     const until = lent?.borrowed(profile) ? await lent.write(profile) : null;
     const childEnv: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
     childEnv.CODEX_HOME = profile.home;
-    withCaBundle(childEnv, caBundle);
+    await withCaBundle(childEnv, caBundle);
     const host = new Host(profile.id, hostSignature(profile), 1, false, key);
     host.lentUntil = until;
     const label = `codex app-server ${key}`;
@@ -584,9 +584,9 @@ const untold = (line: Buffer) => UNTOLD.some((m) => line.length >= m.length && l
 const LENT_RENEW_MS = 6 * 3600_000;
 
 /// When the access token in a home's auth.json runs out (0 when it does not say).
-function lentExpiry(home: string): number {
+async function lentExpiry(home: string): Promise<number> {
   try {
-    const token = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"))?.tokens?.access_token;
+    const token = JSON.parse(await readFile(join(home, "auth.json"), "utf8"))?.tokens?.access_token;
     const claims = JSON.parse(Buffer.from(String(token).split(".")[1] ?? "", "base64url").toString("utf8"));
     return typeof claims?.exp === "number" ? claims.exp * 1000 : 0;
   } catch {
@@ -686,9 +686,9 @@ export class CodexDriver implements AgentDriver {
   /// An app-server whose output has grown past the limit (OUTPUT_LIMIT).
   /// A runner from before it kept what the station keeps (`keeps`) is replaced the same way: it gives back the disk under
   /// a turn still running (read again after a crash, that turn is lost), or none at all.
-  private outgrown(host: Host): number | null {
+  private async outgrown(host: Host): Promise<number | null> {
     try {
-      const size = statSync(outFile(this.data, host.proc.info.id)).size;
+      const size = (await stat(outFile(this.data, host.proc.info.id))).size;
       return size > (this.options.outputLimit ?? OUTPUT_LIMIT) || host.proc.info.keeps !== true ? size : null;
     } catch {
       return null;
@@ -705,7 +705,7 @@ export class CodexDriver implements AgentDriver {
     } else if (this.stale(host)) {
       log.info("agents::codex", "codex was updated under its app-server; restarting it", { profile: host.profile, key, running: host.version, installed });
     } else {
-      const output = this.outgrown(host);
+      const output = await this.outgrown(host);
       if (output === null) return;
       log.info("agents::codex", "its app-server's output has grown long, or its runner is from before; restarting it", { profile: host.profile, key, bytes: output, keeps: host.proc.info.keeps === true });
     }
@@ -756,20 +756,23 @@ export class CodexDriver implements AgentDriver {
     // Outgrown with turns running all the while (a profile's app-server, which many chats share: on ccvm one went 19
     // hours without a moment idle, its output 4.9 GB, 2026-11-04): replaced now, the turns on it ending there.
     if (host.turns.size > 0) {
-      if (this.outgrown(host) === null) return;
-      void this.serial(async () => {
-        if (this.hosts.get(host.key) !== host || host.turns.size === 0) return;
-        log.info("agents::codex", "its app-server's output has grown long, or its runner is from before; new turns go to a new one, its own end there", { profile: host.profile, key: host.key, turns: host.turns.size, keeps: host.proc.info.keeps === true });
-        host.draining = true;
-        this.hosts.delete(host.key);
-        this.draining.add(host);
-      }).then(() => (host.draining ? this.drain(host) : undefined)).catch((error) => log.warn("agents::codex", "a codex app-server not replaced", { profile: host.profile, error: String(error) }));
+      void (async () => {
+        if ((await this.outgrown(host)) === null) return;
+        await this.serial(async () => {
+          if (this.hosts.get(host.key) !== host || host.turns.size === 0) return;
+          log.info("agents::codex", "its app-server's output has grown long, or its runner is from before; new turns go to a new one, its own end there", { profile: host.profile, key: host.key, turns: host.turns.size, keeps: host.proc.info.keeps === true });
+          host.draining = true;
+          this.hosts.delete(host.key);
+          this.draining.add(host);
+        });
+        if (host.draining) await this.drain(host);
+      })().catch((error) => log.warn("agents::codex", "a codex app-server not replaced", { profile: host.profile, error: String(error) }));
       return;
     }
     this.idleLater(host);
     void (async () => {
       const installed = await this.installedVersion();
-      if (!host.loginStale && !this.stale(host) && this.outgrown(host) === null) return;
+      if (!host.loginStale && !this.stale(host) && (await this.outgrown(host)) === null) return;
       await this.serial(() => this.retireStale(host.key, installed));
     })().catch((error) => log.warn("agents::codex", "a codex app-server not replaced", { profile: host.profile, error: String(error) }));
   }
@@ -833,10 +836,12 @@ export class CodexDriver implements AgentDriver {
   /// started while one was being replaced (`<id>.<n>`); none this driver holds.
   private async leftRunners(key: string): Promise<RunnerInfo[]> {
     const base = runnerId("codex", key);
-    const runners = await liveRunners(this.data, { strict: true });
+    const runners = (await liveRunners(this.data, { strict: true })).filter((r) => r.id === base || r.id.startsWith(`${base}.`));
+    const heard = await Promise.all(runners.map(listeningSoon));
+    // (who holds which runner looked at after the last await)
     const held = new Set([...this.hosts.values(), ...this.draining].map((h) => h.proc.info.id));
     const left = runners
-      .filter((r) => (r.id === base || r.id.startsWith(`${base}.`)) && !held.has(r.id) && listening(r))
+      .filter((r, i) => heard[i] && !held.has(r.id))
       .sort((a, b) => a.startedAt - b.startedAt);
     for (const r of left) this.claimed.add(r.id);
     return left;
@@ -1012,7 +1017,7 @@ export class CodexDriver implements AgentDriver {
       const left = taken !== null;
       const host = taken ?? (await Host.start(profile, key, this.command, this.data, this.env, this.caBundle, this.options.lent, key === profile.id ? profile.home : cwd, await this.runnerFor(key), this.agents));
       // Taken up on a borrowed login: when that one runs out, as its auth.json says.
-      if (left && this.options.lent?.borrowed(profile)) host.lentUntil = lentExpiry(profile.home);
+      if (left && this.options.lent?.borrowed(profile)) host.lentUntil = await lentExpiry(profile.home);
       this.hosts.set(key, host);
       host.opening++;
       return { host, replaced };

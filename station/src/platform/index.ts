@@ -170,7 +170,7 @@ export type Platform = {
   /// Whether a directory's entries can be made durable by syncing it (not on Windows: NTFS journals them).
   syncsDirectories: boolean;
   /// `link` the same file as `target`, kept so: a symbolic link, or where one is refused a hard link.
-  shareFile(target: string, link: string): void;
+  shareFile(target: string, link: string): Promise<void>;
 
   // The runner (agents/runner.ts).
   /// Whether a runner's socket is a file that can be looked at without connecting (not a Windows pipe).

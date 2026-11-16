@@ -9,7 +9,7 @@ import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { profileRuntimes } from "../src/agents/profiles.ts";
-import { Accounts, accountEmail, accountEmailSoon } from "../src/accounts/index.ts";
+import { Accounts, accountEmailSoon } from "../src/accounts/index.ts";
 import { uncheckOutdated } from "../src/accounts/models.ts";
 import { accessKinds, checkProfile, loginCommand } from "../src/accounts/profiles.ts";
 import { LoginManager, type LoginState, agyCallbackCode } from "../src/accounts/login.ts";
@@ -1346,7 +1346,7 @@ test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had 
     assert.equal(reads, 0, "a profile with its file reads no keychain");
     rmSync(agyToken(notedHome));
     item = `go-keyring-base64:${Buffer.from(token).toString("base64")}`;
-    assert.equal(accountEmail("agy", notedHome), "someone@gmail.com");
+    assert.equal(await accountEmailSoon("agy", notedHome), "someone@gmail.com");
 
     // 2. The item is this profile's account: taken back into its file, and it is signed in on it.
     const back = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home: notedHome, env: {}, machine: false, lang: "en" });

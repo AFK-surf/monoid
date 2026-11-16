@@ -9,8 +9,7 @@
 // - a subagent is a session of its own in the process, said spawned and finished in Grok Build's own notifications;
 // - the model and effort are flags of the process, the station's instructions `_meta.rules`; `--always-approve` runs
 //   without approvals, as the other runtimes do.
-import { mkdirSync, readdirSync, statSync } from "node:fs";
-import { appendFile, readdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -37,25 +36,6 @@ export const USAGE = "stillfail-usage.jsonl";
 /// model has it).
 export const grokEffort = (effort: string | undefined) => (effort && ["low", "medium", "high", "xhigh", "max"].includes(effort) ? effort : undefined);
 
-/// Grok Build keeps a session at <grok home>/sessions/<working directory, escaped>/<id>/: the directory, if it is there
-/// (`home`: the profile's). Before a session starts (`sessionAt` once it runs, off the station's thread).
-export function sessionDir(home: string, sessionId: string): string | null {
-  if (sessionId === "") return null;
-  const root = join(grokHome(home), SESSIONS);
-  let dirs: string[];
-  try {
-    dirs = readdirSync(root);
-  } catch {
-    return null;
-  }
-  for (const d of dirs) {
-    try {
-      if (statSync(join(root, d, sessionId)).isDirectory()) return join(root, d, sessionId);
-    } catch {}
-  }
-  return null;
-}
-
 /// What failed a turn, from what Grok Build said of it (SuperGrok's sign-in is a subscription's). What the program reads
 /// a process by does this (mb/src/acp `classify`); this is what it is held to.
 export const classifyFailure = (text: string): FailureReason => failureOf(text, { auth: ["access token", "subscription"] });
@@ -77,7 +57,8 @@ export function usageLine(answer: Json, time: number, window: number | null = nu
   return JSON.stringify({ type: "stillfail/usage", time, id, model: typeof meta.modelId === "string" ? meta.modelId : null, usage, context, window });
 }
 
-/// `sessionDir`, read off the station's thread: where a turn's usage is written.
+/// Grok Build keeps a session at <grok home>/sessions/<working directory, escaped>/<id>/: the directory, if it is there
+/// (`home`: the profile's): whether a resumed one was kept, and where a turn's usage is written.
 export async function sessionAt(home: string, sessionId: string): Promise<string | null> {
   if (sessionId === "") return null;
   const root = join(grokHome(home), SESSIONS);
@@ -146,10 +127,10 @@ export class GrokDriver extends AcpDriver<GrokSession> {
     return new GrokSession(this, events, options);
   }
 
-  protected starting(options: OpenOptions): AcpStart {
+  protected async starting(options: OpenOptions): Promise<AcpStart> {
     const home = options.profile.home;
-    mkdirSync(grokHome(home), { recursive: true });
-    if (options.resume !== undefined && sessionDir(home, options.resume) === null) throw new Error(`no Grok Build session ${options.resume}`);
+    await mkdir(grokHome(home), { recursive: true });
+    if (options.resume !== undefined && (await sessionAt(home, options.resume)) === null) throw new Error(`no Grok Build session ${options.resume}`);
     const model = options.model ?? profileModel(options.profile);
     // The station's instructions after Grok Build's own, for the session opened or loaded.
     return { command: this.command, args: grokArgs(model, options.effort), env: grokEnv(options), meta: { rules: grokRules(options.instructions) } };

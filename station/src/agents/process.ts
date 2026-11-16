@@ -5,13 +5,12 @@
 // After a crash there is no snapshot; `ackedOffset` says up to where the dead station had handled, which the program
 // reads again (silently) to know where things stand before the rest comes (mb-agents.ts `replayOwn`; a Codex
 // app-server's, `bytesWithin`).
-import { statSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { keyPart } from "./sandbox-name.ts";
 import { log } from "../ops/log.ts";
-import { Lines, RunnerConnection, listening, listeningSoon, runnerOf, runnersDir, type Exit, type RunnerInfo } from "./runner.ts";
+import { Lines, RunnerConnection, listeningSoon, runnerOf, runnersDir, type Exit, type RunnerInfo } from "./runner.ts";
 import { wall } from "../ops/fibers.ts";
 import type { RuntimeKind } from "./runtime.ts";
 
@@ -74,7 +73,7 @@ export async function endRunner(data: string, id: string, label: string, only?: 
   const info = await findRunner(data, id);
   if (!info || (only !== undefined && (info.runner !== only.runner || info.startedAt !== only.startedAt))) return false;
   log.warn("agents::process", "ending a runtime process left by a previous run", { label, runner: info.runner, pgid: info.pgid });
-  if (listening(info)) {
+  if (await listeningSoon(info)) {
     const conn = new RunnerConnection(info, () => {});
     socketOf(conn).on("error", () => {});
     conn.signal("TERM", true);
@@ -96,6 +95,8 @@ export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number
     const socket = createConnection(info.socket);
     let carry = "";
     let done = false;
+    // (what is said after the place is taken from the output's size, read off the station's thread, is not looked at)
+    let ending = false;
     const finish = (at: number, keep: number | null = null) => {
       if (done) return;
       done = true;
@@ -103,16 +104,17 @@ export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number
       socket.destroy();
       resolve({ at, keep });
     };
-    const size = () => {
-      try {
-        return statSync(out).size;
-      } catch {
-        return 0;
-      }
+    const size = () => stat(out).then((s) => s.size, () => 0);
+    const atEnd = () => {
+      if (done || ending) return;
+      ending = true;
+      quiet();
+      void size().then((end) => finish(end));
     };
-    socket.on("error", () => finish(size()));
+    socket.on("error", atEnd);
     socket.on("connect", () => socket.write(JSON.stringify({ op: "attach" }) + "\n"));
     socket.on("data", (chunk) => {
+      if (ending) return;
       carry += chunk.toString("utf8");
       for (let i = carry.indexOf("\n"); i >= 0; i = carry.indexOf("\n")) {
         const message = JSON.parse(carry.slice(0, i));
@@ -120,14 +122,15 @@ export function ackedOffset(info: RunnerInfo, out: string): Promise<{ at: number
         if (message.op === "attached" && Number.isSafeInteger(message.out)) return finish(message.out, Number.isSafeInteger(message.keep) ? Math.min(message.keep, message.out) : null);
         if (message.op === "out" && message.stream === "out") return finish(message.at);
         // The exit comes after all output: nothing of stdout was left to send.
-        if (message.op === "exit") return finish(size());
+        if (message.op === "exit") return atEnd();
       }
     });
     // Nothing of stdout comes: all of it was acknowledged. What it had then is the place; output written just after
     // that look would come in the moment after, and says its own place.
     let quiet = wall.after(400, () => {
-      const end = size();
-      quiet = wall.after(150, () => finish(end));
+      void size().then((end) => {
+        if (!done && !ending) quiet = wall.after(150, () => finish(end));
+      });
     });
   });
 }

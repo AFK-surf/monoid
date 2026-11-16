@@ -6,7 +6,7 @@ import { mkdirSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "n
 import { join } from "node:path";
 import { deviceCode, LoginManager, type LoginState, stripAnsi } from "../src/accounts/login.ts";
 import { MachineLogins } from "../src/accounts/machine.ts";
-import { linkCodexAuth } from "../src/agents/machine-logins.ts";
+import { linkCodexAuthSoon } from "../src/agents/machine-logins.ts";
 import { approval, exe, fakeBrowser, fakeLogin, idToken, machine, sameAs, script, temp, upon } from "./accounts-fakes.ts";
 import { WINDOWS } from "../src/platform/index.ts";
 
@@ -158,13 +158,13 @@ test("signed out, not installed and keychain only are said as such", async () =>
   assert.deepEqual([got[1]!.usable, got[1]!.text], [false, "Codex 已登录，登录信息保存在钥匙串中"]);
 });
 
-test("a machine profile's codex home links the machine's auth.json", () => {
+test("a machine profile's codex home links the machine's auth.json", async () => {
   const m = machine();
   const profile = join(m.home, "profile");
-  linkCodexAuth(profile, m.env);
+  await linkCodexAuthSoon(profile, m.env);
   assert.equal(readlinkSync(join(profile, "auth.json")), join(m.home, ".codex/auth.json"));
   unlinkSync(join(profile, "auth.json"));
   writeFileSync(join(profile, "auth.json"), "{}");
-  linkCodexAuth(profile, m.env);
+  await linkCodexAuthSoon(profile, m.env);
   assert.ok(lstatSync(join(profile, "auth.json")).isSymbolicLink());
 });

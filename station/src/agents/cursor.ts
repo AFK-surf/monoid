@@ -13,8 +13,7 @@
 // - the model is the SDK's selection, `id` or `id[param=value,…]`, set per prompt;
 // - the bridge keeps the transcript itself (<sessions>/<agent id>.jsonl), the turn's usage in it.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "../ops/log.ts";
@@ -54,27 +53,15 @@ export const sdkPrefix = (data: string) => join(data, "runtimes", "cursor");
 
 /// The SDK's package under the prefix (lib/node_modules where npm puts a prefix's packages; node_modules on Windows),
 /// null when it is not installed.
-export function findSdk(data: string): string | null {
+export async function findSdk(data: string): Promise<string | null> {
   for (const root of [join(sdkPrefix(data), "lib", "node_modules"), join(sdkPrefix(data), "node_modules")]) {
     const dir = join(root, ...SDK_PACKAGE.split("/"));
-    if (existsSync(join(dir, "package.json"))) return dir;
+    if (await access(join(dir, "package.json")).then(() => true, () => false)) return dir;
   }
   return null;
 }
 
-/// The SDK's version, as its package says (null: not installed).
-export function sdkVersion(data: string): string | null {
-  const dir = findSdk(data);
-  if (dir === null) return null;
-  try {
-    const v = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"))?.version;
-    return typeof v === "string" ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-/// `sdkVersion` off the station's thread (the software page's reading of it: updates.ts readCursor).
+/// The SDK's version, as its package says (null: not installed; the software page's reading of it: updates.ts readCursor).
 export async function sdkVersionSoon(data: string): Promise<string | null> {
   for (const root of [join(sdkPrefix(data), "lib", "node_modules"), join(sdkPrefix(data), "node_modules")]) {
     const text = await readFile(join(root, ...SDK_PACKAGE.split("/"), "package.json"), "utf8").catch(() => null);
@@ -91,9 +78,9 @@ export async function sdkVersionSoon(data: string): Promise<string | null> {
 
 /// The key a profile signed in to Cursor has (accounts/cursor.ts keeps it in its home's cursor/auth.json); custom
 /// variables bring their own CURSOR_API_KEY.
-export function cursorKey(home: string): string | null {
+export async function cursorKey(home: string): Promise<string | null> {
   try {
-    const key = JSON.parse(readFileSync(join(cursorHome(home), "auth.json"), "utf8"))?.apiKey;
+    const key = JSON.parse(await readFile(join(cursorHome(home), "auth.json"), "utf8"))?.apiKey;
     return typeof key === "string" && key !== "" ? key : null;
   } catch {
     return null;
@@ -103,7 +90,7 @@ export function cursorKey(home: string): string | null {
 /// The station's instructions as a project rule that always applies, in a folder of the session's own beside its working
 /// directory, with the skills of its workspace (`skills`) linked in as .cursor/skills: the SDK reads a folder it is given
 /// as a project's (rules, AGENTS.md, skills) without them being written into the person's project.
-export function rulesFolder(home: string, key: string, instructions: string, skills?: string): string {
+export function rulesFolder(home: string, key: string, instructions: string, skills?: string): Promise<string> {
   const rule = `---\ndescription: still.fail station\nalwaysApply: true\n---\n${instructions}\n`;
   return folderOf(cursorHome(home), key, ".cursor", { file: "stillfail.mdc", text: rule }, "Cursor", skills);
 }
@@ -157,9 +144,9 @@ export class CursorDriver extends OwnProcessDriver<CursorSession> {
   }
 
   /// Its environment: the profile's key, the SDK's home and package, the station's tools' token.
-  private env(options: OpenOptions, sdk: string): Record<string, string> {
+  private async env(options: OpenOptions, sdk: string): Promise<Record<string, string>> {
     const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "cursor"), options.route) };
-    const key = cursorKey(options.profile.home);
+    const key = await cursorKey(options.profile.home);
     if (key !== null && env.CURSOR_API_KEY === undefined) env.CURSOR_API_KEY = key;
     env.STILLFAIL_CURSOR_SDK = sdk;
     env.STILLFAIL_CURSOR_HOME = join(cursorHome(options.profile.home), SESSIONS, SDK_HOME);
@@ -171,19 +158,19 @@ export class CursorDriver extends OwnProcessDriver<CursorSession> {
   async open(options: OpenOptions, events: Events): Promise<CursorSession> {
     const home = options.profile.home;
     const sessions = join(cursorHome(home), SESSIONS);
-    mkdirSync(sessions, { recursive: true });
-    const sdk = this.sdk ?? findSdk(this.data);
+    await mkdir(sessions, { recursive: true });
+    const sdk = this.sdk ?? (await findSdk(this.data));
     // Not installed: the person's message waits for it as for any runtime not on PATH (agents/runner.ts).
     if (sdk === null) throw new CommandMissing("cursor");
-    if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) {
+    if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) {
       // The SDK would not find it; failing here lets the caller start fresh.
       throw new Error(`no Cursor session ${options.resume}`);
     }
     const model = options.model ?? profileModel(options.profile) ?? null;
-    const rules = rulesFolder(home, options.key, options.instructions, options.skills);
+    const rules = await rulesFolder(home, options.key, options.instructions, options.skills);
     const session = new CursorSession(this, "", { busy: false, aborting: false, closed: false }, null, events, model);
     session.toolsUrl = options.mcpUrl;
-    await this.start(session, options, this.node, [this.bridge], this.env(options, sdk));
+    await this.start(session, options, this.node, [this.bridge], await this.env(options, sdk));
     try {
       const opened = await session.request(OPEN, "open", {
         cwd: options.cwd,

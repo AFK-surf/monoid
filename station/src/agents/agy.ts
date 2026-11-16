@@ -8,8 +8,8 @@
 // - a message for the running turn steers it (`promptTakeover`); its model is session/set_model;
 // - the station keeps the transcript (acp.ts KeptTranscript), with each turn's usage: the prompt's answer says it.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, type Stats } from "node:fs";
-import { copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { access, copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Duration, Effect, type Clock } from "effect";
 import { liveClock, wall } from "../ops/fibers.ts";
@@ -707,13 +707,13 @@ export class AgyDriver extends AcpDriver<AgySession> {
     return session;
   }
 
-  protected starting(options: OpenOptions): AcpStart {
+  protected async starting(options: OpenOptions): Promise<AcpStart> {
     if (options.resume !== undefined && !SESSION_ID.test(options.resume)) throw new Error("invalid Antigravity conversation id");
     const sessions = join(agyHome(options.profile.home), SESSIONS);
-    mkdirSync(sessions, { recursive: true });
-    mkdirSync(geminiDir(options.profile.home), { recursive: true });
+    await mkdir(sessions, { recursive: true });
+    await mkdir(geminiDir(options.profile.home), { recursive: true });
     // Not one the station kept.
-    if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) throw new Error(`no Antigravity conversation ${options.resume}`);
+    if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) throw new Error(`no Antigravity conversation ${options.resume}`);
     return { command: this.command, args: agyArgs(options.profile.home), env: agyEnv(options), opening: agyOpening(options.instructions) };
   }
 

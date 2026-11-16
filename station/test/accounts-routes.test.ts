@@ -92,6 +92,8 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
       const found = route.method === method ? route.pattern.exec(path) : null;
       if (found) {
         const a = await route.handle(r, found.slice(1));
+        // (what the profiles' homes say read off the station's thread, as the overview reads it before it is made)
+        await accounts.homesReadSoon();
         return [a.status, JSON.parse(String(a.body))];
       }
     }
@@ -99,6 +101,7 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
   };
   const profile = (id: string) => accounts.profiles().find((p) => p.id === id);
   const view = (id: string) => accounts.profilesView().find((p) => p.id === id);
+  await accounts.homesReadSoon();
   return { data, path, config, store, accounts, call, profile, view, close: () => accounts.close() };
 }
 
@@ -745,7 +748,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     await s.close();
   });
 
-  test("a profile's home is read on the thread for its first view alone; what changes in it shows once read again off the thread, ten seconds on", async () => {
+  test("a profile's home is read off the thread before its first view; what changes in it shows once read again, ten seconds on", async () => {
     // Its time moves only as the test says.
     const time = testClock();
     const data = temp("homes-read");
@@ -757,7 +760,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     mkdirSync(home, { recursive: true });
     const claims = Buffer.from(JSON.stringify({ email: "b@x.com" })).toString("base64url");
     writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
-    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read on the thread again");
+    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read again at once");
     await time.adjust(10_000);
     const seen = await upon((wake) => t.accounts.onChange(wake), () => {
       const v = t.view("sx")!;

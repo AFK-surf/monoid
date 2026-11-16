@@ -264,12 +264,12 @@ describe("the Cursor driver", { concurrency: true }, () => {
     await assert.rejects(driver().open({ ...o, resume: "agent-gone" }, () => {}), /no Cursor session agent-gone/);
   });
 
-  test("the rules folder is the session's own, written again with its instructions", () => {
+  test("the rules folder is the session's own, written again with its instructions", async () => {
     const home = join(data, "rules-home");
     mkdirSync(home, { recursive: true });
-    const a = rulesFolder(home, "k1", "first");
-    assert.equal(rulesFolder(home, "k1", "second"), a);
-    assert.notEqual(rulesFolder(home, "k2", "other"), a);
+    const a = await rulesFolder(home, "k1", "first");
+    assert.equal(await rulesFolder(home, "k1", "second"), a);
+    assert.notEqual(await rulesFolder(home, "k2", "other"), a);
     assert.match(readFileSync(join(a, ".cursor", "rules", "stillfail.mdc"), "utf8"), /\nsecond\n$/);
   });
 

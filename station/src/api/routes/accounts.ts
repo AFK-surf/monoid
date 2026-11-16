@@ -225,10 +225,10 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     ),
     // A sign-in for a new profile: dropped, or given its code. Any other id is no route.
     route("DELETE", /^\/*logins\/+([^/]+)\/*$/, (r, [id]) =>
-      answer((a) => {
+      answer(async (a) => {
         const login = segment(id!);
         if (!a.hasPending(login)) return noRoute(r);
-        a.dropLogin(login);
+        await a.dropLogin(login);
         return ok({ ok: true });
       }),
     ),

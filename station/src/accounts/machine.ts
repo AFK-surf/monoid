@@ -8,8 +8,7 @@
 // reading that differs from the last (`changes`).
 import type { Clock } from "effect";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { codexHome, type Env, readClaudeCredentials } from "../agents/machine-logins.ts";
 import { liveClock } from "../ops/fibers.ts";
@@ -174,28 +173,19 @@ async function codexLogin(env: Env, lang: Lang): Promise<MachineLogin> {
   const text = ran instanceof Error ? "" : `${ran.stdout}${ran.stderr}`;
   const lower = text.toLowerCase();
   if (!lower.includes("logged in") || lower.includes("not logged in")) return login(rt, true, false, tr(lang, "station.machine.signedOut", { name }));
-  const [email, plan] = codexAccount(home);
-  const usable = existsSync(join(home, "auth.json"));
+  const [email, plan] = await codexAccount(home);
+  const usable = await access(join(home, "auth.json")).then(() => true, () => false);
   const line = said(name, email, plan, lang);
   return { runtime: rt, installed: true, loggedIn: true, email, plan, usable, quota: null, text: usable ? line : tr(lang, "station.machine.inKeychain", { text: line }) };
 }
 
 /// The claims of a Codex home's id token (auth.json), when it has one.
-export function codexClaims(home: string): Json | undefined {
-  try {
-    return codexClaimsIn(readFileSync(join(home, "auth.json"), "utf8"));
-  } catch {
-    return undefined;
-  }
-}
-
-/// `codexClaims` without holding the station's thread.
 export async function codexClaimsSoon(home: string): Promise<Json | undefined> {
   const text = await readFile(join(home, "auth.json"), "utf8").catch(() => undefined);
   return text === undefined ? undefined : codexClaimsIn(text);
 }
 
-/// The claims of the id token an auth.json's text has (`codexClaims`).
+/// The claims of the id token an auth.json's text has (`codexClaimsSoon`).
 export function codexClaimsIn(text: string): Json | undefined {
   try {
     const auth = JSON.parse(text);
@@ -210,14 +200,14 @@ export function codexClaimsIn(text: string): Json | undefined {
 /// Codex's ChatGPT workspace and user, kept until the auth file changes. The account id is shared by members of a
 /// workspace, while one person can belong to several workspaces: both identify whose allowance a profile spends.
 const codexIds = new Map<string, { stamp: string; id: string | null }>();
-export function codexAccountIdentity(home: string): string | null {
+export async function codexAccountIdentity(home: string): Promise<string | null> {
   const path = join(home, "auth.json");
   try {
-    const st = statSync(path);
+    const st = await stat(path);
     const stamp = `${st.size}:${st.mtimeMs}:${st.ino}`;
     const kept = codexIds.get(path);
     if (kept?.stamp === stamp) return kept.id;
-    const text = readFileSync(path, "utf8");
+    const text = await readFile(path, "utf8");
     const id = JSON.parse(text)?.tokens?.account_id;
     const user = codexClaimsIn(text)?.sub;
     const found = typeof id === "string" && id.trim() !== "" && typeof user === "string" && user.trim() !== "" ? JSON.stringify([id, user]) : null;
@@ -230,8 +220,8 @@ export function codexAccountIdentity(home: string): string | null {
 }
 
 /// The account in Codex's auth.json: its id token's email and ChatGPT plan (none for an API key, or in the keyring).
-function codexAccount(home: string): [string | null, string | null] {
-  const claims = codexClaims(home);
+async function codexAccount(home: string): Promise<[string | null, string | null]> {
+  const claims = await codexClaimsSoon(home);
   if (!claims) return [null, null];
   const email = claims.email ?? claims["https://api.openai.com/profile"]?.email;
   const plan = claims["https://api.openai.com/auth"]?.chatgpt_plan_type;

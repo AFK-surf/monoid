@@ -153,6 +153,8 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     const own = d.connectKinds?.get(kind);
     return own === undefined ? shown : { ...shown, ...own.shown(c), connection: own.connection(c) ?? shown.connection };
   });
+  // (what each profile's home says read off the thread first: accounts/index.ts `homeSays`)
+  await d.accounts?.homesReadSoon?.();
   const profiles = d.accounts?.profilesView(viewer) ?? [];
   return {
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
