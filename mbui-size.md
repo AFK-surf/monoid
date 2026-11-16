@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 99.98 | 121.57 |
 | [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.07 | 63.6 | 99.78 | 109.34 |
 | [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 121.84 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 119.43 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 2.41 | 3.32 | 14.02 | 35.04 | 54.34 | 30 | 60.29 | 99.44 | 110.61 |
 | [175701d20](https://github.com/AFK-surf/monoid/commit/175701d202611f0de43671c75f1795c7cf51de5a) feat(terminal): full-stack incremental grid render | 2.41 | 3.32 | 14.02 | 35.04 | 54.34 | 30 | 60.29 | 99.44 | 110.61 |
 | [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 115.64 |
-| [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 2.4 | 3.31 | 13.97 | 34.98 | 54.07 | 30 | 60.29 | 99.44 | 121.12 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [55627aa0c](https://github.com/AFK-surf/monoid/commit/55627aa0cf3038177ca8bd08f13733882008aa36) app: add two-chart quota and pace overview to Prof | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [a734e8520](https://github.com/AFK-surf/monoid/commit/a734e85204cd5f7b7de08699a130aba44b11618d) station: zip folders as a stream off the main thre | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [175701d20](https://github.com/AFK-surf/monoid/commit/175701d202611f0de43671c75f1795c7cf51de5a) feat(terminal): full-stack incremental grid render | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.35 |
 | [5b2e2fb2c](https://github.com/AFK-surf/monoid/commit/5b2e2fb2c01c0c881f5d839199e74a9566160cd9) station: one process of a station at a time acts o | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
-| [b03be6583](https://github.com/AFK-surf/monoid/commit/b03be658343b786964aeae069ded9c9bb614a700) mbui: 模型与预设选择面板改为节点（old-panel 1 → 0，model_triple）  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.48 |
