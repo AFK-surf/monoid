@@ -58,6 +58,10 @@ fn init {
     ("src/sfapp/quote_flight_wbtest.mbt", 115644),
     ("src/sfapp/quote_image_wbtest.mbt", 320444),
     ("src/sfapp/screen_links_wbtest.mbt", 128336),
+    // (the real size's screens, made under its own file since their motion is not judged (squeeze_wbtest.mbt's
+    // screen_in): what Studio's run of both windows held at most, 2026-11-16, the wide window's; held till then under
+    // squeeze_wbtest.mbt's bar, which was theirs)
+    ("src/sfapp/real_size_wbtest.mbt", 1975151),
     ("src/sfapp/screens_wbtest.mbt", 1857231),
     ("src/sfapp/search_wbtest.mbt", 127704),
     ("src/sfapp/send_hold_wbtest.mbt", 89156),
