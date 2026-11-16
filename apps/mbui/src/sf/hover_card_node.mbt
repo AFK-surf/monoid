@@ -251,6 +251,12 @@ pub fn hover_card_node(
   let takes = fn() { anchor.takes_input() }
   let state = fn() {
     let mouse = @ui.pointing() is Mouse
+    let keep = held()
+    // (closed, not kept open, no mouse's pointer to rest on it: nothing the window's presses or whether it takes input
+    // would change, so neither is read, and a finger's press anywhere in the window wakes none of its kind)
+    if !mouse && !keep && !open.get() {
+      return (false, false, false, true, false)
+    }
     let on_anchor = mouse &&
       (
         match pointed {
@@ -266,7 +272,7 @@ pub fn hover_card_node(
           None => false
         }
       )
-    (on_anchor, on_card, anchor.window_held(), takes(), held())
+    (on_anchor, on_card, anchor.window_held(), takes(), keep)
   }
   let rests_was = Ref(false)
   owner.reacts(state, fn(s) {
