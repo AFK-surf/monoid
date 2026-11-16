@@ -481,20 +481,25 @@ test "Ultrafast can be selected and cleared on small and large screens with larg
   for win in [corner_windows[0], corner_windows[5]] {
     for scale in [1.0, 1.3] {
       let t = screen_in("newchat-ultrafast-model", win, "zh", font_scale=scale)
-      let held = t.audit()
+      // (what is wrong already, wherever it is drawn: what opening the speeds moves keeps its fault)
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let held = t.audit().map(bare)
       t.click(Button, label="标准")
       t.run_for(squeeze_opening)
       assert_true(t.words().iter().any(fn(w) { w.0 == "Ultrafast" }))
-      assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
-      t.click(MenuItemRadio, label="Ultrafast")
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+      // (on a phone a sheet of buttons, each named with its note; on a wide screen a menu, named by its title)
+      let phone = win.0 == "phone"
+      let item : @view.Role = if phone { Button } else { MenuItemRadio }
+      t.click(item, label=if phone { "Ultrafast " + @sf.t("web-main.model.ultrafastNote") } else { "Ultrafast" })
       t.run_for(squeeze_opening)
       assert_eq(new_fix.speed, "ultrafast")
       t.click(Button, label="Ultrafast")
       t.run_for(squeeze_opening)
-      t.click(MenuItemRadio, label="标准")
+      t.click(item, label="标准")
       t.run_for(squeeze_opening)
       assert_eq(new_fix.speed, "standard")
-      assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
     }
   }
 }
