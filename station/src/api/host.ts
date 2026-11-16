@@ -27,9 +27,9 @@ function hostname(): string {
 
 /// cpu_busy: how busy the CPUs have been since the last look, if that was within a minute; otherwise over the next
 /// moment. If they have not moved yet, return the first sample and let the caller ask again later.
-function cpuBusy(last: Seen): [busy: number | null, seen: Seen, needsTicks: boolean] {
+async function cpuBusy(last: Seen): Promise<[busy: number | null, seen: Seen, needsTicks: boolean]> {
+  const now = await platform.host.cpuTicks();
   const before = last !== null && wall.now() - last.at < 60_000 ? last.ticks : null;
-  const now = platform.host.cpuTicks();
   if (now === null) return [null, last, false];
   const busy = before === null ? null : cpuShare(before, now);
   return [busy === null ? null : Math.round(busy * 100) / 100, { at: wall.now(), ticks: now }, busy === null];
@@ -57,8 +57,7 @@ export async function hostInfo(dataDir: string, last: Seen): Promise<{ info: any
       stationRssBytes: 100_000_000, checkedAt: wall.now(),
     }, seen: null, needsTicks: false };
   }
-  const [sample, space] = await Promise.all([platform.host.sample(), disk(dataDir)]);
-  const [busy, seen, needsTicks] = cpuBusy(last);
+  const [sample, space, [busy, seen, needsTicks]] = await Promise.all([platform.host.sample(), disk(dataDir), cpuBusy(last)]);
   const n = availableParallelism();
   const info = {
     hostname: hostname(),
@@ -86,7 +85,7 @@ export const CPU_EVERY_MS = 15_000;
 export const CPU_SPAN_MS = 60_000;
 
 /// The CPUs' ticks noted every CPU_EVERY_MS for the last CPU_SPAN_MS or so: how busy they have been over about a minute
-/// (not a moment's sample), on the main thread (the ticks are os.cpus or /proc/stat, read at once).
+/// (not a moment's sample), on the main thread (the ticks are os.cpus, or /proc/stat read off it).
 export class CpuWindow {
   private seen: { at: number; ticks: Ticks }[] = [];
 
@@ -151,16 +150,31 @@ export class Host {
     this.read = read;
   }
 
-  /// Notes the CPUs' ticks now and every CPU_EVERY_MS after, until the returned function is called.
+  /// Notes the CPUs' ticks now and every CPU_EVERY_MS after, until the returned function is called. Ticks read off the
+  /// main thread (/proc/stat) are noted as they come, one read at a time: a beat that finds one still out lets it be,
+  /// and one that comes after the stop is not noted.
   follow(): () => void {
-    const note = () => this.cpu.note(wall.now(), platform.host.cpuTicks());
+    let stopped = false;
+    let reading = false;
+    const note = () => {
+      if (reading) return;
+      const ticks = platform.host.cpuTicks();
+      if (!(ticks instanceof Promise)) return this.cpu.note(wall.now(), ticks);
+      reading = true;
+      void ticks.then((read) => { if (!stopped) this.cpu.note(wall.now(), read); }).finally(() => (reading = false));
+    };
     note();
-    return wall.every(CPU_EVERY_MS, note);
+    const stop = wall.every(CPU_EVERY_MS, note); // timer: a sample of this machine (its CPUs)
+    return () => {
+      stopped = true;
+      stop();
+    };
   }
 
   /// How busy the CPUs have been over about the last minute (follow), null until it has looked twice.
-  recentBusy(): { busy: number; seconds: number } | null {
-    return this.cpu.busy(wall.now(), platform.host.cpuTicks());
+  async recentBusy(): Promise<{ busy: number; seconds: number } | null> {
+    const ticks = await platform.host.cpuTicks();
+    return this.cpu.busy(wall.now(), ticks);
   }
 
   /// The machine sample and its GPUs, one at a time however many ask. GPU failures do not prevent the other
@@ -201,7 +215,7 @@ export class Host {
           const start = wall.now();
           await wall.sleep(500);
           for (;;) {
-            const ticks = platform.host.cpuTicks();
+            const ticks = await platform.host.cpuTicks();
             if (ticks === null) { seen = last; break; }
             const busy = cpuShare(first, ticks);
             if (busy !== null) {

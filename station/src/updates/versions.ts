@@ -28,7 +28,7 @@ export function releaseChannel(app: string): Channel | null {
   if (known !== undefined) return known;
   let channel: Channel | null = null;
   try {
-    channel = channelOfId(readFileSync(join(app, "CHANNEL"), "utf8"));
+    channel = channelOfId(readFileSync(join(app, "CHANNEL"), "utf8")); // sync: as Updates is made, before the station serves; kept once read (an install from before channels, none, is asked again)
   } catch {}
   if (channel !== null) releases.set(app, channel);
   return channel;

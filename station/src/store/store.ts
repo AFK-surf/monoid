@@ -692,14 +692,14 @@ export class Store {
     this.#archiveDir = archiveDir;
     this.#temp = temp;
     // Chats published as snapshots (gone with public sharing): what a station from before kept of them.
-    if (temp === null) rmSync(join(dirname(archiveDir), "published"), { recursive: true, force: true });
+    if (temp === null) rmSync(join(dirname(archiveDir), "published"), { recursive: true, force: true }); // sync: once, as the store opens, before the station serves
   }
 
   /// Opens the store at `path` (":memory:" for one of its own); archived threads go to `archive`, else `archive/`
   /// beside the database. One of version 12 is brought up to this one (#upgradeFrom12); one of another is refused.
   static open(path: string, archive: string | null = null, clock: Clock.Clock = liveClock): Store {
     const memory = path === ":memory:";
-    if (!memory) mkdirSync(dirname(path), { recursive: true });
+    if (!memory) mkdirSync(dirname(path), { recursive: true }); // sync: once, as the store opens
     // Busy for a moment (another process reading, the WAL recovered after a crash): waited for, from the first statement.
     // On the main thread, what takes long is said (timed.ts).
     const priority = new Int32Array(new SharedArrayBuffer(8));
@@ -796,7 +796,7 @@ export class Store {
     if (archive !== null) store = new Store(db, archive, null, clock, priority.buffer as SharedArrayBuffer);
     else if (memory) {
       const dir = join(tmpdir(), `stillfail-archive-${randomBytes(8).toString("hex")}`);
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { recursive: true }); // sync: a store in memory (the tests'), as it opens
       store = new Store(db, dir, dir, clock, priority.buffer as SharedArrayBuffer);
     } else store = new Store(db, join(dirname(path), "archive"), null, clock, priority.buffer as SharedArrayBuffer);
     try {
@@ -819,7 +819,7 @@ export class Store {
   /// Closes the database (and removes an in-memory store's archive): the Rust's drop.
   close(): void {
     this.db.close();
-    if (this.#temp !== null) rmSync(this.#temp, { recursive: true, force: true });
+    if (this.#temp !== null) rmSync(this.#temp, { recursive: true, force: true }); // sync: a test's store in memory only
   }
 
   /// Hears what changes from now on; the function returned stops it.
@@ -4447,7 +4447,7 @@ export class Store {
         for (const trigger of outcomes) this.db.exec(trigger.sql);
         this.#run("UPDATE threads SET archived_at = NULL WHERE id = ?", thread);
       });
-      rmSync(file, { force: true });
+      rmSync(file, { force: true }); // sync: once, as a database of version 12 is brought up
     }
     this.db.exec("DROP INDEX IF EXISTS threads_archived; DROP TABLE IF EXISTS items;");
     if (brought > 0) log.info("store", "the threads archived to files are back in the database", { n: brought, lost: lost.join(" ") });

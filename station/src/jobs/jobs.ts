@@ -199,7 +199,7 @@ const SCREEN_FILE = "screen.json";
 /// The claims an earlier station left holding the screen (what it wrote of them: none when there is nothing to read).
 function heldClaims(path: string): Json[] {
   try {
-    const kept: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const kept: unknown = JSON.parse(readFileSync(path, "utf8")); // sync: read once, as Jobs is made, before the station serves
     if (!Array.isArray(kept)) return [];
     return kept.flatMap((c) =>
       typeof c?.job === "string" && Number.isInteger(c?.pid) && typeof c?.at === "number"
@@ -277,14 +277,14 @@ export class Jobs {
     const dir = join(options.data, "jobs");
     this.dir = dir;
     this.data = options.data;
-    for (const sub of ["logs", "bin", "exit"]) mkdirSync(join(dir, sub), { recursive: true });
+    for (const sub of ["logs", "bin", "exit"]) mkdirSync(join(dir, sub), { recursive: true }); // sync: once, as Jobs is made, before the station serves
     // Runnable by name from any shell (on Windows from cmd or PowerShell, Codex's shell there, too).
     const script = join(dir, "bin", JOB_COMMAND_NAME);
     try {
       platform.makeCommand(script, JOB_COMMAND);
     } catch (error) {
       // The script is there for a POSIX shell; only another shell's way to it (no Git's sh on Windows) is missing.
-      if (!existsSync(script)) throw error;
+      if (!existsSync(script)) throw error; // sync: once, as Jobs is made, before the station serves
       log.warn("jobs", "no stillfail-job for cmd and PowerShell", { error: String(error) });
     }
     this.scope = Effect.runSync(Scope.make());
@@ -656,17 +656,34 @@ export class Jobs {
 
   /// The end of a job an earlier station started (not this one's child): its exit file appearing (heard from the watch
   /// on jobs/exit), or its leader gone (looked at once a second: that end writes no file and has no event). The file is
-  /// looked for once a second too only where the directory is not watched: each look waits on the disk on the main
-  /// thread (four jobs followed on a station, 2026-10-25).
+  /// looked for once a second too only where the directory is not watched (four jobs followed on a station,
+  /// 2026-10-25). Every look at the file is off the main thread; one asked while another is out is made once that one
+  /// comes back, so a write it may have missed is not.
   private leaderGone(id: string, pgid: number): Effect.Effect<void> {
     const exit = this.exitFile(id);
-    const over = () => !pidAlive(pgid) || (this.exitWatch === null && existsSync(exit));
+    const there = () => access(exit).then(() => true, () => false);
     const heard = Effect.callback<void>((resume) => {
       let done = false;
-      const look = () => {
-        if (done || !existsSync(exit)) return;
-        done = true;
-        resume(Effect.void);
+      let looking = false;
+      let again = false;
+      const look = (): void => {
+        if (done) return;
+        if (looking) {
+          again = true;
+          return;
+        }
+        looking = true;
+        void there().then((is) => {
+          looking = false;
+          if (done) return;
+          if (is) {
+            done = true;
+            resume(Effect.void);
+          } else if (again) {
+            again = false;
+            look();
+          }
+        });
       };
       this.exitHeard.set(id, look);
       this.watchExits();
@@ -677,7 +694,7 @@ export class Jobs {
         if (this.exitHeard.get(id) === look) this.exitHeard.delete(id);
       });
     });
-    const looked = Effect.sync(over).pipe(
+    const looked = Effect.promise(async () => !pidAlive(pgid) || (this.exitWatch === null && (await there()))).pipe(
       Effect.repeat({ schedule: Schedule.spaced(FOLLOW_LOOK_MS), until: (gone) => gone }),
       Effect.asVoid,
     );
@@ -688,8 +705,11 @@ export class Jobs {
   private watchExits(): void {
     if (this.exitWatch !== null) return;
     try {
+      // No name: the system let events go or ran them together (an overflowed inotify queue, FSEvents' coalescing), so
+      // every job followed looks again.
       this.exitWatch = watch(join(this.dir, "exit"), (_event, file) => {
         if (file) this.exitHeard.get(file.toString())?.();
+        else for (const look of [...this.exitHeard.values()]) look();
       });
       this.exitWatch.unref();
       this.exitWatch.on("error", () => {});

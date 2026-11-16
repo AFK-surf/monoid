@@ -159,7 +159,7 @@ export class PhoneDisplays {
       // trusted, as every one of the shell's is there.
       ...(sdk >= 33 ? ["display_ime_policy=hide"] : []),
     ];
-    const child = spawnAdb(adb, [...server, "shell", `${DISPLAY_MARK} CLASSPATH=${jar} app_process / com.genymobile.scrcpy.Server ${SERVER_VERSION} ${args.join(" ")}`]);
+    const child = spawnAdb(await adbRunnable(adb, [...server, "shell", `${DISPLAY_MARK} CLASSPATH=${jar} app_process / com.genymobile.scrcpy.Server ${SERVER_VERSION} ${args.join(" ")}`]));
     let said = "";
     child.stdout?.on("data", (d) => (said += d));
     child.stderr?.on("data", (d) => (said += d));
@@ -277,15 +277,20 @@ export class PhoneDisplays {
   }
 }
 
-function spawnAdb(path: string, args: string[]): ChildProcess {
+/// How adb is run with `args` (a .cmd, a shim, through what runs it), looked for off the main thread.
+async function adbRunnable(path: string, args: string[]) {
   const env = adbEnv();
-  const r = platform.runnable(path, args, env);
+  return { env, r: await platform.runnableSoon(path, args, env) };
+}
+
+/// adb started as `adbRunnable` said, no window on Windows: at once, by a caller that listens to it in the same turn.
+function spawnAdb({ env, r }: Awaited<ReturnType<typeof adbRunnable>>): ChildProcess {
   return spawn(r.file, r.args, { windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments, env });
 }
 
-function adbRun(path: string, args: string[]): Promise<string> {
+async function adbRun(path: string, args: string[]): Promise<string> {
+  const child = spawnAdb(await adbRunnable(path, args));
   return new Promise((resolve, reject) => {
-    const child = spawnAdb(path, args);
     let out = "", err = "";
     const stop = wall.after(ADB_TIMEOUT, () => child.kill());
     child.stdout?.on("data", (d) => (out += d));

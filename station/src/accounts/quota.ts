@@ -374,9 +374,9 @@ export function grokQuotaOf(said: Json, lang: Lang = stationLang()): ProfileQuot
 }
 
 /// Asks a Grok Build started for it (ACP over stdio) for its billing: initialize, then `x.ai/billing`.
-function grokBilling(env: Env): Promise<Json> {
+async function grokBilling(env: Env): Promise<Json> {
+  const r = await platform.runnableSoon("grok", ["agent", "--no-leader", "stdio"], env as NodeJS.ProcessEnv);
   return new Promise((resolve, reject) => {
-    const r = platform.runnable("grok", ["agent", "--no-leader", "stdio"], env as NodeJS.ProcessEnv);
     const child = spawn(r.file, r.args, { env: env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
     let buffer = "";
     let stderr = "";

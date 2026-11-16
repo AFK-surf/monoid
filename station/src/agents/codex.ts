@@ -22,7 +22,7 @@ import { REPO_RULES_COMMAND } from "./repo-rules.ts";
 import { Fibers, wall } from "../ops/fibers.ts";
 import type { Clock } from "effect";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
-import { findCommand, run } from "../updates/runtimes.ts";
+import { findCommandSoon, run } from "../updates/runtimes.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { versionIn } from "../updates/versions.ts";
 import { findMissingCodexHost } from "../updates/codex-repair.ts";
@@ -638,8 +638,7 @@ export class CodexDriver implements AgentDriver {
     if (this.command !== "codex") return false;
     const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(profile, "codex"), profile.id) };
     const [agentEnv, stationEnv] = await Promise.all([withShellCommand(this.command, env), withShellCommand(this.command, this.env)]);
-    const agent = findCommand(this.command, agentEnv);
-    const station = findCommand(this.command, stationEnv);
+    const [agent, station] = await Promise.all([findCommandSoon(this.command, agentEnv), findCommandSoon(this.command, stationEnv)]);
     return agent !== null && station !== null && agent.onPath === station.onPath && agent.real === station.real;
   }
 

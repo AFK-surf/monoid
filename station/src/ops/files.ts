@@ -28,7 +28,7 @@ export const mcpPortFile = (data: string) => join(data, "run", "mcp.json");
 
 export function rememberedMcpPort(data: string): number | undefined {
   try {
-    const port = JSON.parse(readFileSync(mcpPortFile(data), "utf8")).port;
+    const port = JSON.parse(readFileSync(mcpPortFile(data), "utf8")).port; // sync: read once, before the station serves
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : undefined;
   } catch {
     return undefined;
@@ -67,7 +67,8 @@ export function flag(args: string[], name: string): string | undefined {
 }
 
 /// Written beside and renamed into place, synced, readable by its owner only. Beside under this process's own name:
-/// another process writing the same file at once (`enroll` while the station runs) has its own.
+/// another process writing the same file at once (`enroll` while the station runs) has its own. On the caller's thread:
+/// a lock's state and key are written whole before what follows them goes on (one step that must not be split).
 export function writePrivate(path: string, data: string | Uint8Array) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;

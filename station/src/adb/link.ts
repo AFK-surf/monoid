@@ -880,10 +880,10 @@ async function adbPathSoon(env: NodeJS.ProcessEnv): Promise<string | null> {
 
 /// What adb says to `args` (out, then err), within `timeout`. Said whatever its exit; fails only if it could not be
 /// started or did not answer in time.
-export function run(adb: string, args: string[], timeout: number | null): Promise<string> {
+export async function run(adb: string, args: string[], timeout: number | null): Promise<string> {
+  // A .cmd (a shim) runs through its script or cmd: Node starts none by itself.
+  const r = await platform.runnableSoon(adb, args, process.env);
   return new Promise((resolve, reject) => {
-    // A .cmd (a shim) runs through its script or cmd: Node starts none by itself.
-    const r = platform.runnable(adb, args, process.env);
     const child = spawn(r.file, r.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
     const out: Buffer[] = [];
     const err: Buffer[] = [];

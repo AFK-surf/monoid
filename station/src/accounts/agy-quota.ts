@@ -142,9 +142,9 @@ function authFailure(text: string): boolean {
   );
 }
 
-function runAgyUsage(command: string, env: Env, cwd: string): Promise<{ code: number | null; stdout: string; stderr: string; authPrompted: boolean }> {
+async function runAgyUsage(command: string, env: Env, cwd: string): Promise<{ code: number | null; stdout: string; stderr: string; authPrompted: boolean }> {
+  const r = await platform.runnableSoon(command, ["--log-file", devNull, "-p", "/usage", "--output-format", "json"], env as NodeJS.ProcessEnv);
   return new Promise((resolve, reject) => {
-    const r = platform.runnable(command, ["--log-file", devNull, "-p", "/usage", "--output-format", "json"], env as NodeJS.ProcessEnv);
     const child = spawn(r.file, r.args, {
       cwd,
       env: env as NodeJS.ProcessEnv,

@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync,
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
@@ -134,7 +134,8 @@ function shellCandidates(env: Env, dirs: string[], saved = false): { path: strin
   return found;
 }
 
-/// Git's sh by `env` (shellCandidates, the first there), or null.
+/// Git's sh by `env` (shellCandidates, the first there), or null. Its files are looked at on the caller's thread once an
+/// environment for the process: posixShells keeps what it found.
 export function gitShell(env: Env, there: (path: string) => boolean = isFile): string | null {
   const found = shellCandidates(env, pathOf(env).split(win32.delimiter)).find((c) => (c.beside === undefined || there(c.beside)) && there(c.path));
   return found?.path ?? null;
@@ -221,6 +222,19 @@ function named(path: string): Named {
   return prefix === undefined ? { at: path } : { beside: path.slice(prefix.length) };
 }
 
+/// The largest file read as a shim.
+const SHIM_MOST = 16 * 1024;
+
+/// What the shim at `path` with `text` in it runs, its paths as they are on the machine: a script with Node (the
+/// node.exe `beside` it, else Node on PATH), or the program it hands on to; null for anything else.
+function shimOf(path: string, text: string): { script: string; beside: string } | { program: string } | null {
+  const dir = dirname(path);
+  const at = (n: Named) => ("beside" in n ? join(dir, n.beside) : n.at);
+  const shim = readShim(text);
+  if (shim === null) return null;
+  return "node" in shim ? { script: at(shim.node), beside: join(dir, "node.exe") } : { program: at(shim.program) };
+}
+
 /// What a `.cmd` shim runs when its arguments can go around cmd (as the runner's `unshim`, native/runner), as
 /// `readShim` tells, a shim that hands on followed. Null for anything else.
 export function unshim(path: string, env: NodeJS.ProcessEnv = process.env): { file: string; args: string[] } | null {
@@ -229,24 +243,57 @@ export function unshim(path: string, env: NodeJS.ProcessEnv = process.env): { fi
     let text: string;
     try {
       const st = statSync(path);
-      if (!st.isFile() || st.size > 16 * 1024) return null;
+      if (!st.isFile() || st.size > SHIM_MOST) return null;
       text = readFileSync(path, "utf8");
     } catch {
       return null;
     }
-    const dir = dirname(path);
-    const at = (n: Named) => ("beside" in n ? join(dir, n.beside) : n.at);
-    const shim = readShim(text);
+    const shim = shimOf(path, text);
     if (shim === null) return null;
-    if ("node" in shim) {
-      const beside = join(dir, "node.exe");
-      const node = existsSync(beside) ? beside : (findCommand("node", env)?.onPath ?? "node");
-      return { file: node, args: [at(shim.node)] };
-    }
-    path = at(shim.program);
+    if ("script" in shim) return { file: existsSync(shim.beside) ? shim.beside : (findCommand("node", env)?.onPath ?? "node"), args: [shim.script] }; // sync: runnable's, for a caller that cannot wait (else runnableSoon)
+    path = shim.program;
     if (/\.exe$/i.test(path)) return { file: path, args: [] };
   }
   return null;
+}
+
+/// `unshim` off the station's thread.
+export async function unshimSoon(path: string, env: NodeJS.ProcessEnv = process.env): Promise<{ file: string; args: string[] } | null> {
+  for (let i = 0; i < 4; i++) {
+    if (!/\.cmd$/i.test(path)) return null;
+    const st = await stat(path).catch(() => null);
+    if (st === null || !st.isFile() || st.size > SHIM_MOST) return null;
+    const text = await readFile(path, "utf8").catch(() => null);
+    if (text === null) return null;
+    const shim = shimOf(path, text);
+    if (shim === null) return null;
+    if ("script" in shim) return { file: (await isFileSoon(shim.beside)) ? shim.beside : ((await findCommandSoon("node", env))?.onPath ?? "node"), args: [shim.script] };
+    path = shim.program;
+    if (/\.exe$/i.test(path)) return { file: path, args: [] };
+  }
+  return null;
+}
+
+/// How Node runs `file` (found on PATH already) with `args`, given what its shim runs (`unshim`): a .cmd or .bat around
+/// cmd where it can be, else through it, each argument quoted (one cmd would read into, a quote or a %, refused).
+function runnableOf(file: string, args: string[], env: NodeJS.ProcessEnv, shim: { file: string; args: string[] } | null): ReturnType<Platform["runnable"]> {
+  if (shim !== null) return { file: shim.file, args: [...shim.args, ...args] };
+  for (const a of [file, ...args]) if (/["%\r\n]/.test(a)) throw new Error(`cannot pass ${JSON.stringify(a)} through cmd`);
+  const line = [file, ...args].map((a) => `"${a}"`).join(" ");
+  return { file: env.ComSpec ?? process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
+
+/// Where a Chrome may be (Platform.browsers), best first: Google Chrome, Chromium, then Edge, each under Program Files
+/// (both) and the user's LOCALAPPDATA.
+function browserPlaces(env: Env): string[] {
+  const value = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase()) ?? ""];
+  const roots = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].flatMap((v) => value(v) ?? []);
+  const under = (...rel: string[]) => roots.map((root) => win32.join(root, ...rel));
+  return [...new Set([
+    ...under("Google", "Chrome", "Application", "chrome.exe"),
+    ...under("Chromium", "Application", "chrome.exe"),
+    ...under("Microsoft", "Edge", "Application", "msedge.exe"),
+  ])];
 }
 
 /// A job's group is its runner: any signal ends it, and its job with it.
@@ -496,11 +543,12 @@ export const windows: Platform = {
   runnable(command, args, env) {
     const file = /[\\/]/.test(command) ? command : (findCommand(command, env)?.onPath ?? command);
     if (!/\.(cmd|bat)$/i.test(file)) return { file, args };
-    const shim = unshim(file, env);
-    if (shim !== null) return { file: shim.file, args: [...shim.args, ...args] };
-    for (const a of [file, ...args]) if (/["%\r\n]/.test(a)) throw new Error(`cannot pass ${JSON.stringify(a)} through cmd`);
-    const line = [file, ...args].map((a) => `"${a}"`).join(" ");
-    return { file: env.ComSpec ?? process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+    return runnableOf(file, args, env, unshim(file, env));
+  },
+  async runnableSoon(command, args, env) {
+    const file = /[\\/]/.test(command) ? command : ((await findCommandSoon(command, env))?.onPath ?? command);
+    if (!/\.(cmd|bat)$/i.test(file)) return { file, args };
+    return runnableOf(file, args, env, await unshimSoon(file, env));
   },
   posixShell,
   posixShellSoon,
@@ -702,16 +750,11 @@ export const windows: Platform = {
     }));
   },
 
-  browsers(env) {
-    const value = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase()) ?? ""];
-    const roots = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].flatMap((v) => value(v) ?? []);
-    const under = (...rel: string[]) => roots.map((root) => win32.join(root, ...rel));
-    const found = [
-      ...under("Google", "Chrome", "Application", "chrome.exe"),
-      ...under("Chromium", "Application", "chrome.exe"),
-      ...under("Microsoft", "Edge", "Application", "msedge.exe"),
-    ];
-    return [...new Set(found)].filter((p) => existsSync(p));
+  browsers: (env) => browserPlaces(env).filter((p) => existsSync(p)), // sync: chromeHost's first look, before the station serves
+  async browsersSoon(env) {
+    const places = browserPlaces(env);
+    const there = await Promise.all(places.map((p) => access(p).then(() => true, () => false)));
+    return places.filter((_, i) => there[i]);
   },
   hasDisplay: () => true,
 

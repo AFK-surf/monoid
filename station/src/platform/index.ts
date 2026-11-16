@@ -40,8 +40,9 @@ export type HostSample = {
 
 /// How the host page says the machine (GET /host): memory, CPU, uptime, the OS.
 export type Host = {
-  /// CPU time since boot, all CPUs together: (busy, total); none when it cannot be read.
-  cpuTicks(): [busy: number, total: number] | null;
+  /// CPU time since boot, all CPUs together: (busy, total); none when it cannot be read. At once where the system's
+  /// counters give it (os.cpus: macOS, Windows), else a file read off the station's thread (Linux's /proc/stat).
+  cpuTicks(): [busy: number, total: number] | null | Promise<[busy: number, total: number] | null>;
   /// The rest, read with commands and files not waited on: it is read on the main thread (api/host.ts).
   sample(): Promise<HostSample>;
 };
@@ -88,6 +89,8 @@ export type Platform = {
   /// How Node runs a command (a name on PATH, or a path) with `args`: on Windows a .cmd is run around cmd when it can
   /// be (npm's, Vite+'s), else through it, quoted.
   runnable(command: string, args: string[], env: NodeJS.ProcessEnv): { file: string; args: string[]; windowsVerbatimArguments?: true };
+  /// `runnable` off the station's thread (on Windows, PATH looked in and a shim read).
+  runnableSoon(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ file: string; args: string[]; windowsVerbatimArguments?: true }>;
   /// The shell jobs, device commands and the vault's runs go under (/bin/sh; Git for Windows' sh, found by `env`: an
   /// error that says how to get it where there is none).
   posixShell(env?: NodeJS.ProcessEnv): string;
@@ -236,6 +239,8 @@ export type Platform = {
   /// Where a Chrome may be on this machine, best first: Google Chrome's, then Chromium's and Edge's (each a file that
   /// is there).
   browsers(env: Env): string[];
+  /// `browsers` off the station's thread.
+  browsersSoon(env: Env): Promise<string[]>;
   /// Whether a program here can show windows (a browser with its own): a Mac's or Windows' desktop; on Linux a display
   /// the environment names (DISPLAY, WAYLAND_DISPLAY).
   hasDisplay(env: Env): boolean;

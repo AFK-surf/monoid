@@ -59,13 +59,13 @@ export function putOwnNodes(env: Env, data: string) {
   if (build === null) return;
   let names: string[];
   try {
-    names = readdirSync(ownNodeHome(data)).filter((n) => n.startsWith("node-v"));
+    names = readdirSync(ownNodeHome(data)).filter((n) => n.startsWith("node-v")); // sync: as Updates is made, before the station serves
   } catch {
     return;
   }
   for (const name of names.sort().reverse()) {
     const bin = join(ownNodeHome(data), name, build.bin);
-    if (existsSync(join(bin, build.npm))) platform.appendPath(env, bin);
+    if (existsSync(join(bin, build.npm))) platform.appendPath(env, bin); // sync: as above
   }
 }
 
@@ -91,7 +91,7 @@ export function removeOwnNodeLinks(env: Env, data: string) {
   for (const name of ["node", "npm", "npx", ...RUNTIMES.map(kindCommand)]) {
     const link = join(bin, name);
     try {
-      if (lstatSync(link).isSymbolicLink() && readlinkSync(link).startsWith(own)) unlinkSync(link);
+      if (lstatSync(link).isSymbolicLink() && readlinkSync(link).startsWith(own)) unlinkSync(link); // sync: as Updates is made, before the station serves
     } catch {}
   }
 }
@@ -109,9 +109,7 @@ export type Found = PlatformFound;
 const real = (p: string): Promise<string | null> => realpath(p).catch(() => null);
 const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
 
-/// A command on `env`'s PATH as a shell finds it (platform.findCommand).
-export const findCommand = (name: string, env: Env): Found | null => platform.findCommand(name, env);
-/// `findCommand` off the station's thread.
+/// A command on `env`'s PATH as a shell finds it (platform.findCommandSoon), off the station's thread.
 export const findCommandSoon = (name: string, env: Env): Promise<Found | null> => platform.findCommandSoon(name, env);
 
 /// Why a runtime cannot be updated from here: said in the language it is read in.

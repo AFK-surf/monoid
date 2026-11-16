@@ -119,8 +119,8 @@ const CLAUDE_DROP = ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_T
 /// What a command said, and how it ended: undefined when it could not be run at all (not installed).
 async function run(command: string, args: string[], env: Env): Promise<{ ok: boolean; stdout: string; stderr: string } | undefined | Error> {
   env = await withShellCommand(command, env);
+  const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
   return new Promise((resolve) => {
-    const r = platform.runnable(command, args, env as NodeJS.ProcessEnv);
     execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 20_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") return resolve(undefined);
       if (error && error.killed) return resolve(new Error(`${command} took too long`));
