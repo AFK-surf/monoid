@@ -16,7 +16,9 @@ fn message_menu_node(row : @view.View, s : MessageShare) -> Unit {
 }
 
 ///|
-/// Agent `agent`'s card (agent_hover's: agent_card_node, in a tile) over `trigger` while a mouse's pointer rests on it,
+/// Agent `agent()`'s card (agent_hover's: agent_card_node, in a tile, of the agent it names as it opens) over `trigger`
+/// while a mouse's pointer rests on it and it names one (one the chat's agents come to name after the row was made
+/// has its card from then),
 /// to a finger as it holds it (not `pointed`), in the chat `here` is; kept open while what was opened from it is.
 /// `words_along`: a trigger that is words (its name), the card's words starting where they start. `press`: what a press
 /// on `trigger` does (its name's: its history), which the card's hand then takes (one gesture a node); none, the
@@ -27,7 +29,7 @@ fn message_agent_card_node(
   trigger : @view.View,
   src : Source,
   here : MessageNodeHere,
-  agent : String,
+  agent : () -> String,
   words_along? : Bool = false,
   press? : () -> Unit,
   pointed? : Bool = false,
@@ -47,12 +49,12 @@ fn message_agent_card_node(
     @sf.hover_card_node(
       here.tips,
       trigger,
-      fn(c) { held.val = agent_card_node(c, src, message_node_ref(here), agent, here.tips, card) },
+      fn(c) { held.val = agent_card_node(c, src, message_node_ref(here), @signals.untracked(agent), here.tips, card) },
       tile=true,
       along_offset=if words_along { -@sf.panel_pad - hover_words_in } else { 0.0 },
       held=fn() { (held.val)() },
       press?,
-      pointed?=if pointed { Some(fn() { trigger.pointed_in() }) } else { None },
+      pointed?=if pointed { Some(fn() { agent() != "" && trigger.pointed_in() }) } else { None },
     ),
   )
 }

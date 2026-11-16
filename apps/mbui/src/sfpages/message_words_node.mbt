@@ -107,11 +107,11 @@ fn mine_bubble_node(
     match flies_from {
       Some((x, y)) =>
         b.flies_in(
-          // det-ok(motion-length): words sent's own, the old page's curve (sfbase's flight_across, flight_up: across
-          // first on the flight's ease, up 12% late), sf/motion.mbt kind 4
-          @motion.flight_by(@motion.tween(@sfbase.flight_desk_ms, ease=Flight)),
+          sent_part_flight,
           fn(to) { Some((x - bubble_side, y - bubble_top, to.2, to.3)) },
           up_late=sent_up_late,
+          bare_from=true,
+          look_late=sent_ground_late,
         )
         |> ignore
       None => ()
@@ -155,6 +155,9 @@ fn mine_said_node(
   flying? : () -> Bool = fn() { false },
 ) -> MessageRowNode {
   let said = fn() { out() is None }
+  // (what is under its words seen once they land, where they fly here from the composer: none of it as they pass up
+  // over its place, coming in from their landing (the old page's time-in: enter_ms from `lands`); at once otherwise)
+  let landed = @motion.Way::new(1.0)
   // (sent from here a moment ago: its bubble flies from where its words stood in the composer's field (mine_bubble_node),
   // landing then; what did not go is said under it once they have, never under them on their way)
   let flies_from = @sfbase.sent_from_take(key)
@@ -165,9 +168,15 @@ fn mine_said_node(
     r.box(fn(col) {
       @sf.style_node(col, fn() { mine_column })
       // (what it quotes ahead of its files and words, in the order the composer held them: mine_message's; its place
-      // the row's as it was made, what was sent from here its key's)
-      let at = if @signals.untracked(said) { message_place(@signals.untracked(m)) } else { key }
-      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, at, said=fn() { m().said }, from=quotes_from)
+      // the row's as it was made, what was sent from here its key's: the row's own, which the core's row that takes it
+      // over is told as too (sfbase's thumb_occurrence, by rows_sent_as), so its thumbnails and a preview opened from
+      // the chat's message name one place)
+      let made_at = if @signals.untracked(said) { message_place(@signals.untracked(m)) } else { key }
+      let at = fn() { made_at }
+      // (sent from here a moment ago: each of its files flying from where it stood in the composer, as its words do:
+      // sfbase's sent_part_take, by its row's key)
+      let flies_of = fn(part : String) { @sfbase.sent_part_take(key, part) }
+      message_quotes_node(col, src, here, fn() { m().quotes }, fn() { m().attachments }, true, made_at, said=fn() { m().said }, from=quotes_from, flies_of~)
       message_files_node(
         col,
         src,
@@ -179,15 +188,24 @@ fn mine_said_node(
         },
         fn() { true },
         fn() { if said() { Some((@sf.t("web-main.chat.you"), "person", m().ts)) } else { None } },
-        at + "/f",
+        fn() { at() + "/f" },
+        flies_of~,
       )
+      // (on its way, its other files still going up: how far, or why it did not go)
+      if !@signals.untracked(said) {
+        outbox_uploads_node(col, here, out)
+      }
       col.show(fn() { m().text != "" }, fn(b) {
         // (what is read in it starts here, its bubble's words: View::read_from)
         b.read_from() |> ignore
         // (and what is picked of it is of its key, its bubble's words alone: quoted by it, all of them taken by 全选,
         // chat_quote_node)
         @ui.picked_of(b, key, whole=true) |> ignore
-        let cards = message_link_card(src, here.station, "", m)
+        let cards = message_link_card(src, here.station, fn() { "" }, m)
+        if flies_from is Some(_) {
+          landed.put(0.0)
+          landed.go(1.0, @motion.tween(@sf.enter_ms, ease=Out), at=b.cause_at() + @sfbase.flight_desk_ms)
+        }
         mine_bubble_node(
           b,
           here,
@@ -228,6 +246,9 @@ fn mine_said_node(
         }
       }
       col.show(at_once=true, lone, fn(n) {
+        if flies_from is Some(_) {
+          n.alpha(By(fn() { landed.shown_on(n) })) |> ignore
+        }
         n.pick(under, leave=msg_part_leave_ms, fn(u, now) {
           match now {
             MineBlocked =>
@@ -349,22 +370,22 @@ fn person_said_node(
         person_avatar_node(av, src, here, fn() { m().author }, fn() { m().by.name }, fn() { m().by.picture })
       },
       fn(h) {
-        message_name_node(h, src, here, fn() { m().by.name }, fn() { message_agent_of(here, m().by.agent) }, fn() {
-          m().by.from
-        })
+        // (a person's row, never one of the chat's agents': were it to come to be one, its row is another kind, made
+        // again as an agent's: chat_body_node's pick by its kind)
+        message_name_node(h, src, here, fn() { m().by.name }, fn() { "" }, fn() { m().by.from }, may_be_agent=false)
       },
       None,
       fn(b) {
         // (what it quotes ahead of its words, its other files under them, as the old body's)
-        let at = message_place(@signals.untracked(m))
-        message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, at, said=fn() { m().said })
+        let at = fn() { message_place(m()) }
+        message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, message_place(@signals.untracked(m)), said=fn() { m().said })
         b.show(fn() { m().text != "" }, fn(w) {
           // (what is read in it starts here, its words under its head line: View::read_from)
           w.read_from() |> ignore
           // (and what is picked of it is of its key, its words alone, not its head line: quoted by it, all of them
           // taken by 全选, chat_quote_node)
           @ui.picked_of(w, key, whole=true) |> ignore
-          person_words_node(w, m, found~, found_at~, lit~, cards=(here.tips, message_link_card(src, here.station, "", m))) |> ignore
+          person_words_node(w, m, found~, found_at~, lit~, cards=(here.tips, message_link_card(src, here.station, fn() { "" }, m))) |> ignore
         })
         message_files_node(
           b,
@@ -377,7 +398,7 @@ fn person_said_node(
           },
           fn() { false },
           fn() { Some((m().by.name, "person", m().ts)) },
-          at + "/f",
+          fn() { at() + "/f" },
           over=fn() { if m().text != "" { files_under_words - msg_gap } else { 0.0 } },
         )
       },
@@ -416,3 +437,16 @@ fn message_files_at(here : MessageNodeHere, said : () -> Bool) -> MessageFilesAt
 ///|
 /// How much of their flight words sent rise after setting out across (sfbase's flight_up: 12% late).
 let sent_up_late : Double = 0.12
+
+///|
+/// How much of their way words sent fly bare, out of the field, before their bubble's ground and edge come round them
+/// (the old page's flight_ground: none till a quarter of the way, flight.mbt's flight_settle).
+let sent_ground_late : Double = 0.24
+
+///|
+/// The way what is sent from here flies from where it stood in the composer to its place in its message (its words, and
+/// each of its files and quotes: the old page's curve, sfbase's flight_across and flight_up: across first on the
+/// flight's ease, up sent_up_late late), sf/motion.mbt kind 4.
+// det-ok(motion-length): words sent's own, the old page's flight (sfbase's flight_desk_ms), sf/motion.mbt kind 4
+// kept across runs: constant flight curve
+let sent_part_flight : @view.Flight = @motion.flight_by(@motion.tween(@sfbase.flight_desk_ms, ease=Flight))

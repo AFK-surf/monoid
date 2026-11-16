@@ -13,47 +13,52 @@ pub fn spokes_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let box = box.unwrap_or(size)
-  let u = size / 24.0
-  let mid = box / 2.0
-  let pi = 3.141592653589793
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(v) {
     made.val = Some(v)
     v
     .width(Is(Some(box)))
     .height(Is(Some(box)))
-    .lines(By(fn() {
-      let ink = color()
-      let lines = []
-      for i in 0..<8 {
-        let a = i.to_double() * pi / 4.0
-        let dx = @dmath.sin(a) * u
-        let dy = -@dmath.cos(a) * u
-        lines.push(
-          @ui.line(
-            [(mid + dx * 4.8, mid + dy * 4.8), (mid + dx * 9.6, mid + dy * 9.6)],
-            width=2.9 * u,
-            color=alpha(ink, spoke_alpha[(8 - i) % 8]),
-          ),
-        )
-      }
-      lines
-    }))
-    .turn(
-      By(fn() {
-        // (held at its first step while motion is reduced, as spoke_turn's: nothing woken for it)
-        if @ui.reduced_motion() {
-          0.0
-        } else {
-          v.cycle_resident(8.0 * spoke_step_ms) * 2.0 * pi
-        }
-      }),
-      drawn=true,
-    )
+    .lines(By(fn() { spokes_lines(size, box, color()) }))
+    .turn(By(fn() { spokes_turn(v) }), drawn=true)
     |> ignore
   })
   |> ignore
   made.val.unwrap()
+}
+
+///|
+/// The spokes' lines (spokes_node's), `size` across in a box `box` across, in `ink`: for a node that draws them as it
+/// is told to, in place (an agent's badge's state).
+pub fn spokes_lines(size : Double, box : Double, ink : Int64) -> Array[@paint.Line] {
+  let u = size / 24.0
+  let mid = box / 2.0
+  let pi = 3.141592653589793
+  let lines = []
+  for i in 0..<8 {
+    let a = i.to_double() * pi / 4.0
+    let dx = @dmath.sin(a) * u
+    let dy = -@dmath.cos(a) * u
+    lines.push(
+      @ui.line(
+        [(mid + dx * 4.8, mid + dy * 4.8), (mid + dx * 9.6, mid + dy * 9.6)],
+        width=2.9 * u,
+        color=alpha(ink, spoke_alpha[(8 - i) % 8]),
+      ),
+    )
+  }
+  lines
+}
+
+///|
+/// How far node `v`'s spokes are turned as it is drawn (spokes_node's): once round every eight steps (spoke_turn's),
+/// held at its first step while motion is reduced, as spoke_turn's: nothing woken for it.
+pub fn spokes_turn(v : @view.View) -> Double {
+  if @ui.reduced_motion() {
+    0.0
+  } else {
+    v.cycle_resident(8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
+  }
 }
 
 ///|

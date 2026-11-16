@@ -54,7 +54,13 @@ fn message_row_frame_node(
     // list's gap for the wide's is what the window or the system's bars did, no motion of the row's (sf/motion.mbt).
     // Picked by the room itself, a list narrowed under chat_narrow_w by the bars the system took made its way from
     // the wide gap to the narrow, laid out none till its end, then stepped there: chat_pops_wbtest's 中屏 beside them)
-    root.pick(fn() { row_top_kind(top()) }, fn(gap, _) { gap.height(By(fn() { Some(top()) })) |> ignore })
+    // (the room laid out anew at another width as the page's column sets off on its way to it (a side panel sliding in
+    // or out: sfbase's column_sets_off), its height going on its list's way from that moment, what is under it in the
+    // row with it, never a step of the gap's in the frame it sets off)
+    root.pick(fn() { row_top_kind(top()) }, fn(gap, _) {
+      gap.height(By(fn() { Some(top()) })) |> ignore
+      @sfbase.column_set_off_each(gap, fn() { if gap.alive() { gap.resizes() |> ignore } })
+    })
     // (its middle, as wide as the list less its sides, those its padding: the old row's line and its middle
     // (row_line, row_middle) one node, no box of room either side)
     root.box(fn(m) {

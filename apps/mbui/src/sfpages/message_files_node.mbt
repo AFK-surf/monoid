@@ -38,8 +38,10 @@ fn MessageFilesAt::here(self : MessageFilesAt) -> MessageHere {
 /// A message's files in `parent` (message_files'), `list` as it is now, at the column's end where they are the viewer's
 /// (`mine`): in rows by the width given, 6 apart along a row and between rows, a picture's and a video's box their data's
 /// at most that width, a card as wide as what it says (236 at most, that width at most). `by`: whose message they are
-/// (author, role, ts), for 引用 in their menus; `place` says where they are shown, `at` names where they are (thumb_occurrence's);
-/// `over`: the room over them (message_files').
+/// (author, role, ts), for 引用 in their menus; `place` says where they are shown, `at()` names where they are as it is now
+/// (thumb_occurrence's: a message sent from here by its key on its way, the chat's once the chat has it); `over`: the
+/// room over them (message_files'). A picture's and a video's size follow the width given as bindings: the window or a
+/// pane resized makes none of them again (what is held on one, how it came in, stay).
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn message_files_node(
@@ -50,8 +52,9 @@ fn message_files_node(
   list : () -> Array[Attachment],
   mine : () -> Bool,
   by : () -> (String, String, String)?,
-  at : String,
+  at : () -> String,
   over? : () -> Double = fn() { 0.0 },
+  flies_of? : (String) -> (Double, Double, Double, Double)? = fn(_) { None },
 ) -> Unit {
   // (none, as most messages have: nothing worked out for them but whether there are some)
   parent.show(fn() { list().length() > 0 }, fn(s) {
@@ -59,6 +62,10 @@ fn message_files_node(
     // itself below goes through this, not through the message again)
     let listed = @signals.computed(fn(_) { list() })
     let list = fn() { listed.get() }
+    // (across all of what holds it, as its room is: a message of one's own lines its files up at its end in it
+    // (files_wrap_end), never by the box shrinking to them, which would give its room one width measured and another
+    // laid out, all made by it said again between the two at each layout)
+    s.width_share(Is(1.0)) |> ignore
     s.by_room(fn(r, room) {
       r.box(fn(files) {
         // (in a picture of the chat being shared, the room each one's ✕ hangs in past its top kept over the first line,
@@ -85,28 +92,47 @@ fn message_files_node(
             },
           )
           let a = fn() { found.get() }
+          // (sent from here a moment ago: where its tile stood in the composer, which it flies from as it is made:
+          // sfbase's sent_part_take, taken once)
+          let from = @signals.untracked(fn() { flies_of(k.get()) })
+          // (only in the change it was made in, the send's: made again later (its size come with the station's copy
+          // of it, as its message is delivered), it is there as it is, never flown again from where its tile stood
+          // then, nor a flight paired as that change lays out what is made for it)
+          let made_at = slot.cause_at()
+          let from_now = fn(v : @view.View) { if v.cause_at() == made_at { from } else { None } }
           slot.box(fn(item) {
             item.max_width(By(fn() { Some(room.width()) })).shrink(Is(0.0)) |> ignore
             // (in a picture of the chat being shared, as it draws it: publish.mbt)
             let drawn = fn(item : @view.View) {
             item.pick(fn() { file_kind(a().name) }, fn(p, kind) {
               match kind {
-                "image" =>
-                  // (its box as its data says it, at most the width given; made again only for another size, as
-                  // the width given or its data changes: a block given another picture of its size keeps its nodes)
-                  p.pick(at_once=true, fn() { media_size(a(), image_least, image_min_side, room.width()) }, fn(q, size) {
-                    message_image_node(q, src, place, a, by, at, size.0, size.1)
+                "image" => {
+                  // (its box as its data says it, at most the width given, bound to both; the same nodes whatever its
+                  // data comes to say, a picture sent from here told its size as the core's row takes it over keeping
+                  // its flight and how it came in: what shows of it bound inside, message_image_node)
+                  let size = fn() { media_size(a(), image_least, image_min_side, room.width()) }
+                  message_image_node(p, src, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies_from=from_now(p))
+                }
+                "video" => {
+                  // (made anew for another file, its still read for the file it is made for; its size bound)
+                  let size = fn() { media_size(a(), video_least, 0.0, room.width()) }
+                  p.pick(at_once=true, fn() { @sfbase.file_key(a()) }, fn(q, _) {
+                    message_video_node(q, src, tips, place, a, by, at, fn() { size().0 }, fn() { size().1 }, flies_from=from_now(q))
                   })
                   |> ignore
-                "video" =>
-                  // (made anew for another file, or another size: its still is read for the file it is made for)
-                  p.pick(
-                    at_once=true,
-                    fn() { (@sfbase.file_key(a()), media_size(a(), video_least, 0.0, room.width())) },
-                    fn(q, made) { message_video_node(q, src, tips, place, a, by, at, made.1.0, made.1.1) },
-                  )
-                  |> ignore
-                _ => message_file_card_node(p, src, tips, place, a, by, at) |> ignore
+                }
+                _ => {
+                  let card = message_file_card_node(p, src, tips, place, a, by, at)
+                  // (its card carried from its tile, from the tile's size to its own, as words sent go)
+                  match from_now(p) {
+                    // (from where its tile stood, at its own size: a card is no tile's square, never drawn
+                    // stretched to one on its way)
+                    Some(r) =>
+                      card.flies_in(sent_part_flight, fn(to) { Some((r.0, r.1, to.2, to.3)) }, up_late=sent_up_late)
+                      |> ignore
+                    None => ()
+                  }
+                }
               }
             })
             }
@@ -120,6 +146,7 @@ fn message_files_node(
       })
       |> ignore
     })
+    .width_share(Is(1.0))
     |> ignore
   })
 }
@@ -144,7 +171,7 @@ fn message_file_card_node(
   place : MessageFilesAt,
   a : () -> Attachment,
   by : () -> (String, String, String)?,
-  at : String,
+  at : () -> String,
 ) -> @view.View {
   // (what the core says of its download, and of its being brought once opened and let go: kept)
   let coming = fn() { card_coming(src, place.here(), a()) }
@@ -183,7 +210,7 @@ fn message_file_card_node(
       match on {
         Remove => if kept is Some(_) { keeping_stop(src, id) } else { download_cancel(src, id) }
         Retry => download_retry(src, id)
-        Open => open_file(here, a, at~)
+        Open => open_file(here, a, at=at())
         Restore => ()
       }
     },
@@ -196,8 +223,12 @@ fn message_file_card_node(
         Some(q) => items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.quote"), q, icon="quote")))
         None => ()
       }
-      items.push(beside_option(here, a, at))
-      items.push(download_option(src, here, a, owner))
+      // (those offered here alone, no line where one is not: message_files's file_options)
+      for x in [beside_option(here, a, at()), download_option(src, here, a, owner)] {
+        if x is Some(_) {
+          items.push(x)
+        }
+      }
       @sf.menu(items, from=@sf.at_point(x, y))
     },
   )

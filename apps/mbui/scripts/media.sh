@@ -6,8 +6,9 @@
 #   Scene: MBUI_WIN, MBUI_FILM_SCALE, MBUI_FILM_PLATFORM, MBUI_NATIVE_INPUT, MBUI_POINTING, MBUI_KEYBOARD, MBUI_DARK,
 #   MBUI_LOCALE, MBUI_FONT_SCALE and the fixture's (all of film's: mbui/src/film/film.mbt; the made-up station's pace,
 #   MBUI_FIX_PACE=DELIVER,ANSWER,END and MBUI_FIX_CORE=MS: src/sffixture fix_pace_said; MBUI_OPEN_WHOLE=1: what opens
-#   waits for what it reads, src/sffilmscene; MBUI_FILM_FACE_MS=MS the people's faces decoded that late, and
-#   MBUI_FILM_FACE_WAITS=1 a page opening waiting for them, src/sffilmscene: the native film's only). A picture: MBUI_PICTURE_FRAME=K
+#   waits for what it reads, src/sffilmscene; MBUI_CHAT_PAGE=nodes: the chat's page made as nodes, 试用新对话页;
+#   MBUI_FILM_FACE_MS=MS the people's faces decoded that late, and MBUI_FILM_FACE_WAITS=1 a page opening waiting for
+#   them, src/sffilmscene: the native film's only). A picture: MBUI_PICTURE_FRAME=K
 #   or MBUI_PICTURE_AT=MS, MBUI_PICTURE_TRANSPARENT=1. A film: MBUI_FILM_FPS (60), also OUT.last.png and OUT.textrec.
 #   Beside each result OUT.scene.json records the scripts, settings and hashes. It fails rather than omit what mbui
 #   cannot draw (a native view, an image not decoded, a corner fault) unless MBUI_FILM_ALLOW_INCOMPLETE=1 or
@@ -154,6 +155,7 @@ jq -n --rawfile drive "$work/drive" --rawfile prepare "$work/prepare" \
   --arg failed_why "${MBUI_FAILED_WHY:-}" --arg window "${MBUI_WINDOW:-}" --arg said "${MBUI_SAID:-}" \
   --arg core_ms "${MBUI_CORE_MS:-}" --arg update "${MBUI_UPDATE:-}" --arg updates_ms "${MBUI_UPDATES_MS:-}" \
   --arg fix_pace "${MBUI_FIX_PACE:-}" --arg fix_core "${MBUI_FIX_CORE:-}" --arg open_whole "${MBUI_OPEN_WHOLE:-}" \
+  --arg chat_page "${MBUI_CHAT_PAGE:-}" \
   --arg autofill "${MBUI_FILM_AUTOFILL:-}" --argjson extra "${MBUI_MEDIA_RECORD:-null}" \
   --arg face_ms "${MBUI_FILM_FACE_MS:-}" --arg face_waits "${MBUI_FILM_FACE_WAITS:-}" \
   '{version: 1, kind: $kind, made_utc: $made, source: ({app: $app, revision: $revision, dirty: $dirty, runtime_key: $runtime_key, executable_sha256: $exe_sha} +
@@ -168,7 +170,8 @@ jq -n --rawfile drive "$work/drive" --rawfile prepare "$work/prepare" \
       transparent: $transparent, allow_incomplete: $allow_incomplete, allow_corner_faults: $allow_corner_faults, local_station_sha256: $station_sha,
       fixture_options: {hold: $hold, failed: $failed, failed_why: $failed_why, window: $window, said: $said,
         core_ms: $core_ms, update: $update, updates_ms: $updates_ms, autofill: $autofill,
-        fix_pace: $fix_pace, fix_core: $fix_core, open_whole: $open_whole, face_ms: $face_ms, face_waits: $face_waits}},
+        fix_pace: $fix_pace, fix_core: $fix_core, open_whole: $open_whole, chat_page: $chat_page, face_ms: $face_ms,
+        face_waits: $face_waits}},
     extra: $extra}' > "$work/scene.json"
 
 # The result is only published after the complete render and its record have succeeded. Each file is renamed on the

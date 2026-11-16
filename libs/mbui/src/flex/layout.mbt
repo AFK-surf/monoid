@@ -1347,6 +1347,8 @@ fn layout_flex(
       if changed > 0.0 {
         node.pre_gen = -1
         node.cache_n = 0
+        // (what it holds changed as it was measured: its place worked out before no longer to be kept)
+        node.p_ok = false
       }
     }
     _ => ()

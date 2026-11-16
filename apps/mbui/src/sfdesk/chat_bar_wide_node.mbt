@@ -168,7 +168,14 @@ fn wide_bar_title_row(
     }
     let station_key = fn() {
       match station() {
-        Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}\u{1}\{s.via}"
+        Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
+        None => ""
+      }
+    }
+    // (how it is reached, read where it shows: no part of a key, so a change of it redraws its dot in place)
+    let via = fn() {
+      match station() {
+        Some(s) => s.via
         None => ""
       }
     }
@@ -182,7 +189,7 @@ fn wide_bar_title_row(
     row.show(fn() { view() is Some(_) && agents().length() == 0 && station() is Some(_) }, fn(x) {
       x.pick(station_key, fn(y, _) {
         match @signals.untracked(station) {
-          Some(s) => wide_station_tag(y, r.station, s, tips, stint)
+          Some(s) => wide_station_tag(y, r.station, s, via, tips, stint)
           None => ()
         }
       })
@@ -199,27 +206,33 @@ fn wide_bar_title_row(
         wide_people(q, src, @signals.untracked(people), 5, tips, stint)
       })
     })
-    // (each of its agents by what it draws: marked among several while its history shows; the first with the station)
+    // (each of its agents by what it draws; the first with the station. Its state, and whether it is marked among
+    // several while its history shows, read where they show: no part of its key, so a change of either redraws them
+    // in place, its tile and an open card kept)
     let agent_key = fn(i : Int, a : Agent) {
-      let all = agents()
-      let front = match view() {
-        Some(v) => side_of(v).1
-        None => ""
-      }
-      let marked = all.length() > 1 && front == a.key
-      "\{i}\u{1}\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.badge}\u{1}\{a.who}\u{1}\{marked}" +
+      "\{i}\u{1}\{a.key}\u{1}\{a.maker}\u{1}\{a.runtime}\u{1}\{a.who}" +
       (if i == 0 { "\u{1}" + station_key() } else { "" })
     }
     let tile = fn(k : @view.View, i : Int) {
       let all = @signals.untracked(agents)
       guard i < all.length() else { return }
       let a = all[i]
-      let front = match @signals.untracked(view) {
-        Some(v) => side_of(v).1
-        None => ""
+      let key = a.key
+      let badge = fn() {
+        match agents().iter().find_first(fn(x) { x.key == key }) {
+          Some(x) => x.badge
+          None => ""
+        }
+      }
+      let marked = fn() {
+        let front = match view() {
+          Some(v) => side_of(v).1
+          None => ""
+        }
+        agents().length() > 1 && front == key
       }
       let s = if i == 0 { @signals.untracked(station) } else { None }
-      wide_agent_tile(k, src, r, a, all.length() > 1 && front == a.key, s, tips, stint)
+      wide_agent_tile(k, src, r, a, badge, marked, s, via, tips, stint)
     }
     row.show(fn() { agents().length() > 0 }, fn(f) {
       f.pick(fn() { agent_key(0, agents()[0]) }, fn(k, _) { tile(k, 0) })
@@ -315,7 +328,14 @@ let wide_doing_mark : Double = 14.0
 /// The machine the chat runs on beside its title while it has no agent to share a tile with (chat_station's): how it is
 /// reached a dot before it, its mark, its name, a quiet tag, its words' ink and the strong line under the hand; its
 /// card over it as the pointer rests there, from the presenters as a finger taps it.
-fn wide_station_tag(m : @view.View, address : String, s : Station, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
+fn wide_station_tag(
+  m : @view.View,
+  address : String,
+  s : Station,
+  via : () -> String,
+  tips : @sf.TipLayer,
+  stint : () -> Int,
+) -> Unit {
   m.box(fn(k) {
     // (a mouse's press on it the bar's: lit by the pointer within it)
     let hot = fn() { @sf.lit_within_node(k) }
@@ -323,7 +343,7 @@ fn wide_station_tag(m : @view.View, address : String, s : Station, tips : @sf.Ti
       k,
       fn() {
         let look = if hot() { chat_station_hot } else { chat_station_tag }
-        if s.via != "" {
+        if via() != "" {
           look.then(@ui.style(pl=@sf.room_of(chat_station_dot_in)))
         } else {
           look
@@ -336,9 +356,12 @@ fn wide_station_tag(m : @view.View, address : String, s : Station, tips : @sf.Ti
       @settings.open_station_peek(address, from=Node(k))
     })
     |> ignore
-    if s.via != "" {
-      wide_via_dot(k, s.via)
-    }
+    // (how it is reached, none where none is said: laid out nowhere then, the same node: no structure round it)
+    k.box(fn(d) {
+      wide_via_dot(d, via)
+      d.laid_nowhere(By(fn() { via() == "" })) |> ignore
+    })
+    |> ignore
     if @sf.has_station_mark(s.emoji, s.icon) {
       @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, chat_station_mark, fn() {
         if hot() {
@@ -355,22 +378,20 @@ fn wide_station_tag(m : @view.View, address : String, s : Station, tips : @sf.Ti
 
 ///|
 /// How a station is reached as a dot (via_dot's).
-fn wide_via_dot(parent : @view.View, via : String) -> Unit {
-  parent.box(fn(d) {
-    @sf.style_node(
-      d,
-      fn() {
-        match via {
-          "direct" => via_direct
-          "relay" => via_relay
-          "offline" => via_offline
-          _ => via_waiting
-        }
-      },
-      in_row=true,
-    )
-  })
-  |> ignore
+/// Node `d` drawn as the dot itself, its colour following `via` in place.
+fn wide_via_dot(d : @view.View, via : () -> String) -> Unit {
+  @sf.style_node(
+    d,
+    fn() {
+      match via() {
+        "direct" => via_direct
+        "relay" => via_relay
+        "offline" => via_offline
+        _ => via_waiting
+      }
+    },
+    in_row=true,
+  )
 }
 
 ///|
@@ -447,13 +468,16 @@ fn wide_agent_tile(
   src : Source,
   r : ChatRef,
   a : Agent,
-  marked : Bool,
+  badge : () -> String,
+  marked : () -> Bool,
   station : Station?,
+  via : () -> String,
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
   let said = fn() { @sf.t("web-pages.chat.historyOf", args=[("agent", a.who)]) }
-  let badge_said = fn() { text(field(agent_json(src.topic("chat", chat_params(r)).get().value, a.key), "session"), "badgeText") }
+  // (of the chat's head alone: sfbase's chat_head_json, told as its agents change, not as a word comes into a message)
+  let badge_said = fn() { text(field(agent_json(@sfbase.chat_head_json(src, r), a.key), "session"), "badgeText") }
   let toggle = fn() { side_toggle(src, r, a.key) }
   // (its card, given the hand's card: what is opened from it stands beside it; kept open while that is)
   let hand : Ref[@sf.HoverHand?] = Ref(None)
@@ -469,7 +493,7 @@ fn wide_agent_tile(
       // (with touch the tile itself the button, as it is drawn: tapped its history's; held, its card and its
       // station's as one: the user, 2026-10-27: 它们是一体的)
       parent.box(fn(t) {
-        @sf.style_node(t, fn() { if marked { agent_station_on } else { agent_station } }, in_row=true)
+        @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
         t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
@@ -493,7 +517,7 @@ fn wide_agent_tile(
         t.box(fn(g) {
           @sf.style_node(g, fn() { if hot() { agent_station_agent_hot } else { agent_station_agent } }, in_row=true)
           wide_tile_seam(g, true)
-          wide_agent_mark(g, a, badge_said, joined=true)
+          wide_agent_mark(g, a, badge, badge_said, joined=true)
         })
         |> ignore
         t.box(fn(p) {
@@ -502,12 +526,12 @@ fn wide_agent_tile(
           wide_station_part(p, s, fn() { false }, stint)
         })
         |> ignore
-        wide_tile_dot(t, s.via)
+        wide_tile_dot(t, via)
       })
       |> ignore
     Some(s) =>
       parent.box(fn(t) {
-        @sf.style_node(t, fn() { if marked { agent_station_on } else { agent_station } }, in_row=true)
+        @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
         let agent = t.box(fn(g) {
           let hot = fn() { @sf.lit_node(g) }
           @sf.style_node(g, fn() { if hot() { agent_station_agent_hot } else { agent_station_agent } }, in_row=true)
@@ -523,7 +547,7 @@ fn wide_agent_tile(
               press=toggle,
             ),
           )
-          wide_agent_mark(g, a, badge_said, joined=true)
+          wide_agent_mark(g, a, badge, badge_said, joined=true)
         })
         t.box(fn(p) {
           // (a mouse's press on it the bar's: lit by the pointer within it, but where the agent's half reaches over it
@@ -539,12 +563,12 @@ fn wide_agent_tile(
           wide_station_part(p, s, hot, stint)
         })
         |> ignore
-        wide_tile_dot(t, s.via)
+        wide_tile_dot(t, via)
       })
       |> ignore
     None =>
       parent.box(fn(t) {
-        @sf.style_node(t, fn() { if marked { agent_mark_btn_on } else { agent_mark_btn } }, in_row=true)
+        @sf.style_node(t, fn() { if marked() { agent_mark_btn_on } else { agent_mark_btn } }, in_row=true)
         t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
@@ -556,7 +580,7 @@ fn wide_agent_tile(
             press=toggle,
           ),
         )
-        wide_agent_mark(t, a, badge_said, joined=false)
+        wide_agent_mark(t, a, badge, badge_said, joined=false)
       })
       |> ignore
   }
@@ -565,7 +589,7 @@ fn wide_agent_tile(
 ///|
 /// An agent's mark in the bar (agent_mark's, 20 across): its maker's mark on its tile (none of its own where `joined`:
 /// the tile it is in paints its ground and hover), its badge at its corner, said as `said` says.
-fn wide_agent_mark(parent : @view.View, a : Agent, said : () -> String, joined~ : Bool) -> Unit {
+fn wide_agent_mark(parent : @view.View, a : Agent, badge : () -> String, said : () -> String, joined~ : Bool) -> Unit {
   parent.box(fn(m) {
     @sf.style_node(
       m,
@@ -578,7 +602,9 @@ fn wide_agent_mark(parent : @view.View, a : Agent, said : () -> String, joined~ 
     )
     m.says(By(fn() { if said() == "" { None } else { Some(@view.said(Group, label=said())) } })) |> ignore
     @sf.maker_mark_node(m, a.maker, a.runtime, (wide_mark_side * wide_logo_of).round()) |> ignore
-    @sfpages.agent_badge_node(m, a.badge, wide_mark_side)
+    // (its state drawn again in place as it changes: over the mark, as big as it, moving nothing in its row)
+    // (none made while it has none, as most marks have, till it first comes to one: agent_badge_slot)
+    @sfpages.agent_badge_slot(m, badge, wide_mark_side)
   })
   |> ignore
 }
@@ -624,12 +650,12 @@ fn wide_station_part(p : @view.View, s : Station, hot : () -> Bool, stint : () -
 
 ///|
 /// How the station is reached, a dot on the tile's bottom right corner, 3 past it, over the tile (none: "").
-fn wide_tile_dot(t : @view.View, via : String) -> Unit {
-  guard via != "" else { return }
+fn wide_tile_dot(t : @view.View, via : () -> String) -> Unit {
+  // (none where none is said: laid out nowhere then, the same nodes: no structure round them)
   t.box(fn(o) {
-    o.over(Is(true)) |> ignore
+    o.over(Is(true)).laid_nowhere(By(fn() { via() == "" })) |> ignore
     @sf.style_node(o, fn() { agent_station_dot_room })
-    o.box(fn(d) { @sf.style_node(d, fn() { corner_dot_of(via) }) }) |> ignore
+    o.box(fn(d) { @sf.style_node(d, fn() { corner_dot_of(via()) }) }) |> ignore
   })
   |> ignore
 }
@@ -657,7 +683,7 @@ fn wide_bar_keys(
         None => ""
       }
     }
-    let chat = fn() { src.topic("chat", chat_params(r)).get().value }
+    let chat = fn() { @sfbase.chat_head_json(src, r) }
     // nothing left in it (the core's `archivable`): archived with one press
     k.show(
       fn() {

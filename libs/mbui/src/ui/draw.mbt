@@ -1875,6 +1875,14 @@ pub fn Ctx::node_pad(self : Ctx, i : Int) -> (Double, Double, Double, Double) {
 }
 
 ///|
+/// How far node `i` is laid out from (`x`, `y`) now, where it is still the node of id `id`: carried with what holds it
+/// since without being built again (Ctx::moved_shift). None where it is another, or none.
+pub fn Ctx::node_moved_since(self : Ctx, i : Int, id : Int, x : Double, y : Double) -> (Double, Double)? {
+  guard i >= 0 && i < self.count && self.nodes[i].id == id else { return None }
+  Some((self.nodes[i].x - x, self.nodes[i].y - y))
+}
+
+///|
 /// Node `i`'s id (0 none).
 pub fn Ctx::node_id(self : Ctx, i : Int) -> Int {
   self.nodes[i].id

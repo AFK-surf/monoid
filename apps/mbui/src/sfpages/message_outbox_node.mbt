@@ -4,8 +4,9 @@
 // station has it, or, not sent, 未发送 with 重试 (or 编辑) and 删除, each turning while the core does it and marked red
 // a moment where that failed (the core's doing). Each read through what it is given, as that changes. It is the
 // viewer's own message's row (message_words_node.mbt mine_said_node), on its way: one row as the core's message takes
-// it over. Not here yet: its files still going up as cards (the library's file_card_node has no upload yet), its
-// words flying in from the composer (the list's flight).
+// it over. Its files still going up but its images (`uploads`) each a card (outbox_uploads_node: how far, or why it
+// did not go). Not here yet: those cards' sheet filling as they go (the library's file_card_node draws none), its words
+// flying in from the composer (the list's flight).
 
 ///|
 /// What is under `o` now, where anything is (outbox_row's order; nothing while it is followed and went, which its row
@@ -56,6 +57,75 @@ fn outbox_said_node(
 ) -> MessageRowNode {
   mine_said_node(v, src, here, key, side, top, fn() { outgoing_row(o()) }, over~, out=fn() { Some(o()) }, since~, flying~)
 }
+
+///|
+/// What a file still going up says under its name (file_card's `pending`, `sent`, `error`, as outbox_row asks it): why
+/// it did not go where it did not (`failed`: the entry's own words, else 未发送); every byte gone and its station not yet
+/// saying it has them, 确认中 (not 100%, read as stuck); how far, and of how much; nothing known yet, 上传中.
+fn upload_meta(o : Outgoing, size : Int, sent : Int) -> String {
+  if o.state == "failed" {
+    if o.error != "" {
+      o.error
+    } else {
+      @sf.t("web-main.chat.notSent")
+    }
+  } else if size > 0 && sent >= size {
+    @sf.t("common.uploadConfirming")
+  } else if size > 0 {
+    let (s, n) = (sent.to_double(), size.to_double())
+    @sf.t(
+      "web-main.file.uploadingPart",
+      args=[("percent", (s / n * 100.0).floor().to_int().to_string()), ("size", @sf.file_size(n))],
+    )
+  } else {
+    @sf.t("common.uploading")
+  }
+}
+
+///|
+/// The files of what was sent from here (`out()`, while it is on its way) still going up but its images (`uploads`: its
+/// images are among its files already), each a card (outbox_row's file_card's, as nodes) in `v` at the column's end, in
+/// the order they were picked: its name over how far it has gone up, or, not sent, why in red. Nothing once it is the
+/// chat's (the core's message has them among its files).
+fn outbox_uploads_node(v : @view.View, here : MessageNodeHere, out : () -> Outgoing?) -> Unit {
+  let ups = fn() { out().map(fn(o) { o.uploads }).unwrap_or([]) }
+  v.show(fn() { ups().length() > 0 }, fn(s) {
+    @sf.style_node(s, fn() { outbox_uploads })
+    let keys = fn() { ups().mapi(fn(i, u) { i.to_string() + "\u{1}" + u.0 }) }
+    s.each(keys, fn(k) { k }, fn(slot, k) {
+      // (read through its key, never kept: its place among them)
+      let up = fn() {
+        let i = keys().search(k.get()).unwrap_or(0)
+        ups().get(i).unwrap_or(("", 0, 0))
+      }
+      let failed = fn() { out().map_or(false, fn(o) { o.state == "failed" }) }
+      @sf.file_card_node(
+        slot,
+        here.tips,
+        fn() { up().0 },
+        fn() {
+          match out() {
+            Some(o) => upload_meta(o, up().1, up().2)
+            None => ""
+          }
+        },
+        failed,
+        fn() { false },
+        fn() { false },
+        fn() { "" },
+        fn() { "" },
+        fn(_) {  },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+/// What still goes up of what was sent from here: its cards down the column, at its end, 4 apart (outbox_words').
+// kept across runs: a value (no field of it changes)
+let outbox_uploads : @ui.Style = @ui.css("w=Full gap=S1 align=AEnd")
 
 ///|
 /// Under what did not go (outbox_unsent's, as nodes) in `v`: 未发送 (refused as it is: why), why in its tip; then 重试,

@@ -86,7 +86,7 @@ fn files_new_by(w : Double, src : Source, list : () -> Array[Attachment], mine :
       let col = root.box(fn(v) { v.width(Is(Some(w))) |> ignore })
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      message_files_node(col, src, tips, files_place(), list, fn() { mine }, fn() { None }, "")
+      message_files_node(col, src, tips, files_place(), list, fn() { mine }, fn() { None }, fn() { "" })
     },
     w=w + 40.0,
     h=400.0,

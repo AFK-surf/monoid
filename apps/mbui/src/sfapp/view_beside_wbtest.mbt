@@ -890,3 +890,12 @@ test "大屏: a song playing in a tab cuts no hole in it (its player placed out 
     assert_eq(holes_beside(f, tab_left(f, beside_film)).length(), 1, msg="\{w} wide: a film's picture")
   }
 }
+
+///|
+test "大屏: a film opened beside keeps what its message knew of it: its size, its length and its frames, from the tab's first frame" {
+  let t = beside_tester(mode="chat-download")
+  let (x, y) = chat_film(t)
+  press_held(t, x, y, @ui.mod_cmd)
+  let f = tab_viewer_named(t, beside_film).file
+  assert_eq((f.width, f.height, f.duration, f.frames), (1280.0, 720.0, 12500.0, 375), msg="the tab's film as its message has it: \{Repr((f.width, f.height, f.duration, f.frames))}, tabs \{Repr(view_tabs(t))}")
+}

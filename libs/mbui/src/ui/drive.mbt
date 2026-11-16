@@ -75,7 +75,8 @@
 //                               own drop, @hostapi.drive 13: Linux's)
 //   log TEXT                    DRIVE LOG TEXT on the log (a mark for whoever watches it)
 //   picks NAME:SIZE …           what the system's pickers give from then on, under a Tester (film): files so named, of
-//                               so many bytes each (none: called off); a host's own pickers are not stood in for
+//                               so many bytes each, or NAME:WxH a picture so many pixels across and down (a PNG)
+//                               (none: called off); a host's own pickers are not stood in for
 //   exit                        ends the run: DRIVE PASS, exit 0
 //   ends                        the app ends by itself, its host quitting it (an update handed to its installer), within
 //                               the timeout; else the run fails. What follows it is never reached
@@ -394,7 +395,12 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
     } else {
       (words != "" && words.contains(what)) || (label != "" && label == what)
     }
-    let (x, y) = (d.x + d.w / 2.0, d.y + d.h / 2.0)
+    // (words in pieces by their own middle, as on_screen_nodes finds the words looked for in an old view's rich text:
+    // a short message's words in a node as wide as its column are drawn at its start, its middle nothing of them)
+    let (x, y) = match (by_words && hit, d.runs.is_empty()) {
+      (true, false) => tree_words_middle(tree, d.id, what).unwrap_or((d.x + d.w / 2.0, d.y + d.h / 2.0))
+      _ => (d.x + d.w / 2.0, d.y + d.h / 2.0)
+    }
     if hit && !tree.leaving(d.id) && d.w > 0.0 && d.h > 0.0 && x >= 0.0 && x <= c.width && y >= 0.0 && y <= c.height {
       hits.push((x, y, d.id, by_words))
     }
@@ -404,6 +410,35 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
   hits
   .filter(fn(h) { h.3 || !hits.iter().any(fn(w) { w.3 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
   .map(fn(h) { (h.0, h.1, h.2) })
+}
+
+///|
+/// The middle of the words `what` (`=WORDS`: all of them) of node `id` of `tree`'s words in pieces where they are drawn,
+/// laid out as it lays them out now (tree_run_rects'), their first line's: None where they hold no such words.
+fn tree_words_middle(tree : @view.Tree, id : @view.NodeId, what : String) -> (Double, Double)? {
+  let mut at : (Double, Double)? = None
+  tree.each_drawn_scaled(fn(c, x, y, a, sc) {
+    if at is Some(_) || c.id != id || c.runs.is_empty() || a <= 0.0 {
+      return
+    }
+    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+    let (from, to) = if what.has_prefix("=") {
+      (0, lay.text.length())
+    } else {
+      match lay.text.find(what) {
+        Some(i) => (i, i + what.length())
+        None => return
+      }
+    }
+    match lay.rects(from, to).get(0) {
+      Some(r) => {
+        let dx = rich_shift_at(lay, r.1 + r.3 / 2.0, if c.words_center { c.w } else { -1.0 })
+        at = Some((x + (r.0 + dx + r.2 / 2.0) * sc, y + (r.1 + r.3 / 2.0) * sc))
+      }
+      None => ()
+    }
+  })
+  at
 }
 
 ///|
@@ -434,6 +469,11 @@ fn reachable(c : Ctx, what : String) -> Array[(Double, Double)] {
       for p in tree_on_screen(c, what) {
         match view_presses_at(p.0, p.1) {
           Some(id) if tree.holds(id, p.2) => at.push((p.0, p.1))
+          // (words that take no press of their own, nothing that does over them: a press there goes to nothing, and
+          // what is found there first is they or what holds them, nothing lying over them)
+          None if !old_root_hit(c, p.0, p.1, pressed=true) &&
+            tree.drop_at(p.0, p.1) is Some(OnNode(id)) &&
+            (tree.holds(id, p.2) || tree.holds(p.2, id)) => at.push((p.0, p.1))
           _ => ()
         }
       }

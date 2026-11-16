@@ -1,0 +1,15 @@
+# The wide frame (MBUI_WIN=1280x800, 大屏): the side panel opened beside the chat, words sent while it is open, then closed.
+timeout 20000
+until 发消息
+wait 600
+tap icon:panel-open
+wait 1200
+tap 发消息
+wait 500
+type 面板开着也发一条
+wait 600
+tap icon:arrow-up
+wait 2200
+tap icon:panel-close
+wait 1500
+exit

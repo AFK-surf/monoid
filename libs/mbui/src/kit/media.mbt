@@ -523,7 +523,8 @@ pub fn Media::play_pause(self : Media) -> Unit {
   let s = self.status()
   match self.view {
     Some(n) =>
-      if s.playing {
+      // (at its end, whatever its host says of its playing as it gets there: from its start again, as it shows)
+      if s.playing && !s.ended {
         n.pause()
       } else {
         if s.ended {
@@ -658,6 +659,11 @@ pub fn Media::toggle_sideways(self : Media) -> Unit {
 }
 
 ///|
+/// How far short of the place it opens at a player said ready may stand and be taken as there: under it, it is sought
+/// once more (a whole second let one left 0.1 … 1 s in open again from its start).
+let media_start_slack_ms : Double = 100.0
+
+///|
 /// For a player shown by nodes of the window's tree (what Media::frame does of its own with no Ctx, told as how it
 /// stands changes, outside any tracking): ready once it is, the place it opens at sought once more where the player took
 /// none before it was ready. Whether it is ready.
@@ -674,7 +680,7 @@ pub fn Media::take_ready(self : Media) -> Bool {
       None => ""
     }
     @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
-    if self.start_at > 0.0 && s.position < self.start_at - 1000.0 {
+    if self.start_at > 0.0 && s.position < self.start_at - media_start_slack_ms {
       self.seek(self.start_at)
     }
   }
@@ -720,7 +726,7 @@ pub fn Media::frame(self : Media, c : @ui.Ctx) -> MediaFrame {
     }
     @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
     // the place it opens at, once more where the player took no seek before it was ready
-    if p.start_at > 0.0 && s.position < p.start_at - 1000.0 {
+    if p.start_at > 0.0 && s.position < p.start_at - media_start_slack_ms {
       p.seek_owed = true
     }
   }
@@ -827,7 +833,8 @@ pub fn Media::stage(self : Media, c : @ui.Ctx, id : Int, w : Double) -> Unit {
         self.seek_by(self.nudge_ms)
         self.note = Some(Ahead(self.nudge_ms))
       } else {
-        let was = self.status().playing
+        // (at its end, whatever its host says of its playing: played again, as play_pause does)
+        let was = self.status().playing && !self.status().ended
         self.play_pause()
         self.note = Some(if was { Paused } else { Played })
       }

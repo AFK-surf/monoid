@@ -43,10 +43,14 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
             })
           _ => ()
         }
-        let s = if mode == "json" {
+        let (base_mode, chat_nodes) = match mode.strip_prefix("nodes:") {
+          Some(rest) => (rest.to_owned(), true)
+          None => (mode, arg("MBUI_CHAT_PAGE") == "nodes")
+        }
+        let s = if base_mode == "json" {
           @sfapp.fixture_json_app(arg("MBUI_FIXTURE_JSON"))
         } else {
-          @sfapp.fixture_app(mode)
+          @sfapp.fixture_app(base_mode, chat_nodes~)
         }
         // MBUI_FIX_PACE, MBUI_FIX_CORE: the made-up station's pace (said in the film's record, scripts/media.sh)
         @sffixture.fix_pace_said(arg("MBUI_FIX_PACE"), arg("MBUI_FIX_CORE"))
@@ -64,6 +68,9 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           @sffixture.failed_topics(s, failed.split(",").map(fn(x) { x.to_owned() }).collect(), arg("MBUI_FAILED_WHY"))
         } else { s }
         let s = if arg("MBUI_SAID") == "1" { @sffixture.said_longest_source(s) } else { s }
+        // (a film's pictures decoded as a device's are, a picture sent from the composer among them: what its host holds
+        // of them at once is theirs, as the bench's real chat's, not a test file's few small ones)
+        @ui.host_image_bytes_known([("src/film/scene.mbt", 262144)])
         // MBUI_FILM_FACE_MS=N: the people's faces the core gives at once (the fixture's ana_face among them), the host
         // decoding each N ms after it is asked; MBUI_FILM_FACE_WAITS=1: a page opening waits for them, as the app does
         // (Source.picture_waits; sfapp's page_pictures_wbtest)
@@ -85,6 +92,8 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           s
         }
         if dark { @sf.set_dark(Some(true)) }
+        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页, as a run that chose it begins)
+        if arg("MBUI_CHAT_PAGE") == "nodes" { @sfbase.chat_page_nodes.set(true) }
         @sf.give_faces()
         src.val = Some(s)
         s

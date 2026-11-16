@@ -261,11 +261,17 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// plp_narrow's laid out more (895, 939, 928, 885 before) once Home's transfers key is made as nodes (sfdesk
 /// transfers_key_node), not an old view of Home's: the new page laid out as before, the old one's opening, Home's old
 /// views a node less, laying out 4 fewer; the same at 60, 120, 24 and 7.
+/// Again 2026-11-16 for phone's and plp_narrow's laid out, nothing laid out more: the chat's page made as nodes kept off the
+/// screen at Home after it (its agent's line stepping on, 350 ms after Home came to rest) now draws a frame there as the old
+/// page always did, so both are counted over the same rest (the shell's old view laying out 2, where the last frame of the
+/// nodes' had been the slide's end, laying out 70): the same laid out of the page and the shell's old view now counted as
+/// the old page's are (before: 903, 952, 934, 890); plp_narrow md's nodes 2217 (2216 before) where the old page builds one
+/// node less, the page as nodes making 552 for 554.
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2736, 903),
-  "phone md": (1788, 952),
-  "plp_narrow card": (2800, 934),
-  "plp_narrow md": (2216, 890),
+  "phone card": (2736, 970),
+  "phone md": (1788, 1038),
+  "plp_narrow card": (2800, 980),
+  "plp_narrow md": (2217, 934),
   "tape card": (1350, 1192),
   "tape md": (1400, 1166),
   "wide card": (1280, 1117),

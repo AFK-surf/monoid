@@ -49,8 +49,10 @@ fn sending_changed() -> Unit {
 
 ///|
 pub fn sent_reset() -> Unit {
+  sent_out_reset()
   local_sending.clear()
   sent_here_n.clear()
+  sent_here_flew.clear()
   sent_here_made.clear()
   local_sent_n.val = 0
   sent_pictures.clear()
@@ -59,6 +61,9 @@ pub fn sent_reset() -> Unit {
     sent_picture_tell(k)
   }
   sent_pictures_told.clear()
+  sent_from_at.clear()
+  sent_parts_at.clear()
+  sent_quotes_from_at.clear()
 }
 
 ///|
@@ -86,9 +91,24 @@ let local_sent_n : Ref[Int] = { val: 0 }
 let sent_here_n : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
 
 ///|
-/// Something was sent from here into chat `rk` (sent_here_n).
-pub fn sent_here_told(rk : String) -> Unit {
+/// Whether what was last sent from here into each chat flies to its row (words from the composer: their bubble flies in
+/// from the field) or not (an answer picked on a card says it with no flight): by the send itself, as it is told, never
+/// by what is still sending as its list reads it (the core may have taken the words over by then).
+// kept across runs: let go by sent_reset
+let sent_here_flew : Map[String, Bool] = Map([])
+
+///|
+/// Something was sent from here into chat `rk` (sent_here_n): words that fly to their row (`flies`), or an answer that
+/// does not.
+pub fn sent_here_told(rk : String, flies? : Bool = true) -> Unit {
+  sent_here_flew[rk] = flies
   sent_here_n.set(rk, @signals.untracked(fn() { sent_here_n.get(rk) }).unwrap_or(0) + 1)
+}
+
+///|
+/// Whether what was last sent from here into chat `rk` flies to its row (sent_here_told's `flies`).
+pub fn sent_here_flies(rk : String) -> Bool {
+  sent_here_flew.get(rk).unwrap_or(true)
 }
 
 ///|
@@ -405,5 +425,35 @@ pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Dou
 pub fn sent_from_take(key : String) -> (Double, Double)? {
   let at = sent_from_at.get(key)
   sent_from_at.remove(key)
+  at
+}
+
+///|
+/// Where each part of what was sent from here stood in the composer as it was sent (its files' tiles, its quotes'
+/// cards and their pictures: x, y, w, h in the window, as the composer drew them), by the key its row has in its chat's
+/// list (sent_local's) and the part's key in that row (a file's file_key, a quote's quote_key, a quote's picture's
+/// quote_picture_key), till that part of the row takes it to fly from there (sent_part_take): on a chat's page made as
+/// nodes, where the composer is an old view hosted in the list's foot, so its tiles are none of the window's tree to
+/// pair with (mbui's View::flies_in), as sent_from_at is for its words.
+let sent_parts_at : Map[String, Map[String, (Double, Double, Double, Double)]] = Map([])
+
+///|
+/// Part `part` of what was sent from here as `key` (sent_local's) stood at `at` in the composer (x, y, w, h).
+pub fn sent_part_said(key : String, part : String, at : (Double, Double, Double, Double)) -> Unit {
+  match sent_parts_at.get(key) {
+    Some(m) => m[part] = at
+    None => sent_parts_at[key] = Map([(part, at)])
+  }
+}
+
+///|
+/// Where part `part` of what was sent from here as `key` stood as it was sent (sent_part_said), taken: told once.
+pub fn sent_part_take(key : String, part : String) -> (Double, Double, Double, Double)? {
+  guard sent_parts_at.get(key) is Some(m) else { return None }
+  let at = m.get(part)
+  m.remove(part)
+  if m.is_empty() {
+    sent_parts_at.remove(key)
+  }
   at
 }

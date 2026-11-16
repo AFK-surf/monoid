@@ -156,19 +156,40 @@ fn Room::height_at(self : Room, v : View, w : Double) -> Double {
 /// padding), as each is stretched across what holds it. Measured, as it stands (@flex.measured_height).
 fn Tree::height_in(self : Tree, at : Int, top : Int, w : Double) -> Double {
   let pt = fn(k : Int, x : Double) { if k == @flex.LEN_PT { x } else { 0.0 } }
+  let side = fn(k : Int) {
+    let s = self.nodes[k].flex.style
+    pt(s.margin_left_kind(), s.margin_left_value()) + pt(s.margin_right_kind(), s.margin_right_value())
+  }
   let mut across = 0.0
   let mut i = at
   while i >= 0 && i != top {
     let s = self.nodes[i].flex.style
-    across = across +
-      pt(s.margin_left_kind(), s.margin_left_value()) +
-      pt(s.margin_right_kind(), s.margin_right_value())
+    across = across + side(i)
     if i != at {
       across = across +
         pt(s.padding_left_kind(), s.padding_left_value()) +
         pt(s.padding_right_kind(), s.padding_right_value())
     }
-    i = self.nodes[i].parent
+    // (growing in a row: what the row leaves it beside the others as wide as they are, and its gaps; Tree::width_in's)
+    let p = self.nodes[i].parent
+    if p >= 0 && p != top && !self.nodes[i].slot {
+      let ps = self.nodes[p].flex.style
+      if ps.direction is (Row | RowReverse) && s.grow > 0.0 {
+        let items = self.column_items(p).filter(fn(o) {
+          let os = self.nodes[o].flex.style
+          self.nodes[o].live &&
+          os.display != @flex.Display::DisplayNone &&
+          !(os.position is @flex.PositionType::Absolute)
+        })
+        for o in items {
+          if o != i {
+            across = across + @flex.measured_width(self.nodes[o].flex, 0.0 / 0.0) + side(o)
+          }
+        }
+        across = across + pt(ps.gap_col_kind(), ps.gap_col_value()) * (items.length() - 1).to_double()
+      }
+    }
+    i = p
   }
   @flex.measured_height(self.nodes[at].flex, dmax(0.0, w - across))
 }

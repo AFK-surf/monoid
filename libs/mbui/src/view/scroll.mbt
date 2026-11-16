@@ -93,6 +93,9 @@ pub struct Scroll {
   priv tuck_at : @signals.Signal[Double?]
   priv mut tuck_owed : Bool
   priv tuck_room : @signals.Signal[Double]
+  /// how tall a page's list's foot is laid out (View::scrolls_window's `foot`: what is pinned over the foot of what
+  /// shows), as it was last laid out: 0 where it holds none
+  priv mut foot_tall : Double
   /// the node it scrolls in that keeps that room, while it does
   priv mut tuck_in : View?
   /// whether what is tucked is kept so (Scroll::tucks' `kept`)
@@ -135,6 +138,9 @@ pub struct Scroll {
   /// under its last block: View::scrolls_window's), what a part brought into sight comes to rest over (View::scrolls'
   /// `shows`)
   priv mut foot_covered : () -> Double
+  /// how tall the top of that foot is that covers nothing (room it keeps under its last block the rows show through:
+  /// View::scrolls_window's `foot_clear`), read through Scroll::foot_hides_now
+  priv mut foot_clear : () -> Double
   /// how tall what lies over its top covers what it shows (the bar a page's list runs under: View::scrolls'
   /// `top_covered`), read through Scroll::top_covered
   priv mut top_cover : () -> Double
@@ -142,6 +148,8 @@ pub struct Scroll {
   /// app's put), for the Tester's judges: what it moves by its offset alone (its bar's thumb) goes there with it in the
   /// frame that takes it (Tree::scroll_put_at)
   priv mut put_at : Double
+  /// the logic's moment the wheel last moved it directly (rows_steady.mbt)
+  priv mut wheel_at : Double
   /// the logic's moment the keys of the page's list it scrolls last changed by data (Scroll::keys_changed), for the
   /// Tester's judges: its bar's thumb, where the reader is in what the list holds, changes with them in that frame
   /// (Tree::scroll_keys_at)
@@ -221,6 +229,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     tuck_at: @signals.signal(None, same=fn(a, b) { a == b }),
     tuck_owed: false,
     tuck_room: @signals.signal(0.0, same=fn(a, b) { a == b }),
+    foot_tall: 0.0,
     tuck_in: None,
     tuck_kept: fn() { true },
     tuck_shut: @signals.signal(false, same=fn(a, b) { a == b }),
@@ -235,8 +244,10 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     sought_said: fn(_, _) {  },
     at_foot_said: None,
     foot_covered: fn() { 0.0 },
+    foot_clear: fn() { 0.0 },
     top_cover: fn() { 0.0 },
     put_at: -1.0e9,
+    wheel_at: -1.0e9,
     keys_at: -1.0e9,
   }
 }
@@ -1366,6 +1377,7 @@ pub fn View::scrolls(
     s.seen.set(None)
     s.tall = fn() { 0.0 }
     s.foot_covered = fn() { 0.0 }
+    s.foot_clear = fn() { 0.0 }
     s.top_cover = fn() { 0.0 }
     s.host = None
     match self.tree.scrolls_at.get(self.at) {
@@ -1412,10 +1424,18 @@ pub fn View::scrolls(
     if s.as_list {
       s.wheel_stops(self, w.at)
       if (w.mods & wheel_notch) != 0 {
-        return s.notched(self, w.at, w.dy)
+        let ok = s.notched(self, w.at, w.dy)
+        if ok {
+          s.wheel_at = w.at
+        }
+        return ok
       }
     }
-    s.moved(w.at, w.dy)
+    let ok = s.moved(w.at, w.dy)
+    if ok {
+      s.wheel_at = w.at
+    }
+    ok
   })
   // (a hold that began on what it holds (a button, a field of an old view's, nothing that takes a press) its own once
   // it moves up or down past the slop, more than across, the way it can still go: else what holds it is asked)
@@ -1697,4 +1717,19 @@ pub fn Scroll::top_covered(self : Scroll) -> Double {
 /// as it is said.
 pub fn Scroll::foot_covered_now(self : Scroll) -> Double {
   dmax(0.0, (self.foot_covered)())
+}
+
+///|
+/// How tall what is pinned over its foot hides of what shows now: its foot (Scroll::foot_covered_now) but the top of it
+/// the rows show through (View::scrolls_window's `foot_clear`), read as it is said; where a thing in it is seen clear of
+/// what hides it, what is drawn flying from it reads (View::seen_place's `clear`, Tree::stays_bounds).
+pub fn Scroll::foot_hides_now(self : Scroll) -> Double {
+  dmax(0.0, (self.foot_covered)() - (self.foot_clear)())
+}
+
+///|
+/// How tall its list's foot was last laid out (Scroll's `foot_tall`): for what is placed beside the list by what shows
+/// over that foot (`View::beside`'s `piece`, asked as it is placed, in the layout that laid the foot out).
+pub fn Scroll::foot_tall(self : Scroll) -> Double {
+  self.foot_tall
 }

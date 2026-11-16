@@ -4,8 +4,8 @@
 // pressed for the card read again; the one in the other's place as it is decided, as anything down a column comes and
 // goes (View::pick: the old under_post's fades and the list's turns are not here). The card's insides are the settings'
 // (rig_card_node…), as the old ones are. Made so far: a rig's (P32), a phone's (P31: not the step left on the phone
-// under its line once granted, settings' phone_ask_node says why), a vault item's (P30), a sign-in's (P33:
-// message_signin_node.mbt). Not here yet: a vault item's asking for a file to be picked.
+// under its line once granted, settings' phone_ask_node says why), a vault item's (P30: one asking for a file to be
+// picked too, its card as wide as it may be from the first), a sign-in's (P33: message_signin_node.mbt).
 
 ///|
 /// What is in place of a post's words, as the message says it now.
@@ -21,15 +21,13 @@ priv enum InPlace {
   Vault
   /// an ask to sign in to a site
   SignIn
-  /// a vault item's asking for a file to be picked: not made as nodes yet
-  NotYet
 }
 
 ///|
 /// What is in place of post `m`'s words (prose_with_files' cases).
 fn in_place_of(m : Message) -> InPlace {
   match m.card {
-    Some({ ask: Some(a), .. }) => if a.typed && a.save_kind == "file" { NotYet } else { Vault }
+    Some({ ask: Some(_), .. }) => Vault
     Some({ phone: Some(_), .. }) => Phone
     Some({ signin: Some(_), .. }) => SignIn
     Some({ rig: Some(_), .. }) => Rig
@@ -49,7 +47,7 @@ fn message_card_node(v : @view.View, here : MessageNodeHere, core : @settings.Co
       Rig => rig_ask_node(p, here, core, m)
       Vault => vault_ask_node(p, here, core, m)
       SignIn => signin_ask_node(p, here, core, m)
-      Words | NotYet => ()
+      Words => ()
     }
   })
 }
@@ -135,11 +133,34 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
       _ => rig_ask_none
     }
   }
-  let assignee = fn() { m().card.map(fn(c) { c.assignee }).unwrap_or("") }
-  let who = fn() { m().card.bind(fn(c) { c.assignee_text }) }
-  v.pick(fn() { ask().status != "" }, fn(p, decided) {
+  // (decided, the card fades where it stands as its room gives way to how it ended (decision_rooms_node's way): one
+  // place, one thing in it at a time, the card leaving as it was at the press, never gone in the press's frame. One
+  // decided as it is made never goes back: none of that is made for it)
+  let leave = if @signals.untracked(fn() { ask().status != "" }) { 0.0 } else { msg_part_leave_ms }
+  v.pick(fn() { ask().status != "" }, leave~, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })
     if !decided {
+      // (what it shows as it was while it waited, held so as it leaves: what it reads of the message is not read again
+      // once it is decided)
+      let held_m : Ref[Message?] = Ref(None)
+      let open_m = fn() -> Message {
+        match held_m.val {
+          Some(h) if ask().status != "" => h
+          _ => {
+            let now = m()
+            held_m.val = Some(now)
+            now
+          }
+        }
+      }
+      let ask = fn() {
+        match open_m().card {
+          Some({ rig: Some(a), .. }) => a
+          _ => rig_ask_none
+        }
+      }
+      let assignee = fn() { open_m().card.map(fn(c) { c.assignee }).unwrap_or("") }
+      let who = fn() { open_m().card.bind(fn(c) { c.assignee_text }) }
       // (the card as wide as what it says: lined up at the column's start, not across it)
       p.lines_up(Is(Some(Start))) |> ignore
       p.box(fn(r) {
@@ -219,10 +240,34 @@ fn phone_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
     }
   }
   let assignee = fn() { m().card.map(fn(c) { c.assignee }).unwrap_or("") }
-  let who = fn() { m().card.bind(fn(c) { c.assignee_text }) }
-  v.pick(fn() { ask().status != "" }, fn(p, decided) {
+  // (decided, the card fades where it stands as its room gives way to how it ended (decision_rooms_node's way): one
+  // place, one thing in it at a time, the card leaving as it was at the press, never gone in the press's frame. One
+  // decided as it is made never goes back: none of that is made for it)
+  let leave = if @signals.untracked(fn() { ask().status != "" }) { 0.0 } else { msg_part_leave_ms }
+  v.pick(fn() { ask().status != "" }, leave~, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })
     if !decided {
+      // (what it shows as it was while it waited, held so as it leaves: what it reads of the message is not read again
+      // once it is decided)
+      let held_m : Ref[Message?] = Ref(None)
+      let open_m = fn() -> Message {
+        match held_m.val {
+          Some(h) if ask().status != "" => h
+          _ => {
+            let now = m()
+            held_m.val = Some(now)
+            now
+          }
+        }
+      }
+      let ask = fn() {
+        match open_m().card {
+          Some({ phone: Some(a), .. }) => a
+          _ => phone_ask_none
+        }
+      }
+      let assignee = fn() { open_m().card.map(fn(c) { c.assignee }).unwrap_or("") }
+      let who = fn() { open_m().card.bind(fn(c) { c.assignee_text }) }
       // (the card as wide as what it says: lined up at the column's start, not across it)
       p.lines_up(Is(Some(Start))) |> ignore
       p.box(fn(r) {
@@ -350,7 +395,8 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
 /// waits, as wide as what it says (320 at least where there is the room), its answer at its foot as the core said it
 /// with the message (`vaultAsk.answer`), answered with `vault.approve` / `vault.deny`; where nothing is answered (no
 /// core), the card without its answer; decided, a line saying how it ended in the card's place, pressed for what was
-/// asked. Not here: one asking for a file to be picked (message_card_node's NotYet).
+/// asked. One asking for a file to be picked is as wide as it may be from the first (ask_card_room_most), so what is
+/// picked comes in beside its button with nothing moving.
 fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, m : () -> Message) -> Unit {
   // (what it asks, and that as its card says it, worked out once as the message changes: what the card makes of it
   // reads them over and over, each reading a field)
@@ -365,14 +411,45 @@ fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
   let ask = fn() { asking.get() }
   let asked_now = @signals.computed(fn(_) { vault_asked_of(ask()) })
   let asked = fn() { asked_now.get() }
-  let card = fn() { m().card }
-  v.pick(fn() { ask().status != "" }, fn(p, decided) {
+  // (decided, the card fades where it stands as its room gives way to how it ended (decision_rooms_node's way): one
+  // place, one thing in it at a time, the card leaving as it was at the press, never gone in the press's frame. One
+  // decided as it is made never goes back: none of that is made for it)
+  let leave = if @signals.untracked(fn() { ask().status != "" }) { 0.0 } else { msg_part_leave_ms }
+  v.pick(fn() { ask().status != "" }, leave~, fn(p, decided) {
     @sf.style_node(p, fn() { under_post_room })
     if !decided {
+      // (what it shows as it was while it waited, held so as it leaves: what it reads of the message is not read again
+      // once it is decided)
+      let held_m : Ref[Message?] = Ref(None)
+      let open_m = fn() -> Message {
+        match held_m.val {
+          Some(h) if ask().status != "" => h
+          _ => {
+            let now = m()
+            held_m.val = Some(now)
+            now
+          }
+        }
+      }
+      let open_asking = @signals.computed(
+        fn(_) {
+          match open_m().card {
+            Some({ ask: Some(a), .. }) => a
+            _ => vault_ask_none
+          }
+        },
+      )
+      let ask = fn() { open_asking.get() }
+      let open_asked = @signals.computed(fn(_) { vault_asked_of(ask()) })
+      let asked = fn() { open_asked.get() }
+      let card = fn() { open_m().card }
       // (the card as wide as what it says: lined up at the column's start, not across it)
       p.lines_up(Is(Some(Start))) |> ignore
       p.box(fn(r) {
-        @sf.style_node(r, fn() { @sf.ask_card_room.then(ask_card_under_head) })
+        @sf.style_node(r, fn() {
+          let a = ask()
+          (if a.typed && a.save_kind == "file" { @sf.ask_card_room_most } else { @sf.ask_card_room }).then(ask_card_under_head)
+        })
         match core {
           Some(core) =>
             @settings.vault_card_node(

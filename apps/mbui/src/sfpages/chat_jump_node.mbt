@@ -261,20 +261,34 @@ fn chat_to_newest(
 /// `shown`; made by `build`.
 fn chat_float_stand(
   foot : @view.View,
+  chat : String,
   width : () -> Double,
   lift : () -> Double,
   shown : () -> Bool,
   build : (@view.View) -> Unit,
 ) -> Unit {
   foot.box(fn(stand) {
+    // (as wide as its column is drawn, where it is drawn, as the composer under it is, whatever the column is laid out
+    // at on its way to another width: @sfbase.column_laid; over the composer's send button all the way)
     stand.row(Is(true)).height(Is(Some(0.0))) |> ignore
+    // (none at rest: bound once a column has first set off on such a way, at that cause, never before)
+    let bound = Ref(false)
+    stand.reacts(fn() { @sfbase.column_set_off_count() > 0 }, fn(going) {
+      if going && !bound.val && stand.alive() {
+        bound.val = true
+        stand
+        .margin(By(fn() { (0.0, 0.0, -@sfbase.column_laid(chat, stand).by, 0.0) }))
+        .offset(By(fn() { (-@sfbase.column_laid(chat, stand).across, 0.0) }))
+        |> ignore
+      }
+    })
     stand.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     stand.show(shown, fn(o) {
       let reach = @sf.float_button_reach
       o
       .margin(
         By(fn() {
-          let w = width()
+          let w = width() + @sfbase.column_laid(chat, o).by
           (
             0.0,
             -(float_side + 2.0 * reach + float_lift - reach + lift()),
@@ -320,7 +334,7 @@ fn chat_to_newest_node(
   // (not in a replay of a run from before the outline, whose way to the newest went to the end alone: `asks_outline`)
   let back = fn() { (src.asks_outline)() && @sfbase.place_kept(chat) }
   let press = fn() { chat_to_newest(src, r, jump, place, view) }
-  chat_float_stand(foot, width, fn() { 0.0 }, fn() { chat_jumps(jump, view) }, fn(o) {
+  chat_float_stand(foot, r.station + "\u{1}" + r.session, width, fn() { 0.0 }, fn() { chat_jumps(jump, view) }, fn(o) {
     @sf.float_button_node(
       o,
       "arrow-down",
@@ -357,7 +371,7 @@ fn chat_outline_node(
   stint : () -> Int,
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
-  chat_float_stand(foot, width, fn() { float_above }, fn() { chat_outlines(src, jump, view) }, fn(o) {
+  chat_float_stand(foot, r.station + "\u{1}" + r.session, width, fn() { float_above }, fn() { chat_outlines(src, jump, view) }, fn(o) {
     // (beside the button itself, their feet together: its room, not the stand it floats in)
     let button : Ref[@view.View] = Ref(o)
     let press = fn() {
@@ -485,22 +499,51 @@ fn chat_rail_node(
   anchor : @view.View,
   tips : @sf.TipLayer,
   stint : () -> Int,
+  scroll? : @view.Scroll,
+  room? : () -> Double = fn() { 0.0 },
+  bar? : () -> Double = top,
 ) -> Unit {
-  // (the chat's thread as the page is made: a page made as nodes is of a chat made, never a new one, Nav::become)
-  guard @signals.untracked(view).thread is Some(th) else { return }
-  let outline = src.topic("chatOutline", outline_params(r, th))
-  let said = @signals.computed(fn(_) { chat_rail_said(src, outline, view, width) }, same=fn(a, b) {
-    match (a, b) {
-      (Some((d1, s1)), Some((d2, s2))) => d1 == d2 && s1 == s2
-      (None, None) => true
-      _ => false
-    }
-  })
+  let said = @signals.computed(
+    fn(_) {
+      match view().thread {
+        Some(th) => chat_rail_said(src, src.topic("chatOutline", outline_params(r, th)), view, width)
+        None => None
+      }
+    },
+    same=fn(a, b) {
+      match (a, b) {
+        (Some((d1, s1)), Some((d2, s2))) => d1 == d2 && s1 == s2
+        (None, None) => true
+        _ => false
+      }
+    },
+  )
   foot.box(fn(stand) {
     stand.height(Is(Some(0.0))) |> ignore
     stand.show(fn() { said.get() is Some(_) }, at_once=true, fn(o) {
       o
-      .beside(anchor.id(), side=Right, along=Middle, offset=-(rail_press_w + @ui.scroll_bar_room), padding=0.0)
+      // (in the middle of what shows of the list between its bar's foot (`bar`) and the composer's own room under it (its
+      // foot as tall as it is laid out less the room under the last row, `room`), as the old page's outline_rail)
+      .beside(
+        anchor.id(),
+        side=Right,
+        along=Middle,
+        offset=-(rail_press_w + @ui.scroll_bar_room),
+        padding=0.0,
+        piece=fn(w, h) {
+          let t = bar()
+          let under = match scroll {
+            Some(s) => dmax(0.0, s.foot_tall() - room())
+            None => 0.0
+          }
+          Some((0.0, t, w, dmax(0.0, h - t - under)))
+        },
+      )
+      // (at its column's right as that is drawn on its way to another width: @sfbase.column_laid)
+      .offset(By(fn() {
+        let c = @sfbase.column_laid(r.station + "\u{1}" + r.session, o)
+        (c.by - c.across, 0.0)
+      }))
       |> ignore
       let ticks = @signals.computed(fn(_) {
         match said.get() {
@@ -587,7 +630,7 @@ let chat_rail_press : @ui.Style = @ui.style(
 
 ///|
 /// The bell to what waits to be decided in chat `r` (to_ask's: the core's `asks`) over the round buttons that show
-/// under it in the list's foot `foot`, while none of their posts is among the rows the list has in sight (once it has
+/// under it in the list's foot `foot`, while any of their posts is not among the rows the list has in sight (once it has
 /// any; `rows` its rows); pressed, the chat goes to the post (@sfbase.go_to), the next one's the next time (ask_turns).
 fn chat_ask_node(
   foot : @view.View,
@@ -601,26 +644,36 @@ fn chat_ask_node(
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
   let shown = fn() {
-    let asks = asks_of(view())
+    let v = view()
+    let asks = asks_of(v)
     guard asks.length() > 0 && jump.sight.get() is Some((first, last)) else { return false }
     let rs = rows.read()
+    // (each post asked about seen among the rows in sight: shown while any of them is not, as the old page's
+    // asks_in_view, every one in view to hide it; the one the chat's end says it stands on (the core's `stateAsk`)
+    // seen where that line is, not its post, as ask_rows_of has it)
+    let seen : Array[Double] = []
     let mut inside = false
-    let mut seen = false
     for k in rs.keys {
       if k == first {
         inside = true
       }
       if inside {
         match rs.get(k).map(fn(row) { row.entry }) {
-          Some(Said(m)) if asks.contains(m.seq) => seen = true
+          Some(Said(m)) if asks.contains(m.seq) && v.state_ask != Some(m.seq) && !seen.contains(m.seq) =>
+            seen.push(m.seq)
+          Some(State(_, _, _)) =>
+            match v.state_ask {
+              Some(seq) if asks.contains(seq) && !seen.contains(seq) => seen.push(seq)
+              _ => ()
+            }
           _ => ()
         }
       }
-      if k == last || seen {
+      if k == last {
         break
       }
     }
-    !seen
+    asks.iter().any(fn(a) { !seen.contains(a) })
   }
   let lift = fn() {
     (if chat_jumps(jump, view) { float_above } else { 0.0 }) +
@@ -630,7 +683,7 @@ fn chat_ask_node(
   // their cause, as the old page's chat-ask/lift)
   let lifted = @motion.Way::new(@signals.untracked(lift))
   foot.reacts(lift, fn(to) { lifted.go(to, @sf.move_spring, at=foot.cause_at()) }, at_start=false)
-  chat_float_stand(foot, width, fn() { lifted.shown_on(foot) }, shown, fn(o) {
+  chat_float_stand(foot, chat, width, fn() { lifted.shown_on(foot) }, shown, fn(o) {
     let press = fn() {
       let asks = asks_of(@signals.untracked(view))
       guard asks.length() > 0 else { return }

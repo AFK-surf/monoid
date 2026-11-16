@@ -21,8 +21,10 @@ fn init {
     ("src/sfapp/chat_pictures_held_wbtest.mbt", 89156),
     ("src/sfapp/chat_send_from_above_wbtest.mbt", 89156),
     // (the chat's page made as nodes, its words and a quoted picture sent: the pictures of the rows round what shows,
-    // as chat_page_nodes_wbtest's, and the quote's, 2026-11-14)
-    ("src/sfapp/chat_sent_seen_wbtest.mbt", 115644),
+    // as chat_page_nodes_wbtest's, and the quote's, 2026-11-14; the quote's picture flying from its 56 tile to its
+    // place in the row since 2026-11-16, as the old page's does, is decoded on its way at 512 as well as at 128, 256 and
+    // its own 1024: one more of the same 38548 bytes)
+    ("src/sfapp/chat_sent_seen_wbtest.mbt", 154192),
     ("src/sfapp/chat_wbtest.mbt", 960538),
     ("src/sfapp/composer_under_sheet_wbtest.mbt", 159102),
     ("src/sfapp/composer_wbtest.mbt", 231032),

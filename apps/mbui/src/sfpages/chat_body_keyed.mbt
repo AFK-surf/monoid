@@ -101,6 +101,7 @@ fn chat_body_ends(
   empty : Bool,
   still : Array[@sfbase.LocalSent],
   answered : Array[Agent],
+  turns : ChatTurnsOut,
 ) -> (ChatBodyParts, ChatBodyParts) {
   let over : ChatBodyParts = { keys: [], rows: Map([]) }
   let under : ChatBodyParts = { keys: [], rows: Map([]) }
@@ -159,10 +160,8 @@ fn chat_body_ends(
       Some((words, lead, rest)) => put(under, Entry::State(words, lead, rest), lone())
       None => ()
     }
-    for a in v.agents {
-      if a.status == "running" || a.status == "queued" {
-        put(under, Entry::Working(a), lone())
-      }
+    for a in chat_working_kept(v, turns) {
+      put(under, Entry::Working(a), lone())
     }
   }
   for a in answered {
@@ -183,6 +182,7 @@ fn chat_body_keyed(
   msgs : @sfbase.ChatMessages,
   sending? : () -> Array[@sfbase.LocalSent] = fn() { [] },
   card? : () -> (String, Message)? = fn() { None },
+  turns? : ChatTurnsOut = { answered: @sf.LiveMap::new(), lingers: @sf.LiveMap::new() },
 ) -> ChatBodyList {
   // what was sent from here a row of the core's took over (chat_body_rows' `sent_as`): the first of this device's own
   // not there as it was sent (an outbox entry, or a message after the newest there then), looked for among the
@@ -384,7 +384,7 @@ fn chat_body_keyed(
     fn(_) {
       let v = head()
       let (still, _) = taken.get()
-      chat_body_ends(kept, v, msgs.keys().is_empty(), still, chat_body_answered(v, msgs, still, card))
+      chat_body_ends(kept, v, msgs.keys().is_empty(), still, chat_body_answered(v, msgs, still, card), turns)
     },
     same=fn(a, b) {
       a.0.keys == b.0.keys &&

@@ -354,14 +354,38 @@ fn bar_middle_node(
         let station = station_marks(src, w).iter().find_first(fn(s) { s.address == r.station })
         let people = if v.people.length() > 5 { v.people[:5].to_owned() } else { v.people }
         let s = match station {
-          Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}\u{1}\{s.via}"
+          Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
           None => ""
         }
         let ps = people.map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}")
-        let ag = v.agents.map(fn(x) { "\{x.key}\u{1}\{x.maker}\u{1}\{x.runtime}\u{1}\{x.badge}\u{1}\{x.who}" }).join("\u{2}")
+        let ag = v.agents.map(fn(x) { "\{x.key}\u{1}\{x.maker}\u{1}\{x.runtime}\u{1}\{x.who}" }).join("\u{2}")
         { key: "read\u{3}" + s + "\u{3}" + ps + "\u{3}" + ag, shown: Some((v, station, people)) }
       }
       None => { key: "", shown: None }
+    }
+  }
+  // (how its station is reached and each agent's state, read where they show: no part of the key, so a change of
+  // either redraws its mark in place, not the whole middle)
+  let via = fn() {
+    let w = match workspace_in_view(src).0 {
+      Some(w) => w.id
+      None => ""
+    }
+    match station_marks(src, w).iter().find_first(fn(s) { s.address == r.station }) {
+      Some(s) => s.via
+      None => ""
+    }
+  }
+  let badge_of = fn(key : String) {
+    fn() {
+      match view() {
+        Some(v) =>
+          match v.agents.iter().find_first(fn(x) { x.key == key }) {
+            Some(x) => x.badge
+            None => ""
+          }
+        None => ""
+      }
     }
   }
   // (made again as what it shows changes, given what it shows)
@@ -433,7 +457,7 @@ fn bar_middle_node(
       guard marks.shown is Some((v, station, people)) else { return }
       if v.agents.length() == 0 {
         match station {
-          Some(s) => station_chip_node(mid, r.station, s, stint)
+          Some(s) => station_chip_node(mid, r.station, s, via, stint)
           None => ()
         }
       }
@@ -455,9 +479,9 @@ fn bar_middle_node(
           }
           k.says(Is(Some(@view.said(Button, label~)))) |> ignore
           if i == 0 {
-            agent_station_node(k, ag, station, stint)
+            agent_station_node(k, ag, badge_of(key), station, via, stint)
           } else {
-            model_mark_node(k, ag, mark_side())
+            model_mark_node(k, ag, badge_of(key), mark_side())
           }
         })
         |> ignore
@@ -595,7 +619,7 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
 
 ///|
 /// The station's tag in a chat's bar while no agent is in it (station_chip's, as nodes): a tap opens its card.
-fn station_chip_node(v : @view.View, address : String, s : Station, stint : () -> Int) -> Unit {
+fn station_chip_node(v : @view.View, address : String, s : Station, via : () -> String, stint : () -> Int) -> Unit {
   v.box(fn(k) {
     @sf.presses_node(k, fn() {
       let (x, y, w, h) = k.placed_window_now()
@@ -604,16 +628,14 @@ fn station_chip_node(v : @view.View, address : String, s : Station, stint : () -
     k
     .row(Is(true))
     .max_width(Is(Some(104.0)))
-    .padding(Is((if s.via != "" { station_dot_in } else { station_tag_end }, 2.0, station_tag_end, 2.0)))
+    .padding(By(fn() { (if via() != "" { station_dot_in } else { station_tag_end }, 2.0, station_tag_end, 2.0) }))
     .gap(Is(4.0))
     .radius(Is(12.0))
     .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .lines_up(Is(Some(Middle)))
     .says(Is(Some(@view.said(Group, label=s.name))))
     |> ignore
-    if s.via != "" {
-      via_dot_node(k, s.via, via_dot_side, 0.0)
-    }
+    k.show(at_once=true, fn() { via() != "" }, fn(d) { via_dot_in(d, via, via_dot_side, 0.0) })
     if @sf.has_station_mark(s.emoji, s.icon) {
       @sf.station_mark_node(k, fn() { s.emoji }, fn() { s.icon }, 12.0, fn() { @sf.theme().p.muted }, stint)
     }
@@ -634,35 +656,33 @@ fn station_chip_node(v : @view.View, address : String, s : Station, stint : () -
 }
 
 ///|
-/// How a station is reached as a dot (via_dot's, as a node), `size` across, ringed `ring` in the page's ground.
-fn via_dot_node(v : @view.View, via : String, size : Double, ring : Double) -> Unit {
+/// Node `d` drawn as how a station is reached, a dot (via_dot's, as a node), `size` across, ringed `ring` in the page's
+/// ground, its colour following `via` in place.
+fn via_dot_in(d : @view.View, via : () -> String, size : Double, ring : Double) -> Unit {
   let inner = size - ring * 2.0
-  v.box(fn(d) {
-    d
-    .width(Is(Some(size)))
-    .height(Is(Some(size)))
-    .radius(Is(size / 2.0))
-    .lines_up(Is(Some(Middle)))
-    .lies_along(Is(Middle))
-    .row(Is(true))
-    .ground(By(fn() { if ring > 0.0 { @sf.theme().p.bg } else { 0L } }))
-    |> ignore
-    d.box(fn(i) {
-      i
-      .width(Is(Some(inner)))
-      .height(Is(Some(inner)))
-      .radius(Is(inner / 2.0))
-      .ground(By(fn() {
-        let p = @sf.theme().p
-        match via {
-          "direct" => p.online
-          "relay" => 0xD9962BFFL
-          "offline" => p.red
-          _ => p.muted
-        }
-      }))
-      |> ignore
-    })
+  d
+  .width(Is(Some(size)))
+  .height(Is(Some(size)))
+  .radius(Is(size / 2.0))
+  .lines_up(Is(Some(Middle)))
+  .lies_along(Is(Middle))
+  .row(Is(true))
+  .ground(By(fn() { if ring > 0.0 { @sf.theme().p.bg } else { 0L } }))
+  |> ignore
+  d.box(fn(i) {
+    i
+    .width(Is(Some(inner)))
+    .height(Is(Some(inner)))
+    .radius(Is(inner / 2.0))
+    .ground(By(fn() {
+      let p = @sf.theme().p
+      match via() {
+        "direct" => p.online
+        "relay" => 0xD9962BFFL
+        "offline" => p.red
+        _ => p.muted
+      }
+    }))
     |> ignore
   })
   |> ignore
@@ -713,13 +733,22 @@ fn people_stack_node(
 ///|
 /// An agent's mark in the bar (model_mark's, as nodes), `size` square: its maker's mark on a soft tile, its state on
 /// the corner.
-fn model_mark_node(v : @view.View, a : Agent, size : Double) -> Unit {
+fn model_mark_node(v : @view.View, a : Agent, badge : () -> String, size : Double) -> Unit {
   v.box(fn(m) {
     m.width(Is(Some(size))).height(Is(Some(size))) |> ignore
     mark_tile_node(m, a, size)
-    @sfpages.agent_badge_node(m, a.badge, size)
+    badge_slot_node(m, badge, size)
   })
   |> ignore
+}
+
+///|
+/// An agent's state on the corner of its `size` mark in `m`, drawn again in place as `badge` changes: over the mark,
+/// as big as it, so it moves nothing beside it.
+fn badge_slot_node(m : @view.View, badge : () -> String, size : Double) -> Unit {
+  // (the pick's own node the badge itself, none round it; none made while it has none, as most marks have, till it
+  // first comes to one)
+  @sfpages.agent_badge_slot(m, badge, size)
 }
 
 ///|
@@ -745,10 +774,17 @@ fn mark_tile_node(v : @view.View, a : Agent, size : Double) -> Unit {
 /// The chat's first agent with the station it runs on, one tile (agent_station_mark's, as nodes): the maker's square,
 /// then the station's mark or name; the agent's state on the maker's corner, how the station is reached on the tile's.
 /// Until the station is known, the agent's mark alone.
-fn agent_station_node(v : @view.View, a : Agent, station : Station?, stint : () -> Int) -> Unit {
+fn agent_station_node(
+  v : @view.View,
+  a : Agent,
+  badge : () -> String,
+  station : Station?,
+  via : () -> String,
+  stint : () -> Int,
+) -> Unit {
   let m = mark_side()
   match station {
-    None => model_mark_node(v, a, m)
+    None => model_mark_node(v, a, badge, m)
     Some(s) =>
       v.box(fn(o) {
         o.box(fn(tile) {
@@ -794,22 +830,15 @@ fn agent_station_node(v : @view.View, a : Agent, station : Station?, stint : () 
         // the agent's state on the maker's corner, how the station is reached on the tile's: each 3 past it
         o.box(fn(over) {
           over.over(Is(true)) |> ignore
-          over.box(fn(b) {
-            b.over(Is(true)).width(Is(Some(m))).height(Is(Some(m))) |> ignore
-            @sfpages.agent_badge_node(b, a.badge, m)
-          })
-          |> ignore
-          if s.via != "" {
-            over.box(fn(d) {
-              d.over(Is(true)).lines_up(Is(Some(End))) |> ignore
-              d.box(fn(at) {
-                at.offset(Is((3.0, m - 7.0))) |> ignore
-                via_dot_node(at, s.via, 10.0, 2.0)
-              })
-              |> ignore
+          badge_slot_node(over, badge, m)
+          over.show(at_once=true, fn() { via() != "" }, fn(d) {
+            d.over(Is(true)).lines_up(Is(Some(End))) |> ignore
+            d.box(fn(at) {
+              at.offset(Is((3.0, m - 7.0))) |> ignore
+              via_dot_in(at, via, 10.0, 2.0)
             })
             |> ignore
-          }
+          })
         })
         |> ignore
       })

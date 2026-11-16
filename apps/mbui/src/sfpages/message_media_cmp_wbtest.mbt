@@ -187,7 +187,7 @@ fn cmp_seen(s : CmpState, old : Bool) -> (Array[String], Double, Array[Double]) 
         let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
         let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
         let tips = @sf.TipLayer::new(fn() { Some(popup) })
-        message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, "")
+        message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, fn() { "" })
       },
       w=430.0,
       h=400.0,

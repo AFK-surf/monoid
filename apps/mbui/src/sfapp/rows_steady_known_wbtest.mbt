@@ -17,8 +17,24 @@ fn init {
     // 2.8, at 60 and 120)
     ("src/sfapp/daily_paths_wbtest.mbt", 1),
     ("src/sfapp/desk_service_wbtest.mbt", 1),
+    // (a settings page's list put where the page that came puts it, in the frame it comes: 推送历史's -31 as 修复 opens,
+    // seen once Tree::lists_steady looks at the window's tree's lists, 2026-11-16, as the replays' on main)
+    ("src/sfapp/history_fixes_wbtest.mbt", 1),
+    // (a message come at the foot of a chat's page made as nodes as it is caught up on, not said: there at once in the
+    // change that brings it, as the file's head says it is to be, its rows over it 84 up in that frame; Tree::lists_steady's,
+    // 2026-11-16)
+    ("src/sfapp/chat_nodes_seen_whole_wbtest.mbt", 1),
+    // (each screen over a core answering late: a place's list -330 to -479 in a frame as the page it opens comes;
+    // Tree::lists_steady's, 2026-11-16, as history_fixes')
+    ("src/sfapp/late_core_wbtest.mbt", 1),
+    // (设置's lists as main's pages of them came as nodes (2026-11-16): a search's list -816 in a frame as its answer comes,
+    // a page's list -206 as the page that came puts it; 大屏's list 5 in a frame as its foot's own way sets out; seen
+    // once Tree::lists_steady looks at the window's tree's lists)
+    ("src/sfapp/settings_search_wbtest.mbt", 1),
+    ("src/sfapp/settings_wbtest.mbt", 1),
     // (大屏 over a core answering late: a chat's rows go -73 to -82 in a frame as its answer comes, 归档's second row -4,
     // at 60 and 120)
     ("src/sfapp/ways_told_wbtest.mbt", 1),
+    ("src/sfapp/wide_wbtest.mbt", 1),
   ])
 }

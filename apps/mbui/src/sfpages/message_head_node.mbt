@@ -140,7 +140,9 @@ fn person_avatar_node(
 /// the chat's agents' (`agent`) opens its history beside the chat, another chat's agent's (`from`, its link) that chat;
 /// underlined then while the hand is on it (lit_node), and as wide as a press's least room less its head's gap at
 /// least (its words at its start); one of the chat's agents' with its card over it, as over its picture (agent_hover's:
-/// message_agent_card_node, its agent as the row is made). Each as it changes.
+/// message_agent_card_node). Each as it changes: one that comes to be of the chat's agents after its row was made (the
+/// chat's agents said after its messages) given its card and its hand then, nothing made again; none watched for so
+/// where it can never be one (`may_be_agent` false: a person's row).
 fn message_name_node(
   v : @view.View,
   src : Source,
@@ -148,6 +150,7 @@ fn message_name_node(
   name : () -> String,
   agent : () -> String,
   from : () -> String,
+  may_be_agent? : Bool = true,
 ) -> Unit {
   // (in a picture of the chat being shared, only words: what it would open is the chat's, not the picture's)
   let goes = fn() { here.picture is None && (agent() != "" || from() != "") }
@@ -162,10 +165,21 @@ fn message_name_node(
       }
     }
     @sf.presses_node(b, on=goes, press)
-    // (its agent's card over it, the card's hand then its presses': one gesture a node)
-    let a = @signals.untracked(agent)
-    if a != "" && here.picture is None {
-      message_agent_card_node(b, src, here, a, words_along=true, press~)
+    // (its agent's card over it, the card's hand then its presses': one gesture a node; one that comes to be of the
+    // chat's agents after it was made (the chat's agents said after its messages) given its card then, in place; none
+    // in a picture of the chat)
+    if here.picture is Some(_) {
+      ()
+    } else if @signals.untracked(agent) != "" {
+      message_agent_card_node(b, src, here, agent, words_along=true, press~)
+    } else if may_be_agent {
+      let carded = Ref(false)
+      b.reacts(fn() { agent() != "" }, at_start=false, fn(on) {
+        if on && !carded.val && b.alive() {
+          carded.val = true
+          message_agent_card_node(b, src, here, agent, words_along=true, press~)
+        }
+      })
     }
     b.says(By(fn() { if goes() { Some(@view.said(Link, label=name())) } else { None } })) |> ignore
     b.box(fn(w) {

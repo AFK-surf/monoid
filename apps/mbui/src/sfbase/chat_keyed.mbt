@@ -192,7 +192,7 @@ let chat_heads : SourceKept[(ChatView?, Json?)] = { kept: {}, listed: false }
 /// Chat `r`'s head as `src` reads it (chat_head_read: its view but its messages) and its topic's error: what reads
 /// it is told only as the head or the error is another, not as a message changes.
 pub fn chat_head(src : Source, r : ChatRef) -> (ChatView?, Json?) {
-  chat_heads.read(
+  let head = chat_heads.read(
     src,
     chat_inputs_key(r),
     fn(_) {
@@ -208,28 +208,81 @@ pub fn chat_head(src : Source, r : ChatRef) -> (ChatView?, Json?) {
       same_view && a.1 == b.1
     },
   )
+  // (what the page reads of the chat kept for as it is left, as view_of_chat keeps it: pages.mbt's page_chat_view_read;
+  // a page that reads the chat by key reads its head alone)
+  page_chat_view_read(src, r, head.0)
+  head
+}
+
+///|
+// kept across runs: the Kept is registered on first use and its stored values are cleared by kept_reset (derived.mbt)
+let chat_head_jsons : SourceKept[Json?] = { kept: {}, listed: false }
+
+///|
+/// Chat `r`'s topic's value as `src` holds it but its messages (an object of every other field of it, none while it has
+/// none): the same object while each of those fields is the same JSON (the core's deltas keep what they do not touch:
+/// core's delta.mbt), so what reads a field of the chat's head that its view does not say (its row's `place`, its
+/// agents' sessions, `watch`, `xshare`) is told as that changes, never as a word comes into a message.
+pub fn chat_head_json(src : Source, r : ChatRef) -> Json? {
+  chat_head_jsons.read(
+    src,
+    chat_inputs_key(r),
+    fn(was) {
+      guard src.topic("chat", chat_params(r)).get().value is Some(Object(o)) else { return None }
+      let n = if o.contains("messages") { o.length() - 1 } else { o.length() }
+      match was {
+        Some(Some(Object(w) as before)) if w.length() == n &&
+          o.iter().all(fn(kv) { kv.0 == "messages" || (w.get(kv.0) is Some(x) && physical_equal(x, kv.1)) }) =>
+          Some(before)
+        _ => {
+          let head : Map[String, Json] = Map([])
+          for k, x in o {
+            if k != "messages" {
+              head[k] = x
+            }
+          }
+          Some(Json::object(head))
+        }
+      }
+    },
+    same=fn(a, b) {
+      match (a, b) {
+        (Some(x), Some(y)) => physical_equal(x, y)
+        (None, None) => true
+        _ => false
+      }
+    },
+  )
 }
 
 ///|
 /// Chat `r`'s view for what reads its head alone (its bar, its composer, whether it needs the viewer): its head
 /// (chat_head, what is on its way from here answering its last card as the core will say: chat_sent_here) where it is
-/// no chat just made from here and `src` keeps its messages by key (what wants them reads them so: chat_messages), else
+/// no chat just made from here with none of the core's messages in it yet (chat_keyed_now) and `src` keeps its messages
+/// by key (what wants them reads them so: chat_messages), else
 /// as view_of_chat works it out (sent_here_view's the same). Told as the head changes, not as a word
 /// comes into a message.
 pub fn chat_view_now(src : Source, r : ChatRef) -> ChatView? {
-  if fresh_view(r) is None {
-    // (the head read first: what holds the topic, whose messages by key are then there; what is on its way from here
-    // answering its last card, as the core will say once it has it)
-    match chat_head(src, r).0 {
-      Some(h) =>
-        match chat_messages(src, r) {
-          Some(ms) => return Some(chat_sent_here(r, h, ms).0)
-          None => ()
-        }
-      None => ()
-    }
+  // (the head read first: what holds the topic, whose messages by key are then there; what is on its way from here
+  // answering its last card, as the core will say once it has it)
+  match chat_head(src, r).0 {
+    Some(h) =>
+      match chat_messages(src, r) {
+        Some(ms) if chat_keyed_now(r, ms) => return Some(chat_sent_here(r, h, ms).0)
+        _ => ()
+      }
+    None => ()
   }
   view_of_chat(src, r).0
+}
+
+///|
+/// Whether chat `r`, its messages by key `ms`, is read by its head and those (chat_view_now, the chat's page made as
+/// nodes): but the chat a new chat became (fresh_view) till the core's view of it holds a message, which view_of_chat
+/// makes never empty meanwhile (its first words in it from the frame they were sent). Told, while it is that chat, as
+/// a message comes.
+pub fn chat_keyed_now(r : ChatRef, ms : ChatMessages) -> Bool {
+  fresh_view(r) is None || ms.keys().length() > 0
 }
 
 ///|

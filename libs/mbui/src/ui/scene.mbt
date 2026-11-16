@@ -1425,6 +1425,7 @@ fn Ctx::paint(self : Ctx, i : Int, alpha_in : Double) -> Unit {
     self.tree_over_scrim_clear()
     self.raise_ranges(tree_over_scrim)
     tree_over_scrim.clear()
+    tree_over_scrim_cut.clear()
   }
   // the page's cover: what is over it (strata.mbt's OverCover) over it
   if !dr.over_cover.is_empty() && dr.mode != mode_hits && dr.covers.contains(i) {

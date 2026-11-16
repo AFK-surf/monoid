@@ -169,6 +169,9 @@ priv struct Rec {
   mut node : Int
   /// How a measured node was drawn after all of its ancestors' looks were applied.
   mut drawn : @ui.DrawnState?
+  /// the node it was drawn as then (its id, 0 none) and where that was laid out: moved since with what holds it, built
+  /// no more (Ctx::moved_shift, an island's old frame carried where its node is drawn), `drawn` goes with it
+  mut drawn_of : (Int, Double, Double)
   mut anchor : Int
   /// the frame it was last laid out in (what this frame's builds of it read: layout_entry)
   mut seen : Int
@@ -267,6 +270,7 @@ fn Rec::new() -> Rec {
     h: 0.0,
     node: -1,
     drawn: None,
+    drawn_of: (0, 0.0, 0.0),
     anchor: 0,
     seen: -10,
     alive: false,
@@ -908,10 +912,31 @@ pub fn measured_drawn_rect(c : @ui.Ctx, key : String) -> (Double, Double, Double
 ///|
 /// The drawn rectangle, rectangular cuts and inherited opacity kept by measure_drawn, for an action taking the node
 /// from where it showed. None once what measures it is no longer built.
+/// Where the frame built since carried what it was drawn in without building it again (Ctx::moved_shift: an old view's
+/// island moved with its node, a list's foot as the side panel slides), as far as that carried its node: what takes it
+/// from there takes it from where it shows now, not from where it was built (words sent, their cards flying from them).
 pub fn measured_drawn_state(c : @ui.Ctx, key : String) -> @ui.DrawnState? {
-  ignore(c)
   match mo.recs.get(motion_key("measure\u{1}" + key)) {
-    Some(r) if r.alive => r.drawn
+    Some(r) if r.alive =>
+      match (r.drawn, r.drawn_of) {
+        (Some(d), (id, x0, y0)) if id != 0 =>
+          match c.node_moved_since(r.node, id, x0, y0) {
+            Some((dx, dy)) if dx != 0.0 || dy != 0.0 => {
+              let mv = fn(q : (Double, Double, Double, Double)) { (q.0 + dx, q.1 + dy, q.2, q.3) }
+              let cut = fn(q : (Double, Double, Double, Double)) {
+                (
+                  if q.0 > -1.0e8 { q.0 + dx } else { q.0 },
+                  if q.1 > -1.0e8 { q.1 + dy } else { q.1 },
+                  if q.2 < 1.0e8 { q.2 + dx } else { q.2 },
+                  if q.3 < 1.0e8 { q.3 + dy } else { q.3 },
+                )
+              }
+              Some({ ..d, rect: mv(d.rect), grown: mv(d.grown), clip: cut(d.clip) })
+            }
+            _ => Some(d)
+          }
+        (d, _) => d
+      }
     _ => None
   }
 }
@@ -1518,7 +1543,11 @@ fn after_layout(c : @ui.Ctx) -> Unit {
   for e in mo.entries {
     if e.kept != 0 && e.kept_drawn {
       match mo.recs.get(e.kept) {
-        Some(r) if r.seen == frame => r.drawn = Some(c.drawn_state(e.node))
+        Some(r) if r.seen == frame => {
+          r.drawn = Some(c.drawn_state(e.node))
+          let (nx, ny, _, _) = c.node_rect(e.node)
+          r.drawn_of = (c.node_id(e.node), nx, ny)
+        }
         _ => ()
       }
     }
@@ -2092,10 +2121,12 @@ fn layout_entry(c : @ui.Ctx, e : Moving, still : Bool, frame : Int, scrolled : M
             // out from rest, not thrown past and turned in a frame (the user, 2026-11-09: 「发送反向时不带速度」))
             let toward = (cx + dx) * vx <= 0.0 && (cy + dy) * vy <= 0.0
             let carried = sets_out_from_rest(spec) && toward && (vx.abs() > part_moving || vy.abs() > part_moving)
+            // (its own delay kept, the late close's added to it: a way said to hold first, as words sent hold the
+            // composer's ground (sent_out_hold_ms), holds what is laid out in it as long)
             let spec = if carried {
               moved(over=carried_way(cx + dx, vx, cy + dy, vy))
             } else {
-              spec.delayed(delay)
+              spec.delayed(spec.delay() + delay)
             }
             // (carried on from where it is now and how fast it goes now: from now, not from its cause's moment before)
             let start_at = if carried { Some(c.moment()) } else { None }

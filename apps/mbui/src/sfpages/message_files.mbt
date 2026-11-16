@@ -1068,6 +1068,11 @@ let image_fill_waiting : @ui.Style = image_fill.then(@ui.css("bg=Neutral"))
 let letterbox_room : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
+/// letterbox_room waiting on its picture, nothing of it to show yet: the neutral ground (image_fill_waiting's).
+// kept across runs: a value (no field of it changes)
+let letterbox_room_waiting : @ui.Style = letterbox_room.then(@ui.css("bg=Neutral"))
+
+///|
 /// One that cannot be had (msgImageUnavailable): its mark over 无法预览, muted, in its middle.
 // kept across runs: a value (no field of it changes)
 let no_preview_box : @ui.Style = @ui.css("w=Full h=Full gap=S1_5 align=ACenter justify=JCenter")

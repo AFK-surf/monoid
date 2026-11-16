@@ -190,6 +190,23 @@ fn tab_viewer_id(chat : String, tab : String) -> String {
 }
 
 ///|
+/// What a film opened beside a chat was known to be as it was opened there (its picture's size, its length and frames:
+/// the message's Attachment), by its tab (view_tab_key, which says none of it: the shell matches tabs by it as
+/// it is), till its tab's viewer is made (tab_viewer), so the tab's player and its size are its file's from the first
+/// frame, not 0 till the station reads its header again.
+// kept across runs: put back by tab_viewers_reset (file_viewer_reset)
+let tab_facts : Map[String, (Double, Double, Double, Int)] = Map([])
+
+///|
+/// File `a` opened beside a chat as tab `tab`: what is known of it kept for its viewer (tab_facts).
+fn tab_facts_said(tab : String, a : Attachment) -> Unit {
+  // (a film's or a song's: a picture is fitted by what its bytes decode to, as over the whole window)
+  if a.duration > 0.0 || a.frames > 0 {
+    tab_facts[tab] = (a.width, a.height, a.duration, a.frames)
+  }
+}
+
+///|
 /// The viewer of tab `tab` of the chat whose tabs are kept by `chat`: made as it is first shown (of the tab alone: its
 /// file read again after a restart), kept while the tab is open. None: no file's tab, or one of a draft's.
 pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
@@ -217,6 +234,11 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
               (m.steps, { ..f.file, width: m.width, height: m.height })
             }
             None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file)
+          }
+          // (a film's or a song's as it was known as it was opened beside: tab_facts)
+          let file = match tab_facts.get(tab) {
+            Some((width, height, duration, frames)) => { ..file, width, height, duration, frames }
+            None => file
           }
           let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, beside=true)
           tab_viewers[id] = { viewer: v, drawn: 0, closing: false }
@@ -266,6 +288,7 @@ fn tab_viewers_reset() -> Unit {
   tab_asked.clear()
   tab_moved.each(fn(_, m) { m.release() })
   tab_moved.clear()
+  tab_facts.clear()
 }
 
 ///|
@@ -300,14 +323,25 @@ let tab_moved : Map[String, TabMoved] = Map([])
 /// whole window's 移到侧边), by their tab: where a film's or a song's player starts there (ms; 0 where it was left),
 /// taken by its tab's viewer as the tab's node is made (viewer_tab_node), its player played at once.
 // kept across runs: put back by tab_viewers_reset (file_viewer_reset)
-let tab_asked : Map[String, Double] = Map([])
+let tab_asked : Map[String, PlayAsked] = Map([])
+
+///|
+/// What a film or a song asked beside the page plays as (tab_asked): from where (ms; 0 where it was left), played at
+/// once or left paused there (moved from the whole window's player paused: kept paused), and, moved so, the speed it
+/// played at and how loud (its sound off or not) there, carried on; None, as the tab's player has them.
+priv struct PlayAsked {
+  at : Double
+  plays : Bool
+  how : (Double, Double, Bool)?
+}
 
 ///|
 /// File tab `tab` asked beside the page in view by the person (Shell's `beside`), a film or a song in it to play at once
 /// from `at` (ms; 0 where it was left): whether the shell put it there. The tab the shell put in front may be another
 /// of the same file (opened by another key: sfdesk's view_beside), the one asked of then. Its tab drawn in front
 /// already (the same file asked again), no node is made for it: its viewer told here.
-fn beside_open(tab : String, at : Double) -> Bool {
+fn beside_open(tab : String, at : Double, plays? : Bool = true, how? : (Double, Double, Bool)? = None) -> Bool {
+  let at : PlayAsked = { at, plays, how }
   // (said before the shell is asked: its tab's node may be made as the shell puts it there)
   tab_asked[tab] = at
   let put = match (shell.val.beside)(tab) {
@@ -331,24 +365,43 @@ fn beside_open(tab : String, at : Double) -> Bool {
 }
 
 ///|
-/// A tab's viewer asked beside by the person just now (tab_asked): its film or song played at once, from `at` (ms; 0
+/// A tab's viewer asked beside by the person just now (tab_asked): its film or song played at once (or left paused, as
+/// `asked` says), at the speed and as loud as it says where it says, from its `at` (ms; 0
 /// where it is): its player sent there and played where it is open already, else opened so (Viewer::fetch).
-fn Viewer::play_asked(self : Viewer, at : Double) -> Unit {
-  self.plays_now = true
+fn Viewer::play_asked(self : Viewer, asked : PlayAsked) -> Unit {
+  let at = asked.at
+  self.plays_now = asked.plays
   match self.media {
     Some(m) => {
       if at > 0.0 {
         m.seek(at)
       }
+      match asked.how {
+        Some(how) => media_as(m, how)
+        None => ()
+      }
       match m.native() {
-        Some(n) => n.play()
+        Some(n) => if asked.plays { n.play() } else { n.pause() }
         None => ()
       }
     }
-    None =>
+    None => {
       if at > 0.0 {
         self.start_at = at
       }
+      self.play_how = asked.how
+    }
+  }
+}
+
+///|
+/// Player `m` at the speed and as loud as `how` says (its speed, how loud, its sound off or not).
+fn media_as(m : @kit.Media, how : (Double, Double, Bool)) -> Unit {
+  let (speed, volume, muted) = how
+  m.set_speed(speed)
+  m.set_volume(volume)
+  if muted != m.volume().1 {
+    m.toggle_mute()
   }
 }
 
@@ -377,9 +430,15 @@ pub fn tab_players_pause(chat? : String = "") -> Unit {
 /// 移到侧边 (the whole window's bar): viewer `vw`'s file beside the page, it closed at once (no flight back: it goes to
 /// the tab); a film or a song played there from where it was. Where the shell has nowhere to put it, it stays.
 pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
-  let at = match self.media {
-    Some(m) => m.position()
-    None => 0.0
+  // (where it is, played on there only where it plays here: paused here, there paused; at the speed and as loud as
+  // here)
+  let (at, plays, how) = match self.media {
+    Some(m) => {
+      let s = m.status()
+      let (volume, muted) = m.volume()
+      (m.position(), s.playing && !s.ended, Some((m.speed(), volume, muted)))
+    }
+    None => (0.0, true, None)
   }
   // (what the window showed of it, handed to the tab's viewer: what it stepped through, its picture's size)
   let (width, height) = if self.file.width > 0.0 && self.file.height > 0.0 {
@@ -403,7 +462,8 @@ pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
     }
     tab_moved[tab] = { steps: self.steps, width, height, near }
   }
-  if beside_open(tab, at) {
+  tab_facts_said(tab, self.file)
+  if beside_open(tab, at, plays~, how~) {
     close_now()
   } else {
     match tab_moved.get(tab) {

@@ -86,9 +86,10 @@ fn film_frame_answered(t : @ui.Tester) -> Unit {
 ///|
 /// The chat's compare.png (`film`: its recording, 演示录屏.mp4) in a window `w` wide (`platform`'s), seen once, wheeled
 /// till its top is `top` (under the chat's bar), pressed and let go a little over its foot: what went wrong in the
-/// frames while it went out from under the bar, and back in under it as it is closed (none, as it should be).
-fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false) -> Array[String] {
-  let (t, x, y) = if film { film_in_chat(platform~, w~) } else { image_in_chat("compare.png", platform~, w~) }
+/// frames while it went out from under the bar, and back in under it as it is closed (none, as it should be); on a
+/// chat's page made as nodes where `nodes` says so (its thumbnail the viewer's to fly from: sfbase's note_thumb_node).
+fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false, nodes? : Bool = false) -> Array[String] {
+  let (t, x, y) = if film { film_in_chat(platform~, w~, nodes~) } else { image_in_chat("compare.png", platform~, w~, nodes~) }
   // opened once and closed: its whole read and kept, as a picture seen before is (the frame it sets out in again asks
   // the core nothing, built once)
   t.tap(x, y)
@@ -179,22 +180,26 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
 }
 
 ///|
-test "a picture under a chat's bar: the bar over it every frame till it is out from under it" {
+test "a picture under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
   // a wide window, the tape's, and a phone's; its top a little under the bar's, and half of it over the window's top
-  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-    for top in [10.0, -100.0] {
-      let faults = picture_under_bar_faults(top, screen.0, screen.1)
-      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
+  for nodes in [false, true] {
+    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+      for top in [10.0, -100.0] {
+        let faults = picture_under_bar_faults(top, screen.0, screen.1, nodes~)
+        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
+      }
     }
   }
 }
 
 ///|
-test "a film under a chat's bar: the bar over it every frame till it is out from under it" {
-  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-    for top in [10.0, -100.0] {
-      let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true)
-      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
+test "a film under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
+  for nodes in [false, true] {
+    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+      for top in [10.0, -100.0] {
+        let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true, nodes~)
+        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
+      }
     }
   }
 }
@@ -211,7 +216,7 @@ fn film_at(t : @ui.Tester) -> Array[(Double, Double)] {
 }
 
 ///|
-/// On a chat's page made as nodes (its thumbnails the window's tree's: View::shared's end that stays) in a window `w`
+/// On a chat's page made as nodes (its thumbnails the viewer's to fly from and back into: sfbase's note_thumb_node) in a window `w`
 /// wide (`platform`'s), the chat's film (`film`) or compare.png opened and closed: what went wrong in each frame from the
 /// press till its flight in ended and from the close till its flight back ended. In each, one picture of it drawn
 /// (never none, never the thumbnail and its flight both, nor the player's own picture over the flight), the first where
@@ -232,26 +237,31 @@ fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] 
   let last : Ref[(Double, Double, Double, Double)?] = Ref(None)
   // (where its flight should set out: its thumbnail as it opens, where it rested as it closes)
   let from = Ref(thumb)
-  let check = fn(said : String, id : String) {
-    let pics = t.drawn_images().filter(of_it)
-    match t.flight_of(id) {
-      Some((r, _)) => {
-        // (the thumbnail drawn nowhere while it flies, nor another picture of it over the flight's (the player's own,
-        // as wide and tall as it, the same shape): one picture; the chat's others under the viewer's ground are theirs)
-        let shape = r.2 / dmax(r.3, 1.0)
-        // (its own picture drawn in its box as the end that stays draws it, contained: a point or two off the box)
-        let near = fn(a : Double, b : Double, size : Double) { (a - b).abs() <= dmax(1.5, size * 0.02) }
-        let others = pics.filter(fn(p) {
-          !(near(p[0], r.0, r.2) && near(p[1], r.1, r.3) && near(p[2], r.2, r.2) && near(p[3], r.3, r.3))
-        }).filter(fn(p) {
-          ((p[0] - thumb.0).abs() < 1.5 && (p[1] - thumb.1).abs() < 1.5 && (p[2] - thumb.2).abs() < 1.5) ||
+  // (its pictures: those of the thumbnail's shape, the thumbnail's own, its flight's, the player's over it)
+  let shape = thumb.2 / dmax(thumb.3, 1.0)
+  let check = fn(said : String) {
+    // (while it flies: landed, its picture the player's own or the viewer's, no flight's)
+    let flying = match viewer.get() {
+      Some(v) => v.flies
+      None => pv_leaving.get().map(fn(v) { v.flies }).unwrap_or(false)
+    }
+    if !flying {
+      frame.val += 1
+      return
+    }
+    let pics = t.drawn_images().filter(of_it).filter(fn(p) { (p[2] / dmax(p[3], 1.0) - shape).abs() < shape * 0.1 })
+    // (its flight: the one nearest where it was the frame before, else where it sets out)
+    let near_to = last.val.unwrap_or(from.val)
+    let far = fn(p : Array[Double]) { (p[0] - near_to.0).abs() + (p[1] - near_to.1).abs() + (p[2] - near_to.2).abs() }
+    match pics.iter().fold(init=None, fn(m : Array[Double]?, p) { if m is Some(q) && far(q) <= far(p) { m } else { Some(p) } }) {
+      Some(p) => {
+        let r = (p[0], p[1], p[2], p[3])
+        // (the thumbnail drawn nowhere while it flies, nor another picture of it over the flight's: one picture)
+        let others = pics.filter(fn(q) {
+          !(q[0] == p[0] && q[1] == p[1] && q[2] == p[2] && q[3] == p[3]) &&
           (
-            p[0] < r.0 + r.2 &&
-            r.0 < p[0] + p[2] &&
-            p[1] < r.1 + r.3 &&
-            r.1 < p[1] + p[3] &&
-            (p[2] / dmax(p[3], 1.0) - shape).abs() < shape * 0.1 &&
-            p[2] * p[3] > r.2 * r.3 * 0.5
+            ((q[0] - thumb.0).abs() < 1.5 && (q[1] - thumb.1).abs() < 1.5 && (q[2] - thumb.2).abs() < 1.5) ||
+            (q[0] < r.0 + r.2 && r.0 < q[0] + q[2] && q[1] < r.1 + r.3 && r.1 < q[1] + q[3] && q[2] * q[3] > r.2 * r.3 * 0.5)
           )
         })
         if others.length() > 0 {
@@ -266,29 +276,36 @@ fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] 
         }
         last.val = Some(r)
       }
-      None => if pics.length() == 0 { faults.push("\{said} frame \{frame.val}: no picture of it drawn") }
+      None => faults.push("\{said} frame \{frame.val}: no picture of it drawn (seen)")
     }
     frame.val += 1
   }
   t.tap(x, y)
   let v = viewer.get()
   guard v is Some(v) else { return ["nothing opened"] }
-  let id = v.thumb_id()
-  t.each_frame(Some(fn() { check("in", id) }))
+  t.each_frame(Some(fn() { check("in") }))
   t.draw()
-  let end = t.flight_end(id).unwrap_or(t.time())
-  if t.flight_end(id) is None {
+  let end = if v.flies { v.fly.end() } else { t.time() }
+  if !v.flies {
     faults.push("it never flew in")
   }
   t.run_shown(end - t.time() + @ui.frame_period_default)
   t.each_frame(None)
   t.run_for(@ui.move_most_ms)
-  // in: at rest where the viewer shows it, its flight's end
+  // in: at rest where the viewer shows it, its flight's end (a film: its player's own picture there)
   match last.val {
-    Some(l) =>
-      if !t.drawn_images().filter(of_it).iter().any(fn(p) { (p[0] - l.0).abs() < 1.5 && (p[1] - l.1).abs() < 1.5 && (p[2] - l.2).abs() < 1.5 }) {
-        faults.push("in: not at rest where its flight ended, \{Repr(l)}")
+    Some(l) => {
+      // (the last frame it was seen flying a frame's way short of its end, its Move all but at rest: within two
+      // hundredths of its size of where it rests)
+      let near = fn(x : Double, y : Double, w : Double) {
+        let k = dmax(2.0, l.2 * 0.02)
+        (x - l.0).abs() < k && (y - l.1).abs() < k && (w - l.2).abs() < k
       }
+      if !t.drawn_images().filter(of_it).iter().any(fn(p) { near(p[0], p[1], p[2]) }) &&
+        !t.holes().iter().any(fn(h) { near(h.0, h.1, h.2) }) {
+        faults.push("in: not at rest where its flight ended, \{Repr(l)}: holes \{Repr(t.holes())}")
+      }
+    }
     None => ()
   }
   // and closed: back into its thumbnail (a film's frame asked for first, given as a host gives it)
@@ -302,10 +319,10 @@ fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] 
   if film {
     film_frame_answered(t)
   }
-  t.each_frame(Some(fn() { check("out", id) }))
+  t.each_frame(Some(fn() { check("out") }))
   t.draw()
-  let end = t.flight_end(id).unwrap_or(t.time())
-  if t.flight_end(id) is None {
+  let end = if v.flies && v.fly_back { v.fly.end() } else { t.time() }
+  if !(v.flies && v.fly_back) {
     faults.push("it never flew back")
   }
   t.run_shown(end - t.time() + @ui.frame_period_default)

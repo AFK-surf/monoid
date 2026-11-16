@@ -70,6 +70,11 @@ priv struct RowsSteady {
   mut went : Map[String, (Double, Double, Double, Double, Double, Bool, Bool)]
   /// when the hand last pressed, let go, typed, scrolled or went back (rows_steady_hand)
   mut hand : Double
+  /// the last frame's moment judged here (for Tree::lists_steady's answered_seen)
+  mut judged : Double
+  /// the width each list of the window's tree was laid out at as the last frame was judged (Tree::lists_steady's
+  /// `laid`, View::lays_anew): where it steps, its rows laid out anew in that frame, their step its own
+  mut laids : Map[Int, Double]
 }
 
 
@@ -86,6 +91,8 @@ let rows_steady : RowsSteady = {
   turned: {},
   went: {},
   hand: -1.0e9,
+  judged: -1.0e9,
+  laids: {},
 }
 
 ///|
@@ -113,6 +120,8 @@ fn rows_steady_begin(loc : String, held : Bool) -> Unit {
   rows_steady.turned.clear()
   rows_steady.went.clear()
   rows_steady.hand = -1.0e9
+  rows_steady.judged = -1.0e9
+  rows_steady.laids.clear()
   rows_steady.window = (-1.0, -1.0)
   rows_steady.words = -1.0
   rows_steady.file = match loc.find(":") {
@@ -264,6 +273,81 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
       r = n.next
     }
   }
+  match view_tree() {
+    Some(tr) =>
+      for tl in tr.lists_steady(rows_steady.judged, now, period, self.width) {
+        let shown_since = match rows_steady.lists.get(tl.id) {
+          Some(t) if now - t <= 2.5 * period + rows_first_ms => t
+          Some(_) => -1.0
+          None => {
+            rows_steady.lists[tl.id] = now
+            now
+          }
+        }
+        rows_steady.lists[tl.id] = if shown_since < 0.0 { -1.0e9 } else { shown_since }
+        let settled = shown_since < 0.0 || now > shown_since + rows_first_ms
+        let free = settled && tl.free && !self.down && !view_holds() && now - tl.put_at > 1.5 * period
+        // (laid out anew at another width in this frame, as the window made another size is: its rows' step its own)
+        let laid_anew = match rows_steady.laids.get(tl.id) {
+          Some(w) => w != tl.laid
+          None => false
+        }
+        rows_steady.laids[tl.id] = tl.laid
+        let mut said = false
+        for r in tl.rows {
+          let (key, y, h, anew, faint) = r
+          here.add(key)
+          let shows = y + h > 0.0 && y < tl.height
+          let seen = match rows_steady.seen.get(key) {
+            Some(s) => s
+            None => {
+              let s = []
+              rows_steady.seen[key] = s
+              s
+            }
+          }
+          let gap = seen.length() > 0 && now - seen[seen.length() - 1].1 > 2.5 * period
+          if !free || gap || anew || resized || laid_anew {
+            seen.clear()
+            rows_steady.went.remove(key)
+          }
+          let returned = if free && shows && seen.length() > 0 {
+            rows_steady_return(key, now, y - seen[seen.length() - 1].2, period, left=tl.left, faint~)
+          } else {
+            None
+          }
+          if seen.length() > 0 && now - seen[seen.length() - 1].0 < 0.5 * period {
+            seen[seen.length() - 1] = (seen[seen.length() - 1].0, now, y)
+          } else {
+            seen.push((now, now, y))
+          }
+          while seen.length() > 4 {
+            seen.remove(0) |> ignore
+          }
+          if free && shows && !said {
+            let set_out = tl.set_out
+            let turned = rows_steady.turned.get(key).unwrap_or(-1.0e9)
+            let (fault, turn) = rows_steady_fault(seen, period, set_out~, turned~, faint~)
+            if turn != turned {
+              rows_steady.turned[key] = turn
+            }
+            let fault = match fault {
+              Some(_) => fault
+              None => returned
+            }
+            match fault {
+              Some(f) => {
+                out.push("row " + key + " (tree list " + tl.id.to_string() + ") " + f + " seen=[\{seen.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}] set_out=\{set_out}")
+                said = true
+              }
+              None => ()
+            }
+          }
+        }
+      }
+    None => ()
+  }
+  rows_steady.judged = now
   // (rows gone: forgotten)
   let gone : Array[String] = []
   rows_steady.seen.each(fn(k, _) { if !here.contains(k) { gone.push(k) } })

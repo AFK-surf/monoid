@@ -40,9 +40,10 @@ pub fn side_of(v : ChatView) -> (Array[String], String) {
 }
 
 ///|
-/// Chat `r`'s tabs as its view has them now.
+/// Chat `r`'s tabs as its view has them now (its head alone: sfbase's chat_view_now, told as they change, not as a word
+/// comes into a message).
 pub fn side_now(src : Source, r : ChatRef) -> (Array[String], String) {
-  match view_of_chat(src, r).0 {
+  match @sfbase.chat_view_now(src, r) {
     Some(v) => side_of(v)
     None => ([], "")
   }

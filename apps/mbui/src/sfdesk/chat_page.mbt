@@ -329,7 +329,7 @@ fn chat_bar_handed_node(v : @view.View, src : Source, r : ChatRef) -> Unit {
     @signals.untracked(fn() {
       guard @sfbase.workspace_in_view(src).0 is Some(w) else { return }
       nav_page_for(page)
-      chat_bar_hand(src, w, r, view_of_chat(src, r).0, src.topic("chat", chat_params(r)).get().value, fn(_) {
+      chat_bar_hand(src, w, r, @sfbase.chat_view_now(src, r), @sfbase.chat_head_json(src, r), fn(_) {
         bar_menu_from_node(v)
       })
     })
@@ -337,15 +337,16 @@ fn chat_bar_handed_node(v : @view.View, src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
-/// What chat_bar_hand reads of chat `r` (`top` its page on top), as a value: changed, what it hands changes.
+/// What chat_bar_hand reads of chat `r` (`top` its page on top), as a value: changed, what it hands changes. Its head
+/// alone (sfbase's chat_view_now, chat_head_json): a word streamed into a message reads none of it again.
 fn chat_bar_said(
   src : Source,
   r : ChatRef,
   top : Bool,
 ) -> (Bool, (Bool, Bool, Bool), (String, Double?, Bool, Bool, Bool, String, String)?, (Json?, Json?, Json?)) {
   let whole = @sfbase.chat_whole_held(src, r)
-  let view = view_of_chat(src, r).0
-  let chat = src.topic("chat", chat_params(r)).get().value
+  let view = @sfbase.chat_view_now(src, r)
+  let chat = @sfbase.chat_head_json(src, r)
   let jobs = src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
   (
     top,

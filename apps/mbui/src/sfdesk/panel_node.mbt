@@ -91,7 +91,7 @@ fn side_way(key : String) -> @motion.Way {
 /// by a change asked here (side_changing's `asked`), slid in or out from where it is at that change's moment, as long as
 /// it is wide; else there at once (a page opened with its tabs as they were left). Slid out, what it showed let go of
 /// at its end.
-fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit {
+fn side_slides(n : @view.View, src : Source, key : String, chat : String, open : Bool) -> Unit {
   let way = side_way(key)
   let target = if open { @signals.untracked(fn() { side_whole(src, n) }) } else { 0.0 }
   let was = @signals.untracked(fn() { panel_own.was.get(key) })
@@ -99,6 +99,8 @@ fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit 
     Some(was) if was != open && panel_own.asked.untracked() == key => {
       panel_own.asked.set("")
       way.go(target, @motion.moved(), at=n.cause_at())
+      // (the chat's rows laid out anew at where it goes, on their list's way from this moment: side_narrower)
+      @sfbase.column_sets_off(chat)
       if !open {
         let ends = way.end()
         n.at_moment(ends, fn() { if way.end() == ends { side_left(key) } }) |> ignore
@@ -117,8 +119,21 @@ fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit 
 }
 
 ///|
-/// How wide page `key`'s panel's column is as node `n` is drawn: where its way has it while it goes, else all of it
-/// open (`open`), none closed.
+/// Whether page `key`'s panel's column is to slide to `open` from where it is and has not set off yet: a change asked
+/// here (side_changing's `asked`) come to what the page reads, side_slides not yet told it. What reads where the column
+/// is (side_col, side_narrower) is told it in the same pass as the change, before or after side_slides is (whichever
+/// way the tree takes them): so it reads the column where its way sets off from, never where it is going for the frame
+/// between (all of the page's width at once as it closes, the column at none, then back to the way's).
+fn side_setting_off(key : String, open : Bool) -> Bool {
+  match panel_own.was.get(key) {
+    Some(was) => was != open && panel_own.asked.get() == key
+    None => false
+  }
+}
+
+///|
+/// How wide page `key`'s panel's column is as node `n` is drawn: where its way has it while it goes, where it sets off
+/// from as it is about to (side_setting_off), else all of it open (`open`), none closed.
 fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
   match panel_own.goes.get(key) {
     Some(way) => {
@@ -126,6 +141,9 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
       let t = n.drawn_while(fn(at) { way.goes_at(at) })
       if t != @double.infinity && way.goes_at(t) {
         return way.value_at(t)
+      }
+      if side_setting_off(key, open) {
+        return way.target()
       }
     }
     None => ()
@@ -138,10 +156,13 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 }
 
 ///|
-/// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out, and how far across it is moved
-/// (chat_page_made's `narrower`): while its panel's column slides, as at the narrower of where the page was as it set
-/// off and where it goes (the panel's wider end), moved across as laid_across has it; at rest, and over a page too
-/// narrow for both (the page as wide as it is), none, laid out as wide as it is.
+/// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out (less than none: wider), and
+/// how far across it is moved (chat_page_made's `narrower`): while its panel's column slides, as where it goes, from the
+/// moment it sets off, moved across as laid_toward has it (the old list's laid_w and list_shift: laid out anew only as
+/// the way sets off, its rows' heights going on the list's way from there; the rows' words where they stood as it set
+/// off, going with the page to where they stand once it is there; laid out at the narrower end all the way it was
+/// narrow at once and wide at once as the panel was gone, the user, 2026-11-09: 「打开关闭右侧面板，中间的变化不对」);
+/// at rest, and over a page too narrow for both (the page as wide as it is), none, laid out as wide as it is.
 fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
   let pane = pane_w_at(src, n)
   guard app.nav.page_of(serial) is Some((Chat(r), _)) else { return { by: 0.0, across: 0.0, laid: pane } }
@@ -153,10 +174,30 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
   }
   if t == @double.infinity || !way.goes_at(t) {
     let open = side_now(src, r).0.length() > 0
-    return { by: 0.0, across: 0.0, laid: pane - (if open { side_whole(src, n) } else { 0.0 }) }
+    let to = if open { side_whole(src, n) } else { 0.0 }
+    // (about to set off: as it is still, where the column is (side_setting_off), laid out anew only as the way sets off,
+    // its rows told then: side_slides)
+    if side_setting_off(chat_key(r), open) {
+      return { by: 0.0, across: 0.0, laid: pane - way.target() }
+    }
+    return { by: 0.0, across: 0.0, laid: pane - to }
   }
-  let ends = (way.value_at(way.starts_at()), way.target())
-  laid_across(pane - way.value_at(t), pane - dmax(ends.0, ends.1), pane - dmin(ends.0, ends.1))
+  laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
+}
+
+///|
+/// A chat's column drawn `now` wide on its way from `from` to `to`: laid out at `to` all the way (how much narrower
+/// than it is drawn: less than none where it is drawn narrower, its page cutting it), moved across by as much further in
+/// as its rows' words stood at `from` than they stand at `to`, less as much of it as the way has come
+/// (chat_page_made's `narrower`): so they go with the page from where they stood as it set off to where they stand, never
+/// stepping where they are laid out anew.
+fn laid_toward(now : Double, from : Double, to : Double) -> @sfbase.ColumnLaid {
+  let gone = if (from - to).abs() > 0.5 { dmax(0.0, dmin(1.0, (from - now) / (from - to))) } else { 1.0 }
+  {
+    by: now - to,
+    across: (@sfpages.chat_row_side(from) - @sfpages.chat_row_side(to)) * (1.0 - gone),
+    laid: to,
+  }
 }
 
 ///|
@@ -188,7 +229,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       return
     }
     let open = fn() { side_now(src, r).0.length() > 0 }
-    col.reacts(open, fn(open) { side_slides(col, src, key, open) })
+    col.reacts(open, fn(open) { side_slides(col, src, key, r.station + "\u{1}" + r.session, open) })
     // (its page kept under another, shown no more: what a file's tab plays here paused, as when its tab is let go)
     col.reacts(fn() { app.nav.shows(serial) }, fn(shows) {
       if !shows {
@@ -234,7 +275,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           island(
             q,
             fn(c) {
-              match (@sfbase.workspace_in_view(src).0, view_of_chat(src, r).0) {
+              match (@sfbase.workspace_in_view(src).0, @sfbase.chat_view_now(src, r)) {
                 (Some(w), Some(_)) => {
                   let (tabs, front) = side_shown(src, r)
                   side_panel(c, src, w, r, tabs, front)
@@ -305,7 +346,7 @@ fn side_view_node(
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, fn() {
-      let thread = match view_of_chat(src, r).0 {
+      let thread = match @sfbase.chat_view_now(src, r) {
         Some(v) => v.thread
         None => None
       }
@@ -406,13 +447,14 @@ fn side_own_node(
       return
     }
     // (once its view, and so its thread, is read: what both show is the thread's)
-    s.pick(fn() { view_of_chat(src, r).0.bind(fn(v) { v.thread }) }, fn(t, thread) {
+    // (its head alone: sfbase's chat_view_now)
+    s.pick(fn() { @sfbase.chat_view_now(src, r).bind(fn(v) { v.thread }) }, fn(t, thread) {
       t.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       guard thread is Some(th) else { return }
       if tab == "letters" {
-        let first = @signals.untracked(fn() { view_of_chat(src, r).0 })
+        let first = @signals.untracked(fn() { @sfbase.chat_view_now(src, r) })
         guard first is Some(first) else { return }
-        letters_tab_node(t, src, r, th, fn() { view_of_chat(src, r).0.unwrap_or(first) }, tips)
+        letters_tab_node(t, src, r, th, fn() { @sfbase.chat_view_now(src, r).unwrap_or(first) }, tips)
       } else {
         @sfpages.things_node(t, src, r, th, fn(seq) { @sfbase.go_to(r, seq) }, beside=true)
       }

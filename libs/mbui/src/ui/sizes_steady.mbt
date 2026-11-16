@@ -546,7 +546,16 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
       let gh = ya[i] * n.fh
       let (top0, bot0) = match self.drawn_entry(i) {
         Some({ ground: Some((_, y, _, h, _)), .. }) => (y, y + h)
-        _ => (gy, gy + gh)
+        // (a node of the window's tree: its ground as drawn, off where it is laid out (Tree::ground_drawn_of: a
+        // ground grown on a list's one way, Node's flip_in))
+        _ =>
+          match (tree, tree_frame_ids.get(i)) {
+            (Some(tr), Some(id)) => {
+              let gd = tr.ground_drawn_of(id)
+              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh))
+            }
+            _ => (gy, gy + gh)
+          }
       }
       let left0 = n.x + xb[i]
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)

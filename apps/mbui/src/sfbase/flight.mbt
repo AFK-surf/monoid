@@ -220,6 +220,12 @@ pub fn quote_picture_key(i : Int) -> String {
 let quote_picture_prefix : String = "quote-picture:"
 
 ///|
+/// Whether `key` is what flies to a quote's own picture (quote_picture_key's).
+pub fn is_quote_picture_key(key : String) -> Bool {
+  key.has_prefix(quote_picture_prefix)
+}
+
+///|
 let quote_prefix : String = "quote:"
 
 ///|
@@ -1232,8 +1238,58 @@ pub fn flight_hint_away(c : @ui.Ctx, chat : String) -> Bool {
   match flight_of(chat) {
     // (files alone leave it where it is)
     Some(f) if f.text != "" || f.files.iter().any(fn(ff) { ff.key.has_prefix(quote_prefix) }) => !flight_out(c, f)
-    _ => false
+    // (on a chat's page made as nodes no old flight: its words' bubble flies from the field on the old's way
+    // (message_words_node's flies_in), out of it half its way up as the old's were: sent_out_said)
+    Some(_) => false
+    None =>
+      match sent_out_of.get(chat) {
+        Some(a) => !way_reaches(c, a, fn(p) { flight_up(p, true) >= 0.5 })
+        None => false
+      }
   }
+}
+
+///|
+/// Words sent from a chat's composer on a chat's page made as nodes, by the chat (its composer's key): how far their
+/// flight has come (0 … 1, linear, the desk's length from the press), its field's hint and caret away till they are half
+/// way up and out of it (flight_hint_away), as the old flight's.
+let sent_out_of : Map[String, @motion.Anim] = Map([])
+
+///|
+/// Words sent from chat `chat`'s composer on a chat's page made as nodes, in the press's frame (`c`'s moment).
+pub fn sent_out_said(c : @ui.Ctx, chat : String) -> Unit {
+  let a = @motion.Anim::new(0.0)
+  // det-ok(motion-length): words sent's own, their flight's (message_words_node's flies_in), sf/motion.mbt kind 4
+  a.animate(c, 1.0, @motion.tween(flight_desk_ms, ease=Linear))
+  sent_out_of[chat] = a
+  sent_out_at[chat] = c.moment()
+}
+
+///|
+/// The moment words were last sent from chat `chat`'s composer on a chat's page made as nodes (sent_out_said).
+let sent_out_at : Map[String, Double] = Map([])
+
+///|
+/// How long the composer's ground keeps the shape it had as words were sent from it on a chat's page made as nodes,
+/// before it comes down with the list: till what flies out of it begins its rise (`sent_up_late` of `flight_desk_ms`).
+pub let sent_out_hold_ms : Double = 0.12 * flight_desk_ms
+
+///|
+/// The moment words were sent from chat `chat`'s composer on a chat's page made as nodes, while its ground still holds
+/// the shape it had then (sent_out_hold_ms from it): the change their sending makes to it set out from there; none
+/// else.
+pub fn sent_out_now(c : @ui.Ctx, chat : String) -> Double? {
+  match sent_out_at.get(chat) {
+    Some(at) if c.moment() >= at && c.moment() - at < sent_out_hold_ms => Some(at)
+    _ => None
+  }
+}
+
+///|
+/// What sent_out_said kept, forgotten as a run starts.
+pub fn sent_out_reset() -> Unit {
+  sent_out_of.clear()
+  sent_out_at.clear()
 }
 
 ///|

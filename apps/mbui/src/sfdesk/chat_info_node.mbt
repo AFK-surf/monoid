@@ -9,7 +9,8 @@
 /// Chat `r`'s info in `v` (the presented panel's body): its view as it is now (`view`), its pictures asked for on the
 /// page's time (`stint`); `done` closes it.
 fn chat_info_node(v : @view.View, src : Source, r : ChatRef, view : () -> ChatView?, stint : () -> Int, done : () -> Unit) -> Unit {
-  let chat = fn() { src.topic("chat", chat_params(r)).get().value }
+  // (the chat's head alone: sfbase's chat_head_json, told as it changes, not as a word comes into a message)
+  let chat = fn() { @sfbase.chat_head_json(src, r) }
   let tips = match @sf.panel_tips_of(v) {
     Some(t) => t
     None => @sf.TipLayer::new(fn() { None })
@@ -106,17 +107,24 @@ fn info_facts_node(
       })
       |> ignore
     }
-    // (where it came from only when that is not here: a still.fail chat's says nothing)
+    // (where it came from only when that is not here: a still.fail chat's says nothing; a Comma Task's is in no place,
+    // Comma alone, as the old view's chat_info said it)
+    let comma = text(thread, "surface").has_prefix("comma:")
     match text(chat, "place") {
-      "" => ()
+      "" if !comma => ()
       place =>
         fact(@sf.t("web-pages.chat.info.from"), fn(row) {
           let feishu = text(thread, "surface").has_prefix("feishu:") || text(chat, "feishuUrl") != ""
           row.box(fn(i) {
             @sf.style_node(i, fn() { info_inline }, in_row=true)
-            @sf.drawable_node(i, if feishu { "feishu" } else { "slack" }, 13.0) |> ignore
-            let through = if feishu { @sf.t("web-pages.connect.feishu.name") } else { "Slack" }
-            @sf.words_node(i, fn() { through + " · " + place }, fn() { info_words }) |> ignore
+            if comma {
+              @sf.drawable_node(i, @sf.origin_mark_name("comma"), 13.0, tint=fn() { Some(@sf.theme().p.text) }) |> ignore
+            } else {
+              @sf.drawable_node(i, if feishu { "feishu" } else { "slack" }, 13.0) |> ignore
+            }
+            let through = if comma { "Comma" } else if feishu { @sf.t("web-pages.connect.feishu.name") } else { "Slack" }
+            @sf.words_node(i, fn() { if place == "" { through } else { through + " · " + place } }, fn() { info_words })
+            |> ignore
           })
           |> ignore
         })

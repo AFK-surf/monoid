@@ -533,7 +533,7 @@ test "a vault item's request decided as its card shows: the card goes, the line 
 }
 
 ///|
-test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: not made as nodes yet, nothing in the words' place" {
+test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: its card, what is asked and the button that picks it" {
   let m = vault_card_post(vault_use())
   let t = card_new(390.0, vault_src(None), fn() { m }, body=Some(fn(b, here, _) { message_card_node(b, here, None, fn() { m }) }))
   t.run_for(@ui.move_most_ms)
@@ -544,7 +544,8 @@ test "a vault item's request where nothing is answered (no core): its card alone
   let f = vault_card_post(vault_keep("file", typed=true))
   let t = card_new(390.0, vault_src(None), fn() { f })
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("测试服务登录") is None)
+  assert_true(t.find("测试服务登录") is Some(_))
+  assert_true(t.find("选择文件") is Some(_))
 }
 
 ///|

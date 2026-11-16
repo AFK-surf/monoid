@@ -1,0 +1,18 @@
+# The wide frame (MBUI_WIN=1280x800, 大屏): a card answered (一起换), then a picture opened big and closed.
+timeout 20000
+until =一起换
+wait 800
+tap =一起换
+wait 2500
+wheel -300
+wait 100
+wheel -300
+wait 100
+wheel -300
+wait 1600
+until img:compare.png
+tap img:compare.png
+wait 1500
+key esc
+wait 1500
+exit

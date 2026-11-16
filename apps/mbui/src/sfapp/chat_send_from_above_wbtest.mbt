@@ -33,10 +33,11 @@ let csa_after_ms : Double = 1500.0
 fn csa_open(screen : (String, Double, Double, Int)) -> @ui.Tester {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.chat_page_nodes.set(both_nodes.val)
   fix_pace.val = csa_pace
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  both_way()
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
   t.set_rows_on_pixels(true)
   nav_rested(t)
@@ -129,46 +130,50 @@ fn csa_sent_lands(t : @ui.Tester, name : String, send : () -> Unit) -> Unit rais
 
 ///|
 test "a chat's page made with its inside nodes, on 小屏 and 大屏, read above its end: words sent take it down only to its foot, the sent words' row on the composer's top, the answer followed" {
-  for screen in csa_screens {
-    let name = screen.0
-    let t = csa_open(screen)
-    assert_true(csa_list(t, name).at_foot, msg="\{name}: not at its end as it opened")
-    csa_read_up(t, screen)
-    guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
-    t.tap(fx + fw / 2.0, fy + fh / 2.0)
-    t.type_text(csa_words)
-    t.run_for(@ui.move_most_ms)
-    csa_sent_lands(t, name, fn() { tap_send(t) })
-  }
+  both_pages(fn() raise {
+    for screen in csa_screens {
+      let name = screen.0
+      let t = csa_open(screen)
+      assert_true(csa_list(t, name).at_foot, msg="\{name}: not at its end as it opened")
+      csa_read_up(t, screen)
+      guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
+      t.tap(fx + fw / 2.0, fy + fh / 2.0)
+      t.type_text(csa_words)
+      t.run_for(@ui.move_most_ms)
+      csa_sent_lands(t, name, fn() { tap_send(t) })
+    }
+  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
 }
 
 ///|
 test "a chat's page made with its inside nodes, on 小屏 and 大屏: the list held by a tall answer's top (ListPlace::follow_from standing), words sent: down only to its foot, at rest there, the next message followed" {
-  for screen in rp_screens {
-    let name = screen.0
-    let (t, clock, _) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
-    let held = csa_list(t, name)
-    assert_false(held.at_foot, msg="\{name}: at its foot, the answer's top not holding it")
-    let seen : Array[CsaList] = []
-    t.each_frame(Some(fn() { seen.push(csa_list(t, name)) }))
-    rp_send(t, "收到，我先看")
-    t.run_shown(rp_rest_ms)
-    t.each_frame(None)
-    let mut was = held.at
-    for i, s in seen {
-      assert_true(s.at >= was - 0.01, msg="\{name}, frame \{i}: up again, \{was} to \{s.at}")
-      was = s.at
+  both_pages(fn() raise {
+    for screen in rp_screens {
+      let name = screen.0
+      let (t, clock, _) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
+      let held = csa_list(t, name)
+      assert_false(held.at_foot, msg="\{name}: at its foot, the answer's top not holding it")
+      let seen : Array[CsaList] = []
+      t.each_frame(Some(fn() { seen.push(csa_list(t, name)) }))
+      rp_send(t, "收到，我先看")
+      t.run_shown(rp_rest_ms)
+      t.each_frame(None)
+      let mut was = held.at
+      for i, s in seen {
+        assert_true(s.at >= was - 0.01, msg="\{name}, frame \{i}: up again, \{was} to \{s.at}")
+        was = s.at
+      }
+      let rest = csa_list(t, name)
+      assert_true(rest.at_foot, msg="\{name}: not at its foot at rest (at \{rest.at})")
+      let gap = csa_gap(t, name)
+      assert_true(gap.abs() <= csa_half_px(), msg="\{name}: its last row's foot \{gap} over the pinned foot's top at rest")
+      // (the limit gone: the next message followed at its foot)
+      let _ = rp_frames(t, clock, fn() { rp_said(171, rp_next) }, rp_next, rp_rest_ms)
+      let after = csa_list(t, name)
+      assert_true(after.at_foot && t.drawn_of(rp_next) is Some(_), msg="\{name}: the next message not followed (at \{after.at})")
     }
-    let rest = csa_list(t, name)
-    assert_true(rest.at_foot, msg="\{name}: not at its foot at rest (at \{rest.at})")
-    let gap = csa_gap(t, name)
-    assert_true(gap.abs() <= csa_half_px(), msg="\{name}: its last row's foot \{gap} over the pinned foot's top at rest")
-    // (the limit gone: the next message followed at its foot)
-    let _ = rp_frames(t, clock, fn() { rp_said(171, rp_next) }, rp_next, rp_rest_ms)
-    let after = csa_list(t, name)
-    assert_true(after.at_foot && t.drawn_of(rp_next) is Some(_), msg="\{name}: the next message not followed (at \{after.at})")
-  }
-  fix_clock.val = None
+    fix_clock.val = None
+  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
 }
 
 ///|
@@ -177,24 +182,26 @@ let csa_second : String = "第二个回答从这里读起"
 
 ///|
 test "a chat's page made with its inside nodes, on 小屏 and 大屏: the list held by a tall answer's top, words sent: at rest at its foot, then a tall answer comes: held by its top" {
-  for screen in rp_screens {
-    let name = screen.0
-    let (t, clock, _) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
-    rp_send(t, "收到，我先看")
-    fix_clock_set(clock, clock.val + fix_deliver_ms)
-    t.draw()
-    t.run_for(rp_rest_ms)
-    let rest = csa_list(t, name)
-    assert_true(rest.at_foot, msg="\{name}: not at its foot at rest after the send (at \{rest.at})")
-    // (at its foot by the glide the send asked: the answer followed no further than its top a margin under the bar)
-    let ys = rp_frames(t, clock, fn() { rp_said(190, csa_second + "\n\n" + long_reply + "\n\n" + rp_paras(30)) }, csa_second, rp_rest_ms)
-    let (wrong, at) = rp_never_over(name, ys)
-    if wrong is Some(w) {
-      fail("\{name}: \{w}")
+  both_pages(fn() raise {
+    for screen in rp_screens {
+      let name = screen.0
+      let (t, clock, _) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
+      rp_send(t, "收到，我先看")
+      fix_clock_set(clock, clock.val + fix_deliver_ms)
+      t.draw()
+      t.run_for(rp_rest_ms)
+      let rest = csa_list(t, name)
+      assert_true(rest.at_foot, msg="\{name}: not at its foot at rest after the send (at \{rest.at})")
+      // (at its foot by the glide the send asked: the answer followed no further than its top a margin under the bar)
+      let ys = rp_frames(t, clock, fn() { rp_said(190, csa_second + "\n\n" + long_reply + "\n\n" + rp_paras(30)) }, csa_second, rp_rest_ms)
+      let (wrong, at) = rp_never_over(name, ys)
+      if wrong is Some(w) {
+        fail("\{name}: \{w}")
+      }
+      assert_true((at - rp_held_at(name)).abs() < rp_half_px, msg="\{name}: its words rest at \{at}")
+      let held = csa_list(t, name)
+      assert_false(held.at_foot, msg="\{name}: at its foot, the answer's top not holding it (at \{held.at})")
     }
-    assert_true((at - rp_held_at(name)).abs() < rp_half_px, msg="\{name}: its words rest at \{at}")
-    let held = csa_list(t, name)
-    assert_false(held.at_foot, msg="\{name}: at its foot, the answer's top not holding it (at \{held.at})")
-  }
-  fix_clock.val = None
+    fix_clock.val = None
+  }, nodes_only="it reads the page's list made as nodes (csa_list: View::scrolls_window's), which the old page has not")
 }

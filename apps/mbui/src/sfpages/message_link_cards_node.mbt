@@ -10,12 +10,15 @@
 ///|
 /// The card each link of message `m` has in a chat of station `station`, its agent `agent` ("" none: a person's) whose
 /// working directory its paths are read in (link_peek's choice, by the link as its row is made).
-fn message_link_card(src : Source, station : String, agent : String, m : () -> Message) -> (@sf.LinkOf) -> @sf.LinkCard? {
+fn message_link_card(src : Source, station : String, agent : () -> String, m : () -> Message) -> (@sf.LinkOf) -> @sf.LinkCard? {
   fn(l) {
     guard station != "" else { return None }
     let href = l.href
     match @sf.path_of_link(href) {
-      Some((path, line)) => if agent == "" { None } else { Some(file_link_card(l, src, station, agent, path, line)) }
+      Some((path, line)) => {
+        let a = @signals.untracked(agent)
+        if a == "" { None } else { Some(file_link_card(l, src, station, a, path, line)) }
+      }
       None => {
         let now = @signals.untracked(m)
         // (a chat's, as the core says of the message's links: its `to`)

@@ -11,7 +11,7 @@
 /// changes (0: Md::lh's); `apart`: a part after another (a reader's block after the one over it), its first block as far
 /// below it as after a paragraph, or its own margin where that is more (markdown_part's);
 /// `ink` (0: the theme's text); `document`: its headings a document's; `bleed`: how far past its column either side its
-/// tables scroll; `copy`: its tables offer to be copied; `fit_tables`: each table shown whole in the column, as much
+/// tables scroll, as it changes (a chat's margin, by the width its list is given: bound, its tables kept); `copy`: its tables offer to be copied; `fit_tables`: each table shown whole in the column, as much
 /// smaller as makes it fit, rather than part of it left to scroll to (a chat's shared picture: markdown's); `paths`: the files its paths name are a session's (chips);
 /// `found`: words found, in bold; `found_at`, where a find marks them (None: in bold alone): each coloured in, the one it
 /// is at (counting them through all its words, -1 none) with a line at its foot (found_marks); `lit`, a passage of
@@ -37,7 +37,7 @@ pub fn markdown_node(
   apart? : Bool = false,
   ink? : () -> Int64 = fn() { 0L },
   document? : Bool = false,
-  bleed? : Double = 0.0,
+  bleed? : () -> Double = fn() { 0.0 },
   copy? : Bool = true,
   fit_tables? : Bool = false,
   paths? : Bool = false,
@@ -199,7 +199,7 @@ priv struct MdNode {
   apart : Bool
   ink : () -> Int64
   document : Bool
-  bleed : Double
+  bleed : () -> Double
   copy : Bool
   /// its tables shown whole in the column (markdown_node's `fit_tables`)
   fit : Bool
@@ -554,7 +554,7 @@ fn md_block_node(
       |> ignore
       p.box(fn(inner) {
         inner.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).padding(Is((md_quote_in, 0.0, 0.0, 0.0))) |> ignore
-        let quoted = { ..md, ink: fn() { web().muted }, bleed: 0.0 }
+        let quoted = { ..md, ink: fn() { web().muted }, bleed: fn() { 0.0 } }
         md_blocks_node(inner, quoted, fn() {
           match block() {
             Some(Quote(bs)) => bs
@@ -635,7 +635,7 @@ fn md_block_node(
               _ => None
             }
           },
-          md.bleed,
+          By(md.bleed),
           md.copy,
           md.on_link,
           md.on_link_hold,
@@ -943,7 +943,7 @@ fn md_list_node(
   depth : Int,
   items? : (Int, Int)? = None,
 ) -> Unit {
-  let inner_md = { ..md, bleed: 0.0, table_rows: None }
+  let inner_md = { ..md, bleed: fn() { 0.0 }, table_rows: None }
   let s = md.size
   // (the list's own, worked out once for all its items as what they are worked out of changes)
   let ordered_now = @signals.computed(fn(_) { list().map(fn(l) { l.ordered }).unwrap_or(false) })

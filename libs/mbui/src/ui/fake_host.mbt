@@ -2502,12 +2502,14 @@ impl @hostapi.Host for FakeHost with script_step(self, step, arg) {
       for part in arg.split(" ") {
         match part.rev_find(":") {
           Some(i) => {
-            let mut n = 0
-            for ch in part[i + 1:] {
-              n = n * 10 + (ch.to_int() - 48)
+            // (NAME:SIZE so many bytes; NAME:WxH a picture so many pixels across and down, as a picker gives a
+            // photo: its bytes a PNG's)
+            let said = part[i + 1:].to_owned()
+            let bytes = match said.find("x") {
+              Some(k) => picked_picture(digits_of(said.unsafe_substring(start=0, end=k)), digits_of(said.unsafe_substring(start=k + 1, end=said.length())))
+              None => Bytes::make(digits_of(said), b'x')
             }
-            let bytes = Bytes::make(n, b'x')
-            self.picks.push({ name: part[:i].to_owned(), bytes, held: 0, size: n.to_double(), src: "" })
+            self.picks.push({ name: part[:i].to_owned(), bytes, held: 0, size: bytes.length().to_double(), src: "" })
           }
           None => ()
         }
@@ -2516,6 +2518,37 @@ impl @hostapi.Host for FakeHost with script_step(self, step, arg) {
     }
     _ => "\{step}: the Tester's host takes no such step of a script"
   }
+}
+
+///|
+/// The number `s`'s digits say.
+fn digits_of(s : String) -> Int {
+  let mut n = 0
+  for ch in s {
+    n = n * 10 + (ch.to_int() - 48)
+  }
+  n
+}
+
+///|
+/// A picture `w` by `h` picked (FakeHost's `picks`): a PNG of a sky over ground, the same every run.
+fn picked_picture(w : Int, h : Int) -> Bytes {
+  let w = if w < 1 { 1 } else { w }
+  let h = if h < 1 { 1 } else { h }
+  let px = FixedArray::make(w * h * 4, b'\xff')
+  for y in 0..<h {
+    for x in 0..<w {
+      let at = (y * w + x) * 4
+      let sky = y * 2 < h
+      let r = if sky { 120 + x * 80 / w } else { 70 + y * 40 / h }
+      let g = if sky { 170 + y * 60 / h } else { 120 + x * 30 / w }
+      let b = if sky { 230 } else { 60 }
+      px[at] = r.to_byte()
+      px[at + 1] = g.to_byte()
+      px[at + 2] = b.to_byte()
+    }
+  }
+  @pixels.png(w, h, px)
 }
 
 ///|

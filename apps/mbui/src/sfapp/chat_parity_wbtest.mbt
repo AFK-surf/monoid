@@ -71,6 +71,7 @@ fn edited_core(
     },
   }
   open_fixture_over(mode, src)
+  both_way()
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~)
   t.run_for(@ui.move_most_ms)
   t
@@ -78,362 +79,384 @@ fn edited_core(
 
 ///|
 test "a chat with no agent in it: its station's tag in the bar opens the station's card" {
-  let calls : Array[Made] = []
-  let t = edited_core(calls, "chat", fn(name, v) {
-    match name {
-      "chat" => with_fields(v, [("agents", [])])
-      // (a name of its own, told apart from the messages that name it)
-      "stations" =>
-        match v {
-          Array(a) =>
-            Json::array(
-              a.map(fn(s) { if text(Some(s), "station") == "ws1/st1" { with_fields(s, [("name", "甲号机")]) } else { s } }),
-            )
-          _ => v
-        }
-      _ => v
-    }
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", fn(name, v) {
+      match name {
+        "chat" => with_fields(v, [("agents", [])])
+        // (a name of its own, told apart from the messages that name it)
+        "stations" =>
+          match v {
+            Array(a) =>
+              Json::array(
+                a.map(fn(s) { if text(Some(s), "station") == "ws1/st1" { with_fields(s, [("name", "甲号机")]) } else { s } }),
+              )
+            _ => v
+          }
+        _ => v
+      }
+    })
+    assert_true(!@sf.presenting())
+    t.tap_text("甲号机")
+    t.frame()
+    assert_true(@sf.presenting(), msg="the station's card")
+    assert_true(t.find("机器详情") is Some(_))
   })
-  assert_true(!@sf.presenting())
-  t.tap_text("甲号机")
-  t.frame()
-  assert_true(@sf.presenting(), msg="the station's card")
-  assert_true(t.find("机器详情") is Some(_))
 }
 
 ///|
 test "a failure the viewer may report: 上报 asks first, then reports it and says what it was filed as" {
-  let calls : Array[Made] = []
-  let t = edited_core(
-    calls,
-    "chat",
-    fn(name, v) {
-      if name == "chat" {
-        with_chat_message(v, 9.0, [
-          ("text", "⚠️ 这一轮没跑完。"),
-          ("notice", { "failed": true, "words": "这一轮没跑完" }),
-          ("reportable", true),
-        ])
-      } else {
-        v
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(
+      calls,
+      "chat",
+      fn(name, v) {
+        if name == "chat" {
+          with_chat_message(v, 9.0, [
+            ("text", "⚠️ 这一轮没跑完。"),
+            ("notice", { "failed": true, "words": "这一轮没跑完" }),
+            ("reportable", true),
+          ])
+        } else {
+          v
+        }
+      },
+      answer=fn(name) { if name == "chat.report" { { "number": 42, "duplicate": false } } else { Json::object({}) } },
+    )
+    for _ in 0..<6 {
+      if t.find("这一轮没跑完") is Some(_) {
+        break
       }
-    },
-    answer=fn(name) { if name == "chat.report" { { "number": 42, "duplicate": false } } else { Json::object({}) } },
-  )
-  for _ in 0..<6 {
-    if t.find("这一轮没跑完") is Some(_) {
-      break
+      t.wheel(195.0, 400.0, -300.0)
     }
-    t.wheel(195.0, 400.0, -300.0)
-  }
-  t.tap_text("上报")
-  t.frame()
-  assert_true(@sf.presenting(), msg="asked first")
-  assert_true(named(calls, "chat.report").length() == 0)
-  // (with a mouse: the web's confirm, come in)
-  t.run_for(@kit.presence_in_ms)
-  // the confirm's own 上报: its words alone on their node (the notice's is in a rich line of its own)
-  let (x, y) = words_node(t, "上报").unwrap()
-  let felt = t.haptics().length()
-  t.tap(x, y)
-  t.frame()
-  let sent = named(calls, "chat.report")
-  assert_eq(sent.length(), 1)
-  assert_eq(t.haptics()[felt:].to_owned(), [@ui.Confirm])
-  assert_eq(number(Some(sent[0].params), "seq"), 9.0)
-  assert_eq(number(Some(sent[0].params), "thread"), 7.0)
-  assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
-  t.frame()
-  assert_true(t.find("已上报为 FB-42") is Some(_))
+    t.tap_text("上报")
+    t.frame()
+    assert_true(@sf.presenting(), msg="asked first")
+    assert_true(named(calls, "chat.report").length() == 0)
+    // (with a mouse: the web's confirm, come in)
+    t.run_for(@kit.presence_in_ms)
+    // the confirm's own 上报: its words alone on their node (the notice's is in a rich line of its own)
+    let (x, y) = words_node(t, "上报").unwrap()
+    let felt = t.haptics().length()
+    t.tap(x, y)
+    t.frame()
+    let sent = named(calls, "chat.report")
+    assert_eq(sent.length(), 1)
+    assert_eq(t.haptics()[felt:].to_owned(), [@ui.Confirm])
+    assert_eq(number(Some(sent[0].params), "seq"), 9.0)
+    assert_eq(number(Some(sent[0].params), "thread"), 7.0)
+    assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
+    t.frame()
+    assert_true(t.find("已上报为 FB-42") is Some(_))
+  })
 }
 
 ///|
 test "an overload notice offers to cancel its retry at the notice" {
-  let calls : Array[Made] = []
-  let retrying = Ref(true)
-  let epoch = @signals.signal(0)
-  let t = edited_core(
-    calls,
-    "chat",
-    fn(name, v) {
-      if name == "chat" {
-        let notice : Json = if retrying.val {
-          { "failed": true, "words": "模型满载，自动重试，与额度无关", "retrySession": "agent-a" }
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let retrying = Ref(true)
+    let epoch = @signals.signal(0)
+    let t = edited_core(
+      calls,
+      "chat",
+      fn(name, v) {
+        if name == "chat" {
+          let notice : Json = if retrying.val {
+            { "failed": true, "words": "模型满载，自动重试，与额度无关", "retrySession": "agent-a" }
+          } else {
+            { "failed": true, "words": "模型满载，自动重试，与额度无关" }
+          }
+          with_chat_message(v, 9.0, [("notice", notice), ("reportable", false)])
         } else {
-          { "failed": true, "words": "模型满载，自动重试，与额度无关" }
+          v
         }
-        with_chat_message(v, 9.0, [("notice", notice), ("reportable", false)])
-      } else {
-        v
+      },
+      epoch~,
+    )
+    for _ in 0..<6 {
+      if t.find("模型满载") is Some(_) {
+        break
       }
-    },
-    epoch~,
-  )
-  for _ in 0..<6 {
-    if t.find("模型满载") is Some(_) {
-      break
+      t.wheel(195.0, 400.0, -300.0)
     }
-    t.wheel(195.0, 400.0, -300.0)
-  }
-  t.tap_text("取消")
-  let sent = named(calls, "session.cancelRetry")
-  assert_eq(sent.length(), 1)
-  assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
-  assert_eq(text(Some(sent[0].params), "key"), "agent-a")
-  assert_eq(number(Some(sent[0].params), "thread"), 7.0)
-  assert_eq(number(Some(sent[0].params), "seq"), 9.0)
-  retrying.val = false
-  epoch.set(epoch.get() + 1)
-  t.frame()
-  t.run_for(@ui.row_size_ms)
-  assert_true(t.find("取消") is None, msg="the action leaves once the retry is over")
+    t.tap_text("取消")
+    let sent = named(calls, "session.cancelRetry")
+    assert_eq(sent.length(), 1)
+    assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
+    assert_eq(text(Some(sent[0].params), "key"), "agent-a")
+    assert_eq(number(Some(sent[0].params), "thread"), 7.0)
+    assert_eq(number(Some(sent[0].params), "seq"), 9.0)
+    retrying.val = false
+    epoch.set(epoch.get() + 1)
+    t.frame()
+    t.run_for(@ui.row_size_ms)
+    assert_true(t.find("取消") is None, msg="the action leaves once the retry is over")
+  })
 }
 
 ///|
 test "a notice that a runtime is missing: its word installs it (software.update)" {
-  let calls : Array[Made] = []
-  let t = edited_core(calls, "chat", fn(name, v) {
-    if name == "chat" {
-      with_chat_message(v, 9.0, [
-        ("text", "Willow 上没有 codex。"),
-        ("notice", { "failed": false, "words": "Willow 上没有 codex" }),
-        ("install", { "runtime": "codex", "state": "missing", "title": "codex", "action": "安装" }),
-      ])
-    } else {
-      v
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", fn(name, v) {
+      if name == "chat" {
+        with_chat_message(v, 9.0, [
+          ("text", "Willow 上没有 codex。"),
+          ("notice", { "failed": false, "words": "Willow 上没有 codex" }),
+          ("install", { "runtime": "codex", "state": "missing", "title": "codex", "action": "安装" }),
+        ])
+      } else {
+        v
+      }
+    })
+    for _ in 0..<6 {
+      if t.find("Willow 上没有 codex") is Some(_) {
+        break
+      }
+      t.wheel(195.0, 400.0, -300.0)
     }
+    t.tap_text("安装")
+    let sent = named(calls, "software.update")
+    assert_eq(sent.length(), 1)
+    assert_eq(text(Some(sent[0].params), "id"), "codex")
+    assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
   })
-  for _ in 0..<6 {
-    if t.find("Willow 上没有 codex") is Some(_) {
-      break
-    }
-    t.wheel(195.0, 400.0, -300.0)
-  }
-  t.tap_text("安装")
-  let sent = named(calls, "software.update")
-  assert_eq(sent.length(), 1)
-  assert_eq(text(Some(sent[0].params), "id"), "codex")
-  assert_eq(text(Some(sent[0].params), "station"), "ws1/st1")
 }
 
 ///|
 test "a notice about a profile: what went wrong (after its ：) leads to the profile's page" {
-  let calls : Array[Made] = []
-  let t = edited_core(calls, "chat", fn(name, v) {
-    if name == "chat" {
-      // (the core says where the profile's link begins: after the ：)
-      with_chat_message(v, 9.0, [
-        ("profile", "p1"),
-        ("notice", { "failed": true, "words": "Willow 上 codex 的登录已失效：请在设置里重新登录", "linkAt": 22 }),
-      ])
-    } else {
-      v
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", fn(name, v) {
+      if name == "chat" {
+        // (the core says where the profile's link begins: after the ：)
+        with_chat_message(v, 9.0, [
+          ("profile", "p1"),
+          ("notice", { "failed": true, "words": "Willow 上 codex 的登录已失效：请在设置里重新登录", "linkAt": 22 }),
+        ])
+      } else {
+        v
+      }
+    })
+    for _ in 0..<6 {
+      if t.find("登录已失效") is Some(_) {
+        break
+      }
+      t.wheel(195.0, 400.0, -300.0)
     }
+    // (the words after the ：, the pill's last: tapped at its right end)
+    let (x, y, w, h) = t.rect_of("登录已失效").unwrap()
+    t.tap(x + w - 20.0, y + h / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
   })
-  for _ in 0..<6 {
-    if t.find("登录已失效") is Some(_) {
-      break
-    }
-    t.wheel(195.0, 400.0, -300.0)
-  }
-  // (the words after the ：, the pill's last: tapped at its right end)
-  let (x, y, w, h) = t.rect_of("登录已失效").unwrap()
-  t.tap(x + w - 20.0, y + h / 2.0)
-  t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
 }
 
 ///|
 test "a notice that a chat was opened: its line is its Markdown drawn, the chat's chip in it, and tapped it opens that chat" {
-  let calls : Array[Made] = []
-  let link = "https://app.still.fail/o/ws1/st1/s-c2"
-  // (as the station says it in a still.fail chat, sessions/opened.ts sayOpened, and the core's tree of its words: its
-  // link to a chat, as it says, refLinks.ts linkTo)
-  let words = "已创建对话：[共享调试：配对后连不上](\{link})"
-  let t = edited_core(
-    calls,
-    "chat",
-    fn(name, v) {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let link = "https://app.still.fail/o/ws1/st1/s-c2"
+    // (as the station says it in a still.fail chat, sessions/opened.ts sayOpened, and the core's tree of its words: its
+    // link to a chat, as it says, refLinks.ts linkTo)
+    let words = "已创建对话：[共享调试：配对后连不上](\{link})"
+    let t = edited_core(
+      calls,
+      "chat",
+      fn(name, v) {
+        if name == "chat" {
+          with_chat_message(v, 9.0, [
+            ("text", Json::string(words)),
+            (
+              "notice",
+              {
+                "failed": false,
+                "words": Json::string(words),
+                "md": [["p", [[0, 6], ["a", [[7, 18]], { "href": Json::string(link), "to": { "chat": true } }]]]],
+              },
+            ),
+          ])
+        } else {
+          v
+        }
+      },
+      answer=fn(name) { if name == "link.parse" { fixture_link_parse(link) } else { Json::object({}) } },
+    )
+    for _ in 0..<6 {
+      if t.find("共享调试：配对后连不上") is Some(_) {
+        break
+      }
+      t.wheel(195.0, 400.0, -300.0)
+    }
+    assert_true(t.find("已创建对话：@共享调试：配对后连不上") is Some(_), msg="the chat's chip in its line")
+    assert_true(t.find("](") is None, msg="none of its Markdown")
+    t.tap_run("共享调试：配对后连不上")
+    assert_eq(named(calls, "link.parse").length(), 1)
+    match app.nav.top() {
+      Chat(r) => assert_eq(r.session, "s-c2")
+      _ => fail("not a chat")
+    }
+  })
+}
+
+///|
+test "an agent's link to an archived chat written bare: its title as the core says it, its card saying it is archived" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let link = "https://app.still.fail/o/ws1/st1/c-old"
+    let words = "看 \{link}"
+    let t = edited_core(
+      calls,
+      "chat",
+      fn(name, v) {
+        if name == "chat" {
+          // (the core's tree of its words, and the chats they link to as their lists have them: views.ts drawn)
+          with_chat_message(v, 11.0, [
+            ("text", Json::string(words)),
+            ("md", [["p", [[0, 2], ["a", [[2, 40]], { "href": Json::string(link), "bare": true, "to": { "chat": true } }]]]]),
+            ("chats", [{ "href": Json::string(link), "title": "旧的对话", "archived": true, "note": "已归档" }]),
+          ])
+        } else {
+          v
+        }
+      },
+      // (a mouse's: what a link shows while the pointer rests on it)
+      platform=0,
+    )
+    assert_true(t.find("看 @旧的对话") is Some(_), msg="its title, not its link")
+    assert_true(t.find(link) is None)
+    assert_true(t.find("已归档") is None)
+    let (x, y, w, h) = t.run_rects("旧的对话")[0]
+    t.move_to(x + w / 2.0, y + h / 2.0)
+    t.run_for(@sfpages.hover_open_ms * 2.0)
+    assert_true(t.find("已归档") is Some(_), msg="its card: that it is archived")
+  })
+}
+
+///|
+test "a link to one message of a chat written bare: the chat's title, not its address" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let link = "https://app.still.fail/o/ws1/st1/c-old?message=2"
+    let words = "看 \{link}"
+    let t = edited_core(calls, "chat", fn(name, v) {
       if name == "chat" {
-        with_chat_message(v, 9.0, [
+        with_chat_message(v, 11.0, [
           ("text", Json::string(words)),
+          ("md", [["p", [[0, 2], ["a", [[2, 50]], { "href": Json::string(link), "bare": true, "to": { "chat": true } }]]]]),
+          ("chats", [{ "href": Json::string(link), "title": "旧的对话" }]),
+        ])
+      } else {
+        v
+      }
+    })
+    assert_true(t.find("看 @旧的对话") is Some(_), msg="its title, not its link")
+    assert_true(t.find(link) is None)
+  })
+}
+
+///|
+test "a Slack user's name in a history: 这是我 binds them to the viewer (slack.identity)" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    // the history's first item (what it received): from a Slack user
+    let slack_from = fn(it : Json) -> Json {
+      let body = field(Some(it), "body")
+      match body {
+        Some(b) if text(body, "kind") == "received" => {
+          let content = field(body, "content").unwrap_or(Json::object({}))
+          let msgs = items(Some(content), "messages").map(fn(m) {
+            with_fields(m, [("from", { "name": "林小满", "bound": false, "slackUser": "U1" })])
+          })
+          with_fields(it, [("body", with_fields(b, [("content", with_fields(content, [("messages", Json::array(msgs))]))]))])
+        }
+        _ => it
+      }
+    }
+    let t = edited_core(calls, "history", fn(name, v) {
+      if name == "history" {
+        // (that item alone: the steps open at their newest, and it in view)
+        with_fields(v, [("items", Json::array(items(Some(v), "items").map(slack_from)[:1].to_owned()))])
+      } else {
+        v
+      }
+    })
+    t.tap_text("林小满")
+    // its menu, the presenters' sheet with a finger, up
+    t.run_for(@sf.presented_rest() - t.time())
+    assert_true(t.find("这是我") is Some(_), msg="its menu")
+    t.tap_text("这是我")
+    let sent = named(calls, "slack.identity")
+    assert_eq(sent.length(), 1)
+    assert_eq(text(Some(sent[0].params), "user"), "U1")
+    assert_true(flag(Some(sent[0].params), "bound"))
+  })
+}
+
+///|
+test "the chat's menu: one from Slack or Feishu opens there" {
+  both_pages(fn() raise {
+    for (words, url) in [
+      ("在飞书中打开", "https://example.feishu.cn/client/chat/open?openChatId=oc_1"),
+      ("在 Slack 中打开", "https://example.slack.com/archives/C1/p1"),
+    ] {
+      let calls : Array[Made] = []
+      let t = edited_core(calls, "chat-actions", fn(name, v) {
+        if name == "chat" {
+          with_fields(v, [
+            ("slackUrl", "https://example.slack.com/archives/C1/p1"),
+            ("feishuUrl", "https://example.feishu.cn/client/chat/open?openChatId=oc_1"),
+          ])
+        } else {
+          v
+        }
+      })
+      open_share(t)
+      t.tap_text(words)
+      assert_true(t.opened().contains(url), msg=words)
+    }
+  })
+}
+
+///|
+test "a station's failed update stays out of the chat bar even when its notice was open" {
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = edited_core(calls, "chat", platform=3, fn(name, v) {
+      if name == "chat" {
+        with_fields(v, [
           (
-            "notice",
+            "stationUpdate",
             {
-              "failed": false,
-              "words": Json::string(words),
-              "md": [["p", [[0, 6], ["a", [[7, 18]], { "href": Json::string(link), "to": { "chat": true } }]]]],
+              "tone": "trouble",
+              "text": "Willow 更新失败",
+              "label": "更新失败",
+              "station": "Willow",
+              "detail": "更新时正在运行的 agent 会稍后继续。",
+              "from": "1.2.0",
+              "to": "1.3.0",
+              "version": "1.3.0",
+              "open": true,
+              "canUpdate": true,
+              "dismissible": true,
             },
           ),
         ])
       } else {
         v
       }
-    },
-    answer=fn(name) { if name == "link.parse" { fixture_link_parse(link) } else { Json::object({}) } },
-  )
-  for _ in 0..<6 {
-    if t.find("共享调试：配对后连不上") is Some(_) {
-      break
-    }
-    t.wheel(195.0, 400.0, -300.0)
-  }
-  assert_true(t.find("已创建对话：@共享调试：配对后连不上") is Some(_), msg="the chat's chip in its line")
-  assert_true(t.find("](") is None, msg="none of its Markdown")
-  t.tap_run("共享调试：配对后连不上")
-  assert_eq(named(calls, "link.parse").length(), 1)
-  match app.nav.top() {
-    Chat(r) => assert_eq(r.session, "s-c2")
-    _ => fail("not a chat")
-  }
-}
-
-///|
-test "an agent's link to an archived chat written bare: its title as the core says it, its card saying it is archived" {
-  let calls : Array[Made] = []
-  let link = "https://app.still.fail/o/ws1/st1/c-old"
-  let words = "看 \{link}"
-  let t = edited_core(
-    calls,
-    "chat",
-    fn(name, v) {
-      if name == "chat" {
-        // (the core's tree of its words, and the chats they link to as their lists have them: views.ts drawn)
-        with_chat_message(v, 11.0, [
-          ("text", Json::string(words)),
-          ("md", [["p", [[0, 2], ["a", [[2, 40]], { "href": Json::string(link), "bare": true, "to": { "chat": true } }]]]]),
-          ("chats", [{ "href": Json::string(link), "title": "旧的对话", "archived": true, "note": "已归档" }]),
-        ])
-      } else {
-        v
-      }
-    },
-    // (a mouse's: what a link shows while the pointer rests on it)
-    platform=0,
-  )
-  assert_true(t.find("看 @旧的对话") is Some(_), msg="its title, not its link")
-  assert_true(t.find(link) is None)
-  assert_true(t.find("已归档") is None)
-  let (x, y, w, h) = t.run_rects("旧的对话")[0]
-  t.move_to(x + w / 2.0, y + h / 2.0)
-  t.run_for(@sfpages.hover_open_ms * 2.0)
-  assert_true(t.find("已归档") is Some(_), msg="its card: that it is archived")
-}
-
-///|
-test "a link to one message of a chat written bare: the chat's title, not its address" {
-  let calls : Array[Made] = []
-  let link = "https://app.still.fail/o/ws1/st1/c-old?message=2"
-  let words = "看 \{link}"
-  let t = edited_core(calls, "chat", fn(name, v) {
-    if name == "chat" {
-      with_chat_message(v, 11.0, [
-        ("text", Json::string(words)),
-        ("md", [["p", [[0, 2], ["a", [[2, 50]], { "href": Json::string(link), "bare": true, "to": { "chat": true } }]]]]),
-        ("chats", [{ "href": Json::string(link), "title": "旧的对话" }]),
-      ])
-    } else {
-      v
-    }
-  })
-  assert_true(t.find("看 @旧的对话") is Some(_), msg="its title, not its link")
-  assert_true(t.find(link) is None)
-}
-
-///|
-test "a Slack user's name in a history: 这是我 binds them to the viewer (slack.identity)" {
-  let calls : Array[Made] = []
-  // the history's first item (what it received): from a Slack user
-  let slack_from = fn(it : Json) -> Json {
-    let body = field(Some(it), "body")
-    match body {
-      Some(b) if text(body, "kind") == "received" => {
-        let content = field(body, "content").unwrap_or(Json::object({}))
-        let msgs = items(Some(content), "messages").map(fn(m) {
-          with_fields(m, [("from", { "name": "林小满", "bound": false, "slackUser": "U1" })])
-        })
-        with_fields(it, [("body", with_fields(b, [("content", with_fields(content, [("messages", Json::array(msgs))]))]))])
-      }
-      _ => it
-    }
-  }
-  let t = edited_core(calls, "history", fn(name, v) {
-    if name == "history" {
-      // (that item alone: the steps open at their newest, and it in view)
-      with_fields(v, [("items", Json::array(items(Some(v), "items").map(slack_from)[:1].to_owned()))])
-    } else {
-      v
-    }
-  })
-  t.tap_text("林小满")
-  // its menu, the presenters' sheet with a finger, up
-  t.run_for(@sf.presented_rest() - t.time())
-  assert_true(t.find("这是我") is Some(_), msg="its menu")
-  t.tap_text("这是我")
-  let sent = named(calls, "slack.identity")
-  assert_eq(sent.length(), 1)
-  assert_eq(text(Some(sent[0].params), "user"), "U1")
-  assert_true(flag(Some(sent[0].params), "bound"))
-}
-
-///|
-test "the chat's menu: one from Slack or Feishu opens there" {
-  for (words, url) in [
-    ("在飞书中打开", "https://example.feishu.cn/client/chat/open?openChatId=oc_1"),
-    ("在 Slack 中打开", "https://example.slack.com/archives/C1/p1"),
-  ] {
-    let calls : Array[Made] = []
-    let t = edited_core(calls, "chat-actions", fn(name, v) {
-      if name == "chat" {
-        with_fields(v, [
-          ("slackUrl", "https://example.slack.com/archives/C1/p1"),
-          ("feishuUrl", "https://example.feishu.cn/client/chat/open?openChatId=oc_1"),
-        ])
-      } else {
-        v
-      }
     })
-    open_share(t)
-    t.tap_text(words)
-    assert_true(t.opened().contains(url), msg=words)
-  }
-}
-
-///|
-test "a station's failed update stays out of the chat bar even when its notice was open" {
-  let calls : Array[Made] = []
-  let t = edited_core(calls, "chat", platform=3, fn(name, v) {
-    if name == "chat" {
-      with_fields(v, [
-        (
-          "stationUpdate",
-          {
-            "tone": "trouble",
-            "text": "Willow 更新失败",
-            "label": "更新失败",
-            "station": "Willow",
-            "detail": "更新时正在运行的 agent 会稍后继续。",
-            "from": "1.2.0",
-            "to": "1.3.0",
-            "version": "1.3.0",
-            "open": true,
-            "canUpdate": true,
-            "dismissible": true,
-          },
-        ),
-      ])
-    } else {
-      v
-    }
+    assert_true(t.find("更新失败") is None)
+    assert_true(t.find("1.2.0 → 1.3.0") is None)
+    t.resize(1280.0, 800.0)
+    t.draw()
+    assert_true(t.find("更新失败") is None)
+    assert_true(t.find("1.2.0 → 1.3.0") is None)
+    assert_eq(named(calls, "station.updateNotice").length(), 0)
+    assert_eq(named(calls, "software.update").length(), 0)
   })
-  assert_true(t.find("更新失败") is None)
-  assert_true(t.find("1.2.0 → 1.3.0") is None)
-  t.resize(1280.0, 800.0)
-  t.draw()
-  assert_true(t.find("更新失败") is None)
-  assert_true(t.find("1.2.0 → 1.3.0") is None)
-  assert_eq(named(calls, "station.updateNotice").length(), 0)
-  assert_eq(named(calls, "software.update").length(), 0)
 }
 
 ///|
@@ -519,8 +542,10 @@ fn report_drawn(words : String) -> (Double, Double) {
 
 ///|
 test "a failure the viewer may report, its words too long for the line: they are cut short before 上报, which is whole" {
-  let short = report_drawn("这一轮没跑完")
-  let long = report_drawn("本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发出的消息），请留意")
-  assert_true(short.0 > 0.0 && short.1 > 0.0, msg="\{Repr(short)}")
-  assert_eq(long, short)
+  both_pages(fn() raise {
+    let short = report_drawn("这一轮没跑完")
+    let long = report_drawn("本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发出的消息），请留意")
+    assert_true(short.0 > 0.0 && short.1 > 0.0, msg="\{Repr(short)}")
+    assert_eq(long, short)
+  })
 }

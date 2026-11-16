@@ -536,7 +536,7 @@ fn pane_made(
                 },
                 // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
                 body=fn(col, s, r, composer, shows) {
-                  pane_made_chat(col, src, k)
+                  pane_made_chat(col, k)
                   chat_body_nodes(col, s, r, tips, stint, composer, shows)
                 },
                 // (the composer's old view on the page's way to another width as the side panel slides beside it, as the
@@ -550,6 +550,8 @@ fn pane_made(
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
                 narrower=fn(n) { side_narrower(src, n, k) },
+                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)
+                aside=fn(n) { pane_aside_at(src, n) },
               )
             })
             |> ignore
@@ -652,11 +654,12 @@ fn pane_made_host(p : @view.View, src : Source, k : Int) -> Unit {
 
 ///|
 /// What page_one did for a chat's page in its island, done for entry `k`'s chat made as nodes, its messages' column
-/// `col` (chat_body_nodes', the composer in it): moved aside as the folded sidebar is shown a while, where the block's
-/// move has got (its bar over it keeps its ends by the same: pane_chat_bar_ends), and what it shows across read of it as
-/// that starts, while its entry shows (fold_goes' `made`), the one kept while the one on top waits too.
-fn pane_made_chat(col : @view.View, src : Source, k : Int) -> Unit {
-  col.offset(By(fn() { (pane_aside_at(src, col), 0.0) })) |> ignore
+/// `col` (chat_body_nodes', the composer in it): what it shows across read of it as the folded sidebar is shown a while,
+/// while its entry shows (fold_goes' `made`), the one kept while the one on top waits too. Moved aside as that block
+/// moves (pane_aside_at) by chat_page_made's `aside`, in the one offset its column has with its way across as the side
+/// panel slides: an offset bound here too let go of that one (a node's one binding of a property), and the chat's rows
+/// stood still while the panel slid, then stepped to their place at its end.
+fn pane_made_chat(col : @view.View, k : Int) -> Unit {
   fold_goes.made[k] = col
   col.owns(fn() {
     match fold_goes.made.get(k) {

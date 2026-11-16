@@ -7,23 +7,30 @@
 // its foot's end from 300 ms after it was first said to be on its way (fading in over 200), from that moment on the
 // timeline, never from when its row was made. One that cannot be had says so; one its station could not be reached
 // for, pressed, is asked again. Pressed, the preview; right clicked, its menu where; held by a finger, its menu, the
-// picture lifted over the menu's scrim while it is up (@sf.lift_node). Its box is one end of a shared flight
-// (View::shared) by its thumbnail's id: the preview's end is an old view's yet, so nothing flies to it yet.
+// picture lifted over the menu's scrim while it is up (@sf.lift_node). The preview flies from its box and back into
+// it by its thumbnail's id (@sfbase.note_thumb_node).
 
 ///|
-/// A message's picture `a` (as it is now) in `parent`, `w` by `h` (its box: image_box's at most the width given), for
-/// where it is shown (`place`, `at`) and whose message it is (`by`, for 引用); `corner` how round it is (a message's
-/// file's, or a quote's own picture's, concentric with its card: quote_picture_corner).
+/// A message's picture `a` (as it is now) in `parent`, `w()` by `h()` (its box: image_box's at most the width given, bound:
+/// the width given changing changes its size alone, the same nodes kept, what is held on it and how it came in), for
+/// where it is shown (`place`, `at()`: as it is now, a message sent from here named by the chat's once it is the chat's)
+/// and whose message it is (`by`, for 引用); `corner` how round it is (a message's file's, or a quote's own picture's,
+/// concentric with its card: quote_picture_corner). What shows of it (its share of the box, what it is decoded for, where
+/// it is cut from) is bound to its data too: a message sent from here, made before the core said its picture's size and
+/// told it as the core's row takes it over, keeps the same nodes, its flight and how it came in. `flies_from`: made in
+/// the change in which it is sent, where it stood in the composer then (its picture flies from there:
+/// image_reveal_node's `flies`).
 fn message_image_node(
   parent : @view.View,
   src : Source,
   place : MessageFilesAt,
   a : () -> Attachment,
   by : () -> (String, String, String)?,
-  at : String,
-  w : Double,
-  h : Double,
+  at : () -> String,
+  w : () -> Double,
+  h : () -> Double,
   corner? : Double = @sf.message_file_corner,
+  flies_from? : (Double, Double, Double, Double)? = None,
 ) -> Unit {
   let station = fn() { (place.station)() }
   let owner = fn() { owner_of(place.here(), a()) }
@@ -51,22 +58,41 @@ fn message_image_node(
   let asked = fn() { key() == "" && !going_up() }
   let letterbox = fn() { image_box(a(), image_least, min_side=image_min_side).2 }
   let thumb = fn() {
-    @sfbase.thumb_place(station() + "/" + owner() + "/" + a().path, station(), (place.session)(), at)
+    @sfbase.thumb_place(station() + "/" + owner() + "/" + a().path, station(), (place.session)(), at())
   }
-  // (the picture's share of the box: all of it, or a letterboxed one's own proportions in its middle)
-  let (sw, sh) = @signals.untracked(fn() { picture_share(a(), image_least, min_side=image_min_side) })
-  let (pw, ph) = (w * sw, h * sh)
-  let start_crop = @signals.untracked(fn() { image_cropped_from_start(a()) })
+  // (the picture's share of the box: all of it, or a letterboxed one's own proportions in its middle; and the box at
+  // its largest, as its data says it, what it is decoded for and its likeness made of whatever width it is given)
+  let share = fn() { picture_share(a(), image_least, min_side=image_min_side) }
+  let most = fn() {
+    let (nw, nh, _) = image_box(a(), image_least, min_side=image_min_side)
+    let (sw, sh) = share()
+    (nw * sw, nh * sh)
+  }
+  let start_crop = fn() { image_cropped_from_start(a()) }
   let likeness = fn() {
     let th = @ui.tree_theme()
-    image_wait_colours(a().thumbhash, pw, ph, th.color(Neutral), th.color(Bg)).unwrap_or("")
+    let (mw, mh) = most()
+    image_wait_colours(a().thumbhash, mw, mh, th.color(Neutral), th.color(Bg)).unwrap_or("")
   }
   // the menu up by a finger's hold (its serial among what is presented: lifted while it is drawn)
   let held_menu : @signals.Signal[Int?] = @signals.signal(None)
+  // (said the one its thumbnail's id names as it is pressed: note_thumb_node's)
+  let chosen : Ref[() -> Unit] = Ref(fn() {  })
   parent.box(fn(f) {
+    // (all of it kept, one value, as it comes to another: what is bound to it worked out again only then, not as the
+    // message's data is said again with its size, its picture's share and its likeness the same: @sf.value_kept)
+    let kept = @sf.value_kept(f, fn() { (w(), h(), share(), most(), start_crop(), likeness()) })
+    let w = fn() { kept().0 }
+    let h = fn() { kept().1 }
+    let share = fn() { kept().2 }
+    let most = fn() { kept().3 }
+    let pw = fn() { w() * share().0 }
+    let ph = fn() { h() * share().1 }
+    let start_crop = fn() { kept().4 }
+    let likeness = fn() { kept().5 }
     @sf.style_node(f, fn() {
       (if key() != "!" || letterbox() { image_frame } else { image_frame_waiting })
-      .then(@ui.style(w=Fixed(w), h=Fixed(h)))
+      .then(@ui.style(w=Fixed(w()), h=Fixed(h())))
       .then(frame_corner_node(corner))
     })
     f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.file.view", args=[("name", a().name)]))) })) |> ignore
@@ -80,8 +106,12 @@ fn message_image_node(
         Some(q) => items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.quote"), q, icon="quote")))
         None => ()
       }
-      items.push(beside_option(here, a, at))
-      items.push(download_option(src, here, a, owner_of(here, a)))
+      // (those offered here alone, no line where one is not: message_files's file_options)
+      for x in [beside_option(here, a, @signals.untracked(at)), download_option(src, here, a, owner_of(here, a))] {
+        if x is Some(_) {
+          items.push(x)
+        }
+      }
       if shown != "" && shown != "!" {
         items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(shown) }, icon="copy")))
       }
@@ -91,7 +121,14 @@ fn message_image_node(
     // (right clicked, its menu where the pointer is; held by a finger, there, felt, the press the menu's)
     @sf.menu_presses_node(
       f,
-      fn() { if unreached() { src.images.again(station()) } else { open_file(place.here(), a(), at~) } },
+      fn() {
+        if unreached() {
+          src.images.again(station())
+        } else {
+          (chosen.val)()
+          open_file(place.here(), a(), at=at())
+        }
+      },
       open_menu,
     )
     // held by a finger for its menu: lifted over the menu's scrim while that menu is drawn
@@ -106,12 +143,24 @@ fn message_image_node(
       },
       file_lift_scale,
     )
-    // (the end of the preview's flight that stays, by its thumbnail's id: drawn nowhere while the preview shows it,
-    // its picture flown from here and back here, View::shared's `stays`)
-    f.shared(By(thumb), @motion.flight_by(@motion.moved()), stays=true) |> ignore
+    // (what the preview flies from and back into, by its thumbnail's id: hidden while the preview shows it, its
+    // picture flown from here and back here by the viewer, under the page's bar while it is under it)
+    chosen.val = @sfbase.note_thumb_node(
+      f,
+      thumb,
+      radius=corner,
+      letterbox~,
+      start_crop~,
+      picture=fn() {
+        match key() {
+          "!" => ""
+          k => k
+        }
+      },
+    )
     f.pick(at_once=true, fn() { key() == "!" }, fn(p, none) {
-      // (all of its box: what is in it laid out in it, its middle the box's)
-      p.width(Is(Some(w))).height(Is(Some(h))) |> ignore
+      // (all of its box, a share of it as the frame's size is said: what is in it laid out in it, its middle the box's)
+      p.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
       if none {
         // one that cannot be had: its mark over 无法预览 (加载失败，点按重试 where its station was not reached)
         p.box(fn(n) {
@@ -128,26 +177,33 @@ fn message_image_node(
       } else {
         // what stands in for it, all of it breathing while it is asked of its station
         p.box(fn(s) {
+          // (what shows of it in its middle: a letterboxed one's own proportions, else all of the box; the same nodes
+          // either way, so its data told anew changes what shows of it alone: letterbox_room's, in this node itself)
           @sf.style_node(s, fn() {
             if key() != "" || letterbox() || likeness() != "" {
-              image_fill
+              letterbox_room
             } else {
-              image_fill_waiting
+              letterbox_room_waiting
             }
           })
           @sf.breathe_node(s, waits=asked)
           let picture = fn(v : @view.View) {
-            @sf.image_reveal_node(v, key, likeness, pw, ph, held=as_is, comes=place.said, start_crop~) |> ignore
-          }
-          if sw < 1.0 || sh < 1.0 {
-            s.box(fn(l) {
-              @sf.style_node(l, fn() { letterbox_room })
-              picture(l)
-            })
+            @sf.image_reveal_node(
+              v,
+              key,
+              likeness,
+              pw,
+              ph,
+              held=as_is,
+              comes=place.said,
+              start_crop~,
+              decoded_for=fn() { dmax(most().0, most().1) },
+              flies=flies_from.map(fn(from) { (sent_part_flight, from, sent_up_late) }),
+              corner~,
+            )
             |> ignore
-          } else {
-            picture(s)
           }
+          picture(s)
         })
         |> ignore
       }

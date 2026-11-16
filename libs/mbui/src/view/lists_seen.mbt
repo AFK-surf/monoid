@@ -10,6 +10,23 @@ priv struct ListAsked {
   count : () -> Int
   bring : (Int) -> Unit
   to_end : () -> Unit
+  way_steady : () -> (Double, Bool, Array[(String, NodeId, Bool, Bool)])
+}
+
+///|
+/// What ui's rows_steady reads of a page's list of the window's tree on a frame just painted (Tree::lists_steady).
+pub(all) struct TreeListSteady {
+  id : Int
+  height : Double
+  free : Bool
+  put_at : Double
+  set_out : Double
+  left : Bool
+  /// the width what holds the list says it lays what it holds out at (View::lays_anew), the nearest that says one; -1
+  /// none: where it steps, the list's rows are laid out anew in that frame, their places its own step there
+  laid : Double
+  /// each live row's key, y in the list, height, anew, faint
+  rows : Array[(String, Double, Double, Bool, Bool)]
 }
 
 ///|
@@ -42,7 +59,7 @@ pub(all) struct ListSeen {
 
 ///|
 /// Each page's list live now, in the order its node was made, as a test reads it (ListSeen), the tree laid out as of
-/// the logic's moment.
+/// the logic's moment, each where it is drawn (Tree::drawn_of's `drawn`: a row on a flip's way where the way has it).
 pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
   self.laid_as_now()
   let ats = self.lists_asked.keys().to_array()
@@ -50,7 +67,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
   ats.filter_map(fn(at) {
     guard self.nodes[at].live && self.lists_asked.get(at) is Some(a) else { return None }
     let list : NodeId = { at, gen: self.nodes[at].gen }
-    guard self.drawn_of(list) is Some(ld) else { return None }
+    guard self.drawn_of(list, drawn=true) is Some(ld) else { return None }
     // (each row's outermost node named for it, drawn within where the list shows)
     let found : Array[(Int, NodeId, (Double, Double, Double, Double))] = []
     let named : Map[Int, Int] = Map([])
@@ -68,7 +85,7 @@ pub fn Tree::lists_seen(self : Tree) -> Array[ListSeen] {
         }
         p = self.nodes[p].parent
       }
-      match self.drawn_of({ at: k, gen: self.nodes[k].gen }) {
+      match self.drawn_of({ at: k, gen: self.nodes[k].gen }, drawn=true) {
         Some(d) if d.y < ld.y + ld.h && d.y + d.h > ld.y && d.h > 0.0 => found.push((order, d.id, (d.x, d.y, d.w, d.h)))
         _ => ()
       }
@@ -146,4 +163,78 @@ pub fn Tree::list_to_end(self : Tree, list : NodeId) -> Unit {
     Some(a) if self.alive_id(list) => (a.to_end)()
     _ => ()
   }
+}
+
+///|
+/// Each page's list of the window's tree drawn in `0 .. win_w` on the frame at `now` (after `judged`, frames `period`
+/// apart), for ui's rows_steady.mbt.
+pub fn Tree::lists_steady(
+  self : Tree,
+  judged : Double,
+  now : Double,
+  period : Double,
+  win_w : Double,
+) -> Array[TreeListSteady] {
+  let answered_lists : Map[Int, Bool] = Map([])
+  for m in self.answered_seen(judged, now) {
+    let mut p = m
+    while p >= 0 && p < self.nodes.length() {
+      if self.lists_asked.contains(p) {
+        answered_lists[p] = true
+        break
+      }
+      p = self.nodes[p].parent
+    }
+  }
+  let ats = self.lists_asked.keys().to_array()
+  ats.sort()
+  ats.filter_map(fn(at) {
+    guard self.nodes[at].live && self.lists_asked.get(at) is Some(a) else { return None }
+    let list : NodeId = { at, gen: self.nodes[at].gen }
+    guard self.drawn_of(list, drawn=true) is Some(ld) && ld.w > 0.0 && ld.h > 0.0 && ld.x + ld.w > 0.0 && ld.x < win_w else {
+      return None
+    }
+    // (its own scroll and every one that holds it: one the hand moves, or that glides, eases or is put somewhere, moves
+    // what shows of the list, and the rows it makes and lets go round that are found anew, the list's room over them counted
+    // again: no step of the list's own (a page's list in a settings page that scrolls, 2026-11-16))
+    let mut free = true
+    let mut put_at = -1.0e9
+    let mut p = at
+    while p >= 0 {
+      match (if p == at { Some(a.scroll) } else { self.scrolls_at.get(p) }) {
+        Some(s) => {
+          free = free &&
+            !@signals.untracked(fn() { s.hand_on.get() }) &&
+            !s.claimed &&
+            s.glides_till() is None &&
+            @signals.untracked(fn() { s.notch.get() }) is None
+          put_at = dmax(put_at, dmax(s.put_at, s.wheel_at))
+        }
+        None => ()
+      }
+      p = self.nodes[p].parent
+    }
+    let (set_out, left, items) = (a.way_steady)()
+    let answered_here = answered_lists.contains(at)
+    let rows : Array[(String, Double, Double, Bool, Bool)] = []
+    for it in items {
+      let (kstr, sid, comes, faint_open) = it
+      guard self.drawn_of(sid, drawn=true) is Some(d) && d.x + d.w > 0.0 && d.x < win_w else { continue }
+      let y = d.y - ld.y
+      let on_way = self.on_way_at(sid.at, now)
+      let anew = (answered_here && !on_way) ||
+        (comes && (d.h < 1.0 || (set_out >= 0.0 && now - set_out < 0.5 * period)))
+      let faint = d.h < 1.0 || d.alpha < 0.05 || faint_open
+      rows.push(("\{-1 - at}/" + kstr, y, d.h, anew, faint))
+    }
+    let mut laid = -1.0
+    let mut p = at
+    while p >= 0 && laid < 0.0 {
+      match self.laid_said_of(p) {
+        Some(w) => laid = w
+        None => p = self.nodes[p].parent
+      }
+    }
+    Some({ id: -1 - at, height: ld.h, free, put_at, set_out, left, laid, rows })
+  })
 }

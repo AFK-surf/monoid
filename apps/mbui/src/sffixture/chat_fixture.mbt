@@ -1647,6 +1647,22 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-uploading-files: files other than pictures going up before it goes, no words with them, each one's card
+    // saying how much of it the station has (views.ts uploads)
+    "chat-uploading-files" =>
+      match outgoing_json("o-seed", { "text": "" }, "sending", "") {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("正在上传 2 个文件")
+          o["progress"] = Json::number(0.4)
+          o["uploads"] = [
+            { "name": "发布说明.pdf", "size": 245760, "sent": 98304 },
+            { "name": "build-logs.zip", "size": 1048576, "sent": 0 },
+          ]
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     _ => []
   }
 }

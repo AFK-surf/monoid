@@ -302,7 +302,8 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
       self.act(fn() { self.p.seek_by(nudge) })
       Ahead(nudge)
     } else {
-      let was = self.p.status().playing
+      // (at its end, whatever its host says of its playing: played again, as Media::play_pause does)
+      let was = self.p.status().playing && !self.p.status().ended
       self.act(fn() { self.p.play_pause() })
       if was {
         Paused
@@ -1622,13 +1623,19 @@ fn desk_player_node(
         match d.kind {
           Down => {
             pn.down = (d.wx, d.wy)
+            pn.last = (d.wx, d.wy)
             pn.moved = false
           }
           Moved => {
             let (x0, y0) = pn.down
-            if (d.wx - x0).abs() + (d.wy - y0).abs() > @ui.press_slop {
+            if (d.wx - x0).abs() > @ui.touch_slop() || (d.wy - y0).abs() > @ui.touch_slop() {
               pn.moved = true
             }
+            // (zoomed in: what is zoomed moved with the pointer or finger, as the wheel moves it)
+            if pn.moved && picture() && z.nw > 0.0 && z.zoomed_at(d.at) {
+              z.pan(d.wx - pn.last.0, d.wy - pn.last.1, at=d.at)
+            }
+            pn.last = (d.wx, d.wy)
           }
           Up => if !pn.moved { pn.tapped(s, d.x, d.w) }
           Off => ()
@@ -1663,7 +1670,13 @@ fn desk_player_node(
       .width(By(fn() { Some(dmax(0.0, stage().0 - panel())) }))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1)) } else { None } }))
       |> ignore
-      middle_node(mid, pn, file.name, fn() { "" })
+      // (what a double click did said a moment in its middle, as a phone's double tap is)
+      middle_node(mid, pn, file.name, fn() {
+        match pn.note.get() {
+          Some(note) => phone_note_words(note)
+          None => ""
+        }
+      })
       cue_node(mid, pn, fn() { embedded || pn.wanted() }, fn() {
         if embedded {
           desk_cue_apart
@@ -1913,8 +1926,10 @@ fn desk_controls_node(
         g.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=media_key_d))).fits(Is(true)) |> ignore
         volume_node(g, pn, ink, tips)
         // the speed, as a figure: its menu of speeds
+        let speed_slot : Ref[@view.View?] = Ref(None)
         g.box(fn(slot) {
           slot.drops(Is(player_drop_speed)) |> ignore
+          speed_slot.val = Some(slot)
           speed_node(slot, pn, ink, fn() { t("web-pages.drive.player.rate") }, phone=false, tips~) |> ignore
         })
         |> ignore
@@ -1961,17 +1976,34 @@ fn desk_controls_node(
         // what left the row, in its ⋯ (there only while something did), opened over it as the speeds are
         g.box(fn(slot) {
           slot.drops(Is(-1)) |> ignore
-          more_node(slot, pn, ink, on, grabs, fn() {
-            match save_slot.val {
-              Some(s) => s.left_out()
-              None => false
-            }
-          }, fn() {
-            match subs_slot.val {
-              Some(s) => s.left_out()
-              None => false
-            }
-          }, subs_label, subs_flip, tips)
+          more_node(
+            slot,
+            pn,
+            ink,
+            on,
+            grabs,
+            fn() {
+              match save_slot.val {
+                Some(s) => s.left_out()
+                None => false
+              }
+            },
+            fn() {
+              match speed_slot.val {
+                Some(s) => s.left_out()
+                None => false
+              }
+            },
+            fn() {
+              match subs_slot.val {
+                Some(s) => s.left_out()
+                None => false
+              }
+            },
+            subs_label,
+            subs_flip,
+            tips,
+          )
         })
         |> ignore
       })
@@ -1985,7 +2017,8 @@ fn desk_controls_node(
 
 ///|
 /// The ⋯ in `slot` (the old player's desk_play_controls' more): what left the row short of room, in its menu over it
-/// (保存此帧 where `grab_out` says it left, then the speeds under their name, the one it plays at chosen).
+/// (保存此帧 where `grab_out` says it left, then the speeds under their name, the one it plays at chosen, where
+/// `speed_out` says the speed left).
 fn more_node(
   slot : @view.View,
   pn : PlayerNode,
@@ -1993,12 +2026,12 @@ fn more_node(
   on : () -> Bool,
   grabs : () -> Bool,
   grab_out : () -> Bool,
+  speed_out : () -> Bool,
   subs_out : () -> Bool,
   subs_label : () -> String,
   subs_flip : () -> Unit,
   tips : TipLayer,
 ) -> Unit {
-  let speed_out = fn() { true }
   let k = media_key_node(slot, fn() { "more" }, fn() { t("web-main.menu.more") }, on, ink, fn() {
     pn.more.set(!pn.more.untracked())
     pn.wake()
@@ -2450,6 +2483,9 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
           t(if pn.p.is_sideways() { "android-misc.drive.player.unfull" } else { "android-misc.drive.player.full" })
         }, fn() {
           pn.act(fn() { pn.p.toggle_sideways() })
+          // (turned: the layout it had held from this moment, the window still as it was, never the one its turned
+          // window would have once the system turns it (a phone's turned wide as a tablet: tokens.mbt's layout))
+          ignore(layout(slot.window().0))
           pn.wake()
         }, fn() { pn.p.is_sideways() })
       })
@@ -2527,7 +2563,8 @@ fn phone_fingers(
         return
       }
       let (dx0, dy0) = (x - pn.down.0, y - pn.down.1)
-      if !pn.moved && dx0.abs() + dy0.abs() > @ui.press_slop {
+      // (a finger's own small shake no drag: past the system's touch slop either way, as a list takes it)
+      if !pn.moved && (dx0.abs() > @ui.touch_slop() || dy0.abs() > @ui.touch_slop()) {
         pn.moved = true
         (pn.hold_end)()
       }

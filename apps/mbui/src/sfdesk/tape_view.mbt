@@ -756,7 +756,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       }
       // (the chat shown has its view: what its side panel shows is known)
       let known = match app.nav.top() {
-        Chat(r) | History(r, _, _) => src.topic("chat", chat_params(r)).get().value is Some(_)
+        Chat(r) | History(r, _, _) => @sfbase.chat_head_json(src, r) is Some(_)
         _ => true
       }
       (chat, open, known, wide.tape_ask.get(), tape_page_ready(), tape_to_of(tape_room_now()))
@@ -1282,7 +1282,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         behind(
           s,
           fn(c) {
-            match (@sfbase.workspace_in_view(src).0, view_of_chat(src, r).0) {
+            match (@sfbase.workspace_in_view(src).0, @sfbase.chat_view_now(src, r)) {
               (Some(w), Some(_)) => {
                 let (tabs, front) = shown()
                 side_panel(c, src, w, r, tabs, front)
@@ -1326,7 +1326,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
 /// What chat `r`'s panel on the tape shows: its tabs as its view has them; closed while in use, as the tape moves off
 /// it, what it had.
 fn tape_side_shown(src : Source, r : ChatRef) -> (Array[String], String) {
-  match view_of_chat(src, r).0 {
+  // (its head alone: sfbase's chat_view_now)
+  match @sfbase.chat_view_now(src, r) {
     Some(view) =>
       if (tape_goes.panel_of)() is None {
         side_leaving(chat_key(r)).unwrap_or(side_of(view))

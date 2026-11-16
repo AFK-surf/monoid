@@ -196,15 +196,16 @@ pub fn table_node(
       reading.val = ""
     })
     |> ignore
-    md_table_body_node(outer, table, bleed, copy, on_link, on_link_hold)
+    md_table_body_node(outer, table, Is(bleed), copy, on_link, on_link_hold)
   })
   |> ignore
 }
 
 ///|
 /// A table (`table`, as it changes) as nodes in `outer` (table_node's, whatever reads its Markdown: a table alone, or
-/// one of a message's blocks, markdown_node's): its columns' widths from the room `outer` is given (View::by_room), `bleed` past
-/// it either side where it scrolls across; its copy key where `copy`; its links taken by `on_link` (`on_link_hold`); a
+/// one of a message's blocks, markdown_node's): its columns' widths from the room `outer` is given (View::by_room), `bleed()` past
+/// it either side where it scrolls across, as it changes (bound: the same nodes, its bar in from its ends as far as it
+/// was as it was made); its copy key where `copy`; its links taken by `on_link` (`on_link_hold`); a
 /// cell of only the message's images drawn as those (`cell_images`: md_cell_images, Md::cell_images'). `rows`: only
 /// those of its rows (from, up to, not; its head's row 0), a piece of it a block of a page's list, its columns' widths
 /// those of all of it, scrolled across with the others (`across`: what they scroll beside, Scroll::beside), its copy key
@@ -213,7 +214,7 @@ pub fn table_node(
 fn md_table_body_node(
   outer : @view.View,
   table : () -> MdTable?,
-  bleed : Double,
+  bleed : @view.Live[Double],
   copy : Bool,
   on_link : (String) -> Unit,
   on_link_hold : ((String, (Double, Double, Double, Double)) -> Unit)?,
@@ -223,6 +224,20 @@ fn md_table_body_node(
   across? : @view.Scroll = @view.Scroll::across(),
   loc~ : SourceLoc,
 ) -> Unit {
+  // (said once, bound as such: no binding run for what never changes (table_node's); a chat's message's by its list's
+  // width)
+  let bleed_now = fn() {
+    match bleed {
+      Is(b) => b
+      By(f) => f()
+    }
+  }
+  let by_bleed = fn(f : (Double) -> (Double, Double, Double, Double)) -> @view.Live[(Double, Double, Double, Double)] {
+    match bleed {
+      Is(b) => Is(f(b))
+      By(g) => By(fn() { f(g()) })
+    }
+  }
     let has_head = match rows {
       Some((r, _)) => r == 0
       None => true
@@ -235,12 +250,12 @@ fn md_table_body_node(
       Some(_) => across.beside()
       None => across
     }
-    outer.margin(Is((-bleed, 0.0, -bleed, 0.0))) |> ignore
+    outer.margin(by_bleed(fn(b) { (-b, 0.0, -b, 0.0) })) |> ignore
     // (its columns by the room it is given, laid out in that same layout)
     outer.by_room(fn(outer, given) {
       let room = fn() {
         outer.words_redone() |> ignore
-        given.width() - 2.0 * bleed
+        given.width() - 2.0 * bleed_now()
       }
       // (each cell's extent and the columns' widths, as Md::table works them out: table_widths)
       let widths_for = fn(t : MdTable) {
@@ -280,7 +295,7 @@ fn md_table_body_node(
         table_nodes_made.val += 1
         let key = "sf-table/\{table_nodes_made.val}"
         let in_rows = fn(held : @view.View) {
-          held.padding(Is((bleed, 0.0, bleed, 0.0))) |> ignore
+          held.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })) |> ignore
           // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has
           // its whole room, as Md::table has it)
           held.box(fn(beside) {
@@ -289,7 +304,7 @@ fn md_table_body_node(
             .lines_up(Is(Some(Start)))
             // (pointed at as a whole, its key with it: what shows its key; taking no press nor hold for it)
             .points(Is(copy))
-            .margin(Is((0.0, 0.0, if copy && bleed >= table_key_room { -table_key_room } else { 0.0 }, 0.0)))
+            .margin(by_bleed(fn(b) { (0.0, 0.0, if copy && b >= table_key_room { -table_key_room } else { 0.0 }, 0.0) }))
             |> ignore
             table_frame_node(beside, table, widths, head_h~, on_link~, on_link_hold~, cell_images?, rows~)
             if copy && has_head {
@@ -305,7 +320,8 @@ fn md_table_body_node(
         }
         // (its bar under its last row alone, where it is in pieces)
         if has_foot {
-          outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=bleed, in_rows) |> ignore
+          outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=@signals.untracked(bleed_now), in_rows)
+          |> ignore
         } else {
           outer.scrolls(across, slop=@ui.touch_slop(), in_rows) |> ignore
         }
@@ -332,7 +348,7 @@ fn md_table_body_node(
       outer.pick(fn() { scale() < 1.0 }, at_once=true, fn(outer, fitted) {
         if fitted {
           outer.box(made_for=loc, fn(whole) {
-            whole.padding(Is((bleed, 0.0, bleed, 0.0))) |> ignore
+            whole.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })) |> ignore
             table_frame_node(
               whole,
               table,

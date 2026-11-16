@@ -142,7 +142,7 @@ fn chat_body_nodes(
   // ⌘F (chat.find, the keymap's Chat, taken while the tree gives the page keys): the chat's find opened in its bar
   // (wide_bar_of's), as the old page's chat_page took it, but in a chat not made yet
   v.on_action("chat.find", fn(_) {
-    guard view_of_chat(src, r).0 is Some({ thread: Some(_), .. }) else { return false }
+    guard @sfbase.chat_view_now(src, r) is Some({ thread: Some(_), .. }) else { return false }
     chat_find_open(r)
     true
   })
@@ -150,11 +150,12 @@ fn chat_body_nodes(
   // the rest of the chat's own keys that act beyond its list, as the old page's chat_keys took them and by what it
   // did: ⌘⇧E into the archive, ⌘⇧H its first agent's history beside it, ⌘. its agents at work stopped, ⌘⇧J its
   // services and jobs, ⌘⇧D its station's own display; what it cannot do now passes the key on
-  let chat_view = fn() { view_of_chat(src, r).0 }
+  // (its head alone: sfbase's chat_view_now)
+  let chat_view = fn() { @sfbase.chat_view_now(src, r) }
   v.on_action("chat.archive", fn(_) {
     guard chat_view() is Some(cv) && !cv.archived && !cv.offline else { return false }
     guard @sfbase.workspace_in_view(src).0 is Some(w) else { return false }
-    archive_asked(src, w, r, cv, src.topic("chat", chat_params(r)).get().value)
+    archive_asked(src, w, r, cv, @sfbase.chat_head_json(src, r))
     true
   })
   .on_action("chat.history", fn(_) {
@@ -178,10 +179,11 @@ fn chat_body_nodes(
     true
   })
   |> ignore
-  // (another chat's find let go as this one's page is made, as chat_page did as it was built: closed, what it looked
-  // for forgotten, nothing left to go to there)
-  v.reacts(fn() { () }, fn(_) {
-    if find_chat() != "" && find_chat() != chat_key(r) {
+  // (another chat's find let go as this one's page comes to be drawn, as chat_page did as it was built: closed, what it
+  // looked for forgotten, nothing left to go to there; a page kept of a chat left too, as it is drawn again; not while
+  // it is made behind another)
+  v.reacts(shows, fn(on) {
+    if on && find_chat() != "" && find_chat() != chat_key(r) {
       find_forget()
     }
   })
@@ -284,7 +286,9 @@ fn chat_composer_nodes(c : @ui.Ctx, src : Source, r : ChatRef, apart : Bool) -> 
   guard @sfbase.workspace_in_view(src).0 is Some(w) else { return }
   let foot = c.box(style=@ui.style(w=Full, min_h=Fixed(@sfpages.composer_open_room(c, c.width))), fn() {
     c.spacer()
-    @sfpages.chat_composer(c, src, w, r, view_of_chat(src, r).0, apart~)
+    // (its head alone, as the composer reads it: sfbase's chat_view_now; a word streamed into a message builds none of
+    // it again)
+    @sfpages.chat_composer(c, src, w, r, @sfbase.chat_view_now(src, r), apart~)
   })
   @motion.scope(c, foot, bottom=true)
 }

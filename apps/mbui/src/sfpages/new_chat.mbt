@@ -704,7 +704,9 @@ fn new_composer_place(
   let wide = c.width >= @sf.page_narrow_most && c.ime_inset() == 0.0
   match state {
     Going(_, _) => list_space(c, @sfbase.fresh.room.get())
-    Held(_) if address == "" => list_space(c, @motion.measured(c, "new/composer").unwrap_or(0.0))
+    // (its room as it will be laid out once its station is there, not 0 till it has been: what is over it laid out
+    // where it will stay from the first frame, never moved up by the composer's coming: new_composer_room)
+    Held(_) if address == "" => list_space(c, @motion.measured(c, "new/composer").unwrap_or(new_composer_room(c, wide)))
     _ => {
       let held = state is Held(_)
       let spec : ComposerSpec = {
@@ -738,6 +740,18 @@ fn new_composer_place(
       c.put_over(place)
       @motion.measure(c, place, "new/composer")
     }
+  }
+}
+
+///|
+/// The room a new chat's composer takes, held (no station yet: nothing typed, its tools not offered), as it is laid out
+/// once it is built: roomy in the page's middle (`wide`) its opened box with one line (composer_open_box), else at the
+/// page's foot a capsule with what is round it there (capsule_room). Where its place is not measured yet.
+fn new_composer_room(c : @ui.Ctx, wide : Bool) -> Double {
+  if wide {
+    composer_open_box(c)
+  } else {
+    capsule_room(c, c.width)
   }
 }
 
@@ -962,6 +976,28 @@ fn new_send(
   let row = sent_local(rk, None, words, up, going~, quotes~, runs~, now=(src.now)())
   if carried {
     @sfbase.flight_carry_into(c, d.key, draft, rk, row)
+  } else if !@ui.reduced_motion() {
+    // (the chat's page made as nodes: its row's bubble flies from where the words stand in this page's field, each
+    // quote's card from its card and each of its files from its tile, as the chat's own composer tells them
+    // (send_in_chat's: sent_from_said, sent_quotes_from_said, sent_part_said; mbui's View::flies_in), as the page
+    // becomes the chat in this change)
+    match d.field.words_at() {
+      Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
+      None => ()
+    }
+    @sfbase.sent_quotes_from_said(row, d.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }))
+    for f in flying_files(c, src, d) {
+      @sfbase.sent_part_said(row, f.key, f.from)
+    }
+    // (and each quote's own picture from its square in its card there, as the old flight takes it: flying_quotes'
+    // quote_picture_key; the card itself from where it stood, sent_quotes_from_said)
+    for f in flying_quotes(c, src, d, station) {
+      if @sfbase.is_quote_picture_key(f.key) {
+        @sfbase.sent_part_said(row, f.key, f.from)
+      }
+    }
+    // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
+    @sfbase.sent_out_said(c, station + ":" + key)
   }
   let sig = @sfbase.picked_sig(v)
   fresh.starting.set(true)

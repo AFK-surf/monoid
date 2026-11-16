@@ -148,7 +148,7 @@ pub fn Tree::seen_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, D
   while i >= 0 {
     let n = self.nodes[i]
     if n.look.clips {
-      let (x, y, sc) = self.placed(i)
+      let (x, y, sc) = self.placed(i, drawn=true)
       let (x1, y1) = (x + n.flex.width * sc, y + n.flex.height * sc)
       b = (dmax(b.0, x), dmax(b.1, y), dmin(b.2, x1), dmin(b.3, y1))
     }

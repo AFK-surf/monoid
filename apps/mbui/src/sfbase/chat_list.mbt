@@ -650,6 +650,9 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
   }
   chat_inputs.forget(key)
   chat_heads.forget(key)
+  chat_head_jsons.forget(key)
+  // (its messages by key let go with it: read again from its list as it is read again)
+  chat_messages_kept.remove(key)
 }
 
 ///|
@@ -662,6 +665,10 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
   }
   chat_inputs.forget_from(src, key)
   chat_heads.forget_from(src, key)
+  chat_head_jsons.forget_from(src, key)
+  // (its messages by key let go with it, chat_read_left having told where it was left: read again from its list as it
+  // is read again)
+  chat_messages_kept.remove(key)
 }
 
 ///|
@@ -670,7 +677,8 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
 pub fn chat_kept(r : ChatRef) -> ChatView? {
   match chat_read.kept(chat_params(r)) {
     Some(c) => Some(c.view)
-    None => None
+    // (a page that reads the chat by key read its head alone: chat_head)
+    None => chat_head_read.kept(chat_params(r)).map(fn(h) { h.view })
   }
 }
 
@@ -679,7 +687,8 @@ pub fn chat_kept(r : ChatRef) -> ChatView? {
 pub fn chat_kept_from(src : Source, r : ChatRef) -> ChatView? {
   match chat_read.kept_from(src, chat_params(r)) {
     Some(c) => Some(c.view)
-    None => None
+    // (a page that reads the chat by key read its head alone: chat_head)
+    None => chat_head_read.kept_from(src, chat_params(r)).map(fn(h) { h.view })
   }
 }
 
@@ -922,7 +931,8 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
           None => ()
         }
       _ =>
-        if chat_kept_from(page_src, r) is Some(_) {
+        // (read whole by its page: chat_read's, never its head alone, which a page reading it by key keeps)
+        if chat_read.kept_from(page_src, chat_params(r)) is Some(_) {
           match view_of_chat(page_src, r).0 {
             Some(v) => chat_tick(c, rk, rd, v, shown=rd.was_shown, in_front~)
             None => ()

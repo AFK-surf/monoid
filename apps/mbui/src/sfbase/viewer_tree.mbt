@@ -312,9 +312,9 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       // (the moment what draws the picture reads the strip and the flight at, in `n`: viewer_flight_at)
       let strip_at = fn(n : @view.View) { viewer_flight_at(vw, n) }
       // (the picture lying flat where its zoom has it, moved across with the strip, its node (but while it flies: its
-      // flight's nodes), under what is drawn over it; let go of at once as it is closed back into a thumbnail the
-      // window's tree draws, flown back there by the tree as the rest fades: Viewer::tree_back)
-      canvas.show(at_once=true, fn() { !vw.tree_back.get() }, fn(p) {
+      // flight's nodes, from and back into its thumbnail, the old view's or a node's: thumb_of), under what is drawn
+      // over it)
+      canvas.box(fn(p) {
         let flat = fn() {
           strip_at(p) |> ignore
           vw.bytes.get() |> ignore
@@ -337,13 +337,9 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
             _ => None
           }
         }))
-        // (the end of its flight that moves, by the id of the thumbnail it shows (Viewer::thumb_id, the one it is on as
-        // it steps): flown from that thumbnail where the chat shows it as a node that stays, back to it as it closes,
-        // that thumbnail drawn nowhere meanwhile (View::shared's `stays`); none such, it comes and goes as it would;
-        // made again for another tier of the window, there at once (`with_stays`))
-        .shared(By(fn() { vw.thumb_id() }), @motion.flight_by(@motion.moved()), with_stays=true)
         |> ignore
       })
+      |> ignore
       // (the picture flying in or back, its nodes: from the thumbnail as the chat lays it out in the frame drawn
       // (Viewer::flight_from) to where its zoom has it, as far as its flight has come then (flight_box): what shows of it
       // on the window, the box it is cut to, its corners round, the picture in it, as Viewer::picture_shown has it, its
@@ -1900,99 +1896,20 @@ fn film_flight(
           },
           at_once=true,
         )
+        // (a thumbnail of a chat's page made as nodes: its capsule, how long it is, at its foot's start corner as there)
+        o.pick(at_once=true, fn() { tree_thumb_duration(vw.thumb_id()) }, fn(k, duration) {
+          if duration > 0.0 {
+            k.over(Is(true)) |> ignore
+            @sf.video_capsule_node(k, duration, corner=@sf.message_file_corner)
+          }
+        })
+        |> ignore
       })
       |> ignore
     })
     |> ignore
   })
   |> ignore
-}
-
-///|
-/// A chat's film viewer `vw` opened from a thumbnail that is a node of the window's tree (a chat's page made as nodes:
-/// message_video_node's, the end of the flight that stays), in node `n`: its still where the player draws its picture,
-/// under the player, flown by the tree from that thumbnail as it opens and, let go of as it closes (Viewer::tree_back,
-/// once the frame it shows is grabbed: the thumbnail keeps it), the thumbnail flown back from where it was (View::shared,
-/// as an image's picture is: image_layer). Whether its picture is the flight's now: on its way in (the tree's flight of
-/// its thumbnail's id, Tree::flight_ends_at), or let go of; its thumbnail no such node shown as it opens, never.
-fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
-  let id = vw.thumb_id()
-  guard @signals.untracked(fn() { vw.in_tree && vw.chat_file() && vw.shown_kind() == Some(KVideo) }) &&
-    tree_thumb_seen(id) else {
-    return fn() { false }
-  }
-  // (paired as it is made, its thumbnail shown then: its flight's end said once the change is committed, Tree's
-  // flight_ends_at; meanwhile as long as a flight may take at most)
-  let made = n.cause_at()
-  let goes = fn(t : Double) {
-    match @ui.view_tree().bind(fn(tree) { tree.flight_ends_at(id) }) {
-      Some(end) => t < end
-      None => t < made + flight_most_ms
-    }
-  }
-  n.show(at_once=true, fn() { !vw.tree_back.get() }, fn(p) {
-    let place = fn() {
-      // (where the player draws its picture: as it was last drawn once it has been, zoomed, moved, read again as it
-      // closes (its frame asked for, pv_leaving); else, or where it has read no size of the film yet (a point in its
-      // middle), as it fits it by the film's size its message says: never from a point)
-      pv_leaving.get() |> ignore
-      vw.grab_told.get() |> ignore
-      match vw.player_place() {
-        Some(r) if r.2 > 1.0 && r.3 > 1.0 => Some(r)
-        _ => {
-          let (w, h) = p.window()
-          vw.video_target(src, player_width(w), h, p.cause_at())
-        }
-      }
-    }
-    p
-    .over(Is(true))
-    .presses(Is(false))
-    .offset(By(fn() {
-      match place() {
-        Some((x, y, _, _)) => (x, y)
-        None => (0.0, 0.0)
-      }
-    }))
-    .width(By(fn() { place().map(fn(r) { r.2 }) }))
-    .height(By(fn() { place().map(fn(r) { r.3 }) }))
-    // (its still on the black, as the thumbnail draws it: none, the black alone)
-    .ground(Is(0x000000FFL))
-    .image(By(fn() {
-      match vw.still(src) {
-        "" | "!" => None
-        k => Some((k, "", stage_px))
-      }
-    }))
-    .image_covers(Is(true))
-    .shared(Is(id), @motion.flight_by(@motion.moved()), with_stays=true)
-    |> ignore
-    // (closing, the frame its player showed, grabbed, over the still: asked for here to be decoded under the player,
-    // which goes back once it is (Viewer::left_with_picture), the still seen till it is)
-    p.box(fn(f) {
-      f
-      .over(Is(true))
-      .width(By(fn() { place().map(fn(r) { r.2 }) }))
-      .height(By(fn() { place().map(fn(r) { r.3 }) }))
-      .image(By(fn() {
-        vw.grab_told.get() |> ignore
-        if vw.leaving_pic != "" {
-          Some((vw.leaving_pic, "", stage_px))
-        } else {
-          None
-        }
-      }))
-      .image_covers(Is(true))
-      |> ignore
-    })
-    |> ignore
-  })
-  fn() {
-    vw.tree_back.get() || {
-      let t = n.drawn_while(goes)
-      goes(t)
-    }
-  }
 }
 
 ///|
@@ -2008,9 +1925,6 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
   // its flight, in its own layer once it is out from under the bar of the page it flies from (that page's slot draws
   // it till then, the bar over it: viewer_flight_slot)
   film_flight(n, src, vw, fn(t) { vw.flies_from_page() == 0 || vw.lifted_at(t) >= 1.0 })
-  // its thumbnail a node of the window's tree (a chat's page made as nodes): its picture flown by the tree from it and
-  // back into it (film_shared)
-  let tree_flies = film_shared(n, src, vw)
   // (the player over its flight, its bars coming as its ground is whole)
   n.box(fn(s) {
     s
@@ -2066,11 +1980,10 @@ fn viewer_player(n : @view.View, src : Source, vw : Viewer) -> Unit {
           on_back=fn() { vw.shut_tree() },
           // (the chat's still where its picture will be, until its first frame shows)
           still=fn() { if vw.shown_kind() == Some(KVideo) { vw.still(src) } else { "" } },
-          // (flying in, or back into its thumbnail once the frame it shows is grabbed: its picture the flight's, the old
-          // one's or the tree's)
+          // (flying in, or back into its thumbnail once the frame it shows is grabbed: its picture the flight's)
           flying=fn() {
             vw.said_flying()
-            (vw.flies && (!vw.closing || !vw.leaving_grab)) || tree_flies()
+            vw.flies && (!vw.closing || !vw.leaving_grab)
           },
           // (closed by its fade: its controls away at once, the page showing through as it goes)
           going=fn() {
@@ -2503,6 +2416,16 @@ impl Eq for FlyingFrom with equal(a, b) {
 /// the page is drawn in the window (what moves the page moves this with it).
 pub fn viewer_flight_slot(slot : @view.View, src : Source, serial : Int, stage : () -> (Double, Double)) -> Unit {
   slot.over(Is(true)).presses(Is(false)) |> ignore
+  // (the page this slot is in, for a thumbnail of its list made as nodes to say which page it flies from:
+  // Viewer::flies_from_page, page_of_node; let go with it)
+  match slot.parent() {
+    Some(page) => {
+      let id = page.id()
+      flight_pages[id] = serial
+      slot.owns(fn() { if flight_pages.get(id) == Some(serial) { flight_pages.remove(id) } }) |> ignore
+    }
+    None => ()
+  }
   let origin = fn() {
     let (x, y, _, _) = slot.rect()
     (x, y)

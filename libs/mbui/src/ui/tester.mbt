@@ -2192,7 +2192,12 @@ pub fn Tester::ctx(self : Tester) -> Ctx {
 /// next frame on.
 pub fn Tester::scroll_to(self : Tester, item : Int) -> Unit {
   match self.list_on() {
-    Old(st) => st.scroll_to(item)
+    // (put there at once by the test: what it shows moves for no row's cause, as Ctx::list_scroll_to says it,
+    // app_scrolled; rows_steady.mbt)
+    Old(st) => {
+      st.scroll_to(item)
+      st.put_at = g().clock
+    }
     // (a page's list: that row brought to its top as its ListPlace brings it, as it is next laid out)
     Tree(l) => view_app.val.unwrap().list_bring(l.list, item)
   }
@@ -2203,7 +2208,10 @@ pub fn Tester::scroll_to(self : Tester, item : Int) -> Unit {
 ///|
 pub fn Tester::scroll_to_end(self : Tester) -> Unit {
   match self.list_on() {
-    Old(st) => st.scroll_to_end()
+    Old(st) => {
+      st.scroll_to_end()
+      st.put_at = g().clock
+    }
     Tree(l) => view_app.val.unwrap().list_to_end(l.list)
   }
   test_stepped()
@@ -3138,6 +3146,33 @@ pub fn Tester::drawn_image_clips(
         (
           (c.inst[b + 16], c.inst[b + 17], c.inst[b + 18], c.inst[b + 19]),
           (c.inst[b + 24], c.inst[b + 25], c.inst[b + 26], c.inst[b + 27]),
+        ),
+      )
+    }
+  }
+  out
+}
+
+///|
+/// How round each image instance of the last frame is drawn, in drawn_images' order: its own corners (36-39: top left,
+/// then round it; 0 square) and the rounded clip outside its own that cuts it (40-43, left, top, right, bottom; its
+/// corners 44-47, all 0 where there is none).
+pub fn Tester::drawn_image_rounds(
+  self : Tester,
+) -> Array[((Double, Double, Double, Double), (Double, Double, Double, Double), (Double, Double, Double, Double))] {
+  self.reads_own()
+  ignore(self)
+  let c = g()
+  let out = []
+  for k in 0..<c.ninst {
+    let b = k * inst_size
+    let a = c.inst
+    if a[b + 5] == 4.0 {
+      out.push(
+        (
+          (a[b + 36], a[b + 37], a[b + 38], a[b + 39]),
+          (a[b + 40], a[b + 41], a[b + 42], a[b + 43]),
+          (a[b + 44], a[b + 45], a[b + 46], a[b + 47]),
         ),
       )
     }

@@ -3,8 +3,9 @@
 // 不存 with how long a use is allowed beside them (or on a line of its own over them where they have not the room: one
 // of the two arrangements, by the width the foot is laid out at, View::one_of), what the person types in over them; a
 // line where there is no answer to give here. What it keeps between frames is keyed by its request (vault_pending,
-// vault_picked, vault_timeout_minutes, vault_typed: signals). Not here yet: a file the person picks (the system's
-// picker's answer is only looked at each frame, @hostapi.polled): what asks for one draws nothing here.
+// vault_picked, vault_timeout_minutes, vault_typed, vault_files: signals). A file the person picks is asked of the
+// system's picker as 选择文件 is pressed (pick_vault_file), its answer told between frames (ui's Pick, on_got) and kept
+// by its request (vault_files), its name and size beside the button once it came.
 
 ///|
 /// What stands at a request's foot in place of an answer where there is none to give here, as `answer` says it ("":
@@ -130,7 +131,7 @@ pub fn vault_foot_node(
   }
   let typing = fn() {
     match (answer(), typed()) {
-      (Some(Approve(_)), Some(ty)) if ty.kind != "file" && ty.oauth == "" => Some(ty)
+      (Some(Approve(_)), Some(ty)) if ty.oauth == "" => Some(ty)
       _ => None
     }
   }
@@ -140,7 +141,18 @@ pub fn vault_foot_node(
       None => false
     }
   }
-  let empty = fn() { typed() is Some(_) && signs_in() == "" && field_of("/secret").text().trim(chars=" \n\t").to_owned() == "" }
+  // (a file the person picks: what was picked for this request, its bytes in base64 and its name)
+  let picks_file = fn() { typing().map(fn(ty) { ty.kind == "file" }).unwrap_or(false) }
+  let file = fn() { vault_files.get(request()) }
+  let empty = fn() {
+    typed() is Some(_) &&
+    signs_in() == "" &&
+    (if picks_file() {
+      file() is None
+    } else {
+      field_of("/secret").text().trim(chars=" \n\t").to_owned() == ""
+    })
+  }
   let act = fn(yes : Bool, call : String, what : String, params : Json) {
     if core.read_only != "" {
       (core.say)(core.read_only)
@@ -210,10 +222,16 @@ pub fn vault_foot_node(
         params.push(("timeout", obj([("kind", str(sc)), ("seconds", Json::number((m * 60).to_double()))])))
       }
       if typed() is Some(_) {
-        let given : Array[(String, Json)] = [("secret", str(field_of("/secret").text()))]
-        let user = if asks_user() { field_of("/username").text() } else { "" }
-        if user.trim(chars=" ").to_owned() != "" {
-          given.push(("username", str(user)))
+        let given : Array[(String, Json)] = match (picks_file(), file()) {
+          (true, Some((content, name))) => [("secret", str(content)), ("filename", str(name))]
+          _ => {
+            let given : Array[(String, Json)] = [("secret", str(field_of("/secret").text()))]
+            let user = if asks_user() { field_of("/username").text() } else { "" }
+            if user.trim(chars=" ").to_owned() != "" {
+              given.push(("username", str(user)))
+            }
+            given
+          }
         }
         params.push(("typed", obj(given)))
       }
@@ -247,7 +265,40 @@ pub fn vault_foot_node(
           |> ignore
         }
         let words = tr("android-settings.vault.ask.typed." + kind)
-        if kind == "ssh_key" {
+        if kind == "file" {
+          // (the button the same before and after, the card as wide (ask_card_room_most): what was picked comes in
+          // beside it, the row no higher)
+          b.box(fn(r) {
+            @sf.style_node(r, fn() { ask_file })
+            @sf.button_node(
+              r,
+              fn() { words },
+              fn() {
+                let at = @signals.untracked(request)
+                pick_vault_file(core, fn(content, name) { vault_files[at] = (content, name) })
+              },
+              disabled=under,
+            )
+            |> ignore
+            r.show(fn() { file() is Some(_) }, fn(n) {
+              // (as wide as its words, giving way where the row has not the room for them, cut short: the old card's
+              // line, never stretched across the rest of the row)
+              n.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(
+                n,
+                fn() {
+                  match file() {
+                    Some((content, name)) => name + " · " + file_size(content)
+                    None => ""
+                  }
+                },
+                fn() { ask_file_name },
+              )
+              |> ignore
+            })
+          })
+          |> ignore
+        } else if kind == "ssh_key" {
           @sf.textarea_node(b, field_of("/secret"), rows=4, placeholder=words, solid=true, card_words=foot, edited=fn(_) {
             keep("/secret")
           })
@@ -401,7 +452,7 @@ pub fn vault_foot_node(
 /// The answer to request `request()` in workspace `ws()` in `v` (vault_actions', as nodes), as the vaults topic says it
 /// now (a card from before its station said what it asks, under its post): the buttons while it waits on the viewer
 /// (`mine()`), or a line where there is no answer to give here (`who()`: whose it is); nothing while the topic has not
-/// come, nor where it asks for a file to be picked (not here yet: see the head).
+/// come.
 pub fn vault_actions_node(
   v : @view.View,
   core : Core,
@@ -411,12 +462,7 @@ pub fn vault_actions_node(
   who? : () -> String? = fn() { None },
 ) -> Unit {
   let row = fn() { items(vaults_of(core, ws()), "requests").iter().find_first(fn(r) { text(Some(r), "id") == request() }) }
-  let said = fn() {
-    match topic_answer(core, ws(), request(), mine(), who()) {
-      Some((Approve(_), _, Some({ kind: "file", .. }))) => None
-      s => s
-    }
-  }
+  let said = fn() { topic_answer(core, ws(), request(), mine(), who()) }
   vault_foot_node(
     v,
     core,

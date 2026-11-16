@@ -1251,8 +1251,10 @@ fn old_frame(c : Ctx) -> Unit {
             },
           )
         }
+        // (cut at its node's top as it is: not one said `over`, drawn whole over it (its ground going to its shape on a
+        // way of its own, what stands out of its corner), as it is at rest)
         let i = if foot_by != 0.0 {
-          c.box(style=style(w=Fixed(w), h=Fixed(h), clip=true), left~, top~, fn() { place(0.0, foot_by) |> ignore })
+          c.box(style=style(w=Fixed(w), h=Fixed(h), clip=!o.over), left~, top~, fn() { place(0.0, foot_by) |> ignore })
         } else {
           place(left, top)
         }
@@ -1431,15 +1433,19 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   // (the node drawn over the old frame's scrim being drawn now, what it holds with it, and where its instances begin:
   // View::over_scrim; each one's taken as what is drawn next is no longer in it, put over the scrim as that is painted)
   tree_over_scrim.clear()
-  let raising : Ref[(@view.NodeId, Int)?] = Ref(None)
+  tree_over_scrim_cut.clear()
+  // (the node drawn over the scrim, where its instances begin, and what cut it where it lies as it began: the clip
+  // round it then)
+  let raising : Ref[(@view.NodeId, Int, (Double, Double, Double, Double))?] = Ref(None)
   let raise_close = fn(next : @view.NodeId?) {
     match raising.val {
-      Some((id, k0)) if (match next {
+      Some((id, k0, cut)) if (match next {
           Some(n) => !tree.holds_in_order(id, n)
           None => true
         }) => {
         if self.ninst > k0 {
           tree_over_scrim.push((k0, self.ninst))
+          tree_over_scrim_cut.push(cut)
         }
         raising.val = None
       }
@@ -1713,7 +1719,8 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         Some(l) => l.spoiled = true
         None => ()
       }
-      raising.val = Some((c.id, self.ninst))
+      let k = clip_top()
+      raising.val = Some((c.id, self.ninst, (clip_stack[k], clip_stack[k + 1], clip_stack[k + 2], clip_stack[k + 3])))
     }
     // (on its way in or out: cut to itself before it draws its own, so its words go no further than its way has got,
     // over nothing beside it; pushed once, for what it holds too, below. Content::clips_self)
@@ -1812,11 +1819,14 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // its own edge, its edge drawn over what it holds there, taking no room; pushed before it drew where it is on its way)
     // (an outer concentric ring round it, captured under what holds it before its own clip is pushed, drawn after what it holds)
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
+    // (and past its foot as far as it says, drawn only: View::clips_past, a block of a page's list closing cut as tall as
+    // it is drawn, not as it rests)
     if c.clips && !c.clips_self {
       let r = c.radius * s
+      let ch = dmax(0.0, c.h + tree.clips_past_of(c.id)) * s
       match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, c.h * s, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(x, y, c.w * s, c.h * s, r, r, r, r)
+        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, ch, tl * s, tr * s, br * s, bl * s)
+        None => push_box_clip(x, y, c.w * s, ch, r, r, r, r)
       }
       clipping.push(c.id)
     }
@@ -1911,6 +1921,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   }
   paint_layers_under(2147483647)
   tree_over_scrim.clear()
+  tree_over_scrim_cut.clear()
   dr.targets_said = false
   view_paint_work.handed = view_paint_work.handed + (self.ninst - n0)
 }
@@ -2139,6 +2150,12 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
 let tree_over_scrim : Array[(Int, Int)] = []
 
 ///|
+/// What cut each of tree_over_scrim's where it lay (the clip round the node drawn over the scrim as it began: its
+/// list's edges, the window's foot), in its order: what is lifted off as it is put over the scrim.
+// kept across runs: emptied with tree_over_scrim
+let tree_over_scrim_cut : Array[(Double, Double, Double, Double)] = []
+
+///|
 /// Where what comes up over the scrim is in the window this frame (points: a sheet's, what the menu from the foot is
 /// in), as what draws it says it once it is laid out: its top and how tall it is; none where nothing is up. What of the
 /// tree is drawn over the scrim stays clear of it (View::over_scrim: the old views' @sf.lift_over).
@@ -2159,11 +2176,6 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
   let a = self.inst
   let mut head = 1.0e300
   let mut foot = -1.0e300
-  // (what cut it where it lay: the loosest of its instances' cuts, what all it holds was drawn inside)
-  let mut x0 = 1.0e300
-  let mut y0 = 1.0e300
-  let mut x1 = -1.0e300
-  let mut y1 = -1.0e300
   for r in tree_over_scrim {
     for k in r.0..<r.1 {
       let b = k * inst_size
@@ -2172,10 +2184,6 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
         head = dmin(head, a[b + 1])
         foot = dmax(foot, a[b + 1] + a[b + 3])
       }
-      x0 = dmin(x0, a[b + 16])
-      y0 = dmin(y0, a[b + 17])
-      x1 = dmax(x1, a[b + 18])
-      y1 = dmax(y1, a[b + 19])
     }
   }
   let dy = match (over_scrim_floor.val)(self) {
@@ -2187,7 +2195,12 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
     }
     _ => 0.0
   }
-  for r in tree_over_scrim {
+  // (what cut each where it lay, the clip round it as it began (tree_over_scrim_cut), lifted off each edge of an
+  // instance's clip that is that clip's: what cuts within it (its own round frame, what it holds cut to it) still does,
+  // never taken for what cut it from outside, as the loosest of its own cuts was taken when all it drew was cut by its
+  // frame: a picture held up drawn square over the whole window, 2026-11-16)
+  for i, r in tree_over_scrim {
+    let (x0, y0, x1, y1) = tree_over_scrim_cut.get(i).unwrap_or((1.0e300, 1.0e300, -1.0e300, -1.0e300))
     for k in r.0..<r.1 {
       let b = k * inst_size
       if a[b + 16] == x0 {

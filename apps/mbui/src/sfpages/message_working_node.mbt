@@ -5,8 +5,27 @@
 // next's at each glyph's place, the line going from the one's width to the other's with its clock, and how long its
 // turn has run; pressed, its history beside the chat; one of several agents, its own stop under the pointer. Each
 // motion from the moment its cause was said (the step began showing; the row came into its list), as data. Not here
-// yet: the card over its picture (P21). The list's, not the row's: the line folding to its picture as a message comes
-// out of it, the picture away while its copy flies, the ring fading as the row goes.
+// yet: the card over its picture (P21). What a message of its agent's coming out of its picture does to it (the line
+// folding to its picture, the picture and its ring away while the message's own flies from it, flying home again from
+// where it let the message out, the line unfolding: emit.mbt's Fold, Float, Return) is the message's (agent_out_steps),
+// told through its AgentFace; the ring fading as the row goes is the list's.
+
+///|
+/// An agent at work's picture on its line, as a message of its agent's coming out of it reads and moves it
+/// (agent_said_node's `out_of`, agent_out_steps; emit.mbt's poses): the picture's box (`face`, where a message's own
+/// picture flies from), its line's words shown (`fold`: 1 shown, 0 folded into the picture), whether the picture is
+/// away (`away`: it and its ring drawn nowhere, its room kept, while a message's picture flies from it and lets that
+/// message out; flying home to it, its own picture (`pic`), from the picture of the message it let out last, as it
+/// comes back: agent_out_steps), and the last message coming out of it (`last`: its plan; a later one of the same agent
+/// drops on from there, not going home first).
+priv struct AgentFace {
+  face : @view.View
+  fold : @motion.Way
+  away : @signals.Signal[Bool]
+  last : Ref[AgentOutPlan?]
+  /// its picture's own node (agent_avatar_node's) made once with the line: where a message's picture flies from
+  pic : Ref[@view.View?]
+}
 
 ///|
 /// What agent `a` says it does now, as its row reads it (activity_row's `said`): what it waits on (important: a wait
@@ -68,7 +87,7 @@ fn working_said_node(
   came : () -> Double?,
   steadies : ActivitySteadies,
   over? : (@view.View, String) -> Unit = fn(_, _) {  },
-  faces? : Map[String, (@view.View, @motion.Way)] = Map([]),
+  faces? : Map[String, AgentFace] = Map([]),
 ) -> MessageRowNode {
   let live = fn() {
     @sfbase.hold(src, @sfbase.chat_scope(here.station, here.session), "live", {
@@ -80,7 +99,23 @@ fn working_said_node(
   // (what it does now folded into its picture as a message of its agent's comes out of it, back once that is out:
   // agent_said_node's `out_of`, emit.mbt's Fold and Return; 1 shown)
   let fold = @motion.Way::new(1.0)
+  let away = @signals.signal(false)
+  let last : Ref[AgentOutPlan?] = Ref(None)
+  let pic : Ref[@view.View?] = Ref(None)
   message_row_frame_node(v, key, side, top, over~, fn(r) {
+    // (a later turn of the same agent at work on this line: whatever a message of the turn before left it as (folded,
+    // its picture away: a turn ended by it), shown again, nothing of that message's dropped on from)
+    let turn_seen = Ref(@signals.untracked(a).last_turn)
+    r.reacts(fn() { a().last_turn }, fn(turn) {
+      guard turn != turn_seen.val else { return }
+      turn_seen.val = turn
+      guard turn != "" else { return }
+      last.val = None
+      if @signals.untracked(fn() { away.get() }) {
+        away.set(false)
+      }
+      fold.put(1.0)
+    })
     // (made by the room the row gives it: how much of the line its words have, activity_visible_width's)
     r.by_room(fn(held, room) {
       held.box(fn(area) {
@@ -119,24 +154,37 @@ fn working_said_node(
           })
           line.box(fn(face) {
             @sf.style_node(face, fn() { activity_face })
-            face.box(fn(av) { agent_avatar_node(av, fn() { a().maker }, fn() { a().runtime }) |> ignore })
-            |> ignore
+            // (away, its picture and its ring with it drawn nowhere, its room kept: one binding for all of it, bound once a
+            // message's picture first flies from it, at that cause; there in full till then)
+            let faded = Ref(false)
+            face.reacts(fn() { away.get() }, at_start=false, fn(gone) {
+              if gone && !faded.val && face.alive() {
+                faded.val = true
+                face.alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } })) |> ignore
+              }
+            })
+            // (its picture, made once; away, drawn nowhere and its room kept, while a message's picture flies from it
+            // and lets that message out; back, flown home from where it let the last one out by that change itself:
+            // emit.mbt's Float and Return, one picture in the other's place the line does not see, agent_out_steps)
+            let own = agent_avatar_node(face, fn() { a().maker }, fn() { a().runtime })
+            pic.val = Some(own)
             // (what a message of its agent's coming while it is at work comes out of: agent_said_node's `out_of`; told no more
             // as it is let go)
             let agent = @signals.untracked(a).key
-            faces[agent] = (face, fold)
+            faces[agent] = { face, fold, away, last, pic }
             face.owns(fn() {
               match faces.get(agent) {
-                Some((f, _)) if f.id() == face.id() => faces.remove(agent)
+                Some(f) if f.face.id() == face.id() => faces.remove(agent)
                 _ => ()
               }
             })
             |> ignore
             // (its agent's card over its picture and the ring over it under a pointer, as over a message's picture:
             // the line's press and hold its own as ever)
-            message_agent_card_node(face, src, here, @signals.untracked(a).key, pointed=true)
+            message_agent_card_node(face, src, here, fn() { a().key }, pointed=true)
             // (its ring over its picture)
             face.box(fn(ring) {
+              // (away with its picture: one picture and one ring, the message's on its way, never a second here)
               ring.over(Is(true)) |> ignore
               @sf.style_node(ring, fn() { ring_room_style })
               ring.pick(fn() { a().wait is Some(_) }, fn(k, waiting) {
@@ -192,8 +240,9 @@ fn working_said_node(
         })
         |> ignore
         // one of several agents: stopped alone from its row, under the pointer
-        // (a mouse over its line or its stop: an old view's row hovered by any of its parts)
-        area.show(fn() { (here.view)().agents.length() > 1 && @sf.lit_in_node(area) }, fn(s) {
+        // (a mouse over its line or its stop: an old view's row hovered by any of its parts; at once, as the ⋯ at a
+        // message's head: shown by where the hand is, no coming or going of its own)
+        area.show(fn() { (here.view)().agents.length() > 1 && @sf.lit_in_node(area) }, at_once=true, fn(s) {
           working_stop_node(s, src, here, a)
         })
       })
