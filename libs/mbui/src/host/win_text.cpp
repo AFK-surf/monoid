@@ -95,11 +95,12 @@ static void init(void) {
   params = p2;
   // A glyph in one colour drawn with ClearType, as Windows draws any app's text (the user, 2026-10-29, beside Chrome:
   // gray coverage looked soft): each of a pixel's three stripes, red, green, blue left to right, covered on its own,
-  // with vertical grid-fitting and Windows' standard ClearType gamma (1.8) and contrast (0.5); a colour glyph (an
-  // emoji) in gray as before.
+  // with vertical grid-fitting, natural 6x1 ClearType at UI sizes (DWRITE_RENDERING_MODE_DEFAULT: no vertical blur on
+  // horizontal strokes), and contrast boost (0.5) at linear gamma (1.0, so black-on-white rasterization does not bend
+  // mid-tone coverage down toward white); a colour glyph (an emoji) in gray as before.
   IDWriteRenderingParams2 *c2 = NULL;
-  dw->CreateCustomRenderingParams(1.8f, 0.5f, 0.5f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
-                                  DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
+  dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
+                                  DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
   params_ct = c2;
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
   CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
