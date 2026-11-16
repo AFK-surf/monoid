@@ -90,6 +90,7 @@ export class KnownNames {
   readonly #reading = new Map<string, Promise<void>>();
   readonly #again = new Set<string>();
   readonly #listeners = new Set<(file: string) => void>();
+  #closed = false;
   #teams: { of: Json; remote: Map<string, Team>; all: Map<string, Team> } | null = null;
 
   /// `config`: config.json as the station holds it (ops/config.ts `raw`), the same object until it changed.
@@ -98,8 +99,11 @@ export class KnownNames {
     this.#config = config;
     // (watched first: what changes as it is read is read again after)
     try {
+      // Each of its files by its name, or by its temporary's (`<file>.<pid>.tmp`, ops/files.ts writePrivateSoon): macOS's
+      // FSEvents coalesces a file written and renamed into an event named after either. None named (the system's
+      // queue overflowed): every one.
       this.#watcher = watch(data, { persistent: false }, (_, file) => {
-        if (file !== null && Object.hasOwn(FILES, file)) void this.#reread(file);
+        for (const k of Object.keys(FILES)) if (file === null || file === k || file.startsWith(`${k}.`)) void this.#reread(k);
       });
       this.#watcher.on("error", () => this.close());
     } catch {
@@ -123,6 +127,7 @@ export class KnownNames {
     }
     const read = (async () => {
       do {
+        if (this.#closed) return;
         this.#again.delete(file);
         try {
           FILES[file]!(this.#kept, JSON.parse(await readFile(join(this.#data, file), "utf8")));
@@ -131,7 +136,7 @@ export class KnownNames {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") FILES[file]!(this.#kept, undefined);
         }
       } while (this.#again.has(file));
-      for (const listener of this.#listeners) listener(file);
+      if (!this.#closed) for (const listener of this.#listeners) listener(file);
     })().finally(() => this.#reading.delete(file));
     this.#reading.set(file, read);
     return read;
@@ -144,6 +149,7 @@ export class KnownNames {
   }
 
   close(): void {
+    this.#closed = true;
     this.#watcher?.close();
     this.#watcher = null;
   }

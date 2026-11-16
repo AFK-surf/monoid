@@ -68,11 +68,14 @@ export class Search {
     this.#sessionList = new SessionListBuilder(join(options.data, "stillfail.db"), options.backfill);
   }
 
+  /// The removal of the index of before under way (`start`): waited for by `stop`.
+  #starting: Promise<void> = Promise.resolve();
+
   /// The index an earlier station kept removed, off the main thread (nothing reads it: there is none now); done once
   /// the promise is. Nothing is started until a search is asked.
   start(): Promise<void> {
-    return Promise.all(["search.db", "search.db-wal", "search.db-shm"].map((f) => rm(join(this.#data, f), { force: true })))
-      .then(() => {}, (error) => log.warn("search", "the index of before was not removed", { error: (error as Error).message }));
+    return (this.#starting = Promise.all(["search.db", "search.db-wal", "search.db-shm"].map((f) => rm(join(this.#data, f), { force: true })))
+      .then(() => {}, (error) => log.warn("search", "the index of before was not removed", { error: (error as Error).message })));
   }
 
   /// Whether a looker runs now (the program, or the test's reference).
@@ -207,7 +210,7 @@ export class Search {
     this.#closed = true;
     this.#idle?.();
     this.#idle = null;
-    await Promise.all([this.#looker?.terminate(), this.#scope.close(), this.#sessionList.close()]);
+    await Promise.all([this.#looker?.terminate(), this.#scope.close(), this.#sessionList.close(), this.#starting]);
     this.#looker = null;
   }
 }

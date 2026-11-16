@@ -13,6 +13,7 @@ import { after, test } from "node:test";
 import { Events } from "../src/api/events.ts";
 import { NAMES_FILE, REMOTE_FILE } from "../src/connects/keys.ts";
 import { ConfigFile } from "../src/ops/config.ts";
+import { writePrivateSoon } from "../src/ops/files.ts";
 import { mbReaderBinary, readerBinary } from "../src/read/mb-reader.ts";
 import { KnownNames } from "../src/read/slack-known.ts";
 import { makeStore } from "../src/read/store.ts";
@@ -116,13 +117,14 @@ test("a message said is told with its authors' names from memory: Slack, Feishu 
   assert.deepEqual(told.map((t) => [t.thread, t.names]), [[slack, ["Una"]], [slack, ["Helper"]], [feishu, ["Fei"]], [own, ["Pat"]], [far, [null]]]);
   assert.equal(told[0]!.pictures[0], "https://p/u.png");
 
-  // The books and other stations' connects changed: taken in off the main thread as the system says so.
+  // The books and other stations' connects changed as the station writes them (a temporary renamed into place, which
+  // macOS's FSEvents may name after either): taken in off the main thread as the system says so.
   const changed = await syncCalls(async () => {
     const slackRead = until<string>((f) => known.listen(f), () => known.person("team", "U1")?.name === "Una Two");
-    await writeFile(join(data, NAMES_FILE.slack), JSON.stringify({ "u:T1:U1": { person: { name: "Una Two" } }, "u:T2:U9": { person: { name: "Nine" } } }));
+    await writePrivateSoon(join(data, NAMES_FILE.slack), JSON.stringify({ "u:T1:U1": { person: { name: "Una Two" } }, "u:T2:U9": { person: { name: "Nine" } } }));
     await slackRead;
     const remoteRead = until<string>((f) => known.listen(f), () => known.teams().has("far"));
-    await writeFile(join(data, REMOTE_FILE), JSON.stringify({ far: { described: { kind: "slack", team: "T2", identity: { team: "Far" } } } }));
+    await writePrivateSoon(join(data, REMOTE_FILE), JSON.stringify({ far: { described: { kind: "slack", team: "T2", identity: { team: "Far" } } } }));
     await remoteRead;
     say(slack, "person", "U1");
     say(far, "person", "U9");
