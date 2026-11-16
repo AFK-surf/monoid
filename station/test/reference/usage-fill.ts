@@ -8,7 +8,7 @@
 // The two `since` are the only cursor: each batch counts a run of whole quarters and moves them to its start in one
 // transaction, so a read always knows which days are complete and a stopped fill goes on from there.
 import type { DatabaseSync } from "node:sqlite";
-import { compactCoverageSince, hasCompactUsage, keepContextOnFill, setCompactCoverageSince } from "../../src/store/usage-compact.ts";
+import { compactCoverageSince, hasCompactUsage, keepContextOnFill, setCompactCoverageSince } from "./backfill/usage-compact.ts";
 import { hasUsageHistory, setUsageHistorySince, setUsageHistoryQuarters, usageHistorySince } from "../../src/store/usage-history.ts";
 
 const QUARTER_MS = 900_000;

@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { makeStore, saidOf, SaidUnavailable } from "./reference/store.ts";
 import { installLegacySaid, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
-import { installSaidState, saidScanStep, type SaidScan } from "../src/store/said-state.ts";
+import { installSaidState, saidScanStep, type SaidScan } from "./reference/backfill/said-state.ts";
 import { Store } from "../src/store/store.ts";
 
 function traceWrites(db: DatabaseSync, trace: (sql: string) => string): void {

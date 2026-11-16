@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep } from "./reference/backfill/outflow-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

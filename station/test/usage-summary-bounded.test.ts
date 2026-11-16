@@ -8,7 +8,7 @@ import { Worker } from "node:worker_threads";
 import * as reads from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep } from "./reference/backfill/usage-summary-blocks.ts";
 
 test("a cold usage summary does bounded work as more minutes contribute to the same days", async () => {
   const store = Store.open(":memory:");

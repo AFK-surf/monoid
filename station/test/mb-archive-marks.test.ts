@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "../src/store/archive-mark-index.ts";
+import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "./reference/backfill/archive-mark-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

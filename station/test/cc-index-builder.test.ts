@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { CcIndexBuilder } from "../src/read/cc-index-builder.ts";
 import { ccSessionReady, installCcIndex } from "../src/store/cc-thread-index.ts";
-import { installLatestThreadIndex, latestThreadReady } from "../src/store/latest-thread-index.ts";
+import { installLatestThreadIndex, latestThreadReady } from "./reference/backfill/latest-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, sessionChatReady } from "../src/store/session-chat-index.ts";
 import { Store } from "../src/store/store.ts";
 import { endsOnce } from "./programs.ts";

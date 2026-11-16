@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { WidgetSourcesBuilder } from "../src/read/widget-sources-builder.ts";
-import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../src/store/widget-sources.ts";
+import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 import { formatDelivery } from "../src/sessions/actor.ts";

@@ -19,22 +19,22 @@ import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-
 import { installLegacySaid, LEGACY_SAID_BOUNDARY_TAIL, LEGACY_SAID_DRAIN, LEGACY_SAID_DRAIN_THREAD,
   LEGACY_SAID_HEAD_FIRST, LEGACY_SAID_HEAD_TAIL, LEGACY_SAID_NEEDS_DRAIN } from "../src/store/legacy-said-build.ts";
 import { ARCHIVE_LAST_FIRST, ARCHIVE_LAST_GUARD, ARCHIVE_LAST_LETTER_AFTER, ARCHIVE_LAST_LETTER_ANY,
-  ARCHIVE_LAST_SAID_KEY, ARCHIVE_LAST_SLICE_BEFORE, ARCHIVE_LAST_SLICE_FIRST, ARCHIVE_LAST_TAIL } from "../src/store/archive-last.ts";
+  ARCHIVE_LAST_SAID_KEY, ARCHIVE_LAST_SLICE_BEFORE, ARCHIVE_LAST_SLICE_FIRST, ARCHIVE_LAST_TAIL } from "./reference/backfill/archive-last.ts";
 import { CC_THREADS_SQL } from "../src/store/rows.ts";
-import { LATEST_THREAD_ATTEMPT, LATEST_THREAD_SCOPE } from "../src/store/latest-thread-index.ts";
-import { CARD_POST_AFTER, CARD_POST_BEFORE, CARD_POST_LATEST, CARD_POST_NEXT, CARD_POST_SAMPLE } from "../src/store/card-post-index.ts";
+import { LATEST_THREAD_ATTEMPT, LATEST_THREAD_SCOPE } from "./reference/backfill/latest-thread-index.ts";
+import { CARD_POST_AFTER, CARD_POST_BEFORE, CARD_POST_LATEST, CARD_POST_NEXT, CARD_POST_SAMPLE } from "./reference/backfill/card-post-index.ts";
 import { SESSION_COUNT_FIRST, SESSION_COUNT_NEXT, SESSION_COUNT_TOTAL, SESSION_COUNT_CONNECT, SESSION_COUNT_DISPLACED } from "./reference/backfill/session-counts.ts";
 import { SESSION_LIST_CONNECT, SESSION_LIST_DISPLACED, SESSION_LIST_FIRST, SESSION_LIST_NEXT, SESSION_LIST_SCOPE,
-  SESSION_LIST_SCOPE_CONNECT } from "../src/store/session-list-index.ts";
-import { SESSION_BINDINGS_DELETE, SESSION_BINDINGS_DISPLACED, SESSION_BINDINGS_EXISTS, SESSION_BINDINGS_FIRST, SESSION_BINDINGS_NEXT, SESSION_BINDINGS_SELECTED } from "../src/store/session-bindings-index.ts";
+  SESSION_LIST_SCOPE_CONNECT } from "./reference/backfill/session-list-index.ts";
+import { SESSION_BINDINGS_DELETE, SESSION_BINDINGS_DISPLACED, SESSION_BINDINGS_EXISTS, SESSION_BINDINGS_FIRST, SESSION_BINDINGS_NEXT, SESSION_BINDINGS_SELECTED } from "./reference/backfill/session-bindings-index.ts";
 import { ARCHIVE_KEEP_EXISTS, ARCHIVE_PIN_EXISTS } from "../src/store/archive-mark-index.ts";
 import { WIDGET_SOURCE, WIDGET_SOURCE_MISSING, WIDGET_SOURCE_POSITIONS_FIRST, WIDGET_SOURCE_POSITIONS_NEXT,
-  WIDGET_SOURCE_UNUSUAL, widgetSourcesStep } from "../src/store/widget-sources.ts";
-import { SESSION_UP_JOB, SESSION_UP_JOBS, SESSION_UP_JOBS_CONFLICT, SESSION_UP_JOBS_DISPLACED, SESSION_UP_JOBS_END, SESSION_UP_JOBS_FIRST, SESSION_UP_JOBS_NEXT } from "../src/store/session-up-jobs.ts";
+  WIDGET_SOURCE_UNUSUAL, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
+import { SESSION_UP_JOB, SESSION_UP_JOBS, SESSION_UP_JOBS_CONFLICT, SESSION_UP_JOBS_DISPLACED, SESSION_UP_JOBS_END, SESSION_UP_JOBS_FIRST, SESSION_UP_JOBS_NEXT } from "./reference/backfill/session-up-jobs.ts";
 import { ACTIVE_SESSIONS, TAKEN_SINCE, TURNS_BETWEEN, TURNS_FROM } from "../src/store/usage.ts";
 import { detailQuery } from "../src/store/usage-detail.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksRangeScan, usageSummaryBlocksScan } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksRangeScan, usageSummaryBlocksScan } from "./reference/backfill/usage-summary-blocks.ts";
 import { REMOTE_RUNS_ALL, REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { AWAKE_JOBS, REMOTE_QUEUE_JOBS, RUNNING_JOB_SESSIONS, RUNNING_WAIT_JOBS } from "../src/store/active-jobs.ts";
 import { activeJobUpgradeStep, ACTIVE_JOB_CONFLICT, ACTIVE_JOB_END, ACTIVE_JOB_FIRST, ACTIVE_JOB_NEXT, ACTIVE_JOB_NULL_ID,

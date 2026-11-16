@@ -10,7 +10,7 @@
 import type { Json, Store } from "./store.ts";
 import * as store from "./store.ts";
 import { ending, sees } from "../../src/store/rows.ts";
-import { outflowChatIndexReady, outflowChatScopes } from "../../src/store/outflow-index.ts";
+import { outflowChatIndexReady, outflowChatScopes } from "./backfill/outflow-index.ts";
 import { titleNeedsFirstText, titleOf } from "./views.ts";
 import { slackCreator } from "./slack-known.ts";
 import { usage } from "./usage.ts";

@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { closedCardsStep } from "../src/store/legacy-closed-cards.ts";
-import { peopleSinceStep } from "../src/store/legacy-people-since.ts";
+import { closedCardsStep } from "./reference/backfill/legacy-closed-cards.ts";
+import { peopleSinceStep } from "./reference/backfill/legacy-people-since.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

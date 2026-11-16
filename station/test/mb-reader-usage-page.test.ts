@@ -17,7 +17,7 @@ import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksStep } from "../src/store/usage-summary-blocks.ts";
+import { installUsageSummaryBlocks, usageSummaryBlocksStep } from "./reference/backfill/usage-summary-blocks.ts";
 import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();

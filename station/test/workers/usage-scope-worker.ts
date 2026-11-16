@@ -4,8 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { parentPort, threadId, workerData } from "node:worker_threads";
 import { wall } from "../../src/ops/fibers.ts";
 import { giveBackfill, takeBackfill } from "../../src/store/backfill.ts";
-import { compactTotalsStep, hasCompactUsage, moveCompactStep } from "../../src/store/usage-compact.ts";
-import { hasUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep, type UsageSummaryKey, type UsageSummaryRange } from "../../src/store/usage-summary-blocks.ts";
+import { compactTotalsStep, hasCompactUsage, moveCompactStep } from "../reference/backfill/usage-compact.ts";
+import { hasUsageSummaryBlocks, usageSummaryBlocksPending, usageSummaryBlocksStep, type UsageSummaryKey, type UsageSummaryRange } from "../reference/backfill/usage-summary-blocks.ts";
 
 const db = new DatabaseSync(workerData.path as string);
 const priority = new Int32Array(workerData.priority as SharedArrayBuffer);

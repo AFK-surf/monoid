@@ -6,11 +6,6 @@ const VERSION = 1;
 export const SESSION_UP_JOB = "SELECT 1 FROM session_up_job_rows WHERE session = ? LIMIT 1";
 export const SESSION_UP_JOBS = `SELECT j.id FROM session_up_job_rows i
   CROSS JOIN jobs j ON j.rowid = i.job_rowid WHERE i.session = ? ORDER BY j.started_at DESC`;
-export const SESSION_UP_JOBS_END = "SELECT rowid FROM jobs INDEXED BY jobs_by_session WHERE session_key = ? ORDER BY rowid DESC LIMIT 1";
-export const SESSION_UP_JOBS_FIRST = `SELECT CAST(rowid AS TEXT) AS position FROM jobs INDEXED BY jobs_by_session
-  WHERE session_key = ? AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`;
-export const SESSION_UP_JOBS_NEXT = `SELECT CAST(rowid AS TEXT) AS position FROM jobs INDEXED BY jobs_by_session
-  WHERE session_key = ? AND rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`;
 
 const up = (name: string) => `(${name}.state = 'running' OR (${name}.state = 'exited' AND ${name}.port IS NOT NULL))`;
 const changed = `OLD.rowid IS NOT NEW.rowid OR OLD.id IS NOT NEW.id OR OLD.token IS NOT NEW.token
@@ -26,7 +21,7 @@ export const SESSION_UP_JOBS_CONFLICT = conflict("?1", "?2", "?3");
 const stage = (old: boolean) => `DELETE FROM session_up_job_replaced;
   INSERT INTO session_up_job_replaced (job_rowid, session) ${displaced("NEW.id", "NEW.token", "NEW.rowid")}
     ${old ? "UNION SELECT OLD.rowid, OLD.session_key" : ""};`;
-const see = (rowid: string) => `INSERT INTO session_up_job_rows (session, job_rowid)
+export const see = (rowid: string) => `INSERT INTO session_up_job_rows (session, job_rowid)
   SELECT j.session_key, j.rowid FROM jobs j WHERE j.rowid = ${rowid} AND ${up("j")}
     AND NOT EXISTS (SELECT 1 FROM session_up_job_rows i WHERE i.session = j.session_key AND i.job_rowid = j.rowid);`;
 const reconcile = `DELETE FROM session_up_job_rows WHERE (session, job_rowid) IN
@@ -79,27 +74,4 @@ export function sessionUpJobsReady(db: DatabaseSync, session: string): boolean {
   if (meta === undefined || meta.version !== VERSION) throw new Error(`session up jobs index version ${meta?.version ?? "missing"} is incompatible with ${VERSION}`);
   if (meta.fresh === 1) return true;
   return (db.prepare("SELECT complete FROM session_up_job_scopes WHERE session = ?").get(session) as { complete: number } | undefined)?.complete === 1;
-}
-
-export function sessionUpJobsStep(db: DatabaseSync, session: string, limit = 256): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("session up job batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (sessionUpJobsReady(db, session)) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    db.prepare(`INSERT INTO session_up_job_scopes (session, last_rowid, end_rowid, complete)
-      SELECT ?, NULL, (${SESSION_UP_JOBS_END}), 0
-      WHERE NOT EXISTS (SELECT 1 FROM session_up_job_scopes WHERE session = ?)`).run(session, session, session);
-    const scope = db.prepare(`SELECT CAST(last_rowid AS TEXT) AS last_rowid, CAST(end_rowid AS TEXT) AS end_rowid
-      FROM session_up_job_scopes WHERE session = ?`).get(session) as { last_rowid: string | null; end_rowid: string | null };
-    const rows = (scope.last_rowid === null
-      ? db.prepare(SESSION_UP_JOBS_FIRST).all(session, scope.end_rowid, limit)
-      : db.prepare(SESSION_UP_JOBS_NEXT).all(session, scope.last_rowid, scope.end_rowid, limit)) as { position: string }[];
-    const put = db.prepare(see("CAST(? AS INTEGER)"));
-    for (const row of rows) put.run(row.position);
-    const done = rows.length < limit;
-    db.prepare("UPDATE session_up_job_scopes SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE session = ?")
-      .run(rows.at(-1)?.position ?? scope.last_rowid, done ? 1 : 0, session);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
 }

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import { prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
+import { prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { REFERENCE, readersOf } from "./reference.ts";
 

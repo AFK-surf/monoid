@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexReady, outflowChatIndexStep, outflowChatScopes } from "./reference/backfill/outflow-index.ts";
 import { OUTFLOW_CHAT_PAGE } from "./reference/outflow.ts";
 import type { InWorkspace } from "../src/store/rows.ts";
 

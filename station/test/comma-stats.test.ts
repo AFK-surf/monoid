@@ -17,7 +17,7 @@ import { CommaSurface } from "../src/comma/surface.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";
 import { Rig } from "./hub-fakes.ts";
 import { newMessage } from "../src/store/store.ts";
-import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "./reference/backfill/outflow-index.ts";
 import * as read from "./reference/store.ts";
 import { HOME, outflowChats } from "./reference/outflow.ts";
 

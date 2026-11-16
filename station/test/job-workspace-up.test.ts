@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { openJobs } from "./reference/jobs.ts";
 import { makeStore, seenBy } from "./reference/store.ts";
 import { JOBS_UP } from "../src/store/rows.ts";
-import { WORKSPACE_UP_JOBS } from "../src/store/workspace-up-jobs.ts";
+import { WORKSPACE_UP_JOBS } from "./reference/backfill/workspace-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 const viewer = (home: boolean) => ({ sub: "a@example.test", email: "a@example.test", name: "A", role: "member",

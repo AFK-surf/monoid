@@ -9,9 +9,9 @@ import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SessionUpJobsBuilder } from "../src/read/session-up-jobs-builder.ts";
 import { WorkspaceUpJobsBuilder } from "../src/read/workspace-up-jobs-builder.ts";
-import { jobNameFirstStep } from "../src/store/job-name-first.ts";
-import { installSessionUpJobs, sessionUpJobsReady, sessionUpJobsStep } from "../src/store/session-up-jobs.ts";
-import { installWorkspaceUpJobs, workspaceUpJobsReady, workspaceUpJobsStep } from "../src/store/workspace-up-jobs.ts";
+import { jobNameFirstStep } from "./reference/backfill/job-name-first.ts";
+import { installSessionUpJobs, sessionUpJobsReady, sessionUpJobsStep } from "./reference/backfill/session-up-jobs.ts";
+import { installWorkspaceUpJobs, workspaceUpJobsReady, workspaceUpJobsStep } from "./reference/backfill/workspace-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

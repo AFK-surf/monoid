@@ -11,7 +11,7 @@ import { usageRoutes } from "../src/api/routes/usage.ts";
 import { makeStore, USAGE_CALLS_EARLIER, USAGE_CALLS_SAME, usageCallsPage, usageGroups, usageSince } from "./reference/store.ts";
 import { usage, usageHistory, usageNow } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
-import { compactQuery, compactScopeReady, compactTotal, compactTotalsStep, installCompactUsage, moveCompactStep } from "../src/store/usage-compact.ts";
+import { compactQuery, compactScopeReady, compactTotal, compactTotalsStep, installCompactUsage, moveCompactStep } from "./reference/backfill/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { keepUsage, retireAfterPrevious, watchCompactMoves } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";

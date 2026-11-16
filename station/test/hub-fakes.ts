@@ -16,7 +16,7 @@ import { answerFiles } from "../src/slack/surface.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
 import { letterMessage } from "../src/store/rows.ts";
-import { CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
 import { actorsBusy } from "../src/sessions/mb-actor.ts";
 
 type Json = any;

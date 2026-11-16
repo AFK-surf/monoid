@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import * as reads from "./reference/store.ts";
 import { usage } from "./reference/usage.ts";
-import * as compact from "../src/store/usage-compact.ts";
+import * as compact from "./reference/backfill/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { Store } from "../src/store/store.ts";
 

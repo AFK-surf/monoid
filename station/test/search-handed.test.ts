@@ -12,7 +12,7 @@ import { historySessionSnapshot, makeStore } from "./reference/store.ts";
 import { type Asker, type Hit, pick } from "../src/search/match.ts";
 import { SearchScopePreparation } from "./reference/search-scope-prepare.ts";
 import { Search } from "../src/search/search.ts";
-import { auditSessionListStep } from "../src/store/session-list-index.ts";
+import { auditSessionListStep } from "./reference/backfill/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
 import { stationDocs } from "./reference/search-sources.ts";
 

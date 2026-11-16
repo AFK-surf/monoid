@@ -20,7 +20,7 @@ import { profileEnv } from "../src/agents/profiles.ts";
 import { fingerprint } from "../src/sessions/decision.ts";
 import { DEFAULT_POLICY } from "../src/sessions/archive-policy.ts";
 import { Store } from "../src/store/store.ts";
-import { SessionChatPreparation, sessionChatReady } from "../src/store/session-chat-index.ts";
+import { SessionChatPreparation, sessionChatReady } from "./reference/backfill/session-chat-index.ts";
 import { approval, exe, fakeBrowser, fakeLogin, machine as fakeMachine, provider, script, temp, until, upon } from "./accounts-fakes.ts";
 import { URLS } from "../src/accounts/profiles.ts";
 import { settle, testClock } from "./hub-fakes.ts";

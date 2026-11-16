@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
-import { installWidgetSources, WIDGET_SOURCE, WIDGET_SOURCE_ORIGINAL, widgetSourcesStep } from "../src/store/widget-sources.ts";
+import { installWidgetSources, WIDGET_SOURCE, WIDGET_SOURCE_ORIGINAL, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 
 const plain = (row: unknown) => row === undefined ? null : { ...(row as object) };
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { jobsNow, LATEST_JOBS, makeStore, PREPARED_UP_JOBS_OF, UP_JOBS_OF } from "./reference/store.ts";
-import { sessionUpJobsReady, sessionUpJobsStep } from "../src/store/session-up-jobs.ts";
+import { sessionUpJobsReady, sessionUpJobsStep } from "./reference/backfill/session-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a session's current jobs do not inspect other sessions' running or restarting jobs", () => {

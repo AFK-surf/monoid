@@ -4,7 +4,7 @@ import { outflowChats } from "./reference/outflow.ts";
 import { firstText, getThread, makeStore } from "./reference/store.ts";
 import { titleOf } from "./reference/views.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
-import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "./reference/backfill/outflow-index.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, constants } from "node:sqlite";
 import { test } from "node:test";
-import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "../src/store/archive-mark-index.ts";
+import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "./reference/backfill/archive-mark-index.ts";
 import { Store } from "../src/store/store.ts";
 
 function dropIndex(store: Store) {

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { Store, newMessage } from "../src/store/store.ts";
-import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "./reference/backfill/outflow-index.ts";
 import type { InWorkspace } from "../src/store/rows.ts";
 import * as read from "./reference/store.ts";
 import { ROUTER_WROTE, outflowChats, outflowMessages, outflowUsage } from "./reference/outflow.ts";

@@ -9,7 +9,7 @@ import { OLDER_THREADS, toldCleared, toldLongChat, toldResumeLost } from "../src
 import { sessionKey } from "../src/sessions/hub.ts";
 import { autoArchive } from "../src/sessions/lifecycle.ts";
 import { undecided } from "../src/sessions/review.ts";
-import { prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
+import { prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
 import { newMessage } from "../src/store/rows.ts";
 import { archiveFactsOf, RECENT_THREADS, Store } from "../src/store/store.ts";
 import { Rig, message } from "./hub-fakes.ts";

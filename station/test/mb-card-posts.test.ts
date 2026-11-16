@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CardPostsBuilder } from "../src/read/card-posts-builder.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { cardPostsReady, cardPostsStep, installCardPosts } from "../src/store/card-post-index.ts";
+import { cardPostsReady, cardPostsStep, installCardPosts } from "./reference/backfill/card-post-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { Store } from "../src/store/store.ts";
 import { Readers } from "../src/read/pool.ts";
 import { OutflowChatIndex } from "../src/read/chat-index-builder.ts";
-import { installOutflowChatIndex, outflowChatIndexStep } from "../src/store/outflow-index.ts";
+import { installOutflowChatIndex, outflowChatIndexStep } from "./reference/backfill/outflow-index.ts";
 import { openStore } from "./reference/store.ts";
 import { outflowChats } from "./reference/outflow.ts";
 import { endsOnce, counted } from "./programs.ts";

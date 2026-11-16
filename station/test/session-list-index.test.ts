@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { listedSessions, makeStore } from "./reference/store.ts";
-import { installSessionListIndex, sessionListReady, sessionListStep } from "../src/store/session-list-index.ts";
+import { installSessionListIndex, sessionListReady, sessionListStep } from "./reference/backfill/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
 
 function dropIndex(store: Store) {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { HAS_NAMING_ORIGIN, HAS_NAMING_ORIGIN_POSSIBLE, HAS_NAMING_ORIGIN_PREPARED, makeStore, namingOriginProbe } from "./reference/store.ts";
-import { CcIndexPreparation, ccSessionReady } from "../src/store/cc-thread-index.ts";
+import { CcIndexPreparation, ccSessionReady } from "./reference/backfill/cc-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const preparedLookup = HAS_NAMING_ORIGIN_PREPARED;

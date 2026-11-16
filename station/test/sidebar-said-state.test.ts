@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { makeStore, saidOf } from "./reference/store.ts";
-import { installSaidState, saidBoundary, saidScanStep, SAID_LATEST, SAID_STATE, type SaidScan } from "../src/store/said-state.ts";
+import { installSaidState, saidBoundary, saidScanStep, SAID_LATEST, SAID_STATE, type SaidScan } from "./reference/backfill/said-state.ts";
 import { Store } from "../src/store/store.ts";
 
 test("installing sidebar state does not read old messages", () => {
