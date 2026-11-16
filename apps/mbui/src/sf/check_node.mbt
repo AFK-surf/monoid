@@ -5,7 +5,7 @@
 ///|
 /// A checkbox in `parent`, on or off as `on` says: 18 square, its corner 6, on the page's ground edged in the theme's
 /// control edge (darker under the pointer), filled with the primary ink while on, its tick in the ink on that; faded
-/// while `disabled`. Pressed (a tap, a click, Space or Enter with the keyboard's focus, a screen reader's Activate),
+/// while `disabled`. Pressed (a tap, a click, Space with the keyboard's focus, a screen reader's Activate),
 /// `turn` told what it becomes; a ring round it while the keyboard's focus is on it. Read out a checkbox named `label`,
 /// on or off.
 #callsite(autofill(loc))
