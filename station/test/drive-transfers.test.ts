@@ -13,6 +13,7 @@ import { free, type Source, type Transfer, Transfers } from "../src/drive/transf
 import { Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { routes as transferRoutes } from "../src/api/routes/transfers.ts";
 import type { Request } from "../src/api/request.ts";
+import { timeFiles } from "../src/ops/file-waits.ts";
 
 /// A station's drive over a folder of its own: `root` pinned, deleted things to the place's own trash.
 function station(name: string) {
@@ -267,4 +268,28 @@ test("routes: a grant read as the member reads; copying into a station only for 
   assert.equal(listed.json.transfers[0].items, undefined);
   assert.deepEqual((await ask(request("GET", "/drive/transfers", null, "member", "b@x"))).json.transfers, []);
   assert.equal((await ask(request("POST", `/drive/transfers/${started.json.transfer.id}/cancel`, null, "member", "b@x"))).json.code, "not_found");
+});
+
+test("a transfer waits on no file on the station's thread, and what it kept is read back after a restart", async () => {
+  const s = station("waits");
+  mkdirSync(join(s.root, "src", "deep"), { recursive: true });
+  for (let i = 0; i < 20; i++) writeFileSync(join(s.root, "src", "deep", `f${i}.txt`), `file ${i}`);
+  mkdirSync(join(s.root, "dst"));
+  const transfers = transfersInto(s);
+  const timed = timeFiles();
+  let t: Transfer;
+  try {
+    t = transfers.start(spec({ from: { station: null, root: s.root, path: "src", names: ["deep"] }, to: { root: s.root, path: "dst" } }));
+    await transfers.idle();
+    const waits = timed.take();
+    assert.equal(waits.calls, 0, [...waits.by.keys()].join("; "));
+  } finally {
+    timed.stop();
+  }
+  const done = transfers.get(t.id)!;
+  assert.equal(done.state, "done", done.error);
+  assert.equal(readFileSync(join(s.root, "dst", "deep", "f7.txt"), "utf8"), "file 7");
+  // On disk once idle: a station started again has it as it ended.
+  await transfers.close();
+  assert.deepEqual(transfersInto(s).get(t.id), done);
 });

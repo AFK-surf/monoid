@@ -167,7 +167,7 @@ export const DriveTransfersLive = Layer.effectDiscard(
             changed: (t) => events.tell("drive-transfers", { transfer: shown(t) }, `drive-transfer\0${t.id}`, { email: t.by }),
           }),
       ),
-      (t) => Effect.sync(() => t.close()),
+      (t) => Effect.promise(() => t.close()),
     );
     bus.on("drive.", (_peer, request, workspace) => driveForPeer(drive, key, request, workspace ?? null, now()));
     parts.routes(routes({ drive, transfers, key, self: () => ownId(data), nameOf: (station) => nameOf(cloud, station), now }));

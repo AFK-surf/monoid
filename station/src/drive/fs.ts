@@ -1,7 +1,7 @@
 // How the drive (drive.ts) reaches the machine's files: directly, or, for the folders macOS keeps from a station launchd
 // runs, through still.fail Helper (helper/files.ts), which holds the grants. The same few operations either way, on
 // paths the drive has already checked (the helper checks them again against the roots it is told).
-import { constants, lstatSync } from "node:fs";
+import { constants, createReadStream, lstatSync } from "node:fs";
 import { type FileHandle, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -41,6 +41,9 @@ export interface Fs {
   /// `length` bytes from `offset` (fewer at the end, none past it), with the file's size and time; EISDIR for a folder.
   read(path: string, offset: number, length: number): Promise<{ bytes: Buffer; size: number; mtimeMs: number }>;
   readAll(path: string): Promise<Buffer>;
+  /// The file's bytes in order, `chunk` at most at a time, read off the station's thread (none where it reads by
+  /// parts: `read`).
+  readStream?(path: string, chunk: number): AsyncIterable<Buffer>;
   /// The file copied to `to`, a new file of the station's own (a clone where the disk can).
   copyTo(path: string, to: string): Promise<void>;
   /// `data` written at `offset` (the file made anew with `create`, else it must be there), then truncated to
@@ -109,6 +112,7 @@ export const direct: Fs = {
     }
   },
   readAll: (path) => readFile(path),
+  readStream: (path, chunk) => createReadStream(path, { highWaterMark: chunk }),
   copyTo: (path, to) => copyFile(path, to, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE),
   async write(path, w) {
     const handle = await open(path, w.create ? "w" : "r+");

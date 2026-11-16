@@ -175,7 +175,7 @@ test("a lock's change is told on the event stream: the workspace's to its member
   stop();
 });
 
-test("the devices that came are listed for the workspace's owners and admins, a member's own for them", () => {
+test("the devices that came are listed for the workspace's owners and admins, a member's own for them", async () => {
   const dir = mkdtempSync(join(tmpdir(), "seen-devices-"));
   const seen = new SeenDevices(join(dir, "seen.json"));
   seen.saw(1000, { workspace: "w1", sub: "carol", email: "c@x" }, "d1", "b1", { kind: "app", label: "Carol's Mac" });
@@ -190,6 +190,7 @@ test("the devices that came are listed for the workspace's owners and admins, a 
   ]);
   assert.deepEqual(seen.of("w1", 9000, "carol", false).map((r) => r.device), ["d1"]);
   // Kept across a restart; past SEEN_SECS, no more.
+  await seen.written();
   const again = new SeenDevices(join(dir, "seen.json"));
   assert.equal(again.of("w2", 9000, "carol", false).length, 1);
   assert.equal(again.of("w1", 1100 + SEEN_SECS + 1, "alice", true).map((r) => r.device).join(), "d1");
