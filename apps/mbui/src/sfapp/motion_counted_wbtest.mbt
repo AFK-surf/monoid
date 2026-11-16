@@ -11,7 +11,6 @@ fn init {
     "src/sfapp/chat_wbtest.mbt",
     "src/sfapp/composer_parts_wbtest.mbt",
     "src/sfapp/composer_wbtest.mbt",
-    "src/sfapp/decide_wbtest.mbt",
     "src/sfapp/desk_service_wbtest.mbt",
     "src/sfapp/downloads_wbtest.mbt",
     "src/sfapp/drive_motion_wbtest.mbt",
