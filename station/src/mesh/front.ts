@@ -632,9 +632,17 @@ class FrontEndpoint implements Endpoint {
   readonly #disabled = new Map<string, { peer: string; relays: string[]; public: boolean }>();
   disabledRelays(id: string, relays: string[], noPublic: boolean) {
     const args = { peer: id, relays, public: noPublic };
+    const before = this.#disabled.get(id);
+    this.#disabled.set(id, args);
     return this.#ask("disabledRelays", { args }).then(() => {
-      if (relays.length === 0 && !noPublic) this.#disabled.delete(id);
-      else this.#disabled.set(id, args);
+      if (relays.length === 0 && !noPublic && this.#disabled.get(id) === args) this.#disabled.delete(id);
+    }, (error) => {
+      // An older front has no policy to replay. Other failures keep the desired set for reconnect.
+      if (/no operation|not a function/.test((error as Error).message) && this.#disabled.get(id) === args) {
+        if (before) this.#disabled.set(id, before);
+        else this.#disabled.delete(id);
+      }
+      throw error;
     });
   }
   insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url])); }

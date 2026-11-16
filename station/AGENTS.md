@@ -266,7 +266,9 @@
 - A relay a workspace turns off is off for its stations too, not only its devices (`src/mesh/relays.ts`): a station is
   kept on the relays its workspaces keep on (`wantedRelays`, still.fail's where it is in none) and dials another
   station through those of the workspaces both are in, the relays all of them turn off disabled (`stationAddr`,
-  `disabledRelays`: iroh takes no path through them, though Address Lookup names them).
+  `disabledRelays`: iroh takes no path through them, though Address Lookup names them). The live per-peer policy
+  (`src/mesh/peer-relays.ts`) is shared by RPC and HTTP and follows every shared workspace, including existing backup
+  paths; callers await it before use. Front reconnect restores it before routing or dialing.
 
 ## A station's name and icon
 

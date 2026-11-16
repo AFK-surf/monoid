@@ -783,6 +783,7 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use n0_future::StreamExt;
 
     /// A way of finding stations that cannot be made, as mDNS is with UDP 5353 unavailable.
     #[derive(Debug)]

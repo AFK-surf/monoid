@@ -188,13 +188,15 @@ test("the front's endpoint linked again is bound with the relays it is on now", 
   const sock = join(dir, "front.sock");
   const links: Socket[] = [];
   const bound: string[][] = [];
+  const told: { link: number; op: string; args?: unknown }[] = [];
   const server = createServer((s) => {
-    links.push(s);
+    const link = links.push(s);
     let pending = "";
     s.on("data", (chunk) => {
       pending += chunk;
       for (let at; (at = pending.indexOf("\n")) >= 0; pending = pending.slice(at + 1)) {
         const asked = JSON.parse(pending.slice(0, at));
+        told.push({ link, op: asked.op, args: asked.args });
         if (asked.op === "bind") bound.push(asked.options.relayUrls);
         s.write(JSON.stringify({ id: asked.id, ok: asked.op === "bind" ? { id: "station", sockets: [] } : asked.op === "relayStatus" ? [] : null }) + "\n");
       }
@@ -208,10 +210,18 @@ test("the front's endpoint linked again is bound with the relays it is on now", 
     await endpoint.removeRelay("https://ours.example/");
     await endpoint.insertRelay("https://more.example");
     await endpoint.insertRelay("https://own.example/");
+    await endpoint.disabledRelays!("peer-a", ["https://ours.example"], true);
+    await endpoint.disabledRelays!("peer-b", ["https://ours.example"], false);
+    await endpoint.disabledRelays!("peer-b", [], false);
+    await endpoint.route!(Buffer.from("test"), ["/tmp/test.sock"], ["GET /test"]);
     links[0]!.destroy();
     while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
     while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
     assert.deepEqual(bound, [["https://ours.example", "https://own.example"], ["https://own.example", "https://more.example"]]);
+    assert.deepEqual(told.filter((x) => x.link === 2 && x.op === "disabledRelays").map((x) => x.args), [{ peer: "peer-a", relays: ["https://ours.example"], public: true }]);
+    const replay = told.findIndex((x) => x.link === 2 && x.op === "disabledRelays");
+    const routed = told.findIndex((x) => x.link === 2 && x.op === "route");
+    assert.ok(replay >= 0 && routed > replay, "restrictions replay before incoming requests are routed");
     await endpoint.close();
   } finally {
     for (const s of links) s.destroy();
