@@ -1050,7 +1050,14 @@ jobs:
         with:
           path: apps/mbui/out/mac/AppIcon-*
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
+      # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
+      # restored, nothing taken out, so the next run goes on from there, as preview.yml's Linux build does (#6575).
+      # Saved only at the job's end, main's c3e7df99 and 4c3a71b2 (2026-11-16, libs/mbui/src/ui changed, 724 of 1028
+      # units compiled, moon's build 235 s) were cut at the job's five minutes with nothing kept, the next run as far behind.
+      # 3.2 minutes: it begins some 67 s in, and the worker's stop, the key and the save take some 25 s)
       - name: Finish the Mac app build
+        id: finish
+        timeout-minutes: 3.2
         run: bash .github/mac-release-prebuild.sh wait
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
@@ -1081,11 +1088,16 @@ jobs:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
       - name: The cache's key, by what it holds
-        if: github.ref == 'refs/heads/main'
+        if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome != 'skipped'
         run: |
-          sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
+          if [ "${{ steps.finish.outcome }}" = success ]; then
+            sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
+          else
+            bash .github/mac-release-prebuild.sh stop
+            find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+          fi
           echo "STORE_KEY=mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
-      - if: github.ref == 'refs/heads/main' && env.STORE_KEY != steps.store.outputs.cache-matched-key
+      - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |

@@ -40,6 +40,18 @@ case "${1:-}" in
     cat "$dir/log"
     [ "$(cat "$dir/status")" = 0 ] || exit 1
     ;;
+  stop)
+    # (the build cut short by the Finish step's own limit: the worker and all it started end before the store is keyed
+    # and saved, so that nothing writes units while they are packed)
+    tree() { for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; echo "$1"; }
+    [ -s "$dir/pid" ] || exit 0
+    pids=$(tree "$(cat "$dir/pid")")
+    # shellcheck disable=SC2086 # pids, one word each
+    kill -TERM $pids 2>/dev/null || :
+    for _ in 1 2 3 4 5; do kill -0 "$(cat "$dir/pid")" 2>/dev/null || break; sleep 1; done
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || :
+    ;;
   work)
     set +e
     bash "$0" build
@@ -68,5 +80,5 @@ case "${1:-}" in
     # the compile and let a successful build time out during cleanup (42588746155, 2026-11-09).
     bash "$A/scripts/mac.sh" build
     ;;
-  *) echo "usage: $0 start|ready|packages|wait" >&2; exit 2 ;;
+  *) echo "usage: $0 start|ready|packages|wait|stop" >&2; exit 2 ;;
 esac
