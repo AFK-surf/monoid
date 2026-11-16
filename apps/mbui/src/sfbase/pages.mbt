@@ -964,11 +964,7 @@ fn page_entry_left(serial : Int, p : Page) -> Unit {
       Archived => @settings.left(@settings.Route::Archive)
       Settings => @settings.left(@settings.Route::Home)
       // a place of the bar's whose page is the settings' (bar.mbt place_page)
-      Place(name) =>
-        match @settings.route_of(name) {
-          Some(r) => @settings.left(r)
-          None => ()
-        }
+      Place(name) => @settings.place_left(name)
       _ => ()
     }
 }

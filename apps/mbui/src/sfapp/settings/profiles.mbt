@@ -2,7 +2,12 @@
 // list and pages are made once as nodes: sfpages' profiles_list.mbt, accounts.mbt).
 
 ///|
-/// Whether the narrow `Profiles` page shows the overview tab (`true`) or the default accounts list (`false`).
+/// Whether the bottom bar's `Place("profiles")` shows 概览 (`true`) or the accounts' list (`false`): its own, so a
+/// `Setting(Profiles(""))` pushed and popped over it never changes what it shows.
+pub let profiles_place_overview : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether a pushed `Setting(Profiles(""))` (and 中屏's and 大屏's) shows 概览 (`true`) or the accounts' list (`false`).
 pub let profiles_narrow_overview : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|

@@ -678,6 +678,13 @@ pub fn open_mode(mode : String) -> Unit {
     app.nav.replace(Place("profiles"))
   } else if mode == "place-profiles-sum-a" {
     @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    @settings.profiles_narrow_overview.set(false)
+    app.nav.replace(Place("profiles"))
+  } else if mode == "place-profiles-sum-overview" {
+    // (the bottom bar's Profile switched to 概览, its own: profiles_place_overview)
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    @settings.profiles_narrow_overview.set(false)
+    @settings.profiles_place_overview.set(true)
     app.nav.replace(Place("profiles"))
   } else if mode == "terminal" || mode.has_prefix("terminal-") {
     // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else

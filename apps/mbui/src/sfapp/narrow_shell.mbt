@@ -743,23 +743,18 @@ fn narrow_made_as(
         )
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
       })
-    Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
-      made("profiles-overview", fn(p, core, here, frame, _stint, acts) {
-        @sfpages.profiles_overview_node(
-          p,
-          core,
-          here,
-          on_back=core.pop,
-          frame~,
-          on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
-          bar_actions?=if place { Some(acts) } else { None },
-        )
-      })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch
     Setting(Stations) =>
       made_at("stations", place, fn(p, core, here, frame, _stint, _acts, serial) {
         @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame~, shown=fn() { app.nav.shows(serial) })
+      })
+    // (the workspace's: its list or 概览, one page; as a place of the bottom bar's, its own 概览 and its ＋ the bar's
+    // notch, none in its top bar)
+    Setting(Profiles("")) =>
+      made("profiles/", fn(p, core, here, frame, _stint, _acts) {
+        let overview = if place { @settings.profiles_place_overview } else { @settings.profiles_narrow_overview }
+        @sfpages.profiles_page_node(p, src, core, here, overview, on_back=core.pop, frame~)
       })
     Setting(Profiles(only)) =>
       made("profiles/" + only, fn(p, core, here, frame, _stint, _acts) {

@@ -10,7 +10,8 @@
 /// `only`'s as that part of its overview says them; each section's heading and each account's row a block of its own (a
 /// row a piece of its section's card), by its key, so one coming or going comes and goes where it is. Adding one (on a
 /// station online) at its title's end, where the frame does not hold it itself (a place's notch names the page:
-/// `frame().named`), or in a frame's bar (`bar_actions`). `here`: who and where, as that changes.
+/// `frame().named`), or in a frame's bar (`bar_actions`). `here`: who and where, as that changes. 概览 pressed:
+/// `on_show_overview` (a pushed page's own by default; the bottom bar's place says its own).
 pub fn profiles_list_node(
   v : @view.View,
   core : Core,
@@ -22,6 +23,7 @@ pub fn profiles_list_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
+  on_show_overview? : () -> Unit = fn() { @settings.profiles_narrow_overview.set(true) },
 ) -> Unit {
   let tips = match tips {
     Some(t) => t
@@ -176,7 +178,7 @@ pub fn profiles_list_node(
             fn() { 0 },
             fn(i) {
               if i == 1 {
-                @settings.profiles_narrow_overview.set(true)
+                on_show_overview()
               }
             },
           )
@@ -884,3 +886,39 @@ let pl_see_fix : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Acc
 // kept across runs: a value (no field of it changes)
 let pl_wait_room : @ui.Style = @ui.css("w=Full px=S4 py=S3")
 
+///|
+/// The workspace's Profile page in node `v`: its accounts' list or 概览 (`overview`, which of the two: the bottom bar's
+/// place keeps its own, a pushed page and 中屏's and 大屏's theirs), one page whichever it shows, so switching between
+/// them keeps the page, its frame's top bar and what it reads: the accounts and the stations held by the page itself
+/// (`src.owned_by`, let go with it), so neither is let go as one is made in the other's place.
+pub fn profiles_page_node(
+  v : @view.View,
+  src : Source,
+  core : Core,
+  here : () -> Here,
+  overview : @signals.Signal[Bool],
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+  tips? : @sf.TipLayer,
+  bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
+) -> Unit {
+  v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  let held = src.owned_by(v)
+  let scope = { "scope": Json::string(@signals.untracked(here).workspace) }
+  held.prefetch("profiles", scope) |> ignore
+  held.prefetch("stations", scope) |> ignore
+  v.pick(fn() { overview.get() }, fn(p, shown) {
+    p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    if shown {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_accounts=fn() {
+        overview.set(false)
+      })
+    } else {
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_overview=fn() {
+        overview.set(true)
+      })
+    }
+  })
+}

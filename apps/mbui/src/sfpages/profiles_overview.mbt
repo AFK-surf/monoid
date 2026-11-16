@@ -1580,18 +1580,21 @@ pub fn profiles_overview_node(
       "概览"
     }
   }
-  let add_actions = fn(a : @view.View) {
-    a.show(fn() { has_accounts_tab && @settings.place_action(core, here(), "profiles") is Some(_) }, fn(bar) {
-      @sf.round_key_node(bar, "plus", fn() { @sf.t("web-pages.settings.profiles.add") }, fn() {
-        match @signals.untracked(fn() { @settings.place_action(core, here(), "profiles") }) {
-          Some(run) => run(Node(bar))
-          None => ()
-        }
-      })
-    })
+  // (adding one as the accounts' list does, profiles_list_node: at its title's end where the frame does not name the
+  // page, else in the frame's bar)
+  let add = fn() { has_accounts_tab && @settings.place_action(core, here(), "profiles") is Some(_) }
+  let adding = fn(at : @view.View) {
+    match @settings.place_action(core, @signals.untracked(here), "profiles") {
+      Some(run) => run(Node(at))
+      None => ()
+    }
+  }
+  let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+  let add_actions = fn(l : @view.View) {
+    l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
   }
   match bar_actions {
-    Some(f) => f(add_actions, fn(_) { @sf.button_height() })
+    Some(f) => f(fn(l) { l.show(add, fn(a) { @sf.page_add_node(a, label, adding) }) }, fn(_) { @sf.button_height() })
     None => ()
   }
   @sf.page_node(

@@ -511,18 +511,26 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
   t_wide.run_for(@ui.move_most_ms)
   assert_true(t_wide.find("额度与恢复") is Some(_))
 
-  // 2. Narrow defaults to the original 账号 list and switches cleanly to 概览 and back
+  // 2. Narrow Place("profiles") (bottom bar) and Setting(Profiles("")) (from settings):
+  //    - 账号 | 概览 has 12px page inset on both sides (not flush to 0..w)
+  //    - Place("profiles") switches to 概览 and back with zero jump on the segmented control and remembers 概览 across shelf switches
+  //    - Setting(Profiles("")) pushed over Place("profiles") keeps compact nav_bar with zero header jump and does not clobber Place("profiles")
   new_run()
-  let src = fixture_app("settings")
+  let src = fixture_app("place-profiles-sum-a")
   let t_phone = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  app.nav.replace(Setting(@settings.Route::Profiles("")))
   t_phone.run_for(@ui.move_most_ms)
   assert_true(t_phone.find("Claude 主账号") is Some(_))
   assert_true(t_phone.find("额度与恢复") is None)
+  let acc_radio_0 = t_phone.all(Radio, label="账号")[0].rect
+  let ov_radio_0 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true(acc_radio_0.0 >= 12.0, msg="place accounts radio inset from left edge: \{acc_radio_0.0}")
+  assert_true(ov_radio_0.0 + ov_radio_0.2 <= 390.0 - 12.0, msg="place overview radio inset from right edge: \{ov_radio_0.0 + ov_radio_0.2}")
   t_phone.tap_text("概览")
   t_phone.run_for(@ui.move_most_ms)
-  assert_true(t_phone.find("额度与恢复") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Place(\"profiles\") switches to 概览")
   assert_true(t_phone.find("消耗速度") is Some(_))
+  let ov_radio_1 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true((ov_radio_1.0 - ov_radio_0.0).abs() <= 0.5 && (ov_radio_1.1 - ov_radio_0.1).abs() <= 0.5, msg="place segmented control stays in place: \{ov_radio_0.0},\{ov_radio_0.1} -> \{ov_radio_1.0},\{ov_radio_1.1}")
   assert_eq(t_phone.corner_faults(), [])
   assert_eq(t_phone.lit_all_faults(), [])
   assert_eq(t_phone.room_faults(), [])
@@ -533,15 +541,50 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
   assert_eq(t_phone.fixed_outgrown(), [])
   assert_eq(t_phone.hand_moves(), [])
   assert_eq(t_phone.squeeze_faults(), [])
+  // Switch bottom bar away to Home and back: Place("profiles") shelved, keeps 概览
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Home) })
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is None)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Place("profiles")) })
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="shelved Place(\"profiles\") remembers 概览")
+  // Open Settings -> Setting(Profiles("")) over Place("profiles"): starts on 账号, switches without header jump, popping preserves Place("profiles") 概览
+  t_phone.click(Button, label="设置")
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { app.nav.push(Setting(@settings.Route::Profiles(""))) })
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+  let set_acc_0 = t_phone.all(Radio, label="账号")[0].rect
+  let set_ov_0 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true(t_phone.query(Link, label="设置") is Some(_), msg="Setting(Profiles(\"\"))'s 账号 has its way back")
+  assert_true(set_acc_0.0 >= 12.0, msg="settings accounts radio inset: \{set_acc_0.0}")
+  assert_true(set_ov_0.0 + set_ov_0.2 <= 390.0 - 12.0, msg="settings overview radio inset: \{set_ov_0.0 + set_ov_0.2}")
+  t_phone.tap_text("概览")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Setting(Profiles(\"\")) switches to 概览")
+  assert_true(t_phone.query(Link, label="设置") is Some(_), msg="Setting(Profiles(\"\"))'s 概览 keeps the same top bar, its way back")
+  let set_ov_1 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true((set_ov_1.0 - set_ov_0.0).abs() <= 0.5 && (set_ov_1.1 - set_ov_0.1).abs() <= 0.5, msg="settings segmented control stays in place (no header jump): \{set_ov_0.0},\{set_ov_0.1} -> \{set_ov_1.0},\{set_ov_1.1}")
+  assert_eq(t_phone.corner_faults(), [])
+  assert_eq(t_phone.room_faults(), [])
+  assert_eq(t_phone.squeeze_faults(), [])
+  t_phone.tap_text("账号")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is None, msg="Setting(Profiles(\"\")) back to 账号")
+  // Back to the bottom bar's Profile: Setting(Profiles(""))'s switch left it as it was (its own, still 概览)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Place("profiles")) })
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Setting(Profiles(\"\")) leaves Place(\"profiles\")'s 概览 as it was")
   t_phone.tap_text("账号")
   t_phone.run_for(@ui.move_most_ms)
   assert_true(t_phone.find("Claude 主账号") is Some(_))
   assert_true(t_phone.find("额度与恢复") is None)
 
-  // 3. Every corner_windows tier (zh & en) + 1.3x font scale on phone for place-profiles and settings-profiles-sum-a
+  // 3. Every corner_windows tier (zh & en) + 1.3x font scale on phone for place-profiles, place-profiles-sum-overview, and settings-profiles-sum-a
   for win in corner_windows {
     for lang in ["zh", "en"] {
-      for mode in ["place-profiles", "place-profiles-sum-a", "settings-profiles", "settings-profiles-sum-a"] {
+      for mode in ["place-profiles", "place-profiles-sum-a", "place-profiles-sum-overview", "settings-profiles", "settings-profiles-sum-a"] {
         let at = "\{win.0}-\{lang} \{mode}"
         let t = screen_in(mode, win, lang)
         let expected_corners = if win.0 == "touch" || win.0 == "desk-win" { 1 } else { 0 }
@@ -571,7 +614,7 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
         assert_eq(g_faults.length(), 0, msg="\{at} gaps: \{g_joined}")
       }
       if win.0 == "phone" {
-        for mode in ["place-profiles", "settings-profiles", "settings-profiles-sum-a"] {
+        for mode in ["place-profiles", "place-profiles-sum-overview", "settings-profiles", "settings-profiles-sum-a"] {
           let at = "phone-\{lang}-1.3 \{mode}"
           let tl = screen_in(mode, win, lang, font_scale=1.3)
           assert_eq(tl.fixed_outgrown(), [], msg="\{at} outgrown")
