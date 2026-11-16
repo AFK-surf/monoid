@@ -58,12 +58,14 @@ test("a_station_offers_its_own_models_says_which_are_borrowed_and_lists_what_oth
   assert.deepEqual(borrowable(ws.map((s) => (s.id === STUDIO ? { ...s, overview: { ...s.overview, sharing: false } } : s)), `ws/${HERE}`, own, null, 0), []);
 });
 
-/// A model control on the first station of `ws`, its core's store and records stood in for.
-function control(ws: J[], role: string) {
-  const values = new Map<string, unknown>([[`overview ws/${HERE}`, ws[0].overview], ["stations", ws], ["stationsWhole", ws]]);
+/// A model control on the first station of `ws`, its core's store and records stood in for (`values`, `records`).
+function control(ws: J[], role: string, values = new Map<string, unknown>(), records = new Map<string, unknown>()) {
+  values.set(`overview ws/${HERE}`, ws[0].overview);
+  values.set("stations", ws);
+  values.set("stationsWhole", ws);
   const keyOf = (t: Topic) => (t.topic === "overview" ? `overview ${t.station}` : String(t.topic));
-  const store: J = { get: (t: Topic) => values.get(keyOf(t)), watch: () => ({ drop() {} }), invalidate() {} };
-  const data: J = { record: () => undefined, put() {}, shared: (t: Topic) => (t.topic === "workspace" ? { role } : undefined), mes: () => [] };
+  const store: J = { get: (t: Topic) => values.get(keyOf(t)), value: (t: Topic) => (values.has(keyOf(t)) ? { ok: values.get(keyOf(t)) } : undefined), watch: () => ({ drop() {} }), invalidate() {} };
+  const data: J = { record: (_: string, k: string) => records.get(k), put: (_: string, k: string, v: unknown) => records.set(k, v), shared: (t: Topic) => (t.topic === "workspace" ? { role } : undefined), mes: () => [] };
   return new Choose({ store, data, now: () => 0, agent: () => null });
 }
 
@@ -81,7 +83,7 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   // Not saved till borrowed.
   assert.throws(() => choose.save(at, of), /请先借用/);
   // Borrowed: Office is asked to share the profile with this station too, as a manager may.
-  const op: J = choose.borrow(at, of);
+  const { op } = choose.borrow(at, of) as J;
   assert.equal(op.target.station, `ws/${STUDIO}`);
   assert.equal(op.path, "/profiles/ds/share");
   assert.deepEqual(op.body, { on: true, allow: [MINI, HERE] });
@@ -94,4 +96,40 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   choose.set(at, of, { model: "claude-opus-5-5" });
   assert.equal((choose.compute({ topic: "pick", station: at, of }) as J).ok.borrow, null);
   assert.throws(() => choose.borrow(at, of), /无需借用/);
+});
+
+test("a_model_borrowed_from_a_controls_panel_is_that_controls_once_borrowed_not_the_one_it_ran_before", () => {
+  // (the user, 2026-11-16: 借用完毕后，应该选中借用的模型，而不是回到老的模型)
+  const at = `ws/${HERE}`;
+  const ws = workspace();
+  const values = new Map<string, unknown>();
+  const records = new Map<string, unknown>();
+  const choose = control(ws, "admin", values, records);
+  const ofPick = (of: string): J => (choose.compute({ topic: "pick", station: at, of }) as J).ok;
+  assert.equal(ofPick("new").value.model, "claude-opus-5-5");
+  choose.set(at, "new", { open: true });
+  choose.set(at, "new", { model: "deepseek-v4-pro" });
+  const { picks } = choose.borrow(at, "new");
+  // Office took the share; the panel shuts, its draft let go of with it.
+  ws[1] = { ...ws[1], overview: { ...ws[1].overview, profiles: ws[1].overview.profiles.map((p: J) => (p.id === "ds" ? { ...p, share: { ...p.share, allow: [MINI, HERE] } } : p)) } };
+  choose.lent(at, "new", picks);
+  choose.stop({ topic: "pick", station: at, of: "new" });
+  // On its way: the control says the model borrowed, its panel opened again picks it, and a chat is not made on another.
+  assert.equal(ofPick("new").option, "deepseek-v4-pro");
+  assert.notEqual(ofPick("new").borrow, null, "its copy not here yet");
+  assert.deepEqual(choose.lentNow(at), [], "not here yet: nothing saved");
+  assert.throws(() => choose.create(at), /还在同步/);
+  // Its copy come: saved as it was picked, and the station's choice is it from now.
+  const copy = { ...ws[1].overview.profiles[2], share: { id: "sh-ds", role: "user", host: STUDIO } };
+  ws[0] = { ...ws[0], overview: { ...ws[0].overview, profiles: [...ws[0].overview.profiles, copy] } };
+  values.set(`overview ${at}`, ws[0].overview);
+  values.set("stationsWhole", ws);
+  assert.deepEqual(choose.lentNow(at), [], "a new chat's pick is the device's own");
+  assert.equal(choose.lentOn(at), false);
+  assert.equal(ofPick("new").value.model, "deepseek-v4-pro");
+  assert.equal(choose.create(at).model, "deepseek-v4-pro");
+  // Another model picked while on its way drops what was borrowed for it.
+  choose.lent(at, "connect-new:f", { model: "gpt-6-astra", runtime: "codex" });
+  choose.set(at, "connect-new:f", { model: "claude-opus-5-5" });
+  assert.equal(choose.lentOn(at), false);
 });

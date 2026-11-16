@@ -595,6 +595,7 @@
   "core-logic.choose.borrow.managers": "Only an owner or admin can borrow",
   "core-logic.choose.borrow.pending": "{station} shares it with every station; it is on its way to this one",
   "core-logic.choose.borrow.first": "Borrow an account for this model first",
+  "core-logic.choose.borrow.coming": "{model}'s account is still on its way to this station: send again in a moment, or pick another model",
   "core-logic.choose.borrow.nothing": "The model picked needs no borrowing",
   "core-logic.transfer.queued": "Queued",
   "core-logic.transfer.walking": "Counting files…",

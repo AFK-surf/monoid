@@ -367,6 +367,10 @@ export class Choose implements Owner {
   /// What its pages read of what is chosen here (drafts, choices, what is being added): made again as it changes.
   readonly #chosen = new Marks();
   readonly #drafts = new Map<string, Record<string, J>>();
+  /// A model borrowed from a control's panel (`pick.borrow`), by its topic's key: how it was picked there, saved as
+  /// it comes to run on the station (`lentNow`), and shown as that control's model meanwhile (the user, 2026-11-16:
+  /// 借用完毕后应该选中借用的模型，而不是回到老的模型). Picking another model in that control drops it.
+  readonly #lent = new Map<string, { station: string; of: string; picks: J }>();
   readonly #adding = new Map<string, J>();
   /// What was set by hand in a control's panel since it opened (a `pick.save` of how it runs with no model: how hard
   /// it thinks, its runtime, how fast, how much context), by its topic's key: what a model never run here would run
@@ -570,6 +574,12 @@ export class Choose implements Owner {
     // workspace joined whose profile's `workspaces` do not name it); then the control's are made apart, as before.
     const servesAll = arr(get(served, "profiles")).length === arr(get(raw, "profiles")).filter((p) => get(p, "enabled") !== false).length;
     view.pick = overview !== null ? this.#face(addr, servesAll ? options : models(raw, this.#env.now())) : null;
+    // A model borrowed from its panel on its way here: its control shows it, not what it ran on before (`#lent`).
+    const lent = this.#lentFor(addr, "new");
+    if (view.pick !== null && lent !== undefined) {
+      const m = String(lent.model);
+      view.pick = { value: { model: m, runtime: text(lent.runtime) ?? view.pick.value.runtime, effort: text(lent.effort), fast: lent.fast, context: lent.context, profile: null }, valueOption: { name: model.name(m), maker: present.maker(m), runtimes: [] }, efforts: [] };
+    }
     // The person's own presets, to pick from where the page's control opens (its menu: each by its name, and the
     // station it was made on): as the device holds them (views/presets.ts), whatever station is up, and those a station
     // from before up now lists that they made; others' only at a press (`otherPresets`). The one picked, theirs or
@@ -834,6 +844,8 @@ export class Choose implements Owner {
   create(station: string): J {
     const scope = ofAddress(station);
     const sid = stationId(station);
+    const lent = this.#lentFor(station, "new");
+    if (lent !== undefined) throw CoreError.invalid(t("core-logic.choose.borrow.coming", { model: model.name(String(lent.model)) }));
     const overview = this.#env.store.get({ topic: "overview", station });
     const [, r] = this.#onStation(station);
     let runtime = r.runtime;
@@ -1059,7 +1071,8 @@ export class Choose implements Owner {
     const [own, value, current, fixed, quiet, runnable] = now;
     const options = this.#withWorkspace(station, own, fixed && typeof value.runtime === "string" ? value.runtime : null);
     const isPreset = o.kind === "connectNew" && o.form === "preset";
-    const draft = this.#drafts.get(topicKey(topic)) ?? {};
+    // (a model borrowed from it on its way here: picked in it still, `#lent`)
+    const draft = { ...this.#lentFor(station, oName), ...this.#drafts.get(topicKey(topic)) };
     const pickedOf = (field: string) => text(field in draft ? draft[field] : get(value, field));
     const rawM = pickedOf("model") ?? (isPreset ? (text(get(this.#onStation(station)[1].entry, "model")) ?? text(get(options[0], "model"))) : null);
     const runtime = pickedOf("runtime");
@@ -1462,6 +1475,7 @@ export class Choose implements Owner {
   set(station: string, oName: string, params: J): void {
     const o = of(oName);
     const key = topicKey({ topic: "pick", station, of: oName });
+    if (get(params, "model") !== undefined || get(params, "clear") === true) this.#lent.delete(key);
     if (get(params, "clear") === true && o.kind === "connectNew") this.#adding.delete(`${station}\u0001${o.form}`);
     if (get(params, "open") === true || get(params, "clear") === true) {
       this.#drafts.delete(key);
@@ -1681,7 +1695,8 @@ export class Choose implements Owner {
 
   /// `pick.borrow`: the station that has the picked model's account shares its profile with this one (its allow list
   /// with this station added), asked of that station; the copy comes here as any share does, and the model with it.
-  borrow(station: string, oName: string): ops.Request {
+  /// What it answers besides: how the model was picked in the panel (`lent` keeps it once the share is taken).
+  borrow(station: string, oName: string): { op: ops.Request; picks: J } {
     const view = this.#pick({ topic: "pick", station, of: oName }, station, oName);
     if (view === undefined) throw CoreError.invalid(t("core-logic.choose.error.no_options_yet"));
     if ("err" in view) throw view.err;
@@ -1693,7 +1708,58 @@ export class Choose implements Owner {
     const allow = [...new Set([...arr(b.allow), stationId(station)])];
     const op = ops.request("profile.share", { station: b.station, id: b.profile, on: true, allow });
     if (op === null) throw CoreError.invalid("profile.share");
-    return op;
+    // (its account not named: the copy that comes here is its own profile, run by what the model runs on here)
+    const d = v.draft;
+    const picks: J = { model: option.model, runtime: get(d, "runtime") ?? null, effort: get(d, "effort") ?? null, fast: get(d, "fast") ?? null, context: get(d, "context") ?? null };
+    return { op, picks };
+  }
+
+  /// A borrowing asked from control `oName`'s panel taken by the station that lends it: the model picked there is that
+  /// control's from now (`#lent`), saved as it comes to run here.
+  lent(station: string, oName: string, picks: J): void {
+    this.#lent.set(topicKey({ topic: "pick", station, of: oName }), { station, of: oName, picks });
+    this.#changed();
+  }
+
+  /// Whether a model borrowed for a control of `station` waits to be saved (`#lent`).
+  lentOn(station: string): boolean {
+    for (const l of this.#lent.values()) if (l.station === station) return true;
+    return false;
+  }
+
+  /// The model borrowed for a control of `station` (`#lent`) where it runs there now (its copy come): each saved as
+  /// it was picked (`save`), what a save asks of the station given back to be run. One that cannot be saved any more
+  /// (its control gone) is let go of.
+  lentNow(station: string): { of: string; op: ops.Request }[] {
+    const out: { of: string; op: ops.Request }[] = [];
+    for (const [key, l] of [...this.#lent]) {
+      if (l.station !== station || this.#lentWaits(station, l.of, l.picks.model)) continue;
+      this.#lent.delete(key);
+      try {
+        const saved = this.save(station, l.of, l.picks);
+        if ("op" in saved) out.push({ of: l.of, op: saved.op });
+      } catch {
+        // (its control gone, or the model no longer offered: what it runs on stays as it was)
+      }
+      this.#changed();
+    }
+    return out;
+  }
+
+  /// Whether model `m` borrowed for control `oName` of `station` is still on its way there: offered, only by another
+  /// station. One the control no longer offers at all waits no more.
+  #lentWaits(station: string, oName: string, m: J): boolean {
+    const now = this.#now(station, of(oName));
+    if (now === undefined) return true;
+    const [own, value, , fixed] = now;
+    const option = optionOf(this.#withWorkspace(station, own, fixed && typeof value.runtime === "string" ? value.runtime : null), text(m));
+    return option !== undefined && option.availability === "borrowable";
+  }
+
+  /// The model borrowed for control `oName` of `station` while it is on its way there (`#lent`); none otherwise.
+  #lentFor(station: string, oName: string): J {
+    const l = this.#lent.get(topicKey({ topic: "pick", station, of: oName }));
+    return l !== undefined && this.#lentWaits(station, oName, l.picks.model) ? l.picks : undefined;
   }
 
   /// What a connect being added will run on.
