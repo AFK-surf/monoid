@@ -435,7 +435,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
   /// How its process is started for a session (`probe`: one opened only to learn what it offers, with no tools of the
   /// station's, nothing of it kept). What must be there first is made here; a session it would not find to load fails
   /// here, before anything starts, so that the caller starts afresh.
-  protected abstract starting(options: OpenOptions, probe: boolean): AcpStart;
+  protected abstract starting(options: OpenOptions, probe: boolean): AcpStart | Promise<AcpStart>;
   /// Once initialize is answered (`answer`): signing in, its version.
   protected async initialized(_session: S, _answer: Json, _options: OpenOptions): Promise<void> {}
   /// Once the session is open: what it runs with (no approvals, its model).
@@ -446,7 +446,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
   }
 
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<S> {
-    const start = this.starting(options, probe);
+    const start = await this.starting(options, probe);
     const session = this.session(options, events);
     session.toolsUrl = options.mcpUrl;
     await this.start(session, options, start.command, start.args, start.env);

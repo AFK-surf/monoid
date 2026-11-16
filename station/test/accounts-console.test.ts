@@ -2,7 +2,7 @@
 // makes, its token renewed and refused, against a stand-in Console and Go gateway at a local address.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Accounts } from "../src/accounts/index.ts";
 import { checkConfig } from "../src/accounts/check.ts";
@@ -59,8 +59,8 @@ test("a sign-in to the OpenCode Console relays its code and leaves the tokens in
     assert.deepEqual([asking.url, asking.userCode, asking.provider], [`${oc.base}/console/device?user_code=WXYZ-1234`, "WXYZ-1234", "opencode"]);
     oc.s.approved = true;
     await wait("done");
-    assert.deepEqual({ ...readConsole(home)!, expiresAt: 0 }, { access: "st_1", refresh: "rt_1", expiresAt: 0, org: "wrk_1", email: "go@example.com", workspace: "Personal" });
-    assert.ok(readConsole(home)!.expiresAt > Date.now() + 29 * 86_400_000);
+    assert.deepEqual({ ...(await readConsole(home))!, expiresAt: 0 }, { access: "st_1", refresh: "rt_1", expiresAt: 0, org: "wrk_1", email: "go@example.com", workspace: "Personal" });
+    assert.ok((await readConsole(home))!.expiresAt > Date.now() + 29 * 86_400_000);
     // The Console asked as the OAuth device grant has it.
     const polled = oc.asked.find((a) => a.url === "/console/auth/device/token")!;
     assert.deepEqual([polled.form.grant_type, polled.form.client_id], ["urn:ietf:params:oauth:grant-type:device_code", "still.fail"]);
@@ -118,7 +118,7 @@ test("a profile signed in to OpenCode runs on its token, renewed, kept through e
     // Renewed: the new token is its key, the refresh token spent replaced in its home.
     await accounts.renewConsole(made);
     assert.equal(raw(made).access.key, "st_2");
-    assert.equal(readConsole(join(data, "homes", made))!.refresh, "rt_2");
+    assert.equal((await readConsole(join(data, "homes", made)))!.refresh, "rt_2");
     assert.equal((await accounts.check(made, "zh")).state, "ok");
     // An edit keeps the sign-in; a key given in its place ends it.
     accounts.putProfile(made, { name: "Go" }, owner, "zh");
@@ -144,5 +144,41 @@ test("a profile signed in to OpenCode runs on its token, renewed, kept through e
   } finally {
     await accounts.close();
     await oc.close();
+  }
+});
+
+test("a key given while its OpenCode token is renewed stays: the renewed token does not take its place", async () => {
+  const data = temp("console-renew-edit");
+  mkdirSync(join(data, "homes", "go"), { recursive: true });
+  writeFileSync(join(data, "homes", "go", CONSOLE_FILE), JSON.stringify({ access: "st_1", refresh: "rt_1", expiresAt: Date.now() + 60_000, org: "wrk_1", email: "go@example.com", workspace: null }));
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "go", name: "Go", home: "homes/go", access: { kind: "opencode-go", key: "st_1", login: true }, env: {} }] }));
+  const config = new ConfigFile(data);
+  config.check = checkConfig;
+  let accounts: Accounts | null = null;
+  // The key is given while the Console's answer to the renewal is on its way.
+  const p = await provider((a) => {
+    if (a.url !== "/console/auth/device/token" || a.form.refresh_token !== "rt_1") return { status: 400, body: { error: "invalid_grant" } };
+    accounts!.putProfile("go", { access: { kind: "opencode-go", key: "sk-instead" } }, owner, "zh");
+    return { status: 200, body: { access_token: "st_2", refresh_token: "rt_2", expires_in: 2_592_000, org_id: "wrk_1" } };
+  });
+  accounts = new Accounts({
+    data,
+    store: Store.open(":memory:", null),
+    config,
+    urls: { ...URLS, console: `${p.base}/console` },
+    machine: null,
+    checkOnStart: false,
+    quota: null,
+    resetQuota: null,
+    discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+  });
+  try {
+    await accounts.renewConsole("go");
+    assert.equal(p.asked.length, 1, "renewed once");
+    const raw = JSON.parse(readFileSync(join(data, "config.json"), "utf8")).profiles.find((x: any) => x.id === "go");
+    assert.deepEqual(raw.access, { kind: "opencode-go", key: "sk-instead" });
+  } finally {
+    await accounts.close();
+    await p.close();
   }
 });

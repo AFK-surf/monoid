@@ -74,9 +74,9 @@ test('handover preserves partial transcript and completes the running turn once'
 });
 test('configuration stays within its profile and rejects unsafe session IDs', async () => {
   const { options, driver } = setup();
-  assert.equal(hermesEnv(options).HERMES_HOME, join(options.profile.home, 'hermes'));
-  assert.equal(hermesEnv(options).CLAUDE_CONFIG_DIR, join(options.profile.home, 'hermes', 'claude'));
-  assert.equal(hermesEnv(options).CODEX_HOME, join(options.profile.home, 'hermes', 'codex'));
+  assert.equal((await hermesEnv(options)).HERMES_HOME, join(options.profile.home, 'hermes'));
+  assert.equal((await hermesEnv(options)).CLAUDE_CONFIG_DIR, join(options.profile.home, 'hermes', 'claude'));
+  assert.equal((await hermesEnv(options)).CODEX_HOME, join(options.profile.home, 'hermes', 'codex'));
   assert.deepEqual(accessKinds('hermes'), ['env']);
   assert.ok(CHAT_CREATE.inputSchema.properties.runtime.enum.includes('hermes'));
   await assert.rejects(driver.open({ ...options, resume: '../escape' }, () => {}), /invalid Hermes session id/);
@@ -85,7 +85,7 @@ test('configuration stays within its profile and rejects unsafe session IDs', as
   assert.equal(outcomeOf({ error: { message: '429 rate limit' } }).kind, 'failed');
 });
 
-test('provider discovery inherits transport settings but only explicit profile credentials', (t) => {
+test('provider discovery inherits transport settings but only explicit profile credentials', async (t) => {
   const { options } = setup();
   // A new provider or a custom key_env must not silently become a configured account in every profile.
   const machine = { XAI_API_KEY: 'machine-only', CUSTOM_PROVIDER_CREDENTIAL: 'custom-machine-only', HERMES_CONFIG_FILE: '/machine/config.yaml' };
@@ -96,12 +96,12 @@ test('provider discovery inherits transport settings but only explicit profile c
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     readAgentEnvFrom(() => null);
   });
-  const isolated = hermesEnv(options);
+  const isolated = await hermesEnv(options);
   for (const key of [...Object.keys(machine), 'MINIMAX_API_KEY']) assert.equal(isolated[key], undefined, `${key} belongs to another account`);
   assert.equal(isolated.HTTPS_PROXY, 'http://proxy.test:8080');
   assert.match(isolated.NO_PROXY, /127\.0\.0\.1/);
   assert.ok(isolated.PATH);
-  const explicit = hermesEnv({ ...options, profile: { ...options.profile, env: { XAI_API_KEY: 'profile-only', CUSTOM_PROVIDER_CREDENTIAL: 'custom-profile-only' } } });
+  const explicit = await hermesEnv({ ...options, profile: { ...options.profile, env: { XAI_API_KEY: 'profile-only', CUSTOM_PROVIDER_CREDENTIAL: 'custom-profile-only' } } });
   assert.equal(explicit.XAI_API_KEY, 'profile-only');
   assert.equal(explicit.CUSTOM_PROVIDER_CREDENTIAL, 'custom-profile-only');
 });
@@ -189,11 +189,11 @@ test('a profile may explicitly select an existing Hermes home', async () => {
   const native = join(data, 'existing-home'); mkdirSync(native, { recursive: true });
   writeFileSync(join(native, 'SOUL.md'), 'Existing personal soul');
   options.profile.env = { ...options.profile.env as Record<string, string>, HERMES_HOME: native };
-  const env = hermesEnv(options);
+  const env = await hermesEnv(options);
   assert.equal(env.HERMES_HOME, native);
   assert.equal(env.CLAUDE_CONFIG_DIR, join(native, 'claude'));
-  assert.equal(hermesEnv({ ...options, profile: { ...options.profile, env: { HERMES_HOME: '~/.hermes' } } }).HERMES_HOME, join(homedir(), '.hermes'));
-  assert.throws(() => hermesEnv({ ...options, profile: { ...options.profile, env: { HERMES_HOME: 'relative' } } }), /absolute path/);
+  assert.equal((await hermesEnv({ ...options, profile: { ...options.profile, env: { HERMES_HOME: '~/.hermes' } } })).HERMES_HOME, join(homedir(), '.hermes'));
+  await assert.rejects(hermesEnv({ ...options, profile: { ...options.profile, env: { HERMES_HOME: 'relative' } } }), /absolute path/);
   assert.deepEqual(await driver.models(options.profile), ['openrouter:default', 'openrouter:test']);
   assert.equal(JSON.parse(readFileSync(dump, 'utf8').trim().split('\n')[0]!).home, native);
   assert.equal(readFileSync(join(native, 'SOUL.md'), 'utf8'), 'Existing personal soul');
@@ -221,6 +221,6 @@ test('a pre-home-selection transcript still resumes in the original private Herm
   delete header.hermesHome; lines[0] = JSON.stringify(header); writeFileSync(transcript, lines.join('\n') + '\n');
   const selected = join(data, 'another-home'); mkdirSync(selected, { recursive: true });
   options.profile.env = { ...options.profile.env as Record<string, string>, HERMES_HOME: selected };
-  assert.equal(hermesEnv({ ...options, resume: id }).HERMES_HOME, join(options.profile.home, 'hermes'));
+  assert.equal((await hermesEnv({ ...options, resume: id })).HERMES_HOME, join(options.profile.home, 'hermes'));
   const resumed = await driver.open({ ...options, resume: id }, () => {}); await resumed.dispose();
 });

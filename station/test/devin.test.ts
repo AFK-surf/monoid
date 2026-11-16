@@ -600,7 +600,7 @@ describe("what a profile runs Devin on", () => {
     try {
       const signedOut = await check();
       assert.equal(signedOut.state, "login");
-      assert.equal(devinEmail(home), null);
+      assert.equal((await devinEmail(home)), null);
       // A code refused: the sign-in fails with what Devin said.
       await logins.start({ id: "d", runtime: "devin", home }, "en");
       await wait("needs_code");
@@ -626,7 +626,7 @@ describe("what a profile runs Devin on", () => {
         devin: { "swe-2": ["medium", "high", "max"], "claude-opus-5-5": ["low", "medium"], "glm-5-2": ["max"] },
       });
       assert.match(signedIn.detail ?? "", /someone@example\.com/);
-      assert.equal(devinEmail(home), "someone@example.com", "noted for naming the account");
+      assert.equal((await devinEmail(home)), "someone@example.com", "noted for naming the account");
       assert.equal(lines(dump).filter((l) => l.argv[0] === "auth" && l.argv[1] === "status").every((l) => l.env.XDG_DATA_HOME === devinData(home)), true);
     } finally {
       await logins.close();

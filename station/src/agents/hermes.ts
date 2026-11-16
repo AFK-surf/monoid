@@ -2,13 +2,13 @@
 // for the protocol contract and supported profile setup. Beside what ACP says: the station's instructions
 // go with each prompt; a message for the running turn waits for the next (Hermes would make it a turn of its own); a
 // call's title is `<tool>: <its input>`; the station keeps the transcript (acp.ts KeptTranscript).
-import { closeSync, existsSync, mkdirSync, openSync, readSync } from "node:fs";
+import { access, mkdir, open } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
 import { homedir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from "./acp.ts";
-import { fileCredentials } from "./no-keychain.ts";
+import { fileCredentialsSoon } from "./no-keychain.ts";
 import type { Events } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
@@ -41,19 +41,26 @@ function configuredHome(value: string | undefined, fallback: string): string {
 
 /// Native state stays where a conversation began, even when its Profile now selects another home.
 /// Before this header existed all Hermes sessions used the profile's private home.
-function sessionHome(options: OpenOptions, configured: string): string {
+async function sessionHome(options: OpenOptions, configured: string): Promise<string> {
   if (options.resume === undefined) return configured;
   if (!SESSION_ID.test(options.resume)) throw new Error("invalid Hermes session id");
   const privateHome = hermesHome(options.profile.home);
-  const fd = openSync(join(privateHome, SESSIONS, `${options.resume}.jsonl`), "r");
+  const file = await open(join(privateHome, SESSIONS, `${options.resume}.jsonl`), "r");
   try {
     const head = Buffer.alloc(16_384);
-    const line = head.subarray(0, readSync(fd, head, 0, head.length, 0)).toString("utf8").split("\n", 1)[0]!;
+    const { bytesRead } = await file.read(head, 0, head.length, 0);
+    const line = head.subarray(0, bytesRead).toString("utf8").split("\n", 1)[0]!;
     const header = JSON.parse(line);
     if (header.type !== "session") throw new Error("Hermes transcript has no session header");
     return configuredHome(header.hermesHome, privateHome);
-  } finally { closeSync(fd); }
+  } finally {
+    await file.close();
+  }
 }
+
+/// The Hermes home a profile names for a new session (what `sessionHome` gives one not resumed).
+const newSessionHome = (options: OpenOptions) =>
+  configuredHome(expandRoute(profileEnv(options.profile, "hermes"), options.route).HERMES_HOME, hermesHome(options.profile.home));
 
 /// What failed a turn, from what Hermes said of it.
 export const classifyFailure = (text: string): FailureReason => failureOf(text);
@@ -68,15 +75,15 @@ export type HermesDriverOptions = {
   command?: string;
 };
 
-export function hermesEnv(options: OpenOptions): Record<string, string> {
+export async function hermesEnv(options: OpenOptions): Promise<Record<string, string>> {
   const inherited = Object.fromEntries(Object.entries(cleanEnv([])).filter(([key]) => INHERITED.has(key.toUpperCase()) || /^LC_[A-Z_]+$/i.test(key)));
   const env = { ...inherited, ...expandRoute(profileEnv(options.profile, "hermes"), options.route) };
-  env.HERMES_HOME = sessionHome(options, configuredHome(env.HERMES_HOME, hermesHome(options.profile.home)));
+  env.HERMES_HOME = await sessionHome(options, configuredHome(env.HERMES_HOME, hermesHome(options.profile.home)));
   // Hermes treats a borrowed Claude/Codex login as a configured provider. Keep those readers inside this profile,
   // unless the profile explicitly names a credential directory, and never borrow macOS's shared Claude login.
   env.CLAUDE_CONFIG_DIR ??= join(env.HERMES_HOME, "claude");
   env.CODEX_HOME ??= join(env.HERMES_HOME, "codex");
-  fileCredentials(env);
+  await fileCredentialsSoon(env);
   env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
   return env;
 }
@@ -116,7 +123,7 @@ export class HermesDriver extends AcpDriver<HermesSession> {
 
   /// The models a profile's Hermes offers: a session opened only to ask.
   async models(profile: Profile): Promise<string[]> {
-    mkdirSync(profile.home, { recursive: true });
+    await mkdir(profile.home, { recursive: true });
     // A fresh HERMES_HOME has no dependency generation to fall back to while another launch owns the
     // shared checkout's update lock. Retry only that pre-ACP refusal; never retry an authentication or turn error.
     const deadline = wall.now() + 120_000;
@@ -144,14 +151,20 @@ export class HermesDriver extends AcpDriver<HermesSession> {
     return new HermesSession(this, events, options);
   }
 
-  protected starting(options: OpenOptions): AcpStart {
+  protected async starting(options: OpenOptions): Promise<AcpStart> {
     if (options.resume !== undefined && !SESSION_ID.test(options.resume)) throw new Error("invalid Hermes session id");
     const sessions = join(hermesHome(options.profile.home), SESSIONS);
-    mkdirSync(sessions, { recursive: true });
+    await mkdir(sessions, { recursive: true });
     // Not one the station kept.
-    if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) throw new Error(`no Hermes session ${options.resume}`);
+    if (options.resume !== undefined) {
+      const kept = await access(join(sessions, `${options.resume}.jsonl`)).then(
+        () => true,
+        () => false,
+      );
+      if (!kept) throw new Error(`no Hermes session ${options.resume}`);
+    }
     // Hermes 0.22 prepares a PM environment for each fresh HERMES_HOME before answering initialize.
-    return { command: this.command, args: ["acp"], env: hermesEnv(options), initializeTimeoutMs: 600_000 };
+    return { command: this.command, args: ["acp"], env: await hermesEnv(options), initializeTimeoutMs: 600_000 };
   }
 
   /// Older ACP adapters omit completion updates for tools invoked through Hermes' discovery bridge. That loses their
@@ -172,7 +185,7 @@ export class HermesDriver extends AcpDriver<HermesSession> {
 export class HermesSession extends AcpSession {
   private readonly instructions: string;
   private readonly profile: Profile;
-  private readonly nativeHome: string;
+  private readonly options: OpenOptions;
   /// What session/new said it offers (hermesCatalog).
   availableModels: string[] = [];
 
@@ -180,12 +193,13 @@ export class HermesSession extends AcpSession {
     super(driver, events, new KeptTranscript("hermes", join(hermesHome(options.profile.home), SESSIONS)));
     this.instructions = options.instructions;
     this.profile = options.profile;
-    this.nativeHome = hermesEnv(options).HERMES_HOME!;
+    this.options = options;
     this.model = options.model ?? profileModel(options.profile) ?? null;
   }
 
+  /// Only a new session begins (never a resumed one), so its Hermes home is the one its profile names.
   override began(cwd: string) {
-    this.transcript?.keep(this.id(), { type: "session", id: this.id(), cwd, hermesHome: this.nativeHome });
+    this.transcript?.keep(this.id(), { type: "session", id: this.id(), cwd, hermesHome: newSessionHome(this.options) });
   }
 
   named(id: string) {

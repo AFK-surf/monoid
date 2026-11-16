@@ -14,7 +14,6 @@
 // - each background command and subagent is told as it starts (system/task_started, is_backgrounded; or task_updated
 //   with it later) and as it ends (task_notification, or task_updated with a final status); a subagent's own commands
 //   say owned_by_subagent. They all end with the process.
-import { mkdirSync } from "node:fs";
 import { link, mkdir, readdir, realpath, stat, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +25,7 @@ import { log } from "../ops/log.ts";
 import { claudeProject } from "../read/transcript.ts";
 import { chars } from "./live.ts";
 import { CLAUDE_TOKEN_MARGIN_MS, machineClaudeToken, type Env, type MachineToken } from "./machine-logins.ts";
-import { fileCredentials, takeBack, takeBackMissing } from "./no-keychain.ts";
+import { fileCredentialsSoon, takeBack, takeBackMissing } from "./no-keychain.ts";
 import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
@@ -306,7 +305,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
   async open(options: OpenOptions, events: Events): Promise<ClaudeSession> {
     const home = options.profile.home;
-    mkdirSync(home, { recursive: true });
+    await mkdir(home, { recursive: true });
     if (options.resume !== undefined) {
       const found = await transcriptAt(home, options.resume, options.cwd);
       // claude would start and exit at once; failing here lets the caller start fresh.
@@ -353,7 +352,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     // Lets the agent name its own transcript, e.g. for an independent reviewer (codex has CODEX_THREAD_ID).
     env.STILLFAIL_RUNTIME_SESSION_ID = sessionId;
     const localSub = !isMachine(options.profile) && !this.lent?.borrowed(options.profile) && accessKind(options.profile) === "subscription";
-    if (!isMachine(options.profile)) fileCredentials(env);
+    if (!isMachine(options.profile)) await fileCredentialsSoon(env);
     // A machine profile runs on the machine's own login, handed over as its current token; a local subscription on its
     // own login renewed here under one lock; another station's subscription on the token that station lends.
     const renew = this.renewer(options.profile);

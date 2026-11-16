@@ -62,7 +62,7 @@ test("a Cursor sign-in has a page to confirm and no code, then the key minted fo
     // The key minted for the station by its name, with no end; the session token dropped.
     const mint = c.asked.find((a) => a.url.endsWith("/CreateUserApiKey"))!;
     assert.deepEqual(mint.body, { name: "still.fail · m1" });
-    const kept = readCursor(home)!;
+    const kept = (await readCursor(home))!;
     assert.deepEqual({ ...kept, createdAt: 0 }, { apiKey: "crsr_1", email: "cu@example.com", keyName: "still.fail · m1", createdAt: 0 });
     assert.equal(cursorKey(home), "crsr_1");
 

@@ -13,13 +13,25 @@ import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:
 import { readFile, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { Events } from "../src/api/events.ts";
 import { overview } from "../src/api/overview.ts";
 import { BrowserState, type Running, chromeHost, readState } from "../src/browser/chrome.ts";
 import { Owners } from "../src/browser/owners.ts";
+import { checkConfig } from "../src/accounts/check.ts";
+import { CONSOLE_FILE, readConsole } from "../src/accounts/console.ts";
+import { Accounts } from "../src/accounts/index.ts";
+import { KIMI_FILE, KIMI_TOKEN_FILE, readKimi } from "../src/accounts/kimi.ts";
 import { type LoginJob, LoginManager } from "../src/accounts/login.ts";
+import { checkProfile, devinEmail, URLS } from "../src/accounts/profiles.ts";
+import { codexUsage, lentCodexUsage } from "../src/accounts/quota.ts";
+import { ClaudeDriver } from "../src/agents/claude.ts";
+import { HermesDriver } from "../src/agents/hermes.ts";
+import type { OpenOptions } from "../src/agents/runtime.ts";
+import { ConfigFile } from "../src/ops/config.ts";
+import { fingerprint } from "../src/sessions/decision.ts";
 import { type Described, RemoteConnects, answerCall } from "../src/connects/remote.ts";
 import { Registrations } from "../src/feishu/register.ts";
 import { type Login, Logins } from "../src/logins/index.ts";
@@ -31,7 +43,7 @@ import { Store } from "../src/store/store.ts";
 import type { Held } from "../src/vault/keeper.ts";
 import { Proxy } from "../src/vault/proxy.ts";
 import { runWith } from "../src/vault/run.ts";
-import { exe, fakeBrowser, fakeLogin, script, upon } from "./accounts-fakes.ts";
+import { exe, fakeBrowser, fakeLogin, idToken, machine, provider, script, upon } from "./accounts-fakes.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 import { syncCalls } from "./main-thread-sync.ts";
 
@@ -323,4 +335,216 @@ test("a Feishu app made by a scan, followed and kept until it is saved, waits on
   assert.equal(saved, "connect-1");
   const kept = JSON.parse(await readFile(join(dir, "feishu-registrations.json"), "utf8"));
   assert.deepEqual(kept.map((r: Json) => [r.state, r.connectId, r.app]), [["done", "connect-1", null]], "its secret not kept once saved");
+});
+
+/// A fake runtime's directory first on a profile's PATH (test/fake).
+const fakes = join(dirname(fileURLToPath(import.meta.url)), "fake");
+
+test("a Claude Code session opened, and a Hermes Agent session started and resumed, wait on no file", async () => {
+  const data = mkdtempSync(WINDOWS ? join(tmpdir(), "io-") : "/tmp/io-");
+  dirs.push(data);
+  const PATH = `${fakes}${delimiter}${process.env.PATH}`;
+  const claude = new ClaudeDriver({ data });
+  const hermes = new HermesDriver({ data });
+  try {
+    const home = join(data, "cc");
+    const claudeOptions: OpenOptions = {
+      key: "slack:T1:C1:1700000000.0001",
+      profile: { id: "cc", runtime: "claude", home, access: { kind: "opencode-go", key: "k1" }, env: { PATH, FAKE_DUMP: join(data, "cc-dump") } },
+      cwd: data,
+      instructions: "be brief",
+      mcpToken: "tok",
+      mcpUrl: "http://127.0.0.1:4750/mcp",
+      route: "r1",
+    };
+    const hermesOptions: OpenOptions = {
+      key: "hermes-io",
+      profile: { id: "hm", runtime: "hermes", home: join(data, "hm"), access: { kind: "env" }, env: { PATH, FAKE_DUMP: join(data, "hm-dump") } },
+      cwd: data,
+      instructions: "be brief",
+      mcpToken: "tok",
+      mcpUrl: "http://127.0.0.1:4750/mcp",
+      route: "r2",
+      model: "openrouter:test",
+    };
+    // (the keychain's stand-in made once before, as a running station has it)
+    await claude.open(claudeOptions, () => {}).then((s) => s.dispose());
+    let id = "";
+    const calls = await syncCalls(async () => {
+      const opened = await claude.open({ ...claudeOptions, profile: { ...claudeOptions.profile, home: join(data, "cc2") } }, () => {});
+      await opened.dispose();
+      const started = await hermes.open(hermesOptions, () => {});
+      id = started.id();
+      await started.dispose();
+      const resumed = await hermes.open({ ...hermesOptions, resume: id }, () => {});
+      assert.equal(resumed.id(), id);
+      await resumed.dispose();
+      await assert.rejects(hermes.open({ ...hermesOptions, resume: "never-kept" }, () => {}), /no Hermes session never-kept/);
+    });
+    // What is left is the runner's start (agents/runner.ts: finding its binary and the command) and the agents' program
+    // (agents/mb-program.ts), not the drivers' own.
+    assert.deepEqual(
+      calls.filter((c) => !/< (startRunner|SessionsProgram\.of)\b/.test(c)),
+      [],
+    );
+  } finally {
+    await Promise.all([claude.shutdown(), hermes.shutdown()]);
+  }
+});
+
+test("a profile checked (Claude Code, Cursor, Devin, Grok Build) and a Codex login's allowance read wait on no file", { skip: WINDOWS && "the stand-in commands are shell scripts" }, async () => {
+  const m = machine({
+    claude: `echo '{"loggedIn":true,"email":"a@x.com","subscriptionType":"max"}'`,
+    devin: `case "$1" in auth) printf 'User:\\n  Email:             d@example.com\\n' ;; *) echo '[]' ;; esac`,
+    grok: `echo 'Available models:'; echo '  * grok-4.7 (default)'`,
+  });
+  const homes = (name: string) => {
+    const home = join(m.home, name);
+    mkdirSync(home, { recursive: true });
+    return home;
+  };
+  const claudeHome = homes("claude");
+  writeFileSync(join(claudeHome, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() + 3_600_000, subscriptionType: "max" } }));
+  const cursorHome = homes("cursor");
+  mkdirSync(join(cursorHome, "cursor"), { recursive: true });
+  writeFileSync(join(cursorHome, "cursor", "auth.json"), JSON.stringify({ apiKey: "crsr_1", email: "cu@example.com", keyName: "k", createdAt: 0 }));
+  const devinHome = homes("devin");
+  const grokHome = homes("grok");
+  mkdirSync(join(grokHome, "grok"), { recursive: true });
+  writeFileSync(join(grokHome, "grok", "auth.json"), JSON.stringify({ x: { email: "g@example.com" } }));
+  const codexHome = homes("codex");
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ tokens: { access_token: idToken({ exp }), account_id: "acc" } }));
+  const p = await provider((a) => {
+    if (a.url === "/v1/models") return { status: 200, body: { data: [{ id: "claude-opus-5-5" }] } };
+    if (a.url === "/cursor/v1/me") return { status: 200, body: { apiKeyName: "k", userEmail: "cu@example.com" } };
+    if (a.url === "/cursor/v1/models") return { status: 200, body: { items: [{ id: "default" }] } };
+    if (a.url === "/backend-api/wham/usage") return { status: 200, body: { rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 18_000, reset_at: 1_900_000_000 } } } };
+    return { status: 404, body: {} };
+  });
+  const urls = { ...URLS, anthropic: p.base, chatgpt: p.base, cursor: { website: p.base, backend: p.base, api: `${p.base}/cursor` } };
+  const base = { kind: "subscription" as const, key: "", via: {}, env: m.env, machine: false, urls, lang: "en" as const };
+  try {
+    const checked: string[] = [];
+    const calls = await syncCalls(async () => {
+      for (const [runtime, home] of [["claude", claudeHome], ["cursor", cursorHome], ["devin", devinHome], ["grok", grokHome]] as const) {
+        const check = await checkProfile({ ...base, runtime, home });
+        checked.push(`${runtime} ${check.state} ${check.detail}`);
+      }
+      assert.ok((await codexUsage(join(codexHome, "auth.json"), urls)) !== null);
+      assert.ok((await lentCodexUsage(codexHome, Date.now(), urls)) !== null);
+    });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(checked, ["claude ok Signed in, a@x.com, max", "cursor ok Signed in, cu@example.com", "devin ok Signed in, d@example.com", "grok ok Signed in, g@example.com"]);
+    assert.equal(await devinEmail(devinHome), "d@example.com", "noted for naming the account");
+  } finally {
+    await p.close();
+  }
+});
+
+test("an OpenCode Console and a Kimi sign-in renewed wait on no file of their own", async () => {
+  const data = scratch("renew-main-thread");
+  const s = { console: "rt_1", kimi: "kr_1" };
+  const p = await provider((a) => {
+    if (a.url === "/console/auth/device/token" && a.form.refresh_token === s.console) {
+      s.console = "rt_2";
+      return { status: 200, body: { access_token: "st_2", refresh_token: s.console, expires_in: 2_592_000, org_id: "wrk_1" } };
+    }
+    if (a.url === "/api/oauth/token" && a.form.refresh_token === s.kimi) {
+      s.kimi = "kr_2";
+      return { status: 200, body: { access_token: "kt_2", refresh_token: s.kimi, expires_in: 900 } };
+    }
+    return { status: 400, body: { error: "invalid_grant" } };
+  });
+  const due = Date.now() + 60_000;
+  for (const [id, file, login] of [
+    ["go", CONSOLE_FILE, { access: "st_1", refresh: "rt_1", expiresAt: due, org: "wrk_1", email: "go@example.com", workspace: null }],
+    ["kimi-code", KIMI_FILE, { access: "kt_1", refresh: "kr_1", expiresAt: due, lifeMs: 900_000, deviceId: "dev" }],
+  ] as const) {
+    mkdirSync(join(data, "homes", id), { recursive: true });
+    writeFileSync(join(data, "homes", id, file), JSON.stringify(login));
+  }
+  writeFileSync(
+    join(data, "config.json"),
+    JSON.stringify({
+      profiles: [
+        { id: "go", name: "Go", access: { kind: "opencode-go", key: "st_1", login: true }, home: "homes/go", env: {} },
+        { id: "kimi-code", name: "Kimi Code", access: { kind: "api-provider", provider: "kimi-code", login: true }, home: "homes/kimi-code", env: {} },
+      ],
+    }),
+  );
+  const config = new ConfigFile(data);
+  config.check = checkConfig;
+  const accounts = new Accounts({
+    data,
+    store: Store.open(":memory:", null),
+    config,
+    urls: { ...URLS, console: `${p.base}/console`, kimi: p.base },
+    machine: null,
+    checkOnStart: false,
+    quota: null,
+    resetQuota: null,
+    check: async () => ({ state: "ok", detail: "", models: null, checkedAt: 0 }),
+    discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+  });
+  try {
+    const calls = await syncCalls(async () => {
+      await accounts.renewKimi("kimi-code");
+      await accounts.renewConsole("go");
+    });
+    // What is left is config.json read and the profile's key written to it (ops/config.ts), not the sign-in's files.
+    assert.deepEqual(
+      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
+      [],
+    );
+    assert.deepEqual([(await readKimi(join(data, "homes", "kimi-code")))?.access, (await readConsole(join(data, "homes", "go")))?.refresh], ["kt_2", "rt_2"]);
+    assert.equal(await readFile(join(data, "homes", "kimi-code", KIMI_TOKEN_FILE), "utf8"), "kt_2");
+  } finally {
+    await accounts.close();
+    await p.close();
+  }
+});
+
+test("a new profile made from a Cursor sign-in reads its home with no synchronous call", async () => {
+  const data = scratch("new-login-main-thread");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [] }));
+  const p = await provider((a) => {
+    if (a.url === "/backend/auth/poll") return { status: 200, body: { accessToken: "session-token", refreshToken: "refresh" } };
+    if (a.url === "/backend/aiserver.v1.DashboardService/CreateUserApiKey") return { status: 200, body: { apiKey: "crsr_1" } };
+    if (a.url === "/backend/aiserver.v1.DashboardService/GetMe") return { status: 200, body: { email: "cu@example.com" } };
+    return { status: 404, body: {} };
+  });
+  const config = new ConfigFile(data);
+  config.check = checkConfig;
+  const accounts = new Accounts({
+    data,
+    store: Store.open(":memory:", null),
+    config,
+    urls: { ...URLS, cursor: { website: `${p.base}/site`, backend: `${p.base}/backend`, api: `${p.base}/api` } },
+    machine: null,
+    checkOnStart: false,
+    quota: null,
+    resetQuota: null,
+    check: async () => ({ state: "ok", detail: "", models: null, checkedAt: 0 }),
+    discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+  });
+  accounts.start();
+  const owner = { sub: "s", email: "o@example.com", name: "", role: "owner", workspace: "ws", device: "d" };
+  try {
+    let made = "";
+    const calls = await syncCalls(async () => {
+      const { id } = await accounts.newLogin({ runtime: "cursor" }, owner, "en");
+      made = await upon((wake) => accounts.onChange(wake), () => accounts.loginsView().find((l) => l.id === id)?.created, "profile");
+    });
+    assert.equal(made, "cu-example-com");
+    // What is left is config.json read and written (ops/config.ts) and the profiles' directory (homes/ listed for the
+    // ids taken, the new home moved to its name: a later wave's): nothing read of the home itself on the thread.
+    assert.deepEqual(
+      calls.filter((c) => !/ ConfigFile\.(stamp|update) |^fs\.renameSync Accounts\.pendingSettled |^fs\.readdirSync Accounts\.takenIds /.test(c)),
+      [],
+    );
+  } finally {
+    await accounts.close();
+    await p.close();
+  }
 });

@@ -2,13 +2,12 @@
 // runtime takes). How an access kind reaches its models (the environment, Codex's overrides) is agents/profiles.ts's.
 // The providers' addresses can be pointed elsewhere (`Urls`): tests give fake servers.
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Env } from "../agents/machine-logins.ts";
 import { linkCodexAuth, parseClaudeCredentials } from "../agents/machine-logins.ts";
-import { fileCredentials, takeBack } from "../agents/no-keychain.ts";
+import { fileCredentialsSoon, takeBack } from "../agents/no-keychain.ts";
 import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, type Via } from "../agents/profiles.ts";
 import { type Endpoints, endpoints, find, type Source } from "../agents/providers.ts";
 import type { Capability } from "../sessions/decision.ts";
@@ -22,7 +21,7 @@ import { agyHome, agyPlanIn, agyTakeBack, agyToken, agyTokenReady, noteAgyEmail 
 import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
-import { claudePlan, codexClaims } from "./machine.ts";
+import { claudePlan, codexClaimsSoon } from "./machine.ts";
 
 type Json = any;
 
@@ -267,7 +266,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
       env.CLAUDE_CODE_OAUTH_TOKEN = machineToken;
     } else {
       await takeBack(o.home);
-      fileCredentials(env as Record<string, string>);
+      await fileCredentialsSoon(env as Record<string, string>);
     }
     const output = await statusOf("claude", ["auth", "status"], env);
     // Signed out, it says so and exits 1: its answer is still the JSON on stdout.
@@ -281,7 +280,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // into the check; the token itself stays in the home. A machine login's keychain is handled by MachineLogins.
     let credentials: ReturnType<typeof parseClaudeCredentials> = undefined;
     if (!o.machine) {
-      try { credentials = parseClaudeCredentials(readFileSync(join(o.home, ".credentials.json"), "utf8")); } catch {}
+      try { credentials = parseClaudeCredentials(await readFile(join(o.home, ".credentials.json"), "utf8")); } catch {}
     }
     const plan = claudePlan(status.subscriptionType ?? credentials?.subscriptionType, status.rateLimitTier ?? credentials?.rateLimitTier);
     const detail = [t("station.profile.signedIn"), typeof status.email === "string" ? status.email : "", plan ?? ""].filter((s) => s !== "");
@@ -296,7 +295,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     if (text.toLowerCase().includes("not logged in")) return check("login", t("station.profile.signedOut"), null);
     if (output.code !== 0) throw new Error(`Command failed: codex login status\n${text}`);
     const result = check("ok", text.split("\n")[0] || t("station.profile.signedIn"), null);
-    const plan = codexClaims(o.home)?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
+    const plan = (await codexClaimsSoon(o.home))?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
     if (typeof plan === "string" && plan.trim() !== "") result.plan = plan.trim();
     return result;
   }
@@ -307,12 +306,12 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     if (/not authenticated|not logged in|sign in/i.test(text)) return check("login", t("station.profile.signedOut"), null);
     if (output.code !== 0) throw new Error(`Command failed: grok models\n${text.trim()}`);
     const models = grokModels(text);
-    const email = grokEmail(o.home);
+    const email = await grokEmail(o.home);
     return check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), models.length > 0 ? models : null);
   }
   if (o.kind === "subscription" && o.runtime === "cursor") {
     // The key the sign-in minted (cursor.ts), asked of Cursor's API: whose it is, and the models it may run.
-    const login = readCursor(o.home);
+    const login = await readCursor(o.home);
     if (login === null) return check("login", t("station.profile.signedOut"), null);
     const cursor = urls.cursor ?? CURSOR;
     const me = await cursorMe(cursor, login.apiKey);
@@ -337,7 +336,8 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // Noted for what names the account without asking Devin (devinEmail).
     if (email !== null) {
       try {
-        writeFileSync(join(o.home, "devin", "account.json"), `${JSON.stringify({ email })}\n`);
+        await mkdir(join(o.home, "devin"), { recursive: true });
+        await writeFile(devinAccountFile(o.home), `${JSON.stringify({ email })}\n`);
       } catch {}
     }
     const done = check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), catalog !== null && catalog.models.length > 0 ? catalog.models : null);
@@ -377,9 +377,9 @@ export function devinEmailIn(text: string): string | null {
 
 /// Whose Devin account a profile signed in to: the email the station noted when it was last checked (account.json in
 /// its Devin home), none before.
-export function devinEmail(home: string): string | null {
+export async function devinEmail(home: string): Promise<string | null> {
   try {
-    return devinNotedIn(readFileSync(devinAccountFile(home), "utf8"));
+    return devinNotedIn(await readFile(devinAccountFile(home), "utf8"));
   } catch {
     return null;
   }
@@ -392,9 +392,6 @@ export function devinNotedIn(text: string): string | null {
   return typeof email === "string" && email !== "" ? email : null;
 }
 
-/// Whose Cursor account a profile signed in to, as its sign-in kept it (accounts/cursor.ts).
-export const cursorEmail = (home: string): string | null => readCursor(home)?.email ?? null;
-
 /// The models `grok models` lists: a line each, `* id (default)` or `- id`.
 export function grokModels(text: string): string[] {
   return text.split("\n").flatMap((line) => {
@@ -404,9 +401,9 @@ export function grokModels(text: string): string[] {
 }
 
 /// Whose account Grok Build is signed in with, as its auth.json says (agents/grok.ts: its home is the profile's grok/).
-export function grokEmail(home: string): string | null {
+export async function grokEmail(home: string): Promise<string | null> {
   try {
-    return grokEmailIn(readFileSync(grokAuthFile(home), "utf8"));
+    return grokEmailIn(await readFile(grokAuthFile(home), "utf8"));
   } catch {
     return null;
   }

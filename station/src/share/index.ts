@@ -46,7 +46,8 @@ import { codexAuthFile } from "../agents/machine-logins.ts";
 import { CONSOLE_FILE } from "../accounts/console.ts";
 import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
-import { cursorEmail, devinAccountFile, grokAuthFile, grokEmail } from "../accounts/profiles.ts";
+import { devinAccountFile, grokAuthFile } from "../accounts/profiles.ts";
+import { accountEmail } from "../accounts/index.ts";
 import { agyAccountFile, agyExpiryIn, agyLentFile, agyToken } from "../agents/agy.ts";
 import { LEND_BOUND_MS } from "../accounts/oauth.ts";
 import { devinData } from "../agents/devin.ts";
@@ -1156,8 +1157,8 @@ export class Sharing {
     if (typeof p.share?.email === "string") return p.share.email;
     if (p.machine === true) return this.deps.machineEmail?.(p.runtime) ?? null;
     const home = this.home(p);
-    if (p.runtime === "grok") return grokEmail(home);
-    if (p.runtime === "cursor") return cursorEmail(home);
+    // (read again only once its file changed: accounts/index.ts emailKept)
+    if (p.runtime === "grok" || p.runtime === "cursor") return accountEmail(p.runtime, home);
     if (p.runtime === "codex") {
       try {
         const auth = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"));

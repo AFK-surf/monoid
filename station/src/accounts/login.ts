@@ -414,8 +414,8 @@ export class LoginManager {
 
   /// Starts signing a Kimi Code profile in to the person's Kimi account the same way (kimi.ts), for a device of its own:
   /// the one it signed in on before where it has one (Kimi renews a token only for the device it was given to).
-  startKimi(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
-    const deviceId = readKimi(profile.home)?.deviceId ?? newDeviceId();
+  async startKimi(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
+    const deviceId = (await readKimi(profile.home))?.deviceId ?? newDeviceId();
     return this.deviceSignIn(profile, "kimi", lang, {
       start: () => startKimiDevice(this.kimi, deviceId),
       ask: (code) => kimiDeviceToken(this.kimi, code, deviceId),
@@ -429,7 +429,7 @@ export class LoginManager {
     profile: { id: string; home: string },
     provider: "opencode" | "kimi",
     lang: Lang,
-    steps: { start: () => Promise<Device>; ask: (deviceCode: string) => Promise<DeviceAnswer>; keep: (token: Token) => Promise<() => void> },
+    steps: { start: () => Promise<Device>; ask: (deviceCode: string) => Promise<DeviceAnswer>; keep: (token: Token) => Promise<() => void | Promise<void>> },
   ): Promise<LoginJob> {
     const [failed, expired, denied, unreachable] =
       provider === "kimi"
@@ -483,11 +483,12 @@ export class LoginManager {
       const write = await steps.keep(answer.token);
       if (!current()) return;
       try {
-        write();
+        await write();
       } catch (e) {
-        return this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        return;
       }
-      this.finish(id, "done", null);
+      if (current()) this.finish(id, "done", null);
     };
     running.stop = this.background.after(interval, ask);
     log.info("login", "device sign-in started", { profile: id, provider });
@@ -545,11 +546,12 @@ export class LoginManager {
       }
       if (!current()) return;
       try {
-        writeCursor(profile.home, { apiKey: minted.apiKey, email: minted.email, keyName: this.keyName(), createdAt: wall.now() });
+        await writeCursor(profile.home, { apiKey: minted.apiKey, email: minted.email, keyName: this.keyName(), createdAt: wall.now() });
       } catch (e) {
-        return this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        return;
       }
-      this.finish(id, "done", null);
+      if (current()) this.finish(id, "done", null);
     };
     running.stop = this.background.after(interval, ask);
     log.info("login", "Cursor sign-in started", { profile: id });

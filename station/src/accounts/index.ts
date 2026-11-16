@@ -204,7 +204,7 @@ function homeAsked(p: Json): { home: string; runtime: Runtime; files: "account" 
 /// `homeAsked`'s answer, read on the thread (a profile not read before).
 function homeSaysNow(p: Json): HomeSays {
   const { home, runtime, files } = homeAsked(p);
-  const email = files === "account" ? accountEmail(runtime, home) : files === "console" ? (readConsole(home)?.email ?? null) : null;
+  const email = files === "account" ? accountEmail(runtime, home) : files === "console" ? emailIn([consoleFile(home)]) : null;
   return { exists: existsSync(home), email };
 }
 
@@ -215,7 +215,7 @@ async function homeSaysSoon(p: Json): Promise<HomeSays> {
     files === "account"
       ? await accountEmailSoon(runtime, home)
       : files === "console"
-        ? ((await readFile(join(home, CONSOLE_FILE), "utf8").then(consoleIn, () => null))?.email ?? null)
+        ? await emailInSoon([consoleFile(home)])
         : null;
   return { exists: await accessFile(home).then(() => true, () => false), email };
 }
@@ -238,6 +238,8 @@ export class Accounts {
   private borrowedLogin = new Map<string, string | null>();
   /// OpenCode Console and Kimi tokens being renewed, by profile (a refresh token is spent once).
   private renewing = new Map<string, Promise<void>>();
+  /// The sign-ins for new profiles being settled (pendingChanged), by id: whether it was told again meanwhile.
+  private settling = new Map<string, boolean>();
   private pending = new Map<string, Pending>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
@@ -331,12 +333,15 @@ export class Accounts {
         this.homes.delete(id);
         this.homesChanged++;
         const pending = this.pending.has(id);
-        if (pending) this.pendingChanged(id);
         const job = this.logins.get(id);
-        // An OpenCode sign-in of a profile there is: its token is its key from now on.
-        if (!pending && job?.state === "done" && job.provider === "opencode") this.signedInConsole(id);
         this.changed();
-        if (!pending && job?.state === "done") this.afterSignIn(id);
+        if (pending) this.background.spawn(() => this.pendingChanged(id));
+        else if (job?.state === "done")
+          this.background.spawn(async () => {
+            // An OpenCode sign-in of a profile there is: its token is its key from now on, before it is checked.
+            if (job.provider === "opencode" && (await this.signedInConsole(id, job.startedAt))) this.changed();
+            this.afterSignIn(id);
+          });
       }),
     );
     if (this.machine) {
@@ -836,7 +841,24 @@ export class Accounts {
   }
 
   /// A sign-in for a new profile moved on: once it succeeds the profile is made, named by the account signed in.
-  private pendingChanged(id: string) {
+  private async pendingChanged(id: string) {
+    // One at a time for an id: told again while its files are read, it would make the profile twice. What it is told
+    // meanwhile is settled once the one under way is.
+    if (this.settling.has(id)) {
+      this.settling.set(id, true);
+      return;
+    }
+    try {
+      do {
+        this.settling.set(id, false);
+        await this.pendingSettled(id);
+      } while (this.settling.get(id) === true);
+    } finally {
+      this.settling.delete(id);
+    }
+  }
+
+  private async pendingSettled(id: string) {
     const p = this.pending.get(id);
     if (!p) return;
     const state = this.logins.get(id)?.state;
@@ -846,11 +868,17 @@ export class Accounts {
     }
     if (state !== "done" || p.created !== null || p.error !== null) return;
     const lang = stationLang();
-    const signedIn = p.access === "opencode-go" ? readConsole(p.home) : null;
+    // Dropped, or made, while its files were read: nothing more of it.
+    const gone = () => this.pending.get(id) !== p || p.created !== null || p.error !== null;
+    const signedIn = p.access === "opencode-go" ? await readConsole(p.home) : null;
+    if (gone()) return;
     if (p.access === "opencode-go" && !signedIn) return this.pendingFailed(id, tr(lang, "station.login.consoleUnreadable"));
     const kimi = p.access === "kimi-code";
-    if (kimi && !readKimi(p.home)) return this.pendingFailed(id, tr(lang, "station.login.kimiUnreadable"));
-    const email = signedIn ? signedIn.email : kimi ? null : accountEmail(p.runtime, p.home);
+    const kimiLogin = kimi ? await readKimi(p.home) : null;
+    if (gone()) return;
+    if (kimi && !kimiLogin) return this.pendingFailed(id, tr(lang, "station.login.kimiUnreadable"));
+    const email = signedIn ? signedIn.email : kimi ? null : await accountEmailSoon(p.runtime, p.home);
+    if (gone()) return;
     const base = signedIn ? "opencode-go" : kimi ? KIMI_CODE : slug(email ?? `${p.runtime}-subscription`, 40) || p.runtime;
     const profileId = unique(base, this.takenIds());
     const target = join(this.deps.data, "homes", profileId);
@@ -881,6 +909,7 @@ export class Accounts {
       return this.pendingFailed(id, tr(lang, "station.login.saveFailed", { error: (e as Error).message }));
     }
     p.created = profileId;
+    this.changed();
     this.afterSignIn(profileId);
     // Kept a while for the page that started it to follow it to the profile.
     this.background.after(PENDING_KEPT_MS, () => this.dropLogin(id));
@@ -893,14 +922,24 @@ export class Accounts {
   }
 
   /// An OpenCode Go profile just signed in to the OpenCode Console: the token left in its home is its key now.
-  private signedInConsole(id: string) {
+  /// Whether its key was set: not once the profile, or the sign-in that started at `startedAt`, changed while its file
+  /// was read (edited to another access, deleted, signed in again).
+  private async signedInConsole(id: string, startedAt: number): Promise<boolean> {
     const profile = this.profile(id);
-    const login = profile ? readConsole(profile.home) : null;
-    if (!login) return log.warn("accounts", "an OpenCode sign-in left no token", { profile: id });
+    const login = profile ? await readConsole(profile.home) : null;
+    const now = this.profile(id);
+    const job = this.logins.get(id);
+    if (!now || accessKind(now) !== "opencode-go" || job?.state !== "done" || job.startedAt !== startedAt) return false;
+    if (!login) {
+      log.warn("accounts", "an OpenCode sign-in left no token", { profile: id });
+      return false;
+    }
     try {
       this.setConsoleKey(id, login.access, "signed in to OpenCode");
+      return true;
     } catch (e) {
       log.warn("accounts", "the OpenCode sign-in was not saved", { profile: id, error: (e as Error).message });
+      return false;
     }
   }
 
@@ -919,9 +958,11 @@ export class Accounts {
   private renewConsoles() {
     for (const p of this.profiles()) {
       if (accessKind(p) !== "opencode-go" || (p.access as Json)?.login !== true || borrowed(p)) continue;
-      const login = readConsole(p.home);
-      if (!login || login.expiresAt - wall.now() > CONSOLE_RENEW_BEFORE_MS) continue;
-      this.background.spawn(() => this.renewConsole(p.id));
+      this.background.spawn(async () => {
+        const login = await readConsole(p.home);
+        if (!login || login.expiresAt - wall.now() > CONSOLE_RENEW_BEFORE_MS) return;
+        await this.renewConsole(p.id);
+      });
     }
   }
 
@@ -931,7 +972,7 @@ export class Accounts {
     if (busy) return busy;
     const run = (async () => {
       const profile = this.profile(id);
-      const login = profile ? readConsole(profile.home) : null;
+      const login = profile ? await readConsole(profile.home) : null;
       if (!profile || !login) return;
       let token;
       try {
@@ -943,7 +984,13 @@ export class Accounts {
         return;
       }
       // The refresh token was spent: the new one is written before anything else can fail.
-      writeConsole(profile.home, { ...login, access: token.access, refresh: token.refresh, expiresAt: wall.now() + token.expiresInMs, org: token.org ?? login.org });
+      await writeConsole(profile.home, { ...login, access: token.access, refresh: token.refresh, expiresAt: wall.now() + token.expiresInMs, org: token.org ?? login.org });
+      // Given another key, or deleted, while it was renewed: what was given stays.
+      const now = this.profile(id);
+      if (!now || accessKind(now) !== "opencode-go" || (now.access as Json)?.login !== true) {
+        log.info("accounts", "an OpenCode token renewed for a profile no longer signed in to it; its key left as it is", { profile: id });
+        return;
+      }
       this.setConsoleKey(id, token.access, "renewed");
     })().finally(() => this.renewing.delete(id));
     this.renewing.set(id, run);
@@ -954,9 +1001,11 @@ export class Accounts {
   private renewKimis() {
     for (const p of this.profiles()) {
       if (!kimiSignedIn(p) || borrowed(p)) continue;
-      const login = readKimi(p.home);
-      if (!login || !kimiDue(login, wall.now())) continue;
-      this.background.spawn(() => this.renewKimi(p.id));
+      this.background.spawn(async () => {
+        const login = await readKimi(p.home);
+        if (!login || !kimiDue(login, wall.now())) return;
+        await this.renewKimi(p.id);
+      });
     }
   }
 
@@ -968,7 +1017,7 @@ export class Accounts {
     let refused = false;
     const run = (async () => {
       const profile = this.profile(id);
-      const login = profile ? readKimi(profile.home) : null;
+      const login = profile ? await readKimi(profile.home) : null;
       if (!profile || !login || login.refresh === "" || !kimiDue(login, wall.now())) return;
       let token;
       try {
@@ -976,13 +1025,13 @@ export class Accounts {
       } catch (e) {
         log.warn("accounts", "could not renew a Kimi token", { profile: id, error: (e as Error).message });
         if (e instanceof RenewRefused) {
-          writeKimi(profile.home, { ...login, refresh: "" });
+          await writeKimi(profile.home, { ...login, refresh: "" });
           refused = true;
         }
         return;
       }
       // The refresh token was spent: the new one is written before anything else can fail.
-      writeKimi(profile.home, { ...login, access: token.access, refresh: token.refresh, expiresAt: wall.now() + token.expiresInMs, lifeMs: token.expiresInMs });
+      await writeKimi(profile.home, { ...login, access: token.access, refresh: token.refresh, expiresAt: wall.now() + token.expiresInMs, lifeMs: token.expiresInMs });
     })().finally(() => this.renewing.delete(id));
     this.renewing.set(id, run);
     // Refused: signed out there; its check (which renews first, so not within this) says it needs signing in again.
@@ -1132,8 +1181,9 @@ export class Accounts {
     // Signed in to Kimi: asked with its current token (renewed first where due), none once signed out.
     const kimi = kimiSignedIn(profile);
     if (kimi) await this.renewKimi(id);
-    const key = kimi ? (readKimi(profile.home)?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
-    const signedOut = kimi && (readKimi(profile.home)?.refresh ?? "") === "";
+    const kimiLogin = kimi ? await readKimi(profile.home) : null;
+    const key = kimi ? (kimiLogin?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
+    const signedOut = kimi && (kimiLogin?.refresh ?? "") === "";
     const check = await this.checkFn(
       { runtime: profile.runtime, kind, key: signedOut ? "" : key, via: profileVia(profile), home: profile.home, machine: profile.machine === true, login: (profile.access as Json)?.login === true },
       lang,
@@ -1838,8 +1888,11 @@ function lastOfRuntime(raw: Json, runtime: Runtime, id: string, lang: Lang) {
 }
 
 /// The account a subscription home is signed in as, when its files say: Codex's id token, Claude's account record.
-export function accountEmail(runtime: Runtime, home: string): string | null {
-  for (const file of accountFiles(runtime, home)) {
+export const accountEmail = (runtime: Runtime, home: string): string | null => emailIn(accountFiles(runtime, home));
+
+/// What the first of `files` that names an account says, as `emailKept` keeps it.
+function emailIn(files: AccountFile[]): string | null {
+  for (const file of files) {
     let stamp: string;
     try {
       const st = statSync(file.path);
@@ -1854,8 +1907,11 @@ export function accountEmail(runtime: Runtime, home: string): string | null {
 }
 
 /// `accountEmail` without holding the station's thread (fs/promises), for what is read again as the overview is made.
-export async function accountEmailSoon(runtime: Runtime, home: string): Promise<string | null> {
-  for (const file of accountFiles(runtime, home)) {
+export const accountEmailSoon = (runtime: Runtime, home: string): Promise<string | null> => emailInSoon(accountFiles(runtime, home));
+
+/// `emailIn` without holding the station's thread.
+async function emailInSoon(files: AccountFile[]): Promise<string | null> {
+  for (const file of files) {
     let stamp: string;
     try {
       const st = await stat(file.path);
@@ -1874,6 +1930,8 @@ export async function accountEmailSoon(runtime: Runtime, home: string): Promise<
 /// Where a home keeps whose account it is signed in to, by its runtime, and how each file says it, in the order looked
 /// at.
 type AccountFile = { path: string; email: (text: string) => string | null };
+/// Where an OpenCode Console sign-in says whose account it is (console.ts).
+const consoleFile = (home: string): AccountFile => ({ path: join(home, CONSOLE_FILE), email: (text) => consoleIn(text)?.email ?? null });
 function accountFiles(runtime: Runtime, home: string): AccountFile[] {
   if (runtime === "grok") return [{ path: grokAuthFile(home), email: grokEmailIn }];
   if (runtime === "cursor") return [{ path: cursorAuthFile(home), email: (text) => cursorIn(text)?.email ?? null }];

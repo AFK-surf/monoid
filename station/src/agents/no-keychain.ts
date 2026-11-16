@@ -5,8 +5,7 @@
 // nothing of Claude Code's (exit 44, "not found"); anything else goes to the real one. Machine profiles are not touched.
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateSoon } from "../ops/files.ts";
@@ -27,34 +26,6 @@ exec /usr/bin/security "$@"
 `;
 
 /// The directory with the stand-in `security`, made (again) when missing or an older one.
-export function stubDir(): string {
-  const dir = join(tmpdir(), `stillfail-no-keychain-${process.getuid?.() ?? 0}`);
-  const path = join(dir, "security");
-  let current: string | undefined;
-  try {
-    current = readFileSync(path, "utf8");
-  } catch {}
-  if (current !== STUB) {
-    try {
-      mkdirSync(dir, { recursive: true });
-      // Written aside and moved in: a process may be running the old one.
-      const fresh = join(dir, `security.${process.pid}`);
-      writeFileSync(fresh, STUB);
-      chmodSync(fresh, 0o755);
-      renameSync(fresh, path);
-    } catch {}
-  }
-  return dir;
-}
-
-/// Keeps Claude Code off the keychain in `env` (macOS only; elsewhere it uses the file anyway).
-export function fileCredentials(env: Record<string, string>) {
-  if (!platform.hasKeychain) return;
-  const path = env.PATH ?? process.env.PATH ?? "";
-  env.PATH = `${stubDir()}:${path}`;
-}
-
-/// `stubDir` off the station's thread.
 async function stubDirSoon(): Promise<string> {
   const dir = join(tmpdir(), `stillfail-no-keychain-${process.getuid?.() ?? 0}`);
   const path = join(dir, "security");
@@ -71,7 +42,7 @@ async function stubDirSoon(): Promise<string> {
   return dir;
 }
 
-/// `fileCredentials` off the station's thread.
+/// Keeps Claude Code off the keychain in `env` (macOS only; elsewhere it uses the file anyway).
 export async function fileCredentialsSoon(env: Record<string, string>): Promise<void> {
   if (!platform.hasKeychain) return;
   const dir = await stubDirSoon();
@@ -93,7 +64,11 @@ const security = (args: string[]) =>
 export async function takeBack(home: string) {
   if (!platform.hasKeychain) return;
   const file = join(home, ".credentials.json");
-  if (existsSync(file)) return;
+  if (await access(file).then(
+    () => true,
+    () => false,
+  ))
+    return;
   const item = keychainItem(home);
   const found = await security(["find-generic-password", "-w", "-s", item]);
   if (!found.ok) return;
@@ -104,7 +79,7 @@ export async function takeBack(home: string) {
   } catch {}
   if (!isLogin) return;
   try {
-    writePrivate(file, text);
+    await writePrivateSoon(file, text);
   } catch (error) {
     log.warn("agents::no_keychain", "could not move a profile's login out of the keychain", { home, error: String(error) });
     return;
@@ -134,17 +109,4 @@ export async function takeBackMissing(home: string): Promise<boolean> {
   await security(["delete-generic-password", "-s", item]);
   log.info("agents::no_keychain", "a profile's login moved back from the keychain to its file", { home });
   return true;
-}
-
-/// Written aside (readable by its owner only) and moved in.
-export function writePrivate(file: string, text: string) {
-  const aside = `${file.replace(/\.json$/, "")}.json.${process.pid}`;
-  const fd = openSync(aside, "w", 0o600);
-  try {
-    writeSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(aside, file);
 }

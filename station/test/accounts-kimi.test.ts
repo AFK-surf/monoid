@@ -60,7 +60,7 @@ test("a sign-in to Kimi relays its code and leaves the tokens in the home, for o
     assert.deepEqual([asking.url, asking.userCode, asking.provider], ["https://www.kimi.com/code/authorize_device?user_code=ABCD-1234", "ABCD-1234", "kimi"]);
     k.s.approved = true;
     await wait("done");
-    const login = readKimi(home)!;
+    const login = (await readKimi(home))!;
     assert.deepEqual([login.access, login.refresh, login.lifeMs, login.deviceId], ["kt_1", "kr_1", 900_000, k.s.device]);
     assert.match(login.deviceId, /^[0-9a-f]{32}$/);
     // Claude Code's key: the access token alone.
@@ -131,11 +131,11 @@ test("a profile signed in to Kimi runs Claude Code on a token renewed in its hom
 
     // Not due yet: left as it is.
     await accounts.renewKimi(made);
-    assert.equal(readKimi(home)!.access, "kt_1");
+    assert.equal((await readKimi(home))!.access, "kt_1");
     // Due (less than half its life left): renewed for its device, the refresh token spent replaced.
-    writeKimi(home, { ...readKimi(home)!, expiresAt: Date.now() + 60_000 });
+    await writeKimi(home, { ...(await readKimi(home))!, expiresAt: Date.now() + 60_000 });
     await accounts.renewKimi(made);
-    assert.deepEqual([readKimi(home)!.access, readKimi(home)!.refresh], ["kt_2", "kr_2"]);
+    assert.deepEqual([(await readKimi(home))!.access, (await readKimi(home))!.refresh], ["kt_2", "kr_2"]);
     assert.equal(readFileSync(join(home, KIMI_TOKEN_FILE), "utf8"), "kt_2");
     assert.equal(raw(made).access.key, undefined);
     // An edit keeps the sign-in.
@@ -144,9 +144,9 @@ test("a profile signed in to Kimi runs Claude Code on a token renewed in its hom
 
     // Signed out on Kimi: renewing is refused, and the check asks for a sign-in.
     k.s.signedOut = true;
-    writeKimi(home, { ...readKimi(home)!, expiresAt: Date.now() + 60_000 });
+    await writeKimi(home, { ...(await readKimi(home))!, expiresAt: Date.now() + 60_000 });
     await accounts.renewKimi(made);
-    assert.equal(readKimi(home)!.refresh, "");
+    assert.equal((await readKimi(home))!.refresh, "");
     assert.equal(asked.at(-1)!.key, "");
     assert.equal((await accounts.check(made, "zh")).state, "login");
 
@@ -155,7 +155,7 @@ test("a profile signed in to Kimi runs Claude Code on a token renewed in its hom
     k.s.approved = false;
     await accounts.startLogin(made, owner, "zh");
     k.s.approved = true;
-    await upon((wake) => accounts.onChange(wake), () => (readKimi(home)?.refresh ?? "") !== "", "signed in");
+    await upon((wake) => accounts.onChange(wake), async () => ((await readKimi(home))?.refresh ?? "") !== "", "signed in");
     assert.equal(readFileSync(join(home, KIMI_TOKEN_FILE), "utf8"), `kt_${k.s.n}`);
   } finally {
     await accounts.close();
