@@ -180,12 +180,17 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   // What the model says of a quota is no notice: not the whole turn, not one line of the CLI's own.
   assert.equal(noticeFailure("Your quota resets in an hour."), null);
   assert.equal(noticeFailure("⚠ Check the quota:\nit is low."), null);
+  assert.equal(noticeFailure("Summary:\n⚠ Your quota resets in an hour."), null);
   assert.equal(noticeFailure("⚠ Something else went wrong."), null);
-  // Its words for a failure it does not name (a borrowed token run out under it, 2026-11-16): a failed turn, not last words.
+  // Its words for a failure it does not name (a borrowed token run out under it, 2026-11-16): a failed turn, not last words,
+  // even when streamed after partial text or a steered prompt.
   assert.equal(noticeFailure("⚠ Agent execution terminated due to error."), "other");
+  assert.equal(noticeFailure("partial\n⚠ Agent execution terminated due to error.\n"), "other");
   assert.equal(noticeFailure("⚠ Authentication expired. Please log back in."), "auth");
   // A sign-in lent by another station run out under the process (1.5.9's words): a sign-in's failure, which reopens it.
   assert.equal(noticeFailure('⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set'), "auth");
+  assert.equal(noticeFailure('partial\n⚠ agent executor error: generating and executing: request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": oauth2: token expired and refresh token is not set\n'), "auth");
+  assert.equal(noticeFailure("⚠ agent executor error: unexpected EOF"), "other");
 });
 
 test("a borrowed Google account: a process opens on a sign-in lent anew once the one it has runs out soon, and goes on with one that lasts", async () => {
@@ -524,8 +529,15 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     await settle();
     const key = store.listSessions()[0]!.key;
     const id = store.getSession(key)!.runtimeSessionId!;
-    const opens = () => rpc(dump).filter((m) => m.method === "initialize").length;
-    const prompts = () => rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    const safeRpc = () => {
+      try {
+        return rpc(dump);
+      } catch {
+        return [];
+      }
+    };
+    const opens = () => safeRpc().filter((m) => m.method === "initialize").length;
+    const prompts = () => safeRpc().filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
     assert.equal(opens(), 1);
     assert.deepEqual(lends, []);
 
@@ -546,6 +558,25 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     await settle();
     assert.equal(opens(), 2);
     assert.deepEqual(lends, [55]);
+
+    // A borrowed sign-in that runs out under an in-flight turn on 1.5.8 (partial text followed by AGY_TERMINATED):
+    // answered as `auth`, so `auth_retry` ends the expired process, lends anew, resumes via `session/load`, and
+    // continues once with `GO_ON_AFTER_AUTH` without posting a failure notice.
+    const { GO_ON_AFTER_AUTH } = await import("../src/agents/instructions.ts");
+    const live = [...(driver as any).live][0];
+    const postsBefore = chat.texts().length;
+    await hub.accept("cl", reply(m1, "2000.4", "<@UBOT> hold-turn", { addressed: true }));
+    await until(() => live.busy());
+    live.signInUntil = Date.now() - 60_000;
+    writeFileSync(agyToken(home), signIn(-1));
+    await hub.accept("cl", reply(m1, "2000.5", "<@UBOT> expire-mid-turn", { addressed: true }));
+    await until(() => !store.getSession(key)!.running && opens() === 3 && prompts().some((p) => p.includes(GO_ON_AFTER_AUTH)));
+    await settle();
+    assert.deepEqual(lends, [55, 55]);
+    assert.equal(store.getSession(key)!.runtimeSessionId, id);
+    assert.equal(rpc(dump).filter((m) => m.method === "session/load").length, 2);
+    assert.equal(chat.texts().some((t) => t.includes("terminated due to error") || t.includes("模型服务出错") || t.includes("认证失败")), false);
+    assert.equal(chat.texts().length, postsBefore + 1);
   } finally {
     await hub.shutdown();
     await driver.shutdown();

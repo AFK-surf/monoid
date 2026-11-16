@@ -433,21 +433,42 @@ pub fn classify(flavor : String, text : Array[Int]) -> String {
 }
 
 ///|
+fn last_line(text : Array[Int]) -> Array[Int] {
+  let mut after = 0
+  for i = 0; i < text.length(); i = i + 1 {
+    if text[i] == 0x0a {
+      after = i + 1
+    }
+  }
+  trimmed(text[after:].to_owned())
+}
+
+///|
 /// agy.ts `noticeFailure`: a failure Antigravity CLI tells only in words, a turn's last words one line of its own
-/// beginning with ⚠ that is not the model's.
+/// beginning with ⚠ that is not the model's, or its executor's trailing notice line after partial text.
 pub fn notice_failure(said : Array[Int]) -> String? {
   let text = trimmed(said)
-  if text.length() == 0 || text[0] != 0x26a0 || text.contains(0x0a) {
+  if text.length() == 0 {
+    return None
+  }
+  let last = last_line(text)
+  let lower = @jscase.lower(@jsjson.raw_text(last))
+  if lower == "\u{26a0} agent execution terminated due to error." {
+    // (agy.ts `AGY_TERMINATED`: its 1.5.8 words for a failure it does not name, even after partial streamed text)
+    return Some("other")
+  }
+  if lower.has_prefix("\u{26a0} agent executor error:") {
+    let reason = classify("agy", last)
+    return Some(if reason == "model" { "other" } else { reason })
+  }
+  if text[0] != 0x26a0 || text.contains(0x0a) {
     return None
   }
   let reason = classify("agy", text)
-  if reason != "model" {
-    Some(reason)
-  } else if @jsjson.raw_text(text).to_lower().contains("agent execution terminated due to error") {
-    // (agy.ts `AGY_TERMINATED`: its words for a failure it does not name)
-    Some("other")
-  } else {
+  if reason == "model" {
     None
+  } else {
+    Some(reason)
   }
 }
 
@@ -987,7 +1008,7 @@ fn Session::end(self : Session, id : Array[Int], answer : J, events : Array[J]) 
   let said = trimmed(self.said_last)
   self.said_last = []
   if self.flavor == "agy" && is_str(outcome.get("kind"), "completed") && said.length() > 0 && notice_failure(said) is Some(reason) {
-    outcome = failed(reason, @claude.chars(said, 1000))
+    outcome = failed(reason, @claude.chars(last_line(said), 1000))
   }
   // An answer to a prompt this station did not see start (taken up after a crash just as it was given).
   if !self.turn.busy {

@@ -1522,8 +1522,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return self.compacted(a, outcome)
   }
   let kind = str_of(outcome.value("kind")).unwrap_or("")
-  let reason = str_of(outcome.value("reason")).unwrap_or("")
+  let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
+  // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
+  // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on one
+  // lent anew and goes on once)
+  if a.runtime == "agy" && kind == "failed" && reason == "other" &&
+    message.to_lower().contains("agent execution terminated due to error") && a.agent is Some(g) {
+    if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
+      reason = "auth"
+    }
+    if !self.is_current(a, generation) {
+      return
+    }
+  }
   // (undefined: none shown; null: the account's; a name: that model's own)
   let mut limit : Json? = None
   if kind == "failed" && reason == "model" && a.turn is Some(_) && !(a.profile is Null) && !a.stop_requested {
@@ -1650,6 +1662,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       nt.codex_retried = true
     }
     return
+  }
+  if a.runtime == "agy" && kind == "failed" && reason == "auth" && a.agent is Some(_) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
   }
   let spent = kind == "failed" && reason == "rate_limit"
   if !spent {

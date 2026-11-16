@@ -300,18 +300,26 @@ export const classifyFailure = (text: string): FailureReason =>
 /// is never one: a notice is all of the turn's last words, one line of its own, and only what tells the account, a
 /// limit or the provider counts (not `model`, the rest). What the program reads a process by does this (mb/src/acp
 /// `notice_failure`); this is what it is held to.
-/// Its own words for any failure it gives no reason for (1.5.9: a token run out under it, 2026-11-16) fail the turn too,
-/// as one not known: shown as a failure to try again, never forwarded as the agent's last words.
+/// Its own words for any failure it gives no reason for (1.5.8 `AGY_TERMINATED`: a token run out under it, 2026-11-16;
+/// 1.5.9 `AGY_EXECUTOR_ERROR`: its executor's error line), even after partial streamed text, fail the turn too, never
+/// forwarded as the agent's last words.
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
+  const last = text.slice(text.lastIndexOf("\n") + 1).trim();
+  const lower = last.toLowerCase();
+  if (lower === AGY_TERMINATED) return "other";
+  if (lower.startsWith(AGY_EXECUTOR_ERROR)) {
+    const reason = classifyFailure(last);
+    return reason === "model" ? "other" : reason;
+  }
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = classifyFailure(text);
-  if (reason !== "model") return reason;
-  return text.toLowerCase().includes(AGY_TERMINATED) ? "other" : null;
+  return reason === "model" ? null : reason;
 }
 
-/// What Antigravity CLI says of a turn it ended on an error it does not name.
-const AGY_TERMINATED = "agent execution terminated due to error";
+/// What Antigravity CLI says of a turn its executor ended on an error (1.5.8: unnamed; 1.5.9: named).
+const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
+const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
@@ -622,6 +630,13 @@ export class AgySession extends AcpSession {
   /// 2026-11-16, five chats failing every turn in 0.1 s.
   outlived() {
     return this.signInUntil !== null && this.signInUntil - wall.now() < AGY_LENT_RENEW_MS;
+  }
+
+  /// When a turn ends on `AGY_TERMINATED` (1.5.8), whether its process's borrowed sign-in has already run out under the
+  /// turn (within a minute's clock margin; 0 when taken up without a known expiry): `actor_run.mbt` then answers it as
+  /// `auth`, ending the process and going on once in a new one on a sign-in lent anew (`auth_retry`).
+  signInExpired() {
+    return this.signInUntil !== null && this.signInUntil - wall.now() <= 60_000;
   }
 
   protected updated(update: Json, _owner: string | null) {

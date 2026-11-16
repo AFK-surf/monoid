@@ -725,8 +725,17 @@ export function acpClassify(flavor: string, text: string): FailureReason {
     return failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired"], limit: ["resource_exhausted", "quota"] });
   return failureOf(text);
 }
+const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
+const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 export function noticeFailure(said: string): FailureReason | null {
   const text = said.trim();
+  const last = text.slice(text.lastIndexOf("\n") + 1).trim();
+  const lower = last.toLowerCase();
+  if (lower === AGY_TERMINATED) return "other";
+  if (lower.startsWith(AGY_EXECUTOR_ERROR)) {
+    const reason = acpClassify("agy", last);
+    return reason === "model" ? "other" : reason;
+  }
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = acpClassify("agy", text);
   return reason === "model" ? null : reason;
@@ -905,7 +914,7 @@ export class AcpReference {
     const said = this.saidLast.trim();
     this.saidLast = "";
     const failed = this.flavor === "agy" && outcome.kind === "completed" && said !== "" ? noticeFailure(said) : null;
-    if (failed !== null) outcome = { kind: "failed", reason: failed, message: chars(said, 1000) };
+    if (failed !== null) outcome = { kind: "failed", reason: failed, message: chars(said.slice(said.lastIndexOf("\n") + 1).trim(), 1000) };
     if (!this.turn.busy) events.push({ type: "turnStarted" });
     this.turn.busy = false;
     this.turn.aborting = false;
