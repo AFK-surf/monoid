@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.73 | 120.44 |
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.03 | 63.42 | 99.39 | 140.78 |
 | [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.39 | 125.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.78 | 115.68 |
 | [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.78 | 119.31 |
-| [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.5 | 118.56 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [36acdd8fb](https://github.com/AFK-surf/monoid/commit/36acdd8fb1807f9d4d494a58406c026e4c3064ee) station: a machine's session gone on with, a chat  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
 | [1e46c5e2f](https://github.com/AFK-surf/monoid/commit/1e46c5e2f18d983a1b094a54a74caaa950f66340) app: the stations' 进程 radio 「对话」 changes once at a | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
-| [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
