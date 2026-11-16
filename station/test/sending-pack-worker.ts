@@ -4,7 +4,7 @@ import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { parentPort, workerData } from "node:worker_threads";
 import type { Bytes } from "../src/mesh/bus.ts";
-import { type PackEntry, packBytes, receivePack } from "../src/replica/sending.ts";
+import { type PackEntry, packBytes, receivePack } from "../src/replica/pack.ts";
 
 const { entry, there } = workerData as { entry: PackEntry; there: string };
 /// What is held now, the garbage collected first: what is kept alive, not what V8 has yet to collect, which is when it

@@ -169,3 +169,28 @@ test("unwatched, an edit takes what was edited elsewhere, and refuses a file tha
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { language: "zh", again: true });
   assert.deepEqual(config.raw(), { language: "zh", again: true });
 });
+
+test("an edit made with `update` while an `updateSoon` is still being written is kept, in memory and on disk", async () => {
+  // (the station's Slack connect writes its team back with `updateSoon`; a command's edit right after it, with
+  // `update`, was put over by that write landing after it, and the next read took the file for someone else's edit:
+  // the edit lost, a test waiting for it until CI's five minutes, 2026-11-17)
+  for (const how of ["unwatched", "watched"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), `config-race-${how}-`));
+    const file = join(dir, "config.json");
+    writeFileSync(file, JSON.stringify({ kept: true }));
+    const config = new ConfigFile(dir);
+    if (how === "watched") config.watch();
+    try {
+      const soon = config.updateSoon((raw) => (raw.team = "T1"));
+      config.update((raw) => (raw.tokens = { cl: "x" }));
+      await soon;
+      await config.written();
+      const both = { kept: true, team: "T1", tokens: { cl: "x" } };
+      assert.deepEqual(JSON.parse(await readFile(file, "utf8")), both, `${how}: on disk`);
+      assert.deepEqual(config.raw(), both, `${how}: read`);
+    } finally {
+      config.unwatch();
+      await config.written();
+    }
+  }
+});

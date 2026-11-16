@@ -114,6 +114,20 @@ export class ConfigFile {
     this.#lastWrittenText = text;
     this.#edits++;
     this.seen = this.stamp();
+    // The latest asked now: an `updateSoon` before it whose write is still on its way would put the text from before
+    // this edit over it, and the next read would take that for someone else's edit and lose this one (a Slack test
+    // waited out CI's five minutes, 2026-11-17). So this text is written again after that write, and until it is, the
+    // file is behind what is in memory (`#writing`).
+    const asked = ++this.#asked;
+    this.#latest = text;
+    if (this.#writing === 0) this.#written = asked;
+    else {
+      this.#writing++;
+      this.#queue = this.#queue
+        .then(() => this.#write(asked))
+        .catch(() => undefined)
+        .finally(() => void this.#writing--);
+    }
     setStationLang(next?.language);
     this.tell();
     return next;
