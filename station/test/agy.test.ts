@@ -434,9 +434,20 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     assert.equal(d2.ownedRunners().size, 0);
 
     await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
+    // (the turn's prompt as the CLI took it, and the turn over: a session not running with no runtime id yet, as takeUp
+    // left it, is so before the turn begins, and the dump read then held only the first ask: main 6a896dd6's
+    // check-station (1), 43815915481)
+    // (a line the fake is still writing is not one yet)
+    const prompted = (words: string) => {
+      try {
+        return rpc(dump).some((m) => m.method === "session/prompt" && String(m.params.prompt[0].text).includes(words));
+      } catch {
+        return false;
+      }
+    };
     await until(() => {
       const s = store.getSession(key)!;
-      return !s.running && s.runtimeSessionId !== id1;
+      return prompted("make it simpler") && !s.running && s.runtimeSessionId !== null && s.runtimeSessionId !== id1;
     });
     await settle();
     const id2 = store.getSession(key)!.runtimeSessionId!;
@@ -452,7 +463,7 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
     await until(() => {
       const s = store.getSession(key)!;
-      return !s.running && s.runtimeSessionId !== id2;
+      return prompted("and shorter") && !s.running && s.runtimeSessionId !== null && s.runtimeSessionId !== id2;
     });
     await settle();
     const id3 = store.getSession(key)!.runtimeSessionId!;
