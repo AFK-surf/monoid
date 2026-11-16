@@ -142,6 +142,7 @@ export class Directory extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS added (workspace TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL, added_by TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (workspace, email));
       CREATE INDEX IF NOT EXISTS added_by_email ON added (email);
       CREATE TABLE IF NOT EXISTS added_mails (workspace TEXT NOT NULL, email TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (workspace, email));
+      CREATE TABLE IF NOT EXISTS added_mail_retries (workspace TEXT NOT NULL, email TEXT NOT NULL, PRIMARY KEY (workspace, email));
       CREATE TABLE IF NOT EXISTS pending (email TEXT PRIMARY KEY, beta INTEGER, may_create INTEGER, added_by TEXT NOT NULL, added_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS invite_codes (code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, used_by TEXT, used_at INTEGER, workspace TEXT);
       CREATE TABLE IF NOT EXISTS push (id TEXT PRIMARY KEY, sub TEXT NOT NULL, sid TEXT NOT NULL, kind TEXT NOT NULL, endpoint TEXT, p256dh TEXT, auth TEXT, token TEXT, created INTEGER NOT NULL);
@@ -637,7 +638,10 @@ export class Directory extends DurableObject<Env> {
     this.#takePending(identity.sub, identity.email);
     if (!old || (old.email === identity.email && old.name === identity.name && old.picture === identity.picture)) return;
     // Members lists show them; invitations they sent show their name; a new email has other invitations.
-    for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) this.#changed(row.workspace as string, false);
+    for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) {
+      if (old.email !== identity.email) this.#forgetMailRetry(row.workspace as string, old.email as string);
+      this.#changed(row.workspace as string, false);
+    }
     const invited = this.#rows("SELECT i.email FROM invitations i WHERE i.created_by = ? AND i.expires_at > ?", identity.sub, nowSeconds()).flatMap((r) => this.#byEmail(r.email as string));
     this.#tell([...invited, ...(old.email === identity.email ? [] : [identity.sub])], LIST);
   }
@@ -688,25 +692,30 @@ export class Directory extends DurableObject<Env> {
    * Adds people by email, no invitation to accept: those with an account are members at once, the others as soon as they
    * first sign in with that email. What each became: joined, added (waiting for a first sign-in), or already a member.
    */
-  addMembers(sub: string, workspace: string, role: Role, emails: unknown): { joined: string[]; added: string[]; already: string[]; view: WorkspaceView; mail: AddedMail } {
+  addMembers(sub: string, workspace: string, role: Role, emails: unknown, reportsSent = false): { joined: string[]; added: string[]; already: string[]; view: WorkspaceView; mail: AddedMail } {
     const mine = this.#role(sub, workspace, MANAGERS);
     if (!ROLES.includes(role)) fail(400, "invalid_role");
     if (role === "owner" && mine !== "owner") fail(403, "forbidden");
     const { joined, added, already } = this.#addEmails(sub, workspace, role, emailsOf(emails));
-    return { joined, added, already, view: this.#view(sub, workspace), mail: this.#toMail(sub, workspace, joined, added) };
+    return { joined, added, already, view: this.#view(sub, workspace), mail: this.#toMail(sub, workspace, joined, added, already, reportsSent) };
   }
 
   /**
    * Who of those just added is told so by mail (api.ts sends it): each email once a day in a workspace at most, so
    * taking someone out and adding them again cannot send the cloud's address to anyone over and over. Noted as sent
-   * here; one that could not be sent is let go of again (`mailFailed`), so adding them again tries again.
+   * here; one that could not be sent waits separately (`mailFailed`), so adding them again tries again even when
+   * they are already a member and the day's records have gone. It waits only while that member or added email stays.
    */
-  #toMail(by: string, workspace: string, joined: string[], added: string[]): AddedMail {
+  #toMail(by: string, workspace: string, joined: string[], added: string[], already: string[], reportsSent: boolean): AddedMail {
     const now = nowSeconds();
     this.#run("DELETE FROM added_mails WHERE at <= ?", now - ADDED_MAIL_EVERY_SEC);
+    const waiting = (email: string) => this.#one("SELECT 1 AS x FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+    const retry = reportsSent ? already.filter(waiting) : [];
     const to: { email: string; joined: boolean }[] = [];
-    for (const [emails, isJoined] of [[joined, true], [added, false]] as const) {
+    for (const [emails, isJoined] of [[[...joined, ...retry], true], [added, false]] as const) {
       for (const email of emails) {
+        // An older API reports only failures: it cannot acknowledge and clear a pending retry after success.
+        if (!reportsSent && waiting(email)) continue;
         if (this.#one("SELECT 1 AS x FROM added_mails WHERE workspace = ? AND email = ?", workspace, email)) continue;
         this.#run("INSERT INTO added_mails (workspace, email, at) VALUES (?, ?, ?)", workspace, email, now);
         to.push({ email, joined: isJoined });
@@ -717,9 +726,29 @@ export class Directory extends DurableObject<Env> {
     return { to, inviter: inviter ?? "", workspace: name ?? "" };
   }
 
-  /** Mails of `addMembers` that could not be sent: not counted as sent, so adding them again sends again. */
-  mailFailed(workspace: string, emails: string[]): void {
-    for (const email of emails) this.#run("DELETE FROM added_mails WHERE workspace = ? AND email = ?", workspace, email);
+  /**
+   * Failure frees its daily slot and waits while its recipient stays; success clears a retry. Keep the old RPC and
+   * make successes optional: a Worker and its Directory may run different versions while code is being deployed.
+   */
+  mailFailed(workspace: string, emails: string[], sent: string[] = []): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const email of emails) {
+        this.#run("DELETE FROM added_mails WHERE workspace = ? AND email = ?", workspace, email);
+        if (this.#mailRecipient(workspace, email)) this.#run("INSERT OR IGNORE INTO added_mail_retries (workspace, email) VALUES (?, ?)", workspace, email);
+        else this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+      }
+      for (const email of sent) this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+    });
+  }
+
+  #mailRecipient(workspace: string, email: string): boolean {
+    return Boolean(this.#one(`SELECT 1 AS x FROM added WHERE workspace = ? AND email = ?
+      UNION ALL SELECT 1 FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = lower(?) LIMIT 1`, workspace, email.toLowerCase(), workspace, email));
+  }
+
+  /** Taking someone out ends their pending mail too; becoming a signed-in member does not. */
+  #forgetMailRetry(workspace: string, email: string): void {
+    if (!this.#mailRecipient(workspace, email)) this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email.toLowerCase());
   }
 
   /** addMembers once allowed: each email a member now, or as soon as it first signs in. */
@@ -762,6 +791,7 @@ export class Directory extends DurableObject<Env> {
   removeAdded(sub: string, workspace: string, email: string): WorkspaceView {
     this.#role(sub, workspace, MANAGERS);
     this.#run("DELETE FROM added WHERE workspace = ? AND email = ?", workspace, email.trim().toLowerCase());
+    this.#forgetMailRetry(workspace, email.trim().toLowerCase());
     this.#changed(workspace, true);
     return this.#view(sub, workspace);
   }
@@ -1215,7 +1245,7 @@ export class Directory extends DurableObject<Env> {
     const told = [...this.#members(id), ...this.#invitees(id)];
     const stations = this.#stationsIn(id).map((station) => ({ station, home: this.#memberships(station)[0] }));
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["members", "invitations", "added", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "told"]) this.#run(`DELETE FROM ${table} WHERE workspace = ?`, id);
+      for (const table of ["members", "invitations", "added", "added_mails", "added_mail_retries", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "told"]) this.#run(`DELETE FROM ${table} WHERE workspace = ?`, id);
       this.#run("DELETE FROM workspaces WHERE id = ?", id);
     });
     this.#tell(told, LIST, { type: "workspace", id });
@@ -1343,6 +1373,8 @@ export class Directory extends DurableObject<Env> {
     }
     if (row!.role === "owner") this.#keepAnOwner(workspace);
     this.#run("DELETE FROM members WHERE workspace = ? AND sub = ?", workspace, target);
+    const email = this.#one("SELECT email FROM users WHERE sub = ?", target)?.email as string | undefined;
+    if (email) this.#forgetMailRetry(workspace, email);
     this.#rigsGone(workspace, target);
     this.#revoke(workspace, "sub", target);
     this.#changed(workspace, true, [target]);
@@ -1391,6 +1423,7 @@ export class Directory extends DurableObject<Env> {
         this.#run("DELETE FROM pending WHERE lower(email) = lower(?)", email);
         this.#run("DELETE FROM added WHERE lower(email) = lower(?)", email);
         this.#run("DELETE FROM invitations WHERE lower(email) = lower(?)", email);
+        this.#run("DELETE FROM added_mail_retries WHERE lower(email) = lower(?)", email);
       }
       this.#run("DELETE FROM users WHERE sub = ?", sub);
     });

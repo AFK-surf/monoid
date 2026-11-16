@@ -95,7 +95,7 @@ export async function harness(
     grantJwk?: JsonWebKey & { kid?: string };
     /** Signing in with an email: the codes sent are kept in `mails` (and handed to this, if it is one: false, or an
      * error code, and the binding throws as Cloudflare's would). */
-    mail?: true | ((message: MailMessage) => boolean | string);
+    mail?: true | ((message: MailMessage) => boolean | string | Promise<boolean | string>);
     /** An OpenID provider in Google's place (OIDC_ISSUER; its client a public one, without a secret),
      * its discovery, keys and token endpoint answered here; `codes` hold what it gave, as Google's do (their `sub` its). */
     oidc?: true;
@@ -290,7 +290,7 @@ export async function harness(
         }
         if (url.href === "https://mail.test/send" && options.mail) {
           const message = JSON.parse(await request.text()) as MailMessage;
-          const sent = options.mail === true ? true : options.mail(message);
+          const sent = options.mail === true ? true : await options.mail(message);
           if (sent !== true) return new MFResponse(sent || "E_INTERNAL_SERVER_ERROR", { status: 500 });
           mails.push(message);
           return new MFResponse(null, { status: 200 });
