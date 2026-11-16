@@ -20,6 +20,10 @@ import { FakeDriver, Rig, matches, message, reply, say, settle, testClock } from
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
 const untimed = (text: string) => text.replace(/^\[Delivered at [^\n]+\]\n/, "");
 
+/// The process `driver` opened for session `key`: sessions accepted together open in whatever order their looks at the
+/// disk come back (off the station's thread), not in the order they came.
+const opened = (driver: FakeDriver, key: string) => driver.sessions.find((s) => s.options.route === key);
+
 test("a new session first says where it can be followed, multi-session connects only", async () => {
   const r = new Rig({ link: true });
   const m = say("<@UBOT> fix the build");
@@ -1332,7 +1336,7 @@ test("taken up by a station whose tools are elsewhere, a process told the old ad
   await first.accept(busy);
   await first.accept(idle);
   await settle();
-  const [runningOld, idleOld] = first.claude.sessions;
+  const [runningOld, idleOld] = [busy, idle].map((m) => opened(first.claude, sessionKey("cl", "C1", m.threadTs)));
   idleOld!.complete();
   await settle();
   await first.call(sessionKey("cl", "C1", idle.threadTs), "chat_state", { kind: "all_done", done: "answered" });
@@ -1345,7 +1349,7 @@ test("taken up by a station whose tools are elsewhere, a process told the old ad
   const moved = "http://127.0.0.1:2/mcp";
   const hub = first.newHub({ chats: (id) => (id === "cl" ? first.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false, mcpUrl: moved });
   await hub.takeUp();
-  const [running, idleTaken] = claude.sessions;
+  const [running, idleTaken] = [runningOld, idleOld].map((old) => claude.sessions.find((s) => s.sessionId === old!.sessionId));
   assert.equal(running!.toolsUrl, "http://127.0.0.1:1/mcp", "as it was told");
   hub.toolsAt(moved);
   hub.recover();
@@ -2997,7 +3001,7 @@ test("after a station restart, a reset resumes a recorded allowance wait but not
   await r.accept(first);
   await r.accept(stopped);
   await settle();
-  const [waitingAgent, stoppedAgent] = r.claude.sessions;
+  const [waitingAgent, stoppedAgent] = [first, stopped].map((m) => opened(r.claude, sessionKey("cl", "C1", m.threadTs)));
   const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "usage limit reached" };
   waitingAgent!.end(spent);
   stoppedAgent!.end(spent);
@@ -3205,7 +3209,7 @@ test("taken up by the next station, a process runs on the account it was started
   await r.accept(busy);
   await r.accept(idle);
   await settle();
-  const [busyOld, idleOld] = r.claude.sessions;
+  const [busyOld, idleOld] = [busy, idle].map((m) => opened(r.claude, sessionKey("cl", "C1", m.threadTs)));
   const busyKey = busyOld!.options.route;
   const idleKey = idleOld!.options.route;
   assert.ok(busyOld!.options.profile.id === "cc" && idleOld!.options.profile.id === "cc");
