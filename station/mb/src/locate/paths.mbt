@@ -1,6 +1,6 @@
-// Where a session's transcripts are, as station/src/read/transcript.ts finds them (`transcriptPaths`,
-// `transcriptSources` and what they call): its paths made as Node's path.join makes them, the filesystem asked through
-// the shell (`fs.stat`, `fs.readdir`, `fs.realpath`, as Node's statSync, readdirSync and realpathSync answer), and the
+// Where a session's transcripts are, as station/src/read/transcript.ts finds them (`transcriptPathsLooking`,
+// `transcriptSourcesLooking` and what they call): its paths made as Node's path.join makes them, the filesystem asked
+// through the shell (`fs.stat`, `fs.readdir`, `fs.realpath`, as Node's stat, readdir and realpath answer), and the
 // in-process hints it keeps (`elsewhere`, `rollouts`, `saidRollouts`) given for each batch by the station
 // (`transcriptLocationHints`) and given back after it.
 
@@ -287,7 +287,7 @@ fn homes_first(profiles : Array[(String, String)], first : String?) -> Array[Str
 }
 
 ///|
-/// transcript.ts `transcriptPaths` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
+/// transcript.ts `transcriptPathsLooking` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
 pub fn Finder::transcript_path(
   self : Finder,
   runtime : String,
@@ -379,7 +379,7 @@ pub(all) struct Source {
 }
 
 ///|
-/// transcript.ts `transcriptSources`: each source's path with its runtime, and whether the last one's was found
+/// transcript.ts `transcriptSourcesLooking`: each source's path with its runtime, and whether the last one's was found
 /// (`anywhere` false, as the live locator asks: a Claude one looked for in its places alone).
 pub fn Finder::sources(
   self : Finder,
@@ -406,7 +406,7 @@ pub fn Finder::sources(
 }
 
 ///|
-/// transcript.ts `useTranscriptLocationHints`: the hints of one batch, read from what the station sent.
+/// test/reference/transcript-paths.ts `useTranscriptLocationHints`: the hints of one batch, read from what the station sent.
 pub fn Finder::use_hints(self : Finder, hints : Json) -> Unit {
   self.elsewhere.clear()
   self.rollouts.clear()

@@ -3,7 +3,7 @@
 // build makes again is removed from its own directory, and the rest of its workspace and the transcripts its runtime
 // keeps in station storage are packed (archive.ts); they are restored before its runtime starts again, or when it is
 // shown again. The hub calls it (ColdStorage) from the session's queue, so no turn starts halfway through.
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { access, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -12,11 +12,15 @@ import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { wall } from "../ops/fibers.ts";
 import { realOutside } from "../ops/places.ts";
-import { homesFirst, sessionPlaces, transcriptPaths } from "../read/transcript.ts";
+import { homesFirst, sessionPlaces } from "../read/transcript.ts";
+import { transcriptPathsSoon } from "../read/transcript-soon.ts";
 import * as archive from "./archive.ts";
 import { runtimeNamed } from "./config.ts";
 import { measureRoom, roomOfSoon, safeToRemove, within } from "./footprint.ts";
 import type { ColdStorage, Hub } from "./hub.ts";
+import type { Located } from "./live.ts";
+import type { RuntimeKind } from "../agents/runtime.ts";
+import type { SessionRow } from "../store/rows.ts";
 
 /// Links followed, never into a folder macOS protects (a session continued there, a job's directory: ops/places.ts).
 /// Each path is kept for 15 minutes so repeated archive rounds do not follow the same folders on the station's thread.
@@ -127,36 +131,12 @@ export class ColdRooms implements ColdStorage {
     return freed;
   }
 
+  /// The files of an archived session's transcripts that cold storage puts away, nothing of it on the station's thread.
   /// Runtime-owned files outside station storage are never removed. A shared runtime session is left hot while another
-  /// chat can still use it. The main transcript and Claude's subagent files are compressed together.
-  historyFiles(key: string, packing: boolean): string[] {
-    const hub = this.hub();
-    const row = hub.store.getSession(key);
-    if (!row) throw new Error(`unknown session ${key}`);
-    const sources = hub.store.runtimeSessionSources(key);
-    if (sources.length === 0) return [];
-    if (packing && sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key)))
-      return [];
-    const config = hub.config();
-    const root = realpathSync(config.dataDir);
-    const files: string[] = [];
-    // With those of the runtime sessions it ran in before (sessions/afresh.ts), each found as its history finds it.
-    for (const each of sources) {
-      const segmentRuntime = runtimeNamed(each.runtime);
-      if (!segmentRuntime) continue;
-      const path = transcriptPaths(segmentRuntime, config.dataDir, homesFirst(config.profiles, each.profile), [each.id], sessionPlaces(row)).paths[0];
-      if (path === undefined) continue;
-      const parent = realpathSync(dirname(path));
-      if (!within(parent, root)) continue;
-      files.push(join(parent, basename(path)));
-      if (segmentRuntime === "claude") archive.jsonlFiles(join(parent, each.id), files);
-    }
-    return files;
-  }
-
-  /// `historyFiles`, nothing of it on the station's thread: the transcripts found where the live view finds them (live.ts
-  /// `locateAsync`, the MoonBit program's), their directories followed and Claude's subagent files listed off it. Where
-  /// there is no locator (a test's hub) as `historyFiles` finds them.
+  /// chat can still use it. The main transcript and Claude's subagent files are compressed together. The transcripts are
+  /// found where the live view finds them (live.ts `locateAsync`, the MoonBit program's), their directories followed and
+  /// Claude's subagent files listed off it; where there is no locator (a test's hub), as its history finds them
+  /// (`historyFound`).
   async historyFilesSoon(key: string, packing: boolean): Promise<string[]> {
     const hub = this.hub();
     const row = hub.store.getSession(key);
@@ -165,8 +145,7 @@ export class ColdRooms implements ColdStorage {
     if (sources.length === 0) return [];
     if (packing && sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key))) return [];
     const locate = hub.live.locateAsync;
-    if (locate === null) return this.historyFiles(key, packing);
-    const located = await locate(key, new AbortController().signal);
+    const located = locate !== null ? await locate(key, new AbortController().signal) : await this.historyFound(row, sources);
     if (located === null) return [];
     const root = await realpath(hub.config().dataDir);
     const files: string[] = [];
@@ -184,6 +163,20 @@ export class ColdRooms implements ColdStorage {
     return files;
   }
 
+  /// Where a session's transcripts are where no locator finds them (a test's hub): each of the runtime sessions it ran in
+  /// (sessions/afresh.ts) found as its history finds it, off the station's thread.
+  async historyFound(row: SessionRow, sources: readonly { id: string; runtime: string; profile: string | null }[]): Promise<Located> {
+    const { dataDir, profiles } = this.hub().config();
+    const paths: { path: string; runtime: RuntimeKind }[] = [];
+    for (const each of sources) {
+      const runtime = runtimeNamed(each.runtime);
+      if (!runtime) continue;
+      const path = (await transcriptPathsSoon(runtime, dataDir, homesFirst(profiles, each.profile), [each.id], sessionPlaces(row))).paths[0];
+      if (path !== undefined) paths.push({ path, runtime });
+    }
+    return paths.length === 0 ? null : { runtime: paths[0]!.runtime, paths };
+  }
+
   /// Whether an archived session's directory or transcripts are put away: asked before each of its processes opens, so
   /// off the station's thread, its transcripts found where the live view finds them (live.ts `locateAsync`, a worker's).
   async isCold(key: string): Promise<boolean> {
@@ -197,7 +190,7 @@ export class ColdRooms implements ColdStorage {
       const locate = hub.live.locateAsync;
       paths = locate !== null
         ? ((await locate(key, new AbortController().signal))?.paths ?? []).map((p) => (typeof p === "string" ? p : p.path))
-        : this.historyFiles(key, false);
+        : await this.historyFilesSoon(key, false);
     } catch {
       return false;
     }

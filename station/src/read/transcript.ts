@@ -2,8 +2,8 @@
 // and what was learned of where its files went), the shape of an entry of a timeline, and times as transcripts write
 // them. Reading a transcript into entries is the MoonBit program's (mb/src/history: the readers' pages, the live view's
 // `tailRead`); the TypeScript that read them before is the tests' (test/reference/transcript.ts), which the program is
-// compared with.
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+// compared with. Nothing here touches the file system: a transcript is looked for by a `Looking`, which
+// read/transcript-soon.ts answers off the station's thread.
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { runtimeKind, type RuntimeKind } from "../agents/runtime.ts";
 
@@ -18,29 +18,35 @@ export type TailState = { path: string; runtime?: RuntimeKind; offset: number; p
 /// A transcript and the runtime that wrote it. A plain path uses the chain's default runtime.
 export type TranscriptRef = string | { path: string; runtime: RuntimeKind };
 
+/// What finding a transcript asks of the file system, a question at a time (a step of a `Looking`): whether a path is
+/// there (`there`, its links followed), whether it is a file (`file`), the names a directory lists (`names`, null: it
+/// lists none), a path with its links resolved (`real`, null: it is not there), and where under `path` a Codex rollout
+/// of `id` is (`rollout`, null: none). The station answers them off its thread (read/transcript-soon.ts `looked`); the
+/// tests' reference answers them with node:fs's synchronous calls (test/reference/transcript-paths.ts), the one way of
+/// looking both share, so the two find the same.
+export type Look = { ask: "there" | "file" | "names" | "real"; path: string } | { ask: "rollout"; path: string; id: string };
+export type Looking<T> = Generator<Look, T, unknown>;
+
+function* there(path: string): Looking<boolean> {
+  return (yield { ask: "there", path }) as boolean;
+}
+function* isFile(path: string): Looking<boolean> {
+  return (yield { ask: "file", path }) as boolean;
+}
+function* entriesOf(path: string): Looking<string[] | null> {
+  return (yield { ask: "names", path }) as string[] | null;
+}
+function* realOf(path: string): Looking<string | null> {
+  return (yield { ask: "real", path }) as string | null;
+}
 /// archive.rs `storage`: the file, or its `.zst` once put away.
-export const storage = (path: string) => (existsSync(path) ? path : `${path}.zst`);
-const isFile = (path: string) => {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-};
-const isDir = (path: string) => {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-};
-const entriesOf = (dir: string): string[] | null => {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return null;
-  }
-};
+export function* storageLooking(path: string): Looking<string> {
+  return (yield* there(path)) ? path : `${path}.zst`;
+}
+/// Whether a transcript is there as a file, or put away beside it.
+function* stored(path: string): Looking<boolean> {
+  return yield* isFile(yield* storageLooking(path));
+}
 
 /// Where in a home a runtime keeps its transcripts: Claude Code's projects/, Codex's sessions/, DeepSeek Harness's
 /// dsh-sessions/ as dsh.ts sets it, Grok Build's grok/sessions/, Cursor's and Devin's cursor/sessions/ and devin/sessions/
@@ -51,11 +57,6 @@ export const transcriptDir = (runtime: string) => (runtime === "claude" ? "proje
 /// The one place a runtime's transcripts are kept on the station, whichever account's home wrote them.
 export const sharedTranscripts = (dataDir: string, runtime: string) => join(dataDir, "transcripts", runtime);
 
-/// transcript_path: where a runtime keeps a session's transcript in a home, if it is there.
-export function transcriptPath(runtime: RuntimeKind, home: string, id: string): string | null {
-  return transcriptIn(runtime, join(home, transcriptDir(runtime)), id);
-}
-
 /// The directory Claude Code keeps a working directory's transcripts in, in projects/ (its sanitizePath): each character
 /// but an ASCII letter or digit a dash. Past 200 characters it shortens the name and adds a hash of it: none said.
 export function claudeProject(cwd: string): string | null {
@@ -65,24 +66,19 @@ export function claudeProject(cwd: string): string | null {
 
 /// Where a Claude session's transcript is in a directory of them when it ran in one of `places` (the session's working
 /// directories): looked for there alone, a file or two, not in every project's directory (the shared place has one for
-/// each chat the station ever had: many on a station, each looked at in turn on the main thread).
-function placedIn(runtime: RuntimeKind, dir: string, id: string, places: readonly string[]): string | null {
+/// each chat the station ever had: many on a station, each looked at in turn).
+function* placedIn(runtime: RuntimeKind, dir: string, id: string, places: readonly string[]): Looking<string | null> {
   if (runtime !== "claude") return null;
   // Claude Code names it by the directory as its process sees it (symbolic links resolved): one reached through a link
   // is looked for by both.
-  const real = (place: string): string[] => {
-    try {
-      const at = realpathSync(place);
-      return at === place ? [place] : [place, at];
-    } catch {
-      return [place];
+  for (const place of places) {
+    const at = yield* realOf(place);
+    for (const each of at === null || at === place ? [place] : [place, at]) {
+      const project = claudeProject(each);
+      if (project === null) continue;
+      const path = join(dir, project, `${id}.jsonl`);
+      if (yield* stored(path)) return path;
     }
-  };
-  for (const place of places.flatMap(real)) {
-    const project = claudeProject(place);
-    if (project === null) continue;
-    const path = join(dir, project, `${id}.jsonl`);
-    if (isFile(storage(path))) return path;
   }
   return null;
 }
@@ -105,23 +101,23 @@ export function onTranscriptHintsChanged(listener: (id: string) => void): () => 
 
 /// Where a session's transcript is in a directory of the runtime's transcripts (a home's, `transcriptDir`, or the shared
 /// place), if it is there. `placed`: a Claude one was looked for in its session's places first. `anywhere`: one not
-/// found there yet is looked for in every project of the directory (`transcriptPaths`).
-function transcriptIn(runtime: RuntimeKind, dir: string, id: string, placed = false, anywhere = true): string | null {
-  if (runtime === "dsh") return dshTranscript(dir, id);
-  if (runtime === "grok") return grokTranscript(dir, id);
+/// found there yet is looked for in every project of the directory (read/transcript-soon.ts `transcriptPathsSoon`).
+export function* transcriptInLooking(runtime: RuntimeKind, dir: string, id: string, placed = false, anywhere = true): Looking<string | null> {
+  if (runtime === "dsh") return yield* dshTranscript(dir, id);
+  if (runtime === "grok") return yield* grokTranscript(dir, id);
   if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" || runtime === "pi") {
     const path = join(dir, `${id}.jsonl`);
-    return isFile(storage(path)) ? path : null;
+    return (yield* stored(path)) ? path : null;
   }
   if (runtime === "claude") {
     const at = `${dir}\0${id}`;
     const kept = elsewhere.get(at);
     if (kept === null && placed) return null;
-    if (kept != null && isFile(storage(kept))) return kept;
+    if (kept != null && (yield* stored(kept))) return kept;
     if (!anywhere) return null;
-    for (const project of entriesOf(dir) ?? []) {
+    for (const project of (yield* entriesOf(dir)) ?? []) {
       const path = join(dir, project, `${id}.jsonl`);
-      if (isFile(storage(path))) {
+      if (yield* stored(path)) {
         if (elsewhere.get(at) !== path) { elsewhere.set(at, path); hintChanged(id); }
         return path;
       }
@@ -132,31 +128,8 @@ function transcriptIn(runtime: RuntimeKind, dir: string, id: string, placed = fa
   // Codex's: its file is where it was found (put away, its `.zst` beside) once a process.
   const at = `${dir}\0${id}`;
   const kept = rollouts.get(at);
-  if (kept !== undefined && isFile(storage(kept))) return kept;
-  const find = (dir: string): string | null => {
-    // Directory entries already say whether ordinary files are directories. Checking every transcript here blocks the
-    // station's main thread on disk when its file cache is cold; only links and unknown types need a metadata read.
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return null;
-    }
-    for (const entry of entries) {
-      const name = entry.name;
-      const path = join(dir, name);
-      if (entry.isDirectory() || (!entry.isFile() && isDir(path))) {
-        const found = find(path);
-        if (found !== null) return found;
-      } else if (name.startsWith("rollout-") && name.endsWith(`${id}.jsonl`)) {
-        return path;
-      } else if (name.startsWith("rollout-") && name.endsWith(`${id}.jsonl.zst`)) {
-        return path.slice(0, -".zst".length);
-      }
-    }
-    return null;
-  };
-  const found = find(dir);
+  if (kept !== undefined && (yield* stored(kept))) return kept;
+  const found = (yield { ask: "rollout", path: dir, id }) as string | null;
   if (found !== null && rollouts.get(at) !== found) { rollouts.set(at, found); hintChanged(id); }
   return found;
 }
@@ -170,13 +143,14 @@ const rollouts = new Map<string, string>();
 type SaidRollout = { suffix: string; seen: boolean };
 const saidRollouts = new Map<string, Map<string, SaidRollout>>();
 
-export function rememberCodexRollout(home: string, id: string, path: unknown): string | null {
+/// The rollout path a Codex thread said, kept where it is under its home's sessions/ (as reached, and with its links
+/// resolved): the path, or null where it is none of the thread's there.
+export function* rememberCodexRolloutLooking(home: string, id: string, path: unknown): Looking<string | null> {
   if (typeof path !== "string" || !isAbsolute(path) || /[\\/\0]/.test(id)) return null;
   const name = basename(path);
   if (!name.startsWith("rollout-") || !name.endsWith(`-${id}.jsonl`)) return null;
   const dir = join(home, "sessions");
-  let real = dir;
-  try { real = realpathSync(dir); } catch {}
+  const real = (yield* realOf(dir)) ?? dir;
   const within = (root: string) => {
     const part = relative(root, path);
     return part !== "" && part !== ".." && !part.startsWith(`..${sep}`) && !isAbsolute(part);
@@ -193,9 +167,9 @@ export function rememberCodexRollout(home: string, id: string, path: unknown): s
 
 /// dsh's: the session's directory holds one file per format it was written in (session.v<N>.jsonl); the current is the
 /// highest N. Its directory is under one named for its working directory (any).
-function dshTranscript(root: string, id: string): string | null {
-  for (const dir of entriesOf(root) ?? []) {
-    const files = (entriesOf(join(root, dir, id)) ?? [])
+function* dshTranscript(root: string, id: string): Looking<string | null> {
+  for (const dir of (yield* entriesOf(root)) ?? []) {
+    const files = ((yield* entriesOf(join(root, dir, id))) ?? [])
       .map((name) => [name, /^session\.v(\d+)\.jsonl$/.exec(name)?.[1]] as const)
       .filter((f): f is readonly [string, string] => f[1] !== undefined)
       .sort((a, b) => Number(b[1]) - Number(a[1]));
@@ -205,10 +179,10 @@ function dshTranscript(root: string, id: string): string | null {
 }
 
 /// Grok Build's: sessions/<working directory, escaped>/<id>/chat_history.jsonl in its home (agents/grok.ts).
-function grokTranscript(root: string, id: string): string | null {
-  for (const dir of entriesOf(root) ?? []) {
+function* grokTranscript(root: string, id: string): Looking<string | null> {
+  for (const dir of (yield* entriesOf(root)) ?? []) {
     const path = join(root, dir, id, "chat_history.jsonl");
-    if (isFile(storage(path))) return path;
+    if (yield* stored(path)) return path;
   }
   return null;
 }
@@ -227,70 +201,66 @@ export const homesFirst = (profiles: readonly { id: string; home: string }[], fi
 /// runtime writes it only once its conversation has begun. `places`: where the session works and worked (`sessionPlaces`),
 /// where a Claude transcript is looked for first, in every directory, before anywhere else in them. `anywhere` false: a
 /// Claude transcript is looked for in its places alone, never through every project (one that ran before the data
-/// directory moved, or in a terminal's directory): what the live view of the sessions at work asks, on the station's
-/// main thread (sessions/hub.ts). There each new chat, its transcript not written yet, had every project looked in (many
-/// on a station), every device held 22 s and 45 s while memory was short and all their connections lost (2026-11-02). A
-/// session at work writes in its places.
-export function transcriptPaths(runtime: RuntimeKind, dataDir: string, homes: string[], ids: string[], places: readonly string[] = [], { anywhere = true }: { anywhere?: boolean } = {}): { paths: string[]; current: boolean } {
+/// directory moved, or in a terminal's directory): what the live view of the sessions at work asks (sessions/hub.ts).
+/// There each new chat, its transcript not written yet, had every project looked in (many on a station), every device
+/// held 22 s and 45 s while memory was short and all their connections lost (2026-11-02). A session at work writes in
+/// its places.
+export function* transcriptPathsLooking(runtime: RuntimeKind, dataDir: string, homes: string[], ids: string[], places: readonly string[] = [], { anywhere = true }: { anywhere?: boolean } = {}): Looking<{ paths: string[]; current: boolean }> {
   // Each directory once, however it is reached (a home's that links to the shared place is that place), the homes' made
   // out only once one is to be looked in: nearly every transcript is in the shared place, the first.
   const shared = sharedTranscripts(dataDir, runtime);
   const ways = homes.map((home) => join(home, transcriptDir(runtime)));
   const saidDirs = runtime === "codex" ? [shared, ...ways] : [];
-  const real = (dir: string): string | null => {
-    try {
-      return realpathSync(dir);
-    } catch {
-      return null;
-    }
-  };
   let seen: Set<string> | null = null;
   const dirs = [shared];
-  const dirAt = (i: number): string | undefined => {
+  function* dirAt(i: number): Looking<string | undefined> {
     while (dirs.length <= i && ways.length > 0) {
-      seen ??= new Set([real(shared) ?? shared]);
+      if (seen === null) seen = new Set([(yield* realOf(shared)) ?? shared]);
       const dir = ways.shift()!;
-      const at = real(dir);
+      const at = yield* realOf(dir);
       if (at !== null && !seen.has(at)) (seen.add(at), dirs.push(dir));
     }
     return dirs[i];
-  };
-  const inDirs = (look: (dir: string) => string | null): string | null => {
-    for (let i = 0; dirAt(i) !== undefined; i++) {
-      const path = look(dirs[i]!);
+  }
+  function* inDirs(look: (dir: string) => Looking<string | null>): Looking<string | null> {
+    for (let i = 0; (yield* dirAt(i)) !== undefined; i++) {
+      const path = yield* look(dirs[i]!);
       if (path !== null) return path;
     }
     return null;
-  };
+  }
   const placed = places.length > 0;
-  const found = ids.map((id) => {
+  function* one(id: string): Looking<string | null> {
     let reported: { suffix: string; seen: boolean } | undefined;
     if (runtime === "codex") {
       for (const dir of saidDirs) {
-        const said = saidRollouts.get(id)?.get(dir) ?? saidRollouts.get(id)?.get(real(dir) ?? dir);
+        const kept = saidRollouts.get(id);
+        const said = kept?.get(dir) ?? (kept === undefined ? undefined : kept.get((yield* realOf(dir)) ?? dir));
         if (!said) continue;
         reported ??= said;
         const path = join(dir, said.suffix);
-        if (isFile(storage(path))) { if (!said.seen) { said.seen = true; hintChanged(id); } return path; }
+        if (yield* stored(path)) { if (!said.seen) { said.seen = true; hintChanged(id); } return path; }
         if (!said.seen && !anywhere) return null;
         // History also looks elsewhere: a file may have moved before this process saw it at the reported path.
       }
     }
-    const path = inDirs((dir) => placedIn(runtime, dir, id, places)) ?? inDirs((dir) => transcriptIn(runtime, dir, id, placed, anywhere));
+    const path = (yield* inDirs((dir) => placedIn(runtime, dir, id, places))) ?? (yield* inDirs((dir) => transcriptInLooking(runtime, dir, id, placed, anywhere)));
     // If a history read found the file elsewhere, later live reads may use that cached location too.
     if (path !== null && reported && !reported.seen) { reported.seen = true; hintChanged(id); }
     return path;
-  });
+  }
+  const found: (string | null)[] = [];
+  for (const id of ids) found.push(yield* one(id));
   return { paths: found.filter((p) => p !== null), current: found.at(-1) != null };
 }
 
 /// Resolve each segment with the runtime and account that wrote it, keeping their conversation order.
-export function transcriptSources(dataDir: string, profiles: readonly { id: string; home: string }[], sources: readonly { id: string; runtime: string; profile: string | null }[], places: readonly string[] = [], options: { anywhere?: boolean } = {}): { paths: { path: string; runtime: RuntimeKind }[]; current: boolean } {
+export function* transcriptSourcesLooking(dataDir: string, profiles: readonly { id: string; home: string }[], sources: readonly { id: string; runtime: string; profile: string | null }[], places: readonly string[] = [], options: { anywhere?: boolean } = {}): Looking<{ paths: { path: string; runtime: RuntimeKind }[]; current: boolean }> {
   const paths: { path: string; runtime: RuntimeKind }[] = [];
   let current = false;
   for (const source of sources) {
     const runtime = runtimeKind(source.runtime);
-    const found = runtime ? transcriptPaths(runtime, dataDir, homesFirst(profiles, source.profile), [source.id], places, options) : null;
+    const found = runtime ? yield* transcriptPathsLooking(runtime, dataDir, homesFirst(profiles, source.profile), [source.id], places, options) : null;
     current = found?.current === true;
     if (runtime && found?.paths[0]) paths.push({ path: found.paths[0], runtime });
   }
@@ -351,7 +321,7 @@ export function transcriptLocationHints(dataDir: string, profiles: readonly { ho
 }
 
 /// Every in-process hint, for the usage counter's program (usage/counter-mb.ts), which finds transcripts as
-/// `transcriptPaths` here and gives back what it found (`takeTranscriptHints`).
+/// `transcriptPathsLooking` here and gives back what it found (`takeTranscriptHints`).
 export function allTranscriptHints(): TranscriptLocationHints {
   return {
     elsewhere: [...elsewhere], rollouts: [...rollouts],
@@ -375,17 +345,11 @@ export function takeTranscriptHints(found: TranscriptLocationHints): void {
   }
 }
 
-/// Used in the dedicated locator worker, whose transcript caches belong to one batch at a time.
-export function useTranscriptLocationHints(hints: TranscriptLocationHints): void {
-  elsewhere.clear();
-  rollouts.clear();
-  saidRollouts.clear();
-  for (const [key, path] of hints.elsewhere) elsewhere.set(key, path);
-  for (const [key, path] of hints.rollouts) rollouts.set(key, path);
-  for (const [id, dirs] of hints.said) saidRollouts.set(id, new Map(dirs));
-}
+/// The hints this process keeps, for what the tests' reference does with them (test/reference/transcript-paths.ts
+/// `useTranscriptLocationHints`: a locator's worker of before, given a batch's).
+export const keptTranscriptHints = () => ({ elsewhere, rollouts, saidRollouts });
 
-/// Where a session works and worked, for `transcriptPaths`: the directory it was moved to, and its workspace.
+/// Where a session works and worked, for `transcriptPathsLooking`: the directory it was moved to, and its workspace.
 export const sessionPlaces = (row: { cwd: string | null; workspace: string }): string[] => (row.cwd !== null && row.cwd !== row.workspace ? [row.cwd, row.workspace] : [row.workspace]);
 
 const divEuclid = (a: number, b: number) => Math.floor(a / b);

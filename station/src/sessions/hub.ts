@@ -31,7 +31,8 @@ import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
-import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
+import { iso, sessionPlaces } from "../read/transcript.ts";
+import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs } from "../store/rows.ts";
@@ -328,13 +329,13 @@ export class Hub {
       },
     });
     this.live = new LiveHub(
-      (key) => {
+      async (key) => {
         const row = this.store.getSession(key);
         const runtime = row && runtimeNamed(row.runtime);
         if (!row || !runtime || this.store.runtimeSessionSources(key).length === 0) return null;
         const { dataDir, profiles } = this.config();
-        // In its places alone: this is the main thread (read/transcript.ts `anywhere`).
-        const { paths, current } = transcriptSources(dataDir, profiles, this.store.runtimeSessionSources(key), sessionPlaces(row), { anywhere: false });
+        // In its places alone, as the live view asks it (read/transcript.ts `anywhere`).
+        const { paths, current } = await transcriptSourcesSoon(dataDir, profiles, this.store.runtimeSessionSources(key), sessionPlaces(row), { anywhere: false });
         return paths.length === 0 ? null : { runtime, paths, current };
       },
       this.clock,

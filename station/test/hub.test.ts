@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { GO_ON_AFTER_AUTH, GO_ON_AFTER_FAILED, GO_ON_AFTER_OVERLOADED, GO_ON_AFTER_REFILL, GO_ON_AFTER_SPENT, GO_ON_AFTER_UNANSWERED, NUDGE, TOOLS_LOST } from "../src/agents/instructions.ts";
 import { retryable } from "../src/sessions/actor.ts";
 import { latest } from "../src/agents/migrations.ts";
-import { claudeProject, homesFirst, transcriptPaths } from "../src/read/transcript.ts";
+import { claudeProject, homesFirst, transcriptPaths } from "./reference/transcript-paths.ts";
 import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";

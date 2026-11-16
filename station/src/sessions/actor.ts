@@ -182,7 +182,7 @@ export type SessionDeps = {
   longChat?(key: string): string | null;
   /// Its subagents `ids` of runtime session `from`, stopped with its process, taken to runtime session `to` begun on
   /// `on`, so that they are taken up there (sessions/afresh.ts): the ids taken.
-  carrySubagents?(from: string, to: string, on: Profile, ids: string[]): string[];
+  carrySubagents?(from: string, to: string, on: Profile, ids: string[]): Promise<string[]>;
   /// The runtime session it runs in, on `profile` (null: not known).
   ranIn?(key: string, id: string, profile: string | null): void;
   idle(key: string): void;
@@ -373,7 +373,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     told.afresh = afresh;
     const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
       : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
-    if (from === undefined || from.runtime === row.runtime) resumable = deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents) ?? [];
+    if (from === undefined || from.runtime === row.runtime) resumable = (await deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents)) ?? [];
   } else if (row.runtimeSessionId) {
     try {
       agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));

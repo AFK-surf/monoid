@@ -16,7 +16,7 @@ import { piRoute, profileEnv, profileRuntimes } from "../src/agents/profiles.ts"
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { learn } from "../src/accounts/catalog.ts";
-import { transcriptPath } from "../src/read/transcript.ts";
+import { transcriptPath } from "./reference/transcript-paths.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;

@@ -23,7 +23,7 @@ import { test } from "node:test";
 import { zstdDecompressSync } from "node:zlib";
 import {
   emptyWorkspace,
-  jsonlFiles,
+  jsonlFilesSoon,
   lock,
   packFile,
   packFileIf,
@@ -310,7 +310,7 @@ test("the room's lock is taken in turn", async () => {
   rmSync(room, { recursive: true });
 });
 
-test("jsonl files: logical names, packed ones too, once each", () => {
+test("jsonl files: logical names, packed ones too, once each", async () => {
   const root = temp();
   write(join(root, "a.jsonl"), "");
   write(join(root, "sub/b.jsonl.zst"), "");
@@ -318,7 +318,7 @@ test("jsonl files: logical names, packed ones too, once each", () => {
   write(join(root, "c.txt"), "");
   write(join(root, "a.jsonl.archive-lock"), "");
   const out: string[] = [];
-  jsonlFiles(root, out);
+  await jsonlFilesSoon(root, out);
   assert.deepEqual(out.sort(), [join(root, "a.jsonl"), join(root, "sub/b.jsonl")]);
   assert.equal(withExtension("/x/abc.jsonl", "jsonl.archive-lock"), join("/x", "abc.jsonl.archive-lock"));
   assert.equal(withExtension("/x/abc.jsonl.zst", "zst.writing"), join("/x", "abc.jsonl.zst.writing"));

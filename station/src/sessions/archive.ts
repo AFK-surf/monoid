@@ -19,7 +19,7 @@
 // addon (tests), the lock files are made where the Rust makes them but the lock itself is held within
 // this process (one station at a time works on a data directory; only an overlap at a handover would see both).
 import { loadMesh } from "../mesh/native.ts";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { segments } from "../ops/paths.ts";
@@ -249,21 +249,8 @@ export async function restoreFile(path: string): Promise<void> {
   }
 }
 
-/// Logical JSONL names, including files whose raw bytes have been put away. Never follow directory symlinks.
-export function jsonlFiles(dir: string, out: string[]) {
-  if (!existsSync(dir)) return;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) jsonlFiles(path, out);
-    else if (entry.isFile()) {
-      const logical = extension(path) === "zst" ? withExtension(path, "") : path;
-      if (extension(logical) === "jsonl" && !out.includes(logical)) out.push(logical);
-    }
-  }
-}
-
-/// `jsonlFiles`, off the station's thread: walked as every walk is (ops/walk.ts `walkBounded`: on its file system, no
-/// link followed, bounded, yielding), each transcript once.
+/// Logical JSONL names under `dir`, including files whose raw bytes have been put away, each once, off the station's
+/// thread: walked as every walk is (ops/walk.ts `walkBounded`: on its file system, no link followed, bounded, yielding).
 export async function jsonlFilesSoon(dir: string, out: string[]): Promise<void> {
   const seen = new Set(out);
   await walkBounded(dir, (entry) => {

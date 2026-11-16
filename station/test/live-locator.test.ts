@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { transcriptSources } from "../src/read/transcript.ts";
+import { transcriptSources } from "./reference/transcript-paths.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { Store } from "../src/store/store.ts";
 import { Worker } from "node:worker_threads";

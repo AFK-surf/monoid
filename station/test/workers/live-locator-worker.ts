@@ -4,7 +4,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { runtimeKind } from "../../src/agents/runtime.ts";
 import { getSession, historyRuntimeSources, openStore } from "../reference/store.ts";
-import { sessionPlaces, transcriptLocationHints, transcriptSources, useTranscriptLocationHints } from "../../src/read/transcript.ts";
+import { sessionPlaces, transcriptLocationHints, transcriptSources, useTranscriptLocationHints } from "../reference/transcript-paths.ts";
 import { locationIdentity, type LocateMessage, type LocateReply, type LocateRequest, type LiveSource } from "../../src/sessions/live-location-protocol.ts";
 
 const data = workerData.data as string;

@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { iso, rememberCodexRollout } from "../src/read/transcript.ts";
+import { iso, rememberCodexRollout } from "./reference/transcript-paths.ts";
 import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";

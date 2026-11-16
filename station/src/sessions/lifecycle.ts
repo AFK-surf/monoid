@@ -14,7 +14,8 @@ import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
-import { sessionPlaces, sharedTranscripts, transcriptSources } from "../read/transcript.ts";
+import { sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
+import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
@@ -625,7 +626,7 @@ export async function deleteSession(hub: Hub, key: string) {
   await actor?.dispose();
   hub.live.forget(key);
   const { dataDir, profiles } = hub.config();
-  const transcripts = transcriptSources(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row)).paths.map((p) => p.path);
+  const transcripts = (await transcriptSourcesSoon(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row))).paths.map((p) => p.path);
   hub.store.deleteSession(key);
   hub.closed(key);
   await rm(transcriptCopy(hub, key), { force: true });
@@ -723,7 +724,7 @@ export async function continueMachineSession(hub: Hub, roots: Roots, found: Mach
   const model = keptModel ?? profile.model ?? profile.models[0] ?? null;
   const copy = await copyTranscript(roots, found, sharedTranscripts(config.dataDir, runtime));
   // Where its execution history is when it comes here: its last entry, counted as the history reads it (from the shared
-  // place, read/transcript.ts `transcriptPaths`), by the readers, not on this thread.
+  // place, read/transcript.ts `transcriptPathsSoon`), by the readers, not on this thread.
   const entries = await hub.live.counted(runtime, copy);
   const last = entries > 0 ? entries - 1 : null;
   const key = newChatKey();

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { agentEnv } from "../ops/agent-env.ts";
 import { log } from "../ops/log.ts";
 import { walkBounded } from "../ops/walk.ts";
-import { rememberCodexRollout } from "../read/transcript.ts";
+import { rememberCodexRolloutSoon } from "../read/transcript-soon.ts";
 import { linkCodexAuth, type Env } from "./machine-logins.ts";
 import { ackedOffset, bytesWithin, debug, findRunner, outFile, runnerId } from "./process.ts";
 import { AgentsHost, HostedProcess, type Heard, type Router } from "./mb-agents.ts";
@@ -1213,10 +1213,11 @@ export class CodexDriver implements AgentDriver {
       }
     }
     const session = new CodexSession(this, threadId, host, options.profile, { busy: false, turnId: null, closed: false }, NO_LIVE, events);
-    session.rememberTranscript(opened?.thread?.path);
+    const remembered = session.rememberTranscript(opened?.thread?.path);
     session.running = { model, effort: options.effort };
     session.toolsUrl = options.mcpUrl;
     host.addThread(threadId, session.sink(), NO_LIVE);
+    await remembered;
     return session;
   }
 
@@ -1232,7 +1233,10 @@ export class CodexDriver implements AgentDriver {
       return host;
     });
     try {
-      return this.adoptOn(leased, options, handed, events, key);
+      const session = this.adoptOn(leased, options, handed, events, key);
+      // (where its transcript is, as the station before was told it: known before it is handed on again)
+      await session.transcriptKnown;
+      return session;
     } finally {
       this.let(leased);
     }
@@ -1276,14 +1280,14 @@ export class CodexDriver implements AgentDriver {
   }
 
   /// A session taken up on `host`.
-  private adoptOn(host: Host, options: OpenOptions, handed: CodexSnapshot | null, events: (event: RuntimeEvent) => void, key: string): AgentSession {
+  private adoptOn(host: Host, options: OpenOptions, handed: CodexSnapshot | null, events: (event: RuntimeEvent) => void, key: string): CodexSession {
     let session: CodexSession;
     if (handed) {
       session = new CodexSession(this, handed.threadId, host, options.profile, { busy: handed.busy, turnId: handed.turnId, closed: false }, handed.live ?? NO_LIVE, events);
       session.tuned = handed.tuned ?? null;
       session.running = session.tuned;
       session.toolsUrl = handed.mcpUrl ?? null;
-      session.rememberTranscript(handed.transcriptPath);
+      void session.rememberTranscript(handed.transcriptPath);
     } else {
       const threadId = options.resume;
       if (threadId === undefined) throw new Error("a codex thread is taken up by its id (resume)");
@@ -1429,6 +1433,9 @@ export class CodexSession implements AgentSession {
   /// The address of the station's tools its thread was given; null when not known (taken up after a crash).
   toolsUrl: string | null = null;
   private transcriptPath: string | null = null;
+  /// The last rollout path said of its thread, kept (`rememberTranscript`): only the newest asked sets `transcriptPath`.
+  transcriptKnown: Promise<void> = Promise.resolve();
+  #transcriptAsked = 0;
 
   constructor(driver: CodexDriver, threadId: string, host: Host, profile: Profile, state: ThreadState, live: CodexLiveState, events: (event: RuntimeEvent) => void) {
     this.driver = driver;
@@ -1509,17 +1516,24 @@ export class CodexSession implements AgentSession {
     return this.driver.updateMatchesStation(this.profile);
   }
 
-  rememberTranscript(path: unknown) {
-    this.transcriptPath = rememberCodexRollout(this.profile.home, this.threadId, path);
+  /// Keeps the rollout path Codex said of its thread (read/transcript.ts `rememberCodexRolloutSoon`, off the station's
+  /// thread), what its snapshot hands the next station.
+  rememberTranscript(path: unknown): Promise<void> {
+    const asked = ++this.#transcriptAsked;
+    this.transcriptKnown = rememberCodexRolloutSoon(this.profile.home, this.threadId, path).then((kept) => {
+      if (asked === this.#transcriptAsked) this.transcriptPath = kept;
+    });
+    return this.transcriptKnown;
   }
 
   /// A snapshot from an older station (or recovery after a crash) has no path. Ask the running app-server without
   /// holding up the handover; if it cannot say, the ordinary transcript lookup still works.
   recoverTranscript() {
-    if (this.transcriptPath !== null) return;
-    void this.host.request("thread/read", { threadId: this.threadId, includeTurns: false })
-      .then((answer) => { if (!this.state.closed) this.rememberTranscript(answer?.thread?.path); })
-      .catch(() => {});
+    void this.transcriptKnown.then(() => {
+      if (this.transcriptPath !== null || this.state.closed) return;
+      return this.host.request("thread/read", { threadId: this.threadId, includeTurns: false })
+        .then((answer) => { if (!this.state.closed) return this.rememberTranscript(answer?.thread?.path); });
+    }).catch(() => {});
   }
 
   mcpUrl() {

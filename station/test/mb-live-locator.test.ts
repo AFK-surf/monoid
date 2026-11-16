@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { rememberCodexRollout, transcriptSources } from "../src/read/transcript.ts";
+import { rememberCodexRollout, transcriptSources } from "./reference/transcript-paths.ts";
 import { LiveLocator } from "../src/sessions/live-locator.ts";
 import { Store } from "../src/store/store.ts";
 import { Worker } from "node:worker_threads";

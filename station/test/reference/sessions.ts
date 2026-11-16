@@ -23,7 +23,7 @@ import { type InWorkspace, sees } from "../../src/store/rows.ts";
 import { watching } from "./store.ts";
 import * as store from "./store.ts";
 import type { Json, SessionRow, Store, ThreadRow, ThreadSummary } from "./store.ts";
-import { sessionPlaces, transcriptSources } from "../../src/read/transcript.ts";
+import { sessionPlaces, transcriptSources } from "./transcript-paths.ts";
 import { type Read, chainOf, entriesOf, lengthOf, marksDir, stateOf } from "./transcripts.ts";
 import { log } from "../../src/ops/log.ts";
 import { HttpError, apiOf, authorNames as authorNamesOf, creator as creatorOf, messageView, people as peopleOf, useNames } from "./views.ts";

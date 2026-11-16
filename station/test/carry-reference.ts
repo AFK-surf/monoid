@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ANY_NAME_DEPTH, rebuildableByName, rebuiltByName, rebuiltOfAnyName, roomOf } from "./footprint-reference.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../src/sessions/agent-home.ts";
 import { runtimeKind } from "../src/agents/runtime.ts";
-import { sessionPlaces, storage, transcriptSources } from "../src/read/transcript.ts";
+import { sessionPlaces, storage, transcriptSources } from "./reference/transcript-paths.ts";
 import { carriedTo, moved } from "../src/replica/restore.ts";
 
 import { type CarriedFile, type CarriedGit, type CarriedHome, type CarriedSession, type CarryIndex, type Gathered, SIZED_TRANSCRIPTS, type Sized, type Sizing, carriedPlace, cliKeptOf, indexFile, listFile } from "../src/replica/carry.ts";

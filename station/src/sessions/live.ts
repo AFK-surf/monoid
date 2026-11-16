@@ -54,8 +54,10 @@ export type History = {
 
 /// Where a session's transcripts are: of the runtime sessions it ran in, the first first, ending with its current one
 /// (`current`: whether that one's is among them; when not given, it is).
-export type Locate = (key: string) => { runtime: RuntimeKind; paths: TranscriptRef[]; current?: boolean } | null;
-export type AsyncLocate = (key: string, signal: AbortSignal) => Promise<ReturnType<Locate>>;
+export type Located = { runtime: RuntimeKind; paths: TranscriptRef[]; current?: boolean } | null;
+/// Looked for off the station's thread where it waits on the disk (read/transcript.ts `transcriptSourcesSoon`).
+export type Locate = (key: string) => Promise<Located> | Located;
+export type AsyncLocate = (key: string, signal: AbortSignal) => Promise<Located>;
 
 /// A read of one transcript on from where its reading stood (none: from its start), with where it stands after (the
 /// readers' `tailRead`, mb/src/history `tail_read`): each entry told otherwise in brief carries that beside it
@@ -303,7 +305,7 @@ export class LiveHub {
     switch (f) {
       case "locate": {
         const key = args[0] as string;
-        if (this.locateAsync === null) return this.#keepLocated(key, this.#locate(key) ?? null);
+        if (this.locateAsync === null) return this.#keepLocated(key, (await this.#locate(key)) ?? null);
         const pending = new AbortController();
         // (where a session that moved on goes on, looked for as it is read: given up by the next read, `unfollow`)
         const following = args[1] === true;
@@ -431,8 +433,8 @@ export class LiveHub {
   }
 
   /// Where the program last found each session's transcripts: what a page read here reads (`#pageHere`).
-  readonly #located = new Map<string, ReturnType<Locate>>();
-  #keepLocated(key: string, at: ReturnType<Locate>): ReturnType<Locate> {
+  readonly #located = new Map<string, Located>();
+  #keepLocated(key: string, at: Located): Located {
     if (at === null) this.#located.delete(key);
     else this.#located.set(key, at);
     return at;
@@ -441,7 +443,7 @@ export class LiveHub {
   /// A page of a session's transcripts read whole by the program's reader of its own (no readers: a test's): for the
   /// program, where it found them.
   async #pageHere(key: string, before: number, limit: number, inBrief: boolean, asked = false): Promise<{ start: number; entries: TimelineEntry[]; end: number } | null> {
-    const at = (asked ? this.#located.get(key) : undefined) ?? (this.locateAsync !== null ? await this.locateAsync(key, new AbortController().signal) : this.#locate(key));
+    const at = (asked ? this.#located.get(key) : undefined) ?? (this.locateAsync !== null ? await this.locateAsync(key, new AbortController().signal) : await this.#locate(key));
     if (!at) return null;
     const all: Json[] = [];
     for (const ref of at.paths) {

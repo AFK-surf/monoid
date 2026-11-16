@@ -1,6 +1,6 @@
 // The TypeScript that read a runtime's transcript into a timeline before the MoonBit program did (mb/src/history), kept
-// for the tests to compare the program with; where transcripts are is still station/src/read/transcript.ts's, which
-// this gives on.
+// for the tests to compare the program with; where transcripts are is station/src/read/transcript.ts's, found on this
+// thread as the tests' reference finds them (./transcript-paths.ts), which this gives on.
 //
 // A runtime's own session transcript as one readable timeline for the pages, read whole
 // as a session nobody watches is: its file, or its `.zst` once put away; the agent's own posts left
@@ -20,9 +20,9 @@ import { isPlanTool } from "./plan.ts";
 import type { Json } from "../../src/read/store.ts";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { unpackedWhole } from "./packed.ts";
-import { type TimelineEntry, storage } from "../../src/read/transcript.ts";
+import { type TimelineEntry, storage } from "./transcript-paths.ts";
 
-export * from "../../src/read/transcript.ts";
+export * from "./transcript-paths.ts";
 
 const MAX_TEXT = 4000;
 

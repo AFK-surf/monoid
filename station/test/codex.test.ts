@@ -19,7 +19,7 @@ import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
 import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
 import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
-import { transcriptPaths } from "../src/read/transcript.ts";
+import { transcriptPaths } from "./reference/transcript-paths.ts";
 import { tempDir } from "./temp-dir.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
