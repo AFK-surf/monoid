@@ -9,6 +9,7 @@
 // `stillfail-station update --apply-delta --app DIR --delta FILE --out FILE`: the applier the running station starts
 // apart from itself (release.ts applyApart), the delta applied to the release in DIR and what it makes written to FILE;
 // why it failed on stderr, exit code 1.
+import { CLOUD_ORIGIN, CloudTransport, cloudEntry } from "../cloud/transport.ts";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +53,7 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
   const positional = args.filter((a, i) => !a.startsWith("--") && !(i > 0 && ["--app", "--data"].includes(args[i - 1]!)));
   if (!app || asked.length > 1 || positional.length !== 1) return 2;
   const lang = stationLang();
+  let transport: CloudTransport | undefined;
   try {
     const base = releaseBaseIn(data);
     if (base === null) throw new Error(tr(lang, "station.updates.notJoined"));
@@ -59,11 +61,13 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
     if (named !== null) await setChannel(data, named, 10_000);
     let raw: any = {};
     if (existsSync(configPath(data))) raw = readJsonFile(configPath(data));
+    transport = new CloudTransport(() => cloudEntry(raw));
+    const request = base === CLOUD_ORIGIN ? transport.fetch : fetch;
     const channel = channelOf(raw, app);
     const installed = releaseChannel(app) ?? channel;
-    const plan = await planUpdate({ base, channel, app, installed, lang, trusted });
+    const plan = await planUpdate({ base, channel, app, installed, lang, trusted, request });
     // timer: a deadline of an outside request (the delta's download), past which the installer downloads the release.
-    const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS) });
+    const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS), request });
     const lines = [`script=${plan.script}`, ...Object.entries({ ...plan.env, ...handed }).map(([k, v]) => `${k}=${v}`)];
     if (lines.some((l) => /[\r\n]/.test(l))) throw new Error(`a line break in ${JSON.stringify(lines)}`);
     console.log(lines.join("\n"));
@@ -71,7 +75,7 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);
     return 1;
-  }
+  } finally { await transport?.close(); }
 }
 
 function applyDeltaCommand(args: string[]): number {

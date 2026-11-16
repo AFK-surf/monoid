@@ -39,6 +39,7 @@
 // - `stillfail-station channel` reaches this process as the launcher's `{"op":"hup"}` (it holds SIGHUP for it):
 //   `answerChannelAsk`.
 
+import { CLOUD_ORIGIN, CloudTransport, cloudEntry } from "../cloud/transport.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { type FSWatcher, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
@@ -236,6 +237,8 @@ export class Updates {
   readonly app: string;
   readonly data: string;
   private config: ConfigFile;
+  private cloudTransport: CloudTransport;
+  private cloudRequest = (url: string, init?: RequestInit): Promise<Response> => this.origin() === CLOUD_ORIGIN ? this.cloudTransport.fetch(url, init) : fetch(url, init);
   private origin: () => string | null | undefined;
   private env: Env;
   private registry: string;
@@ -286,6 +289,7 @@ export class Updates {
     this.data = o.data;
     this.config = o.config;
     this.origin = o.origin;
+    this.cloudTransport = new CloudTransport(() => cloudEntry(this.config.raw()), o.clock);
     this.env = o.env ?? process.env;
     // The Nodes it installed for npm, on its PATH (and what it starts): what they installed is found there.
     removeOwnNodeLinks(this.env, this.data);
@@ -376,6 +380,7 @@ export class Updates {
     this.unhold?.();
     this.following?.();
     this.following = null;
+    await this.cloudTransport.close();
     await this.fibers.close();
   }
 
@@ -517,7 +522,7 @@ export class Updates {
     if (origin !== null) {
       try {
         // Only a release whose words verify is one (none is newer than a feed that does not).
-        const { release, why } = verifiedOrNull(await readFeed(channel, origin), this.trusted);
+        const { release, why } = verifiedOrNull(await readFeed(channel, origin, 15_000, this.cloudRequest), this.trusted);
         if (release === null) log.warn("updates", "the station's latest release does not verify: not offered", { channel, why });
         latest = release?.version ?? null;
       } catch (e) {
@@ -1131,7 +1136,7 @@ export class Updates {
     // The release verified, the installer to run and what it is told (refused in `lang`: not left updating).
     let plan: Plan;
     try {
-      plan = await planUpdate({ base: origin, channel, app: this.app, installed: this.installed, lang, trusted: this.trusted });
+      plan = await planUpdate({ base: origin, channel, app: this.app, installed: this.installed, lang, trusted: this.trusted, request: this.cloudRequest });
     } catch (e) {
       Object.assign(station, before);
       throw e;
@@ -1166,6 +1171,7 @@ export class Updates {
       return await takeDelta(plan, {
         app: this.app,
         apply: applyApart,
+        request: this.cloudRequest,
         signal: over.signal,
         progress: (percent) => this.set("station", (i) => (i.percent = percent)),
       });

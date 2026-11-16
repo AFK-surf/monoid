@@ -1,7 +1,8 @@
 // The station's services: what its parts are given, each a Context key with the layer that makes it. Async and
 // long-lived work is Effect (fibers in scopes: a part stopped stops all it started); computing what to answer is plain
 // functions (src/read). 「模块划分」.
-import { Context, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
+import { cloudEntry } from "./cloud/transport.ts";
+import { Clock, Context, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Admin } from "./api/admin.ts";
@@ -70,7 +71,9 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
         const { data } = yield* Paths;
         const key = yield* Key;
         const up = yield* Up;
-        const state = yield* Effect.acquireRelease(Effect.sync(() => new CloudState(data)), (s) => Effect.sync(() => s.close()));
+        const clock = yield* Clock.clockWith(Effect.succeed);
+        const config = yield* StationConfig;
+        const state = yield* Effect.acquireRelease(Effect.sync(() => new CloudState(data, true, clock, () => cloudEntry(config.raw()))), (s) => Effect.promise(async () => { await s.close(); }));
         const changes = Stream.callback<void>((queue) =>
           Effect.acquireRelease(
             Effect.sync(() => state.listen(() => void Queue.offerUnsafe(queue, undefined))),

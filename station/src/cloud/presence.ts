@@ -117,76 +117,94 @@ function cloudSaid(event: unknown, said?: (event: CloudSaid) => void): boolean {
 /// can't be had or breaks; closed when interrupted.
 const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (event: CloudSaid) => void) =>
   Effect.callback<string, Error>((resume) => {
-    const state = s.state!;
-    const ts = nowSecs();
-    // New clouds read the canonical proof; old clouds their original one.
-    const headers = signedHeaders(plane.connectPrefixes, state.station, ts, (prefix) => key.sign(`${prefix}-station-connect-v1:${state.origin}:${state.station}:${ts}`), { version: version() });
-    const socket = new WebSocket(`${state.origin.replace("http", "ws")}${plane.connectPath}`, { headers, handshakeTimeout: CONNECT_TIMEOUT_MS });
+    let created: WebSocket | undefined;
     let ping: (() => void) | undefined;
-    let answered = true;
-    const { tell, askPending } = planeTeller(s, (frame) => socket.send(JSON.stringify(frame)), () => socket.readyState === WebSocket.OPEN);
-    tell();
-    const unlisten = s.listen(tell);
-    let failed: Error | null = null;
-    socket.on("unexpected-response", (_, response) => {
-      if (response.statusCode === 404) {
-        removed(s, 404);
-        failed = new Error("station removed");
-      } else {
-        failed = new Error(`${plane.name} answered ${response.statusCode}`);
-      }
-      socket.terminate();
-    });
-    socket.on("error", (error) => (failed ??= error));
-    socket.on("open", () => {
-      takenBack(s, plane);
-      writePresence(s.data, true, null);
-      log.info("presence", `online at ${plane.name}`);
-      // The cloud's answering is in the machine's time.
-      ping = wall.every(PING_MS, () => {
-        // No pong since the last ping: gone even if the socket has not noticed.
-        if (!answered) {
-          failed = new Error(`${plane.name} stopped answering`);
-          socket.terminate();
+    let unlisten = () => {};
+    try {
+      const state = s.state!;
+      const ts = nowSecs();
+      // New clouds read the canonical proof; old clouds their original one.
+      const headers = signedHeaders(plane.connectPrefixes, state.station, ts, (prefix) => key.sign(`${prefix}-station-connect-v1:${state.origin}:${state.station}:${ts}`), { version: version() });
+      const url = `${state.origin.replace("http", "ws")}${plane.connectPath}`;
+      const regional = plane.provider === "stillfail" && s.transport.eligible(state.origin, plane.provider);
+      const socket = created = regional ? s.transport.websocket(url, headers, WebSocket) : new WebSocket(url, { headers, handshakeTimeout: CONNECT_TIMEOUT_MS });
+      let answered = true;
+      const { tell, askPending } = planeTeller(s, (frame) => socket.send(JSON.stringify(frame)), () => socket.readyState === WebSocket.OPEN);
+      tell();
+      unlisten = s.listen(tell);
+      let failed: Error | null = null;
+      socket.on("unexpected-response", (_, response) => {
+        if (response.statusCode === 404) {
+          removed(s, 404);
+          failed = new Error("station removed");
+        } else {
+          failed = new Error(`${plane.name} answered ${response.statusCode}`);
+        }
+        socket.terminate();
+      });
+      socket.on("error", (error) => (failed ??= error));
+      socket.on("open", () => {
+        takenBack(s, plane);
+        writePresence(s.data, true, null);
+        log.info("presence", `online at ${plane.name}`);
+        // The cloud's answering is in the machine's time.
+        ping = wall.every(PING_MS, () => { // timer: the existing presence heartbeat
+          // No pong since the last ping: gone even if the socket has not noticed.
+          if (!answered) {
+            failed = new Error(`${plane.name} stopped answering`);
+            socket.terminate();
+            return;
+          }
+          answered = false;
+          socket.send("ping");
+          askPending();
+        });
+      });
+      socket.on("message", (data, binary) => {
+        if (binary) return;
+        const text = data.toString();
+        if (text === "pong") {
+          answered = true;
           return;
         }
-        answered = false;
-        socket.send("ping");
-        askPending();
+        // Each frame is told by its parsed `type`, never by where that field sits in the text: a provider's encoder may
+        // put it anywhere (Comma's map encoder puts it last).
+        let body: any;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          return;
+        }
+        if (cloudSaid(body, said)) return;
+        if (body?.type === "tool") tool(s, plane, socket, body);
+        else applyFrame(s, body, (frame) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(frame)));
       });
-    });
-    socket.on("message", (data, binary) => {
-      if (binary) return;
-      const text = data.toString();
-      if (text === "pong") {
-        answered = true;
-        return;
-      }
-      // Each frame is told by its parsed `type`, never by where that field sits in the text: a provider's encoder may
-      // put it anywhere (Comma's map encoder puts it last).
-      let body: any;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        return;
-      }
-      if (cloudSaid(body, said)) return;
-      if (body?.type === "tool") tool(s, plane, socket, body);
-      else applyFrame(s, body, (frame) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(frame)));
-    });
-    socket.on("close", (code, reason) => {
+      socket.on("close", (code, reason) => {
+        ping?.();
+        unlisten();
+        if (code === CLOSE_REMOVED) removed(s, CLOSE_REMOVED);
+        // With its code and reason: replaced by another socket of this station's (4000), silent (4008), the cloud restarting (1001, 1012)…
+        const why = reason.length > 0 ? `${code} ${reason.toString("utf8")}` : String(code);
+        resume(failed ? Effect.fail(failed) : Effect.succeed(`${plane.name} closed the presence socket (${why})`));
+      });
+      return Effect.sync(() => {
+        ping?.();
+        unlisten();
+        if (regional) socket.terminate();
+        else socket.close();
+      });
+    } catch (error) {
+      // Connection preparation can fail before a socket emits an error. Keep the same status and retry path.
       ping?.();
       unlisten();
-      if (code === CLOSE_REMOVED) removed(s, CLOSE_REMOVED);
-      // With its code and reason: replaced by another socket of this station's (4000), silent (4008), the cloud restarting (1001, 1012)…
-      const why = reason.length > 0 ? `${code} ${reason.toString("utf8")}` : String(code);
-      resume(failed ? Effect.fail(failed) : Effect.succeed(`${plane.name} closed the presence socket (${why})`));
-    });
-    return Effect.sync(() => {
-      ping?.();
-      unlisten();
-      socket.close();
-    });
+      if (created) {
+        created.removeAllListeners();
+        created.on("error", () => {});
+        created.terminate();
+      }
+      resume(Effect.fail(error instanceof Error ? error : new Error(String(error))));
+      return Effect.void;
+    }
   });
 
 /// What a station tells the plane of its locks on one socket (`send`, while `open`): the entries it took from devices

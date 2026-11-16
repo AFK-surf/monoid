@@ -1,5 +1,7 @@
 // The station's commands other than `run` (the Rust station's main.rs `main`): enroll, status, id. Their output is what
 // people and `bin/stillfail` read, so its words are the catalog's, as the Rust station says them.
+import { CloudTransport, cloudEntry } from "./cloud/transport.ts";
+import { ConfigFile } from "./ops/config.ts";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadKey } from "./cloud/key.ts";
@@ -137,35 +139,39 @@ export function nameJoinedLock(data: string, ws: string, hash: string, atMachine
 async function redeem(data: string, origin: string, token: string, provider: Provider, path: string, rig = false): Promise<any> {
   const plane = specOf(provider);
   const key = loadKey(data);
-  let response: Response | undefined;
-  // The new proof first; the old spelling only when a pre-rename cloud explicitly refuses the signature.
-  for (const prefix of plane.enrollPrefixes) {
-    const signature = key.sign(`${prefix}-station-enroll-v1:${origin}:${token}:${key.id}`);
-    response = await fetch(`${origin}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      // Joining: it pins the lock of a locked workspace it joins, which the plane asks before
-      // letting it into one.
-      // `rig`: it enrolls as a rig, which a rig's token alone makes.
-      body: JSON.stringify({ token, station: key.id, signature, version: version(), ...(path === plane.joinPath ? { locks: true } : {}), ...(rig ? { rig: true } : {}) }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (prefix === plane.enrollPrefixes.at(-1) || response.status !== 401) break;
-    const text = await response.text();
-    let error: unknown;
-    try {
-      error = JSON.parse(text).error;
-    } catch {}
-    if (error !== "invalid_signature") throw new Error(`${plane.name} answered ${response.status}: ${text}`);
-  }
-  // A control plane from before several workspaces has no join: nothing changed there.
-  if (path === plane.joinPath && response!.status === 404) {
-    const text = await response!.text();
-    if (!text.includes("enrollment_not_found")) throw new Error(`${plane.name} cannot add a station to more than one workspace yet; nothing changed`);
-    throw new Error(`${plane.name} answered 404: ${text}`);
-  }
-  if (!response!.ok) throw new Error(`${plane.name} answered ${response!.status}: ${await response!.text()}`);
-  return await response!.json();
+  const config = new ConfigFile(data);
+  const transport = new CloudTransport(() => cloudEntry(config.raw()));
+  try {
+    let response: Response | undefined;
+    // The new proof first; the old spelling only when a pre-rename cloud explicitly refuses the signature.
+    for (const prefix of plane.enrollPrefixes) {
+      const signature = key.sign(`${prefix}-station-enroll-v1:${origin}:${token}:${key.id}`);
+      response = await (provider === "stillfail" ? transport.fetch : fetch)(`${origin}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // Joining: it pins the lock of a locked workspace it joins, which the plane asks before
+        // letting it into one.
+        // `rig`: it enrolls as a rig, which a rig's token alone makes.
+        body: JSON.stringify({ token, station: key.id, signature, version: version(), ...(path === plane.joinPath ? { locks: true } : {}), ...(rig ? { rig: true } : {}) }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (prefix === plane.enrollPrefixes.at(-1) || response.status !== 401) break;
+      const text = await response.text();
+      let error: unknown;
+      try {
+        error = JSON.parse(text).error;
+      } catch {}
+      if (error !== "invalid_signature") throw new Error(`${plane.name} answered ${response.status}: ${text}`);
+    }
+    // A control plane from before several workspaces has no join: nothing changed there.
+    if (path === plane.joinPath && response!.status === 404) {
+      const text = await response!.text();
+      if (!text.includes("enrollment_not_found")) throw new Error(`${plane.name} cannot add a station to more than one workspace yet; nothing changed`);
+      throw new Error(`${plane.name} answered 404: ${text}`);
+    }
+    if (!response!.ok) throw new Error(`${plane.name} answered ${response!.status}: ${await response!.text()}`);
+    return await response!.json();
+  } finally { await transport.close(); }
 }
 
 /// `lock status`: whether a workspace lock is pinned here and how far it goes; `lock reset`: takes it away (kept beside

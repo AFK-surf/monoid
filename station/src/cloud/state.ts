@@ -1,6 +1,8 @@
 // Where the station stands with still.fail cloud: <data>/mesh/cloud.json (its fields, mode and pretty JSON as the Rust
 // station writes them: the desktop app and `bin/stillfail` read it too). One copy in memory, written through on every
 // change and told to whoever listens; the file is watched only for `enroll` writing it from another process.
+import { CloudTransport, type CloudEntry } from "./transport.ts";
+import type { Clock } from "effect";
 import { type FSWatcher, existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch } from "node:fs";
 import { dirname, join } from "node:path";
 import { nowSecs, writePrivate } from "../ops/files.ts";
@@ -396,6 +398,16 @@ export const isRevocation = (r: any): r is Revocation => typeof r?.kind === "str
 
 /// The state in memory, and who wants to hear of its changes.
 export class Cloud {
+  private readonly networkClock?: Clock.Clock;
+  private readonly networkEntry: () => CloudEntry | null;
+  private network?: CloudTransport;
+  get transport(): CloudTransport {
+    if (!this.network) {
+      this.network = new CloudTransport(this.networkEntry, this.networkClock);
+    }
+    return this.network;
+  }
+  request = (url: string, init?: RequestInit): Promise<Response> => this.provider() === "stillfail" ? this.transport.fetch(url, init) : fetch(url, init);
   state: CloudState | null;
   /// Whether `peers` is taken as the workspace's stations: the roster the cloud said last, kept in cloud.json, through a
   /// presence socket gone and a restart (user, 2026-11-04: a station cut off from the cloud for an hour refused every
@@ -457,8 +469,10 @@ export class Cloud {
 
   /// `watchFiles`: whether the files are watched for others' changes (tests that start and stop many stations leave it out:
   /// macOS takes a good while to end each watch).
-  constructor(data: string, watchFiles = true) {
+  constructor(data: string, watchFiles = true, clock?: Clock.Clock, entry: () => CloudEntry | null = () => null) {
     this.data = data;
+    this.networkClock = clock;
+    this.networkEntry = entry;
     try {
       moveFormerHost(data);
     } catch (error) {
@@ -496,9 +510,11 @@ export class Cloud {
   }
 
   close() {
+    const closed = this.network?.close();
     this.watcher?.close();
     this.locksWatcher?.close();
     this.listeners.clear();
+    return closed;
   }
 
   /// The state read again from its file; told when it changed, or anyway (`tell`: the station joined a workspace, and

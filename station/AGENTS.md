@@ -429,3 +429,12 @@
 - What is written to a program's stdin is bounded both sides: Node ends a program that left `STDIN_MOST` unread
   (`src/read/mb-reader.ts`), and the program's own queue stops reading stdin past its bound (`mb/src/host/host.c`
   `STDIN_MOST`). Only that reading thread waits there: the shell's answers come on its tokio threads, which never wait.
+
+## Cloud TCP entries
+
+- `config.json` can name one current `cloudEntry`: `{"origin":"https://app.still.fail","host":"entry.example","port":24443}`.
+  The still.fail owner supplies and updates this address. The station has no entry discovery or health polling.
+  Only still.fail's canonical cloud HTTP and presence socket use it. Comma, custom origins and third-party downloads keep their routes.
+  The entry forwards TCP to the fixed cloud backend. TLS, Host, signatures and certificate checks keep the canonical origin.
+  `src/cloud/transport.ts` owns pending dials and the HTTP pool. A request's cancellation never owns a pool dial.
+  Direct TLS gets one second before one entry starts. Both candidates share ten seconds for HTTP and twenty seconds for presence Upgrade.

@@ -7,6 +7,7 @@
 // downloaded and applied to the installed release, and the installer is handed what it made (STILLFAIL_ARCHIVE, where it
 // takes a handed archive from) with the raw form's hash to check instead of the archive's. Anything wrong with it is a
 // line in the log, and the installer downloads the whole archive as without one.
+import type { CloudFetch } from "../cloud/transport.ts";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
@@ -23,9 +24,9 @@ import { type Channel, feed, platform, stationVersion } from "./versions.ts";
 const UA = { "user-agent": "stillfail-station" };
 
 /// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served.
-export async function readFeed(channel: Channel, base: string, ms = 15_000): Promise<any> {
+export async function readFeed(channel: Channel, base: string, ms = 15_000, request: CloudFetch = fetch): Promise<any> {
   const url = feed(channel, base);
-  const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(ms) });
+  const response = await request(url, { headers: UA, signal: AbortSignal.timeout(ms) });
   if (!response.ok) throw new Error(`${url}: ${response.status}`);
   return response.json();
 }
@@ -77,8 +78,8 @@ export function deltaFor(said: any, build: Build, platform: string | null, curre
 /// What updating the station of `app` (from `installed`'s channel) to `channel`'s latest at `base` runs. Refusals are
 /// thrown in `lang`: a feed that does not verify, an older release (but back to the stable one from the beta), none
 /// for this machine, no installer in this release.
-export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string> }): Promise<Plan> {
-  const said = await readFeed(o.channel, o.base);
+export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch }): Promise<Plan> {
+  const said = await readFeed(o.channel, o.base, 15_000, o.request);
   const { release, why } = verifiedOrNull(said, o.trusted);
   if (release === null) throw new Error(tr(o.lang, "station.updates.unverified", { why }));
   const version = stationVersion(o.app) ?? null;
@@ -154,8 +155,8 @@ function hashFile(file: string): Promise<{ sha256: string; size: number }> {
 }
 
 /// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says.
-async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void) {
-  const response = await fetch(d.url, { headers: UA, signal });
+async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void, request: CloudFetch) {
+  const response = await request(d.url, { headers: UA, signal });
   if (!response.ok || !response.body) throw new Error(`${d.url}: ${response.status}`);
   const length = response.headers.get("content-length");
   if (length !== null && Number(length) !== d.size) throw new Error(`the delta is ${length} bytes, the feed says ${d.size}`);
@@ -184,7 +185,7 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
 /// not used (none, a download or an applying that failed, what it made not the signed raw form) is a line in the log,
 /// what it left removed, and nothing told (the installer downloads the whole archive, checked against its own hash).
 /// `signal` ends it (the caller's deadline); `progress` hears how much of the delta is in (0–100).
-export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void }): Promise<Record<string, string>> {
+export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void; request?: CloudFetch }): Promise<Record<string, string>> {
   const d = plan.delta;
   if (d === null) return {};
   const { dir, archive } = handedArchive();
@@ -192,7 +193,7 @@ export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; si
   try {
     await mkdir(dir, { mode: 0o700 });
     const file = join(dir, "delta");
-    await download(d, file, o.signal, o.progress ?? (() => {}));
+    await download(d, file, o.signal, o.progress ?? (() => {}), o.request ?? fetch);
     await o.apply(o.app, file, made, o.signal);
     await rm(file, { force: true });
     o.signal.throwIfAborted();

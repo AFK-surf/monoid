@@ -206,7 +206,7 @@ function run() {
   );
   const paths = Layer.succeed(Paths)({ data, app, beforeStore });
   // still.fail Helper, one for the screens and the drive, and one look at its grants.
-  const base = Layer.mergeAll(Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
+  const base = Layer.mergeAll(StationConfig.layer, Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
   const parts = ControlPlane.layer.pipe(Layer.provideMerge(base));
   // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`) is another program of the same release: of a station's
   // parts only what another station asks of it (rig/main.ts). What a machine is, is read once, as it starts; enrolled
@@ -216,7 +216,6 @@ function run() {
     Layer.provideMerge(RigLive(control)),
     Layer.provideMerge(RigSide.layer),
     Layer.provideMerge(AdminHost.layer),
-    Layer.provideMerge(StationConfig.layer),
     Layer.provideMerge(Peers.layer),
     Layer.provideMerge(MeshSide.layer),
     Layer.provideMerge(Parts.layer),
@@ -236,7 +235,6 @@ function run() {
     Layer.provideMerge(Browser.layer),
     // config.json, what is the station's own, and the process before this one: the platform's, for every part.
     Layer.provideMerge(Own.layer),
-    Layer.provideMerge(StationConfig.layer),
     // The requests between the stations of the workspace (mesh/bus.ts): the mesh attaches them, the parts answer.
     Layer.provideMerge(Peers.layer),
     // What the mesh and the agents' side share, each filling in its own (services.ts MeshSide).
