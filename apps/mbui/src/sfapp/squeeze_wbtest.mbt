@@ -93,6 +93,12 @@ fn screen_in(
     // (`dark`: the app's dark theme, the fixture's prefs saying so: the contrast test's, contrast_wbtest.mbt)
     env=[("MBUI_LOCALE", lang), ("MBUI_REDUCE_MOTION", "1")] + (if dark { [("MBUI_DARK", "1")] } else { [] }),
   )
+  // (`moves_held` false: how what moves goes frame to frame not judged at all (words_over, rows_steady, sizes_steady,
+  // gaps_steady: Tester::motion_unjudged), not worked out on every frame for no one to read: held to nothing, sizes and
+  // gaps steady were a quarter of the real size's wide sweep, 2026-11-16)
+  if !moves_held {
+    t.motion_unjudged(true)
+  }
   if font_scale != 1.0 {
     t.set_font_scale(font_scale)
   }
