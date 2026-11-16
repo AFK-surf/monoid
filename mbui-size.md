@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.48 | 99.88 | 127.61 |
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.68 | 123.41 |
 | [5e093f1bc](https://github.com/AFK-surf/monoid/commit/5e093f1bc6fc4dfcab84eda52d794f22599a7085) fix(mbui): align view_made glyph_x, formula glyphs | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.47 | 117.31 |
 | [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.7 | 117.67 |
-| [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 2.16 | 3.02 | 13.06 | 34.2 | 51.77 | 29.98 | 60.22 | 99.78 | 115.68 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4e5083b16](https://github.com/AFK-surf/monoid/commit/4e5083b16289ad82b394fd489ecc8f7a0feda233) move: what the real run VM-1 → Office-Host-2 and t | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
 | [5e093f1bc](https://github.com/AFK-surf/monoid/commit/5e093f1bc6fc4dfcab84eda52d794f22599a7085) fix(mbui): align view_made glyph_x, formula glyphs | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.31 |
 | [5d5292351](https://github.com/AFK-surf/monoid/commit/5d52923517c78364c737be0c7746be6121eb78e2) ci: Farview's client given its pin's mtime, so moo | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
-| [881204a8f](https://github.com/AFK-surf/monoid/commit/881204a8ff14cb3406c142754eefa8fafa5370de) mbui: each cause's layout passes held by every Tes | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
