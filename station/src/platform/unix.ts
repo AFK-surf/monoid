@@ -4,7 +4,7 @@ import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_pro
 import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { access, chmod, copyFile, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, lstat, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
@@ -587,19 +587,12 @@ export const unix: Platform = {
       child.unref();
     });
   },
-  shimUpdate: () => null,
-  linkCommand(command, dir) {
+  shimUpdate: async () => null,
+  async linkCommand(command, dir) {
     const link = join(dir, basename(command));
-    try {
-      lstatSync(link);
-      return false;
-    } catch {}
-    try {
-      symlinkSync(command, link);
-      return true;
-    } catch {
-      return false;
-    }
+    if ((await lstat(link).catch(() => null)) !== null) return false;
+    // (symlink() fails where something of that name was made meanwhile: nothing is replaced)
+    return symlink(command, link).then(() => true, () => false);
   },
   codexStandalone: true,
   nodeBuild(version) {

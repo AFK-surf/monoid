@@ -1,6 +1,7 @@
 // What the updates go by, as plain functions: versions and how they compare, the release
 // channels, what is offered, and the words the pages show while something updates.
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { plainText } from "../ops/command-output.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
@@ -34,11 +35,37 @@ export function releaseChannel(app: string): Channel | null {
 }
 const releases = new Map<string, Channel>();
 
+/// `releaseChannel` off the station's thread (kept as it keeps it).
+export async function releaseChannelSoon(app: string): Promise<Channel | null> {
+  const known = releases.get(app);
+  if (known !== undefined) return known;
+  const channel = await readFile(join(app, "CHANNEL"), "utf8").then(channelOfId, () => null);
+  if (channel !== null) releases.set(app, channel);
+  return channel;
+}
+
 /// The channel a station is updated on: as its config says (`updateChannel`), else as its release came (an install from
 /// before there were channels: stable).
 export function channelOf(raw: any, app: string): Channel {
-  const said = typeof raw?.updateChannel === "string" ? channelOfId(raw.updateChannel) : null;
-  return said ?? releaseChannel(app) ?? "stable";
+  return channelFrom(raw, configChannel(raw) === null ? releaseChannel(app) : null);
+}
+
+/// `channelOf` off the station's thread.
+export async function channelOfSoon(raw: any, app: string): Promise<Channel> {
+  return channelFrom(raw, configChannel(raw) === null ? await releaseChannelSoon(app) : null);
+}
+
+/// `channelOf` with the release's channel already read (`release`: as its CHANNEL says, null where it says none).
+export function channelFrom(raw: any, release: Channel | null): Channel {
+  return configChannel(raw) ?? release ?? "stable";
+}
+
+const configChannel = (raw: any): Channel | null => (typeof raw?.updateChannel === "string" ? channelOfId(raw.updateChannel) : null);
+
+/// The station's version as `stationVersion` says it, its release's BUILD read off the station's thread.
+export async function stationVersionSoon(app: string): Promise<string | undefined> {
+  const build = await readFile(join(app, "BUILD"), "utf8").then((b) => b.trim(), () => "");
+  return build !== "" && /^[0-9]+$/.test(build) ? `0.1.${build}` : undefined;
 }
 
 const parts = (v: string) => v.split(/[^0-9]/).filter((p) => p !== "").map((p) => (/^\d+$/.test(p) ? BigInt(p) : 0n));
@@ -91,23 +118,19 @@ export function curlPercent(log: string): number | null {
 
 /// How much of the station's release the installer has downloaded, from update.log's tail (a slow download's log can
 /// be large).
-export function stationDownloadPercent(log: string): number | null {
-  let fd: number;
+export async function stationDownloadPercent(log: string): Promise<number | null> {
+  const fh = await open(log, "r").catch(() => null);
+  if (fh === null) return null;
   try {
-    fd = openSync(log, "r");
-  } catch {
-    return null;
-  }
-  try {
-    const len = statSync(log).size;
+    const len = (await fh.stat()).size;
     const from = Math.max(0, len - 4096);
     const buf = Buffer.alloc(Math.min(4096, len));
-    const n = readSync(fd, buf, 0, buf.length, from);
-    return curlPercent(buf.subarray(0, n).toString("utf8"));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, from);
+    return curlPercent(buf.subarray(0, bytesRead).toString("utf8"));
   } catch {
     return null;
   } finally {
-    closeSync(fd);
+    await fh.close().catch(() => {});
   }
 }
 

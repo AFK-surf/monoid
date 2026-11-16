@@ -1,7 +1,8 @@
 // Claude Code, Codex, DeepSeek Harness, Grok Build, Devin and Pi on this machine (Cursor's SDK: updates.ts readCursor): where the station's PATH finds
 // them, how each is updated the way it was installed (`claude update`, `pi update`, Devin's installer, npm, Homebrew, winget, Vite+, Codex's
 // standalone installer) or installed when it is not there, and running those commands.
-import { existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { type Lang, tr } from "../ops/i18n.ts";
@@ -51,7 +52,8 @@ export function ownNode(data: string, version: string): OwnNode | null {
 }
 
 /// Each Node the station installed (<data>/node/<dist>, its npm there), newest first, put last on `env`'s PATH, in
-/// place: what they installed is found, and what the station starts has them, behind anything of the machine's.
+/// place: what they installed is found, and what the station starts has them, behind anything of the machine's. Read
+/// as the station starts (Updates' constructor); once it serves, `putOwnNodesSoon`.
 export function putOwnNodes(env: Env, data: string) {
   const build = platform.nodeBuild("0");
   if (build === null) return;
@@ -64,6 +66,18 @@ export function putOwnNodes(env: Env, data: string) {
   for (const name of names.sort().reverse()) {
     const bin = join(ownNodeHome(data), name, build.bin);
     if (existsSync(join(bin, build.npm))) platform.appendPath(env, bin);
+  }
+}
+
+/// `putOwnNodes` off the station's thread (a Node installed while it serves: Updates' installNode).
+export async function putOwnNodesSoon(env: Env, data: string) {
+  const build = platform.nodeBuild("0");
+  if (build === null) return;
+  const names = await readdir(ownNodeHome(data)).then((all) => all.filter((n) => n.startsWith("node-v")), () => null);
+  if (names === null) return;
+  for (const name of names.sort().reverse()) {
+    const bin = join(ownNodeHome(data), name, build.bin);
+    if (await exists(join(bin, build.npm))) platform.appendPath(env, bin);
   }
 }
 
@@ -92,16 +106,13 @@ export function pinNpmVersion(how: How, pkg: string, version: string): How {
 /// A command as the station's PATH finds it: where it was found (the link on PATH) and what that is.
 export type Found = PlatformFound;
 
-const real = (p: string) => {
-  try {
-    return realpathSync(p);
-  } catch {
-    return null;
-  }
-};
+const real = (p: string): Promise<string | null> => realpath(p).catch(() => null);
+const exists = (p: string): Promise<boolean> => stat(p).then(() => true, () => false);
 
 /// A command on `env`'s PATH as a shell finds it (platform.findCommand).
 export const findCommand = (name: string, env: Env): Found | null => platform.findCommand(name, env);
+/// `findCommand` off the station's thread.
+export const findCommandSoon = (name: string, env: Env): Promise<Found | null> => platform.findCommandSoon(name, env);
 
 /// Why a runtime cannot be updated from here: said in the language it is read in.
 export class Unable {
@@ -116,8 +127,9 @@ export class Unable {
   }
 }
 
-/// How a runtime installed as `found` is updated, or why it cannot be from here.
-export function howToUpdate(kind: Kind, found: Found, env: Env): How | Unable {
+/// How a runtime installed as `found` is updated, or why it cannot be from here (what it looks at on the disk read off
+/// the station's thread).
+export async function howToUpdateSoon(kind: Kind, found: Found, env: Env): Promise<How | Unable> {
   // The markers below are written with `/`: a path whose machine separates otherwise too is read with them (it has
   // the same length, so where a marker is found is where it is in found.real).
   const realPath = found.real.split(platform.paths.separator).join("/");
@@ -134,45 +146,45 @@ export function howToUpdate(kind: Kind, found: Found, env: Env): How | Unable {
   // runs its installer's command, PI_SELF_UPDATE_COMMAND); one npm installed, by npm, below.
   if (kind === "pi" && !realPath.includes("/lib/node_modules/")) return { program: found.onPath, args: ["update"] };
   // A package manager's of this machine's kind (Windows: winget's, Vite+'s shim beside vp.exe, npm's .cmd in its prefix).
-  const shim = platform.shimUpdate(found, kindPackage(kind), env);
+  const shim = await platform.shimUpdate(found, kindPackage(kind), env);
   if (shim === "no-npm") return new Unable("station.updates.noNpm", { name });
   if (shim !== null) return shim;
   // Vite+ global commands are shims pointing to vp itself. Its packages are separate from npm's; `claude update` can
   // report success after updating a different installation.
   if (basename(realPath) === "vp") {
     const beside = join(dirname(found.onPath), "vp");
-    let vp: string | null = real(beside) === realPath ? beside : null;
+    let vp: string | null = (await real(beside)) === realPath ? beside : null;
     if (vp === null) {
-      const other = findCommand("vp", env);
+      const other = await findCommandSoon("vp", env);
       if (other !== null && other.real === realPath) vp = other.onPath;
     }
     if (vp === null) return new Unable("station.updates.noVp", { name });
     return { program: vp, args: ["install", "-g", `${kindPackage(kind)}@latest`] };
   }
-  const brew = (): string | Unable => findCommand("brew", env)?.onPath ?? new Unable("station.updates.noBrew", { name });
-  const npm = (): string | Unable => {
+  const brew = async (): Promise<string | Unable> => (await findCommandSoon("brew", env))?.onPath ?? new Unable("station.updates.noBrew", { name });
+  const npm = async (): Promise<string | Unable> => {
     // The npm of the Node the command is installed in (…/lib/node_modules/… → …/bin/npm): the link on PATH can sit
     // beside another Node's npm (~/.local/bin with links into two Nodes), which installs where PATH does not look.
     const at = realPath.indexOf("/lib/node_modules/");
     const own = at >= 0 ? join(found.real.slice(0, at), "bin/npm") : null;
-    if (own !== null && existsSync(own)) return own;
+    if (own !== null && (await exists(own))) return own;
     const beside = join(dirname(found.onPath), "npm");
-    if (existsSync(beside)) return beside;
-    return findCommand("npm", env)?.onPath ?? new Unable("station.updates.noNpm", { name });
+    if (await exists(beside)) return beside;
+    return (await findCommandSoon("npm", env))?.onPath ?? new Unable("station.updates.noNpm", { name });
   };
   const using = (program: string | Unable, args: string[]): How | Unable => (program instanceof Unable ? program : { program, args });
   const pkg = `${kindPackage(kind)}@latest`;
   // Homebrew has Claude Code and Codex (DeepSeek Harness, Grok Build and Pi are npm's only here).
   const npmOnly = kind === "dsh" || kind === "grok" || kind === "pi";
-  if (!npmOnly && realPath.includes("/Caskroom/")) return using(brew(), ["upgrade", "--cask", kind === "claude" ? "claude-code" : "codex"]);
-  if (!npmOnly && realPath.includes("/Cellar/")) return using(brew(), ["upgrade", kind === "claude" ? "claude-code" : "codex"]);
+  if (!npmOnly && realPath.includes("/Caskroom/")) return using(await brew(), ["upgrade", "--cask", kind === "claude" ? "claude-code" : "codex"]);
+  if (!npmOnly && realPath.includes("/Cellar/")) return using(await brew(), ["upgrade", kind === "claude" ? "claude-code" : "codex"]);
   if (realPath.includes("/node_modules/")) {
     // npm's shebang uses PATH's node; even the right npm can therefore choose another Node's global prefix. Explicitly
     // target the installation the station actually uses.
     const at = realPath.indexOf("/lib/node_modules/");
     if (at < 0) return new Unable("station.updates.npmRootUnknown", { path: realPath });
     // The prefix as the machine writes it (realPath has the same length: only its separators are changed).
-    return using(npm(), ["install", "-g", pkg, "--prefix", found.real.slice(0, at)]);
+    return using(await npm(), ["install", "-g", pkg, "--prefix", found.real.slice(0, at)]);
   }
   if (kind === "claude") return { program: found.onPath, args: ["update"] };
   if (npmOnly) return new Unable("station.updates.codexElsewhere", { path: realPath });
@@ -206,8 +218,9 @@ CODEX_HOME="$1" CODEX_INSTALL_DIR="$2" CODEX_NON_INTERACTIVE=1 sh -c "$installer
 /// How a runtime the machine has not is installed, or why it cannot be from here: Claude Code by its own installer
 /// (into ~/.local/bin, on the station's PATH as install.ts sets it), Codex by npm, else its own installer (into
 /// ~/.local/bin too; where that is not run, `node`'s npm), DeepSeek Harness, Grok Build and Pi by npm (where the machine has
-/// none, `node`'s: installed first), Devin and the Antigravity CLI by their own installers (into ~/.local/bin too).
-export function howToInstall(kind: Kind, env: Env, node: OwnNode | null = null): How | Unable {
+/// none, `node`'s: installed first), Devin and the Antigravity CLI by their own installers (into ~/.local/bin too). PATH
+/// looked at off the station's thread.
+export async function howToInstallSoon(kind: Kind, env: Env, node: OwnNode | null = null): Promise<How | Unable> {
   if (kind === "station") return new Unable("");
   if (kind === "hermes") return new Unable("station.updates.hermesExternal");
   if (kind === "claude") return platform.claudeInstall;
@@ -215,21 +228,21 @@ export function howToInstall(kind: Kind, env: Env, node: OwnNode | null = null):
   if (kind === "devin") return platform.devinInstall;
   // DeepSeek Harness is an npm package (it runs on the Node npm is of: 22.19 or newer), Pi too (22.19 too; it needs none
   // of its dependencies' install scripts, which it says to leave out).
-  if (kind === "dsh" || kind === "grok") return npmInstall(env, node, ["install", "-g", `${kindPackage(kind)}@latest`], kindName(kind));
-  if (kind === "pi") return npmInstall(env, node, ["install", "-g", "--ignore-scripts", `${kindPackage(kind)}@latest`], kindName(kind));
+  if (kind === "dsh" || kind === "grok") return npmInstallSoon(env, node, ["install", "-g", `${kindPackage(kind)}@latest`], kindName(kind));
+  if (kind === "pi") return npmInstallSoon(env, node, ["install", "-g", "--ignore-scripts", `${kindPackage(kind)}@latest`], kindName(kind));
   const args = ["install", "-g", "@openai/codex@latest"];
-  const npm = findCommand("npm", env);
+  const npm = await findCommandSoon("npm", env);
   if (npm) return { program: npm.onPath, args };
   if (platform.codexStandalone) return standaloneCodexInstall();
-  const brew = findCommand("brew", env);
+  const brew = await findCommandSoon("brew", env);
   if (brew) return { program: brew.onPath, args: ["install", "--cask", "codex"] };
-  return npmInstall(env, node, args, kindName(kind));
+  return npmInstallSoon(env, node, args, kindName(kind));
 }
 
 /// npm running `args`: the machine's, else `node`'s (installed first; into that Node, unless `args` give a prefix),
-/// else why it cannot be from here.
-export function npmInstall(env: Env, node: OwnNode | null, args: string[], name: string): How | Unable {
-  const npm = findCommand("npm", env);
+/// else why it cannot be from here. PATH looked at off the station's thread.
+export async function npmInstallSoon(env: Env, node: OwnNode | null, args: string[], name: string): Promise<How | Unable> {
+  const npm = await findCommandSoon("npm", env);
   if (npm) return { program: npm.onPath, args };
   if (node) return { program: join(node.bin, node.build.npm), args: args.includes("--prefix") ? args : [...args, "--prefix", node.at], node };
   return new Unable("station.updates.noNpmInstall", { name });
@@ -255,8 +268,8 @@ export async function linkBesideNpm(kind: Kind, how: How, env: Env): Promise<boo
   const [ok, , out] = await runBoth(how.program, ["prefix", "-g"], env, 20_000, () => {}, "en");
   const prefix = out.trim().split("\n").at(-1)?.trim();
   if (!ok || !prefix) return false;
-  const found = platform.findCommand(kindCommand(kind), { ...env, PATH: join(prefix, "bin") });
-  return found !== null && platform.linkCommand(found.onPath, dirname(how.program));
+  const found = await platform.findCommandSoon(kindCommand(kind), { ...env, PATH: join(prefix, "bin") });
+  return found !== null && (await platform.linkCommand(found.onPath, dirname(how.program)));
 }
 
 /// A command that did not end in time.

@@ -10,8 +10,8 @@
 import type { CloudFetch } from "../cloud/transport.ts";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { platform as machine } from "../platform/index.ts";
 import { type Build, type Release, Unverified, allowed, expected, trustedKeys, verifyFeed } from "./signed.ts";
-import { type Channel, feed, platform, stationVersion } from "./versions.ts";
+import { type Channel, feed, platform, stationVersionSoon } from "./versions.ts";
 
 const UA = { "user-agent": "stillfail-station" };
 
@@ -109,7 +109,7 @@ export async function planUpdate(o: { base: string; channel: Channel; app: strin
   const said = await readFeed(o.channel, o.base, 15_000, o.request, o.wait);
   const { release, why } = verifiedOrNull(said, o.trusted);
   if (release === null) throw new Error(tr(o.lang, "station.updates.unverified", { why }));
-  const version = stationVersion(o.app) ?? null;
+  const version = (await stationVersionSoon(o.app)) ?? null;
   const current = version === null ? null : Number(/^0\.\d+\.(\d+)$/.exec(version)?.[1] ?? NaN);
   if (!allowed(release, current, o.channel, o.installed)) throw new Error(tr(o.lang, "station.updates.older", { version: release.version, current: version }));
   let build;
@@ -119,7 +119,7 @@ export async function planUpdate(o: { base: string; channel: Channel; app: strin
     throw new Error(tr(o.lang, "station.updates.noBuild", { version: release.version }));
   }
   const script = bundledInstaller(o.app, o.lang);
-  if (!existsSync(script)) throw new Error(tr(o.lang, "station.updates.noInstaller"));
+  if (!(await access(script).then(() => true, () => false))) throw new Error(tr(o.lang, "station.updates.noInstaller"));
   return {
     release,
     script,

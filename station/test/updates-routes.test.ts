@@ -134,7 +134,7 @@ test("a running station is asked for the channel and keeps it itself", { skip: p
   writeFileSync(join(runDir, "station.json"), JSON.stringify({ pid: process.pid, drain: 1, channel: 1 }));
   const asked: Channel[] = [];
   const hup = () =>
-    answerChannelAsk(runDir, (channel) => {
+    void answerChannelAsk(runDir, (channel) => {
       asked.push(channel);
       if (channel === "stable") throw new Error("不行");
     });
@@ -182,11 +182,11 @@ test("the running station takes the ask: kept in its config and read on that cha
   const runDir = join(dir, "run");
   mkdirSync(runDir, { recursive: true });
   writeFileSync(join(runDir, CHANNEL_ASK), "beta");
-  updates.answerChannelAsk();
+  await updates.answerChannelAsk();
   assert.equal(readFileSync(join(runDir, CHANNEL_ANSWER), "utf8"), "ok beta\n");
   assert.equal(updates.channel(), "beta");
   writeFileSync(join(runDir, CHANNEL_ASK), "nightly");
-  updates.answerChannelAsk();
+  await updates.answerChannelAsk();
   assert.equal(readFileSync(join(runDir, CHANNEL_ANSWER), "utf8"), "error 无法识别的渠道 nightly\n");
 });
 

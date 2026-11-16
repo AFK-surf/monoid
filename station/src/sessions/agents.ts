@@ -568,7 +568,7 @@ export const AgentsLive = (control: Control) =>
       updates.start();
       plane.told("release", () => void updates.check().catch((error) => log.warn("updates", "the release not read", { error: String(error) })));
       // `stillfail update --beta|--stable` asks a running station by SIGHUP (run/channel-ask).
-      control.on("hup", () => updates.answerChannelAsk());
+      control.on("hup", () => void updates.answerChannelAsk());
 
       // Outside a workspace its agents do not reach out of it: their outward tools are refused.
       // So are those of a session of a workspace the station has left.

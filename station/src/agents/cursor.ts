@@ -14,6 +14,7 @@
 // - the bridge keeps the transcript itself (<sessions>/<agent id>.jsonl), the turn's usage in it.
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "../ops/log.ts";
@@ -71,6 +72,21 @@ export function sdkVersion(data: string): string | null {
   } catch {
     return null;
   }
+}
+
+/// `sdkVersion` off the station's thread (the software page's reading of it: updates.ts readCursor).
+export async function sdkVersionSoon(data: string): Promise<string | null> {
+  for (const root of [join(sdkPrefix(data), "lib", "node_modules"), join(sdkPrefix(data), "node_modules")]) {
+    const text = await readFile(join(root, ...SDK_PACKAGE.split("/"), "package.json"), "utf8").catch(() => null);
+    if (text === null) continue;
+    try {
+      const v = JSON.parse(text)?.version;
+      return typeof v === "string" ? v : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /// The key a profile signed in to Cursor has (accounts/cursor.ts keeps it in its home's cursor/auth.json); custom
