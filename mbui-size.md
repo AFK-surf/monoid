@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 2.46 | 3.45 | 14.74 | 35.92 | 57.72 | 31.47 | 65.05 | 100.12 | 126.74 |
 | [485803ed9](https://github.com/AFK-surf/monoid/commit/485803ed97c4025c4419ed54860410635e6cdcbc) core, app: fold consecutive identical failure noti | 2.46 | 3.45 | 14.68 | 35.89 | 57.44 | 31.47 | 65.05 | 100.12 | 117.55 |
 | [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 2.44 | 3.42 | 14.53 | 35.65 | 56.73 | 31.07 | 63.6 | 99.78 | 119.43 |
 | [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 2.43 | 3.39 | 14.44 | 35.54 | 56.39 | 31.07 | 63.6 | 99.78 | 115.05 |
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.07 | 63.6 | 99.78 | 118.68 |
-| [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [485803ed9](https://github.com/AFK-surf/monoid/commit/485803ed97c4025c4419ed54860410635e6cdcbc) core, app: fold consecutive identical failure noti | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [db433ae96](https://github.com/AFK-surf/monoid/commit/db433ae969b4bfc1d5d341d45b89350e39821bc2) app: 看板 its own key on 小屏 Home's bar, Linear-style | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [0ff80373e](https://github.com/AFK-surf/monoid/commit/0ff80373e8c928d97aeb53205fe6e23b1ddf6fa7) core: the settings' first open reads no overview w | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
-| [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
