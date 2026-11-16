@@ -32,7 +32,6 @@ fn init {
     "src/sfapp/quote_image_wbtest.mbt",
     "src/sfapp/service_link_wbtest.mbt",
     "src/sfapp/settings_wbtest.mbt",
-    "src/sfapp/squeeze_wbtest.mbt",
     "src/sfapp/stack_over_wbtest.mbt",
     "src/sfapp/stations_now_wbtest.mbt",
     "src/sfapp/tape_moment_wbtest.mbt",
