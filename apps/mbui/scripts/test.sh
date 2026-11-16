@@ -476,15 +476,19 @@ for t in $targets; do
           # 160 s of runs, the second's sweeps 420, the third's kept_rows, real_size and answers_still 650, the
           # fourth's send_steady three 230 since they skip the frames nothing asks for); the third's pages on two
           # programs (p3, below), one leaving their 175-271 s to one core: by the table some 200 s a group)
-          *) specs="4,4,80,1 2,4,210,1 2,4,325,1 4,4,115,1" ;;
+          # (dealt so, #6678's 43854977577: app 1/4 211 s of tests (real_size's wide half 169 beside its pages' 211),
+          # 2/4 203 (its pages on two programs the longest), 3/4 170, 4/4 139 (send_steady's three 38-60 s). Each
+          # reckoned again so that what was dealt would have ended as it ran, the wide window's real_size on the
+          # fourth, the second's pages on three programs: by the table 720, 355, 386 and 711 s of pages)
+          *) specs="4,4,54,1 3,4,418,1 2,4,286,1 4,4,62,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
-        # (the second's pages on two programs beside its sweeps at the default rate, on $n at a rate, where it has none;
-        # the third's on two at the default rate, on one at a rate beside kept_rows' five runs, as it was)
-        p2=2 p3=2
+        # (the second's pages on three programs beside its sweeps at the default rate, on $n at a rate, where it has
+        # none; the third's on two at the default rate, on one at a rate beside kept_rows' five runs, as it was)
+        p2=3 p3=2
         [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
         runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else
@@ -574,7 +578,10 @@ for t in $targets; do
       # (its tests cut at each of its two sweeps since #6627 put a quick test of its own first: cut in two halves, the
       # first was that test alone and the second both sweeps, "--index 1-3", matched by none of these and dealt to the
       # fourth beside its 142 files of pages, 306 s, app 4/4 cut at its 5 minutes on main 202a54dc 43822504735)
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 1 ;;
+      # (the wide window's on the fourth since, whose send_steady three skip the frames nothing asks for (38-60 s, where
+      # they were 95-136): on the first beside its pages on four programs it ran 169 s, app 1/4 228 s, where app 4/4
+      # was 157, #6678's 43854977577)
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
