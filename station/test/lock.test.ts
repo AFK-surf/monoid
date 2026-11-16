@@ -14,6 +14,7 @@ import { Cloud, writeState } from "../src/cloud/state.ts";
 import { verifyMember } from "../src/mesh/credential.ts";
 import { inLock, inLockBringing, lockRoute, personChainsOf, stillIn } from "../src/mesh/serve.ts";
 import { GrantKey } from "./fake-control-plane.ts";
+import { settle } from "./hub-fakes.ts";
 
 const WS = "01HZZZZZZZZZZZZZZZZZZZZZZZ";
 const hexOf = (k: KeyObject) => Buffer.from(k.export({ format: "jwk" }).x as string, "base64url").toString("hex");
@@ -462,6 +463,8 @@ test("a station in a second workspace pins that one's lock there: none of its me
   applyState(cloud, JSON.stringify({ type: "lock", workspace: B, entries: [b.first] }));
   assert.equal(cloud.locked(B)?.state?.genesis, entryHash(b.first));
   assert.equal(cloud.locked(), null, "its home is as it was");
+  // (what joining named to pin removed off the thread)
+  await settle();
   assert.ok(existsSync(joinedLockPath(cloud.data, B)) && !existsSync(joinedPendingPath(cloud.data, B)));
   assert.deepEqual(ws(), [WS, B]);
   assert.deepEqual(cloud.membership(B)!.peers.map((p) => p.id), [b.stations[0]!.hex], "the stations B's lock names only");

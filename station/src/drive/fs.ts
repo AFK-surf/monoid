@@ -156,20 +156,20 @@ export function protectedTop(path: string, home = homedir(), mounts = platform.m
 /// (`mounts`, the platform's), not by its path's name alone: opening one mounted elsewhere waits on macOS asking the
 /// person as one in /Volumes does. What is in /Volumes is a disk unless it is the system's own (a link to / there) or
 /// nothing: as last looked at off the thread (`volumes`), a disk while that is not known or may have changed
-/// (`protectedPlaceSoon` looks first).
+/// (`protectedPlaceSoon` looks first). The mounts are as last read off the thread too: none known before the first read.
 export function protectedPlace(path: string, home = homedir(), mounts = platform.mounts()): Where | null {
   const named = byName(path, home, mounts);
   return named !== null && "volume" in named ? volumeKept(named.volume) : named;
 }
 
-/// `protectedPlace`, what is in /Volumes looked at first (off the thread).
-export async function protectedPlaceSoon(path: string, home = homedir(), mounts = platform.mounts()): Promise<Where | null> {
-  const named = byName(path, home, mounts);
+/// `protectedPlace`, the mounts and what is in /Volumes looked at first (off the thread).
+export async function protectedPlaceSoon(path: string, home = homedir(), mounts?: string[]): Promise<Where | null> {
+  const named = byName(path, home, mounts ?? (await platform.mountsSoon()));
   return named !== null && "volume" in named ? volumeAt(named.volume, await lookVolume(named.volume)) : named;
 }
 
-/// `protectedTop`, what is in /Volumes looked at first (off the thread).
-export async function protectedTopSoon(path: string, home = homedir(), mounts = platform.mounts()): Promise<string | null> {
+/// `protectedTop`, the mounts and what is in /Volumes looked at first (off the thread).
+export async function protectedTopSoon(path: string, home = homedir(), mounts?: string[]): Promise<string | null> {
   const place = await protectedPlaceSoon(path, home, mounts);
   return place?.helper ? place.top : null;
 }

@@ -55,8 +55,6 @@ const helper: PlaceHelper = {
 test("a place looked at, walked, its links followed and a file staged wait on no file", { skip: WINDOWS }, async () => {
   const h = home();
   const into = join(h, "uploads");
-  // (the machine's mounts as the platform first reads them: its own, before this)
-  platform.mounts();
   const places = new Places({ mac: true, home: h, helper, probe: nodeProbe });
   const plain = new Places({ mac: false, home: h });
   const desk = (p: string) => protectedPlaceSoon(p, h);
@@ -109,7 +107,6 @@ test("the drive's pinned roots, as GET /drive and every GET /overview show them,
   const viewer = { sub: "s", email: "person@example.test", name: "P", role: "member", workspace: "w", device: "d" } as const;
   const states = ["ok", "ok", "missing", "not_a_directory", "ok"];
   try {
-    platform.mounts();
     const calls = await syncCalls(async () => {
       assert.deepEqual((await drive.roots()).map((r) => r.state), states);
       assert.deepEqual(await rootViewThrough(desktop, files, h), { path: desktop, name: "proj", state: "ok" });

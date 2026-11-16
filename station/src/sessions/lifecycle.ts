@@ -350,10 +350,10 @@ export function archiveChat(hub: Hub, thread: number, archived: boolean): void |
 }
 
 /// A snapshot-bounded walk of archived workspaces; no main-thread query returns more than a page.
-async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean = () => true): AsyncGenerator<ArchivedWorkspace> {
+async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean | Promise<boolean> = () => true): AsyncGenerator<ArchivedWorkspace> {
   let after: ArchivedWorkspace | null = null;
   for (;;) {
-    if (!needed()) return;
+    if (!(await needed())) return;
     const page = hub.store.archivedSessions(after, through);
     for (const s of page) yield s;
     if (page.length < ARCHIVED_WORKSPACE_BATCH) return;
@@ -384,18 +384,18 @@ export async function expireArchived(hub: Hub, now: number): Promise<number | nu
 /// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
 /// longest archived first, as `expireArchived` empties them, until `free` is DISK_LOW_BYTES again. None with
 /// archivedWorkspaceDays 0 (kept on purpose).
-export async function relieveArchived(hub: Hub, free: () => number): Promise<void> {
+export async function relieveArchived(hub: Hub, free: () => number | Promise<number>): Promise<void> {
   const { cold } = hub;
   if (hub.config().archivedWorkspaceMs <= 0 || !cold.expire || !cold.holdsMore) return;
-  if (free() >= DISK_LOW_BYTES) return;
+  if ((await free()) >= DISK_LOW_BYTES) return;
   const through = hub.store.lastArchivedSession();
   if (through === null) return;
-  for await (const s of archivedWorkspaces(hub, through, () => free() < DISK_LOW_BYTES)) {
-    if (free() >= DISK_LOW_BYTES) return;
+  for await (const s of archivedWorkspaces(hub, through, async () => (await free()) < DISK_LOW_BYTES)) {
+    if ((await free()) >= DISK_LOW_BYTES) return;
     try {
       // Shown and archived again since, it is not the one looked at: `expire` leaves it.
       if (!(await cold.holdsMore(s.key))) continue;
-      if (free() >= DISK_LOW_BYTES) return;
+      if ((await free()) >= DISK_LOW_BYTES) return;
       await cold.expire(s.key, s.archivedAt);
     } catch (error) {
       log.warn("hub", "the workspace of an archived session was not emptied", { session: s.key, error: (error as Error).message });

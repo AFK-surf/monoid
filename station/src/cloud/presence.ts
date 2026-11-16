@@ -3,8 +3,8 @@
 // what it takes back. Signed at connect like enrollment. Reconnects with backoff; once removed from its workspace, asks
 // again only now and then, or at once when enrolled anew meanwhile. Which control plane, and how it is spoken to, is
 // the provider's (provider.ts), read anew at every connect.
-import { readFileSync, rmSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Clock, Effect, Stream, SubscriptionRef } from "effect";
 import WebSocket from "ws";
@@ -416,6 +416,7 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
     s.peersCurrent = Array.isArray(body.peers);
     s.reached = s.peersCurrent;
     s.rostersSaid = (s.rostersSaid ?? 0) + 1;
+    let fullAgain = false;
     s.update((st) => {
       for (const k of ["workspace", "workspace_name", "name", "origin", "relay_url"] as const) {
         if (locked && (k === "origin" || (k === "workspace" && !took))) continue;
@@ -460,9 +461,12 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
         log.warn("presence", "this rig is listed as a whole station, as its person signed: it becomes one");
         delete st.rig;
         delete st.full_pending;
-        rmSync(rigGrantsPath(s.data), { force: true });
+        fullAgain = true;
       }
     });
+    // Its grants as a rig go with it, off the thread: a whole station reads none, and one made a rig again removes them
+    // first (sessions/agents.ts `follow`).
+    if (fullAgain) void rm(rigGrantsPath(s.data), { force: true }).catch((error) => log.warn("presence", "the grants of this station as a rig were not removed", { error: (error as Error).message }));
     syncLock(s, body.lock, send);
     // Each joined workspace's lock too, level with the plane's.
     if (Array.isArray(body.workspaces)) {
@@ -519,10 +523,10 @@ function syncLock(s: CloudState, head: any, send: (frame: unknown) => unknown, w
   else hashes.delete(ws ?? "");
   const mine = s.chain(ws)?.state?.seq;
   if (mine === undefined) {
-    const pending = ws === null ? pendingLock(s.data) : s.pendingLock(ws);
     // (a joined workspace that turned its lock on after this station joined it, this station not in it then: its lock,
-    // pinned once it names this station, takeFromPlane)
-    if (theirs >= 0 && (pending !== null || (ws !== null && s.leftOut(ws) === "unpinned"))) send({ type: "lock.get", after: -1, ...which });
+    // pinned once it names this station, takeFromPlane). What joining named to pin is read only where the plane has a
+    // lock to bring: not at every frame of a workspace with none.
+    if (theirs >= 0 && ((ws === null ? pendingLock(s.data) : s.pendingLock(ws)) !== null || (ws !== null && s.leftOut(ws) === "unpinned"))) send({ type: "lock.get", after: -1, ...which });
     return;
   }
   // The plane's lock another than the one pinned here: turned off and on again while this station was not there to hear
@@ -604,7 +608,9 @@ function takeFromPlane(s: CloudState, raw: unknown[], ws: string | null = null, 
       if (pending === null) return;
       if (!entries.some((e) => entryHash(e!) === pending)) return log.warn("lock", "the control plane's lock is not the one this station was enrolled with", ws === null ? {} : { workspace: ws });
       s.takeLock(entries as Entry[], ws);
-      rmSync(ws === null ? pendingLockPath(s.data) : joinedPendingPath(s.data, ws), { force: true });
+      // Off the thread: pinned now, what joining named to pin is read no more (only while nothing is pinned: syncLock,
+      // takeFromPlane, Cloud.leftOut), so its going a moment later changes nothing.
+      void rm(ws === null ? pendingLockPath(s.data) : joinedPendingPath(s.data, ws), { force: true }).catch(() => {});
     } else {
       try {
         s.takeLock(entries as Entry[], ws);

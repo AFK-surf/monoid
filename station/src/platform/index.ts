@@ -163,8 +163,10 @@ export type Platform = {
   /// Where file systems other than the machine's own volumes are mounted (a network share, OrbStack's NFS in the home,
   /// a disk), wherever that is: macOS asks the person before a process opens one, so the station never does itself
   /// (drive/fs.ts protectedPlace). macOS's, as `mount` says them (read again in the background when asked a while
-  /// after the last read); none elsewhere.
+  /// after the last read, never on the thread: none until the first read, which asking starts, is in); none elsewhere.
   mounts(): string[];
+  /// `mounts`, read first (off the thread) where it was not yet or is stale.
+  mountsSoon(): Promise<string[]>;
   /// Whether making a symbolic link was refused for want of the privilege (Windows without Developer Mode).
   linkRefused(error: unknown): boolean;
   /// Whether a directory's entries can be made durable by syncing it (not on Windows: NTFS journals them).

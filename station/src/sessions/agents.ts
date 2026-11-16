@@ -8,6 +8,7 @@
 import { sandboxesOf } from "../agents/sandbox.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { Context, Effect, Layer, Schedule, Stream, SubscriptionRef } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { CLAUDE_TOOL_LOADED, ClaudeDriver } from "../agents/claude.ts";
@@ -768,7 +769,7 @@ export const AgentsLive = (control: Control) =>
           await hub.suspendAll();
           for (const a of along) await a.left?.();
           await jobs.stopAll("this station only runs tasks now");
-          rmSync(rigGrantsPath(data), { force: true });
+          await rm(rigGrantsPath(data), { force: true });
           cloud.update((st) => {
             st.rig = { owner: due.owner, owner_email: due.owner_email, owner_name: due.owner_name, person: due.person };
             delete st.rig_pending;
@@ -935,13 +936,7 @@ export const AgentsLive = (control: Control) =>
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
       // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
       const relieving = async () => {
-        const free = () => {
-          try {
-            return diskFree(data);
-          } catch {
-            return Infinity;
-          }
-        };
+        const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
         try {
           const disk = await diskOf(data).catch(() => null);
@@ -950,7 +945,7 @@ export const AgentsLive = (control: Control) =>
             await upkeep.renewables(hub.now());
             await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
-          if (free() < DISK_LOW_BYTES) await relieveArchived(hub, free);
+          if ((await free()) < DISK_LOW_BYTES) await relieveArchived(hub, free);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }

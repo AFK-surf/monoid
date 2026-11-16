@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { fieldOrNull, firstWord, idleOfIoreg, output, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, procStatTicks, trim } from "./text.ts";
+import { fieldOrNull, firstWord, idleOfIoreg, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, procStatTicks, trim } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -51,6 +51,10 @@ function background(): Background {
   }
   return backgroundFound;
 }
+
+/// Whether /usr/bin/nice is here (Platform.lowered), looked for once.
+let niceFound: boolean | null = null;
+const niceThere = (): boolean => (niceFound ??= existsSync("/usr/bin/nice")); // sync: a stat, once for the process
 
 /// `program` with `args` under the wrapper `how`.
 export function backgroundedOn(how: Background, program: string, args: string[]): [string, string[]] {
@@ -244,12 +248,12 @@ function procAddress(hex: string): string {
 
 /// Where `pids` listen at `port` by Linux's /proc (no lsof): the listening sockets of the port, those whose inode one of
 /// them holds open.
-function procListening(pids: number[], port: number): string[] | null {
+async function procListening(pids: number[], port: number): Promise<string[] | null> {
   const sockets = new Map<string, string>();
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     let text: string;
     try {
-      text = readFileSync(table, "utf8");
+      text = await readFile(table, "utf8");
     } catch {
       continue;
     }
@@ -260,19 +264,19 @@ function procListening(pids: number[], port: number): string[] | null {
       if (parseInt(hexPort ?? "", 16) === port) sockets.set(f[9]!, procAddress(address ?? ""));
     }
   }
-  if (!existsSync("/proc/self/fd")) return null;
+  if (!(await access("/proc/self/fd").then(() => true, () => false))) return null;
   const found: string[] = [];
   for (const pid of pids) {
     let fds: string[] = [];
     try {
-      fds = readdirSync(`/proc/${pid}/fd`);
+      fds = await readdir(`/proc/${pid}/fd`);
     } catch {
       continue;
     }
     for (const fd of fds) {
       let target = "";
       try {
-        target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+        target = await readlink(`/proc/${pid}/fd/${fd}`);
       } catch {
         continue;
       }
@@ -287,26 +291,37 @@ function procListening(pids: number[], port: number): string[] | null {
 /// std::env::consts::OS for the Unixes Node names otherwise.
 const OS: Record<string, string> = { darwin: "macos", linux: "linux", freebsd: "freebsd", openbsd: "openbsd" };
 
-/// macOS's mounts as last read (platform `mounts`), and when; read again in the background once this old.
+/// macOS's mounts as last read (platform `mounts`), and when; read again in the background once this old. Never read
+/// on the thread: `/sbin/mount` once took the thread for as long as a network share it lists did not answer.
 let mounted: { at: number; points: string[] } | null = null;
-let mounting = false;
+let mounting: Promise<string[]> | null = null;
 const MOUNTS_FRESH_MS = 2_000;
+
+/// `/sbin/mount` read off the thread, one read at a time however many ask.
+function readMounts(): Promise<string[]> {
+  mounting ??= new Promise<string[]>((resolve) => {
+    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
+      mounting = null;
+      mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+      resolve(mounted.points);
+    });
+  });
+  return mounting;
+}
+
+/// Platform.mounts: as last read, none before the first read is in (which this starts); read again in the background
+/// once stale.
 function mounts(): string[] {
   if (!MACOS) return [];
-  if (mounted === null) {
-    let out = "";
-    try {
-      out = execFileSync("/sbin/mount", { encoding: "utf8" });
-    } catch {}
-    mounted = { at: wall.now(), points: parseMounts(out) };
-  } else if (!mounting && wall.now() - mounted.at > MOUNTS_FRESH_MS) {
-    mounting = true;
-    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
-      mounting = false;
-      mounted = { at: wall.now(), points: error ? mounted!.points : parseMounts(out) };
-    });
-  }
-  return mounted.points;
+  if (mounted === null || wall.now() - mounted.at > MOUNTS_FRESH_MS) void readMounts();
+  return mounted?.points ?? [];
+}
+
+/// Platform.mountsSoon: as mount says them now, read first where not read yet or stale.
+async function mountsSoon(): Promise<string[]> {
+  if (!MACOS) return [];
+  if (mounted !== null && wall.now() - mounted.at <= MOUNTS_FRESH_MS) return mounted.points;
+  return readMounts();
 }
 
 /// Where Linux's `script` (util-linux's) may be.
@@ -380,7 +395,7 @@ export const unix: Platform = {
   runnable: (command, args) => ({ file: command, args }),
   posixShell: () => "/bin/sh",
   grouped: (program, args) => [program, args],
-  lowered: (program, args, by) => (by === 0 || !existsSync("/usr/bin/nice") ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
+  lowered: (program, args, by) => (by === 0 || !niceThere() ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
   backgrounded: (program, args) => backgroundedOn(background(), program, args),
   flushing: (dir) => (MACOS ? ["sync", []] : ["sync", ["-f", dir]]),
   makeCommand(path, script) {
@@ -441,12 +456,7 @@ export const unix: Platform = {
       const hex = port.toString(16).toUpperCase().padStart(4, "0");
       const inodes = new Set<string>();
       for (const file of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-        let text = "";
-        try {
-          text = readFileSync(file, "utf8");
-        } catch {
-          continue;
-        }
+        const text = await readFile(file, "utf8").catch(() => "");
         for (const line of text.split("\n").slice(1)) {
           const f = line.trim().split(/\s+/);
           if (f.length > 9 && f[1]!.endsWith(`:${hex}`) && f[3] === "01") inodes.add(f[9]!);
@@ -465,7 +475,7 @@ export const unix: Platform = {
         }
         for (const fd of fds) {
           try {
-            const link = readlinkSync(`/proc/${pid}/fd/${fd}`);
+            const link = await readlink(`/proc/${pid}/fd/${fd}`);
             const m = /^socket:\[(\d+)\]$/.exec(link);
             if (m && inodes.has(m[1]!)) {
               pids.push(pid);
@@ -519,6 +529,7 @@ export const unix: Platform = {
     return found;
   },
   mounts,
+  mountsSoon,
   linkRefused: () => false,
   syncsDirectories: true,
   async shareFile(target, link) {
@@ -685,7 +696,7 @@ export const unix: Platform = {
     if (!MACOS) {
       for (const pid of pids) {
         try {
-          out.set(pid, readlinkSync(`/proc/${pid}/cwd`));
+          out.set(pid, await readlink(`/proc/${pid}/cwd`));
         } catch {}
       }
       return out;
@@ -713,7 +724,7 @@ export const unix: Platform = {
       const error = e as NodeJS.ErrnoException & { stdout?: string; code?: unknown };
       // lsof says nothing found by its exit 1.
       if (typeof error.code === "number" && error.code === 1) return parseLsof(error.stdout ?? "", port);
-      return MACOS ? null : procListening(pids, port);
+      return MACOS ? null : await procListening(pids, port);
     }
   },
   async commands(pids) {

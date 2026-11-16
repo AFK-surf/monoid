@@ -97,7 +97,7 @@ export class HelperGrants {
   readonly #listeners = new Set<() => void>();
   /// Where removable and network disks are mounted (the test's own).
   readonly #volumes: string;
-  readonly #mounts: () => string[];
+  readonly #mounts: () => string[] | Promise<string[]>;
   /// Whether the station may reach its LAN, as last looked at (null: no LAN, or not known).
   #lan: GrantState | null = null;
   readonly #reach: () => Promise<"granted" | "denied" | null>;
@@ -109,7 +109,7 @@ export class HelperGrants {
     now?: () => number;
     volumes?: string;
     /// The disks mounted elsewhere than `volumes` (platform `mounts`): OrbStack's NFS in the home.
-    mounts?: () => string[];
+    mounts?: () => string[] | Promise<string[]>;
     reach?: () => Promise<"granted" | "denied" | null>;
     open?: (url: string) => void;
   }) {
@@ -117,7 +117,9 @@ export class HelperGrants {
     this.#folders = options.folders ?? true;
     this.#now = options.now ?? (() => wall.now());
     this.#volumes = options.volumes ?? "/Volumes";
-    this.#mounts = options.mounts ?? (() => platform.mounts());
+    this.#mounts = options.mounts ?? (() => platform.mountsSoon());
+    // Read now, off the thread, for what asks the platform's as last read (drive/fs.ts `protectedPlace`).
+    if (options.mounts === undefined) void platform.mountsSoon();
     this.#reach = options.reach ?? (() => lanReach());
     this.#open = options.open ?? ((url) => void execFile("open", [url], () => undefined));
     // A grant changed (its window saw it), or the helper came back: looked at again.
@@ -261,7 +263,7 @@ export class HelperGrants {
     // The system's own disk is a link to / there.
     const disks = await Promise.all(each.map((p) => lstat(p).then((s) => !s.isSymbolicLink(), () => false)));
     const tops = each.filter((_, i) => disks[i]);
-    tops.push(...this.#mounts().filter((m) => !m.startsWith(`${this.#volumes}/`)));
+    tops.push(...(await this.#mounts()).filter((m) => !m.startsWith(`${this.#volumes}/`)));
     if (tops.length === 0) return null;
     const answer = await this.helper.request({ op: "files.access", paths: tops }).catch(() => null);
     const found = (answer?.access ?? []).find((a: any) => a?.grant === grant && typeof a.path === "string");
