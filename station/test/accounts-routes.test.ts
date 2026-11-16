@@ -280,12 +280,16 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.call("POST", "/profiles/sub/login");
     const job = await wait("sub", "needs_code");
     assert.ok(job.url.startsWith("https://claude.com/cai/oauth/authorize?"));
-    await t.call("POST", "/profiles/sub/login-code", { code: "wrong" });
+    // A code Claude's command would not take: refused at once, saying what to paste; the sign-in waits on.
+    assert.deepEqual(await t.call("POST", "/profiles/sub/login-code", { code: "good-code" }), [400, { error: "授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）" }]);
+    assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "good-code#other" }))[0], 400);
+    assert.equal(t.view("sub")!.login.state, "needs_code");
+    await t.call("POST", "/profiles/sub/login-code", { code: "wrong#y" });
     assert.ok((await wait("sub", "failed")).error.includes("invalid code"));
     assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "again" }))[0], 400);
     await t.call("POST", "/profiles/sub/login");
     await wait("sub", "needs_code");
-    await t.call("POST", "/profiles/sub/login-code", { code: " good-code " });
+    await t.call("POST", "/profiles/sub/login-code", { code: " good-code#y " });
     await wait("sub", "done");
 
     await t.call("PUT", "/profiles/cxs", { runtime: "codex", access: { kind: "subscription" } });
@@ -398,7 +402,9 @@ describe("the accounts routes", { concurrency: true }, () => {
       assert.equal(await t.accounts.logins.openPage(started.id, "zh"), "browser:T2");
       const stateForNew = b.options.get("T2")!.stateFile!;
       assert.equal(stateForNew(), join(dir, "homes", started.id, LOGIN_BROWSER_FILE));
-      await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" });
+      assert.equal((await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" }))[0], 400);
+      assert.equal(t.accounts.logins.get(started.id)?.state, "needs_code");
+      await t.call("POST", `/logins/${started.id}/code`, { code: "https://platform.claude.com/oauth/code/callback?code=good-code&state=y" });
       const created = await upon(
         (wake) => t.accounts.onChange(wake),
         () => t.accounts.loginsView().find((l) => l.id === started.id)?.created as string | undefined,

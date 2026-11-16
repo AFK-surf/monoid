@@ -129,14 +129,24 @@ export function approval(dir: string): { path: string; approve: () => Promise<vo
 
 /// The stand-in login command: Claude's prints a link and reads a code; Codex's prints a device
 /// link and a code, then finishes once the person approved (when an `approval` fifo is given, once it is written).
+/// Claude's as `claude auth login` 2.1.321 takes one: one with no `#` (or nothing on a side of it) it says it would
+/// not take and reads another, never ending; `good-code#y` signs in; `refused#y` it says it would not take either;
+/// `silent#y` it says nothing of and reads on; any other it fails on.
 export const fakeLogin = (approval?: string) => `#!/bin/sh
 if [ "$1" = "auth" ]; then
   echo "Opening browser to sign in…"
   echo "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=y"
   printf "Paste code here if prompted > "
-  read code
-  [ "$code" = "good-code" ] && { echo "Login successful"; exit 0; }
-  echo "OAuth error: invalid code"; exit 1
+  while read code; do
+    left="\${code%%#*}"; right="\${code#*#}"
+    if [ "$left" = "$code" ] || [ -z "$left" ] || [ -z "$right" ] || [ "$code" = "refused#y" ]; then
+      echo "Invalid code. Please make sure the full code was copied"; continue
+    fi
+    [ "$code" = "silent#y" ] && continue
+    [ "$code" = "good-code#y" ] && { echo "Login successful"; exit 0; }
+    echo "OAuth error: invalid code"; exit 1
+  done
+  exit 1
 fi
 printf "1. Open this link\\n   \\033[94mhttps://auth.openai.com/codex/device\\033[0m\\n2. Enter this one-time code\\n   \\033[94mABCD-12345\\033[0m\\n"
 ${approval === undefined ? "" : `while [ ! -e '${approval}' ]; do sleep 0.05; done; read approved < '${approval}'`}

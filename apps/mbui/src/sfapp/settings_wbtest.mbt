@@ -935,10 +935,52 @@ test "a subscription signing in: what to do in the browser, then the code typed 
   // nothing typed: 完成登录 there, but not to be pressed
   assert_true(t.find("完成登录") is Some(_))
   t.tap_text("粘贴授权码")
-  t.type_text("abc-123")
+  t.type_text("abc-123#st8")
   t.tap_text("完成登录")
   t.draw()
-  assert_true(t.find("abc-123") is None, msg="sent, its field emptied")
+  assert_true(t.semantics().iter().all(fn(s) { s.value != "abc-123#st8" }), msg="sent, its field emptied")
+}
+
+///|
+test "a subscription's code the station refuses (no # and what follows) is said under its field, kept there to mend, gone as it is edited, then the whole code signs in" {
+  let incomplete = "授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）"
+  let phone = corner_windows[corner_windows.search_by(w => w.0 == "phone").unwrap()]
+  let wide = corner_windows[corner_windows.search_by(w => w.0 == "wide").unwrap()]
+  for mode in ["settings-profile-login", "settings-new-profile-login"] {
+    for c in [(phone, 1.0), (wide, 1.0), (phone, words_large_scale)] {
+      let (win, scale) = c
+      let at = "\{mode} \{win.0} at \{scale}"
+      let t = screen_in(mode, win, "zh", font_scale=scale)
+      // (the code's field, by what is in it)
+      let field = fn(value : String) { t.semantics().iter().find_first(fn(s) { s.role == TextField && s.value == value }) }
+      let before = t.audit()
+      t.tap_text("粘贴授权码")
+      t.type_text("abc123")
+      t.tap_text("完成登录")
+      t.run_for(@ui.move_most_ms)
+      // refused: still at the code's step, the code kept in its field, why said right under it
+      assert_true(t.find("正在完成登录") is None, msg="\{at}: not waiting on the station")
+      guard field("abc123") is Some(code) else { fail("\{at}: the code not kept in its field") }
+      guard t.find(incomplete) is Some((_, bad_y)) else { fail("\{at}: no reason under the field") }
+      assert_true(bad_y > code.rect.1 + code.rect.3 / 2.0, msg="\{at}: why \{bad_y} under the field \{Repr(code.rect)}")
+      assert_eq(t.audit().filter(fn(f) { !before.map(aw_plain).contains(aw_plain(f)) }), [], msg=at)
+      assert_eq(t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown(), [], msg=at)
+      // edited: the reason gone
+      t.tap(code.rect.0 + code.rect.2 - 8.0, code.rect.1 + code.rect.3 / 2.0)
+      t.type_text("#st8")
+      t.run_for(@ui.move_most_ms)
+      assert_true(field("abc123#st8") is Some(_), msg="\{at}: the code mended")
+      assert_true(t.find(incomplete) is None, msg="\{at}: gone as it is edited")
+      // the whole code: signed in
+      t.tap_text("完成登录")
+      t.run_for(@ui.move_most_ms)
+      t.draw()
+      t.run_for(@ui.move_most_ms)
+      assert_true(field("abc123#st8") is None, msg="\{at}: taken")
+      assert_true(t.find("完成登录") is None, msg="\{at}: no code asked any more")
+      assert_true(t.find(incomplete) is None, msg=at)
+    }
+  }
 }
 
 ///|

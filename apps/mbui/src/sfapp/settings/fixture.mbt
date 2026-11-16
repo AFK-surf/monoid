@@ -311,6 +311,12 @@ let fx_google : Ref[String] = Ref("")
 let fx_google_login : Ref[String] = Ref("")
 
 ///|
+/// An Anthropic plan's sign-in for a new profile (settings-new-profile-login…) given its whole code: signed in, its
+/// profile made (cc); before, waiting on the code.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_new_login_done : Ref[Bool] = Ref(false)
+
+///|
 /// Whether Google accounts are among the profiles (settings-profiles-google): a company's and a person's.
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
 let fx_google_profiles : Ref[Bool] = Ref(false)
@@ -428,6 +434,7 @@ fn fixture_reset() -> Unit {
   fx_group_made.val = false
   fx_google.val = ""
   fx_google_login.val = ""
+  fx_new_login_done.val = false
   fx_google_profiles.val = false
   fx_connects_waiting.val = false
 }
@@ -2034,6 +2041,8 @@ fn fx_station(address : String) -> Json {
                   ("created", if fx_google_login.val == "done" { str("gw") } else { Json::null() }),
                 ]),
               ]
+            } else if fx.new_login && fx_new_login_done.val {
+              [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "done")), ("created", str("cc"))])]
             } else if fx.new_login {
               [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])]
             } else {
@@ -3720,6 +3729,30 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     // the drafts' forms (a new profile's, a new connect's, the decisions' and the archive policy's), opened and edited
     // an Anthropic plan's sign-in for a new profile, begun (settings-new-profile-login…)
     "login.new" if fx.new_login => Some(Ok(obj([("id", str("login-new")), ("job", fx_login_job("login-new", "needs_code"))])))
+    // a code pasted back for Claude's sign-in, as the station takes it (station/src/accounts/login.ts claudeCodeOf):
+    // refused without its `#` and what follows it, the sign-in still waiting; whole, signed in
+    "login.code" if fx.new_login =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx_new_login_done.val = true
+            fx_changed()
+            Ok(obj([("job", fx_login_job("login-new", "done"))]))
+          }
+        },
+      )
+    "profile.loginCode" if fx.login == "needs_code" =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx.login = "done"
+            fx_changed()
+            Ok(obj([]))
+          }
+        },
+      )
     // Google's sign-in, begun; its code taken (a company's then asks for its project), its project taken
     "login.new" if fx_google.val != "" => {
       // (one under way already, as a mode put it: as it is)
@@ -3981,6 +4014,18 @@ fn fx_words() -> Array[String] {
     "amber", "basin", "cedar", "delta", "ember", "fable", "grove", "harbor", "island", "jasper", "kettle", "lantern", "meadow",
     "nectar", "orbit", "pebble", "quarry", "river", "saddle", "timber", "umbra", "velvet", "willow", "zephyr",
   ]
+}
+
+///|
+/// Why the station would refuse `code` pasted back for Claude's sign-in (no `#`, or nothing on a side of it), as its
+/// refusal comes to the app; None where it takes it.
+fn fx_claude_code(code : String) -> Json? {
+  let parts = code.split("#").to_array()
+  if parts.length() == 2 && parts[0].trim(chars=" ").length() > 0 && parts[1].trim(chars=" ").length() > 0 {
+    None
+  } else {
+    Some(obj([("code", str("http")), ("message", str("授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）"))]))
+  }
 }
 
 ///|

@@ -459,16 +459,10 @@ fn new_profile_plan_node(
             job,
             fn() { text(field(d(), "signIn"), "provider") },
             fn() { is_doing(core, ["login.code"], on()) },
-            fn(code, sent) {
+            fn(code, sent, refused) {
               let id = n.login.untracked()
               if id != "" {
-                @settings.act(
-                  core,
-                  @sf.t("web-pages.profiles.finish"),
-                  "login.code",
-                  obj([("station", str(station)), ("id", str(id)), ("code", str(code))]),
-                  then=fn(_) { sent() },
-                )
+                login_code_sent(core, "login.code", obj([("station", str(station)), ("id", str(id)), ("code", str(code))]), sent, refused)
               }
             },
             copied,

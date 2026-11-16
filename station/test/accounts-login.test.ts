@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdirSync, readlinkSync, lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { deviceCode, LoginManager, type LoginState, stripAnsi } from "../src/accounts/login.ts";
+import { claudeCodeOf, deviceCode, LoginManager, type LoginState, stripAnsi, VERIFY_WAIT_MS } from "../src/accounts/login.ts";
 import { MachineLogins } from "../src/accounts/machine.ts";
 import { linkCodexAuth } from "../src/agents/machine-logins.ts";
 import { approval, exe, fakeBrowser, fakeLogin, idToken, machine, sameAs, script, temp, upon } from "./accounts-fakes.ts";
 import { WINDOWS } from "../src/platform/index.ts";
+import { tr } from "../src/ops/i18n.ts";
+import { testClock } from "./hub-fakes.ts";
 
 test("a subscription sign-in relays the link, the code and the result", async () => {
   const dir = temp("login");
@@ -26,13 +28,13 @@ test("a subscription sign-in relays the link, the code and the result", async ()
     const job = await wait("sub", "needs_code");
     assert.ok(job.url!.startsWith("https://claude.com/cai/oauth/authorize?"), JSON.stringify(job));
     assert.equal(heard[0], "sub");
-    await logins.submitCode("sub", "wrong", "zh");
+    await logins.submitCode("sub", "wrong#y", "zh");
     assert.ok((await wait("sub", "failed")).error!.includes("invalid code"));
     await assert.rejects(logins.submitCode("sub", "x", "zh"), /未在等待授权码/);
     await logins.start(sub, "zh");
     await wait("sub", "needs_code");
     await assert.rejects(logins.submitCode("sub", "  ", "zh"), /空/);
-    await logins.submitCode("sub", " good-code ", "zh");
+    await logins.submitCode("sub", " good-code#y ", "zh");
     await wait("sub", "done");
 
     const cxs = { id: "cxs", runtime: "codex" as const, home: join(dir, "homes", "cxs") };
@@ -57,6 +59,80 @@ test("a subscription sign-in relays the link, the code and the result", async ()
   } finally {
     await logins.close();
   }
+});
+
+test("Claude's code is checked before it goes in: one it would not take is refused saying what to paste, the sign-in still waiting for a code", async () => {
+  const dir = temp("login");
+  const fake = join(dir, "fake-login");
+  script(fake, fakeLogin());
+  const logins = new LoginManager(dir, { claude: exe(fake), codex: exe(fake) });
+  const wait = (profile: string, state: LoginState) =>
+    upon((wake) => logins.changes(wake), () => (logins.get(profile)?.state === state ? logins.get(profile) : undefined), `${profile} ${state}`);
+  try {
+    const sub = { id: "sub", runtime: "claude" as const, home: join(dir, "homes", "sub") };
+    await logins.start(sub, "zh");
+    await wait("sub", "needs_code");
+    // Only what precedes `#`: refused, the same sign-in still waiting; its command still running.
+    await assert.rejects(logins.submitCode("sub", "good-code", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    await assert.rejects(logins.submitCode("sub", "good-code#", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    await assert.rejects(logins.submitCode("sub", "#y", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    await assert.rejects(logins.submitCode("sub", "a#b#y", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    // Another sign-in's: refused, saying where the new one is.
+    await assert.rejects(logins.submitCode("sub", "good-code#other", "en"), { message: tr("en", "station.login.claudeWrongState") });
+    assert.equal(logins.get("sub")!.state, "needs_code");
+    // The whole code then signs in on the same sign-in, with no new link.
+    await logins.submitCode("sub", "good-code#y", "zh");
+    await wait("sub", "done");
+
+    // The address its page was at, pasted: its code and state taken out of it.
+    await logins.start(sub, "zh");
+    await wait("sub", "needs_code");
+    await assert.rejects(logins.submitCode("sub", "https://platform.claude.com/oauth/code/callback?code=good-code", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    await assert.rejects(logins.submitCode("sub", "https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=y", "zh"), { message: tr("zh", "station.login.claudeIncompleteCode") });
+    await assert.rejects(logins.submitCode("sub", "https://platform.claude.com/oauth/code/callback?code=good-code&state=other", "zh"), { message: tr("zh", "station.login.claudeWrongState") });
+    await logins.submitCode("sub", " https://platform.claude.com/oauth/code/callback?code=good-code&state=y ", "zh");
+    await wait("sub", "done");
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a code Claude's command says it would not take, or one it says nothing of, ends the sign-in saying to start again", async () => {
+  const dir = temp("login");
+  const fake = join(dir, "fake-login");
+  script(fake, fakeLogin());
+  const time = testClock();
+  const logins = new LoginManager(dir, { claude: exe(fake), codex: exe(fake) }, undefined, time.clock);
+  const wait = (profile: string, state: LoginState) =>
+    upon((wake) => logins.changes(wake), () => (logins.get(profile)?.state === state ? logins.get(profile) : undefined), `${profile} ${state}`);
+  try {
+    const sub = { id: "sub", runtime: "claude" as const, home: join(dir, "homes", "sub") };
+    await logins.start(sub, "zh");
+    await wait("sub", "needs_code");
+    await logins.submitCode("sub", "refused#y", "zh");
+    assert.equal((await wait("sub", "failed")).error, tr("zh", "station.login.claudeIncompleteCode"));
+
+    await logins.start(sub, "zh");
+    await wait("sub", "needs_code");
+    await logins.submitCode("sub", "silent#y", "zh");
+    assert.equal(logins.get("sub")!.state, "verifying");
+    await time.adjust(VERIFY_WAIT_MS - 1);
+    assert.equal(logins.get("sub")!.state, "verifying");
+    await time.adjust(1);
+    assert.equal((await wait("sub", "failed")).error, tr("zh", "station.login.verifyTimedOut"));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("Claude's pasted code is read as its command takes it", () => {
+  const auth = "https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=st8";
+  assert.equal(claudeCodeOf("abc#st8", auth, "en"), "abc#st8");
+  assert.equal(claudeCodeOf("abc # st8", auth, "en"), "abc#st8");
+  assert.equal(claudeCodeOf("abc#anything", null, "en"), "abc#anything");
+  assert.equal(claudeCodeOf("https://platform.claude.com/oauth/code/callback?code=abc&state=st8", auth, "en"), "abc#st8");
+  assert.throws(() => claudeCodeOf("abc", auth, "en"), { message: tr("en", "station.login.claudeIncompleteCode") });
+  assert.throws(() => claudeCodeOf("abc#other", auth, "en"), { message: tr("en", "station.login.claudeWrongState") });
 });
 
 test("a sign-in's page opens in the station's browser: Claude's loopback page (no code to paste), a device code's page; its tab closed as it ends", { skip: WINDOWS && "the stand-in browser writes nothing down on Windows" }, async () => {

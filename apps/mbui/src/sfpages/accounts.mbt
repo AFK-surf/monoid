@@ -709,14 +709,8 @@ fn profile_sign_in_node(
           job,
           provider,
           fn() { is_doing(core, ["profile.loginCode"], on) },
-          fn(code, sent) {
-            @settings.act(
-              core,
-              @sf.t("web-pages.profiles.finish"),
-              "profile.loginCode",
-              obj([("station", str(address)), ("id", str(id)), ("code", str(code))]),
-              then=fn(_) { sent() },
-            )
+          fn(code, sent, refused) {
+            login_code_sent(core, "profile.loginCode", obj([("station", str(address)), ("id", str(id)), ("code", str(code))]), sent, refused)
           },
           open.copied,
           in_station=(fn() { text(s(), "name") }, fn() { is_doing(core, ["profile.loginBrowser"], on) }, fn(what) {
@@ -740,10 +734,33 @@ fn profile_sign_in_node(
 }
 
 ///|
+/// A code pasted back for a sign-in sent by the call `name`: gone through, `sent` (and what a lock's change waits for
+/// said, as `@settings.act` says it); refused, felt so and `refused` given why, which the field shows under it (no
+/// notice besides: it is where the code is mended).
+fn login_code_sent(core : Core, name : String, params : Json, sent : () -> Unit, refused : (String) -> Unit) -> Unit {
+  (core.call)(name, params, fn(r) {
+    match r {
+      Ok(v) => {
+        match @settings.pending_said(v) {
+          "" => ()
+          waits => (core.say)(waits)
+        }
+        sent()
+      }
+      Err(e) => {
+        @ui.haptic(Reject)
+        refused(@settings.error_text(e))
+      }
+    }
+  })
+}
+
+///|
 /// What the person does in the browser for a sign-in under way (LoginSteps), in node `v`, as its `job` says it now: the
 /// link and the code to paste back (Claude, Devin), the code to enter on the page that opens (DeviceCode: Codex, Grok,
 /// OpenCode, Kimi, Cursor's page alone: copied as it is opened, `copied` saying so); while it is checked or added, said
-/// so. `send`: a code pasted back sent, then `sent` (its field emptied); `sending` while it is. Where its job says the
+/// so. `send`: a code pasted back sent, then `sent` (its field emptied), or `refused` with why (said under the field, the
+/// code kept in it to be mended, till it is edited); `sending` while it is. Where its job says the
 /// station has a browser of its own (`browser`), the same page there (`in_station`: the station's name, whether it is
 /// being opened, and what opens it given what it is called) is a button beside the page's button; copying the link
 /// stays in the ⋯ after them.
@@ -753,7 +770,7 @@ pub fn login_steps_node(
   job : () -> Json?,
   provider : () -> String,
   sending : () -> Bool,
-  send : (String, () -> Unit) -> Unit,
+  send : (String, () -> Unit, (String) -> Unit) -> Unit,
   copied : @signals.Signal[Bool],
   in_station? : (() -> String, () -> Bool, (String) -> Unit),
 ) -> Unit {
@@ -831,10 +848,14 @@ pub fn login_steps_node(
       @sf.words_node(st, words, fn() { pf_words }) |> ignore
       let f = @ui.Field::new()
       let typed = fn() { f.text().trim(chars=" \t\n").to_owned() }
+      // why what was sent was refused, under the field till what is in it is edited
+      let bad : @signals.Signal[String] = @signals.signal("")
+      st.reacts(fn() { f.text() }, fn(_) { if bad.untracked() != "" { bad.set("") } })
       let go = fn() {
         let code = @signals.untracked(typed)
         if code != "" && !@signals.untracked(sending) {
-          send(code, fn() { f.set("") })
+          bad.set("")
+          send(code, fn() { f.set("") }, fn(why) { bad.set(why) })
         }
       }
       st.box(fn(r) {
@@ -851,6 +872,7 @@ pub fn login_steps_node(
         |> ignore
       })
       |> ignore
+      st.show(fn() { bad.get() != "" }, fn(x) { @sf.words_node(x, fn() { bad.get() }, fn() { ap_note_bad }) |> ignore })
     })
     |> ignore
   }
