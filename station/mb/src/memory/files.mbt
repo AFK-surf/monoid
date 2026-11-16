@@ -275,9 +275,11 @@ async fn scan(blobs : Blobs, ask : Scan) -> Json {
   let sep = blobs.sep
   let out : Array[Json] = []
   let held : Array[Json] = []
-  // MEMORY.md, a link or one only its owner may read not shared; one that does not read passed over.
+  // MEMORY.md, a link not shared; one that does not read passed over. One only its owner may read is shared all the
+  // same (as 0o644): it is the workspace's, never a key, and passed over it was never taken in nor written (a
+  // station's of before, 0o600, held every other station's edits off for good).
   let memory = ask.dir + sep + "MEMORY.md"
-  if lstat(host, memory) is Some(st) && st.kind == "file" && !own(st.mode) {
+  if lstat(host, memory) is Some(st) && st.kind == "file" {
     if st.size <= ask.file_most {
       if found_json(blobs, ask, { path: "MEMORY.md", full: memory, st }) is Some(j) {
         out.push(j)

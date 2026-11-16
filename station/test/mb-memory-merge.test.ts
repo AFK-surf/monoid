@@ -335,7 +335,7 @@ test("the files read: the same, in the same order, held back alike, those change
   for (const f of again.got.files) assert.equal(existsSync(join(again.blobs, f.hash)), false, f.path);
 });
 
-test("the files read: a MEMORY.md of nothing yet is not kept, nor told changed; one too large, a link, one only its owner reads held", { skip }, async () => {
+test("the files read: a MEMORY.md of nothing yet is not kept, nor told changed; one too large or a link held", { skip }, async () => {
   for (const [text, empty] of [["# still.fail memory\n", true], ["﻿  # ember memory \n\n", true], ["", true], ["# still.fail memory\n- one\n", false], [Buffer.from([0x23, 0xff]), false]] as [string | Buffer, boolean][]) {
     const dir = fresh("memory-home-");
     writeFileSync(join(dir, "MEMORY.md"), text);
@@ -361,6 +361,21 @@ test("the files read: a MEMORY.md of nothing yet is not kept, nor told changed; 
     assert.deepEqual(got.files.map((f: any) => f.path), [...want.files.keys()]);
     assert.deepEqual(new Set(got.held), want.held);
   }
+});
+
+test("the files read: a MEMORY.md only its owner reads is told as any other, 0o644; a file of a skill only its owner reads is not", { skip }, async () => {
+  const dir = fresh("memory-home-");
+  writeFileSync(join(dir, "MEMORY.md"), "- one\n");
+  chmodSync(join(dir, "MEMORY.md"), 0o600);
+  mkdirSync(join(dir, "skills/p"), { recursive: true });
+  writeFileSync(join(dir, "skills/p/SKILL.md"), "- a\n");
+  writeFileSync(join(dir, "skills/p/secret"), "key\n");
+  chmodSync(join(dir, "skills/p/secret"), 0o600);
+  const got = await memoryProgram().ask("scan", { dir, blobs: fresh("memory-blobs-"), kept: {}, builtin: [], skipped: [], fileMost: 512 * 1024, skillMost: 4 * 1024 * 1024, skillFiles: 200 });
+  assert.deepEqual(got.files.map((f: any) => [f.path, f.mode]), [["MEMORY.md", 0o644], ["skills/p/SKILL.md", 0o644]]);
+  assert.equal(got.files[0].hash, sha(Buffer.from("- one\n")));
+  const want = await readMemory(dir);
+  assert.deepEqual([...want.files].map(([p, f]) => [p, f.mode]), [["MEMORY.md", 0o644], ["skills/p/SKILL.md", 0o644]]);
 });
 
 test("the program is started by an ask, let go IDLE_MS after the last, or at once when the station is short of memory", { skip }, async () => {

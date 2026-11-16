@@ -35,7 +35,8 @@ import { MemoryProgram } from "./memory-mb.ts";
 type Json = any;
 
 /// A file of the memory, as each station keeps and tells it. `hash` "" once deleted; `size` of its content; `mode` its
-/// permission bits (0o644 or 0o755: a file only its owner may read, a key's, stays on its machine); `origin`: what a station had before the memory was shared (its first
+/// permission bits (0o644 or 0o755: a file of a skill only its owner may read, a key's, stays on its machine; MEMORY.md
+/// is shared whatever its own); `origin`: what a station had before the memory was shared (its first
 /// look), merged with another such without a version both were made from.
 export type Rec = { hash: string; at: number; by: string; prev: string[]; size: number; mode: number; origin?: true };
 type Kept = { clock: number; files: Record<string, Rec> };

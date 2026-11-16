@@ -3,7 +3,7 @@
 // as directories of their own, a cloud that only lists who is in the workspace, the station transport a direct call.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -190,6 +190,34 @@ test("what stays on its machine: a file only its owner reads, a built-in skill, 
     assert.equal(read(w.at(B), "skills/stillfail-jobs/SKILL.md"), null);
     assert.equal(read(w.at(B), "skills/site/SKILL.md"), null);
     rmSync(site, { recursive: true, force: true });
+  } finally {
+    await w.done();
+  }
+});
+
+test("a MEMORY.md only its owner reads is shared all the same: taken in, merged and written back 0o644; a key beside a skill stays", async () => {
+  const w = world([A, B]);
+  try {
+    // A station's of before left 0o600 (an atomic rewrite's temporary file): passed over, it held every edit off for good.
+    write(w.at(A), "MEMORY.md", "- from ccvm\n");
+    chmodSync(join(w.at(A).home, "MEMORY.md"), 0o600);
+    write(w.at(A), "skills/p/SKILL.md", "- a\n");
+    write(w.at(A), "skills/p/secret", "key\n");
+    chmodSync(join(w.at(A).home, "skills/p/secret"), 0o600);
+    write(w.at(B), "MEMORY.md", "- from Studio\n");
+    await w.level(A, B, A);
+    const a = read(w.at(A), "MEMORY.md");
+    assert.equal(a, read(w.at(B), "MEMORY.md"));
+    // (two memories of before: each line once, marked with its station)
+    assert.deepEqual(a!.split("\n").filter(Boolean).sort(), ["- [Studio] from Studio", "- [ccvm] from ccvm"]);
+    for (const s of [w.at(A), w.at(B)]) assert.equal(statSync(join(s.home, "MEMORY.md")).mode & 0o777, 0o644, s.id);
+    // Another edit comes through as any other, not refused as one made here.
+    write(w.at(B), "MEMORY.md", `${a}- later\n`);
+    await w.level(B, A);
+    assert.equal(read(w.at(A), "MEMORY.md"), `${a}- later\n`);
+    assert.equal(read(w.at(B), "skills/p/SKILL.md"), "- a\n");
+    assert.equal(read(w.at(B), "skills/p/secret"), null);
+    assert.equal(statSync(join(w.at(A).home, "skills/p/secret")).mode & 0o777, 0o600);
   } finally {
     await w.done();
   }

@@ -237,7 +237,7 @@ export async function readMemory(dir: string): Promise<{ files: Map<string, { by
   const held = new Set<string>();
   try {
     const st = await lstat(join(dir, "MEMORY.md"));
-    if (!st.isFile() || own(st.mode)) {}
+    if (!st.isFile()) {}
     else if (st.size <= FILE_MOST) files.set("MEMORY.md", { bytes: await readFile(join(dir, "MEMORY.md")), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
     else held.add("MEMORY.md");
   } catch {}
