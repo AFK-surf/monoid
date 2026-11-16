@@ -314,35 +314,53 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     )
     // then what is in it, one card (the user, 2026-10-30: who works in it before what it made, what it holds apart from
     // what is done with it): its pull requests, what else was said, what its agents and other chats' wrote
-    col.pick(fn() { info_holds_said(src, r, chat()) }, fn(p, holds) {
-      guard holds is Some((th, pulls, said, letters)) else { return }
+    // (told only as it changes; the card there while it holds anything, each of its rows by what it shows: a thing come
+    // or gone makes again only the row it changes)
+    let holds = @signals.computed(fn(_) { info_holds_said(src, r, chat()) })
+    let pulls = fn() {
+      match holds.get() {
+        Some((_, p, _, _)) => p
+        None => []
+      }
+    }
+    col.pick(fn() { holds.get().map(fn(h) { h.0 }) }, fn(p, th) {
+      guard th is Some(th) else { return }
       info_list_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
-        let latest = pulls[:if pulls.length() < info_pulls_most { pulls.length() } else { info_pulls_most }].to_owned()
-        k.each_of(fn() { latest }, fn(row, pull) { info_pull_row_node(row, src, r, Some(pull), close) })
-        if pulls.length() > info_pulls_most {
-          let words = fill("web-main.things.pullsAll", [("n", pulls.length().to_string())])
-          info_more_row_node(k, "list", words, "", fn() {
+        k.each(
+          fn() {
+            let all = pulls()
+            all[:if all.length() < info_pulls_most { all.length() } else { info_pulls_most }].to_owned()
+          },
+          fn(pull) { text(Some(pull), "url") },
+          fn(row, pull) { info_pull_row_node(row, src, r, @signals.untracked(fn() { Some(pull.get()) }), close) },
+        )
+        k.pick(fn() { if pulls().length() > info_pulls_most { pulls().length() } else { 0 } }, fn(m, n) {
+          guard n > 0 else { return }
+          let words = fill("web-main.things.pullsAll", [("n", n.to_string())])
+          info_more_row_node(m, "list", words, "", fn() {
             close()
             @sfpages.things_choose(r, "pulls")
             open_things(src, r, th)
           })
-        }
+        })
         // what was said in it besides words: a sheet of their own (sfpages things.mbt)
-        if said > 0 {
-          info_more_row_node(k, "photo", tr("web-main.things.title"), said.to_string(), fn() {
+        k.pick(fn() { holds.get().map_or(0, fn(h) { h.2 }) }, fn(m, said) {
+          guard said > 0 else { return }
+          info_more_row_node(m, "photo", tr("web-main.things.title"), said.to_string(), fn() {
             close()
             open_things(src, r, th)
           })
-        }
+        })
         // what its agents and other chats' wrote each other, not in the chat: their own sheet
-        if letters > 0 {
-          info_more_row_node(k, "chats", tr("web-main.letters.title"), fill("web-main.letters.count", [("n", letters.to_string())]), fn() {
+        k.pick(fn() { holds.get().map_or(0, fn(h) { h.3 }) }, fn(m, letters) {
+          guard letters > 0 else { return }
+          info_more_row_node(m, "chats", tr("web-main.letters.title"), fill("web-main.letters.count", [("n", letters.to_string())]), fn() {
             close()
             open_letters(src, r, th)
           })
-        }
+        })
       })
     })
     // (its last card at a dialog's foot, as far from it as from its sides)
@@ -626,7 +644,10 @@ let info_opener_corner : Double = 8.0
 /// opens something closes the panel (`close`) first.
 fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : () -> Unit) -> Unit {
   let chat = fn() { src.topic("chat", chat_params(r)).get().value }
-  let a = fn() { agent_json(chat(), key) }
+  // (the agent as the chat has it, told only as it changes: what reads it not run again as each message of the chat
+  // does)
+  let agent = @signals.computed(fn(_) { agent_json(chat(), key) })
+  let a = fn() { agent.get() }
   let s = fn() { field(a(), "session") }
   let card = fn() { src.topic("agentCard", { "station": Json::string(r.station), "key": Json::string(key) }).get().value }
   let entry = context_entry_node(v, src, r, key, s, close)
@@ -1589,15 +1610,18 @@ fn jobs_row_node(b : @view.View, src : Source, r : ChatRef, row : JobsRow, view 
       |> ignore
     JobsOne(service, id) => {
       let group = fn() { items(view(), "jobs").filter(fn(j) { flag(Some(j), "service") == service }) }
-      let job = fn() { group().iter().find_first(fn(j) { text(Some(j), "id") == id }) }
+      // (its job and its piece told only as they change: what reads them not run again as another job does)
+      let job_now = @signals.computed(fn(_) { group().iter().find_first(fn(j) { text(Some(j), "id") == id }) })
+      let job = fn() { job_now.get() }
       // (each a piece of its group's card: the card's top, its foot, one between, or the whole of it)
-      let piece = fn() {
+      let piece_now = @signals.computed(fn(_) {
         let g = group()
         match g.search_by(fn(j) { text(Some(j), "id") == id }) {
           Some(i) => @sf.card_piece_of(i, g.length())
           None => @sf.CardWhole
         }
-      }
+      })
+      let piece = fn() { piece_now.get() }
       @sf.card_piece_node(b, piece, fn(k) { job_row_node(k, job, fn() { job_press(src, r, @signals.untracked(job), close) }) })
     }
   }
