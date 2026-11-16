@@ -496,17 +496,31 @@ test("others' presets wait for a slow station only so long: the press is let go,
   // (b linked and reached, its answer held until the test lets it go)
   let letGo = () => {};
   const gate = new Promise<void>((resolve) => (letGo = resolve));
-  const answer = slow.answer;
-  slow.answer = (viewer) => (method, path, body) =>
-    path === "/presets/others" ? Effect.flatMap(Effect.promise(() => gate), () => answer(viewer)(method, path, body)) : answer(viewer)(method, path, body);
+  // (each station's answer of others' presets said when it is made: the station reads its file off the thread, so the
+  // test waits for that answer, never for a number of turns of the loop)
+  const answered = (s: Rig, held?: Promise<void>) => {
+    let done = () => {};
+    const made = new Promise<void>((resolve) => (done = resolve));
+    const answer = s.answer;
+    s.answer = (viewer) => (method, path, body) => {
+      if (path !== "/presets/others") return answer(viewer)(method, path, body);
+      const asked = Effect.ensuring(answer(viewer)(method, path, body), Effect.sync(done));
+      return held === undefined ? asked : Effect.flatMap(Effect.promise(() => held), () => asked);
+    };
+    return made;
+  };
+  const aAnswered = answered(a);
+  const slowAnswered = answered(slow, gate);
   const d = device(ME, [a, slow], true);
   const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { name: string }[] } }).ok;
   d.views.start({ topic: "otherPresets", scope: WS });
+  await aAnswered;
   await d.host.time.pass(10);
   assert.deepEqual([others().reading, others().presets.map((p) => p.name)], [true, ["Bo's on a"]], "a answered, b still waited for");
   await d.host.time.pass(OTHERS_WAIT_MS);
   assert.deepEqual([others().reading, others().presets.map((p) => p.name)], [false, ["Bo's on a"]], "b no longer holds the press");
   letGo();
+  await slowAnswered;
   await d.host.time.pass(10);
   assert.deepEqual([others().reading, others().presets.map((p) => p.name).sort()], [false, ["Bo's on a", "Bo's on b"]], "b's joins the list as it comes");
 });
