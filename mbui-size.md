@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9dbcbbe02](https://github.com/AFK-surf/monoid/commit/9dbcbbe020a90f1ebc50ff72b3b09092826f6f6a) app: a file moved beside and a service opened from | 2.46 | 3.45 | 14.67 | 35.85 | 57.4 | 31.42 | 64.78 | 100.16 | 124.22 |
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 2.46 | 3.44 | 14.66 | 35.84 | 57.36 | 31.42 | 64.78 | 100.16 | 122.45 |
 | [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61ae9f865](https://github.com/AFK-surf/monoid/commit/61ae9f8658da44a2a3bc1fab1346c6aead85ccc2) feat(station): add regional cloud TCP entries (#66 | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.58 | 99.89 | 115.04 |
 | [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.48 | 99.88 | 127.61 |
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
-| [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9dbcbbe02](https://github.com/AFK-surf/monoid/commit/9dbcbbe020a90f1ebc50ff72b3b09092826f6f6a) app: a file moved beside and a service opened from | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61ae9f865](https://github.com/AFK-surf/monoid/commit/61ae9f8658da44a2a3bc1fab1346c6aead85ccc2) feat(station): add regional cloud TCP entries (#66 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [202a54dcf](https://github.com/AFK-surf/monoid/commit/202a54dcf8aab07e532f391b60344624c01a1553) mbui: a list's row reads its own item by key (View | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
-| [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
