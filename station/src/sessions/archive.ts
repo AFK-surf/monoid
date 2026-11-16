@@ -159,12 +159,19 @@ export async function removeTree(path: string, opts: { force?: boolean } = {}): 
   }
 }
 
+/// (What goes meanwhile is passed over: the refused `rm` goes on removing the rest after it rejects, a sibling of what
+/// it was refused at gone under this walk, 2026-11-16, a test's read-only directory beside a project.)
 async function ownerWritable(path: string): Promise<void> {
   const there = await lstatOrNull(path);
   if (!there || there.isSymbolicLink()) return;
+  const gone = (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  };
   const need = there.isDirectory() ? 0o700 : 0o200;
-  if ((there.mode & need) !== need) await chmod(path, (there.mode | need) & 0o7777);
-  if (there.isDirectory()) for (const name of await readdir(path)) await ownerWritable(join(path, name));
+  if ((there.mode & need) !== need) await chmod(path, (there.mode | need) & 0o7777).catch(gone);
+  if (!there.isDirectory()) return;
+  const names = await readdir(path).catch((error: NodeJS.ErrnoException) => (gone(error), [] as string[]));
+  for (const name of names) await ownerWritable(join(path, name));
 }
 
 // ── transcripts ────────────────────────────────────────────────────────────────────────────────────────────────────
