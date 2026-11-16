@@ -280,6 +280,39 @@ test("deepseek_harness_is_offered_where_the_station_runs_it_on_any_endpoint", ()
   assert.equal(flows.value(topic).usesLine, "添加后可用于：自动决策");
 });
 
+test("pi_runs_on_every_key_deepseek_harness_does_and_its_own_variables_where_the_station_runs_it", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], consoleSignIn: true, updates: [{ id: "station" }, { id: "dsh" }, { id: "pi", name: "Pi", installed: true }] } });
+  let view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  const tiles = view.groups.flatMap((g: J) => g.providers);
+  assert.deepEqual(view.groups.find((g: J) => g.id === "local").providers.map((p: J) => p.id), ["env-claude", "env-codex", "env-dsh", "env-pi"]);
+  assert.equal(tiles.find((p: J) => p.id === "anthropic").usesText, "Claude Code · DeepSeek Harness · Pi");
+  assert.equal(tiles.find((p: J) => p.id === "opencode-go").usesText, "Claude Code · Codex · DeepSeek Harness · Pi · 自动决策");
+  // Pi takes no plan of its own: no tile of its own among the makers, nothing to sign in to.
+  assert.ok(!tiles.some((p: J) => p.id === "pi" || (p.hasPlan === true && p.runtime === "pi")));
+  flows.change(topic, 1, "edit", { provider: "deepseek", key: "k" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：DeepSeek Harness · Pi · 自动决策");
+  flows.change(topic, 1, "edit", { provider: "opencode-go" });
+  flows.change(topic, 1, "edit", { method: "plan" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：Claude Code · Codex · DeepSeek Harness · Pi");
+  flows.change(topic, 1, "edit", { provider: "env-pi" });
+  view = flows.value(topic);
+  assert.deepEqual([view.title, view.usesLine], ["连接 环境变量（Pi）", "添加后可用于：Pi"]);
+  assert.deepEqual(flows.begin(topic, 1), { runtime: "pi", access: { kind: "env" } });
+  flows.finish(topic, 1, null);
+  // A station that lists Pi but not DeepSeek Harness: a key runs Pi alone of the two.
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], updates: [{ id: "station" }, { id: "pi", name: "Pi", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "deepseek", key: "k" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：Pi · 自动决策");
+  // A station from before it: not offered, and a key is said to be for what that station runs.
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], updates: [{ id: "station" }, { id: "dsh" }] } });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：DeepSeek Harness · 自动决策");
+  assert.ok(!flows.value(topic).groups.flatMap((g: J) => g.providers).some((p: J) => p.id === "env-pi"));
+  assert.throws(() => flows.change(topic, 1, "edit", { provider: "env-pi" }));
+});
+
 test("supergrok_is_xais_plan_and_an_xai_key_runs_grok_build_where_the_station_runs_it", () => {
   const { s, flows, topic } = flow();
   flows.change(topic, 1, "open", {});

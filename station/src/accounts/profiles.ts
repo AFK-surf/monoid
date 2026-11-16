@@ -119,8 +119,9 @@ export function accessKinds(runtime: Runtime): AccessKind[] {
   // Antigravity CLI: a Google account signed in to (its plan: Google AI Pro / Ultra), a Gemini key, or its own variables.
   if (runtime === "agy") return ["subscription", "api-provider", "env"];
   if (runtime === "claude") return ["subscription", "opencode-go", "anthropic-api", "api-provider", "env"];
-  // DeepSeek Harness has no subscription to sign in to here: an account of its own is set up by variables.
-  if (runtime === "dsh") return ["opencode-go", "anthropic-api", "api-provider", "env"];
+  // DeepSeek Harness has no subscription to sign in to here: an account of its own is set up by variables. Neither has
+  // Pi here (its own sign-ins are not offered yet): it runs on the same keys, on pi-ai as DeepSeek Harness's routes do.
+  if (runtime === "dsh" || runtime === "pi") return ["opencode-go", "anthropic-api", "api-provider", "env"];
   // Grok Build: SuperGrok signed in to, an xAI key, or its own variables.
   if (runtime === "grok") return ["subscription", "api-provider", "env"];
   // Cursor: a Cursor account signed in to (it takes no provider's key), or its own variables (CURSOR_API_KEY).
@@ -140,10 +141,10 @@ export const needsKey = (kind: AccessKind, provider: string | undefined): boolea
 /// The runtimes an access kind runs without its provider: a provider's follow from where it
 /// speaks (`runtimesFor`).
 export function runtimesOf(kind: AccessKind, runtime: Runtime | undefined): Runtime[] {
-  if (kind === "opencode-go") return ["claude", "codex", "dsh"];
-  if (kind === "anthropic-api") return ["claude", "dsh"];
+  if (kind === "opencode-go") return ["claude", "codex", "dsh", "pi"];
+  if (kind === "anthropic-api") return ["claude", "dsh", "pi"];
   if (kind === "api-provider") return [];
-  if (kind === "subscription" && runtime === "dsh") return [];
+  if (kind === "subscription" && (runtime === "dsh" || runtime === "pi")) return [];
   return runtime ? [runtime] : [];
 }
 

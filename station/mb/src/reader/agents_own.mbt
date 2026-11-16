@@ -1,5 +1,6 @@
-// A DeepSeek Harness, Cursor or ACP runtime's process read here (`kind` "dsh", "cursor", "acp": agents.mbt), each a
-// session of its own: its lines read as the TypeScript station read them (station/dsh, station/cursor, station/acp:
+// A DeepSeek Harness, Cursor, ACP runtime's or Pi's process read here (`kind` "dsh", "cursor", "acp", "pi": agents.mbt),
+// each a session of its own: its lines read as the TypeScript station read them (station/dsh, station/cursor, station/acp;
+// Pi's RPC, which no TypeScript read before, station/pi:
 // the live steps, the turn's start and end with its outcome, the station's tools out of reach, what the station keeps
 // of an ACP runtime's transcript), told as Claude Code's are (the steps' words held DELTAS_MS, a batch given its
 // session's actor here once Node took it), and the lines that answer Node's requests or ask something of it given Node
@@ -16,6 +17,7 @@ priv enum Own {
   Dsh(@dsh.Session)
   Cursor(@cursor.Session)
   Acp(@acp.Session)
+  Pi(@pi.Session)
 }
 
 ///|
@@ -57,6 +59,7 @@ fn own_of(kind : String, m : Map[String, Json]) -> Own? {
       let kept = m.get("kept") is Some(True)
       Some(Acp(if live is Some(_) { @acp.Session::of_state(flavor, kept~, turn, live) } else { @acp.Session::new(flavor, kept~) }))
     }
+    "pi" => Some(Pi(@pi.Session::new(@pi.Turn::of_json(turn.unwrap_or(Null)), @pi.Live::of_state(live.unwrap_or(Null)))))
     _ => None
   }
 }
@@ -67,6 +70,7 @@ fn Own::turn(self : Own) -> @jsjson.JValue {
     Dsh(s) => s.turn.json()
     Cursor(s) => s.turn.json()
     Acp(s) => s.turn.json()
+    Pi(s) => s.turn.json()
   }
 }
 
@@ -77,6 +81,7 @@ fn Own::state(self : Own) -> @jsjson.JValue {
     Dsh(s) => s.live.state()
     Cursor(s) => s.live.state()
     Acp(s) => s.state()
+    Pi(s) => s.live.state()
   }
 }
 
@@ -86,6 +91,7 @@ fn Own::aborting(self : Own) -> Unit {
     Dsh(s) => s.turn.aborting = true
     Cursor(s) => s.turn.aborting = true
     Acp(s) => s.turn.aborting = true
+    Pi(s) => s.turn.aborting = true
   }
 }
 
@@ -95,6 +101,7 @@ fn Own::cut_short(self : Own) -> Array[@jsjson.JValue] {
     Dsh(s) => s.cut_short()
     Cursor(s) => s.cut_short()
     Acp(s) => s.cut_short()
+    Pi(s) => s.cut_short()
   }
 }
 
@@ -112,6 +119,10 @@ fn Own::line(self : Own, v : @jsjson.JValue, now : () -> Double) -> (Array[@jsjs
     }
     Acp(s) => {
       let said = s.line(v, now)
+      (said.events, said.node)
+    }
+    Pi(s) => {
+      let said = s.line(v)
       (said.events, said.node)
     }
   }
@@ -202,11 +213,12 @@ fn Agents::own_now(self : Agents, h : Hosted, own : Own, events : Array[@jsjson.
 }
 
 ///|
-/// A prompt of Node's given (`begin`): DeepSeek Harness' turn is asked for, Cursor's runs; both with the model.
+/// A prompt of Node's given (`begin`): DeepSeek Harness' and Pi's turn is asked for, Cursor's runs; all with the model.
 fn Agents::own_begin(self : Agents, h : Hosted, own : Own) -> Unit {
   let events = match own {
     Dsh(s) => s.prompted()
     Cursor(s) => s.prompted()
+    Pi(s) => s.prompted()
     Acp(_) => []
   }
   self.own_now(h, own, events)
@@ -243,6 +255,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
   let claude_live = @claude.Live::new()
   let dsh = @dsh.Replay::new()
   let cursor = @cursor.Replay::new()
+  let pi = @pi.Replay::new()
   let flavor = match m.get("flavor") {
     Some(String(f)) => f
     _ => "grok"
@@ -262,6 +275,7 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
       "dsh" => dsh.line(v)
       "cursor" => cursor.line(v)
       "acp" => acp.line(v)
+      "pi" => pi.line(v)
       _ => ()
     }
   }
@@ -317,6 +331,11 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
       said["session"] = text(cursor.session)
       said["turn"] = to_json(cursor.turn.json())
       said["live"] = to_json(cursor.live.state())
+    }
+    "pi" => {
+      said["session"] = Json::null()
+      said["turn"] = to_json(pi.session.turn.json())
+      said["live"] = to_json(pi.session.live.state())
     }
     "acp" => {
       let usages = acp.finish(now)

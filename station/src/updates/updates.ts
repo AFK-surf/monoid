@@ -252,7 +252,7 @@ export class Updates {
   private trusted: Map<string, string> | undefined;
   /// The channel the running release came from: as it says (CHANNEL), else the channel it started on.
   readonly installed: Channel;
-  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty() };
+  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty() };
   private checkedAt: number | null = null;
   private checking: Promise<void> | null = null;
   /// Version refusals from several conversations join one update of the machine's Codex.

@@ -76,6 +76,8 @@ const CODEX_KEY = "STILLFAIL_API_KEY";
 /// The variable DeepSeek Harness reads a profile's key from (its route's `apiKeyEnv`, dsh.ts); DeepSeek's own route
 /// and its web search read DEEPSEEK_API_KEY.
 export const DSH_KEY = "STILLFAIL_DSH_KEY";
+/// The variable Pi reads a profile's key from (the provider the station registers in it, pi.ts).
+export const PI_KEY = "STILLFAIL_PI_KEY";
 
 /// Environment an access kind needs. `{route}` is expanded per session later.
 export function accessEnv(runtime: Runtime, kind: AccessKind, key: string, model: string | undefined, via: Via): Record<string, string> {
@@ -95,6 +97,7 @@ export function accessEnv(runtime: Runtime, kind: AccessKind, key: string, model
   }
   if (kind === "opencode-go" && runtime === "codex") return { OPENCODE_GO_KEY: key, OPENCODE_SESSION: "stillfail-{route}" };
   if ((kind === "opencode-go" || kind === "anthropic-api") && runtime === "dsh") return { [DSH_KEY]: key };
+  if ((kind === "opencode-go" || kind === "anthropic-api") && runtime === "pi") return { [PI_KEY]: key };
   // Grok Build on SuperGrok signs in in its own home (grok.ts); on an xAI key, it is given it.
   if (runtime === "grok") return kind === "api-provider" && via.provider === "xai" ? { XAI_API_KEY: key } : {};
   // The Antigravity CLI signed in to a Google account keeps it in its own home (agy.ts); on a Gemini key, it is given it.
@@ -129,6 +132,7 @@ function apiEnv(runtime: Runtime, key: string, model: string | undefined, via: V
     if (route === null) return {};
     return route.kind === "deepseek" ? { DEEPSEEK_API_KEY: keyOrNone } : { [DSH_KEY]: keyOrNone };
   }
+  if (runtime === "pi") return piRoute({ id: "", runtime: "pi", home: "", access: { kind: "api-provider", ...via } }) === null ? {} : { [PI_KEY]: keyOrNone };
   if (at.responses === undefined) return {};
   const env: Record<string, string> = { [CODEX_KEY]: keyOrNone };
   if (source.sessionHeader) env.OPENCODE_SESSION = "stillfail-{route}";
@@ -197,8 +201,26 @@ export function dshRoute(p: Profile): DshRoute | null {
   return null;
 }
 
-/// The runtimes an account runs: an OpenCode Go key all three, an Anthropic key Claude Code
-/// and DeepSeek Harness, a provider's what it speaks; a subscription (and custom variables) the runtime it was made for.
+/// Where a Pi session's model requests go: the profile's provider on pi-ai, as DeepSeek Harness's routes go
+/// (`dshRoute`), DeepSeek's own API too (its chat completions, where dsh has a route of its own). None: Pi as its home and
+/// variables set it up.
+export type PiRoute = Omit<Extract<DshRoute, { kind: "pi" }>, "kind">;
+
+export function piRoute(p: Profile): PiRoute | null {
+  const route = dshRoute(p);
+  if (route?.kind === "pi") {
+    const { kind: _, ...rest } = route;
+    return rest;
+  }
+  if (route?.kind !== "deepseek") return null;
+  const found = apiSource(profileVia(p));
+  const chat = found?.[1].chat;
+  return found && chat !== undefined ? { name: found[0].name, api: "openai-completions", baseURL: chat } : null;
+}
+
+/// The runtimes an account runs: an OpenCode Go key Claude Code, Codex, DeepSeek Harness and Pi, an Anthropic key
+/// Claude Code, DeepSeek Harness and Pi, a provider's what it speaks; a subscription (and custom variables) the runtime
+/// it was made for.
 export function profileRuntimes(p: Profile): Runtime[] {
   const kind = accessKind(p);
   if (kind === "api-provider") {
@@ -210,11 +232,11 @@ export function profileRuntimes(p: Profile): Runtime[] {
     // A Gemini key runs the Antigravity CLI too.
     return found[0].id === "xai" ? [...runtimesOf(found[1]), "grok"] : found[0].id === "google" ? [...runtimesOf(found[1]), "agy"] : runtimesOf(found[1]);
   }
-  if (kind === "opencode-go") return ["claude", "codex", "dsh"];
-  if (kind === "anthropic-api") return ["claude", "dsh"];
+  if (kind === "opencode-go") return ["claude", "codex", "dsh", "pi"];
+  if (kind === "anthropic-api") return ["claude", "dsh", "pi"];
   const own = runtimeKind(p.runtime);
-  // DeepSeek Harness has no subscription to sign in to here: its own account is set up by variables.
-  if (own === "dsh" && kind === "subscription") return [];
+  // DeepSeek Harness and Pi have no subscription to sign in to here: their own account is set up by variables.
+  if ((own === "dsh" || own === "pi") && kind === "subscription") return [];
   return own ? [own] : [];
 }
 

@@ -1,7 +1,7 @@
 // A runtime's transcript records as timeline entries (station/test/reference/transcript.ts `timelineOf`): Claude Code's,
-// Codex's (its code mode's scripts read for their calls), DeepSeek Harness's, Grok Build's, and the station's own for
-// Cursor, Devin, Hermes and Antigravity; each record read as JSON.parse reads it (station/mb src/jsjson), what it says
-// written as JSON.stringify writes it.
+// Codex's (its code mode's scripts read for their calls), DeepSeek Harness's, Grok Build's, Pi's, and the station's own
+// for Cursor, Devin, Hermes and Antigravity; each record read as JSON.parse reads it (station/mb src/jsjson), what it
+// says written as JSON.stringify writes it.
 
 ///|
 /// An entry (transcript.ts `TimelineEntry`): `said`, a call's brief made of its whole input (transcript.ts `briefs`).
@@ -195,6 +195,7 @@ pub fn timeline_of(runtime : String, record : @jsjson.JValue, state : ReadState,
     "dsh" => dsh(record, out)
     "grok" => grok(record, out)
     "cursor" | "devin" | "hermes" | "agy" => cursor(record, out)
+    "pi" => pi(record, out)
     _ => codex(record, state, out)
   }
 }

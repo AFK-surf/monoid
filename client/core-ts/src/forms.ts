@@ -812,15 +812,15 @@ function feishuView(f: J, overview: J, pending: boolean): J {
 
 // ── the add-profile pages ──
 
-const usesNames = (u: providers.Uses) => ([[u.claude, "claude"], [u.codex, "codex"], [u.dsh, "dsh"], [u.grok, "grok"], [u.agy, "agy"], [u.decision, "decision"]] as [boolean, string][]).filter(([on]) => on).map(([, id]) => id);
+const usesNames = (u: providers.Uses) => ([[u.claude, "claude"], [u.codex, "codex"], [u.dsh, "dsh"], [u.grok, "grok"], [u.agy, "agy"], [u.pi, "pi"], [u.decision, "decision"]] as [boolean, string][]).filter(([on]) => on).map(([, id]) => id);
 const usesTextOf = present.usesText;
 const runtimeName = format.runtimeLabel;
 
 /// The runtimes a station runs only where its overview's `updates` lists them.
-const LISTED = ["dsh", "grok", "cursor", "devin", "hermes", "agy"];
+const LISTED = ["dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"];
 
-/// The runtimes a station can run: Claude Code and Codex on any; DeepSeek Harness, Grok Build, Cursor and Devin each on one
-/// that lists its version (a station from before it does not, and is not offered it).
+/// The runtimes a station can run: Claude Code and Codex on any; DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent,
+/// the Antigravity CLI and Pi each on one that lists its version (a station from before it does not, and is not offered it).
 export function stationRuntimes(overview: J): string[] {
   const listed = (id: string) => arr(get(overview, "updates")).some((u) => get(u, "id") === id);
   return format.RUNTIMES.filter((r) => !LISTED.includes(r) || listed(r));

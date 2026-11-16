@@ -641,10 +641,10 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
     added += self.read_file(path, "codex", false, s, file, since)
   }
   // DeepSeek Harness, Grok Build (what the station kept of its turns beside each transcript), Cursor, Devin, Hermes,
-  // Antigravity: each runtime session's own file.
+  // Antigravity, Pi: each runtime session's own file.
   for s in sessions {
     let runtime = s.runtime
-    if !["dsh", "grok", "cursor", "devin", "hermes", "agy"].contains(runtime) {
+    if !["dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"].contains(runtime) {
       continue
     }
     for source in self.sources(s) {

@@ -23,7 +23,7 @@ still.fail 把你选定的机器连到你在的任何地方。每台机器运行
 
 - **随时随地用你的机器。** 浏览和分享它的文件，查看并操作它的浏览器或桌面，在 app 的卡片里完成命令行工具的登录，或者通过 adb 把自己的安卓手机借给 station。
 - **一个账号池。** 同一 workspace 各台 station 上登录的账号合起来用：新对话交给有所选模型、可用、最快重置且剩余最多的账号，跳过已退出登录、被拒绝或额度用完的账号。对话不得不换账号时，agent 会读回它的历史。
-- **用你已经在用的 agent。** Claude Code、Codex、Cursor、Devin、Grok Build、DeepSeek Harness、Hermes Agent 和 Antigravity CLI，可以登录各自的订阅，也可以填服务商的 API key（OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、OpenRouter 等）。
+- **用你已经在用的 agent。** Claude Code、Codex、Cursor、Devin、Grok Build、DeepSeek Harness、Hermes Agent、Antigravity CLI 和 Pi，可以登录各自的订阅，也可以填服务商的 API key（OpenAI、Anthropic、Google Gemini、DeepSeek、Kimi、OpenRouter 等）。
 - **几台机器合起来用。** station 支持 macOS、Linux 和 Windows，使用那台机器上已登录的 runtime 和订阅。同一 workspace 的 station 互相协作：agent 可以在其他 station 上运行任务、开对话，station 之间可以借用 Profile 和 skill。
 - **就在团队聊天的地方。** 在 Slack thread 或飞书（Lark）群里 @ 机器人，把 station 的 agent 拉进 [Comma](https://comma.surf) 的 Task，或在 app 里新建对话：网页版、桌面版（macOS、Windows）、安卓，iPhone、iPad 和 Linux 上用网页版。同一个对话里的人和同一个 agent 协作。
 - **会话一直在。** 每个对话保留自己的工作目录、历史和记忆。构建、监控、网页预览以任务和服务的形式在一轮结束后继续运行，结束时回到对话里报告。

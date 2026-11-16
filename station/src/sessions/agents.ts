@@ -17,6 +17,7 @@ import { DshDriver } from "../agents/dsh.ts";
 import { GrokDriver } from "../agents/grok.ts";
 import { CursorDriver } from "../agents/cursor.ts";
 import { HermesDriver } from "../agents/hermes.ts";
+import { PiDriver } from "../agents/pi.ts";
 import { AGY_TOOL_BUDGET, AgyDriver, agyRenew } from "../agents/agy.ts";
 import { type RuntimeKind, runtimeKind } from "../agents/runtime.ts";
 import { DevinDriver } from "../agents/devin.ts";
@@ -309,6 +310,7 @@ export const AgentsLive = (control: Control) =>
           new DevinDriver({ data }),
           hermes,
           agy,
+          new PiDriver({ data }),
         ],
         mcpUrl: () => door?.url ?? "",
         internal: new InternalChat(),

@@ -169,6 +169,7 @@ export const NOTES: [number, string][] = [
   [162, "chat_create needs for: me for a chat you lead (it asks you, not a person, and its claims are yours to check before you pass them on: skill stillfail-leading), person for one opened for your person (theirs: you are told nothing of it). A chat headed 由…领导的/Led by <a chat's link> asks its leader (need_human reaches it, not a person) and gives what it would drop as a proposal; one headed …为你开的/Opened for you by is your person's."],
   [163, "station_move plan and status answer a summary (each module's counts, what cannot move grouped by why with a few examples, what moving an item alone would stop, what is lent and what is stopped); a module's items come a page at a time with module (after, limit), one with item; its `room` says the chats' files in bytes and what is free there, and a move that would not leave that station 20 GB (or a tenth of its disk) free is refused (skill stillfail-move)."],
   [164, "browser takes engine (chrome or farview: this chat's browser, kept for it, where the station has Farview) and, on Farview, action open (url) and close (tab), tab for endpoint and status: a chat's Farview tabs share one profile, and a page's new window is a tab of its own."],
+  [165, "Pi is available where the station has Pi 1.0 or newer installed and a profile it runs on (a provider's key, an OpenCode Go or Anthropic key, or custom variables): chat_create takes runtime \"pi\"."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

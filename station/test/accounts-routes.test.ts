@@ -223,18 +223,18 @@ describe("the accounts routes", { concurrency: true }, () => {
 
   test("a key on a listed provider makes a profile that runs what its endpoints speak", async () => {
     const t = await rig();
-    // Chat completions only: DeepSeek Harness alone runs it.
+    // Chat completions only: DeepSeek Harness and Pi alone run it.
     const [status, body] = await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq", key: "gsk-123456" } });
     assert.equal(status, 200, JSON.stringify(body));
     assert.equal(body.id, "groq");
     const groq = t.profile("groq")!;
-    assert.deepEqual([(groq.access as any).kind, (groq.access as any).provider, groq.runtimes, groq.name], ["api-provider", "groq", ["dsh"], "Groq"]);
+    assert.deepEqual([(groq.access as any).kind, (groq.access as any).provider, groq.runtimes, groq.name], ["api-provider", "groq", ["dsh", "pi"], "Groq"]);
     assert.equal(profileEnv(groq, "dsh").STILLFAIL_DSH_KEY, "gsk-123456");
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "jev", key: "jev-key-1" } }))[0], 200);
     assert.deepEqual(t.profile("jev")!.runtimes, []);
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "opencode", key: "oc-key-1" } }))[0], 200);
     const zen = t.profile("opencode")!;
-    assert.deepEqual(zen.runtimes, ["claude", "codex", "dsh"]);
+    assert.deepEqual(zen.runtimes, ["claude", "codex", "dsh", "pi"]);
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_BASE_URL, "https://opencode.ai/zen");
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_CUSTOM_HEADERS, "x-opencode-session: {route}");
     assert.equal(profileEnv(zen, "codex").STILLFAIL_API_KEY, "oc-key-1");
@@ -245,7 +245,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "azure-openai", key: "k" } }))[0], 400);
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "custom", endpoint: "http://127.0.0.1:4000/v1", protocol: "anthropic" } }))[0], 200);
     const custom = t.profile("custom")!;
-    assert.deepEqual([(custom.access as any).key, (custom.access as any).endpoint, custom.runtimes], [undefined, "http://127.0.0.1:4000/v1", ["claude", "dsh"]]);
+    assert.deepEqual([(custom.access as any).key, (custom.access as any).endpoint, custom.runtimes], [undefined, "http://127.0.0.1:4000/v1", ["claude", "dsh", "pi"]]);
     // Claude Code adds /v1/messages itself: the address is taken at the root above the /v1 given.
     assert.equal(profileEnv(custom, "claude").ANTHROPIC_BASE_URL, "http://127.0.0.1:4000");
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq" } }))[0], 400, "a key is needed");

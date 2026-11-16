@@ -44,9 +44,9 @@ const entriesOf = (dir: string): string[] | null => {
 
 /// Where in a home a runtime keeps its transcripts: Claude Code's projects/, Codex's sessions/, DeepSeek Harness's
 /// dsh-sessions/ as dsh.ts sets it, Grok Build's grok/sessions/, Cursor's and Devin's cursor/sessions/ and devin/sessions/
-/// as cursor.ts and devin.ts keep them. In a home the station keeps it is a link to the runtime's shared place
-/// (`sharedTranscripts`, sessions/agent-home.ts `linkTranscripts`).
-export const transcriptDir = (runtime: string) => (runtime === "claude" ? "projects" : runtime === "codex" ? "sessions" : runtime === "grok" ? "grok/sessions" : runtime === "cursor" ? "cursor/sessions" : runtime === "devin" ? "devin/sessions" : runtime === "hermes" ? "hermes/sessions" : runtime === "agy" ? "agy/sessions" : "dsh-sessions");
+/// as cursor.ts and devin.ts keep them, Pi's pi/sessions/ as pi.ts names them. In a home the station keeps it is a link
+/// to the runtime's shared place (`sharedTranscripts`, sessions/agent-home.ts `linkTranscripts`).
+export const transcriptDir = (runtime: string) => (runtime === "claude" ? "projects" : runtime === "codex" ? "sessions" : runtime === "grok" ? "grok/sessions" : runtime === "cursor" ? "cursor/sessions" : runtime === "devin" ? "devin/sessions" : runtime === "hermes" ? "hermes/sessions" : runtime === "agy" ? "agy/sessions" : runtime === "pi" ? "pi/sessions" : "dsh-sessions");
 
 /// The one place a runtime's transcripts are kept on the station, whichever account's home wrote them.
 export const sharedTranscripts = (dataDir: string, runtime: string) => join(dataDir, "transcripts", runtime);
@@ -109,7 +109,7 @@ export function onTranscriptHintsChanged(listener: (id: string) => void): () => 
 function transcriptIn(runtime: RuntimeKind, dir: string, id: string, placed = false, anywhere = true): string | null {
   if (runtime === "dsh") return dshTranscript(dir, id);
   if (runtime === "grok") return grokTranscript(dir, id);
-  if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy") {
+  if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" || runtime === "pi") {
     const path = join(dir, `${id}.jsonl`);
     return isFile(storage(path)) ? path : null;
   }

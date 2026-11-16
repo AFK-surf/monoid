@@ -43,6 +43,7 @@ import {
   "station/dsh",
   "station/cursor",
   "station/acp",
+  "station/pi",
   "station/pieces",
   "station/nodepath",
   "station/admit",

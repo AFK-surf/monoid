@@ -21,8 +21,8 @@ type Json = any;
 /// `lines`, `marks`, `threads`: a Codex app-server's (`kind` "codex", mb agents_codex.mbt): the lines Node reads, each
 /// with where it begins and ends; the turns' starts and ends of threads no session has; each session's thread's events
 /// and live steps as they stand after them, with its batch where the program keeps them for its actor.
-/// `lines` for the others (`kind` "dsh", "cursor", "acp", mb agents_own.mbt): the lines that answer Node's requests or
-/// ask something of it.
+/// `lines` for the others (`kind` "dsh", "cursor", "acp", "pi", mb agents_own.mbt): the lines that answer Node's requests
+/// or ask something of it.
 /// `batch`: the events are kept by the program to give the session's actor there once its owner took them (`route`);
 /// `routed`: they are, so the session's owner says it took them (its router) and the program, not Node, acknowledges.
 export type Heard = {
@@ -44,8 +44,8 @@ export type CodexHeard = { thread: string; events: Json[]; live: Json; batch?: n
 export type Router = { program: SessionsProgram; took: (batch: number) => boolean };
 
 /// How a process's lines are read: Claude Code's frames, a Codex app-server's JSON-RPC, DeepSeek Harness' or Cursor's
-/// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs), an ACP runtime's JSON-RPC.
-export type HostedKind = "claude" | "codex" | "dsh" | "cursor" | "acp";
+/// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs), an ACP runtime's JSON-RPC, Pi's RPC.
+export type HostedKind = "claude" | "codex" | "dsh" | "cursor" | "acp" | "pi";
 
 export type HostedOptions = {
   label: string;

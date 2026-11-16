@@ -94,14 +94,15 @@ pub fn drawable(c : @ui.Ctx, name : String, w : Double, tint? : Int64) -> Int {
 let mono_makers : Array[String] = [
   "anthropic", "openai", "kimi", "xai", "mistral", "xiaomi", "ant-ling", "openrouter",
   "vercel", "cloudflare", "azure", "groq", "together", "fireworks", "cerebras", "huggingface",
-  "nvidia", "baseten", "dsh", "cursor", "devin", "hermes", "meta", "stepfun", "tencent",
+  "nvidia", "baseten", "dsh", "cursor", "devin", "hermes", "pi", "meta", "stepfun", "tencent",
   "meituan",
 ]
 
 ///|
 /// The mark of the company that made a model: the core's
 /// `maker` id when there is a mark for it, else its runtime's maker's
-/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's and Devin's their own, else Anthropic's).
+/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's, Devin's, Hermes Agent's, the Antigravity CLI's and Pi's their own,
+/// else Anthropic's).
 pub fn maker_mark(
   c : @ui.Ctx,
   maker : String,
@@ -442,6 +443,7 @@ pub fn provider_logo(c : @ui.Ctx, runtime : String, kind : String, size : Double
       "devin" => "devin"
       "hermes" => "hermes"
       "agy" => "agy"
+      "pi" => "pi"
       _ => "openai"
     }
   }

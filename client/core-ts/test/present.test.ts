@@ -233,6 +233,9 @@ test("a_profile_says_what_it_can_do_from_where_its_provider_speaks", () => {
   assert.deepEqual(text({ runtimes: ["devin"], access: { kind: "subscription" } }), ["subscription", ""]);
   assert.equal(text({ runtimes: ["dsh", "codex", "claude"], access: { kind: "opencode-go" } })[1], "Claude Code · Codex · DeepSeek Harness · 自动决策");
   assert.deepEqual(text({ runtimes: ["dsh"], access: { kind: "api-provider", provider: "deepseek" } }), ["api-provider", "DeepSeek Harness · 自动决策"]);
+  assert.deepEqual(text({ runtimes: ["pi", "dsh"], access: { kind: "api-provider", provider: "deepseek" } }), ["api-provider", "DeepSeek Harness · Pi · 自动决策"]);
+  assert.equal(text({ runtimes: ["pi", "dsh", "codex", "claude"], access: { kind: "opencode-go" } })[1], "Claude Code · Codex · DeepSeek Harness · Pi · 自动决策");
+  assert.deepEqual(text({ runtimes: ["pi"], access: { kind: "env" } }), ["env", ""]);
   assert.deepEqual(text({ runtimes: ["dsh"], access: { kind: "env" } }), ["env", ""]);
   assert.deepEqual(text({ runtimes: ["codex"], access: { kind: "env" } }), ["env", ""]);
   assert.equal(text({ runtimes: ["codex"], access: { kind: "env" }, check: { decision: { state: "ready" } } })[1], "Codex · 自动决策");

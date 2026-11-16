@@ -383,7 +383,7 @@ describe("what a profile runs DeepSeek Harness on", () => {
 
   test("a provider's key: DeepSeek on its own route, the rest on the protocol they speak, chat completions first", () => {
     const deepseek = profile({ kind: "api-provider", provider: "deepseek", key: "sk" });
-    assert.deepEqual(profileRuntimes(deepseek), ["dsh"], "DeepSeek speaks chat completions only: dsh alone runs it");
+    assert.deepEqual(profileRuntimes(deepseek), ["dsh", "pi"], "DeepSeek speaks chat completions only: dsh and Pi alone run it");
     assert.deepEqual(dshRoute(deepseek), { kind: "deepseek" });
     assert.deepEqual(profileEnv(deepseek, "dsh"), { DEEPSEEK_API_KEY: "sk" });
     const setup = dshSetup(dshRoute(deepseek), "deepseek-v4-pro", "medium", "", "/h", "r", "http://127.0.0.1:1/mcp");
@@ -394,7 +394,7 @@ describe("what a profile runs DeepSeek Harness on", () => {
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "moonshotai", key: "k" })), { kind: "pi", name: "Kimi", api: "openai-completions", baseURL: "https://api.moonshot.ai/v1" });
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "minimax", key: "k" })), { kind: "pi", name: "MiniMax", api: "anthropic-messages", baseURL: "https://api.minimax.io/anthropic" });
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "openai", key: "k" })), { kind: "pi", name: "OpenAI", api: "openai-responses", baseURL: "https://api.openai.com/v1" });
-    assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })), ["codex", "dsh"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })), ["codex", "dsh", "pi"]);
     assert.deepEqual(profileEnv(profile({ kind: "api-provider", provider: "openai", key: "k" }), "dsh"), { STILLFAIL_DSH_KEY: "k" });
     // A decision-only provider runs no runtime.
     assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "jev", key: "k" })), []);
@@ -407,8 +407,8 @@ describe("what a profile runs DeepSeek Harness on", () => {
     assert.equal(own.provider, undefined, "dsh's own default route");
     assert.deepEqual(profileRuntimes(profile({ kind: "env" })), ["dsh"]);
     assert.deepEqual(profileRuntimes(profile({ kind: "subscription" })), [], "no subscription to sign in to");
-    assert.deepEqual(profileRuntimes(profile({ kind: "opencode-go", key: "k" }, { runtime: "claude" })), ["claude", "codex", "dsh"]);
-    assert.deepEqual(profileRuntimes(profile({ kind: "anthropic-api", key: "k" }, { runtime: "claude" })), ["claude", "dsh"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "opencode-go", key: "k" }, { runtime: "claude" })), ["claude", "codex", "dsh", "pi"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "anthropic-api", key: "k" }, { runtime: "claude" })), ["claude", "dsh", "pi"]);
   });
 
   test("instructions go as system, not developer, on an OpenAI protocol anywhere but OpenAI's own API", () => {

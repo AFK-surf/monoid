@@ -106,6 +106,7 @@ pub fn transcript_dir(runtime : String) -> String {
     "devin" => "devin/sessions"
     "hermes" => "hermes/sessions"
     "agy" => "agy/sessions"
+    "pi" => "pi/sessions"
     _ => "dsh-sessions"
   }
 }
@@ -113,7 +114,7 @@ pub fn transcript_dir(runtime : String) -> String {
 ///|
 /// agents/runtime.ts `RUNTIME_KINDS`.
 pub fn runtime_kind(runtime : String) -> Bool {
-  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy"].contains(runtime)
+  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"].contains(runtime)
 }
 
 ///|
@@ -162,7 +163,7 @@ fn Finder::transcript_in(self : Finder, runtime : String, dir : String, id : Str
   match runtime {
     "dsh" => return self.dsh(dir, id)
     "grok" => return self.grok(dir, id)
-    "cursor" | "devin" | "hermes" | "agy" => {
+    "cursor" | "devin" | "hermes" | "agy" | "pi" => {
       let path = self.join([dir, id + ".jsonl"])
       return if self.kept(path) { Some(path) } else { None }
     }

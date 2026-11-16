@@ -248,6 +248,9 @@ let dsh_message : Bytes = b"{\"type\":\"assistant/message\""
 let dsh_context : Bytes = b"{\"type\":\"request/context\""
 
 ///|
+let pi_message : Bytes = b"{\"type\":\"message\""
+
+///|
 let grok_usage : Bytes = b"{\"type\":\"stillfail/usage\""
 
 ///|
@@ -269,6 +272,7 @@ fn wanted(runtime : String, line : BytesView) -> Bool {
     "claude" => holds(line, usage_word)
     "dsh" => (begins(line, dsh_message) && holds(line, usage_word)) || begins(line, dsh_context)
     "grok" => begins(line, grok_usage)
+    "pi" => begins(line, pi_message) && holds(line, usage_word)
     "cursor" | "devin" | "hermes" | "agy" => holds(line, type_usage)
     _ => holds(line, token_count) || holds(line, turn_context) || holds(line, session_meta)
   }
@@ -342,6 +346,38 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           calls: max_d(1.0, n(get(rec, "calls"))),
           context: told(get(rec, "context")),
           window: told(get(rec, "window")),
+        })
+      }
+      "pi" => {
+        // Each answer of the model's as Pi kept it in the session (agents/pi.ts): its usage pi-ai's, input apart from
+        // the cache's; a failed or stopped one that used nothing is no call.
+        let message = get(rec, "message")
+        let usage = get(message, "usage")
+        let id = str(get(rec, "id"))
+        guard str(get(message, "role")) == Some("assistant") && usage is Some(u) && !(u is Null) && id is Some(id) else {
+          continue
+        }
+        let input = n(get(usage, "input"))
+        let cache_read = n(get(usage, "cacheRead"))
+        let cache_write = n(get(usage, "cacheWrite"))
+        let output = n(get(usage, "output"))
+        if input + cache_read + cache_write + output == 0.0 {
+          continue
+        }
+        out.push({
+          id: "pi:" + id,
+          at,
+          model: str(get(message, "model")),
+          subagent,
+          fast: false,
+          input,
+          cache_read,
+          cache_write,
+          cache_write_long: 0.0,
+          output,
+          calls: 1.0,
+          context: if subagent { None } else { Some(input + cache_read + cache_write) },
+          window: state.window,
         })
       }
       "dsh" => {

@@ -141,7 +141,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
     }
     // (taken in now: what Node says of it next is had in order, whenever its socket opens)
     let kind = match text("kind") {
-      Some("codex" as k) | Some("dsh" as k) | Some("cursor" as k) | Some("acp" as k) => k
+      Some("codex" as k) | Some("dsh" as k) | Some("cursor" as k) | Some("acp" as k) | Some("pi" as k) => k
       _ => "claude"
     }
     let h = hosted(n.to_int(), if kind == "claude" { turn } else { @claude.Turn::new() }, if kind == "claude" { live } else { @claude.Live::new() }, kind~)

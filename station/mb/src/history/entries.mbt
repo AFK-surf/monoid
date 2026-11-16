@@ -124,6 +124,55 @@ fn dsh(r : @jsjson.JValue, out : Array[Entry]) -> Unit raise {
 }
 
 ///|
+/// Pi's session file (agents/pi.ts names it): its entries' messages, a person's words, the model's (its text, its
+/// thinking, its calls with their arguments), each call's result; what Pi keeps of its own (its system prompt, a model or
+/// level changed, a compaction's summary) is no entry.
+fn pi(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
+  guard string_of(get(Some(r), "type")) == Some("message") else { return }
+  let at = string_of(get(Some(r), "timestamp"))
+  let message = get(Some(r), "message")
+  let role = string_of(get(message, "role")).unwrap_or("")
+  if role == "user" {
+    let text = match get(message, "content") {
+      Some(Str(s)) => @jsjson.raw_text(s)
+      c => dsh_text(c)
+    }
+    if trim(text) != "" {
+      out.push(entry(at, "user", clip(text)))
+    }
+  } else if role == "assistant" {
+    guard get(message, "content") is Some(Arr(blocks)) else { return }
+    for block in blocks {
+      let b = Some(block)
+      let t = string_of(get(b, "type"))
+      if t == Some("text") {
+        let text = string_of(get(b, "text")).unwrap_or("")
+        if trim(text) != "" {
+          out.push(entry(at, "assistant", clip(text)))
+        }
+      } else if t == Some("thinking") {
+        let text = string_of(get(b, "thinking")).unwrap_or("")
+        if trim(text) != "" {
+          out.push(entry(at, "thinking", clip(text)))
+        }
+      } else if t == Some("toolCall") {
+        let name = string_of(get(b, "name")).unwrap_or("")
+        let input = get(b, "arguments")
+        let args = @jsjson.stringify_pretty(match input {
+          None | Some(Null) => Obj([])
+          Some(v) => v
+        })
+        let e = entry(at, "tool_call", if kept_whole(name) { args } else { clip(args) }, tool=name)
+        out.push(with_brief({ ..e, call_id: string_of(get(b, "id")) }, input))
+      }
+    }
+  } else if role == "toolResult" {
+    let e = entry(at, "tool_result", clip(dsh_text(get(message, "content"))), ok=!(get(message, "isError") is Some(Bool(true))))
+    out.push({ ..e, call_id: string_of(get(message, "toolCallId")) })
+  }
+}
+
+///|
 /// Whether `text` starts `Failed to call <name>:` (grokTimeline's `/^Failed to call [\w.-]+:/`).
 fn failed_call(text : String) -> Bool {
   let head = "Failed to call "

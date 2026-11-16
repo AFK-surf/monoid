@@ -364,7 +364,7 @@ export const CHAT_CREATE = {
       "runtime": {
         "type": "string",
         "enum": RUNTIME_KINDS,
-        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI). Default: that of its model."
+        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model."
       },
       "model": {
         "type": "string",

@@ -170,6 +170,7 @@ export function fallbackEfforts(runtime: string): string[] {
   if (runtime === "cursor" || runtime === "hermes" || runtime === "agy") return [];
   // Devin's are its models' thinking levels (agents/devin.ts); a model's own list comes with it.
   if (runtime === "devin") return ["low", "medium", "high", "xhigh", "max"];
+  // Pi's thinking levels (agents/pi.ts): it clamps one to what the model offers.
   return ["low", "medium", "high", "xhigh", "max"];
 }
 

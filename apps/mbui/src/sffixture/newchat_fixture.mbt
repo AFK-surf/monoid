@@ -554,6 +554,7 @@ fn fix_runtime_short(runtime : String) -> String {
     "devin" => "Devin"
     "hermes" => "Hermes"
     "agy" => "AGY"
+    "pi" => "Pi"
     _ => "CC"
   }
 }

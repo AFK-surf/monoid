@@ -371,7 +371,7 @@ let sources : Array[Source] = [
 ///|
 /// runtime.ts RUNTIME_KINDS.
 let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy",
+  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
 ]
 
 ///|
@@ -501,7 +501,7 @@ fn first_runtime(p : @jsjson.JValue) -> String raise {
   }
   match text(jget(Some(p), "runtime")) {
     Some(own) if runtime_kinds.contains(own) =>
-      if own == "dsh" && kind == Some("subscription") {
+      if (own == "dsh" || own == "pi") && kind == Some("subscription") {
         "claude"
       } else {
         own
