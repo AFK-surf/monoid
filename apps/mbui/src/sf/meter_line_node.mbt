@@ -16,26 +16,33 @@ pub fn meter_line_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let tips = parent.lent(panel_tips_lent)
-  let line = fn(r : @view.View, figure : Bool) {
+  let line = fn(r : @view.View, figure : () -> Bool) {
     style_node(r, fn() { meter_line_way }, in_row=true)
     r.each(fn() { Array::makei(meters().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
       let k = i.untracked()
       meter_chip_node(c, fn() { meters().get(k) }, figure, tips)
     })
   }
+  // (in words where the line has the room for all of them whole, else by their figures: which, by the room the line
+  // is given as it is laid out, View::by_room, never two ways laid out over each other while one gives way)
   parent.box(made_for=loc, fn(b) {
     style_node(b, fn() { quota_chips_line }, in_row~)
-    b.fits(Is(true)) |> ignore
-    // (in words where the line has the room for all of them, else by their figures: the words' line left out of its
-    // row where it has not the room, the figures' there only while it is, View::drops)
-    b.box(fn(r) {
-      r.drops(Is(1)) |> ignore
-      line(r, false)
-    })
-    |> ignore
-    b.box(fn(r) {
-      r.drops(Is(-1)) |> ignore
-      line(r, true)
+    b.by_room(fn(held, given) {
+      let worded_w = fn() {
+        let look = @ui.style_words(chip_text)
+        let size = node_sp(held, look.size)
+        let across = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+        let mut used = 0.0
+        for i, m in meters() {
+          let mark = chip_str(Some(m), "short")
+          let words = chip_str(Some(m), "remaining")
+          let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
+          used = used + (if i > 0 { @ui.Space::S2.px() } else { 0.0 }) + 2.0 * @ui.Space::S2.px() + across(mark) + between +
+            across(words)
+        }
+        used
+      }
+      held.box(fn(r) { line(r, fn() { worded_w() > given.width() + 0.01 }) }) |> ignore
     })
     |> ignore
   })
@@ -44,12 +51,12 @@ pub fn meter_line_node(
 
 ///|
 /// A machine's CPU, memory or disk (`m`, as it is now) in `c` (meter_chip's): its mark and what is left, filled as far as
-/// is used; `figure`, the figure alone with its unit's first letter at the chip's own size. What it is over it while
+/// is used; while `figure` says, the figure alone with its unit's first letter at the chip's own size. What it is over it while
 /// pointed at, in `tips`.
-fn meter_chip_node(c : @view.View, m : () -> Json?, figure : Bool, tips : TipLayer?) -> Unit {
+fn meter_chip_node(c : @view.View, m : () -> Json?, figure : () -> Bool, tips : TipLayer?) -> Unit {
   let words = fn() {
     let unit = chip_str(m(), "unit")
-    if figure && chip_str(m(), "big") != "" {
+    if figure() && chip_str(m(), "big") != "" {
       chip_str(m(), "big") + (if unit == "%" || unit == "" { unit } else { unit.clamped_view(end=1).to_owned() })
     } else {
       chip_str(m(), "remaining")

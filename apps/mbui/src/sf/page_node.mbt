@@ -226,7 +226,9 @@ priv enum PageItem {
 /// names it too); narrow, under back where the frame gives that, back's line its first, what the page does (`actions`)
 /// at that line's end (own_head's back_line), told the head as it is made (head_back_holds). `near_foot`: a page more
 /// asked as its list is scrolled near its foot while it has more (View::scrolls_window's). `small`: what the page is
-/// of, over its large title, narrow (page's `small`: LargeTitle's small line).
+/// of, over its large title, narrow (page's `small`: LargeTitle's small line). `back_as`: back, where the frame gives
+/// it, said so ("": as the frame says it), the page knowing what it goes back to by name (a station's profiles: that
+/// station's), told the frame's bar that names it as well (PageSaid's `back`).
 pub fn page_node(
   v : @view.View,
   title : () -> String,
@@ -244,11 +246,21 @@ pub fn page_node(
   head? : (@view.View) -> Unit,
   near_foot? : (Double, () -> Bool, () -> Unit),
   small? : () -> String = fn() { "" },
+  back_as? : () -> String = fn() { "" },
 ) -> Unit {
   // (what it says of itself to the frame's bar that names it, as that changes, whole: the frame's own to keep)
   match said {
-    Some(f) => v.reacts(fn() { { title: title(), about: about() } }, f)
+    Some(f) => v.reacts(fn() { { title: title(), about: about(), back: back_as() } }, f)
     None => ()
+  }
+  // (back, where the frame gives it, said as the page says it where it says it: `back_as`)
+  let frame_given = frame
+  let frame = fn() {
+    let f = frame_given()
+    match (f.back, back_as()) {
+      (Some(_), b) if b != "" => { ..f, back: Some(b) }
+      _ => f
+    }
   }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   let look = match width {
@@ -648,16 +660,38 @@ let nav_back_ripple : Double = 8.0
 ///|
 /// A heading over a group (heading's, narrow: SectionHeader, 12 in, its words strong, 14 over it and 6 under). `ends`:
 /// what is done on its title's line, at its end, 8 apart across the line's middle and no taller than it (heading's
-/// `actions`: their room for a finger past it into the heading's own over and under it).
+/// `actions`: their room for a finger past it into the heading's own over and under it). `lead`: what stands before its
+/// title on its line (a kind's mark), 6 from it across the line's middle.
 #callsite(autofill(loc))
-pub fn heading_node(parent : @view.View, title : () -> String, ends? : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+pub fn heading_node(
+  parent : @view.View,
+  title : () -> String,
+  ends? : (@view.View) -> Unit,
+  lead? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(l) {
     l.row(Is(true)).padding(Is((12.0, 14.0, 8.0, title_card_narrow))).gap(Is(8.0)).lines_up(Is(Some(End))) |> ignore
     l.box(fn(w) {
       if ends is Some(_) {
         w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       }
-      styled_words(w, title, fn() { pg_heading }) |> ignore
+      match lead {
+        Some(make) => {
+          w.row(Is(true)).gap(Is(heading_lead_gap)).lines_up(Is(Some(Middle))) |> ignore
+          w.box(fn(m) {
+            m.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+            make(m)
+          })
+          |> ignore
+          w.box(fn(t) {
+            t.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            styled_words(t, title, fn() { pg_heading }) |> ignore
+          })
+          |> ignore
+        }
+        None => styled_words(w, title, fn() { pg_heading }) |> ignore
+      }
     })
     |> ignore
     match ends {
@@ -677,6 +711,10 @@ pub fn heading_node(parent : @view.View, title : () -> String, ends? : (@view.Vi
   })
   |> ignore
 }
+
+///|
+/// A heading's lead from its title (heading_node's `lead`).
+let heading_lead_gap : Double = 6.0
 
 ///|
 /// What stands at the end of a line of words (line_end's, as a node), made by `make` in a row in `parent`: as high as
@@ -808,6 +846,9 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 /// taking more lines under it, never cut (a narrow row's: what a moved item waits for, its whole name);
 /// `chevron_room`: a chevron's room kept where it has none, so a list's ends line up. What is after its title
 /// (`title_after`) leaves its line (View::drops) where it says so and the line has not the room.
+/// `lines_from_lead`: its lead (a line icon, LeadLine's) at its first line's start, so what is under that line (its
+/// note, what is wrong, below) starts where the lead does, not where its title does: the room of the lead's line more
+/// for them (an account's row: its allowance's chips each said whole, as #6417 laid it out).
 #callsite(autofill(loc))
 pub fn link_row_node(
   parent : @view.View,
@@ -845,6 +886,7 @@ pub fn link_row_node(
   value_cut? : Bool = false,
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
+  lines_from_lead? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -884,6 +926,7 @@ pub fn link_row_node(
     value_cut~,
     value_wraps~,
     chevron_room~,
+    lines_from_lead~,
   )
 }
 
@@ -1010,6 +1053,7 @@ fn link_row_made(
   value_cut? : Bool = false,
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
+  lines_from_lead? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
@@ -1051,7 +1095,7 @@ fn link_row_made(
     wide_link_row_node(
       parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead, face,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~,
     )
     return
   }
@@ -1094,31 +1138,34 @@ fn link_row_made(
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as that line at least, across its
     // middle)
+    // (`lines_from_lead`: made at its first line's start instead, so the lines under that line start where it does)
+    let lead_line = fn(at : @view.View) {
+      at.box(fn(l) {
+        // (as tall as its first line is drawn at least, the system's size of words applied as it changes, the icon in
+        // its middle up and down: row_lead's)
+        l
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .min_height(By(fn() {
+          if under() {
+            l.words_redone() |> ignore
+            Some(node_sp(l, @ui.tree_theme().text_size(Body).1))
+          } else {
+            None
+          }
+        }))
+        |> ignore
+        match lead {
+          LeadIcon(name) => icon_node(l, name, row_icon, By(lead_ink)) |> ignore
+          LeadLine(f) => f(l)
+          _ => ()
+        }
+      })
+      |> ignore
+    }
     match lead {
       NoLead => ()
-      LeadIcon(_) | LeadLine(_) =>
-        r.box(fn(l) {
-          // (as tall as its first line is drawn at least, the system's size of words applied as it changes, the icon in
-          // its middle up and down: row_lead's)
-          l
-          .row(Is(true))
-          .lines_up(Is(Some(Middle)))
-          .min_height(By(fn() {
-            if under() {
-              l.words_redone() |> ignore
-              Some(node_sp(l, @ui.tree_theme().text_size(Body).1))
-            } else {
-              None
-            }
-          }))
-          |> ignore
-          match lead {
-            LeadIcon(name) => icon_node(l, name, row_icon, By(lead_ink)) |> ignore
-            LeadLine(f) => f(l)
-            _ => ()
-          }
-        })
-        |> ignore
+      LeadIcon(_) | LeadLine(_) => if !lines_from_lead { lead_line(r) }
       LeadMade(f) => r.box(fn(l) { f(l) }) |> ignore
       LeadTile(f) => r.box(fn(l) { l.margin(Is((corner_inset - text_in, 0.0, 0.0, 0.0))) |> ignore; f(l) }) |> ignore
     }
@@ -1127,6 +1174,11 @@ fn link_row_made(
     r.box(fn(words) {
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      // (`lines_from_lead`: its lead and the lines under it out to the ladder's inset from the row's side, one edge with
+      // what is below them, small blocks concentric in its corner: #6417's mark_out, the user, 2026-11-14)
+      if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+        words.margin(Is((corner_inset - side, 0.0, 0.0, 0.0))) |> ignore
+      }
       words.box(fn(first) {
         // (where what it says may go under its title, its first line may be two: what is after them stands on the
         // first of them, each as tall as that line and across its middle, never across the middle of both)
@@ -1140,72 +1192,83 @@ fn link_row_made(
           }
         }
         first.row(Is(true)).gap(Is(12.0)).lines_up(By(fn() { Some(if may_wrap() { Start } else { Middle }) })) |> ignore
-        // with words under it, its title and what it says in a line, what it says under the title where the line has not
-        // the room (pg_title_value, a row in lines: its ends the title's and what it says'); else all of it on one line,
-        // its title giving way (link_row's `!under`)
-        first.box(fn(tv) {
-          tv
-          .grow(Is(1.0))
-          .shrink(Is(1.0))
-          .min_width(Is(Some(0.0)))
-          .row(Is(true))
-          .gap(Is(12.0))
-          .wraps(By(fn() { if under() && value() != "" { Some(0.0) } else { None } }))
-          .lines_up(Is(Some(Middle)))
-          |> ignore
-          tv.box(fn(t) {
-            // (giving way to what it says where the line has not the room, cut short, as link_row's title in a row does;
-            // beside what it says, its words' own (pg_row_title_in), the line's room left between them: its line's ends
-            // the title's and what it says')
-            t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            let plain = fn() { if under() && value() != "" { titled_in } else { titled } }
-            // (what follows its title on its line while it is said, 8 apart across their middle: the title cut short
-            // where the line leaves it less, link_row's title_line; its title the same words all along)
-            let after_now = fn() { title_after is Some(_) && title_after_shown() }
-            t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-            t.box(fn(w) {
-              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              styled_words(w, title, fn() {
-                if after_now() || (note_cut_now() && value() == "") || title_cut { plain().then(cut_words) } else { plain() }
-              })
-              |> ignore
-              if acts {
-                w.ink(By(fn() { link_ink() })) |> ignore
-              }
-            })
+        // its title and what it says (in a line of their own with its lead, 6 from it, where the lead leads its first
+        // line: `lines_from_lead`, #6417's mark from its name)
+        let title_line = fn(at : @view.View) {
+          at.box(fn(tv) {
+            tv
+            .grow(Is(1.0))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            .row(Is(true))
+            .gap(Is(12.0))
+            .wraps(By(fn() { if under() && value() != "" { Some(0.0) } else { None } }))
+            .lines_up(Is(Some(Middle)))
             |> ignore
-            match title_after {
-              Some(after) =>
-                t.show(title_after_shown, fn(a) {
-                  a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
-                  after(a)
-                })
-              None => ()
-            }
-          })
-          |> ignore
-          tv.show(fn() { value() != "" }, fn(said) {
-            said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-            said.show(value_dot, fn(d) { status_dot_node(d) })
-            if value_cut || value_wraps {
-              said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            }
-            said.box(fn(w) {
-              // (`value_wraps`: on a line of its own under the title, as narrow as that line and onto the next where
-              // it has not the room, its words whole)
-              if value_wraps {
+            tv.box(fn(t) {
+              // (giving way to what it says where the line has not the room, cut short, as link_row's title in a row does;
+              // beside what it says, its words' own (pg_row_title_in), the line's room left between them: its line's ends
+              // the title's and what it says')
+              t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              let plain = fn() { if under() && value() != "" { titled_in } else { titled } }
+              // (what follows its title on its line while it is said, 8 apart across their middle: the title cut short
+              // where the line leaves it less, link_row's title_line; its title the same words all along)
+              let after_now = fn() { title_after is Some(_) && title_after_shown() }
+              t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
+              t.box(fn(w) {
                 w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                styled_words(w, title, fn() {
+                  if after_now() || (note_cut_now() && value() == "") || title_cut { plain().then(cut_words) } else { plain() }
+                })
+                |> ignore
+                if acts {
+                  w.ink(By(fn() { link_ink() })) |> ignore
+                }
+              })
+              |> ignore
+              match title_after {
+                Some(after) =>
+                  t.show(title_after_shown, fn(a) {
+                    a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+                    after(a)
+                  })
+                None => ()
               }
-              styled_words(w, value, fn() {
-                let look = value_look(if value_bad() { pg_value.then(bad) } else { pg_value })
-                if value_cut { look.then(cut_words) } else if value_wraps { look.then(value_wrapped) } else { look }
+            })
+            |> ignore
+            tv.show(fn() { value() != "" }, fn(said) {
+              said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+              said.show(value_dot, fn(d) { status_dot_node(d) })
+              if value_cut || value_wraps {
+                said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              }
+              said.box(fn(w) {
+                // (`value_wraps`: on a line of its own under the title, as narrow as that line and onto the next where
+                // it has not the room, its words whole)
+                if value_wraps {
+                  w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                }
+                styled_words(w, value, fn() {
+                  let look = value_look(if value_bad() { pg_value.then(bad) } else { pg_value })
+                  if value_cut { look.then(cut_words) } else if value_wraps { look.then(value_wrapped) } else { look }
+                })
+                |> ignore
               })
               |> ignore
             })
-            |> ignore
           })
-        })
-        |> ignore
+          |> ignore
+        }
+        if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+          first.box(fn(own) {
+            own.row(Is(true)).gap(Is(lead_from_title)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            lead_line(own)
+            title_line(own)
+          })
+          |> ignore
+        } else {
+          title_line(first)
+        }
         row_tail_node(first, tail, tail_shown, tall=fn() { if may_wrap() { Some(line()) } else { None } })
         if ends {
           icon_node(first, mark(), pg_chevron, By(fn() { theme().p.subtle }), name_now=mark).margin(By(fn() { on_line(pg_chevron) }))
@@ -1420,6 +1483,10 @@ fn row_below_node(words : @view.View, make : (@view.View) -> Unit, open : () -> 
     |> ignore
   })
 }
+
+///|
+/// A link row's lead from its title where it leads its first line (`lines_from_lead`): #6417's account mark's 6.
+let lead_from_title : Double = 6.0
 
 ///|
 /// How far out a box inside `link_row_node`'s `below` reaches (`margin`) to stand `corner_inset` (8) in from the row's

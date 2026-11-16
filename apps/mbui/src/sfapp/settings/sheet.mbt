@@ -61,24 +61,6 @@ pub fn field_of(key : String) -> @ui.Field {
 }
 
 ///|
-/// A line to type in: mbui's field in its look (@sf.field_look), its placeholder until it has
-/// words, its words 15 on 21 (`secret`: as dots).
-fn field_box(
-  c : @ui.Ctx,
-  key : String,
-  placeholder : String,
-  mono? : Bool = false,
-  secret? : Bool = false,
-  field? : @ui.Field,
-) -> String {
-  ignore(mono)
-  @kit.text_field(c, key, placeholder~, secret~, size=15.0, line=21.0, look=@sf.field_look, field=match field {
-    Some(f) => f
-    None => field_of(key)
-  }).text
-}
-
-///|
 /// Asks for a line (in place of the sheet up): its title, the field (with `value` in it at
 /// first), a hint under it, then 取消 and `action`, which can be pressed once the line has words and differs from
 /// `value`. Said, it closes and `run` goes on with the line, trimmed.

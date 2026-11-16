@@ -150,38 +150,6 @@ fn press_add_here(
 }
 
 ///|
-/// 添加这台 Mac offered where a station is added (添加 station's sheet, a workspace's first): what it does, its button;
-/// pressed, joins via `station.join` when online and joinable in the mesh, else calls `local_install(true)` and opens
-/// 本机 Station.
-fn add_this_machine(c : @ui.Ctx, core : Core, here : Here, then : () -> Unit) -> Unit {
-  let pc = local_machine_pc()
-  let (join_addr, needs_lock, lock_line) = local_here_join_state(core, here)
-  let joining = match join_addr {
-    Some(st) => is_doing(core, ["station.join"], [("station", st), ("workspace", here.workspace)])
-    None => false
-  }
-  c.box(style=here_column, fn() {
-    c.text(add_here_note(pc), style=here_words) |> ignore
-    if lock_line != "" {
-      c.text(lock_line, style=join_soft_words) |> ignore
-    }
-    @sf.button(
-      c,
-      tr(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }),
-      key="add-here",
-      busy=joining,
-      disabled=needs_lock || joining,
-      on_press=fn() { press_add_here(core, here, join_addr, false, then) },
-    )
-    let err = adding.here_error.get()
-    if err != "" {
-      c.text(err, style=add_error_words) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 /// 添加这台 Mac's words over its button.
 let here_column : @ui.Style = @ui.css("w=Full gap=S2_5")

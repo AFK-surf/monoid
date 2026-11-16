@@ -1048,6 +1048,7 @@ fn profile_quota_node(
   o : () -> Json?,
   p : () -> Json?,
   tips : @sf.TipLayer?,
+  read_under? : Bool = false,
 ) -> Unit {
   let on = [("station", address), ("id", id)]
   let params = fn() { obj([("station", str(address)), ("id", str(id))]) }
@@ -1162,6 +1163,22 @@ fn profile_quota_node(
           } else if w == 2 {
             @sf.block_node(x, fn(bl) {
               @sf.dials_node(bl, fn() { quota_dials_of(windows()) }, lines=2)
+              // (`read_under`: when it was read, 12 under its dials, being read said so; quota_section's, where no head
+              // says it, as on an account on several stations' page)
+              if read_under {
+                let read = fn() { @settings.stamp(quota(), "checkedAt", "ago") }
+                bl.show(fn() { refreshing() || read() != "" }, fn(r) {
+                  @sf.style_node(r, fn() { pq_read_room })
+                  @sf.words_node(r, fn() {
+                    if refreshing() {
+                      @sf.t("android-settings.quota.checking")
+                    } else {
+                      @sf.t("android-settings.quota.checkedAt", args=[("ago", read())])
+                    }
+                  }, fn() { pq_read_words })
+                  |> ignore
+                })
+              }
             })
           }
         })
@@ -2631,3 +2648,12 @@ fn profile_sample() -> Json {
 ///|
 /// A workspace's mark before its switch's title.
 let profile_ws_mark : Double = 16.0
+
+///|
+/// When an allowance was read, 12 under its dials (quota_read_room's).
+// kept across runs: a value (no field of it changes)
+let pq_read_room : @ui.Style = @ui.css("w=Full pt=S3")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pq_read_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)

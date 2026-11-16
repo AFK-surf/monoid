@@ -187,12 +187,12 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go)
-        assert_eq(home_again_peak.val, if place == "profiles" { (7, 0, 10) } else { (368, 0, 254) }, msg="\{tag} home→\{place}")
+        assert_eq(home_again_peak.val, if place == "profiles" { (617, 0, 504) } else { (368, 0, 254) }, msg="\{tag} home→\{place}")
         t.run_for(kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
-        // (Home taken back: nothing made; the old view's place let go of, 连接 put by)
-        assert_eq(home_again_peak.val, (0, if place == "profiles" { 7 } else { 1 }, 6), msg="\{tag} \{place}→home")
+        // (Home taken back: nothing made; the place put by, 额度 as 连接)
+        assert_eq(home_again_peak.val, (0, 1, 6), msg="\{tag} \{place}→home")
       }
     }
   }
@@ -361,7 +361,7 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked \{place})")
       let first = if place == "profiles" {
-        (7, 0, 10)
+        (767, 0, 628)
       } else if place == "connects" {
         (444, 0, 306)
       } else {
@@ -371,7 +371,7 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       t.run_for(kept_switch_over_ms)
       home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
       println("home-again \{tag}: on \{Repr(place_of(app.nav.top()))} (asked chats)")
-      assert_eq(home_again_peak.val, (0, if place == "profiles" { 7 } else { 1 }, 6), msg="\{tag} \{place}→home")
+      assert_eq(home_again_peak.val, (0, 1, 6), msg="\{tag} \{place}→home")
     }
     // (the phone's window: Home put back at the stack's root by the shell itself, no finger on the bar)
     for place in ["connects", "usage"] {

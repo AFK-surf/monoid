@@ -421,7 +421,8 @@ pub fn narrow_heading_node(parent : @view.View, title : () -> String, loc~ : Sou
 /// heads a section, narrow heading_node's, wide its title on its line, as far over the card as it stands there.
 /// `title_after`: what its title holds after its words, wide (section_node's: a count). `note`: what it holds said,
 /// under its title as section_node has it (narrow a page's note under the heading, wide under the title's words).
-/// `trailing`: how many or how much it holds, narrow at its title's line's end, wide as its note.
+/// `trailing`: how many or how much it holds, narrow at its title's line's end, wide as its note. `lead`: what stands
+/// before its title's words on their line (a kind's mark), 6 from them (heading_node's).
 #callsite(autofill(loc))
 pub fn section_heading_node(
   parent : @view.View,
@@ -429,65 +430,69 @@ pub fn section_heading_node(
   title_after? : (@view.View) -> Unit,
   note? : () -> String,
   trailing? : () -> String,
+  lead? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   // (`trailing`: how many, how much, narrow at its title's line's end in the meta's muted (SectionHeader's trailing),
   // wide under its title as what it holds said)
   let note = match (look_node(parent), trailing) {
     (Narrow, Some(t)) => {
-      heading_node(loc~, parent, title, ends=fn(e) { words_node(e, t, fn() { heading_trailing }) |> ignore })
+      heading_node(loc~, parent, title, ends=fn(e) { words_node(e, t, fn() { heading_trailing }) |> ignore }, lead?)
       return
     }
     (Wide, Some(t)) => Some(t)
     _ => note
   }
-  match (look_node(parent), note) {
-    (Narrow, None) => heading_node(loc~, parent, title)
-    (Narrow, Some(note)) =>
-      parent.box(made_for=loc, fn(h) {
-        heading_node(h, title)
-        h.show(fn() { note() != "" }, fn(n) { page_note_node(n, note) })
-      })
-      |> ignore
-    (Wide, Some(note)) =>
-      parent.box(made_for=loc, fn(line) {
-        let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
-        line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
-        match title_after {
-          Some(after) =>
-            line.box(fn(l) {
-              l.row(Is(true)).gap(Is(section_title_after_gap)).lines_up(Is(Some(Middle))) |> ignore
-              words_node(l, title, fn() { section_title }) |> ignore
-              after(l)
+  if look_node(parent) is Narrow {
+    match note {
+      None => heading_node(loc~, parent, title, lead?)
+      Some(note) =>
+        parent.box(made_for=loc, fn(h) {
+          heading_node(h, title, lead?)
+          h.show(fn() { note() != "" }, fn(n) { page_note_node(n, note) })
+        })
+        |> ignore
+    }
+    return
+  }
+  parent.box(made_for=loc, fn(line) {
+    let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
+    line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
+    // (as section_node's title line has it: what leads its words (a kind's mark), its words and what is after them in a
+    // line, across its middle)
+    if lead is Some(_) || title_after is Some(_) {
+      line.box(fn(l) {
+        l.row(Is(true)).gap(Is(section_title_after_gap)).lines_up(Is(Some(Middle))) |> ignore
+        match lead {
+          Some(make) =>
+            l.box(fn(m) {
+              m.row(Is(true)).lines_up(Is(Some(Middle))).margin(Is((0.0, 0.0, heading_lead_gap - section_title_after_gap, 0.0))) |> ignore
+              make(m)
             })
             |> ignore
-          None => words_node(line, title, fn() { section_title }) |> ignore
+          None => ()
         }
-        // (what it holds said: under its title, as section_node's)
+        words_node(l, title, fn() { section_title }) |> ignore
+        match title_after {
+          Some(after) => after(l)
+          None => ()
+        }
+      })
+      |> ignore
+    } else {
+      words_node(line, title, fn() { section_title }) |> ignore
+    }
+    // (what it holds said: under its title, as section_node's)
+    match note {
+      Some(note) =>
         line.show(fn() { note() != "" }, fn(n) {
           n.padding(Is((0.0, section_note_gap, 0.0, 0.0))).max_width(Is(Some(section_note_w))) |> ignore
           words_node(n, note, fn() { section_note }) |> ignore
         })
-      })
-      |> ignore
-    (Wide, None) =>
-      parent.box(made_for=loc, fn(line) {
-        let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
-        line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
-        match title_after {
-          // (as section_node's title line has it: its words and what is after them in a line, across its middle)
-          Some(after) =>
-            line.box(fn(l) {
-              l.row(Is(true)).gap(Is(section_title_after_gap)).lines_up(Is(Some(Middle))) |> ignore
-              words_node(l, title, fn() { section_title }) |> ignore
-              after(l)
-            })
-            |> ignore
-          None => words_node(line, title, fn() { section_title }) |> ignore
-        }
-      })
-      |> ignore
-  }
+      None => ()
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -588,6 +593,7 @@ fn wide_link_row_node(
   title_cut : Bool,
   value_cut : Bool,
   chevron_room : Bool,
+  lines_from_lead? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -658,29 +664,32 @@ fn wide_link_row_node(
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as a list's title's line at least,
     // across its middle)
+    // (`lines_from_lead`: made at its first line's start instead, so the lines under that line start where it does)
+    let lead_line = fn(at : @view.View) {
+      at.box(fn(l) {
+        l
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .min_height(By(fn() {
+          if under() {
+            l.words_redone() |> ignore
+            Some(node_sp(l, @ui.tree_theme().leading(L6).unwrap_or(@ui.tree_theme().text_size(Ui).1)))
+          } else {
+            None
+          }
+        }))
+        |> ignore
+        match lead {
+          LeadIcon(name) => icon_node(l, name, desk_mark, By(lead_ink)) |> ignore
+          LeadLine(f) => f(l)
+          _ => ()
+        }
+      })
+      |> ignore
+    }
     match lead {
       NoLead => ()
-      LeadIcon(_) | LeadLine(_) =>
-        r.box(fn(l) {
-          l
-          .row(Is(true))
-          .lines_up(Is(Some(Middle)))
-          .min_height(By(fn() {
-            if under() {
-              l.words_redone() |> ignore
-              Some(node_sp(l, @ui.tree_theme().leading(L6).unwrap_or(@ui.tree_theme().text_size(Ui).1)))
-            } else {
-              None
-            }
-          }))
-          |> ignore
-          match lead {
-            LeadIcon(name) => icon_node(l, name, desk_mark, By(lead_ink)) |> ignore
-            LeadLine(f) => f(l)
-            _ => ()
-          }
-        })
-        |> ignore
+      LeadIcon(_) | LeadLine(_) => if !lines_from_lead { lead_line(r) }
       LeadMade(f) => r.box(fn(l) { f(l) }) |> ignore
       // (in the row's corner, out from its words to the ladder's inset from its start and top)
       LeadTile(f) =>
@@ -692,34 +701,53 @@ fn wide_link_row_node(
     }
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
+      // (`lines_from_lead`: its lead and the lines under it out to the ladder's inset from the row's side, one edge with
+      // what is below them, small blocks concentric in its corner: #6417's mark_out, the user, 2026-11-14)
+      if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+        words.margin(Is((corner_inset - side, 0.0, 0.0, 0.0))) |> ignore
+      }
       words.box(fn(first) {
         first.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
-        first.box(fn(t) {
-          t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
-          // the line leaves it less: link_row's title_line; its title the same words all along)
-          t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-          t.box(fn(w) {
-            w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            styled_words(w, title, fn() {
-              if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
+        // its title (in a line of its own with its lead, 6 from it, where the lead leads its first line:
+        // `lines_from_lead`, #6417's mark from its name)
+        let title_line = fn(at : @view.View) {
+          at.box(fn(t) {
+            t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
+            // the line leaves it less: link_row's title_line; its title the same words all along)
+            t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
+            t.box(fn(w) {
+              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              styled_words(w, title, fn() {
+                if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
+              })
+              |> ignore
+              if acts {
+                w.ink(By(fn() { link_ink() })) |> ignore
+              }
             })
             |> ignore
-            if acts {
-              w.ink(By(fn() { link_ink() })) |> ignore
+            match title_after {
+              Some(after) =>
+                t.show(title_after_shown, fn(a) {
+                  a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+                  after(a)
+                })
+              None => ()
             }
           })
           |> ignore
-          match title_after {
-            Some(after) =>
-              t.show(title_after_shown, fn(a) {
-                a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
-                after(a)
-              })
-            None => ()
-          }
-        })
-        |> ignore
+        }
+        if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+          first.box(fn(own) {
+            own.row(Is(true)).gap(Is(lead_from_title)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            lead_line(own)
+            title_line(own)
+          })
+          |> ignore
+        } else {
+          title_line(first)
+        }
         first.show(fn() { value() != "" }, fn(said) {
           said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
           said.show(value_dot, fn(d) { status_dot_node(d) })

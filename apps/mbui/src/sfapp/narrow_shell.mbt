@@ -588,7 +588,7 @@ fn narrow_made_as(
           }
         })
       })
-    Settings =>
+    Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
           @sf.layout(p.window().0) is Small
@@ -747,6 +747,20 @@ fn narrow_made_as(
           on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
           bar_actions?=if place { Some(acts) } else { None },
         )
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch
+    Setting(Stations) =>
+      made_at("stations", place, fn(p, core, here, frame, _stint, _acts, serial) {
+        @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame~, shown=fn() { app.nav.shows(serial) })
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profiles_list_node(p, core, here, only, on_back=core.pop, frame~)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profile_account_node(p, core, here, key, on_back=core.pop, frame~)
       })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {

@@ -400,7 +400,7 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   t.tree_frames_from_now()
   kept_go(t, "profiles", true)
   t.run_for(kept_switch_over_ms)
-  // (what 额度 made, an old view's place: let go of as it is left, never kept)
+  // (what 额度 made, a place made once as nodes since the profiles' list was: put by as it is left, kept)
   let away_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   t.tree_frames_from_now()
   kept_go(t, "chats", true)
@@ -423,5 +423,6 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   println("bar-kept late core: back to Home made \{made_all}, let go \{let_go_all} (额度 made \{away_made}), rows moving \{moving}; words \{rows_before} then \{seen}")
   assert_eq(seen, rows_before, msg="Home as it was left")
   assert_false(moving, msg="no row coming in as Home is taken back")
-  assert_eq((made_all, let_go_all), (0, away_made), msg="nothing of Home made again or let go, only 额度 let go")
+  // (but a node of Home's made while it was away, let go as it is back: bar_places_today's)
+  assert_eq((made_all, let_go_all), (0, 1), msg="nothing of Home made again or let go, 额度 put by")
 }

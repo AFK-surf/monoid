@@ -33,7 +33,8 @@ fn worded_tester(room : Double) -> @ui.Tester {
 test "an allowance's windows in words: one way for them all, the longest that fits, each chip whole" {
   // (a phone's row: 326 was what cut all three to 5 小时剩…, 每周剩余…, 每月剩余…, 2026-10-31)
   let ways = [
-    ["5 小时", "剩 62%", "每周", "剩 95%", "每月", "剩 97%"],
+    // (a name run on into what is left, 5 小时剩 62%: one line of words, chip_joined)
+    ["5 小时剩 62%", "每周剩 95%", "每月剩 97%"],
     ["5 小时", "62%", "每周", "95%", "每月", "97%"],
     ["5H", "62%", "W", "95%", "M", "97%"],
   ]
@@ -94,9 +95,9 @@ test "an account's windows and its models' own, five: where no line holds them t
     for room in [900.0, 420.0, 342.0, 300.0, 240.0, 180.0, 130.0] {
       let t = own_tester(room, worded)
       let shown = t.words().filter(fn(w) { w.5 > 0.5 })
-      // (the one of `words` it is said by, there once)
+      // (the one of `words` it is said by, there once; or run on into what is left, 每周剩 19%: chip_joined)
       let at = fn(words : Array[String]) {
-        match shown.filter(fn(w) { words.contains(w.0) }) {
+        match shown.filter(fn(w) { words.iter().any(fn(x) { w.0 == x || w.0.has_prefix(x + "剩") }) }) {
           [w] => w
           found => @halt.saying("\{room}: one of \{Repr(words)}: \{Repr(found)} in \{Repr(shown.map(fn(w) { w.0 }))}")
         }
@@ -110,7 +111,8 @@ test "an account's windows and its models' own, five: where no line holds them t
       if fable.2 > week.2 {
         // (in lines: its models' own by the model, under the account's; the account's by their names where worded)
         lined += 1
-        assert_eq([fable.0, sonnet.0, week.0], ["Fable", "Sonnet", if worded { "每周" } else { "W" }], msg="\{worded} \{room}")
+        assert_eq([fable.0, sonnet.0], ["Fable", "Sonnet"], msg="\{worded} \{room}")
+        assert_true(week.0.has_prefix(if worded { "每周" } else { "W" }), msg="\{worded} \{room}: \{week.0}")
         assert_true(sonnet.2 >= fable.2)
       } else {
         assert_true(sonnet.2 == week.2, msg="\{worded} \{room}: one line")

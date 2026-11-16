@@ -263,7 +263,7 @@ fn pane_made(
     // (Home: the board while it is chosen, else its ground: board.mbt)
     Home => Some(board_home_made(src, tips))
     // (the settings come to beside their list: its first row's page, made once as that page is)
-    Settings => pane_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
+    Settings | Setting(Home) => pane_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     Setting(About) =>
       made("about", fn(a, core, _here, _stint, frame, width) {
         @sfpages.about_node(a, core, on_back=core.pop, frame~, width~)
@@ -351,6 +351,20 @@ fn pane_made(
           tips~,
           on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
         )
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt)
+    Setting(Stations) =>
+      made("stations", fn(a, core, here, _stint, frame, width) {
+        @sfpages.stations_list_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_list_node(a, core, here, only, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(a, core, here, _stint, frame, width) {
+        @sfpages.profile_account_node(a, core, here, key, on_back=core.pop, frame~, width~, tips~)
       })
     // (by its station and id: another's another page)
     Setting(Profile(address, id)) =>

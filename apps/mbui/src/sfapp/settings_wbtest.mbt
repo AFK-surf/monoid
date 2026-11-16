@@ -503,8 +503,9 @@ test "profiles on a phone: a short plan stays whole beside a long account email"
       (s.has_suffix("…") && email.has_prefix(s[:s.length() - 1].to_owned()))
     })
     assert_true(email_shown, msg="\{Repr(spec)}: \{Repr(shown)}")
+    // (cut short on its line as it is laid out: a node's words are said whole, drawn cut)
     if spec.3 {
-      assert_false(shown.contains(email), msg="expected email clipped at \{Repr(spec)}: \{Repr(shown)}")
+      assert_false(t.lines_of(email) == [email], msg="expected email clipped at \{Repr(spec)}: \{Repr(t.lines_of(email))}")
     }
     assert_eq(t.squeeze_faults(), [], msg=Repr(spec).to_string())
     assert_eq(t.words_over_now(), [], msg=Repr(spec).to_string())
@@ -525,7 +526,8 @@ test "profiles on a phone: an allowance of three windows said one way for all, e
   // (on one line 5 小时剩余 62%, 本周剩余 19% and 每月剩余 97% were cut to 5 小时剩…, 本周剩余…, 每月剩余…, 2026-10-31)
   // a phone's 390 has the room for all three in full: each its name and what is left, whole
   let shown = t.words().filter(fn(w) { w.5 > 0.5 }).map(fn(w) { w.0 })
-  for words in ["5 小时", "剩 62%", "本周", "剩 19%", "每月", "剩 97%"] {
+  // (a name run on into what is left, 5 小时剩 62%: one line of words, fill_chip's chip_joined)
+  for words in ["5 小时剩 62%", "本周剩 19%", "每月剩 97%"] {
     assert_true(shown.contains(words), msg="\{words}: \{Repr(shown)}")
     assert_eq(t.lines_of(words), [words], msg=words)
   }
@@ -537,9 +539,12 @@ test "a model's own week (Fable's) is a chip and a dial of its own, after the ac
   let t = settings_tester("profiles", shows="settings-profiles-fable")
   // (its chips one way for all, the longest the row has the room for: each its name whole, then what is left)
   let shown = fn(t : @ui.Tester) { t.words().filter(fn(w) { w.5 > 0.5 }) }
-  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { w.0 == words })[0] }
+  // (the account's week its name run on into what is left on its chip, 每周剩 …: fill_chip's chip_joined; Fable's
+  // not, its name ending in a Latin letter; a dial's name alone)
+  let means = fn(w : String, words : String) { w == words || (words == "每周" && w.has_prefix("每周剩")) }
+  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { means(w.0, words) })[0] }
   for words in ["每周", "每周 · Fable"] {
-    assert_eq(shown(t).filter(fn(w) { w.0 == words }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
+    assert_eq(shown(t).filter(fn(w) { means(w.0, words) }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
   }
   assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "每周 · Fable").1 }))
   assert_true(at(t, "每周 · Fable").1 > at(t, "每周").1 && at(t, "每周 · Fable").2 == at(t, "每周").2)
@@ -846,10 +851,10 @@ test "settings: a station's network not open yet (stationNet's null) waits as it
 ///|
 test "settings: a station's network not open yet waits where its line goes (StationBody): its bones over the line's room, 10 under the load's boxes" {
   let t = stations_unread_net()
-  // Willow's: its low box (20 high round its words), the line's room 10 under it, two lines of 18 2 apart
+  // Willow's: its low box (a chip high round its words), the line's room 10 under it
   let (_, box_mid) = t.find("剩 5.8 G").unwrap()
   let room = unseen_lines(t)[0]
-  assert_true((room - (box_mid + 10.0 + 10.0)).abs() < 0.5, msg="the line's room from \{room}, the box's middle \{box_mid}")
+  assert_true((room - (box_mid + @sf.fill_chip_h / 2.0 + 10.0)).abs() < 0.5, msg="the line's room from \{room}, the box's middle \{box_mid}")
   // its bones the line it keeps the room of (the same made-up one, unseen): a bar where each of its words starts, in
   // that word's line
   let unseen = t.words().filter(fn(w) { w.5 == 0.0 && w.2 >= room - 0.5 && w.2 < room + 38.0 && w.0 != " " })
@@ -867,10 +872,12 @@ test "settings: a station's network not open yet waits where its line goes (Stat
 ///|
 test "settings: an offline station's picture and line centred across its card's room (StationBody), not over the 10 above it" {
   let t = stations_unread_net()
-  // Maple's room: its load's 20 and 10 over its unseen line, the line's 18
-  let room = unseen_lines(t)[1] - 30.0
+  // Maple's room: its load's chip and 10 over its unseen line, the line's own
+  let line = t.words().filter(fn(w) { w.0 == "直连" && w.5 == 0.0 }).map(fn(w) { w.4 })[0]
+  let room = unseen_lines(t)[1] - @sf.fill_chip_h - 10.0
+  let middle = room + (@sf.fill_chip_h + 10.0 + line) / 2.0
   let (_, said) = t.find("长时间未连接").unwrap()
-  assert_true((said - (room + 24.0)).abs() < 0.5, msg="the line's middle \{said}, the room's \{room + 24.0}")
+  assert_true((said - middle).abs() < 0.5, msg="the line's middle \{said}, the room's \{middle}")
 }
 
 ///|
@@ -882,7 +889,8 @@ test "settings: a station's card with its CPU, memory and disk all low shows eac
     t.draw()
     let shown = t.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
     // in words where the line has the room for all three, else all by their figures: one way for all of them
-    let worded = ["空闲 8%", "剩 5.8 G", "剩 19.4 G"].iter().all(fn(x) { shown.contains(x) })
+    // (a name run on into what is left, 内存剩 5.8 G: fill_chip's chip_joined)
+    let worded = ["空闲 8%", "内存剩 5.8 G", "磁盘剩 19.4 G"].iter().all(fn(x) { shown.contains(x) })
     let figured = ["8%", "5.8G", "19.4G"].iter().all(fn(x) { shown.contains(x) })
     assert_true(worded != figured, msg="\{w}: \{Repr(shown)}")
     assert_true(!shown.iter().any(fn(x) { x.contains("…") }), msg="\{w}: \{Repr(shown)}")

@@ -713,6 +713,8 @@ pub fn fixture_page(mode : String) -> String {
     }
     "settings-profiles-several" => fx.several = true
     "settings-profiles-offer" => fx.offer_quota = true
+    // (an account on several stations' own page: its members those of a profile's hosts)
+    "settings-profile-account" => fx.profile_hosts = true
     "settings-profiles-sum-a" => {
       fx.summary = true
       profiles_narrow_overview.set(true)
@@ -914,6 +916,9 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-copy" => "profile:ws1/st1#bx"
     "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
     "settings-profile-quota-kinds" => "profile:ws1/st1#cc"
+    // (an account on several stations by its key, and one station's profiles from its page)
+    "settings-profile-account" => "profile-account:ws1/st1/cc"
+    "settings-profiles-station" => "profiles:ws1/st1"
     "settings-me-reading" => "me"
     "settings-usage-details-pending" => "usage"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"

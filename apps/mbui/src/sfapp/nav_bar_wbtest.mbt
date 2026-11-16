@@ -12,6 +12,8 @@ fn standard_head(mode : String) -> String? {
     // (a run's models: back to the run's page, 更换模型)
     "settings-run-models" => Some("选择模型")
     "settings-run-accounts" => Some("选择账号")
+    "settings-profiles" => Some("Profile")
+    "settings-stations" => Some("Station")
     _ => None
   }
 }

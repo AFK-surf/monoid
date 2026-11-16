@@ -1257,6 +1257,10 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::VaultItems) => @sf.t("web-pages.vault.all")
     Setting(@settings.Route::KeptFiles) => @sf.t("android-settings.files.title")
     Setting(@settings.Route::Connects(_)) | Place("connects") => @sf.t("android-settings.connects.title")
+    // (the stations' and the profiles' lists, as their old pages said them to what they led to: an account on several
+    // stations, a station's own page)
+    Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
+    Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
     _ => @sf.t("common.back")
