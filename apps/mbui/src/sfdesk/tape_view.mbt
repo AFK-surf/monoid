@@ -48,8 +48,6 @@ priv struct TapeGoes {
   /// told as a move is committed or where things go is put (what works out where they are from it reads it)
   said : @signals.Signal[Int]
   mut pull_x0 : Double
-  mut pull_last : (Double, Double)
-  mut pull_v : Double
   /// the window's tree's node holding the tape, while it does (what its moves and its room are worked out of), and the
   /// side panel open on the page on top
   mut node : @view.View?
@@ -74,8 +72,6 @@ let tape_goes : TapeGoes = {
   last_side: @signals.signal(None, same=fn(a, b) { a == b }),
   said: @signals.signal(0),
   pull_x0: 0.0,
-  pull_last: (0.0, 0.0),
-  pull_v: 0.0,
   node: None,
   parts: [],
   panel_of: fn() { None },
@@ -98,8 +94,6 @@ fn tape_goes_reset() -> Unit {
   tape_goes.rest.set(true)
   tape_goes.last_side.set(None)
   tape_goes.pull_x0 = 0.0
-  tape_goes.pull_last = (0.0, 0.0)
-  tape_goes.pull_v = 0.0
   tape_goes.node = None
   tape_goes.parts.clear()
   tape_goes.panel_of = fn() { None }
@@ -464,8 +458,9 @@ fn tape_take_ask(at : Double) -> Bool {
 }
 
 ///|
-/// The one pulled over let go at `at` (`v`: the finger's speed across as it left, px/s): brought over when pulled a
-/// third of the way or flung toward it, else back to the one in use; on from where the finger left the tape.
+/// The one pulled over let go at `at` (`v`: the finger's speed across as it left, px/s): brought over when landing past
+/// a fifth of the way (tape_pull_far at most) or flung toward it, else back to the one in use; on from where the finger
+/// left the tape.
 fn tape_let_go(p : TapePane, v : Double, at : Double) -> Unit {
   @signals.untracked(fn() {
     let ends = tape_ends(tape_room_now())
@@ -503,10 +498,16 @@ fn tape_back(p : TapePane, step : @ui.BackStep) -> Unit {
     Moved(x, t) | LetGo(x, t) =>
       if wide.tape_backing {
         let (x1, t1) = wide.tape_back_last
-        if t > t1 {
+        // (let go where it last moved to, as a system's back always says it, later: the speed it last moved at, none
+        // where it stood still there longer than a pause first; never worked out of that place said again)
+        if step is LetGo(_, _) && x == x1 {
+          if t - t1 > @view.tracker_gap_ms {
+            wide.tape_back_v = 0.0
+          }
+        } else if t > t1 {
           wide.tape_back_v = (x - x1) / (t - t1) * 1000.0
+          wide.tape_back_last = (x, t)
         }
-        wide.tape_back_last = (x, t)
         wide.tape_drag.set(x - wide.tape_back_x0)
         if step is LetGo(_, _) {
           wide.tape_backing = false
@@ -1053,22 +1054,16 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
 ///|
 /// A finger dragging panel `p`'s cover across (tape_cover), gone down at `down` (where across the window, when): the tape
 /// in its hand from where it went down (unless another is in its hand: back's), moved as far as it has come from there;
-/// let go, over or back (tape_let_go), as fast as it went from where it was last told (from its down where none was);
+/// let go, over or back (tape_let_go), as fast as the finger went as it left (Drag::vx: a lift saying its last place
+/// again, as a device's always does, later, takes none of it, Tracker::up);
 /// called off, back.
 fn tape_pulled(p : TapePane, d : @view.Drag, down : (Double, Double)) -> Unit {
   let begin = fn() {
     wide.tape_pull.set(Some(p))
     wide.tape_drag.set(0.0)
     tape_goes.pull_x0 = down.0
-    tape_goes.pull_last = down
-    tape_goes.pull_v = 0.0
   }
   let moved = fn() {
-    let (x1, t1) = tape_goes.pull_last
-    if d.at > t1 {
-      tape_goes.pull_v = (d.wx - x1) / (d.at - t1) * 1000.0
-    }
-    tape_goes.pull_last = (d.wx, d.at)
     wide.tape_drag.set(tape_pull_clamp(tape_ends(tape_room_now()), p, d.wx - tape_goes.pull_x0))
   }
   let mine = wide.tape_pull.get() == Some(p) && !wide.tape_backing
@@ -1087,7 +1082,7 @@ fn tape_pulled(p : TapePane, d : @view.Drag, down : (Double, Double)) -> Unit {
           begin()
         }
         moved()
-        tape_let_go(p, tape_goes.pull_v, d.at)
+        tape_let_go(p, d.vx() * 1000.0, d.at)
       }
     Off =>
       if mine {
@@ -1562,11 +1557,14 @@ fn screen_tab_alone(tabs : Array[String]) -> Bool {
 
 ///|
 /// Whether the one pulled `pulled` of its way `span` over, let go going `v` (px a second), is brought over: flung toward
-/// it, or landing past tape_pull_over of the way on from that speed (@ui.lands_past) and not flung away.
+/// it, or landing past tape_pull_over of the way (tape_pull_far at most) on from that speed (@ui.lands_past) and not
+/// flung away.
 fn tape_goes_over(pulled : Double, span : Double, v : Double) -> Bool {
   let fling = v.abs() > tape_fling
   let toward = fling && (v > 0.0) == (span > 0.0)
   let away = fling && !toward
-  let over = span != 0.0 && @ui.lands_past(pulled, v / 1000.0, tape_pull_over * span)
+  let far = dmin(tape_pull_far, tape_pull_over * span.abs())
+  let line = if span > 0.0 { far } else { -far }
+  let over = span != 0.0 && @ui.lands_past(pulled, v / 1000.0, line)
   toward || (over && !away)
 }

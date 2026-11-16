@@ -921,12 +921,17 @@ pub fn laid_beside(p : Page) -> Bool {
 }
 
 ///|
-/// How much of the way a panel pulled over must have come to be brought over when let go, and how fast a finger
-/// leaving it (px/s) flings it over or back whatever the way it came.
-let tape_pull_over : Double = 0.3
+/// How much of the way a panel pulled over must have come to be brought over when let go (a fifth, as a strip's
+/// step: viewer_tree's strip_step), as far as tape_pull_far at most (a page's way to the side panel is 550-750 wide),
+/// and how fast a finger leaving it (px/s) flings it over or back whatever the way it came (0.4 a ms, as the app's
+/// other swipes).
+let tape_pull_over : Double = 0.2
 
 ///|
-let tape_fling : Double = 900.0
+let tape_pull_far : Double = 72.0
+
+///|
+let tape_fling : Double = 400.0
 
 ///|
 /// How many times further across than up or down a finger on the panel in use has gone to be a swipe to the one beside

@@ -1013,10 +1013,11 @@ fn board_narrow(
 /// its own (where it is scrolled to kept as another is shown): the one chosen (sfbase's board_lane) shown, slid to as
 /// it is chosen (the chips) a column's width a step (the theme's slide, as the chats' lists are: chats_lists_node), and
 /// in the hand across: a finger moving more across than down takes the track (View::claims: what scrolls a column keeps
-/// the rest), the column it leaves and the one beside it following it; let go past board_swipe_share of a column, or
-/// flung that way, the one beside it chosen, else back. Only the columns on the way are there (the one chosen at
-/// rest; from where it set out to where it goes; in the hand, it and those beside it): one off the way is put by as it
-/// was (View::each's `keeps`), laid out, drawn and read out nowhere, taken in again as it is on the way.
+/// the rest), the column it leaves and the one beside it following it; let go landing past board_swipe_share of a column
+/// (board_swipe_far at most), or flung that way, the one beside it chosen, else back. Only the columns on the way are
+/// there (the one chosen at rest; from where it set out to where it goes; in the hand, it and those beside it): one off
+/// the way is put by as it was (View::each's `keeps`), laid out, drawn and read out nowhere, taken in again as it is on
+/// the way.
 fn board_track(
   track : @view.View,
   src : Source,
@@ -1076,9 +1077,12 @@ fn board_track(
       Up => {
         let moved = d.wx - from_x.val
         let vx = d.vx()
-        let next = if k < n - 1 && (moved < -board_swipe_share * w || (vx < -board_fling_vx && moved < -board_fling_least)) {
+        let far = dmin(board_swipe_far, board_swipe_share * w)
+        let next = if k < n - 1 &&
+          (@ui.lands_past(moved, vx, -far) || (vx < -board_fling_vx && moved < -board_fling_least)) {
           k + 1
-        } else if k > 0 && (moved > board_swipe_share * w || (vx > board_fling_vx && moved > board_fling_least)) {
+        } else if k > 0 &&
+          (@ui.lands_past(moved, vx, far) || (vx > board_fling_vx && moved > board_fling_least)) {
           k - 1
         } else {
           k
@@ -1119,9 +1123,13 @@ fn board_track(
 }
 
 ///|
-/// How far across a column the narrow board's track is taken to have the one beside it chosen as it is let go, and
-/// how fast (points a millisecond) and at least how far it is flung to have it so sooner.
-let board_swipe_share : Double = 0.22
+/// How far across a column the narrow board's track is taken to have the one beside it chosen as it is let go, as far
+/// as board_swipe_far at most (landing past it on from the finger's speed: @ui.lands_past), and how fast (points a
+/// millisecond) and at least how far it is flung to have it so sooner.
+let board_swipe_share : Double = 0.18
+
+///|
+let board_swipe_far : Double = 68.0
 
 ///|
 let board_fling_vx : Double = 0.32
