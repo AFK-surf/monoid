@@ -395,6 +395,8 @@ export const windows: Platform = {
   lowered: (program, args) => [program, args],
   /// As it is: Windows has no wrapper that execs a command lower and keeps its pid (a job would be another process).
   backgrounded: (program, args) => [program, args],
+  /// None: Windows has no `sync`; what is taken there is flushed a file at a time (sending.ts `receiveFile`).
+  flushing: () => null,
   /// Windows runs no script by its #!: a .cmd beside it hands it to Git's sh (or does nothing).
   makeCommand(path, script, noop) {
     writeFileSync(path, script);

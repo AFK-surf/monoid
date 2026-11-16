@@ -2,17 +2,22 @@
 // hash: what a station retired (retire.ts) and a chat handed over (handover.ts) both send their files by. Each session's
 // list is read as it streams, what the other lacks asked of in batches (`lacking`, at most `most` hashes), each file it
 // lacks sent (`put`), then the list itself; nothing of it is one object on the main thread.
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { type Bytes, Refused, withBytes } from "../mesh/bus.ts";
+import { platform } from "../platform/index.ts";
 import { AskAgain } from "../move/module.ts";
 import { fileBytes, oneBytes } from "../mesh/files.ts";
 import type { CarryIndex, Gathered } from "./carry.ts";
 
 type Json = any;
+
+const run = promisify(execFile);
 
 /// How a sending reaches the other station and says how far it went.
 export type Sending = {
@@ -165,8 +170,11 @@ export async function lackingIn(files: string, hashes: string[]): Promise<string
 }
 
 /// A file sent, taken into `files` by its hash: written beside, its bytes' hash checked as they come, then put in place;
-/// one whose bytes are not what its name says (it changed as it was read) refused.
-export async function receiveFile(files: string, hash: string, bytes: Bytes): Promise<void> {
+/// one whose bytes are not what its name says (it changed as it was read) refused. `flush`: written out to the drive
+/// before it is in place; not where its taker flushes once what it says it placed (`flushOnce`): on macOS a file's
+/// flush is the whole drive's (F_FULLFSYNC), 70% of taking a small file (measured 2026-11-16: 7.5 ms with it, 2 ms
+/// without), and it stalls all else writing to that disk.
+export async function receiveFile(files: string, hash: string, bytes: Bytes, flush = true): Promise<void> {
   const path = join(files, hash);
   if (await there(path)) {
     for await (const _ of bytes) void _;
@@ -181,7 +189,7 @@ export async function receiveFile(files: string, hash: string, bytes: Bytes): Pr
       h.update(piece);
       for (let done = 0; done < piece.length; ) done += (await f.write(piece, done, piece.length - done)).bytesWritten;
     }
-    await f.sync();
+    if (flush) await f.sync();
   } catch (e) {
     await f.close().catch(() => {});
     await rm(tmp, { force: true });
@@ -193,6 +201,28 @@ export async function receiveFile(files: string, hash: string, bytes: Bytes): Pr
     throw new Refused("changed: its bytes are not what its name says");
   }
   await rename(tmp, path);
+}
+
+/// Whether this machine writes out a file system at once (`flushOnce`); where it does not, each file is flushed as it
+/// is taken.
+export const flushesOnce = platform.flushing(".") !== null;
+
+/// What was written to the file system holding `dir`, out on the drive: the system's `sync` (that file system alone on
+/// Linux), then one file under `dir` flushed, the drive's own cache with it (F_FULLFSYNC on macOS). One for all the
+/// files a placing took, before it says it placed them (handover.ts `#place`). macOS's sync(2) may return before all
+/// is written (its man page says so), so there this is as much as the system gives short of a flush a file: taken
+/// knowingly, as the station a chat came from keeps its room after it went, and a hand-over still coming as this
+/// machine starts again is dropped (handover.ts `#load`, `boot`).
+export async function flushOnce(dir: string): Promise<void> {
+  const command = platform.flushing(dir);
+  if (command === null) return;
+  await run(command[0], command[1]);
+  const f = await open(join(dir, "flushed"), "w");
+  try {
+    await f.sync();
+  } finally {
+    await f.close();
+  }
 }
 
 /// A request with `bytes` after it.

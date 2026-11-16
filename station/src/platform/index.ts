@@ -96,6 +96,9 @@ export type Platform = {
   /// IO as it was; Linux: under `ionice -t -c2 -n7` and `nice -n 10` (best-effort's lowest IO, a lower CPU priority);
   /// else as `lowered` by 10; as it is on Windows. Each wrapper execs the command, which keeps its pid.
   backgrounded(program: string, args: string[]): [string, string[]];
+  /// The command that writes out what the file system holding `dir` has of written files (replica/sending.ts
+  /// `flushOnce`): Linux's `sync -f <dir>`, that file system only; macOS's `sync`, every one; none on Windows.
+  flushing(dir: string): [string, string[]] | null;
   /// A shell script at `path` runnable by name from any shell: on Windows a `.cmd` beside it too, running it with the
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;

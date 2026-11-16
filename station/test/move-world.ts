@@ -11,6 +11,7 @@ import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { type CarriedJob, gatherSoon, placeSoon, sizesSoon } from "../src/replica/carry.ts";
+import { flushesOnce } from "../src/replica/sending.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -56,6 +57,10 @@ export type Station = {
   placing?: (index: string) => Promise<void>;
   /// Called as a placing here ended.
   placed?: () => void;
+  /// What a placing here took written out (sending.ts `flushOnce`), each its directory: none, nothing done.
+  flushing?: (dir: string) => Promise<void>;
+  /// When its machine started (handover.ts `boot`; none: 0).
+  boot?: number;
   /// Waited for before a gathering here (each, the room's scratch), before git runs here (each command), before a drop
   /// here takes its files out, and before a clone here is removed: work that takes long.
   gathering?: (scratch: string) => Promise<void>;
@@ -190,6 +195,9 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
           return sizesSoon(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing);
         },
         hasGit: async () => true,
+        // (the machine's own flush is sending-flush.test.ts's: here only what a test says)
+        flush: flushesOnce ? (dir) => (st.flushing ?? (async () => {}))(dir) : null,
+        boot: () => st.boot ?? 0,
         lackMost: 50,
         hashMost: st.hashMost,
         remove: async (dir) => {

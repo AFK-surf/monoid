@@ -24,10 +24,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
 import { appendFile, link, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { uptime } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
-import type { Fibers } from "../ops/fibers.ts";
+import { type Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { PREVIOUS_LIMIT_MS } from "../ops/previous.ts";
 import { knownOf } from "../connects/remote.ts";
@@ -42,7 +43,7 @@ import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
-import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
+import { flushOnce, flushesOnce, lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
 import type { Told } from "../move/told.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
@@ -137,7 +138,10 @@ export type In = { id: string; origin: string; keys: string[]; ws: string; at: n
   /// Its drop was asked (`handover.drop`, or a newer hand-over of the chat begun): its rows taken out as it was asked,
   /// nothing more of it taken, its files taken out after what it was doing to them; one this station's process stopped
   /// before that ended is ended as the next starts.
-  dropping?: boolean };
+  dropping?: boolean;
+  /// When this machine started, as it began here (`bootHere`): one still coming as it starts under another boot is
+  /// dropped (`#load`); none, one begun by a station from before, its files flushed one by one.
+  boot?: number };
 
 /// What a hand-over's steps took (ms), from when each began to when the next did, the last to `end`; and the whole.
 function tookOf(began: Record<string, number> | undefined, end: number): { ms: Record<string, number>; total: number } {
@@ -189,6 +193,11 @@ export type HandoverDeps = {
   reposDir: string;
   room?: () => Promise<{ free: number | null; total?: number | null }>;
   hasGit?: () => Promise<boolean>;
+  /// What a placing here took written out to the drive, once, before it says it placed it (sending.ts `flushOnce`);
+  /// null: no such flush here (Windows), each file flushed as it is taken.
+  flush?: ((dir: string) => Promise<void>) | null;
+  /// When this machine started (wall ms; none: `bootHere`), a test's another.
+  boot?: () => number;
   git?: (dir: string, args: string[]) => Promise<string>;
   lackMost?: number;
   /// The most bytes one `handover.lacking` hashes here (HASH_MOST; a test's smaller).
@@ -225,6 +234,10 @@ export type HandoverDeps = {
 };
 
 const dir = (data: string) => join(data, "replica", "handover");
+/// When this machine started (wall ms).
+const bootHere = () => wall.now() - uptime() * 1000;
+/// Two boots this close are one (the wall clock is set as it runs; a machine never starts again that soon).
+const BOOT_SLACK_MS = 60_000;
 const outFile = (data: string, id: string) => join(dir(data), "out", `${id}.json`);
 const inFile = (data: string, id: string) => join(dir(data), "in", `${id}.json`);
 const inFiles = (data: string, id: string) => join(dir(data), "in", id, "files");
@@ -355,6 +368,7 @@ export class Handover {
   readonly #again = new Map<string, () => void>();
   readonly #tries = new Map<string, number>();
   readonly #work: NonNullable<HandoverDeps["work"]>;
+  readonly #flush: ((dir: string) => Promise<void>) | null;
   /// The drops under way here, by hand-over: `marked` once its rows are out and its record says it drops, `files` once
   /// its files are out too.
   readonly #drops = new Map<string, { marked: Promise<void>; files: Promise<void> }>();
@@ -365,6 +379,7 @@ export class Handover {
   constructor(d: HandoverDeps) {
     this.#d = d;
     this.#work = d.work ?? { gather: gatherSoon, place: placeSoon };
+    this.#flush = d.flush !== undefined ? d.flush : flushesOnce ? flushOnce : null;
     this.#reads = {
       session: (k) => d.store.getSession(k),
       homeMembers: (k) => {
@@ -391,10 +406,17 @@ export class Handover {
   #load(): void {
     const d = this.#d;
     for (const o of readAll<Out>(join(dir(d.data), "out"))) this.#keepOut(o);
+    const boot = (d.boot ?? bootHere)();
     for (const i of readAll<In>(join(dir(d.data), "in"))) {
       // (what its rows' pages put in, as kept with them: newer than its file where a stop came between the two)
       if (i.step === "coming") i.ctx = d.store.importCtx(i.id) ?? i.ctx;
-      if (i.step === "coming" && i.dropping !== true) this.#unsure.add(i.id);
+      // (begun under another boot of this machine: what it took came unflushed, `flushOnce`, and may never have reached
+      // the drive, its names whole and its bytes not: refused from now, dropped as this station starts)
+      const rebooted = i.step === "coming" && i.dropping !== true && i.boot !== undefined && Math.abs(i.boot - boot) > BOOT_SLACK_MS;
+      if (rebooted) {
+        this.#rebooted.add(i.id);
+        this.#dropping.add(i.id);
+      } else if (i.step === "coming" && i.dropping !== true) this.#unsure.add(i.id);
       if (i.step === "coming" && i.dropping === true) this.#dropping.add(i.id);
       this.#keepIn(i);
       this.#holdIn(i);
@@ -426,6 +448,7 @@ export class Handover {
     this.#owedOuts.clear();
     this.#unsure.clear();
     this.#dropping.clear();
+    this.#rebooted.clear();
     this.#load();
     for (const key of before) if (!this.#heldAtLoad.has(key)) this.#d.hub.releaseChat(key);
   }
@@ -460,6 +483,14 @@ export class Handover {
         log.info("handover", "a chat went as this station stopped: it went", { id: o.id, to: o.to });
       } else await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
     }
+    // (what was coming here under another boot of this machine: dropped, before anything of it is asked or answered)
+    for (const id of this.#rebooted) {
+      const i = this.#ins.get(id);
+      if (i === undefined) continue;
+      log.warn("handover", "a chat coming here was begun before this machine started again: what it took may not be on the drive: dropped here", { id: i.id, from: i.origin.slice(0, 12) });
+      await this.#dropSoon(i).marked;
+    }
+    this.#rebooted.clear();
     // (what was being taken out here as this station stopped: taken out now)
     for (const i of [...this.#comingIns]) if (i.dropping === true) void this.#dropSoon(i);
     // (what was coming here as this station stopped: asked of where it came from whether it still goes on)
@@ -1190,6 +1221,8 @@ export class Handover {
   /// (its sender failed and its drop never came, or it lost its record). One begun in this process is the sender's
   /// own to drop, as it does on failure, told until it is answered.
   readonly #unsure = new Set<string>();
+  /// Those of them begun under another boot of this machine (`#load`): dropped as it starts.
+  readonly #rebooted = new Set<string>();
   #asking = new Set<string>();
 
   #askStill(i: In): void {
@@ -1337,7 +1370,8 @@ export class Handover {
               const name = String(request.name ?? "");
               if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
               this.#d.fail?.("put");
-              await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
+              // (not flushed a file at a time where its placing flushes once what it took: `#place`)
+              await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes, this.#flush === null);
               return { ok: true };
             }
             case "handover.place": {
@@ -1482,7 +1516,7 @@ export class Handover {
     const bindings: Record<string, string> = {};
     for (const [c, k] of Object.entries((request.bindings ?? {}) as Record<string, string>)) if (typeof k === "string") bindings[strings(request.connects)[c] ?? c] = k;
     const i: In = was ?? {
-      id, origin, keys, ws, at: this.#d.fibers.now(), step: "coming", carry: null, error: null, stoppedFor, bindings,
+      id, origin, keys, ws, at: this.#d.fibers.now(), step: "coming", carry: null, error: null, stoppedFor, bindings, boot: (this.#d.boot ?? bootHere)(),
       ctx: newCtx({ from: origin, here: this.#d.here() ?? undefined, fromData: String(request.dataDir ?? ""), toData: this.#d.data, connects: strings(request.connects), profiles, ws: comingWs(ws) }),
     };
     this.#keepIn(i);
@@ -1502,6 +1536,9 @@ export class Handover {
     // (each worktree git makes for it kept, as the files it makes are: a drop takes it out again)
     const gits = inGits(this.#d.data, i.id);
     if (c.gits.length > 0 && this.#d.git !== undefined) await rebuildGits(this.#d.data, this.#d.reposDir, c, files, this.#d.git, { clone: false, made: (m) => appendFile(gits, `${JSON.stringify(m)}\n`) });
+    // (what it took and placed written out once, before the sender is told it is placed: its files came unflushed,
+    // as a drive's flush a file was 70% of taking a small one, 2026-11-16; failing, the placing fails)
+    await this.#flush?.(join(dir(this.#d.data), "in", i.id));
     i.carry = carry;
     await this.#saveIn(i);
     return { ok: true, placed: placed.placed, missing: placed.missing };

@@ -115,7 +115,8 @@ below, sends them along).
   only orders them by their needs). Its state is a file a hand-over on each side (`handover/out/`, `handover/in/`):
   nothing of it is in the copies' export or the schema but `handed_over` (where each chat went, store `handOff`). The
   chat is held alone (sessions/hub.ts `holdChat`), its files gathered alone (carry.ts `gatherSoon`'s `keys`) and sent
-  as a retirement's are (`sending.ts`), its rows sent a page at a time and put in through the other's store, hidden
+  as a retirement's are (`sending.ts`; flushed to the drive once a placing, not a file at a time, `flushOnce`: on macOS not surely all of
+  it, so one still coming as that machine starts again is dropped there, `boot`), its rows sent a page at a time and put in through the other's store, hidden
   until shown (store/handover.ts, `comingWs`): each thread's log goes on past what that station has (n kept where it
   was this chat's own as it was left, else by ts), so a chat handed back appends what was said there. Each station's
   log keeps the numbers it has: an arriving entry the same at its number is skipped, one found by ts elsewhere is that

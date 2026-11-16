@@ -353,6 +353,7 @@ export const unix: Platform = {
   grouped: (program, args) => [program, args],
   lowered: (program, args, by) => (by === 0 || !existsSync("/usr/bin/nice") ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
   backgrounded: (program, args) => backgroundedOn(background(), program, args),
+  flushing: (dir) => (MACOS ? ["sync", []] : ["sync", ["-f", dir]]),
   makeCommand(path, script) {
     writeFileSync(path, script);
     chmodSync(path, 0o755);

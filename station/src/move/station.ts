@@ -76,6 +76,8 @@ export type MovesDeps = {
   reposDir: string;
   room?: HandoverDeps["room"];
   hasGit?: HandoverDeps["hasGit"];
+  flush?: HandoverDeps["flush"];
+  boot?: HandoverDeps["boot"];
   git?: HandoverDeps["git"];
   lackMost?: number;
   hashMost?: number;
@@ -263,7 +265,7 @@ export class Moves {
         here: (a) => this.accountHere(a),
         present: (id) => d.profiles().some((p) => p?.id === id),
       },
-      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, hashMost: d.hashMost, work: d.work, told: this.told, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
+      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, flush: d.flush, boot: d.boot, git: d.git, lackMost: d.lackMost, hashMost: d.hashMost, work: d.work, told: this.told, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)
