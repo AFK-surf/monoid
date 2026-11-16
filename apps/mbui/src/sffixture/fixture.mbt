@@ -2208,6 +2208,14 @@ pub fn fixture(mode : String) -> Source {
           if f.mode == "chat-turn-failed" || f.mode == "chat-turn-unanswered" {
             f.step += 1
             f.changed()
+          } else if f.mode == "chat-turn-failed-repeated" {
+            // (its agent at it, then failing again alike a moment later: one more folded into the notice)
+            f.step = 1
+            f.changed()
+            fix_later(fix_failed_again_ms, fn() {
+              f.step = 2
+              f.changed()
+            })
           }
           done(Ok(Json::object({})))
         }
@@ -2844,3 +2852,7 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
     "titleText": "Station 更新",
   }
 }
+
+///|
+/// How long after 重试 is pressed on chat-turn-failed-repeated its agent fails again alike, one more folded.
+pub let fix_failed_again_ms : Double = 1500.0

@@ -332,6 +332,8 @@ export const SHAPES: Record<string, Shape> = {
     ["lines", opt(vec("String")), { said: true, doc: "A chat's run changed: how it ran and how it runs, whole (之前：…, 现在：…), shown in place of `words` once\nthe notice is opened. Absent otherwise." }],
     ["md", opt("Value"), { doc: "`words` read as Markdown (markdown.ts), its runs of words in `words`: what the clients draw (a chat it opened is\na link to it). Absent where a view reads none of its messages' words (a decision's)." }],
     ["sides", opt("RunSides"), { doc: "A chat's run changed to another runtime or model: the two sides of `words` apart, each drawn after its\nmark. Absent otherwise." }],
+    ["count", opt("u32"), { doc: "Failures said in the same words one after another, folded into this one (views.ts foldNotices): how many\n(2 or more), drawn after `words` as ×n. Absent for one." }],
+    ["lastSeq", opt("i64"), { client: opt("I54"), doc: "With `count`: the last folded notice's `seq`, what is acted on (`session.retry`, `session.cancelRetry`,\n`session.reassign`, `chat.report`) and read up to." }],
   ], { doc: "still.fail's notice as a chat shows it (core views.ts noticeOf)." }),
   RunSides: struct([
     ["was", "String", { said: true, doc: "What changed as it was (Claude Code · Opus 5.5)." }],

@@ -1996,6 +1996,16 @@ export interface NoticeShown {
 	 * mark. Absent otherwise.
 	 */
 	sides?: RunSides;
+	/**
+	 * Failures said in the same words one after another, folded into this one (views.ts foldNotices): how many
+	 * (2 or more), drawn after `words` as ×n. Absent for one.
+	 */
+	count?: number;
+	/**
+	 * With `count`: the last folded notice's `seq`, what is acted on (`session.retry`, `session.cancelRetry`,
+	 * `session.reassign`, `chat.report`) and read up to.
+	 */
+	lastSeq?: number;
 }
 
 /** Who said a message, as its line shows them: an agent by its label and mark, a person by name and picture. */

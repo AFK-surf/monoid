@@ -214,7 +214,7 @@ pub fn sent_local(
       None => Map([])
     },
     newest: match v {
-      Some(v) => v.messages.fold(init=-@double.infinity, fn(n, m) { if m.seq > n { m.seq } else { n } })
+      Some(v) => v.messages.fold(init=-@double.infinity, fn(n, m) { if m.notice_last_seq > n { m.notice_last_seq } else { n } })
       None => -@double.infinity
     },
   })

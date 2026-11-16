@@ -8,7 +8,7 @@
 /// One of the fixture's notices (seq 9, ts9): `words` (its Markdown's tree, `md`), a failure (`failed`), what failed
 /// said (`detail`); about a profile (`link` where its link starts); a runtime the station lacks (`install`); reportable;
 /// its agent waiting to retry (`retry`), or its failed turn to try again (`again`); a chat's run changed (`short`, `lines`,
-/// `sides`).
+/// `sides`); failures said alike folded into it (`count` of them, the last at `last`).
 fn nt_msg(
   words? : String = "Willow 的 codex 这一轮超时了，已经停下",
   md? : Json? = None,
@@ -23,8 +23,14 @@ fn nt_msg(
   short? : String = "",
   lines? : Array[String] = [],
   sides? : Json? = None,
+  count? : Int = 1,
+  last? : Int = 9,
 ) -> Message {
   let n : Map[String, Json] = { "failed": Json::boolean(failed), "words": Json::string(words) }
+  if count > 1 {
+    n["count"] = Json::number(count.to_double())
+    n["lastSeq"] = Json::number(last.to_double())
+  }
   // (as the core reads its words: one paragraph, where it says no other)
   n["md"] = md.unwrap_or([["p", [[0, words.length()]]]])
   if detail != "" {
@@ -84,11 +90,11 @@ fn nt_opened() -> Message {
 
 ///|
 /// The core's doing with `call` (session.cancelRetry, chat.report, software.update) on the fixture's notice.
-fn nt_doing(call : String) -> Json {
+fn nt_doing(call : String, seq? : String = "9") -> Json {
   let params : Json = match call {
     "session.cancelRetry" | "session.retry" | "session.reassign" => { "station": "ws1/st1", "key": "s-c1" }
     "software.update" => { "station": "ws1/st1", "id": "codex" }
-    _ => { "station": "ws1/st1", "thread": "7", "seq": "9" }
+    _ => { "station": "ws1/st1", "thread": "7", "seq": Json::string(seq) }
   }
   { "doing": [{ "call": Json::string(call), "stage": "running", "params": params }] }
 }
@@ -229,6 +235,7 @@ fn nt_cases() -> Array[(String, Message, Json?, Bool)] {
       "nowRuntime": "codex",
     }),
   )
+  let lost = "与模型服务的连接中断，回复即可重试"
   let report_long = "本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发出的消息），请留意"
   [
     ("closed", nt_msg(), None, false),
@@ -255,6 +262,15 @@ fn nt_cases() -> Array[(String, Message, Json?, Bool)] {
     ("profile", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, false),
     ("profile open", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, true),
     ("chat opened", nt_opened(), None, false),
+    // (eleven failures said alike, folded: ×11 after its words, before what it ends in; its words cut short, never ×11
+    // nor 重试 or 上报)
+    ("folded", nt_msg(words=lost, failed=true, count=11, last=19), None, false),
+    ("folded again", nt_msg(words=lost, failed=true, again=true, count=11, last=19), None, false),
+    ("folded again open", nt_msg(words=lost, failed=true, detail~, again=true, count=11, last=19), None, true),
+    ("folded trying again", nt_msg(words=lost, failed=true, again=true, count=11, last=19), Some(nt_doing("session.retry")), false),
+    ("folded report", nt_msg(words=lost, failed=true, reportable=true, count=11, last=19), None, false),
+    ("folded report long", nt_msg(words=report_long, failed=true, reportable=true, count=11, last=19), None, false),
+    ("folded report long open", nt_msg(words=report_long, failed=true, reportable=true, count=11, last=19), None, true),
   ]
 }
 
@@ -310,21 +326,22 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
 /// How many times each of nt_audit's is said of case `c` drawn (open or not) at the system's size of words `scale`:
 /// time, copy, act, dot. At 1.3 复制 is 25 high and the pill 40.6: those in it have their room.
 fn nt_known(c : (String, Message, Json?, Bool), scale : Double) -> (Int, Int, Int, Int) {
-  let (_, m, doing, _open) = c
+  let (_, m, doing, open) = c
   let small = scale == 1.0
   let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.reportable) && m.notice_short == "" && m.notice_lines.is_empty()
   (
     0,
     0,
-    if small && ends && doing is None { 1 } else { 0 },
+    // (open, the pill is as tall as what it holds: its end has its room)
+    if small && ends && doing is None && !open { 1 } else { 0 },
     if ends { 1 } else { 0 },
   )
 }
 
 ///|
 /// What a Tester draws (head_drawn's), each place and size to a hundredth (the old view's sums leave tails the nodes'
-/// do not: 31.200000000000003 against 31.2); where `under` (x, y), the underline drawn from x at y set `by` lower first.
-fn nt_drawn(t : @ui.Tester, under? : (Double, Double, Double)? = None) -> String {
+/// do not: 31.200000000000003 against 31.2); each underline of `under` (its x, its y) drawn at the y it says instead.
+fn nt_drawn(t : @ui.Tester, under? : Array[(Double, Double, Double)] = []) -> String {
   let r = fn(v : Double) { (v * 100.0).round() / 100.0 }
   // (but what the old view's row left out, 换成 while what a run ran on is there: words of no size, never drawn)
   t.words().filter(fn(w) { w.3 > 0.0 || w.4 > 0.0 }).map(fn(w) { "\{w.0}@\{r(w.1)},\{r(w.2)} \{r(w.3)}x\{r(w.4)} a\{w.5}" }).join("\n") +
@@ -332,9 +349,9 @@ fn nt_drawn(t : @ui.Tester, under? : (Double, Double, Double)? = None) -> String
   t
   .drawn_rects()
   .map(fn(d) {
-    let y = match under {
-      Some((x, at, by)) if r(d.0) == r(x) && r(d.1) == r(at) && d.3 <= 1.0 => d.1 + by
-      _ => d.1
+    let y = match under.iter().find_first(fn(u) { r(d.0) == r(u.0) && r(d.1) == r(u.1) && d.3 <= 1.0 }) {
+      Some((_, _, to)) => to
+      None => d.1
     }
     "\{r(d.0)},\{r(y)} \{r(d.2)}x\{r(d.3)} \{d.4}"
   })
@@ -342,23 +359,28 @@ fn nt_drawn(t : @ui.Tester, under? : (Double, Double, Double)? = None) -> String
 }
 
 ///|
-/// Where the old view underlines notice `m`'s · 安装, its 取消, 重试 or 重新分配账号, or · 上报 at the system's size of words `scale` (its x, its y), if
-/// it ends in one and that is not the default size of words: the nodes' 0.1 lower (the old view's rich line puts it
-/// 18.9 under its words' top where they stand at 25.6, the nodes' runs 19, as they do for the profile's link at 22).
-fn nt_under(t : @ui.Tester, m : Message, scale : Double) -> (Double, Double, Double)? {
-  guard scale != 1.0 else { return None }
+/// Where the old view underlines notice `m`'s · 安装, its 取消, 重试 or 重新分配账号, · 上报, or its 复制, at the system's
+/// size of words `scale` (its x, its y), and where the nodes do, if that is not the default size of words: the old
+/// view's rich line puts it 18.9 or 19 under its words' top as their place falls between pixels (at 25.6, 18.9; at 103,
+/// 19; at 131.6, 18.9), the nodes' runs 19 always, as they do for the profile's link at 22.
+fn nt_under(t : @ui.Tester, m : Message, scale : Double) -> Array[(Double, Double, Double)] {
+  guard scale != 1.0 else { return [] }
   let act = match (m.install, notice_after(m)) {
     (Some(_), _) => "安装"
     (None, Some((_, label, _))) => label
     (None, None) => if m.reportable { "上报" } else { "" }
   }
-  guard act != "" && m.notice_short == "" else { return None }
-  let words = t.words().iter().find_first(fn(w) { w.0 == act })
-  let line = t.drawn_rects().iter().find_first(fn(d) { d.3 <= 1.0 && words.map(fn(w) { (d.0 - w.1).abs() < 0.01 }).unwrap_or(false) })
-  match line {
-    Some(d) => Some((d.0, d.1, 0.1))
-    None => None
-  }
+  let said = (if act != "" && m.notice_short == "" { [act] } else { [] }) + ["复制"]
+  said.filter_map(fn(s) {
+    let words = t.words().iter().find_first(fn(w) { w.0 == s })
+    match words {
+      Some(w) =>
+        t.drawn_rects().iter().find_first(fn(d) { d.3 <= 1.0 && (d.0 - w.1).abs() < 0.01 && d.1 > w.2 }).map(fn(d) {
+          (d.0, d.1, w.2 + 19.0)
+        })
+      None => None
+    }
+  })
 }
 
 ///|
@@ -631,4 +653,140 @@ test "a notice's action at the end of its first line, closed and opened: it neve
   let first_y = t_long.words().iter().fold(init=1.0e9, fn(m, w) { if w.2 < m { w.2 } else { m } })
   let (_, ry, _, _) = t_long.rect_of("重试").unwrap()
   assert_true((ry - first_y).abs() < 2.0, msg="wrapped open notice keeps action on first line: \{ry} vs \{first_y}")
+}
+
+///|
+/// A drawn words' place and size (Tester::words's).
+fn nt_rect(w : (String, Double, Double, Double, Double, Double)) -> (Double, Double, Double, Double) {
+  (w.1, w.2, w.3, w.4)
+}
+
+///|
+/// Where words drawn exactly `s` are (a word at a notice's end, not the words that hold it): x, y, w, h.
+fn nt_word(t : @ui.Tester, s : String) -> (Double, Double, Double, Double) {
+  match t.words().iter().find_first(fn(w) { w.0 == s }) {
+    Some(w) => (w.1, w.2, w.3, w.4)
+    None => @halt.saying("no words drawn " + s)
+  }
+}
+
+///|
+test "failures said alike folded: ×11 after their words and before 重试, both whole where the words are cut short, at 390 and 1.3" {
+  let lost = "与模型服务的连接中断，回复即可重试"
+  let long = "本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发出的消息），请留意"
+  for c in [(lost, true, false), (long, true, false), (long, false, true)] {
+    let (words, again, reportable) = c
+    let end = if again { "重试" } else { "上报" }
+    for (w, scale) in [(760.0, 1.0), (390.0, 1.0), (390.0, 1.3)] {
+      let at = "\{words} at \{w}, \{scale}"
+      let t = nt_new(w, nt_src(None, []), fn() { nt_msg(words~, failed=true, again~, reportable~, count=11, last=19) })
+      t.set_font_scale(scale)
+      t.run_for(@ui.move_most_ms)
+      let (nx, ny, nw, nh) = nt_word(t, "×11")
+      let (ex, ey, _, eh) = nt_word(t, end)
+      let (_, wy, _, wh) = t.words()[0] |> nt_rect
+      // (on the words' line, at its foot as what it ends in always stood)
+      assert_true(ex >= nx + nw && ny >= wy - 0.5 && (ny + nh - (wy + wh)).abs() < 0.5 && (ey + eh - (ny + nh)).abs() < 0.5, msg=at + ": ×11 then " + end + " on the words' line: \{Repr((nx, ny, nw, nh, ex, ey, wy, wh))}")
+      // (only the words give way: what they end in is drawn whole, inside the row)
+      let runs = t.words().filter(fn(x) { x.0 != words && x.0.has_suffix("…") })
+      assert_true(runs.iter().all(fn(x) { words.has_prefix(x.0.clamped_view(end=x.0.length() - 1).to_owned()) }), msg=at + ": cut short only its words: \{Repr(runs.map(fn(x) { x.0 }))}")
+      assert_true(nx + nw <= w && ex <= w, msg=at)
+      // (read out with how many it folds)
+      assert_true(t.query(Button, label=words + " ×11") is Some(_), msg=at + ": read out with ×11")
+      let faults = nt_audit(t, 0, 0, if scale == 1.0 { 1 } else { 0 }, 1)
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    }
+  }
+}
+
+///|
+test "opened on several lines, a folded notice's ×11 and 重试 stay on its first line" {
+  let long = "本轮 agent 未在对话中回复，以下是它最后输出的文字，由 station 代为转发（并非它发出的消息），请留意"
+  for (w, scale) in [(390.0, 1.0), (390.0, 1.3)] {
+    let at = "\{w}, \{scale}"
+    let t = nt_new(w, nt_src(None, []), fn() { nt_msg(words=long, failed=true, again=true, detail="request r19: ECONNRESET", count=11, last=19) })
+    t.set_font_scale(scale)
+    t.run_for(@ui.move_most_ms)
+    // (closed: its words on one line, cut short)
+    let (_, _, _, line) = t.words()[0] |> nt_rect
+    let (_, closed_n, _, _) = nt_word(t, "×11")
+    let (_, closed_e, _, _) = nt_word(t, "重试")
+    nt_open(t)
+    let (_, first, _, bh) = nt_word(t, long)
+    let (_, ny, _, nh) = nt_word(t, "×11")
+    let (_, ey, _, eh) = nt_word(t, "重试")
+    assert_true(bh > line * 1.5, msg=at + ": opened on several lines: \{Repr((bh, line))}")
+    // (at the foot of its first line, where they stood closed: never moved down to its last)
+    assert_true((ny - closed_n).abs() < 0.01 && (ey - closed_e).abs() < 0.01 && (ny + nh - (first + line)).abs() < 0.5 && (ey + eh - (first + line)).abs() < 0.5, msg=at + ": on the first line \{first}+\{line}: \{Repr((ny, nh, ey, eh, closed_n, closed_e))}")
+    assert_true(t.find("request r19: ECONNRESET") is Some(_), msg=at + ": the last's failure in words under it")
+    let faults = nt_audit(t, 0, 0, 0, 1)
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+  }
+}
+
+///|
+test "one failure, then two, then eleven said alike: the same pill, ×2 then ×11 after its words, its words on their line, whole" {
+  let count = @signals.signal(1)
+  let lost = "与模型服务的连接中断，回复即可重试"
+  let t = nt_new(390.0, nt_src(None, []), fn() { nt_msg(words=lost, failed=true, again=true, count=count.get(), last=8 + count.get()) })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("×1") is None && t.find("×2") is None, msg="one: no count")
+  let (_, wy, ww, _) = nt_word(t, lost)
+  for n in [2, 11] {
+    count.set(n)
+    t.run_for(@ui.move_most_ms)
+    let (nx, ny, _, _) = nt_word(t, "×\{n}")
+    let (x, y, w, _) = nt_word(t, lost)
+    // (the pill widened round them, centred as it is: its words on their line, not cut, ×n after them)
+    assert_true((y - wy).abs() < 0.01 && (w - ww).abs() < 0.01 && nx >= x + w && (ny - y).abs() < 2.0, msg="at ×\{n}: \{Repr((x, y, w, wy, ww, nx, ny))}")
+    assert_true(t.query(Button, label="重试") is Some(_))
+  }
+  let faults = nt_audit(t, 0, 0, 1, 1)
+  assert_true(faults.is_empty(), msg=faults.join(" | "))
+}
+
+///|
+test "重试 and · 上报 on a folded notice act on the last failure it folds (its lastSeq), as the old view does" {
+  let lost = "与模型服务的连接中断，回复即可重试"
+  // (the nodes)
+  let calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, calls), fn() { nt_msg(words=lost, failed=true, again=true, count=11, last=19) })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="重试")
+  t.frame()
+  let sent = calls.filter(fn(c) { c.0 == "session.retry" })
+  assert_eq(sent.length(), 1)
+  assert_eq(number(Some(sent[0].1), "seq"), 19.0)
+  // (the old view)
+  let old_calls : Array[(String, Json)] = []
+  let old = nt_old(760.0, nt_src(None, old_calls), nt_msg(words=lost, failed=true, again=true, count=11, last=19))
+  old.run_for(@ui.move_most_ms)
+  let (rx, ry, rw, rh) = nt_word(old, "重试")
+  old.tap(rx + rw / 2.0, ry + rh / 2.0)
+  old.frame()
+  let sent = old_calls.filter(fn(c) { c.0 == "session.retry" })
+  assert_eq(sent.length(), 1)
+  assert_eq(number(Some(sent[0].1), "seq"), 19.0)
+  // · 上报, asked first, the last's seq; under way by it
+  @sf.presenters_reset()
+  let calls : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(None, calls, answer={ "number": 42, "duplicate": false }), fn() {
+    nt_msg(words=lost, failed=true, reportable=true, count=11, last=19)
+  })
+  t.run_for(@ui.move_most_ms)
+  t.tap_run("上报")
+  t.run_for(@ui.move_most_ms)
+  let ok = t.get(Button, label="上报", within=t.get(Dialog))
+  t.tap(ok.rect.0 + ok.rect.2 / 2.0, ok.rect.1 + ok.rect.3 / 2.0)
+  t.frame()
+  let sent = calls.filter(fn(c) { c.0 == "chat.report" })
+  assert_eq(sent.length(), 1)
+  assert_eq(number(Some(sent[0].1), "seq"), 19.0)
+  t.run_for(@ui.move_most_ms)
+  let busy : Array[(String, Json)] = []
+  let t = nt_new(760.0, nt_src(Some(nt_doing("chat.report", seq="19")), busy), fn() {
+    nt_msg(words=lost, failed=true, reportable=true, count=11, last=19)
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.get(Button, label="上报").disabled, msg="under way by its last's seq")
 }

@@ -1037,10 +1037,10 @@ pub fn chat_tick(
   let here = match ms {
     Some(ms) if v.messages.is_empty() =>
       match ms.peek_keys().last().bind(fn(k) { ms.peek(k) }) {
-        Some(m) => m.seq
+        Some(m) => m.notice_last_seq
         None => -1.0
       }
-    _ => v.messages.iter().fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+    _ => v.messages.iter().fold(init=-1.0, fn(m, x) { if x.notice_last_seq > m { x.notice_last_seq } else { m } })
   }
   let on_its_way = fn(a : Agent) {
     match a.about {
@@ -1501,7 +1501,8 @@ pub fn read_place(
       while k <= i.last && k < n {
         let h = lr.row_height(k).unwrap_or(0.0)
         match list[k] {
-          Said(m) if y >= top - 0.5 && y + h <= foot + 0.5 && m.seq > rd.seen_whole => rd.seen_whole = m.seq
+          // (a notice folding several is read to its last)
+          Said(m) if y >= top - 0.5 && y + h <= foot + 0.5 && m.notice_last_seq > rd.seen_whole => rd.seen_whole = m.notice_last_seq
           _ => ()
         }
         y = y + h
@@ -2742,7 +2743,7 @@ fn shown_sign(e : Entry) -> String {
         Some(d) => "\{d.resolved}\{d.dismissed}\{@ui.some_text(d.chosen)}"
         None => ""
       }
-      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_reassign_session}|\{m.notice_detail.length()}"
+      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_reassign_session}|\{m.notice_detail.length()}|\{m.notice_count}"
     }
     Out(o) => "o\{o.text.length()}|\{o.attachments.length()}|\{o.state}|\{o.joined}|\{o.followed}"
     State(a, b, c) => "s" + a + b + c

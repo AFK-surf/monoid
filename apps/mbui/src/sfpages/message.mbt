@@ -810,6 +810,12 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
     _ => None
   }
   let linked = m.profile != "" && m.notice_link >= 0 && m.notice_link <= said.length()
+  // (what follows its words held to the foot of their first line: notice_end_strut)
+  let strut = if m.notice_short == "" && m.notice_lines.is_empty() && !linked {
+    notice_end_strut(c.theme().leading(notice_leading).unwrap_or(0.0), @ui.font_scale())
+  } else {
+    0.0
+  }
   let after = if here.list is Some(_) { notice_after(m) } else { None }
   let pill = fn() {
     // (as wide as it was closed as it sets out, as the chat lets it once open, what it holds cut to it on the way)
@@ -890,27 +896,35 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
           }
         })
         |> ignore
+        // how many it folds (said alike one after another: the core's), after its words, never cut short with them
+        if m.notice_count > 1 {
+          c.box(style=notice_count_room.then(@ui.style(min_h=Fixed(strut))), keep=true, fn() {
+            c.text("×\{m.notice_count}", style=notice_count_words.then(@ui.text_style(color=ink))) |> ignore
+          })
+          |> ignore
+        }
         // what it ends in, on its first line as · 安装 and · 上报 are: its 取消, 重试 or 重新分配账号 too, which never
         // changes its place as it opens or shuts (the user, 2026-11-14: 「两行丑」, and nothing carried across it)
         match (install, after) {
           (Some(i), _) =>
-            notice_action(c, "notice-install/" + m.ts, i.action, ink, install_busy(src, station, i), fn() {
+            notice_action(c, "notice-install/" + m.ts, i.action, ink, install_busy(src, station, i), strut~, fn() {
               install_runtime(src, station, i)
             })
           (None, Some((session, label, call))) =>
-            notice_action(c, "notice-cancel/" + m.ts, label, ink, src.read_only || here.view.offline || core_doing(src, [call], [("station", station), ("key", session)]), fn() {
+            notice_action(c, "notice-cancel/" + m.ts, label, ink, src.read_only || here.view.offline || core_doing(src, [call], [("station", station), ("key", session)]), strut~, fn() {
               if !src.read_only && !here.view.offline {
                 act(src, label, "", call, {
                   "station": Json::string(station),
                   "key": Json::string(session),
                   "thread": Json::number(m.thread),
-                  "seq": Json::number(m.seq),
+                  // (of a notice folding several, the last: what its turn is bound to)
+                  "seq": Json::number(m.notice_last_seq),
                 })
               }
             })
           (None, None) =>
             if m.reportable {
-              report_action(c, src, station, m, ink)
+              report_action(c, src, station, m, ink, strut~)
             }
         }
       })
@@ -1016,12 +1030,20 @@ let notice_opening : Map[String, Bool] = Map([])
 ///|
 /// A word at a notice's end that acts on it (InstallAction, ReportAction): " · " at 60%, then the word, underlined;
 /// not offered while it is under way.
-fn notice_action(c : @ui.Ctx, key : String, action : String, ink : @ui.Color, busy : Bool, run : () -> Unit) -> Unit {
+fn notice_action(
+  c : @ui.Ctx,
+  key : String,
+  action : String,
+  ink : @ui.Color,
+  busy : Bool,
+  strut? : Double = 0.0,
+  run : () -> Unit,
+) -> Unit {
   let id = c.id(key)
   if !busy {
     c.on_press(id, run)
   }
-  c.box(style=notice_end, keep=true, fn() {
+  c.box(style=notice_end.then(@ui.style(min_h=Fixed(strut))), keep=true, fn() {
     c.box(style=notice_dot_room, fn() {
       c.text("·", style=if ink == Danger { notice_dot_failed } else { notice_dot }) |> ignore
     })
@@ -1043,11 +1065,12 @@ fn notice_action(c : @ui.Ctx, key : String, action : String, ink : @ui.Color, bu
 ///|
 /// Sending a failure notice to the still.fail team (ReportAction): asked first, saying what goes; what it was filed as
 /// said once sent.
-fn report_action(c : @ui.Ctx, src : Source, station : String, m : Message, ink : @ui.Color) -> Unit {
-  let on = [("station", station), ("thread", m.thread.to_int().to_string()), ("seq", m.seq.to_int().to_string())]
+fn report_action(c : @ui.Ctx, src : Source, station : String, m : Message, ink : @ui.Color, strut? : Double = 0.0) -> Unit {
+  // (of a notice folding several, the last: what failed last, its detail the one shown)
+  let on = [("station", station), ("thread", m.thread.to_int().to_string()), ("seq", m.notice_last_seq.to_int().to_string())]
   let busy = core_doing(src, ["chat.report"], on)
   let action = @sf.t("common.report.action")
-  notice_action(c, "notice-report/" + m.ts, action, ink, busy, fn() {
+  notice_action(c, "notice-report/" + m.ts, action, ink, busy, strut~, fn() {
     @sf.confirm(
       @sf.t("common.report.title"),
       @sf.t("common.report.lead") + "\n\n" + @sf.t("common.report.sends"),
@@ -1058,7 +1081,7 @@ fn report_action(c : @ui.Ctx, src : Source, station : String, m : Message, ink :
           action,
           "",
           "chat.report",
-          { "station": Json::string(station), "thread": Json::number(m.thread), "seq": Json::number(m.seq) },
+          { "station": Json::string(station), "thread": Json::number(m.thread), "seq": Json::number(m.notice_last_seq) },
           ok=fn(v) {
             @ui.haptic(Confirm)
             let number = match field(Some(v), "number") {
@@ -1516,6 +1539,25 @@ let notice_pill_failed_open : @ui.Style = notice_pill_open.then(@ui.css("bg=Over
 /// its room whole (notice_action: kept, as a row's end); once opened, aligned with the first line of wrapped words.
 // kept across runs: a value (no field of it changes)
 let notice_line : @ui.Style = @ui.css("row align=AEnd")
+
+///|
+/// How many failures said alike it folds (×n), after its words: kept whole as they are cut short.
+// kept across runs: a value (no field of it changes)
+let notice_count_room : @ui.Style = @ui.css("pl=S1_5 justify=JEnd")
+
+///|
+/// How tall the first line of a notice's words read as Markdown is (their line a share of their size, the system's size
+/// of words applied after: markdown's line_em), `leading` its line at 1: what follows them (×n, its action) is held to
+/// its foot, so it stands where it did closed whether they take a line or, opened, several. At the system's 1.3 that
+/// line is taller than an action's own words' (28.6 against 25), which closed stood at its foot (notice_line's AEnd).
+fn notice_end_strut(leading : Double, scale : Double) -> Double {
+  leading * scale
+}
+
+///|
+/// ×n's words: of the notice's size and line, a little heavier, in its ink whole (its contrast on the pill's ground).
+// kept across runs: a value (no field of it changes)
+let notice_count_words : @ui.TextStyle = @ui.text_style(size=notice_size, leading=notice_leading, weight=Medium, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

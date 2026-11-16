@@ -540,6 +540,79 @@ export function lettersByChat(letters: { message: J; way: "in" | "out"; title: s
   });
 }
 
+/// A failure notice that may fold with the same said next to it: one line, no install, no run change.
+function foldable(m: J): boolean {
+  return m.system === true && isObject(m.notice) && m.notice.failed === true && m.install === undefined && m.notice.short === undefined && m.notice.lines === undefined;
+}
+
+/// What `foldNotices` made of a run, by its first message: the run it was made of, the same objects, and what it made.
+const foldMade = new WeakMap<object, { run: J[]; out: J }>();
+
+/// still.fail's failures said in the same words one after another, folded into one (the user, 2026-11-16: eleven
+/// 与模型服务的连接中断 filled the screen): the first's `seq` and `ts`, so its row stays the one it was as more come,
+/// with how many (`count`) and the last's `seq` (`lastSeq`), what is acted on and read up to; the last's time, failure
+/// in words (`detail`) and what may be done of it. Their details may differ (another request, another error): what is
+/// shown closed is the same. Not across what was sent elsewhere after one of them (`after`: the seqs it follows).
+export function foldNotices(messages: J[], after?: ReadonlySet<number>): J[] {
+  let folded: J[] | null = null;
+  for (let i = 0; i < messages.length;) {
+    const first = messages[i]!;
+    let j = i + 1;
+    if (foldable(first)) {
+      const words = first.notice.words;
+      const profile = str(first.profile) ?? "";
+      while (j < messages.length && foldable(messages[j]!) && messages[j]!.notice.words === words && (str(messages[j]!.profile) ?? "") === profile && !(after?.has(u64(messages[j - 1]!.seq) ?? -1) ?? false)) j++;
+    }
+    if (j - i < 2) {
+      if (folded !== null) folded.push(first);
+      i = j;
+      continue;
+    }
+    folded ??= messages.slice(0, i);
+    const run = messages.slice(i, j);
+    const was = foldMade.get(first);
+    if (was !== undefined && was.run.length === run.length && was.run.every((m, k) => m === run[k])) folded.push(was.out);
+    else {
+      const last = run[run.length - 1]!;
+      const notice: J = { ...first.notice, count: run.length };
+      const lastSeq = u64(last.seq);
+      if (lastSeq !== null) notice.lastSeq = lastSeq;
+      delete notice.detail;
+      for (let k = run.length - 1; k >= 0; k--) {
+        const detail = str(run[k]!.notice.detail);
+        if (detail !== null && detail !== "") {
+          notice.detail = detail;
+          break;
+        }
+      }
+      for (const mark of ["retrySession", "againSession", "reassignSession"]) {
+        delete notice[mark];
+        for (let k = run.length - 1; k >= 0; k--) {
+          const v = run[k]!.notice[mark];
+          if (v !== undefined) {
+            notice[mark] = v;
+            break;
+          }
+        }
+      }
+      const out: J = { ...first, notice };
+      if (last.createdAt !== undefined) out.createdAt = last.createdAt;
+      if (run.some((m) => m.reportable === true)) out.reportable = true;
+      if (run.some((m) => m.asked === true)) out.asked = true;
+      const shared = sharedValue(out);
+      foldMade.set(first, { run, out: shared });
+      folded.push(shared);
+    }
+    i = j;
+  }
+  return folded ?? messages;
+}
+
+/// The last seq a message shown stands for: a folded notice's last (`lastSeq`), else its own.
+export function endSeq(m: J): number | null {
+  return u64(get(get(m, "notice"), "lastSeq")) ?? u64(get(m, "seq"));
+}
+
 /// The notices that a runtime is not installed, said where they matter: under the viewer's message that waits for it
 /// (its `blocked`, the last such before them) rather than as notices of their own; once it is installed they are gone
 /// (what waited went on). One with none of the viewer's waiting before it stays a notice, with installing it.
@@ -3517,6 +3590,8 @@ export class Views implements Owner {
     }
     messages.splice(0, messages.length, ...decisions.inMessages(messages, pendingCard, outbox.filter((m) => m.state !== "failed")));
     const elsewhere = timed("chat.elsewhere", () => this.#sentElsewhere(station, thread, agents, messages, u64(page.first) !== null && page.first > 1, page.end === false, { members: members_, bots }));
+    // (folded once what each notice is bound to, and what was sent elsewhere after which, is known of them one by one)
+    messages = foldNotices(messages, new Set(elsewhere.flatMap((s) => (u64(s.after) !== null ? [s.after as number] : []))));
     const title = row !== undefined && row.title !== undefined ? row.title : typeof page.title === "string" ? page.title : format.chatTitle(thread);
     const view: J = {
       me: this.me(scope),
@@ -3596,7 +3671,7 @@ export class Views implements Owner {
       // Only the notice explicitly recorded for this turn can replace its state. Do not mistake another agent's
       // notice (or an earlier one) for it; when the notice isn't loaded the state remains visible.
       const about = present.stateAbout(agent, u64(thread.id) ?? null);
-      return about !== null && messages.some((m: J) => u64(m.seq) === about && get(get(m, "notice"), "failed") === true);
+      return about !== null && messages.some((m: J) => (u64(m.seq) ?? Infinity) <= about && about <= (endSeq(m) ?? -1) && get(get(m, "notice"), "failed") === true);
     }) : null;
     // What it needed of a person, let go by the viewer (忽略): kept, said as let go, in place of what its row says
     const letGo = shown !== null ? present.rowLetGoNeed(shown) : null;
@@ -3630,7 +3705,7 @@ export class Views implements Owner {
     // The bell to what waits floats over the list's end only while that is out of view there: one at the end itself
     // (the line saying what an agent needs, or the last post with nothing after it) shows whenever the end does, so
     // the end keeps clear of the bell only for another. Else a need coming in would push the chat up for nothing.
-    const lastSeq = messages.length > 0 ? u64(get(messages[messages.length - 1], "seq")) : null;
+    const lastSeq = messages.length > 0 ? endSeq(messages[messages.length - 1]) : null;
     const atEnd = (seq: number) => view.newer !== true && (seq === view.stateAsk || (seq === lastSeq && arr(outbox).length === 0 && view.stateText === undefined));
     if (view.asks.some((a: J) => !atEnd(a.seq))) view.askClear = true;
     if (letters > 0) view.letters = letters;
@@ -3714,7 +3789,7 @@ export class Views implements Owner {
     const thread = this.#core.data.listedThread(station, id) ?? get(this.ok({ topic: "thread", station, thread: id }), "thread") ?? {};
     const agents = this.#agentsOf(station, thread);
     const keys = new Set(members(thread));
-    const messages = decisions.inMessages(this.#shown(station, thread, agents, merge(entries).filter((m) => !isLetter(m, keys)), []), null);
+    const messages = foldNotices(decisions.inMessages(this.#shown(station, thread, agents, merge(entries).filter((m) => !isLetter(m, keys)), []), null));
     const out = drawn({ ok: { agents, messages } }, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, `t:${id}`));
     const ws = ofAddress(station);
     return arr(get(out.ok, "messages")).map((m) => (isObject(m) && vaultAskOf(get(m, "card")) !== null ? { ...m, card: this.#vaultCard(m.card, ws) } : m));
@@ -4513,7 +4588,8 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
   if (Array.isArray(view.outbox)) view.outbox = view.outbox.map((o: J) => (isObject(o) ? goingUp({ ...o, attachments: own(o.attachments), ...(typeof o.text === "string" && o.text !== "" ? { words: personWords(o.text) } : {}) }) : o));
   const elsewhere = arr(view.elsewhere);
   if (elsewhere.length > 0) {
-    const bySeq = new Map(messages.map((m, i) => [u64(m.seq), i]));
+    // (a folded notice's last seq too: what was sent after its last is after it)
+    const bySeq = new Map(messages.flatMap((m, i) => [[u64(m.seq), i] as const, [endSeq(m), i] as const]));
     const first: J[] = [];
     const after = new Map<number, J[]>();
     for (const item of elsewhere) {

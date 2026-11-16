@@ -11,7 +11,7 @@ import { merge } from "../src/entries.ts";
 import { topicKey, type Topic } from "../src/protocol.ts";
 import { EVICT_AFTER_MS } from "../src/store.ts";
 import { attention, choices, models, quotaFor, runnableOn } from "../src/views/models.ts";
-import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, noticeOf, shownMessage, stationOn } from "../src/views/views.ts";
+import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, foldNotices, noticeOf, shownMessage, stationOn } from "../src/views/views.ts";
 import { localDay } from "../src/views/usage.ts";
 import { decorate, installView, profile as presentProfile } from "../src/present.ts";
 import { conformTy } from "../src/conform.ts";
@@ -2767,19 +2767,19 @@ test("only the overload notice belonging to a waiting retry offers its cancellat
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k", "j"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 模型满载，自动重试，与额度无关"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 模型满载，自动重试，与额度无关"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const waiting = {
     kind: "resume", outcome: "failed", declared: "waiting", detail: "overloaded: at capacity",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: waiting }), threads: [chat], turns: [] });
   t.set(sessionOf("ws/a", "j"), { session: fullSession("j"), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[0].notice.retrySession, undefined);
-  assert.equal(u.value.messages[1].notice.retrySession, "k");
+  assert.equal(u.value.messages[2].notice.retrySession, "k");
   // A new turn, or an unrelated wait, cannot be cancelled through that old notice.
   for (const lastTurn of [
     { ...waiting, outcome: "aborted", declared: null },
@@ -2788,7 +2788,7 @@ test("only the overload notice belonging to a waiting retry offers its cancellat
   ]) {
     t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn }), threads: [chat], turns: [] });
     await t.read(u, 1);
-    assert.equal(u.value.messages[1].notice.retrySession, undefined);
+    assert.equal(u.value.messages[2].notice.retrySession, undefined);
   }
 });
 
@@ -2798,19 +2798,19 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const failed = {
     kind: "input", outcome: "failed", declared: null, detail: "network: fetch failed",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[0].notice.againSession, undefined);
-  assert.equal(u.value.messages[1].notice.againSession, "k");
-  assert.equal(u.value.messages[1].notice.retrySession, undefined);
+  assert.equal(u.value.messages[2].notice.againSession, "k");
+  assert.equal(u.value.messages[2].notice.retrySession, undefined);
   // Gone once it runs, a message waits for it, it ended otherwise, or the failure is one a retry would meet again.
   for (const [session, lastTurn] of [
     [{ process: "running" }, failed],
@@ -2822,17 +2822,17 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   ] as const) {
     t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { ...session, lastTurn }), threads: [chat], turns: [] });
     await t.read(u, 1);
-    assert.equal(u.value.messages[1].notice.againSession, undefined, JSON.stringify([session, lastTurn]));
+    assert.equal(u.value.messages[2].notice.againSession, undefined, JSON.stringify([session, lastTurn]));
   }
   // A turn the station stopped asking for a state (回复即可继续) offers it too, while it stands there.
   const givenUp = { kind: "nudge", outcome: "completed", declared: null, detail: null, about: failed.about, startedAt: 10, endedAt: 11 };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.againSession, "k");
+  assert.equal(u.value.messages[2].notice.againSession, "k");
   assert.equal(u.value.messages[0].notice.againSession, undefined);
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.againSession, undefined);
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
 });
 
 test("the notice of a failure where the allowance showed a limit offers 重新分配账号, not 重试, while its agent stands there", async () => {
@@ -2841,22 +2841,22 @@ test("the notice of a failure where the allowance showed a limit offers 重新�
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 这个账号的 Fable 额度已用完"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 这个账号的 Fable 额度已用完"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const failed = {
     kind: "input", outcome: "failed", declared: null, detail: "limit:Fable: You've hit your Fable limit",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.reassignSession, "k");
-  assert.equal(u.value.messages[1].notice.againSession, undefined);
+  assert.equal(u.value.messages[2].notice.reassignSession, "k");
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
   assert.equal(u.value.messages[0].notice.reassignSession, undefined);
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.reassignSession, undefined);
+  assert.equal(u.value.messages[2].notice.reassignSession, undefined);
 });
 
 test("chat_is_a_thread_its_messages_and_its_agents", async () => {
@@ -3580,6 +3580,91 @@ test("a_failure_is_not_repeated_when_its_notice_is_in_the_chat", async () => {
   t.set(rows("ws/a"), [{ ...r, agents: [...r.agents] }]);
   await t.read(u, 1);
   assert.equal(u.value.stateText, "出错：模型服务出错");
+});
+
+test("failures_said_alike_one_after_another_fold_into_one_acted_on_and_read_by_the_last", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  const words = "与模型服务的连接中断，回复即可重试";
+  // Eleven, each its own request: the same closed, their details apart; the last of them with none.
+  const lost = (n: number): J => ({ ...entry(n, `⚠️ ${words}${n < 12 ? `\n\n\`\`\`\nrequest r${n}: ECONNRESET\n\`\`\`` : ""}`), authorKind: "ember", author: "ember", at: n * 1000 });
+  const failed = (seq: number) => ({ kind: "input", outcome: "failed", declared: null, detail: "network: fetch failed", startedAt: 1, endedAt: 2, about: { thread: 7, seq, ts: `${seq}.0` } });
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", process: "warm", lastTurn: failed(12) })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed(12) }), threads: [thread(7, ["k"], now)], turns: [] });
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  t.set(overview("ws/a"), { ...overviewOf([], []), feedback: true });
+  const notices = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(lost);
+  t.set(pageOf("ws/a", 7), { first: 1, last: 12, entries: [entry(1, "开始"), ...notices], thread: null });
+  const r = { ...row("k", now), thread: 7 };
+  r.agents[0].lastTurn = failed(12);
+  r.agents[0].process = "warm";
+  t.set(rows("ws/a"), [r]);
+  await t.read(u, 1);
+  const shown = () => u.value.messages.map((m: J) => [m.seq, m.ts, m.notice?.count, m.notice?.lastSeq]);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 11, 12]]);
+  let folded = u.value.messages[1];
+  // The last's time and failure in words, what may be done of it (重试, 上报), as one.
+  assert.deepEqual([folded.notice.words, folded.notice.detail, folded.notice.againSession, folded.createdAt, folded.reportable], [words, "request r11: ECONNRESET", "k", 12000, true]);
+  // Its turn's failure is in the chat (the last of the folded), so the end says nothing more of it; nor of one of them.
+  assert.equal(u.value.stateText, undefined);
+  for (const about of [2, 7]) {
+    r.agents[0].lastTurn = failed(about);
+    t.set(rows("ws/a"), [{ ...r, agents: [...r.agents] }]);
+    await t.read(u, 1);
+    assert.equal(u.value.stateText, undefined, String(about));
+  }
+  // One more comes: the same row (its seq and ts), one more said.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, lost(13)], last: 13 }));
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", process: "warm", lastTurn: failed(13) })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed(13) }), threads: [thread(7, ["k"], now)], turns: [] });
+  await t.read(u, 1);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 12, 13]]);
+  folded = u.value.messages[1];
+  assert.deepEqual([folded.notice.againSession, folded.createdAt], ["k", 13000]);
+  // What the viewer says parts them; what is not a failure, or says otherwise, is not folded.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, entry(14, "再试"), lost(15), lost(16), { ...entry(17, "已停止当前任务"), authorKind: "ember", author: "ember" }, { ...entry(18, "已停止当前任务"), authorKind: "ember", author: "ember" }, { ...entry(19, "⚠️ 模型服务出错，回复即可重试"), authorKind: "ember", author: "ember" }, lost(20)], last: 20 }));
+  await t.read(u, 1);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 12, 13], [14, "14.0", undefined, undefined], [15, "15.0", 2, 16], [17, "17.0", undefined, undefined], [18, "18.0", undefined, undefined], [19, "19.0", undefined, undefined], [20, "20.0", undefined, undefined]]);
+  // A picture of the chat (`listed`) folds them alike.
+  const listed = t.views.listed("ws/a", 7, (t.store.get(pageOf("ws/a", 7)) as J).entries);
+  assert.deepEqual(listed.map((m: J) => [m.seq, m.notice?.count]), [[1, undefined], [2, 12], [14, undefined], [15, 2], [17, undefined], [18, undefined], [19, undefined], [20, undefined]]);
+});
+
+test("failures_said_alike_fold_by_what_they_are_bound_to_and_not_across_what_was_sent_elsewhere", async () => {
+  // Folded alone: kept as made while what it is made of is the same objects.
+  const n = (seq: number, words = "与模型服务的连接中断", more: J = {}): J => ({ seq, ts: `${seq}.0`, system: true, createdAt: seq, notice: { failed: true, words, ...more } });
+  const said = [n(1), n(2, "与模型服务的连接中断", { retrySession: "k" }), n(3), n(4, "与模型服务的连接中断", { againSession: "k" }), n(5)];
+  const once = foldNotices(said);
+  assert.equal(once.length, 1);
+  assert.deepEqual([once[0].notice.count, once[0].notice.lastSeq, once[0].notice.retrySession, once[0].notice.againSession, once[0].seq], [5, 5, "k", "k", 1]);
+  assert.equal(foldNotices(said)[0], once[0]);
+  assert.equal(foldNotices([...said.slice(0, 4), n(5)])[0] === once[0], false);
+  // None folded: the list as it was.
+  const apart = [n(1), n(2, "额度已用完")];
+  assert.equal(foldNotices(apart), apart);
+  // What was sent elsewhere after 2 parts 1-2 from 3-5; another's profile, or a different one, too.
+  assert.deepEqual(foldNotices(said, new Set([2])).map((m) => [m.seq, m.notice.count]), [[1, 2], [3, 3]]);
+  assert.deepEqual(foldNotices([n(1), { ...n(2), profile: "p" }, { ...n(3), profile: "p" }]).map((m) => [m.seq, m.notice.count]), [[1, undefined], [2, 2]]);
+  // One with an install, or a run's change, stands alone.
+  assert.deepEqual(foldNotices([n(1), { ...n(2), install: {} }, n(3, "与模型服务的连接中断", { short: "换成 Codex" })]).map((m) => m.seq), [1, 2, 3]);
+  // In a chat's page: what its agent sent to Slack after the second of three is under the second.
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember" })]);
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  const lost = (seq: number): J => ({ ...entry(seq, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember", at: seq * 1000 });
+  t.set(pageOf("ws/a", 7), { first: 1, last: 4, entries: [lost(1), lost(2), lost(3), lost(4)], thread: null });
+  const call = (tool: string, args: J, at: string, callId: string) => ({ at, kind: "tool_call", tool, text: JSON.stringify(args), callId });
+  t.data.putItems("transcript", "ws/a", "k", [
+    [0, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "连不上了" }, "1970-01-01T00:00:02.5Z", "c1")],
+    [1, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "还是连不上" }, "1970-01-01T00:00:04.5Z", "c2")],
+  ]);
+  await t.read(u, 1);
+  assert.deepEqual(u.value.messages.map((m: J) => [m.seq, m.notice.count, m.notice.lastSeq, (m.elsewhere ?? []).map((s: J) => s.text)]), [[1, 2, 2, ["连不上了"]], [3, 2, 4, ["还是连不上"]]]);
 });
 
 test("the_viewers_messages_sent_one_after_another_go_close_together_their_time_under_the_last", async () => {
