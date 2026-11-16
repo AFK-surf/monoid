@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3088173c9](https://github.com/AFK-surf/monoid/commit/3088173c94e5b5061feb5616c6217283c503b380) mbui: a menu draws back into what opened it as it  | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 | [4fd173dcd](https://github.com/AFK-surf/monoid/commit/4fd173dcd677e96df69758ed551925efffaadb63) mbc: function types the same are one type, so one  | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 | [f5d90eb2f](https://github.com/AFK-surf/monoid/commit/f5d90eb2f054be595b6a273f118348fe5c609873) Pi (pi) as a runtime, on a provider's key, an Open | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 | [0ca41c2dc](https://github.com/AFK-surf/monoid/commit/0ca41c2dc5227651f8b2d980a59b31335dc376a2) station: carry a room's own clone after its worktr | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 124.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.83 | 121.21 |
 | [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.91 | 123.5 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.7 | 123.15 |
-| [753c9aefd](https://github.com/AFK-surf/monoid/commit/753c9aefdd04834cfbf26549ed1f445a8e20af2a) iOS: the app is an iPad app too, not an iPhone app | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.71 | 117.25 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3088173c9](https://github.com/AFK-surf/monoid/commit/3088173c94e5b5061feb5616c6217283c503b380) mbui: a menu draws back into what opened it as it  | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
 | [4fd173dcd](https://github.com/AFK-surf/monoid/commit/4fd173dcd677e96df69758ed551925efffaadb63) mbc: function types the same are one type, so one  | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.36 |
 | [f5d90eb2f](https://github.com/AFK-surf/monoid/commit/f5d90eb2f054be595b6a273f118348fe5c609873) Pi (pi) as a runtime, on a provider's key, an Open | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
 | [0ca41c2dc](https://github.com/AFK-surf/monoid/commit/0ca41c2dc5227651f8b2d980a59b31335dc376a2) station: carry a room's own clone after its worktr | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
-| [753c9aefd](https://github.com/AFK-surf/monoid/commit/753c9aefdd04834cfbf26549ed1f445a8e20af2a) iOS: the app is an iPad app too, not an iPhone app | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.41 |
