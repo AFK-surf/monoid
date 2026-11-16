@@ -8,7 +8,13 @@
 //
 // On the GPU where it can (the renderer's device, made with video support: win_render.cpp): the decoder given a DXGI
 // device manager decodes in hardware into Direct3D surfaces, each frame copied off its surface into an NV12 texture of
-// the stream's own (a few kept for reuse), its colours made BGRA there by the video processor only when something
+// the stream's own (a few kept for reuse). The decoders work on a device of their own on the same adapter (decoding),
+// each frame's texture shared with the renderer's and handed over once its copy is done on the GPU (a fence waited on
+// by the decoder's thread), taken back once what the renderer drew of it is (a fence the decoding device waits on):
+// on the renderer's device, a seek's run of frames decoded to reach the one asked for (a key frame's two seconds of 4K)
+// held the window's Present 25-80 ms; NVIDIA, 2026-11-17: 15-19 frames late of 32 seeks, 0-5 so. Where that
+// device or the sharing is not to be had, the decoders are on the renderer's device as before. Its colours made BGRA
+// there by the video processor only when something
 // shows it: the stream's system video layer (below), or the app's renderer drawing it (mb_stream_srv). Elsewhere (no
 // video device, a decoder that will not decode on the GPU) as before: in software, its NV12 made BGRA on the CPU as its
 // colours say (BT.709 or BT.601, video or full range) into a texture.
@@ -49,6 +55,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <d3d10.h>
 #include <dxgi1_2.h>
 #include <dcomp.h>
@@ -83,6 +90,10 @@ struct Gpu {
   ID3D11VideoProcessorInputView *in;
   int w, h;
   int bt601, full;
+  // decoding on a device of its own: the same texture there (what a frame is copied into), and the renderer's fence's
+  // value once what it drew of it is done (given back to be copied into again)
+  ID3D11Texture2D *dtex;
+  UINT64 drawn;
 };
 
 struct StreamFrame {
@@ -288,6 +299,110 @@ static ID3D11VideoContext *vctx;
 static IMFDXGIDeviceManager *dxgi_manager;
 static int mf_started;
 
+// The decoders' device (decoding, above): it, its context, its fence (a frame's copy done: `copied` its last value);
+// the renderer's context and fence (shared, opened there too: what it drew of a texture done: `drawn` its last value).
+// Each fence's values set under fence_lock, so they only rise. ddev NULL: the decoders on the renderer's device.
+static ID3D11Device *ddev;
+static ID3D11DeviceContext4 *dctx;
+static ID3D11Fence *copied_fence, *drawn_fence, *drawn_fence_d;
+static ID3D11DeviceContext4 *rctx4;
+static UINT64 copied, drawn;
+static SRWLOCK fence_lock = SRWLOCK_INIT;
+
+static void decoding_drop(void) {
+  if (drawn_fence_d) drawn_fence_d->Release();
+  if (drawn_fence) drawn_fence->Release();
+  if (copied_fence) copied_fence->Release();
+  if (rctx4) rctx4->Release();
+  if (dctx) dctx->Release();
+  if (ddev) ddev->Release();
+  drawn_fence_d = drawn_fence = copied_fence = NULL;
+  rctx4 = dctx = NULL;
+  ddev = NULL;
+}
+
+// A texture w × h for frames copied off the decoder: made on the decoders' device, shared, opened on the renderer's
+// (*dtex and *tex), as the video processor takes it in (a decoder's surface: what NVIDIA's takes) or else plain.
+static HRESULT shared_nv12(int w, int h, ID3D11Texture2D **dtex, ID3D11Texture2D **tex) {
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = (UINT)w;
+  td.Height = (UINT)h;
+  td.MipLevels = td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_NV12;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DEFAULT;
+  td.BindFlags = D3D11_BIND_DECODER;
+  td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+  *dtex = *tex = NULL;
+  HRESULT hr = ddev->CreateTexture2D(&td, NULL, dtex);
+  if (FAILED(hr)) {
+    td.BindFlags = 0;
+    hr = ddev->CreateTexture2D(&td, NULL, dtex);
+  }
+  IDXGIResource *r = NULL;
+  HANDLE handle = NULL;
+  if (SUCCEEDED(hr)) hr = (*dtex)->QueryInterface(IID_PPV_ARGS(&r));
+  if (SUCCEEDED(hr)) hr = r->GetSharedHandle(&handle);
+  if (SUCCEEDED(hr)) hr = dev->OpenSharedResource(handle, IID_PPV_ARGS(tex));
+  if (r) r->Release();
+  if (FAILED(hr)) {
+    if (*dtex) (*dtex)->Release();
+    if (*tex) (*tex)->Release();
+    *dtex = *tex = NULL;
+  }
+  return hr;
+}
+
+// The decoders' device on the renderer's adapter, its fences, and a texture shared from it tried (decoding, above):
+// none of it (ddev NULL) where any of that fails, or MBUI_SAME_VIDEO_DEVICE says so.
+static void decoding_device(ID3D11Device *dev, ID3D11DeviceContext *ctx) {
+  const char *same = getenv("MBUI_SAME_VIDEO_DEVICE");
+  if (same && *same && *same != '0') return;
+  IDXGIDevice *xdev = NULL;
+  IDXGIAdapter *adapter = NULL;
+  ID3D11Device5 *dev5 = NULL, *ddev5 = NULL;
+  ID3D11DeviceContext *dc = NULL;
+  ID3D10Multithread *mt = NULL;
+  HANDLE handle = NULL;
+  D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+  HRESULT hr = dev->QueryInterface(IID_PPV_ARGS(&xdev));
+  if (SUCCEEDED(hr)) hr = xdev->GetAdapter(&adapter);
+  if (SUCCEEDED(hr))
+    hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL,
+                           D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2,
+                           D3D11_SDK_VERSION, &ddev, NULL, &dc);
+  if (SUCCEEDED(hr)) hr = dc->QueryInterface(IID_PPV_ARGS(&dctx));
+  // (the decoders' threads and the one that copies off them share its context: each call under its lock)
+  if (SUCCEEDED(hr)) hr = ddev->QueryInterface(IID_PPV_ARGS(&mt));
+  if (SUCCEEDED(hr)) mt->SetMultithreadProtected(TRUE);
+  if (SUCCEEDED(hr)) hr = ctx->QueryInterface(IID_PPV_ARGS(&rctx4));
+  if (SUCCEEDED(hr)) hr = dev->QueryInterface(IID_PPV_ARGS(&dev5));
+  if (SUCCEEDED(hr)) hr = ddev->QueryInterface(IID_PPV_ARGS(&ddev5));
+  if (SUCCEEDED(hr)) hr = ddev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&copied_fence));
+  if (SUCCEEDED(hr)) hr = dev5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&drawn_fence));
+  if (SUCCEEDED(hr)) hr = drawn_fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &handle);
+  if (SUCCEEDED(hr)) hr = ddev5->OpenSharedFence(handle, IID_PPV_ARGS(&drawn_fence_d));
+  if (SUCCEEDED(hr)) {
+    ID3D11Texture2D *a = NULL, *b = NULL;
+    hr = shared_nv12(64, 64, &a, &b);
+    if (a) a->Release();
+    if (b) b->Release();
+  }
+  if (handle) CloseHandle(handle);
+  if (mt) mt->Release();
+  if (ddev5) ddev5->Release();
+  if (dev5) dev5->Release();
+  if (dc) dc->Release();
+  if (adapter) adapter->Release();
+  if (xdev) xdev->Release();
+  if (FAILED(hr)) {
+    decoding_drop();
+    fprintf(stdout, "win: streams: decoded on the renderer's device (none of their own: %08lx)\n", (unsigned long)hr);
+    fflush(stdout);
+  }
+}
+
 static int video_here(void) {
   if (video_state) return video_state > 0;
   ID3D11Device *dev = (ID3D11Device *)mb_render_device();
@@ -313,12 +428,15 @@ static int video_here(void) {
   mt->SetMultithreadProtected(TRUE);
   mt->Release();
   if (!mf_started && SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) mf_started = 1;
-  if (FAILED(MFCreateDXGIDeviceManager(&token, &dxgi_manager)) || FAILED(dxgi_manager->ResetDevice(dev, token))) {
+  decoding_device(dev, ctx);
+  if (FAILED(MFCreateDXGIDeviceManager(&token, &dxgi_manager)) ||
+      FAILED(dxgi_manager->ResetDevice(ddev ? ddev : dev, token))) {
     if (dxgi_manager) dxgi_manager->Release();
     dxgi_manager = NULL;
   }
   video_state = 1;
-  fprintf(stdout, "win: streams: on the GPU (its decoders %s)\n", dxgi_manager ? "too" : "not: no device manager");
+  fprintf(stdout, "win: streams: on the GPU (its decoders %s)\n",
+          !dxgi_manager ? "not: no device manager" : ddev ? "too, on a device of their own" : "too");
   fflush(stdout);
   return 1;
 }
@@ -360,6 +478,7 @@ static IMFTransform *decoder_of(const GUID &sub) {
 static void gpu_drop(Gpu *g) {
   if (g->in) g->in->Release();
   if (g->tex) g->tex->Release();
+  if (g->dtex) g->dtex->Release();
   memset(g, 0, sizeof *g);
 }
 
@@ -377,6 +496,12 @@ static Gpu gpu_take(Stream *s, int w, int h) {
   }
   LeaveCriticalSection(&lock);
   if (g.tex) return g;
+  g.w = w;
+  g.h = h;
+  if (ddev) {
+    shared_nv12(w, h, &g.dtex, &g.tex);
+    return g;
+  }
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = (UINT)w;
   td.Height = (UINT)h;
@@ -399,6 +524,14 @@ static Gpu gpu_take(Stream *s, int w, int h) {
 // A texture it no longer shows, kept to be copied into again (a few), else let go.
 static void gpu_give(Stream *s, Gpu *g) {
   if (!g->tex) return;
+  if (g->dtex) {
+    // (copied into again only once what the renderer drew of it is done: its fence's value now, sent to the GPU)
+    AcquireSRWLockExclusive(&fence_lock);
+    g->drawn = ++drawn;
+    rctx4->Signal(drawn_fence, g->drawn);
+    ReleaseSRWLockExclusive(&fence_lock);
+    rctx4->Flush();
+  }
   EnterCriticalSection(&lock);
   int kept = !s->closed && s->npool < POOL;
   if (kept) s->pool[s->npool++] = *g;
@@ -964,7 +1097,27 @@ static Gpu gpu_copy_off(Stream *s, H264 *d, IMFSample *smp) {
   if (w > 0 && h > 0 && SUCCEEDED(smp->GetBufferByIndex(0, &b)) && SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&xb))) &&
       SUCCEEDED(xb->GetResource(IID_PPV_ARGS(&src))) && SUCCEEDED(xb->GetSubresourceIndex(&sub))) {
     g = gpu_take(s, w, h);
-    if (g.tex) {
+    if (g.tex && g.dtex) {
+      // on the decoders' device, after what the renderer drew of it last; handed over once done there (waited for
+      // here, on the decoder's thread: nothing of the renderer's waits)
+      D3D11_BOX box = {0, 0, 0, (UINT)w, (UINT)h, 1};
+      if (g.drawn) dctx->Wait(drawn_fence_d, g.drawn);
+      dctx->CopySubresourceRegion(g.dtex, 0, 0, 0, 0, src, sub, &box);
+      AcquireSRWLockExclusive(&fence_lock);
+      UINT64 v = ++copied;
+      dctx->Signal(copied_fence, v);
+      ReleaseSRWLockExclusive(&fence_lock);
+      dctx->Flush();
+      if (copied_fence->GetCompletedValue() < v) {
+        static thread_local HANDLE done;
+        if (!done) done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        // (a GPU that never finishes it: the frame let go, after 2 s)
+        if (!done || FAILED(copied_fence->SetEventOnCompletion(v, done)) || WaitForSingleObject(done, 2000) != WAIT_OBJECT_0)
+          gpu_drop(&g);
+      }
+      g.bt601 = d->bt601;
+      g.full = d->full;
+    } else if (g.tex) {
       D3D11_BOX box = {0, 0, 0, (UINT)w, (UINT)h, 1};
       ((ID3D11DeviceContext *)mb_render_context())->CopySubresourceRegion(g.tex, 0, 0, 0, 0, src, sub, &box);
       g.bt601 = d->bt601;
