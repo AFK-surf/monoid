@@ -4,6 +4,7 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
@@ -55,6 +56,14 @@ export type Station = {
   placing?: (index: string) => Promise<void>;
   /// Called as a placing here ended.
   placed?: () => void;
+  /// Waited for before a gathering here (each, the room's scratch), before git runs here (each command), before a drop
+  /// here takes its files out, and before a clone here is removed: work that takes long.
+  gathering?: (scratch: string) => Promise<void>;
+  /// The most bytes one `handover.lacking` hashes here (none: the station's own).
+  hashMost?: number;
+  gitting?: (args: string[]) => Promise<void>;
+  dropping?: (id: string) => Promise<void>;
+  removing?: (dir: string) => Promise<void>;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
   jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; sized: string[]; fails: Set<string>; onFail: ((step: string) => void | Promise<void>) | null;
@@ -71,8 +80,13 @@ afterEach(async () => {
   for (const c of open.splice(0).reverse()) await c().catch(() => {});
 });
 
+/// How long a request's answer is waited for between stations (mesh/peer.ts ANSWER_MS).
+export const ANSWER_MS = 30_000;
+
 /// Stations of workspace "ws" (each its own Rig, its connects and its moves); A has the Slack connects cl and gpt.
-export function world(ids: string[] = [A, B]) {
+/// `answerMs`: each request between them fails as mesh/peer.ts fails it when its answer did not come within ANSWER_MS
+/// on the test's clock (the station asked goes on with it).
+export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
   const t = testClock();
   const stations = new Map<string, Station>();
   const roster = ids.map((id) => ({ id, name: id.slice(0, 1).toUpperCase() }));
@@ -80,6 +94,9 @@ export function world(ids: string[] = [A, B]) {
   let tamper: ((to: string, request: Json) => Json) | null = null;
   /// After a request was taken there, whether its answer is lost on the way back (a test's: what it fails with then).
   let lose: ((to: string, request: Json) => Error | null) | null = null;
+  /// Each request asked between the stations, as it went and as it was answered (on the test's clock): what a test of
+  /// the answers' bounds reads.
+  const heard: { from: string; to: string; method: string; name?: string; at: number; answered: number | null; failed: string | null }[] = [];
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
     const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
@@ -88,7 +105,22 @@ export function world(ids: string[] = [A, B]) {
       const there = stations.get(to);
       if (there === undefined || !there.up || !st.up) throw new Error("station unreachable");
       const sent = tamper === null ? request : tamper(to, request);
-      const answer = across(await there.bus.handle(ws ?? WS, id, across(sent)));
+      const seen = { from: id, to, method: String(request?.method ?? ""), ...(typeof request?.name === "string" ? { name: request.name as string } : {}), at: st.fibers.now(), answered: null as number | null, failed: null as string | null };
+      heard.push(seen);
+      const handled = there.bus.handle(ws ?? WS, id, across(sent));
+      let late = () => {};
+      const deadline = o.answerMs !== true ? null : new Promise<never>((_, reject) => (late = st.fibers.after(ANSWER_MS, () => reject(new Error("peer request timed out; execution may have happened — query the same task key"))))); // timer: a deadline (an answer's, as mesh/peer.ts waits for it)
+      let answer: Json;
+      try {
+        answer = across(await (deadline === null ? handled : Promise.race([handled, deadline])));
+        seen.answered = st.fibers.now();
+      } catch (e) {
+        seen.failed = (e as Error).message;
+        handled.catch(() => {});
+        throw e;
+      } finally {
+        late();
+      }
       const lost = lose === null ? null : lose(to, sent);
       if (lost !== null) throw lost;
       return answer;
@@ -159,8 +191,17 @@ export function world(ids: string[] = [A, B]) {
         },
         hasGit: async () => true,
         lackMost: 50,
+        hashMost: st.hashMost,
+        remove: async (dir) => {
+          await st.removing?.(dir);
+          await rm(dir, { recursive: true, force: true });
+        },
         work: {
-          gather: gatherSoon,
+          gather: async (...args) => {
+            await st.gathering?.(args[4]);
+            return gatherSoon(...args);
+          },
+          drop: async (hid) => void (await st.dropping?.(hid)),
           place: async (dataDir, index, from, made, aside, placed, projects) => {
             await st.placing?.(index);
             try {
@@ -197,7 +238,7 @@ export function world(ids: string[] = [A, B]) {
       st.bus.on("move.", moves.answers(() => true));
       return moves;
     };
-    st.git = async (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
+    st.git = async (dir: string, args: string[]) => (await st.gitting?.(args), execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim());
     st.moves = st.make();
     const routes = moveRoutes({
       scheduler: { busy: () => st.moves.scheduler.busy(), last: (ws: string) => st.moves.scheduler.last(ws), plan: (ws: string, to: string) => st.moves.scheduler.plan(ws, to), planShown: (ws: string, to: string) => st.moves.scheduler.planShown(ws, to), held: (ws: string, to: string) => st.moves.scheduler.held(ws, to), stopped: () => st.moves.scheduler.stopped(), move: (...a: Parameters<Moves["scheduler"]["move"]>) => st.moves.scheduler.move(...a), back: (...a: Parameters<Moves["scheduler"]["back"]>) => st.moves.scheduler.back(...a), stopTurn: (by: string | null) => st.moves.scheduler.stopTurn(by), stopping: () => st.moves.scheduler.stopping(), current: () => st.moves.scheduler.current() } as Json,
@@ -235,7 +276,7 @@ export function world(ids: string[] = [A, B]) {
       await s.rig.quiet();
     }
   };
-  return { t, stations, get: (id: string) => stations.get(id)!, quiet, tamper: (f: typeof tamper) => void (tamper = f), lose: (f: typeof lose) => void (lose = f) };
+  return { t, stations, get: (id: string) => stations.get(id)!, quiet, heard, tamper: (f: typeof tamper) => void (tamper = f), lose: (f: typeof lose) => void (lose = f) };
 }
 
 /// The running turn of a station's session ended with a state, as its agent would.

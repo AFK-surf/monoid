@@ -1,10 +1,11 @@
 // The repos module (move/AGENTS.md): an item is one canonical clone in the repository cache (sessions/hub.ts
 // `reposDir`) that a chat's linked worktree hangs on, known by its remote (`repo:<url>`, the same on every station).
 // Moved: there it is a clone of that remote (one there already is taken), with what no remote has of it fetched from a
-// bundle sent along (`move.repo.make`, `move.repo.bundle`); progress in the bundle's bytes. Moved back: the clone there
-// is removed where this move made it, never one that was there before. A chat whose worktree hangs on it needs it
+// bundle sent along (`move.repo.make`, `move.repo.bundle`, fetched there as a told step, move/told.ts); progress in the
+// bundle's bytes. Moved back: the clone there is removed where this move made it, never one that was there before (a
+// told step too: a large clone takes long to remove). A chat whose worktree hangs on it needs it
 // (chats.ts), and its own move only adds the worktree (replica/retire.ts `rebuildGits` with `clone: false`).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -12,6 +13,7 @@ import { Refused, withBytes, type Bytes } from "../mesh/bus.ts";
 import { fileBytes } from "../mesh/files.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { type Item, type ItemState, type Module, type PlanReads, type Progress, Said, unanswered, notAnswered } from "./module.ts";
+import type { Told } from "./told.ts";
 
 type Json = any;
 
@@ -27,7 +29,15 @@ export type ReposDeps = {
   after?: (ms: number, f: () => void) => () => void;
   /// A station's name, for words.
   name?: (station: string) => string;
+  /// The steps that grow with a repository (a bundle fetched, a clone removed), asked of another station and told back
+  /// (told.ts); none: asked and answered inside one request, as before.
+  told?: Told;
+  /// What takes a clone away here (a test's; none: rm).
+  remove?: (dir: string) => Promise<void>;
 };
+
+/// The key a told step of a repository's names (told.ts): what it is, its remote, and this ask's own part.
+const stepKey = (step: string, url: string) => `${step}:${createHash("sha256").update(url).digest("hex").slice(0, 16)}:${randomBytes(6).toString("hex")}`;
 
 /// How long a clone there is waited for, told back as it ends (`move.repo.made`): a request's answer is waited for
 /// 30 s (mesh/peer.ts ANSWER_MS), a clone can take minutes.
@@ -121,6 +131,9 @@ export async function worktreesOfClones(reposDir: string, elsewhere: string[], d
 
 export const repoItemId = (url: string) => `repo:${url}`;
 
+/// The told step a request names (told.ts); none: a station from before, answered as before.
+const toldOf = (request: Json): string | null => (typeof request?.told === "string" && request.told.length > 0 && request.told.length <= 300 ? request.told : null);
+
 /// What a station keeps of the clones moves made here (removed on a move back), by remote.
 type Made = Record<string, { dir: string; made: boolean }>;
 
@@ -203,7 +216,12 @@ export class ReposModule implements Module {
       const p = { done: 0, total: size, unit: "bytes" };
       this.#moving.set(item.id, p);
       progress(p);
-      if (size > 0) await this.#d.ask(to, withBytes({ method: "move.repo.bundle", url }, fileBytes(bundle, 0, size)));
+      if (size > 0) {
+        const told = this.#d.told;
+        const key = stepKey("bundle", url);
+        if (told === undefined) await this.#d.ask(to, withBytes({ method: "move.repo.bundle", url }, fileBytes(bundle, 0, size)));
+        else await told.asked(to, key, () => withBytes({ method: "move.repo.bundle", url, told: key }, fileBytes(bundle, 0, size)));
+      }
       progress({ done: size, total: size, unit: "bytes" });
       this.#there.set(item.id, true);
     } finally {
@@ -213,7 +231,10 @@ export class ReposModule implements Module {
   }
 
   async back(item: Item, from: string): Promise<void> {
-    await this.#d.ask(from, { method: "move.repo.drop", url: item.id.slice(5) });
+    const url = item.id.slice(5);
+    const key = stepKey("repodrop", url);
+    if (this.#d.told === undefined) await this.#d.ask(from, { method: "move.repo.drop", url });
+    else await this.#d.told.asked(from, key, () => ({ method: "move.repo.drop", url, told: key }));
     this.#there.set(item.id, false);
   }
 
@@ -302,19 +323,33 @@ export class ReposModule implements Module {
         } finally {
           await out.close();
         }
-        try {
-          await this.#d.git(dir, ["fetch", "-q", "--update-head-ok", path, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
-        } finally {
-          await rm(path, { force: true });
-        }
-        return { ok: true };
+        const fetch = async () => {
+          try {
+            await this.#d.git(dir, ["fetch", "-q", "--update-head-ok", path, "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]);
+          } finally {
+            await rm(path, { force: true });
+          }
+          return { ok: true };
+        };
+        const key = toldOf(request);
+        if (key === null || this.#d.told === undefined) return await fetch();
+        // (fetched by itself, told back as it ends: one under way, or ended, asked again with its bytes again, is not
+        // fetched twice)
+        let started = false;
+        const answer = this.#d.told.run(peer, key, () => ((started = true), fetch()));
+        if (!started) await rm(path, { force: true });
+        return answer;
       }
       case "move.repo.drop": {
-        const m = this.#made[url];
-        if (m?.made === true) await rm(m.dir, { recursive: true, force: true });
-        delete this.#made[url];
-        await this.#saveMade();
-        return { ok: true };
+        const drop = async () => {
+          const m = this.#made[url];
+          if (m?.made === true) await (this.#d.remove ?? ((d: string) => rm(d, { recursive: true, force: true })))(m.dir);
+          delete this.#made[url];
+          await this.#saveMade();
+          return { ok: true };
+        };
+        const key = toldOf(request);
+        return key === null || this.#d.told === undefined ? await drop() : this.#d.told.run(peer, key, drop);
       }
     }
     throw new Refused("no such repo request");

@@ -719,7 +719,9 @@ test("the station it leaves stopped while the chat is held and its files are bei
   const id = b.moves.handover.ins()[0]!.id;
   await a.moves.close();
   a.moves = a.make();
-  const started = a.moves.start().then(() => void order.push("dropped"));
+  // (the drop answered as it is asked; what it takes out there, once that station gets to it)
+  b.dropping = async () => void order.push("dropped");
+  const started = a.moves.start();
   // (the drop is there, waiting or not, before the placing goes on)
   await a.rig.quiet();
   await b.rig.quiet();
@@ -727,7 +729,7 @@ test("the station it leaves stopped while the chat is held and its files are bei
   await started;
   assert.notEqual(await moving, null, "it did not go");
   await w.quiet();
-  assert.deepEqual(order, ["placed", "dropped"], "the drop waited for the placing under way");
+  assert.deepEqual(order, ["placed", "dropped"], "the drop's taking out waited for the placing under way");
   // What of it comes after its drop (a late page of rows, a show) is refused, and puts nothing in.
   const late = (request: Json) => a.bus.ask(B, { ...request, workspace: WS, origin: A, id });
   const why = (p: Promise<unknown>) => p.then(() => "taken", (e: Error) => e.message);

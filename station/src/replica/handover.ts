@@ -23,7 +23,7 @@
 // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { appendFile, link, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
@@ -44,6 +44,7 @@ import type { KeptSend } from "../api/admin.ts";
 import { LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
 import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
+import type { Told } from "../move/told.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 
 type Json = any;
@@ -107,6 +108,8 @@ export type Out = {
   /// What was sent and placed of its files (bytes), for the status; of them, the bytes of the room's own files that
   /// went (what was in place there already did not).
   done: number; total: number; sentBytes?: number;
+  /// How far its placing there is (files), as that station tells it (move/told.ts): while its files are placed.
+  placing?: { done: number; total: number };
   /// When each of its steps began (the station's clock, the wall's: a step of that clock as it runs skews one step's ms,
   /// which a log line can bear), in order: `begin`, `first` (the first pass's gathering and sending),
   /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`: what its line at gone says each took; then `show`
@@ -128,7 +131,11 @@ export type In = { id: string; origin: string; keys: string[]; ws: string; at: n
   /// The last page of rows taken (`handover.rows`'s `page`): the same page asked again (its answer lost on the way,
   /// its sender's process or this one's stopping as it went: mesh/peer.ts PeerStopped) is answered as taken, not
   /// counted twice.
-  page?: string };
+  page?: string;
+  /// Its drop was asked (`handover.drop`, or a newer hand-over of the chat begun): its rows taken out as it was asked,
+  /// nothing more of it taken, its files taken out after what it was doing to them; one this station's process stopped
+  /// before that ended is ended as the next starts.
+  dropping?: boolean };
 
 /// What a hand-over's steps took (ms), from when each began to when the next did, the last to `end`; and the whole.
 function tookOf(began: Record<string, number> | undefined, end: number): { ms: Record<string, number>; total: number } {
@@ -182,7 +189,13 @@ export type HandoverDeps = {
   hasGit?: () => Promise<boolean>;
   git?: (dir: string, args: string[]) => Promise<string>;
   lackMost?: number;
-  work?: { gather: typeof gatherSoon; place: typeof placeSoon };
+  /// The most bytes one `handover.lacking` hashes here (HASH_MOST; a test's smaller).
+  hashMost?: number;
+  /// The work done here of a hand-over's files: gathered, placed; `drop`, a test's: waited for before a drop takes its
+  /// files out.
+  work?: { gather: typeof gatherSoon; place: typeof placeSoon; drop?: (id: string) => Promise<void> };
+  /// The steps asked of another station that are told back, and those it asks of this one (move/told.ts).
+  told: Told;
   /// Told as a hand-over's state changes (the scheduler, move/).
   changed?: (id: string) => void;
   /// A chat that arrived here stopped, waiting for `need` (move/scheduler.ts `noteStopped`), held before it is shown.
@@ -266,6 +279,18 @@ function readAll<T>(at: string): T[] {
   return out;
 }
 
+/// The most bytes one `handover.lacking` reads to hash what lies here where its time differs from what was sent: a request
+/// is answered within 30 s (mesh/peer.ts ANSWER_MS), and a room left here by another station's copy has its files at
+/// other times, so each is read whole (the rest is said `unchecked`, asked again). A file larger than it alone is not
+/// read: said lacking, it is sent, a piece at a time.
+export const HASH_MOST = 256 * 1024 ** 2;
+
+/// The key of a told step a request names (move/told.ts): none from a station from before told steps, answered as
+/// before, by its result.
+const toldKey = (request: Json): string | null => (typeof request?.told === "string" && request.told.length > 0 && request.told.length <= 300 ? request.told : null);
+
+const uncheckedOf = (answer: Json): string[] => (Array.isArray(answer?.unchecked) ? answer.unchecked.filter((h: unknown): h is string => typeof h === "string") : []);
+
 /// What this station's disk failing a write it was sent is (full, over its quota, read-only): the hand-over's own end
 /// here, told the asker in numbers.
 const WRITE_FAILED = new Set(["ENOSPC", "EDQUOT", "EROFS"]);
@@ -327,7 +352,10 @@ export class Handover {
   readonly #runs = new Map<string, Promise<void>>();
   readonly #again = new Map<string, () => void>();
   readonly #tries = new Map<string, number>();
-  readonly #work: { gather: typeof gatherSoon; place: typeof placeSoon };
+  readonly #work: NonNullable<HandoverDeps["work"]>;
+  /// The drops under way here, by hand-over: `marked` once its rows are out and its record says it drops, `files` once
+  /// its files are out too.
+  readonly #drops = new Map<string, { marked: Promise<void>; files: Promise<void> }>();
   #closed = false;
 
   /// Where each side stood, read before the station serves: a chat being handed over is held again before its agents
@@ -364,7 +392,8 @@ export class Handover {
     for (const i of readAll<In>(join(dir(d.data), "in"))) {
       // (what its rows' pages put in, as kept with them: newer than its file where a stop came between the two)
       if (i.step === "coming") i.ctx = d.store.importCtx(i.id) ?? i.ctx;
-      if (i.step === "coming") this.#unsure.add(i.id);
+      if (i.step === "coming" && i.dropping !== true) this.#unsure.add(i.id);
+      if (i.step === "coming" && i.dropping === true) this.#dropping.add(i.id);
       this.#keepIn(i);
       this.#holdIn(i);
     }
@@ -394,6 +423,7 @@ export class Handover {
     this.#comingIns.clear();
     this.#owedOuts.clear();
     this.#unsure.clear();
+    this.#dropping.clear();
     this.#load();
     for (const key of before) if (!this.#heldAtLoad.has(key)) this.#d.hub.releaseChat(key);
   }
@@ -428,6 +458,8 @@ export class Handover {
         log.info("handover", "a chat went as this station stopped: it went", { id: o.id, to: o.to });
       } else await this.#fail(o, tr(stationLang(), "station.move.restartedMidway", { station: o.toName || o.to.slice(0, 12) }));
     }
+    // (what was being taken out here as this station stopped: taken out now)
+    for (const i of [...this.#comingIns]) if (i.dropping === true) void this.#dropSoon(i);
     // (what was coming here as this station stopped: asked of where it came from whether it still goes on)
     for (const id of this.#unsure) {
       const i = this.#ins.get(id);
@@ -567,7 +599,11 @@ export class Handover {
 
   /// What is under way brought to rest (a test's).
   async settle(): Promise<void> {
-    while (this.#runs.size > 0) await Promise.all([...this.#runs.values()].map((p) => p.catch(() => {})));
+    for (;;) {
+      await this.#d.told.settle();
+      if (this.#runs.size === 0 && this.#drops.size === 0) return;
+      await Promise.all([...this.#runs.values(), ...[...this.#drops.values()].map((d) => d.files)].map((p) => p.catch(() => {})));
+    }
   }
 
   /// The hand-overs from here, the latest of each chat first.
@@ -888,7 +924,22 @@ export class Handover {
     d.fail?.("files");
     const carry = await sendGathered(g, {
       // (where each goes and how big, so that what is in place there already is not sent again)
-      lacking: (hashes, files) => ask({ method: "handover.lacking", hashes, files: files.map((f) => ({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs ?? null, ...(f.room !== undefined ? { room: f.room } : {}) })) }),
+      lacking: async (hashes, files) => {
+        const asked = files.map((f) => ({ hash: f.hash, path: f.path, size: f.size, mtimeMs: f.mtimeMs ?? null, ...(f.room !== undefined ? { room: f.room } : {}) }));
+        const answer = await ask({ method: "handover.lacking", hashes, files: asked });
+        const lacking = new Set<string>(Array.isArray(answer?.lacking) ? answer.lacking : hashes);
+        // (what it had no time to read there, asked again alone, until each was looked at: it is said lacking meanwhile)
+        for (let rest = uncheckedOf(answer); rest.length > 0; ) {
+          const of = new Set(rest);
+          const again = await ask({ method: "handover.lacking", hashes: rest, files: asked.filter((f) => of.has(f.hash)) });
+          const said = new Set<string>(Array.isArray(again?.lacking) ? again.lacking : rest);
+          for (const h of rest) if (!said.has(h)) lacking.delete(h);
+          const next = uncheckedOf(again);
+          if (next.length >= rest.length) break;
+          rest = next;
+        }
+        return { lacking: [...lacking] };
+      },
       put: async (hash, bytes, path, size) => {
         const answer = await d.ask(o.to, withBytes({ method: "handover.put", workspace: o.ws, origin: here, id: o.id, name: hash }, bytes));
         if (carriedPlace(d.data, path)) o.sentBytes = (o.sentBytes ?? 0) + size;
@@ -903,7 +954,13 @@ export class Handover {
     }, held, [], true).catch((e) => Promise.reject(carryWords(e)));
     this.#given(o);
     if (carry === null) throw new Said(why("stopping"));
-    const placed = await ask({ method: "handover.place", carry });
+    // (placed there by itself, told back as it goes and as it ends: a placing of minutes waits on no request's answer)
+    const key = `place:${o.id}:${held ? "held" : "first"}:${carry}`;
+    const placed = await d.told.asked(o.to, key, () => ({ method: "handover.place", workspace: o.ws, origin: here, id: o.id, carry, held, told: key }), (p) => {
+      if (typeof p?.done !== "number" || typeof p?.total !== "number") return;
+      o.placing = { done: p.done, total: p.total };
+      d.changed?.(o.id);
+    }).finally(() => void delete o.placing);
     if (held && typeof placed?.missing === "number" && placed.missing > 0) throw new Said(why("filesMissing", { n: placed.missing }));
   }
 
@@ -922,7 +979,8 @@ export class Handover {
     d.fail?.("rows");
     const sent = await this.#sendRows(o, ask, null);
     // (what the room there has that this one's lists no longer name goes there: a mirror of it)
-    await ask({ method: "handover.prune" });
+    const pruning = `prune:${o.id}`;
+    await d.told.asked(o.to, pruning, () => ({ method: "handover.prune", workspace: o.ws, origin: here, id: o.id, told: pruning }));
     this.#mark(o, "counts");
     const counts = (await ask({ method: "handover.counts" }))?.counts as Counts | undefined;
     d.fail?.("counts");
@@ -1115,14 +1173,14 @@ export class Handover {
   #asking = new Set<string>();
 
   #askStill(i: In): void {
-    if (i.step !== "coming" || this.#asking.has(i.id) || this.#inWork.has(i.id)) return;
+    if (i.step !== "coming" || i.dropping === true || this.#asking.has(i.id) || this.#inWork.has(i.id)) return;
     this.#asking.add(i.id);
     void this.#d.ask(i.origin, { method: "handover.still", workspace: i.ws, origin: this.#d.here(), id: i.id })
       .then(async (a) => {
         this.#unsure.delete(i.id);
         if (a?.going === false && i.step === "coming") {
           log.info("handover", "a chat coming here no longer goes on where it came from: dropped here", { id: i.id, from: i.origin.slice(0, 12) });
-          await this.#drop1(i);
+          await this.#dropSoon(i).marked;
         }
       })
       .catch(() => {})
@@ -1195,13 +1253,20 @@ export class Handover {
         // that it does not is what lets that station take back a chat it said went (`#mend`))
         if (request.method === "handover.held") {
           const i = this.#ins.get(id);
-          return { held: i !== undefined && i.origin === peer && i.step !== "dropped" && !this.#dropping.has(id) };
+          return { held: i !== undefined && i.origin === peer && i.step !== "dropped" && i.dropping !== true && !this.#dropping.has(id) };
         }
         const i = this.#ins.get(id);
-        if (request.method === "handover.drop") return i === undefined ? { ok: true } : await this.#drop1(i);
+        // (answered as it is marked, its rows out: its files are taken out after what it was doing to them, by this
+        // station itself, as its next process starts where this one stops first; the asker needs nothing more of it)
+        if (request.method === "handover.drop") {
+          if (i === undefined || i.step === "dropped") return { ok: true };
+          if (i.step === "shown") throw new Refused(why("shownHere"));
+          await this.#dropSoon(i).marked;
+          return { ok: true };
+        }
         if (i === undefined || i.origin !== peer) throw new Refused(why("badRequest", { detail: "not begun: handover.begin first" }));
         // (dropped here, by its own drop or a newer hand-over of the chat: nothing more of it is taken)
-        if (i.step === "dropped" || this.#dropping.has(i.id)) throw new Refused(why("droppedThere"));
+        if (i.step === "dropped" || i.dropping === true || this.#dropping.has(i.id)) throw new Refused(why("droppedThere"));
         const t0 = this.#d.fibers.now();
         const kind = String(request.method).slice("handover.".length);
         // (what answering it took, by request: the show's own said in its line, as it ends)
@@ -1211,6 +1276,9 @@ export class Handover {
               const hashes = Array.isArray(request.hashes) ? request.hashes : [];
               if (hashes.length > (this.#d.lackMost ?? LACK_MOST) || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(why("badRequest", { detail: "too many hashes" }));
               const lacking = new Set(await lackingIn(inFiles(this.#d.data, id), hashes));
+              // (an older hand-over of the chat still being taken out here may take away what is in place now: none is
+              // taken as in place until it is out)
+              const olderOut = this.#insAt(i.keys, "lacking").some((o) => o.id !== i.id && this.#drops.has(o.id));
               // (one in place here already, the same bytes where it goes, is not lacking: a room kept here, or placed
               // by a hand-over before. Only where every path of it the request names is: the same bytes at two paths,
               // one of them not in place, are sent, or that one could not be placed (the real run, 2026-11-16: two
@@ -1220,21 +1288,31 @@ export class Handover {
               const rooms = new Map<string, string>();
               const placed = new Set<string>();
               const missing = new Set<string>();
+              // (what one request reads to hash, at most: the rest said unchecked, lacking until it is asked again)
+              const unchecked = new Set<string>();
+              const budget = { left: this.#d.hashMost ?? HASH_MOST, most: this.#d.hashMost ?? HASH_MOST };
               for (const f of files) {
-                if (!lacking.has(f?.hash) || missing.has(f?.hash) || typeof f?.path !== "string") continue;
+                if (olderOut) break;
+                if (!lacking.has(f?.hash) || missing.has(f?.hash) || unchecked.has(f?.hash) || typeof f?.path !== "string") continue;
                 // (where it lies here by the same answer its placing gives: restore.ts `carriedTo`)
                 let room: string | null = null;
                 if (typeof f.room === "string") {
                   room = rooms.get(f.room) ?? (await realOfSoon(moved(f.room, i.ctx.fromData, this.#d.data)));
                   rooms.set(f.room, room);
                 }
-                if (await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f)) placed.add(f.hash);
+                const is = await inPlace(carriedTo(f.path, i.ctx.fromData, this.#d.data, room), this.#d.data, f, budget);
+                if (is === "yes") placed.add(f.hash);
+                else if (is === "later") unchecked.add(f.hash);
                 else missing.add(f.hash);
               }
-              return { lacking: hashes.filter((h: string) => lacking.has(h) && (missing.has(h) || !placed.has(h))) };
+              // (one unchecked is said lacking too: an asker from before sends it rather than take it as in place)
+              return {
+                lacking: hashes.filter((h: string) => lacking.has(h) && (olderOut || missing.has(h) || unchecked.has(h) || !placed.has(h))),
+                ...(unchecked.size > 0 ? { unchecked: [...unchecked].filter((h) => !missing.has(h)) } : {}),
+              };
             }
             case "handover.prune":
-              return await this.#serialIn(i, () => this.#prune(i));
+              return await this.#step(peer, i, request, () => this.#serialIn(i, () => this.#prune(i)));
             case "handover.put": {
               const name = String(request.name ?? "");
               if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
@@ -1242,8 +1320,12 @@ export class Handover {
               await receiveFile(inFiles(this.#d.data, id), name, bytes as Bytes);
               return { ok: true };
             }
-            case "handover.place":
-              return await this.#serialIn(i, () => this.#place(i, String(request.carry ?? ""))).catch((e) => Promise.reject(carryWords(e)));
+            case "handover.place": {
+              const carry = String(request.carry ?? "");
+              if (!HASH.test(carry)) throw new Refused(why("badRequest", { detail: "not a copy's name" }));
+              const place = () => this.#serialIn(i, () => this.#place(i, carry)).catch((e) => Promise.reject(carryWords(e)));
+              return await this.#step(peer, i, request, place, this.#placing(i, carry));
+            }
             case "handover.rows": {
               const table = String(request.table ?? "") as ChatTable;
               // (shown: only what was said there after its rows went, its log's and what it has yet to be handed)
@@ -1271,16 +1353,7 @@ export class Handover {
         try {
           return await answer();
         } catch (e) {
-          // (this station's own disk failing what it is sent (full, over its quota, read-only): nothing of the chat is
-          // kept here, dropped now by this station itself, and the asker told so in numbers, never as a stream reset)
-          // (a write of the program's, placing, says its code in its words)
-          const code = (e as NodeJS.ErrnoException)?.code ?? /\b(ENOSPC|EDQUOT|EROFS)\b/.exec((e as Error)?.message ?? "")?.[1] ?? "";
-          if (!WRITE_FAILED.has(code)) throw e;
-          log.warn("handover", "a chat coming here could not be written: dropped here", { id: i.id, error: (e as Error).message });
-          void this.#drop1(i).catch((d) => log.warn("handover", "a chat coming here not dropped after its write failed", { id: i.id, error: (d as Error).message }));
-          const room = await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null }));
-          const name = this.#d.roster(i.ws)?.find((s) => s.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12);
-          throw new Refused(why("fullThere", { station: name, free: typeof room.free === "number" ? gb(room.free) : "?", error: code }));
+          throw await this.#written(i, e);
         } finally {
           if (kind !== "show") this.#spent(i, kind, t0);
         }
@@ -1290,18 +1363,82 @@ export class Handover {
     };
   }
 
+  /// What failed of hand-over `i` here as it is answered, as the asker is told it: this station's own disk failing what
+  /// it is sent (full, over its quota, read-only), nothing of the chat is kept here, dropped now by this station itself,
+  /// and the asker told so in numbers, never as a stream reset (a write of the program's, placing, says its code in its
+  /// words); anything else as it is.
+  async #written(i: In, e: unknown): Promise<unknown> {
+    const code = (e as NodeJS.ErrnoException)?.code ?? /\b(ENOSPC|EDQUOT|EROFS)\b/.exec((e as Error)?.message ?? "")?.[1] ?? "";
+    if (!WRITE_FAILED.has(code)) return e;
+    log.warn("handover", "a chat coming here could not be written: dropped here", { id: i.id, error: (e as Error).message });
+    this.#dropSoon(i).marked.catch((d) => log.warn("handover", "a chat coming here not dropped after its write failed", { id: i.id, error: (d as Error).message }));
+    const room = await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null }));
+    const name = this.#d.roster(i.ws)?.find((s) => s.id === this.#d.here())?.name || (this.#d.here() ?? "").slice(0, 12);
+    return new Refused(why("fullThere", { station: name, free: typeof room.free === "number" ? gb(room.free) : "?", error: code }));
+  }
+
+  /// Work of hand-over `i` that grows with its chat (its placing, its pruning), as `request` asks it: a told step
+  /// (move/told.ts), started and answered at once, told back as it goes and as it ends; asked by a station from before
+  /// told steps, answered by its result as before.
+  async #step(peer: string, i: In, request: Json, run: () => Promise<Json>, measure?: () => Promise<Json>): Promise<Json> {
+    const key = toldKey(request);
+    if (key === null) return await run();
+    const kind = String(request.method).slice("handover.".length);
+    return this.#d.told.run(peer, key, async () => {
+      const t0 = this.#d.fibers.now();
+      try {
+        return await run();
+      } catch (e) {
+        throw await this.#written(i, e);
+      } finally {
+        this.#spent(i, kind, t0);
+      }
+    }, { measure });
+  }
+
+  /// How far hand-over `i`'s placing of `carry` is, as each beat of its step asks: the lines its program added to
+  /// `placed.txt` since it began (a file each, put or found in place), read from where the last beat left off, of the
+  /// files its index names.
+  #placing(i: In, carry: string): () => Promise<Json> {
+    const at = join(dir(this.#d.data), "in", i.id, "placed.txt");
+    const from = stat(at).then((s) => s.size, () => 0);
+    const total = readFile(join(inFiles(this.#d.data, i.id), carry), "utf8").then((t) => Number((JSON.parse(t) as CarryIndex).files) || 0, () => 0);
+    let offset: number | null = null;
+    let done = 0;
+    return async () => {
+      offset ??= await from;
+      const f = await open(at, "r").catch(() => null);
+      if (f !== null) {
+        try {
+          const piece = Buffer.alloc(1 << 20);
+          for (;;) {
+            const { bytesRead } = await f.read(piece, 0, piece.length, offset);
+            offset += bytesRead;
+            for (let k = 0; k < bytesRead; k++) if (piece[k] === 10) done++;
+            if (bytesRead < piece.length) break;
+          }
+        } finally {
+          await f.close();
+        }
+      }
+      return { done, total: await total, unit: "files" };
+    };
+  }
+
   async #begin(origin: string, ws: string, id: string, request: Json): Promise<Json> {
     const was = this.#ins.get(id);
     if (was !== undefined && was.step !== "coming") throw new Refused(why("wasAlready", { step: was.step }));
+    if (was?.dropping === true) throw new Refused(why("droppedThere"));
     const keys: string[] = Array.isArray(request.keys) ? request.keys.filter((k: unknown): k is string => typeof k === "string") : [];
     if (keys.length === 0) throw new Refused(why("badRequest", { detail: "no chat named" }));
     // (a chat of the same key that is live here went on apart from it: never merged into, nothing written)
     const live = this.#d.store.liveOf(keys);
     if (live.length > 0) throw new Refused(liveHereWords(live, this.#d.roster(ws)?.find((s) => s.id === this.#d.here())?.name || "this station"));
     // (an older hand-over of the chat still coming here was given up where it began, its drop maybe not here yet: it is
-    // dropped now, before this one places anything, so that its drop, coming late, takes nothing this one counted)
+    // dropped now, its rows out before this one's come, so that its drop, coming late, takes nothing this one counted;
+    // its files after what it was doing to them, before this one places anything (`#serialIn`), not in this answer)
     for (const old of this.#insAt(keys, "begin")) {
-      if (old.id !== id && old.origin === origin && old.step === "coming") await this.#drop1(old);
+      if (old.id !== id && old.origin === origin && old.step === "coming") await this.#dropSoon(old).marked;
     }
     // Its accounts as they are here: each the profile of the same share, or of the same key; one not here refused,
     // named.
@@ -1562,19 +1699,34 @@ export class Handover {
 
   /// What a hand-over that did not go put in here, taken out: its rows (store `dropImport`) and the files placed where
   /// nothing was; what it replaced or pruned put back.
-  /// Hand-over `i` dropped: nothing more of it taken from now, then undone once what it was doing to its files ended.
-  async #drop1(i: In): Promise<Json> {
+  /// Hand-over `i` dropped: nothing more of it taken from now, its rows out and its record saying so (`marked`), then
+  /// its files taken out once what it was doing to them ended (`files`), by this station itself: what asked it waits
+  /// only for `marked`, whatever its files.
+  #dropSoon(i: In): { marked: Promise<void>; files: Promise<void> } {
+    const was = this.#drops.get(i.id);
+    if (was !== undefined) return was;
     this.#dropping.add(i.id);
-    try {
-      return await this.#serialIn(i, () => this.#dropIn(i));
-    } finally {
-      this.#dropping.delete(i.id);
+    let marked: Promise<void> = Promise.resolve();
+    if (i.dropping !== true) {
+      this.#d.store.dropImport(i.ctx);
+      this.#d.store.forgetImport(i.id);
+      i.dropping = true;
+      marked = this.#saveIn(i);
     }
+    const drop = { marked, files: Promise.resolve() };
+    drop.files = marked.then(() => this.#serialIn(i, () => this.#dropIn(i), true)).then(
+      () => void this.#dropping.delete(i.id),
+      (e) => log.warn("handover", "a chat coming here not all taken out: its next start takes out the rest", { id: i.id, error: (e as Error)?.message ?? String(e) }),
+    ).finally(() => void (this.#drops.get(i.id) === drop && this.#drops.delete(i.id)));
+    this.#drops.set(i.id, drop);
+    return drop;
   }
 
-  /// `f`, after what hand-over `i` was doing to its files here ended.
-  #serialIn<T>(i: In, f: () => Promise<T>): Promise<T> {
-    const before = this.#inWork.get(i.id) ?? Promise.resolve();
+  /// `f`, after what hand-over `i` was doing to its files here ended, and (but for a drop's own) after the drops of
+  /// older hand-overs of its chat under way here: what they take out is never what it puts.
+  #serialIn<T>(i: In, f: () => Promise<T>, drop = false): Promise<T> {
+    const older = drop ? [] : this.#insAt(i.keys, "serial").flatMap((o) => (o.id !== i.id ? [this.#drops.get(o.id)?.files ?? null] : [])).filter((p): p is Promise<void> => p !== null);
+    const before = Promise.all([this.#inWork.get(i.id) ?? Promise.resolve(), ...older]);
     const run = before.then(f, f);
     const settled = run.catch(() => {});
     this.#inWork.set(i.id, settled);
@@ -1587,8 +1739,7 @@ export class Handover {
   async #dropIn(i: In): Promise<Json> {
     if (i.step === "dropped") return { ok: true };
     if (i.step === "shown") throw new Refused(why("shownHere"));
-    this.#d.store.dropImport(i.ctx);
-    this.#d.store.forgetImport(i.id);
+    await this.#work.drop?.(i.id);
     // What git made for it: each worktree's own `.git` taken out and its registration with it (`worktree prune`), the
     // branch and the ref it made there deleted; the repository and all it had before stay.
     const gits = new Map<string, MadeGit>();
@@ -1647,15 +1798,19 @@ async function realOfSoon(path: string): Promise<string> {
 }
 
 /// Whether the file at `path` (under `data`'s rooms) is the one described already: of its size, and of its time or its
-/// bytes' hash (read off the main thread's way, a stream).
-async function inPlace(path: string, data: string, f: { hash: string; size: number; mtimeMs?: number | null }): Promise<boolean> {
-  if (!carriedPlace(data, path)) return false;
+/// bytes' hash (read off the main thread's way, a stream), the bytes read taken from `budget`: `later` where they would
+/// take more than is left of it, `no` for a file larger than all of it (not read: sent).
+async function inPlace(path: string, data: string, f: { hash: string; size: number; mtimeMs?: number | null }, budget: { left: number; most: number }): Promise<"yes" | "no" | "later"> {
+  if (!carriedPlace(data, path)) return "no";
   const st = await stat(path).catch(() => null);
-  if (st === null || !st.isFile() || st.size !== f.size) return false;
-  if (typeof f.mtimeMs === "number" && Math.trunc(st.mtimeMs) === Math.trunc(f.mtimeMs)) return true;
+  if (st === null || !st.isFile() || st.size !== f.size) return "no";
+  if (typeof f.mtimeMs === "number" && Math.trunc(st.mtimeMs) === Math.trunc(f.mtimeMs)) return "yes";
+  if (st.size > budget.most) return "no";
+  if (st.size > budget.left) return "later";
+  budget.left -= st.size;
   const h = createHash("sha256");
   for await (const piece of createReadStream(path)) h.update(piece as Buffer);
-  return h.digest("hex") === f.hash;
+  return h.digest("hex") === f.hash ? "yes" : "no";
 }
 
 /// Where what was sent and what it has differ, in words (null: they do not).

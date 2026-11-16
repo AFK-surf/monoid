@@ -99,6 +99,17 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   move request's handler takes a repeat as the same (by its ids, versions, what is there already; a page of rows by its
   `page`); chat-handover-moves.test.ts meets every request of a turn so, half taken with their answers lost. What a move says to people is the catalog's (`station.move.*`), naming things as people
   call them, never by id.
+- No request of a move waits on work that grows with a chat or a repository (the real run, 2026-11-16: a chat of 70k
+  files placed in 50 s, past an answer's 30 s, mesh/peer.ts ANSWER_MS, and could never move): such work is a told step
+  (`told.ts`): a hand-over's placing and pruning, a chat's hand-over back (`move.back`), a bundle's fetch and a clone's
+  removal (`move.repo.bundle`, `move.repo.drop`); a clone already answers at once and tells its end (`move.repo.made`),
+  a hand-over's drop is answered as it is marked and taken out by that station itself (replica/AGENTS.md). The station
+  asked starts it and answers `under`, tells how it goes every `TOLD_EVERY_MS` (`move.told`) and its end until
+  answered; the asker waits with no clock on its length, asks it again after `TOLD_SILENT_MS` of silence or as the
+  other is heard from after one, and only that ask failing fails it (a station found gone, above). Each step can run
+  again: a process that did not know it starts it on that ask. `chat-handover-steps.test.ts` holds every request a move
+  asks to its time, with all the work there held ten minutes, and fails on one it does not know: a new request is put
+  in its table with what bounds it.
 - People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
   the press in the app is the confirmation.

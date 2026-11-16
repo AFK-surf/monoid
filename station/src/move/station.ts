@@ -27,6 +27,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { Scheduler } from "./scheduler.ts";
 import { KeptSet } from "./kept.ts";
+import { Told } from "./told.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
@@ -77,7 +78,10 @@ export type MovesDeps = {
   hasGit?: HandoverDeps["hasGit"];
   git?: HandoverDeps["git"];
   lackMost?: number;
+  hashMost?: number;
   work?: HandoverDeps["work"];
+  /// A test's: what takes a directory away here (a clone a move back removes); none: rm.
+  remove?: (dir: string) => Promise<void>;
   fail?: HandoverDeps["fail"];
   /// The station process this one took over from gone (handover.ts `previous`), and its pid.
   previous?: Promise<void>;
@@ -130,6 +134,8 @@ export class Moves {
   readonly settings: SettingsModule;
   /// What a move would send of each chat (sizes.ts).
   readonly sizes: Sizes;
+  /// The steps that grow with a chat or a repository, asked of another station and told back, and those it asks here.
+  readonly told: Told;
   readonly #d: MovesDeps;
   /// Whether a busy chat's turn is waited for as it moves (station_move `wait`, for the request under way).
   wait = true;
@@ -216,8 +222,9 @@ export class Moves {
     this.#known = new Map(Object.entries(known));
     const here = () => d.here() ?? "";
     const ask = this.#ask;
+    this.told = new Told({ fibers: d.fibers, ask, hold: () => this.#hold() });
     this.repos = new ReposModule({
-      data: d.data, reposDir: d.reposDir, ask, here,
+      data: d.data, reposDir: d.reposDir, ask, here, told: this.told, remove: d.remove,
       after: (ms, f) => d.fibers.after(ms, f), name: (station) => d.roster(d.home() ?? "")?.find((r) => r.id === station)?.name ?? station.slice(0, 12),
       workspaces: async (ws) => {
         const out: string[] = [];
@@ -256,7 +263,7 @@ export class Moves {
         here: (a) => this.accountHere(a),
         present: (id) => d.profiles().some((p) => p?.id === id),
       },
-      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, work: d.work, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
+      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, git: d.git, lackMost: d.lackMost, hashMost: d.hashMost, work: d.work, told: this.told, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)
@@ -309,7 +316,7 @@ export class Moves {
     this.modules = [
       this.#accounts,
       chatsModule({
-        store: d.store, handover: this.handover, hub: d.hub, ask: this.#ask, here, reads: (ws) => this.reads(ws),
+        store: d.store, handover: this.handover, hub: d.hub, ask: this.#ask, told: this.told, here, reads: (ws) => this.reads(ws),
         kindOf: (id) => d.connects?.kindOf(id) ?? null, wait: () => this.wait, sizes: this.sizes,
         name: (id) => d.roster(d.home() ?? "")?.find((r) => r.id === id)?.name || id.slice(0, 12),
         vaultsOf: (keys, ws) => new Map([...v.grantOwners(keys)].map(([k, owners]) => [k, owners.map((o) => `${vaultItemId(o)}@${ws}`)])),
@@ -487,6 +494,7 @@ export class Moves {
   }
 
   async close(): Promise<void> {
+    this.told.close();
     await this.handover.close();
   }
 
@@ -630,6 +638,8 @@ export class Moves {
   /// A station heard from: what is stopped here for what may have come from it meanwhile (a tell of its coming lost) is
   /// looked at (scheduler `settleStopped`), a burst of requests heard as one: while one look goes on, one more after it.
   heard(peer: string): void {
+    // (a step of it waited on with no word for a while: asked again now, its link open again)
+    this.told.reached(peer);
     // (what this station owes it of a borrowed login's last use told now; nothing owed: a size check)
     if (this.#unusedOwed.size > 0) this.#tellUnused(peer);
     // (only what waits for what is at that station: each need it waits for looked at once)
@@ -670,6 +680,9 @@ export class Moves {
       if (method.startsWith("move.setting.")) return this.settings.answer(peer, request);
       if (method.startsWith("move.vault.")) return this.vault.answer(request);
       switch (request?.method) {
+        case "move.told":
+          // (how a step this station asked of the one telling goes, or its end)
+          return this.told.heard(peer, request);
         case "move.open":
           return { on: this.on(), ...(await (this.#d.room ?? roomHere(this.#d.data))().catch(() => ({}))) };
         case "move.unused": {
@@ -714,8 +727,17 @@ export class Moves {
           const id = String(request.id ?? "");
           if (request.module === "chats") {
             const stoppedFor = typeof request.stoppedFor?.module === "string" && typeof request.stoppedFor?.id === "string" ? { module: request.stoppedFor.module, id: request.stoppedFor.id, ...(typeof request.stoppedFor.label === "string" ? { label: request.stoppedFor.label } : {}) } : undefined;
-            await this.handover.handOver(id, peer, { wait: true, stoppedFor });
-            return { ok: true };
+            const back = async () => {
+              // (asked again after this station's process was replaced as it went: one that went already went)
+              const o = this.handover.outOf(id);
+              if (o !== null && o.to === peer && o.ended !== true && (o.step === "gone" || o.step === "done")) return { ok: true };
+              await this.handover.handOver(id, peer, { wait: true, stoppedFor });
+              return { ok: true };
+            };
+            // (a told step: the hand-over back is the whole chat's, told back as it goes and as it ends; an asker from
+            // before told steps is answered by its end, as before)
+            const told = typeof request.told === "string" && request.told.length <= 300 ? request.told : null;
+            return told === null ? await back() : this.told.run(peer, told, back);
           }
           if (request.module === "accounts") {
             const pid = this.#d.profiles().find((p) => typeof p?.id === "string" && accountItemId(p.id, accountOf(p, this.#d.here() ?? "")) === id)?.id ?? this.accountHere(id.startsWith("own:") ? { own: id.slice(4), name: id } : { name: id });

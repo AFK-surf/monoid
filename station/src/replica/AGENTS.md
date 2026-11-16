@@ -124,10 +124,14 @@ below, sends them along).
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
   handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
-  (`handover.drop`: after the placing under way, what it placed and the directories made for it, a linked worktree
-  git made with its registration, branch and ref, the repository staying; what it put aside back; a newer hand-over
-  of the chat drops an older one still coming first, so the older's drop, late, takes nothing of it; asked even of a
-  station the turn found gone, owed until answered). The station it goes to drops it by itself where its own disk fails
+  (`handover.drop`: answered once its rows are out and its record says it drops; then, by that station itself after
+  the placing under way (its next process where this one stops first), what it placed and the directories made for
+  it, a linked worktree git made with its registration, branch and ref, the repository staying; what it put aside
+  back; a newer hand-over of the chat drops an older one still coming first, its rows as it begins, its files before
+  the newer places anything (`#serialIn`), so the older's drop, late, takes nothing of it; asked even of a station the
+  turn found gone, owed until answered). No request of a hand-over waits on work that grows with the chat: its placing
+  (with its worktrees) and its pruning are told steps (move/told.ts, move/AGENTS.md), `handover.lacking` hashes
+  `HASH_MOST` bytes at most a request (the rest `unchecked`, asked again). The station it goes to drops it by itself where its own disk fails
   what it is sent (full, over quota, read-only: refused in numbers, never a stream reset: mesh/peer.ts `Incoming.held`),
   and where one still coming as it starts, or as its sender is heard from, no longer goes on there (`handover.still`);
   after, nothing is undone and the rest is told until it is answered. One process of a station acts on its hand-overs

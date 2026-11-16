@@ -11,6 +11,8 @@ import { stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { accountItemId } from "./accounts.ts";
 import { connectItemId } from "./connects.ts";
+import type { Told } from "./told.ts";
+import { randomBytes } from "node:crypto";
 
 /// The most a move back waits for the chat it brings to be shown here once the other answered it went: twice an answer's
 /// bound (mesh/peer.ts, 30 s), what the other's word told again takes where it is up.
@@ -39,6 +41,8 @@ export type ChatsDeps = {
   /// Its jobs stopped and kept as one being handed over has them (jobs.ts `keep`), and started again here.
   jobs: { keep(keys: string[], why: string): Promise<void>; startKept(keys: string[]): void };
   ask: (station: string, request: Json) => Promise<Json>;
+  /// A step asked of another station and told back as it goes and ends (told.ts): a hand-over back is the whole chat's.
+  told?: Pick<Told, "asked">;
   here: () => string;
   /// How connect `id` goes (connects/workspace.ts `kindOf`; null: not known).
   kindOf: (id: string) => { kind: string; mode: string } | null;
@@ -152,7 +156,12 @@ export function chatsModule(d: ChatsDeps): Module {
       await d.handover.handOver(item.id, to, { wait: d.wait?.() ?? true, progress, stoppedFor: opts?.stoppedFor });
     },
     async back(item, from, opts) {
-      await d.ask(from, { method: "move.back", module: "chats", id: item.id, to: d.here(), ...(opts?.stoppedFor ? { stoppedFor: opts.stoppedFor } : {}) });
+      const request = { method: "move.back", module: "chats", id: item.id, to: d.here(), ...(opts?.stoppedFor ? { stoppedFor: opts.stoppedFor } : {}) };
+      // (the hand-over back runs there by itself, told back as it goes and as it ends: a chat of minutes waits on no
+      // request's answer; this move back's own, a key of its own)
+      const key = `back:${item.id}:${randomBytes(6).toString("hex")}`;
+      if (d.told !== undefined) await d.told.asked(from, key, () => ({ ...request, told: key }));
+      else await d.ask(from, request);
       // (back once shown here, not before: the other may answer having gone on without our word that it is shown; one
       // that does not come in the time the other is told again, the other gone since, is on its way, said so)
       for (const k of keysOf(item)) {
@@ -172,7 +181,9 @@ export function chatsModule(d: ChatsDeps): Module {
       if (handed !== null) return { state: "there", at: handed.station };
       // (where it went is no longer said here: here, whatever a record of an older trip says)
       if (o === null) return { state: "here" };
-      if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress: { done: o.done, total: o.total, unit: "bytes" }, ...(d.handover.waitsForTurn(o) ? { waits: "turn" as const } : {}) };
+      // (its files placed there: how many of them, as that station tells it)
+      const progress = o.placing !== undefined ? { done: o.placing.done, total: o.placing.total, unit: "files" } : { done: o.done, total: o.total, unit: "bytes" };
+      if (o.step === "held" || o.step === "files" || o.step === "rows") return { state: "moving", progress, ...(d.handover.waitsForTurn(o) ? { waits: "turn" as const } : {}) };
       if (o.step === "failed") return { state: "failed", error: o.error ?? "" };
       return { state: "here" };
     },
