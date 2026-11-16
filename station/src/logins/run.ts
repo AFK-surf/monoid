@@ -175,7 +175,7 @@ export class LoginRun {
     }
     child.stdin?.on("error", () => {});
     const decoders = [new StringDecoder("utf8"), new StringDecoder("utf8")];
-    [child.stdout, child.stderr].forEach((stream, i) => stream?.on("data", (chunk: Buffer) => this.#output(decoders[i]!.write(chunk))));
+    [child.stdout, child.stderr].forEach((stream, i) => stream?.on("data", (chunk: Buffer) => this.output(decoders[i]!.write(chunk))));
     child.once("close", (code, signal) => void this.#closed(code, signal));
     this.#timeout = this.#o.fibers.after(TIMEOUT_MS, () => this.#fail(tr(this.#o.lang, "station.machineLogin.timedOut"), "timeout"));
     this.#watchStall();
@@ -225,20 +225,25 @@ export class LoginRun {
     stdin.write(text);
   }
 
-  #output(text: string): void {
+  /// What its command printed, a chunk as it came (its output's own handler; a test gives the chunks it means).
+  output(text: string): void {
     if (text === "" || !this.active) return;
     // A line's "\r" at a chunk's end is read with what follows it ("\r\n" split in two is one line's end).
     const whole = this.#cr + text;
     this.#cr = /\r+$/.exec(whole)?.[0] ?? "";
     const plain = plainText(whole.slice(0, whole.length - this.#cr.length));
-    const said = this.#said + plain;
-    this.#said = said.length > SAID_KEPT ? said.slice(said.length - SAID_KEPT) : said;
-    if (this.hadBrowserStep && !this.#saidDone) {
-      this.#afterStep = (this.#afterStep + plain).slice(-4_000);
-      this.#saidDone = saysDone(this.#afterStep);
-    }
     this.#watchStall();
     this.#term.write(text, () => {
+      // What it said is taken as the emulator has drawn it, chunk by chunk in the order they came (its writes'
+      // callbacks run so), never ahead of the screen: taken as it came, a chunk's draw looked again at what it said
+      // with the next chunk already in it, its page and code told while the screen did not show them yet (2026-11-16,
+      // logins.test.ts's "answered [n]", check-station (2) on 43866525344).
+      const said = this.#said + plain;
+      this.#said = said.length > SAID_KEPT ? said.slice(said.length - SAID_KEPT) : said;
+      if (this.hadBrowserStep && !this.#saidDone) {
+        this.#afterStep = (this.#afterStep + plain).slice(-4_000);
+        this.#saidDone = saysDone(this.#afterStep);
+      }
       this.#draw();
       // Saying more, it no longer waits on what it asked (whether it waits now is asked once it is quiet again).
       if (this.waiting) {

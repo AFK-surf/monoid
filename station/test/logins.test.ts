@@ -13,14 +13,15 @@ import { test } from "node:test";
 import { Logins, type Login, Refused, slackPage } from "../src/logins/index.ts";
 import type { Callback } from "../src/logins/relay.ts";
 import { asksEnter, commandWords, deviceCodeIn, deviceUrls, loopbackOf, plainText, programOf, prompts, saysDone, storesSecret, unwrapped, urlsIn } from "../src/ops/command-output.ts";
-import { COLS, QUIET_MS, STALL_MS, TIMEOUT_MS } from "../src/logins/run.ts";
+import { COLS, LoginRun, QUIET_MS, STALL_MS, TIMEOUT_MS } from "../src/logins/run.ts";
+import { Fibers } from "../src/ops/fibers.ts";
 import { routes } from "../src/api/routes/logins.ts";
 import { act, endedNotice, loginTools, promptNotice, screenFor } from "../src/logins/tool.ts";
 import { pageOrigin } from "../src/sessions/page.ts";
 import { WINDOWS, platform } from "../src/platform/index.ts";
 import { approval, fakeBrowser, script, temp, upon } from "./accounts-fakes.ts";
 import type { LoginPages } from "../src/logins/pages.ts";
-import { settle, testClock } from "./hub-fakes.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
 
 type Json = any;
 
@@ -153,6 +154,55 @@ function machine(pages?: LoginPages) {
   const by = { by: { email: "a@x.com", name: "张三" }, workspace: "w1" };
   return { home, bin, env, time, logins, until, quietAt, quietShowing, screen, by };
 }
+
+// A command's output comes in chunks as its pipe gives them: its answer's echo in one, the page and the code in the next,
+// which may come as the first is drawn and its pages read again (43866525344: logins.test.ts's "answered [n]" missing
+// from the screen as the device step was told). What it said is read no further than the emulator has drawn it: the
+// next chunk given here just after a chunk's draw, before that draw's reading of its pages ends, each round.
+test("a login's step, page and code are told only once its screen shows them, its output in chunks", async () => {
+  const home = temp("logins-chunks");
+  const time = testClock();
+  const fibers = new Fibers("logins-chunks", time.clock);
+  const chunks = ["n\r\n", "answered [n]\r\n! First copy your one-time code: 1A2B-C3D4\r\nPress Enter to open https://github.com/login/device in your browser... "];
+  try {
+    for (let round = 0; round < 40; round++) {
+      let fed = 1;
+      const ahead: string[] = [];
+      let run!: LoginRun;
+      let allDrawn!: () => void;
+      const drawnAll = new Promise<void>((done) => (allDrawn = done));
+      const told = new Promise<void>((done) => {
+        run = new LoginRun({
+          id: `r${round}`, command: ["fakegh", "auth", "login"], env: {}, cwd: home, shims: home,
+          opened: join(home, `r${round}.opened`), fibers, lang: "en",
+          changed: () => {
+            if (run.step !== "device") return;
+            const shown = run.screen().rows.join("\n");
+            if (!shown.includes("answered [n]") || !shown.includes("1A2B-C3D4")) ahead.push(shown);
+            done();
+          },
+          // (the next chunk as this one is drawn: before its draw's reading of the pages it opened has ended)
+          drawn: () => {
+            if (fed < chunks.length) {
+              const next = chunks[fed++]!;
+              queueMicrotask(() => run.output(next));
+            } else if (run.screen().rows.join("\n").includes("Press Enter")) allDrawn();
+          },
+        });
+      });
+      run.output(chunks[0]!);
+      // (the emulator draws what it is given as its own timer comes round: once it drew all of it, what that set going,
+      // its pages read again, is what is waited for)
+      await drawnAll;
+      await given(told, `round ${round}: the device step told`);
+      assert.deepEqual(ahead, [], `round ${round}: told before its screen showed it`);
+      assert.deepEqual([run.code, run.url], ["1A2B-C3D4", "https://github.com/login/device"]);
+      run.cancel();
+    }
+  } finally {
+    await fibers.close();
+  }
+});
 
 const skipped = WINDOWS && "logins run in a pseudo-terminal: script is Unix's";
 
