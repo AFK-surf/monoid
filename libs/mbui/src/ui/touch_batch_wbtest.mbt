@@ -2,6 +2,10 @@
 // once, as the batch's last is taken.
 
 ///|
+/// A frame of a phone's display: between the finger's down and its batch of moves.
+let batch_frame_ms : Double = 16.0
+
+///|
 /// A Tester with a node a finger drags over the window's top left: its width the drag's x, what it is told in `seen`
 /// (what, where, when).
 fn batch_tester(seen : Array[String]) -> Tester {
@@ -40,12 +44,12 @@ fn batch_moved(phases : Array[Int], xs : Array[Double]) -> (Array[String], Int) 
   let t = batch_tester(seen)
   let t0 = t.time()
   t.touch_raw(0, 7, 10.0, 10.0, t0)
-  t.advance(16.0)
+  t.advance(batch_frame_ms)
   t.drawn_now()
   let laid = fn() { view_app.val.unwrap().work().laid }
   let before = laid()
   for i, x in xs {
-    t.touch_raw(phases[i], 7, x, 10.0, t0 + 16.0 + 2.0 * i.to_double())
+    t.touch_raw(phases[i], 7, x, 10.0, t0 + batch_frame_ms + 2.0 * i.to_double())
   }
   let moved = laid() - before
   t.drawn_now()
