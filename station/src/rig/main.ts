@@ -5,6 +5,7 @@
 // a secret a station sends along (vault/incoming.ts), and the rig's own say over who may use it (rig/module.ts). No
 // agents, sessions, chats, connects, accounts, vault or drive are made here: there is nothing in this process that
 // could run one.
+import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Cause, Context, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
@@ -255,7 +256,7 @@ export const RigMeshLive = Layer.effectDiscard(
       const call = peerCall(endpoint, cloud);
       peers.attach(call);
       // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
-      yield* Effect.addFinalizer(() => Effect.sync(() => call.close?.()));
+      yield* Effect.addFinalizer(() => Effect.sync(() => { call.close?.(); closePeerRelays(endpoint); }));
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)

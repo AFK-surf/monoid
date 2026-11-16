@@ -567,7 +567,7 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     }
     "conn.answers" => self.host.shell("conn.answers", { "id": arg("conn"), "within": arg("within") }).0
     "conn.seen" => self.seen(arg("conn"))
-    "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" => {
+    "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" => {
       let args = match asked_args(arg) {
         Object(m) => {
           m["id"] = self.bound()

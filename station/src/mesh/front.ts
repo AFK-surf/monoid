@@ -584,6 +584,7 @@ class FrontEndpoint implements Endpoint {
             this.#relays = await next.ask("relayStatus").catch(() => []);
             this.#watch(next);
             if (this.#routed) await next.ask("route", this.#routed).catch(() => {});
+            for (const args of this.#disabled.values()) await next.ask("disabledRelays", { args }).catch((e) => log.warn("mesh", "a station's disabled relays not held on the front linked to again", { error: (e as Error).message }));
             log.info("mesh", "linked to the front again", { station: said.id });
             return;
           } catch (e) {
@@ -620,6 +621,16 @@ class FrontEndpoint implements Endpoint {
     this.#ask("relayStatus").then((r) => { this.#relays = r; }, () => {}).finally(() => (this.#asking = false));
   }
   // (what the endpoint is on now is what a link made again binds with: else a relay removed came back as it did)
+  /// The stations' disabled relays as given (`disabledRelays`), given again to a front linked to anew (its endpoint bound
+  /// afresh): as they are now, never one taken back.
+  readonly #disabled = new Map<string, { peer: string; relays: string[]; public: boolean }>();
+  disabledRelays(id: string, relays: string[], noPublic: boolean) {
+    const args = { peer: id, relays, public: noPublic };
+    return this.#ask("disabledRelays", { args }).then(() => {
+      if (relays.length === 0 && !noPublic) this.#disabled.delete(id);
+      else this.#disabled.set(id, args);
+    });
+  }
   insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url])); }
   removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.filter((u) => bare(u) !== bare(url)))); }
   #relayUrls(change: (urls: string[]) => string[]) {

@@ -53,6 +53,9 @@ napi-build = "2"
 [dev-dependencies]
 # The test's clock (`start_paused`): what a dial sends over ten minutes, counted in no time.
 tokio = { version = "1", features = ["test-util"] }
+# Relays on this machine, what each was sent counted (the side run's tests of a station's disabled relays).
+iroh = { version = "=1.0.3", features = ["test-utils"] }
+iroh-relay = { version = "=1.3.0", default-features = false, features = ["server", "test-utils"] }
 
 # A workspace of its own: not part of mesh/ or client/.
 [workspace]
@@ -63,8 +66,8 @@ noq-proto = { git = "https://github.com/zzj3720/noq", rev = "76344e6eab7ae651ce5
 swarm-discovery = { path = "../../../vendor/swarm-discovery" }
 iroh-mdns-address-lookup = { path = "../../../vendor/iroh-mdns-address-lookup" }
 noq-udp = { path = "../../../vendor/noq-udp" }
-iroh = { git = "https://github.com/zzj3720/iroh", rev = "ac3487648aa9dd0a0d11b21f375649eb4c46fb66" }
-iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "ac3487648aa9dd0a0d11b21f375649eb4c46fb66" }
+iroh = { git = "https://github.com/zzj3720/iroh", rev = "bc6fee0d414b6bc4b74711159e74b4224616aee1" }
+iroh-relay = { git = "https://github.com/zzj3720/iroh", rev = "bc6fee0d414b6bc4b74711159e74b4224616aee1" }
 
 [profile.release]
 strip = true

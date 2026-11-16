@@ -67,6 +67,10 @@ export type Endpoint = {
   insertRelay(url: string): Promise<void>;
   removeRelay(url: string): Promise<void>;
   publicRelays(on: boolean): Promise<void>;
+  /// The relays the endpoint `id` is not to be reached through (`relays`; none: any), and its own public relays too
+  /// where `noPublic`, in force once this resolves: nothing is sent it through one from then on, and what a connection
+  /// to it has through one is given up, its direct paths kept. Absent from an addon or a front from before.
+  disabledRelays?(id: string, relays: string[], noPublic: boolean): Promise<void>;
   keep(urls: string[]): void;
   /// The advanced network setting changed while running (lib.rs): the controller of the connections made from now
   /// on. Absent from an addon from before.

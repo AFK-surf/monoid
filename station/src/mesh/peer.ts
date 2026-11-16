@@ -15,6 +15,7 @@ import { answerLock } from "./lock-sync.ts";
 import { answerMarks, stationMarksOf } from "./station-marks.ts";
 import { answerWays, waysOf } from "./ways.ts";
 import { goesThrough, onRelaysChanged, stationAddr } from "./relays.ts";
+import { peerRelaysOf } from "./peer-relays.ts";
 import { Reader } from "./serve.ts";
 
 export const PEER_ALPN = Buffer.from("stillfail/station/1");
@@ -257,6 +258,18 @@ export function peerCall(
   timing: { checkMs?: number; heardMs?: number } = {},
 ): StationCall {
   const addr = given ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
+  // The relays each station is not reached through, held by the endpoint itself (peer-relays.ts), set before it is
+  // dialed and as the ways change, on what its connections have too; where the endpoint holds none (one from before),
+  // a connection whose chosen path goes through a relay turned off is closed instead (`goesThrough`).
+  const held = given === undefined ? peerRelaysOf(endpoint, cloud) : null;
+  const holds = () => held !== null && held.supported;
+  /// Where a station is dialed: the endpoint holding its disabled relays, the dial says none (it would set them over).
+  const dialAddr = (target: string, ws: string | null): Addr => {
+    const a = addr(target, ws);
+    if (!holds()) return a;
+    const { disabledRelays: _, ...rest } = a as Addr & { disabledRelays?: string[] };
+    return rest;
+  };
   const checkMs = timing.checkMs ?? CHECK_MS;
   const heardMs = timing.heardMs ?? HEARD_MS;
   const connections = new Map<string, Connection>();
@@ -265,6 +278,7 @@ export function peerCall(
   // A relay turned off: the connections kept through it let go at once, not as the next request comes (idle, they kept
   // it busy with their keep-alives meanwhile).
   const sweep = () => {
+    if (holds()) return;
     for (const [target, conn] of [...connections]) {
       if (conn.isClosed() || !goesThrough(conn, addr(target, askedIn.get(target) ?? null).disabledRelays)) continue;
       connections.delete(target);
@@ -326,7 +340,7 @@ export function peerCall(
     const open = connections.get(target);
     if (open !== undefined && !open.isClosed()) {
       // Kept from before its relay was turned off (the workspace's ways): let go, dialed anew through those on.
-      if (!goesThrough(open, addr(target, ws).disabledRelays)) return { made: Promise.resolve(open), dial: null, leave: () => {} };
+      if (holds() || !goesThrough(open, addr(target, ws).disabledRelays)) return { made: Promise.resolve(open), dial: null, leave: () => {} };
       connections.delete(target);
       log.info("mesh", "a station's connection goes through a relay turned off: closed, dialed anew", { peer: target.slice(0, 12) });
       open.close(0, "its relay turned off");
@@ -335,7 +349,7 @@ export function peerCall(
     if (dial === undefined) {
       let giveUp = () => {};
       const givenUp = new Promise<void>((resolve) => (giveUp = resolve));
-      const made: Promise<Connection> = endpoint.connect(addr(target, ws), PEER_BYTES_ALPN, [PEER_ALPN], givenUp).then(
+      const made: Promise<Connection> = (held === null ? Promise.resolve() : held.hold(target)).then(() => endpoint.connect(dialAddr(target, ws), PEER_BYTES_ALPN, [PEER_ALPN], givenUp)).then(
         (conn) => {
           if (d.abandoned) {
             conn.close(0, "too late");
@@ -506,6 +520,8 @@ export function peerCall(
   /// again: another endpoint, the one kept leading nowhere), is found gone and dropped, what waits on it failed at once.
   const arrived = (conn: Connection) => {
     const target = conn.remoteId();
+    // (a station that came to this one: held to its disabled relays as one dialed is, its connection's paths too)
+    void held?.hold(target);
     const kept = connections.get(target);
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });

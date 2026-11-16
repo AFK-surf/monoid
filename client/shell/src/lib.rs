@@ -3303,6 +3303,23 @@ impl Inner {
                 Ok(Answer::json(json!({})))
             }
             // A station's endpoint (station/mb's front, which keeps it for the station's Node: the addon's `Endpoint`).
+            // A station's peer's relays it is not to be reached through (`peer`, hex; `relays`; `public`: iroh's own
+            // public relays too), in force once answered (iroh's `set_disabled_relays`): the addon's `disabled_relays`.
+            "iroh.disabledRelays" => {
+                let endpoint = match self.handle(id_of(&a)?)? {
+                    Handle::Endpoint(endpoint, _) => endpoint,
+                    Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
+                    _ => return Err("not an endpoint".into()),
+                };
+                let bytes: [u8; 32] = hex::decode(str_of(&a, "peer")?).map_err(err)?.try_into().map_err(|_| "the id is not 32 bytes".to_string())?;
+                let peer = EndpointId::from_bytes(&bytes).map_err(err)?;
+                let mut disabled: std::collections::BTreeSet<RelayUrl> = a.get("relays").and_then(Value::as_array).into_iter().flatten().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
+                if a.get("public").and_then(Value::as_bool).unwrap_or(false) {
+                    disabled.extend(iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().iter().map(|c| c.url.clone()));
+                }
+                endpoint.set_disabled_relays(peer, disabled).await;
+                Ok(Answer::json(json!({})))
+            }
             "iroh.online" | "iroh.insertRelay" | "iroh.removeRelay" | "iroh.publicRelays" | "iroh.keep" | "iroh.setCongestion" | "iroh.holdIncoming" => {
                 let (endpoint, kept) = match self.handle(id_of(&a)?)? {
                     Handle::Endpoint(endpoint, kept) => (endpoint, kept),
