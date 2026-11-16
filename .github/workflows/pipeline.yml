@@ -1271,10 +1271,11 @@ jobs:
           restore-keys: mbui-win-store-m-
       - run: touch "$RUNNER_TEMP/start"
       # (a push's stopped by its own limit, before the job's, so what it compiled is kept (the units' step, last): cut
-      # at the job's 5 minutes, it kept none, the next run as far behind. 3.3 minutes: it begins some 75 s in)
+      # at the job's 5 minutes, it kept none, the next run as far behind. 3 minutes: it begins some 67-75 s in, and the
+      # stop, the key and the save take some 30 s)
       - name: Build, pack and sign the beta Windows app
         id: build
-        timeout-minutes: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') && 3.3 || 8 }}
+        timeout-minutes: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') && 3 || 8 }}
         env:
           # The installer's signature (its .sig): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
