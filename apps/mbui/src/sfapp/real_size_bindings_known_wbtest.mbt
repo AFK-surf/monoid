@@ -654,8 +654,6 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone share-card-poster fleet/down": 7,
   "phone share-card-senren-ciallo fleet/down": 4,
   "phone share-card-senren-photo fleet/down": 4,
-  "wide home lock/member": 74,
-  "wide home lock/approved": 74,
   "wide home workspaceMarks/thing": 2,
   "wide home workspaceMarks/message": 2,
   "wide home workspaceMarks/card": 2,
