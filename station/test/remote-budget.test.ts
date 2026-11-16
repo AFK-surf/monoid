@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
+import { timeFiles } from "../src/ops/file-waits.ts";
 import { signalGroup } from "../src/ops/group.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
 import { ROOM_RECENT_MS, Remote, TASKS_KEPT_MS, hash, latestIn, remoteBudget } from "../src/jobs/remote.ts";
@@ -129,4 +130,28 @@ describe("remote's budget", { concurrency: true }, () => {
     assert.equal(await latestIn(dir), 2_000_000_000_000);
     assert.equal(await latestIn(dir, 3), Infinity, "past its bound: kept");
   });
+});
+
+// On its own (not beside the tests above): the station's synchronous file calls are counted while it runs.
+test("over its budget, a room a task runs in is kept with nothing read on the station's thread: the tasks' records are the program's", async () => {
+  const r = station();
+  const now = Date.now();
+  // Over its budget only by rooms that stay: one a task runs in, unused for days; one used within the hour.
+  const busy = room(r, "busy", now - 5 * 24 * 3600_000, 2 * MiB);
+  const recent = room(r, "recent", now - ROOM_RECENT_MS / 2, 2 * MiB);
+  const task = hash(["ws", "peer-a", "busy", "k"]);
+  mkdirSync(join(r.remote.root, "incoming", task), { recursive: true });
+  writeFileSync(join(r.remote.root, "incoming", task, "task.json"), JSON.stringify({ workspace: "ws", station: "peer-a", session: "busy", key: "k", layout: "session", spec: { command: "x" } }));
+  const running = await r.jobs.startId("remote:ws:peer-a:busy", "k", "tail -f /dev/null", join(busy, "work"), null, false, `remote_${task}`);
+  const files = timeFiles();
+  try {
+    files.take();
+    assert.equal(await r.remote.budget(now, MiB), 0, "nothing of them goes");
+    assert.equal(files.take().calls, 0, "no synchronous file call: the running task's record is read off the thread");
+  } finally {
+    files.stop();
+  }
+  assert.ok(existsSync(join(busy, "work", "made")), "the room a task runs in stays");
+  assert.ok(existsSync(join(recent, "work", "made")), "the room used within the hour stays");
+  await r.jobs.stop(running.id);
 });

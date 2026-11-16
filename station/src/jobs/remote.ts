@@ -10,8 +10,8 @@
 // outgoing/<id>.json, used/<id>.json), so either station reads what the other wrote. A task's station tells the one
 // that started it when the task ends or says something (`task.changed`), and that one then asks it what (`task.get`):
 // nothing asks about a task while nothing happens to it; one on a station from before that is not followed (its session is told).
-// What is retried (a request that did not get through, a closed session's stations every 60 s) and the hourly sweep
-// are Effect schedules; nothing here polls local state.
+// What is retried (a request that did not get through, a closed session's stations every 60 s) and the sweeps are the
+// program's, on this clock; nothing here polls local state.
 import { createHash, randomBytes } from "node:crypto";
 import { constants, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { access, link, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -50,9 +50,6 @@ const MAX_FILE = 1024 * 1024 * 1024;
 const PATCH_MAX = 64 * 1024 * 1024;
 /// A source session's directory unused this long is removed by the target, in case its source never says so.
 export const IDLE_MS = 14 * 24 * 3600 * 1000;
-/// A source keeps asking an unreachable target to remove a closed session's directory this long.
-const CLOSE_FOR_MS = 30 * 24 * 3600 * 1000;
-const CLOSE_EVERY = "60 seconds";
 /// A task its station does not know, or has not started, this long after its start was asked for is no longer followed.
 export const GIVE_UP_MS = 10 * 60_000;
 /// A mirror (a task's `dir` on the target) no task of its session has run in or synced for this long goes, with what
@@ -137,49 +134,6 @@ export function readJson(path: string): Json {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-/// What chats used of other stations' workspaces (`usedPath`), as last written or read here: what `workspaceTargets`
-/// says of every chat shown, again and again, read from the disk each time on the station's thread, 16 of them held it
-/// 2.5 s on a station short of memory (2026-11-03), and `recordUse` at each of their tool calls. Written only by this station
-/// (`writeJson` keeps it current); null: none written.
-const used = new Map<string, Json | null>();
-
-/// How many times each record was written here (`writeJson`): one read before a write is not kept after it.
-const writes = new Map<string, number>();
-
-/// Every chat's record read in, off the station's thread, as the station starts: read on it as each chat is first
-/// shown after every update, the reads can hold up its other work.
-async function readAllUsed(dir: string): Promise<void> {
-  for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (!name.endsWith(".json")) continue;
-    const path = join(dir, name);
-    if (used.has(path)) continue;
-    const before = writes.get(path) ?? 0;
-    let read: Json | null;
-    try {
-      read = JSON.parse(await readFile(path, "utf8"));
-    } catch {
-      continue;
-    }
-    if (!used.has(path) && (writes.get(path) ?? 0) === before) used.set(path, read);
-  }
-}
-
-/// A chat's record (null: none), not to be changed in place: a copy is written (`writeJson`).
-function readUsed(path: string): Json | null {
-  const kept = used.get(path);
-  if (kept !== undefined) return kept;
-  let read: Json | null;
-  try {
-    read = readJson(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    read = null;
-  }
-  used.set(path, read);
-  if (used.size > 4096) used.delete(used.keys().next().value!);
-  return read;
-}
-
 /// How long what a task brought back is kept once nothing in it changed (`tidyBack`), and how often that is looked at.
 const BACK_KEPT_MS = 6 * 3600_000;
 const BACK_TIDY_MS = 3600_000;
@@ -205,19 +159,12 @@ export async function latestIn(path: string, most = LATEST_MOST): Promise<number
 /// station in five days (2026-11-15).
 export const REMOTE_BUDGET_MOST = 32 * 1024 ** 3;
 export const remoteBudget = (total: number | null): number => (total === null || !(total > 0) ? REMOTE_BUDGET_MOST : Math.min(REMOTE_BUDGET_MOST, Math.floor(total * 0.15)));
-/// A room used within this stays, over its budget or not.
+/// A room used within this stays, over its budget or not (the program's, remote_target.mbt `room_recent_ms`).
 export const ROOM_RECENT_MS = 3600_000;
 /// A task done here (remote/incoming/<task>), and one started from here whose end was told (remote/outgoing/<id>.json),
 /// kept this long after: 3,255 of the first on a station of five days (2026-11-15), as a session's tasks were never
-/// swept (the program's sweep leaves them to their room).
+/// swept (the program's sweep leaves them to their room). The program's (remote_target.mbt `tasks_kept_ms`).
 export const TASKS_KEPT_MS = 7 * 24 * 3600_000;
-
-/// readJson off the station's thread (fs/promises): what is read again on a schedule, or all the records at once. Read
-/// after what was asked to be written of it before (`writeJson`).
-const readJsonSoon = async (path: string): Promise<Json> => {
-  await written(path);
-  return JSON.parse(await readFile(path, "utf8"));
-};
 
 /// Path::with_extension: the file name's extension replaced (or added).
 function withExtension(path: string, ext: string): string {
@@ -227,80 +174,28 @@ function withExtension(path: string, ext: string): string {
   return join(dirname(path), `${stem}.${ext}`);
 }
 
-/// Each record's writes, in the order they were asked (`writeJson`, `updateJson`): one written before another is never
-/// renamed over by it.
-const writing = new Map<string, Promise<unknown>>();
+/// What was asked of the program to write of each record and is not answered yet (`track`): a record of the chats' use
+/// (`recordUse`, `closeSession`), a room's use (`work`).
+const asking = new Map<string, Promise<unknown>>();
 
-function inTurn<T>(path: string, work: () => Promise<T>): Promise<T> {
-  const mine = (writing.get(path) ?? Promise.resolve()).then(work, work);
-  const tail = mine.catch(() => undefined);
-  writing.set(path, tail);
+/// `asked` of the program writes `path`: waited for by `written`.
+function track(path: string, asked: Promise<unknown>): void {
+  const tail = Promise.allSettled([asking.get(path), asked]).then(() => undefined);
+  asking.set(path, tail);
   void tail.then(() => {
-    if (writing.get(path) === tail) writing.delete(path);
+    if (asking.get(path) === tail) asking.delete(path);
   });
-  return mine;
 }
 
 /// The program's writes of each record under way (told `writing`, then `wrote`, before and after each: in the order
 /// it says things, so a write told before what it tells next is waited for by what that wakes here).
 const programWriting = new Map<string, Map<number, { done: Promise<void>; end: () => void }>>();
 
-/// Once what was asked of `path` before is written (or failed), here or by the program.
+/// Once what was asked of `path` before is written (or failed) by the program.
 export async function written(path: string): Promise<void> {
-  await writing.get(path);
+  await asking.get(path);
   const theirs = programWriting.get(path);
   if (theirs) await Promise.all([...theirs.values()].map((w) => w.done));
-}
-
-/// `json` written whole or not at all, off the station's thread: a private temporary file, synced, renamed over. The
-/// sync was the main thread's, every remote tool call's: on a disk kept busy, 1,600 of them held it 3 minutes on a
-/// station (2026-11-06).
-async function writeWhole(path: string, json: string): Promise<void> {
-  const temp = withExtension(path, `${randomBytes(8).toString("hex")}.tmp`);
-  const file = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try {
-    await file.writeFile(json);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  await rename(temp, path);
-}
-
-/// `value` as a record, written in its turn (`writeWhole`); what this station's reads keep of it (`readUsed`) is the new
-/// one from now.
-export function writeJson(path: string, value: Json): Promise<void> {
-  const json = JSON.stringify(value);
-  writes.set(path, (writes.get(path) ?? 0) + 1);
-  if (used.has(path)) used.set(path, JSON.parse(json));
-  return inTurn(path, () => writeWhole(path, json));
-}
-
-/// A record read after what was written of it before, changed by `edit` and written in its turn: what `edit` gives is
-/// written (undefined: nothing; null: the record removed). False when it could not be read; one not there is `missing`
-/// where that is given.
-export function updateJson(path: string, edit: (v: Json) => Json | null | undefined, missing?: Json): Promise<boolean> {
-  return inTurn(path, async () => {
-    let v: Json;
-    try {
-      v = JSON.parse(await readFile(path, "utf8"));
-    } catch (error) {
-      if (missing === undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") return false;
-      v = structuredClone(missing);
-    }
-    const next = edit(v);
-    if (next === undefined) return true;
-    writes.set(path, (writes.get(path) ?? 0) + 1);
-    if (next === null) {
-      used.delete(path);
-      await rm(path, { force: true });
-      return true;
-    }
-    const json = JSON.stringify(next);
-    if (used.has(path)) used.set(path, JSON.parse(json));
-    await writeWhole(path, json);
-    return true;
-  });
 }
 
 const isLink = (path: string): Promise<boolean> => lstat(path).then((st) => st.isSymbolicLink(), () => false);
@@ -373,7 +268,8 @@ const REMOTE_KEY = "#remote";
 /// transport's and the machine's, which the program asks for (`asked`): the requests to and from the other stations and
 /// the bytes that go with them (a directory sync's packed requests, the program's), the folders
 /// macOS protects, the load, the cloud's state; and what the station's own parts read at once: a session's shared
-/// directory (`work`), the chats' use records (`workspaceTargets`, `recordUse`, `closeSession`).
+/// directory (`work`), the chats' use records as the program tells them (`workspaceTargets`; `recordUse` and
+/// `closeSession` change them here at once and have the program write them).
 export class Remote {
   readonly root: string;
   readonly store: Store;
@@ -391,8 +287,17 @@ export class Remote {
   private serial: Promise<unknown> = Promise.resolve();
   /// When each source session's room was last used here (`seen`), as its record says once written.
   private seenAt = new Map<string, number>();
-  /// The closing sessions whose stations are being asked to remove their directories.
-  private watching = new Set<string>();
+  /// What chats used of other stations' workspaces (`usedPath`; null: none), as the program told it (`used`) or as
+  /// changed here and asked of it: what `workspaceTargets` says of every chat shown, again and again, read from the disk
+  /// each time on the station's thread, 16 of them held it 2.5 s on a station short of memory (2026-11-03).
+  private usedCache = new Map<string, Json | null>();
+  /// The program told every record it read as it started (`usedReady`): one it did not tell is none.
+  private usedReady = false;
+  /// The changes of each record asked of the program and not answered yet, and the last it told of the record meanwhile
+  /// (`usedHeld`): kept as changed here until the last is answered, then as it told it last (each of its changes is
+  /// told, in its order), or as it answered where it told nothing.
+  private usedAsked = new Map<string, number>();
+  private usedHeld = new Map<string, Json | null>();
   /// The station is stopping: nothing more is followed.
   private stopped = false;
   /// The station's bulk requests to the others (syncs' contents, files' chunks), one at a time (dirsync.ts `Bulk`).
@@ -408,8 +313,6 @@ export class Remote {
   /// station_task, named `sandbox:<name>`, whose tasks this station takes itself and runs there.
   private sandboxes: (() => Sandbox[]) | null = null;
   private removeTask: (path: string) => Promise<void>;
-  /// While a pass holds remote/sessions to its budget (`budget`): the bytes it is over by yet.
-  private over = 0;
   /// Under how many bytes free the disk is low to the program's `relieve` (`relieve`'s `below`).
   private lowBelow = DISK_LOW_BYTES;
   /// The program the jobs run in (theirs: jobs/jobs.ts), these as `#remote` of it.
@@ -438,7 +341,6 @@ export class Remote {
     for (const name of ["incoming", "outgoing", "sessions", "used", "prepared"]) mkdirSync(join(this.root, name), { recursive: true }); // sync: once, as it is made
     this.landing = join(this.root, "landing", String(process.pid));
     void tidyLanding(join(this.root, "landing"));
-    void readAllUsed(join(this.root, "used"));
     this.scope = Effect.runSync(Scope.make());
     const runtime = Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope);
     this.run = Effect.runSync(options.clock ? runtime.pipe(Effect.provideService(Clock.Clock, options.clock)) : runtime);
@@ -528,10 +430,10 @@ export class Remote {
       case "node.ask":
         return await this.ask(a, b);
       case "node.seen": {
-        // (its record, written off this thread, there before the program reads it)
-        const work = this.seen(a, b, c);
-        await written(join(this.room(a, b, c), "session.json"));
-        return work;
+        // (the program writes its record when `write`; one asked of it before by work() is written before it reads it)
+        const seen = this.seen(a, b, c);
+        if (!seen.write) await written(join(this.room(a, b, c), "session.json"));
+        return seen;
       }
       case "node.written":
         await written(a);
@@ -547,9 +449,13 @@ export class Remote {
         await this.removeTask(a);
         return null;
       case "node.removeMirror":
-        if (this.over > 0) this.over -= (await treeBytes(a)).bytes;
         await this.removeMirror(a);
         return null;
+      case "node.treeBytes":
+        return (await treeBytes(a)).bytes;
+      case "node.roomInfo":
+        // A room's size, and when it was last used here (its record may say an older time: `seen`).
+        return { bytes: (await treeBytes(a)).bytes, seenAt: this.seenAt.get(a) ?? 0 };
       case "node.load":
         return await this.measuredLoad();
       case "node.workspaceSize": {
@@ -568,8 +474,6 @@ export class Remote {
       case "node.fileGet":
         return await this.fileGet(a, b);
       case "node.diskLow": {
-        // Over its budget too (`budget`): as much is to be freed as it is over by.
-        if (this.over > 0) return true;
         try {
           return this.diskFree(a) < this.lowBelow;
         } catch {
@@ -585,9 +489,6 @@ export class Remote {
         return (this.sandboxes?.() ?? []).map((s) => ({ name: s.name }));
       case "node.listStations":
         return await this.stationList(a, b, c);
-      case "node.recordUse":
-        this.recordUse(a, b, c);
-        return null;
       case "node.stationFile":
         return await this.stationFile(a, b, c, d);
       case "node.directory":
@@ -642,6 +543,17 @@ export class Remote {
       if (theirs?.size === 0) programWriting.delete(path);
       return;
     }
+    if (f === "used") {
+      // A chat's use record as the program has it now (null: none); one changed here since is told by its answer.
+      const [path, record] = args as [string, Json | null];
+      if (this.usedAsked.has(path)) this.usedHeld.set(path, record ?? null);
+      else this.usedCache.set(path, record ?? null);
+      return;
+    }
+    if (f === "usedReady") {
+      this.usedReady = true;
+      return;
+    }
     if (f === "log") {
       const [level, message, fields] = args;
       (level === "warn" ? log.warn : level === "error" ? log.error : log.info)("remote", message, fields ?? {});
@@ -654,22 +566,9 @@ export class Remote {
   }
 
   /// Follows the tasks started from here and the sessions closing, tells the sources of tasks here what they missed;
-  /// sweeps now and hourly (the program's); moves prepared records from before.
+  /// sweeps now and hourly; moves prepared records from before (all the program's).
   private started(): void {
     void this.call("attached", []).catch(() => undefined);
-    void this.movePrepared().catch(() => undefined);
-    void this.resumeClosing().catch(() => undefined);
-  }
-
-  /// The sessions closing asked to remove their directories again (their records read off the station's thread).
-  private async resumeClosing(): Promise<void> {
-    const dir = join(this.root, "used");
-    for (const name of (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".json"))) {
-      if (this.stopped) return;
-      const path = join(dir, name);
-      const v = await readJsonSoon(path).catch(() => null);
-      if (v !== null && field(v, "closing") === true) this.closer(path);
-    }
   }
 
   /// Schedule the cleanup across station restarts, remembering each completed sweep.
@@ -730,22 +629,24 @@ export class Remote {
   }
 
   /// A source session's shared directory, made and noted as used (a command run there with a secret of the vault:
-  /// vault/secrets.ts `heard`).
+  /// vault/secrets.ts `heard`); its record written by the program.
   work(workspace: string, peer: string, session: string): string {
-    return this.seen(workspace, peer, session);
+    const seen = this.seen(workspace, peer, session);
+    if (seen.write) track(join(this.room(workspace, peer, session), "session.json"), this.call("writeSession", [workspace, peer, session, seen.now]).catch(() => undefined));
+    return seen.work;
   }
 
-  /// Makes a source session's shared directory and notes when it was last used (at most once a minute).
-  private seen(workspace: string, peer: string, session: string): string {
+  /// Makes a source session's shared directory and notes when it was last used (at most once a minute): `write`, its
+  /// record is to be written saying `now` (the program's: remote.mbt `seen`).
+  private seen(workspace: string, peer: string, session: string): { work: string; write: boolean; now: number } {
     const room = this.room(workspace, peer, session);
     const now = this.store.now();
     // Used within the minute: noted already (its record's write may still be on its way: `closeHere` asks this too).
     const last = this.seenAt.get(room);
-    if (last !== undefined && now - last < 60_000) return join(room, "work");
+    if (last !== undefined && now - last < 60_000) return { work: join(room, "work"), write: false, now };
     mkdirSync(join(room, "work"), { recursive: true }); // sync: work() gives the directory at once; once a minute a room
     this.seenAt.set(room, now);
-    void writeJson(join(room, "session.json"), { workspace, station: peer, session, seen: now }).catch(() => undefined);
-    return join(room, "work");
+    return { work: join(room, "work"), write: true, now };
   }
 
   /// A source session's tasks' directories and its room taken out of their places in one step, its use asked again just
@@ -798,132 +699,26 @@ export class Remote {
     return { expired, freed };
   }
 
-  /// The source sessions' rooms here (remote/sessions/<id>), each with how much it takes and when it was last used.
-  private async rooms(): Promise<{ dir: string; bytes: number; seen: number; owner: [string, string, string] | null }[]> {
-    const sessions = join(this.root, "sessions");
-    const out = [];
-    for (const name of await readdir(sessions).catch(() => [] as string[])) {
-      if (this.stopped) break;
-      const dir = join(sessions, name);
-      const meta = await readJsonSoon(join(dir, "session.json")).catch(() => null);
-      const recorded = typeof meta?.seen === "number" ? meta.seen : 0;
-      const seen = Math.max(recorded, this.seenAt.get(dir) ?? 0);
-      const owner: [string, string, string] | null = typeof meta?.workspace === "string" && typeof meta?.station === "string" && typeof meta?.session === "string" ? [meta.workspace, meta.station, meta.session] : null;
-      out.push({ dir, bytes: (await treeBytes(dir)).bytes, seen, owner });
-    }
-    return out;
-  }
-
-  /// remote/sessions held to `budget`: the mirrors not in use go first, the longest unused first (the program's
-  /// `relieve`, told the disk is low until as much as it is over by went); then the rooms with no task running there, the
-  /// longest unused first. One used within ROOM_RECENT_MS, and anything a task runs in, stays. The bytes freed.
+  /// remote/sessions held to `budget` (the program's, remote_target.mbt `budget`): the mirrors not in use go first, the
+  /// longest unused first; then the rooms with no task running there, the longest unused first. One used within
+  /// ROOM_RECENT_MS, and anything a task runs in, stays. The bytes freed.
   async budget(now: number, budget: number): Promise<number> {
-    let rooms = await this.rooms();
-    const before = rooms.reduce((n, r) => n + r.bytes, 0);
-    if (before <= budget || this.stopped) return 0;
-    log.warn("remote", "other stations' rooms here over their budget: the longest unused go", { bytes: before, budget });
-    this.over = before - budget;
-    try {
-      await this.call("relieve", [now]);
-    } finally {
-      this.over = 0;
-    }
-    rooms = await this.rooms();
-    let total = rooms.reduce((n, r) => n + r.bytes, 0);
-    const running = this.runningOwners();
-    for (const room of rooms.sort((a, b) => a.seen - b.seen)) {
-      if (total <= budget || this.stopped) break;
-      if (room.owner === null || now - room.seen < ROOM_RECENT_MS || running.has(JSON.stringify(room.owner))) continue;
-      // Taken out in one step with its use asked again (`closeRoom`): one used since it was looked at stays.
-      const moved = this.closeRoom(room.dir, [], now - ROOM_RECENT_MS) as { room: string | null } | null;
-      if (moved?.room) {
-        await this.removeTask(moved.room).catch(() => undefined);
-        total -= room.bytes;
-        log.info("remote", "remote session directory removed", { why: "over budget", bytes: room.bytes, workspace: room.owner[0], station: room.owner[1], session: room.owner[2] });
-      }
-    }
-    return Math.max(0, before - total);
+    const freed = await this.call("budget", [now, budget]);
+    return typeof freed === "number" ? freed : 0;
   }
 
-  /// The source sessions with a task running here (remote/incoming's records, their jobs `remote_<task>` running), as
-  /// JSON of [workspace, station, session].
-  private runningOwners(): Set<string> {
-    const owners = new Set<string>();
-    for (const job of this.store.jobsUp()) {
-      if (!job.id.startsWith("remote_")) continue;
-      try {
-        const meta = JSON.parse(readFileSync(join(this.root, "incoming", job.id.slice("remote_".length), "task.json"), "utf8")); // sync: a few records of the tasks running, as the rooms are let go of in one step
-        owners.add(JSON.stringify([meta.workspace, meta.station, meta.session]));
-      } catch {}
-    }
-    return owners;
-  }
-
-  /// Tasks long over let go of: remote/incoming/<task> whose job ended TASKS_KEPT_MS ago (or the store no longer has,
-  /// and unchanged as long), and remote/outgoing/<id>.json told its end (`delivered`) and unchanged as long. How many.
+  /// Tasks long over let go of (the program's, remote_target.mbt `expire`): remote/incoming/<task> whose job ended
+  /// TASKS_KEPT_MS ago (or the store no longer has, and unchanged as long), and remote/outgoing/<id>.json told its end
+  /// (`delivered`) and unchanged as long. How many.
   async expire(now: number): Promise<number> {
-    let gone = 0;
-    const up = new Set(this.store.jobsUp().map((j) => j.id));
-    const incoming = join(this.root, "incoming");
-    for (const name of await readdir(incoming).catch(() => [] as string[])) {
-      if (this.stopped) return gone;
-      const id = `remote_${name}`;
-      if (up.has(id)) continue;
-      const job = this.store.getJob(id);
-      const dir = join(incoming, name);
-      let at: number;
-      if (job === null) at = (await lstat(join(dir, "task.json")).catch(() => null))?.mtimeMs ?? (await lstat(dir).catch(() => null))?.mtimeMs ?? now;
-      else if (job.state === "running" || job.endedAt === null) continue;
-      else at = job.endedAt;
-      if (now - at < TASKS_KEPT_MS) continue;
-      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-      gone++;
-    }
-    const outgoing = join(this.root, "outgoing");
-    for (const name of await readdir(outgoing).catch(() => [] as string[])) {
-      if (this.stopped || !name.endsWith(".json")) continue;
-      const file = join(outgoing, name);
-      const st = await lstat(file).catch(() => null);
-      if (st === null || now - st.mtimeMs < TASKS_KEPT_MS) continue;
-      const record = await readJsonSoon(file).catch(() => null);
-      if (record?.delivered !== true) continue;
-      await rm(file, { force: true }).catch(() => undefined);
-      gone++;
-    }
-    if (gone > 0) log.info("remote", "tasks long over let go of", { count: gone });
-    return gone;
+    const gone = await this.call("expire", [now]);
+    return typeof gone === "number" ? gone : 0;
   }
 
-  /// A session's prepared tasks' directories and what they bring back, as this station has them: one directory per
-  /// session, so closing one removes its own without reading the others' (many on a station, each read on the station's
-  /// thread at every close, 24 seconds held while memory was short).
-  private preparedDir(session: string): string {
-    return join(this.root, "prepared", hash(session));
-  }
-
-  /// Prepared records from before they were kept by session (remote/prepared/<hash>.json) moved into their session's,
-  /// read off the thread.
+  /// Prepared records from before they were kept by session (remote/prepared/<hash>.json) moved into their session's
+  /// (the program's, as the transport is there: `attached`).
   private async movePrepared(): Promise<void> {
-    const dir = join(this.root, "prepared");
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
-      if (this.stopped) return;
-      if (!name.endsWith(".json")) continue;
-      const file = join(dir, name);
-      const v = await readJsonSoon(file).catch(() => null);
-      const session = text(v, "session");
-      if (session === "") {
-        await rm(file, { force: true }).catch(() => undefined);
-        continue;
-      }
-      await mkdir(this.preparedDir(session), { recursive: true }).catch(() => undefined);
-      // A newer prepare may have written there since this old record was read. Never replace it with the old one.
-      try {
-        await link(file, join(this.preparedDir(session), name));
-        await rm(file, { force: true });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") await rm(file, { force: true }).catch(() => undefined);
-      }
-    }
+    await this.call("movePrepared", []);
   }
 
   usedPath(session: string): string {
@@ -936,7 +731,7 @@ export class Remote {
     if (!row || row.archivedAt !== null) return null;
     try {
       const workspace = this.workspace(row.ws ?? null);
-      const record = readUsed(this.usedPath(session));
+      const record = this.usedRecord(this.usedPath(session));
       if (record === null || record.closing === true || record.workspace !== workspace || !Array.isArray(record.stations)) return null;
       return { workspace, stations: record.stations.filter((s: unknown): s is string => typeof s === "string" && s !== "") };
     } catch {
@@ -968,12 +763,47 @@ export class Remote {
     return { path: value.path, bytes: value.bytes, complete: value.complete };
   }
 
-  /// The source remembers which stations a session ran tasks on, to ask them to clean up when it closes.
+  /// A chat's use record as kept here (null: none). Until the program told every record it read as it started, one it
+  /// did not tell yet is read here, once.
+  private usedRecord(path: string): Json | null {
+    const kept = this.usedCache.get(path);
+    if (kept !== undefined) return kept;
+    if (this.usedReady) return null;
+    let read: Json | null;
+    try {
+      read = readJson(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      read = null;
+    }
+    this.usedCache.set(path, read);
+    return read;
+  }
+
+  /// A change of the use record at `path` asked of the program (`asked`): kept here as made until it answers with the
+  /// record as it wrote it.
+  private changed(path: string, asked: Promise<Json>): void {
+    this.usedAsked.set(path, (this.usedAsked.get(path) ?? 0) + 1);
+    const answered = asked.then((record) => ({ record }), () => null);
+    track(path, answered);
+    void answered.then((got) => {
+      const left = (this.usedAsked.get(path) ?? 1) - 1;
+      if (left > 0) return void this.usedAsked.set(path, left);
+      this.usedAsked.delete(path);
+      const held = this.usedHeld.get(path);
+      this.usedHeld.delete(path);
+      if (held !== undefined) this.usedCache.set(path, held);
+      else if (got !== null) this.usedCache.set(path, got.record);
+    });
+  }
+
+  /// The source remembers which stations a session ran tasks on, to ask them to clean up when it closes: kept here at
+  /// once, written by the program (remote_source.mbt `record_use`, which a station_task of the program's calls itself).
   recordUse(workspace: string, session: string, station: string): void {
     const path = this.usedPath(session);
     let had: Json | null;
     try {
-      had = readUsed(path);
+      had = this.usedRecord(path);
     } catch {
       had = null;
     }
@@ -988,72 +818,21 @@ export class Remote {
     v.closing = false;
     v.closed = [];
     v.workspace = workspace;
-    // Kept here at once (`readUsed`), on the disk in its turn.
-    void writeJson(path, v).catch((error) => log.warn("remote", "a session's use of a station not written", { session, error: (error as Error).message }));
+    this.usedCache.set(path, v);
+    this.changed(path, this.call("recordUse", [workspace, session, station]));
   }
 
   /// A session was archived or deleted: its tasks on other stations stop and their directories are removed. Asked until
-  /// each station has answered (CLOSE_FOR_MS at most), across restarts.
+  /// each station has answered (30 days at most), across restarts (the program's: remote_source.mbt `close_session`).
   closeSession(session: string): void {
     const path = this.usedPath(session);
-    let had: Json | null;
+    let had: Json | null = null;
     try {
-      had = readUsed(path);
-    } catch {
-      return;
-    }
-    if (had === null) return;
-    const v = { ...structuredClone(had), closing: true, since: this.store.now() };
-    const written = writeJson(path, v);
-    // Their tasks started from here are no longer followed, its prepared tasks go (the program's, remote.mbt).
-    void this.call("unfollow", [session]).catch(() => undefined);
-    // Asked about once it is written closing (the closer reads it from the disk).
-    void written.then(() => this.closer(path), () => undefined);
-  }
-
-  /// Asks each station a closing session used to remove its directory, every minute until all have answered.
-  private closer(path: string): void {
-    if (this.watching.has(path)) return;
-    this.watching.add(path);
-    const round = Effect.promise(async (): Promise<boolean> => {
-      let v: Json;
-      try {
-        v = await readJsonSoon(path);
-      } catch {
-        return true;
-      }
-      if (v.closing !== true) return true;
-      const closed = Array.isArray(v.closed) ? v.closed : [];
-      const pending: string[] = (Array.isArray(v.stations) ? v.stations : []).filter((s: Json) => !closed.includes(s) && typeof s === "string");
-      if (pending.length === 0 || this.store.now() - (asI64(v.since) ?? 0) > CLOSE_FOR_MS) {
-        await updateJson(path, (now) => now.closing === true ? null : undefined).catch(() => undefined);
-        return true;
-      }
-      for (const station of pending) {
-        const request = { method: "session.close", workspace: field(v, "workspace"), session: field(v, "session") };
-        // An answer, or a refusal (a station from before session directories, or one that no longer takes tasks from
-        // here), is final; no connection is asked again.
-        let done: boolean;
-        try {
-          await this.ask(station, request);
-          done = true;
-        } catch (error) {
-          done = error instanceof Refused;
-        }
-        if (done) {
-          await updateJson(path, (now) => now.closing === true && Array.isArray(now.closed) ? { ...now, closed: [...now.closed, station] } : undefined)
-            .catch(() => undefined);
-        }
-      }
-      return false;
-    });
-    void this.run(
-      round.pipe(
-        Effect.repeat({ schedule: Schedule.spaced(CLOSE_EVERY), until: (over) => over }),
-        Effect.ensuring(Effect.sync(() => this.watching.delete(path))),
-        Effect.asVoid,
-      ),
-    ).catch(() => undefined);
+      had = this.usedRecord(path);
+    } catch {}
+    const since = this.store.now();
+    if (had !== null) this.usedCache.set(path, { ...structuredClone(had), closing: true, since });
+    this.changed(path, this.call("closeSession", [session, since]));
   }
 
   /// Where messages from other stations' sessions go (session.message): any station of the workspace may send them,
@@ -1575,11 +1354,6 @@ export class Remote {
     }
     throw new Error("direction must be upload or download");
   }
-}
-
-/// serde_json's as_i64.
-function asI64(v: unknown): number | null {
-  return typeof v === "number" && Number.isInteger(v) ? v : null;
 }
 
 /// The target side of the station transport: a request taken in, its answer as the wire has it

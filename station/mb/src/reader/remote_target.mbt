@@ -1,5 +1,5 @@
 // The target's side of the remote tasks (remote.ts `task` and what it stands on): a source session's tasks here, their
-// shared directory and its mirrors, and their cleanup.
+// shared directory and its mirrors, and their cleanup (`sweep`, `relieve`; the upkeep's `expire` and `budget`).
 
 ///|
 fn refusal(m : String) -> Error {
@@ -760,7 +760,12 @@ async fn Actors::drop_mirror(self : Actors, workspace : String, peer : String, s
         self.write_json(path, with_field(meta, "synced", jbool(false)))
       }
     }
-    ignore(self.rnode("removeMirror", [jstr(self.rjoin([room, "work", mirror]))]))
+    let tree = self.rjoin([room, "work", mirror])
+    // Over its budget (`budget`): as much is to be freed as it is over by.
+    if self.remote.over > 0.0 {
+      self.remote.over -= num_of(Some(self.rnode("treeBytes", [jstr(tree)]))).unwrap_or(0.0)
+    }
+    ignore(self.rnode("removeMirror", [jstr(tree)]))
     self.remove(self.rjoin([room, "sync", mirror]), recursive=true)
     self.remove(self.rjoin([room, "mirrors", "\{mirror}.json"]))
     ignore(self.update_json(self.rjoin([room, "mirrors-used.json"]), used => match used {
@@ -902,7 +907,8 @@ async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
 /// The disk of the station's data low (ops/disk.ts): mirrors go, the longest unused first, until there is enough again.
 /// One a task runs in or syncs to, or used within MIRROR_RECENT_MS, stays.
 async fn Actors::relieve(self : Actors, now : Double) -> Unit raise {
-  let low = async fn() -> Bool raise { truthy(self.rnode("diskLow", [jstr(self.remote.root)])) }
+  // (over its budget too: `budget`)
+  let low = async fn() -> Bool raise { self.remote.over > 0.0 || truthy(self.rnode("diskLow", [jstr(self.remote.root)])) }
   if !low() {
     return
   }
@@ -931,6 +937,224 @@ async fn Actors::relieve(self : Actors, now : Double) -> Unit raise {
         ignore(self.drop_mirror(workspace, peer, session, name, "disk low"))
       }
     })
+  }
+}
+
+///|
+/// A room used within this stays, over its budget or not (remote.ts `ROOM_RECENT_MS`).
+let room_recent_ms : Double = 3600000.0
+
+///|
+/// A task done here (incoming/<task>), and one started from here whose end was told (outgoing/<id>.json), kept this
+/// long after (remote.ts `TASKS_KEPT_MS`).
+let tasks_kept_ms : Double = 7.0 * 24.0 * 3600.0 * 1000.0
+
+///|
+priv struct RoomUse {
+  dir : String
+  bytes : Double
+  seen : Double
+  owner : (String, String, String)?
+}
+
+///|
+/// The source sessions' rooms here (sessions/<id>), each with how much it takes and when it was last used (its record's
+/// time, or Node's of a use since: `roomInfo`).
+async fn Actors::rooms(self : Actors) -> Array[RoomUse] raise {
+  let sessions = self.rjoin([self.remote.root, "sessions"])
+  let out : Array[RoomUse] = []
+  for name in self.readdir_names(sessions) {
+    if self.remote.stopped {
+      break
+    }
+    let dir = self.rjoin([sessions, name])
+    let meta = self.read_json(self.rjoin([dir, "session.json"])) catch { _ => Json::null() }
+    let info = self.rnode("roomInfo", [jstr(dir)])
+    let recorded = match field_of(meta, "seen") {
+      Number(n, ..) => n
+      _ => 0.0
+    }
+    let here = num_of(Some(field_of(info, "seenAt"))).unwrap_or(0.0)
+    let owner = match (field_of(meta, "workspace"), field_of(meta, "station"), field_of(meta, "session")) {
+      (String(w), String(s), String(x)) => Some((w, s, x))
+      _ => None
+    }
+    out.push({ dir, bytes: num_of(Some(field_of(info, "bytes"))).unwrap_or(0.0), seen: if here > recorded { here } else { recorded }, owner })
+  }
+  out
+}
+
+///|
+fn rooms_bytes(rooms : Array[RoomUse]) -> Double {
+  rooms.fold(init=0.0, (n, r) => n + r.bytes)
+}
+
+///|
+/// The source sessions with a task running here (incoming's records, their jobs `remote_<task>` running), as JSON of
+/// [workspace, station, session]: the records read here, never on Node's thread.
+async fn Actors::running_owners(self : Actors) -> Map[String, Bool] raise {
+  let owners : Map[String, Bool] = {}
+  guard self.rstore("jobsUp", []) is Array(jobs) else { return owners }
+  for job in jobs {
+    let id = text_of(job, "id")
+    if !id.has_prefix("remote_") {
+      continue
+    }
+    let record = self.rjoin([self.remote.root, "incoming", id.view(start_offset=7).to_string(), "task.json"])
+    let meta = self.read_json(record) catch { _ => continue }
+    owners[js_text(Json::array([field_of(meta, "workspace"), field_of(meta, "station"), field_of(meta, "session")]))] = true
+  }
+  owners
+}
+
+///|
+/// remote/sessions held to `budget` (remote.ts `budget`): the mirrors not in use go first, the longest unused first
+/// (`relieve`, told the disk is low until as much as it is over by went); then the rooms with no task running there,
+/// the longest unused first. One used within ROOM_RECENT_MS, and anything a task runs in, stays. The bytes freed.
+async fn Actors::budget(self : Actors, now : Double, budget : Double) -> Double raise {
+  let before = rooms_bytes(self.rooms())
+  if before <= budget || self.remote.stopped {
+    return 0.0
+  }
+  self.rlog("warn", "other stations' rooms here over their budget: the longest unused go", fields={ "bytes": jnum(before), "budget": jnum(budget) })
+  self.remote.over = before - budget
+  let failed = try {
+    self.relieve(now)
+    None
+  } catch {
+    e => Some(e)
+  }
+  self.remote.over = 0.0
+  if failed is Some(e) {
+    raise e
+  }
+  let rooms = self.rooms()
+  let mut total = rooms_bytes(rooms)
+  let running = self.running_owners()
+  rooms.sort_by((a, b) => a.seen.compare(b.seen))
+  for room in rooms {
+    if total <= budget || self.remote.stopped {
+      break
+    }
+    guard room.owner is Some((workspace, station, session)) else { continue }
+    let owner = js_text(Json::array([jstr(workspace), jstr(station), jstr(session)]))
+    if now - room.seen < room_recent_ms || running.contains(owner) {
+      continue
+    }
+    // Taken out in one step with its use asked again (Node's `closeRoom`): one used since it was looked at stays.
+    let moved = self.rnode("closeRoom", [jstr(room.dir), Json::array([]), jnum(now - room_recent_ms)])
+    if field_of(moved, "room") is String(gone) {
+      ignore(self.rnode("removeTask", [jstr(gone)])) catch { _ => () }
+      total -= room.bytes
+      self.rlog("info", "remote session directory removed", fields={
+        "why": jstr("over budget"),
+        "bytes": jnum(room.bytes),
+        "workspace": jstr(workspace),
+        "station": jstr(station),
+        "session": jstr(session),
+      })
+    }
+  }
+  if before - total > 0.0 { before - total } else { 0.0 }
+}
+
+///|
+/// Tasks long over let go of (remote.ts `expire`): incoming/<task> whose job ended TASKS_KEPT_MS ago (or the store no
+/// longer has, and unchanged as long), and outgoing/<id>.json told its end (`delivered`) and unchanged as long. How
+/// many.
+async fn Actors::expire(self : Actors, now : Double) -> Int raise {
+  let mut gone = 0
+  let up : Map[String, Bool] = {}
+  if self.rstore("jobsUp", []) is Array(jobs) {
+    for job in jobs {
+      up[text_of(job, "id")] = true
+    }
+  }
+  let incoming = self.rjoin([self.remote.root, "incoming"])
+  for name in self.readdir_names(incoming) {
+    if self.remote.stopped {
+      return gone
+    }
+    let id = "remote_\{name}"
+    if up.contains(id) {
+      continue
+    }
+    let job = self.rstore("getJob", [jstr(id)])
+    let dir = self.rjoin([incoming, name])
+    let mut at = now
+    if job is Null {
+      let record = self.lstat(self.rjoin([dir, "task.json"])) catch { _ => None }
+      let st = match record {
+        Some(st) => Some(st)
+        None => self.lstat(dir) catch { _ => None }
+      }
+      if st is Some(st) {
+        at = num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now)
+      }
+    } else {
+      guard text_of(job, "state") != "running" && num_of(Some(field_of(job, "endedAt"))) is Some(ended) else { continue }
+      at = ended
+    }
+    if now - at < tasks_kept_ms {
+      continue
+    }
+    self.remove(dir, recursive=true) catch { _ => () }
+    gone += 1
+  }
+  let outgoing = self.rjoin([self.remote.root, "outgoing"])
+  for name in self.readdir_names(outgoing) {
+    if self.remote.stopped || !name.has_suffix(".json") {
+      continue
+    }
+    let file = self.rjoin([outgoing, name])
+    let st = self.lstat(file) catch { _ => None }
+    guard st is Some(st) else { continue }
+    if now - num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now) < tasks_kept_ms {
+      continue
+    }
+    let record = self.read_json(file) catch { _ => Json::null() }
+    if !(field_of(record, "delivered") is True) {
+      continue
+    }
+    self.remove(file) catch { _ => () }
+    gone += 1
+  }
+  if gone > 0 {
+    self.rlog("info", "tasks long over let go of", fields={ "count": jnum(gone.to_double()) })
+  }
+  gone
+}
+
+///|
+/// Prepared records from before they were kept by session (prepared/<hash>.json) moved into their session's: linked
+/// there, never over a newer prepare's record (one there already: the old one goes).
+async fn Actors::move_prepared(self : Actors) -> Unit raise {
+  let dir = self.rjoin([self.remote.root, "prepared"])
+  for name in self.readdir_names(dir) {
+    if self.remote.stopped {
+      return
+    }
+    if !name.has_suffix(".json") {
+      continue
+    }
+    let file = self.rjoin([dir, name])
+    let v = self.read_json(file) catch { _ => Json::null() }
+    let session = text_of(v, "session")
+    if session == "" {
+      self.remove(file) catch { _ => () }
+      continue
+    }
+    self.mkdirs(self.prepared_dir(session)) catch { _ => () }
+    // (true: linked; false: one there already, EEXIST: either way the old one goes)
+    let linked = try {
+      ignore(self.fs("fs.link", { "from": jstr(file), "to": jstr(self.rjoin([self.prepared_dir(session), name])) }))
+      true
+    } catch {
+      _ => false
+    }
+    if linked {
+      self.remove(file) catch { _ => () }
+    }
   }
 }
 

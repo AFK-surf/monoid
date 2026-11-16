@@ -12,7 +12,8 @@ import { type Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { signalGroup } from "../src/ops/group.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
-import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, writeJson, written } from "../src/jobs/remote.ts";
+import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, written } from "../src/jobs/remote.ts";
+import { writeJson } from "./remote-records.ts";
 import { type Load, OLDER } from "../src/jobs/load.ts";
 import { type Json, Store } from "../src/store/store.ts";
 import { remoteTools } from "../src/tools/remote.ts";
@@ -660,6 +661,45 @@ describe("remote", { concurrency: true }, () => {
     assert.equal(asked.filter((s) => s === "old").length, 1);
     assert.equal(asked.filter((s) => s === "down").length, 3);
     assert.ok(existsSync(r.remote.usedPath("other")));
+  });
+
+  test("a station started again takes up a session closing: its stations asked on its clock until each answered, then its record goes", async () => {
+    const clock = testClock();
+    const store = Store.open(":memory:", null, clock);
+    cleanup.push(() => store.close());
+    const dir = tempdir();
+    // The station before: the session used two stations, closed while neither was reached.
+    const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null });
+    const before = new Remote({ data: dir, store, jobs, clock, notify: () => {}, version: "0.1.1" });
+    let tried = 0;
+    before.attach(async () => {
+      tried++;
+      throw new Error("offline");
+    });
+    before.recordUse("ws", "s", "up");
+    before.recordUse("ws", "s", "down");
+    before.closeSession("s");
+    const path = before.usedPath("s");
+    await written(path);
+    await until("both asked once", () => tried === 2);
+    await before.close();
+    await jobs.shutdown();
+    assert.deepEqual([readJson(path).closing, readJson(path).closed], [true, []], "left closing, none answered");
+
+    // Started again (a program of its own): the record taken up from the disk, its stations asked again.
+    const next = station({ clock, dir, store });
+    const asked: string[] = [];
+    let down = 0;
+    next.remote.attach(async (target, _workspace, request) => {
+      assert.deepEqual([request.method, request.workspace, request.session], ["session.close", "ws", "s"]);
+      asked.push(target);
+      if (target === "down" && down++ === 0) throw new Error("offline");
+      return { closed: true };
+    });
+    await until("asked again as it is attached", () => asked.length === 2);
+    assert.ok(existsSync(path), "one station not answered yet: kept");
+    await rounds("every station answered and the record gone", clock, "10 seconds", () => !existsSync(path));
+    assert.deepEqual([asked.filter((s) => s === "up").length, asked.filter((s) => s === "down").length], [1, 2]);
   });
 
   // ── recovery_tests ──

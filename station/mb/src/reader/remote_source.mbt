@@ -1,6 +1,6 @@
 // The source's side of the remote tasks (remote.ts): a task started from here followed until its end is told to its
-// session (`check`, `round`, `settle`), a task here told to the station it came from (`push_out`), and the station_*
-// tools.
+// session (`check`, `round`, `settle`), a task here told to the station it came from (`push_out`), the chats' use of
+// other stations and their closing there (`record_use`, `close_session`, `closer`), and the station_* tools.
 
 ///|
 /// Whether the task's station tells of it itself (`task.changed`).
@@ -359,7 +359,7 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
 
 ///|
 /// A session was archived or deleted: its tasks started from here are no longer followed, its prepared tasks go
-/// (Node writes its use record closing and asks its stations to remove its directories).
+/// (`close_session`, which writes its use record closing and asks its stations to remove its directories).
 async fn Actors::unfollow_session(self : Actors, session : String) -> Unit raise {
   let outgoing = self.rjoin([self.remote.root, "outgoing"])
   for name in self.readdir_names(outgoing) {
@@ -518,7 +518,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     raise refusal("station and key are required (list, mirrors and clean need only station)")
   }
   if !session_action {
-    ignore(self.rnode("recordUse", [jstr(workspace), jstr(session), jstr(station)]))
+    ignore(self.record_use(workspace, session, station))
   }
   let request : Map[String, Json] = { "workspace": jstr(workspace), "session": jstr(session), "key": jstr(key) }
   if tool != "station_task" {
@@ -677,4 +677,254 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
       raise e
     }
   }
+}
+
+// ── the chats' use of other stations (remote/used/<hash(session)>.json) ──
+
+///|
+/// A source keeps asking an unreachable target to remove a closed session's directory this long.
+let close_for_ms : Double = 30.0 * 24.0 * 3600.0 * 1000.0
+
+///|
+/// A closing session's stations not answered yet are asked again this long after.
+let close_every_ms : Double = 60000.0
+
+///|
+/// The record of which stations of its workspace a session of this station ran tasks on (remote.ts `usedPath`).
+fn Actors::used_path(self : Actors, session : String) -> String {
+  self.rjoin([self.remote.root, "used", "\{rhash(jstr(session))}.json"])
+}
+
+///|
+/// The record at `path` is `v` now (Null: none): kept, and Node told (what it reads at once: remote.ts `workspaceTargets`).
+fn Actors::used_told(self : Actors, path : String, v : Json) -> Unit {
+  self.remote.used[path] = v
+  self.tell(remote_key, "used", [jstr(path), v])
+}
+
+///|
+/// Every chat's record read in as the station starts, each told Node (`used`), then that all were (`usedReady`): read on
+/// Node's thread as each chat is first shown after every update, the reads held up its other work. One changed here
+/// meanwhile is told as it is now.
+async fn Actors::load_used(self : Actors) -> Unit {
+  let dir = self.rjoin([self.remote.root, "used"])
+  let names = self.readdir_names(dir) catch { _ => [] }
+  for name in names {
+    if !name.has_suffix(".json") {
+      continue
+    }
+    let path = self.rjoin([dir, name])
+    if self.remote.used.get(path) is Some(v) {
+      self.tell(remote_key, "used", [jstr(path), v])
+      continue
+    }
+    let before = self.remote.writes.get(path).unwrap_or(0)
+    let text = self.read_text(path) catch { _ => continue }
+    guard text is Some(text) else { continue }
+    let v = @json.parse(text) catch { _ => continue }
+    if !self.remote.used.contains(path) && self.remote.writes.get(path).unwrap_or(0) == before {
+      self.used_told(path, v)
+    }
+  }
+  self.tell(remote_key, "usedReady", [])
+}
+
+///|
+/// A chat's record (Null: none), read once and kept; raised when it is not JSON.
+async fn Actors::used_record(self : Actors, path : String) -> Json raise {
+  if self.remote.used.get(path) is Some(v) {
+    return v
+  }
+  let before = self.remote.writes.get(path).unwrap_or(0)
+  self.written(path)
+  let v = match self.read_text(path) {
+    Some(text) => @json.parse(text) catch { _ => raise FsError("\{path}: not JSON") }
+    None => Json::null()
+  }
+  if !self.remote.used.contains(path) && self.remote.writes.get(path).unwrap_or(0) == before {
+    self.remote.used[path] = v
+  }
+  v
+}
+
+///|
+/// `f` after what was asked before it of the record at `path` (its changes, one after another).
+async fn[X] Actors::in_used(self : Actors, path : String, f : async () -> X raise) -> X raise {
+  self.in_lane("used:" + path, f)
+}
+
+///|
+/// The source remembers which stations a session ran tasks on, to ask them to clean up when it closes: a station_task's
+/// (`tool`), and Node's (remote.ts `recordUse`). The record as it is now.
+async fn Actors::record_use(self : Actors, workspace : String, session : String, station : String) -> Json raise {
+  let path = self.used_path(session)
+  self.in_used(path, async fn() -> Json raise {
+    let had = self.used_record(path) catch { _ => Json::null() }
+    let known = match field_of(had, "stations") {
+      Array(s) => s.contains(jstr(station))
+      _ => false
+    }
+    if known && !(field_of(had, "closing") is True) {
+      return had
+    }
+    let mut v : Json = if had is Null {
+      { "session": jstr(session), "workspace": jstr(workspace), "stations": Json::array([]) }
+    } else {
+      had
+    }
+    if !known {
+      match field_of(v, "stations") {
+        Array(s) => {
+          let s = s.copy()
+          s.push(jstr(station))
+          v = with_field(v, "stations", Json::array(s))
+        }
+        _ => raise FsError("bad record")
+      }
+    }
+    // Used again after closing (shown again): close later from the start.
+    v = with_field(with_field(with_field(v, "closing", jbool(false)), "closed", Json::array([])), "workspace", jstr(workspace))
+    self.used_told(path, v)
+    self.write_json(path, v) catch {
+      e => self.rlog("warn", "a session's use of a station not written", fields={ "session": jstr(session), "error": jstr(FsError::of(e)) })
+    }
+    v
+  })
+}
+
+///|
+/// A session was archived or deleted (remote.ts `closeSession`): its record written closing since `since`, its tasks
+/// started from here no longer followed (`unfollow_session`), and each station it used asked to remove its directories
+/// (`closer`) once that is written. The record as it is now (Null: none, nothing to close).
+async fn Actors::close_session(self : Actors, session : String, since : Double) -> Json raise {
+  let path = self.used_path(session)
+  let (v, wrote) = self.in_used(path, async fn() -> (Json, Bool) raise {
+    let had = self.used_record(path) catch { _ => return (Json::null(), false) }
+    if had is Null {
+      return (had, false)
+    }
+    let v = with_field(with_field(had, "closing", jbool(true)), "since", jnum(since))
+    self.used_told(path, v)
+    let wrote = try {
+      self.write_json(path, v)
+      true
+    } catch {
+      _ => false
+    }
+    (v, wrote)
+  })
+  if v is Null {
+    return v
+  }
+  self.spawn(() => try { self.unfollow_session(session) } catch { _ => () })
+  if wrote {
+    self.closer(path)
+  }
+  v
+}
+
+///|
+/// The record at `path` changed by `edit` in its turn (`update_json`), Node told what it is then.
+async fn Actors::used_update(self : Actors, path : String, edit : (Json) -> Json?) -> Unit raise {
+  self.in_used(path, async fn() raise {
+    let got : Ref[Json?] = { val: None }
+    let ok = self.update_json(path, v => {
+      let next = edit(v)
+      got.val = next
+      next
+    })
+    if ok && got.val is Some(next) {
+      self.used_told(path, next)
+    }
+  })
+}
+
+///|
+/// The sessions closing asked to remove their directories again (the transport is there: `attached`).
+async fn Actors::resume_closing(self : Actors) -> Unit raise {
+  let dir = self.rjoin([self.remote.root, "used"])
+  for name in self.readdir_names(dir) {
+    if self.remote.stopped {
+      return
+    }
+    if !name.has_suffix(".json") {
+      continue
+    }
+    let path = self.rjoin([dir, name])
+    let v = self.read_json(path) catch { _ => continue }
+    if field_of(v, "closing") is True {
+      self.closer(path)
+    }
+  }
+}
+
+///|
+/// Asks each station a closing session used to remove its directory, now and every minute (on the remote tasks' clock)
+/// until all have answered; one round at a time for each record.
+fn Actors::closer(self : Actors, path : String) -> Unit {
+  if self.remote.stopped || self.remote.closing.contains(path) {
+    return
+  }
+  self.remote.closing[path] = true
+  self.closing_round(path)
+}
+
+///|
+fn Actors::closing_round(self : Actors, path : String) -> Unit {
+  self.spawn(() => {
+    let over = (try { self.close_round(path) } catch { _ => false }) || self.remote.stopped
+    if over {
+      self.remote.closing.remove(path)
+      return
+    }
+    ignore(self.rafter(close_every_ms, () => self.closing_round(path)))
+  })
+}
+
+///|
+/// One round of `closer`: whether it is over (the record gone, no longer closing, or every station answered).
+async fn Actors::close_round(self : Actors, path : String) -> Bool raise {
+  let v = self.read_json(path) catch { _ => return true }
+  if !(field_of(v, "closing") is True) {
+    return true
+  }
+  let closed = match field_of(v, "closed") {
+    Array(c) => c
+    _ => []
+  }
+  let pending = match field_of(v, "stations") {
+    Array(s) => s.filter(x => x is String(_) && !closed.contains(x))
+    _ => []
+  }
+  let now = self.remote_now()
+  if pending.length() == 0 || now - as_i64(field_of(v, "since")).unwrap_or(0.0) > close_for_ms {
+    self.used_update(path, now => if field_of(now, "closing") is True { Some(Json::null()) } else { None }) catch {
+      _ => ()
+    }
+    return true
+  }
+  for s in pending {
+    let request : Json = { "method": jstr("session.close"), "workspace": field_of(v, "workspace"), "session": field_of(v, "session") }
+    // An answer, or a refusal (a station from before session directories, or one that no longer takes tasks from
+    // here), is final; no connection is asked again.
+    let done = try {
+      ignore(self.ask(str_of(Some(s)).unwrap_or(""), request))
+      true
+    } catch {
+      e => refused(e)
+    }
+    if done {
+      self.used_update(path, now => match (field_of(now, "closing"), field_of(now, "closed")) {
+        (True, Array(c)) => {
+          let c = c.copy()
+          c.push(s)
+          Some(with_field(now, "closed", Json::array(c)))
+        }
+        _ => None
+      }) catch {
+        _ => ()
+      }
+    }
+  }
+  false
 }

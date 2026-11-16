@@ -6,8 +6,9 @@
 // sessions/<id>/session.json, outgoing/<id>.json, prepared/...), written as it wrote them (remote_files.mbt).
 // Node keeps what is the transport's and the machine's, which this asks of it (`rnode`): the requests to and from the
 // other stations (the bus, a sandbox's), the bytes that go with them (a directory sync's packed requests, which this
-// has the shell pack: dirsync_source.mbt), the folders macOS protects, the load, the cloud's state, the chats' use
-// records.
+// has the shell pack: dirsync_source.mbt), the folders macOS protects, the load, the cloud's state, a room's use and
+// size. The chats' use records (remote/used/<id>.json) are this program's (remote_source.mbt `record_use`), Node told
+// each as it changes (`used`) for what it reads at once.
 
 ///|
 priv struct SyncRun {
@@ -29,6 +30,10 @@ priv struct RemoteState {
   task_owners : Map[String, String]
   owner_tasks : Map[String, Map[String, Bool]]
   unreadable : Map[String, Bool]
+  /// the closing sessions' use records whose stations are being asked to remove their directories (`closer`)
+  closing : Map[String, Bool]
+  /// while a pass holds remote/sessions to its budget (`budget`): the bytes it is over by yet
+  mut over : Double
   mut incoming_stamp : String?
   mut indexing : @effect.Deferred[Unit]?
   mut root : String
@@ -49,6 +54,8 @@ fn RemoteState::new() -> RemoteState {
     task_owners: Map([]),
     owner_tasks: Map([]),
     unreadable: Map([]),
+    closing: Map([]),
+    over: 0.0,
     incoming_stamp: None,
     indexing: None,
     root: "",
@@ -198,9 +205,23 @@ fn Actors::room(self : Actors, workspace : String, peer : String, session : Stri
 }
 
 ///|
-/// A source session's shared directory, made and noted as used (Node's, as vault/secrets.ts asks it at once).
+/// A source session's shared directory, made and noted as used (Node's, as vault/secrets.ts asks it at once), its
+/// record written here when Node says it is to be (at most once a minute).
 async fn Actors::seen(self : Actors, workspace : String, peer : String, session : String) -> String raise {
-  str_of(Some(self.rnode("seen", [jstr(workspace), jstr(peer), jstr(session)]))).unwrap_or("")
+  let got = self.rnode("seen", [jstr(workspace), jstr(peer), jstr(session)])
+  if field_of(got, "write") is True {
+    self.write_session(workspace, peer, session, field_of(got, "now"))
+  }
+  text_of(got, "work")
+}
+
+///|
+/// A source session's room's record (sessions/<id>/session.json): used at `seen`. One not written is let go, as before.
+async fn Actors::write_session(self : Actors, workspace : String, peer : String, session : String, seen : Json) -> Unit {
+  let record = self.rjoin([self.room(workspace, peer, session), "session.json"])
+  self.write_json(record, { "workspace": jstr(workspace), "station": jstr(peer), "session": jstr(session), "seen": seen }) catch {
+    _ => ()
+  }
 }
 
 ///|
@@ -222,14 +243,30 @@ async fn Actors::remote_called(self : Actors, method : String, args : Array[Json
   match method {
     "start" => {
       self.remote.root = str_of(Some(arg(0))).unwrap_or("")
+      self.spawn(() => self.load_used())
       Json::null()
     }
     "attached" => {
       self.spawn(() => try { self.resume() } catch { _ => () })
       self.spawn(() => try { self.push_missed() } catch { _ => () })
+      self.spawn(() => try { self.resume_closing() } catch { _ => () })
+      self.spawn(() => try { self.move_prepared() } catch { _ => () })
       self.sweep_hourly()
       Json::null()
     }
+    "recordUse" =>
+      self.record_use(str_of(Some(arg(0))).unwrap_or(""), str_of(Some(arg(1))).unwrap_or(""), str_of(Some(arg(2))).unwrap_or(""))
+    "closeSession" => self.close_session(str_of(Some(arg(0))).unwrap_or(""), num_of(Some(arg(1))).unwrap_or(0.0))
+    "writeSession" => {
+      self.write_session(str_of(Some(arg(0))).unwrap_or(""), str_of(Some(arg(1))).unwrap_or(""), str_of(Some(arg(2))).unwrap_or(""), arg(3))
+      Json::null()
+    }
+    "movePrepared" => {
+      self.move_prepared()
+      Json::null()
+    }
+    "expire" => jnum(self.expire(num_of(Some(arg(0))).unwrap_or(0.0)).to_double())
+    "budget" => jnum(self.budget(num_of(Some(arg(0))).unwrap_or(0.0), num_of(Some(arg(1))).unwrap_or(0.0)))
     "handle" => {
       let workspace = str_of(Some(arg(0))).unwrap_or("")
       let peer = str_of(Some(arg(1))).unwrap_or("")
@@ -258,10 +295,6 @@ async fn Actors::remote_called(self : Actors, method : String, args : Array[Json
     }
     "revoke" => {
       self.revoke(arg(0), truthy(arg(1)))
-      Json::null()
-    }
-    "unfollow" => {
-      self.unfollow_session(str_of(Some(arg(0))).unwrap_or(""))
       Json::null()
     }
     // (what a directory sync would send of `dir`: the tests compare it with what the TypeScript listed)
