@@ -666,6 +666,9 @@ fn profile_sign_in_node(
           @sf.copy_command_node(x, command, copy=@sf.t("common.copy"), copied=@sf.t("common.copied"))
         })
         @sf.card_foot_node(q, fn(f) {
+          // (where the two have not the room on one line, words set large: the way on the machine a line over 登录,
+          // which keeps the foot's corner, View::wraps' `reverse`)
+          f.wraps(Is(Some(pf_foot_lines)), reverse=true) |> ignore
           @sf.button_node(
             f,
             fn() { if state() == "done" || !needed() { @sf.t("web-pages.signIn.again") } else { @sf.t("web-pages.profiles.signIn") } },
@@ -676,9 +679,11 @@ fn profile_sign_in_node(
           )
           |> ignore
           // (the way to sign in on the machine at the foot's end, in the card's corner concentric with it: where its
-          // words are long (English) it stood just short of the corner, its ground under the hand off the corner's)
-          f.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
+          // words are long (English) it stood just short of the corner, its ground under the hand off the corner's; on a
+          // line of its own, at that line's end)
           f.show(at_once=true, fn() { command() != "" }, fn(x) {
+            x.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)) |> ignore
+            x.box(fn(sp) { sp.grow(Is(1.0)) |> ignore }) |> ignore
             @sf.button_node(
               x,
               // (the short words, the phone's: beside 登录 on a card's foot they fit a phone, the long ones ran past its
@@ -2441,6 +2446,10 @@ let pf_wait_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 ///|
 /// A card's parts apart, what a part of it shows in its own room too (desk_card's gap=S3_5).
 let pf_card_gap : Double = 14.0
+
+///|
+/// A footed card's lines of buttons apart where they go on to another (card_foot's gap between them, 8).
+let pf_foot_lines : Double = 8.0
 
 ///|
 /// A sign-in's step (steps: its words over what is done in it).

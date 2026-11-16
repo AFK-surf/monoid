@@ -167,10 +167,8 @@ let corners_heights_known : Map[String, Int] = Map([
 /// file's card in a chat (published files), a found message in the outline, 决策's chevron, a run's model in its
 /// history's details (its icon and chevron). And what old views hosted in the window's tree show, measured once the
 /// rules took the tree's nodes in each after its parent (#6294, 2026-11-15): a chat's files and references, its
-/// agent's card, 文件's rows, a station's settings, 搜索's results, a login's fill.
+/// agent's card, 文件's rows, a station's settings, a login's fill.
 let corners_first_line_known : Map[String, Int] = Map([
-  ("phone-en search-jobs", 3),
-  ("phone-zh search-jobs", 3),
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
   ("desk-en newchat-preset-new-browse", 2),
@@ -278,7 +276,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en place-stations-tasks", 4),
   ("phone-en place-stations", 2),
   ("phone-en screen-login-fill", 1),
-  ("phone-en search-results", 7),
   ("phone-en service-restart", 1),
   ("phone-en settings-stations-add", 2),
   ("phone-en settings-stations-command", 2),
@@ -310,7 +307,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-zh place-stations-tasks", 4),
   ("phone-zh place-stations", 2),
   ("phone-zh screen-login-fill", 1),
-  ("phone-zh search-results", 7),
   ("phone-zh service-restart", 1),
   ("phone-zh settings-stations-add", 2),
   ("phone-zh settings-stations-command", 2),

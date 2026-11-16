@@ -2942,7 +2942,7 @@ let triple_usual : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=f
 ///|
 /// How one of those used most runs, after its name: a capsule on the words' tint, its words the rows' own colour.
 // kept across runs: a value (no field of it changes)
-let triple_combo : @ui.Style = @ui.css("row h=S5 px=S2 align=ACenter radius=Full bg=Tint")
+let triple_combo : @ui.Style = @ui.css("row min_h=S5 px=S2 align=ACenter radius=Full bg=Tint")
 
 ///|
 // kept across runs: a value (no field of it changes)
