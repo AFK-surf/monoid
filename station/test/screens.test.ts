@@ -1871,14 +1871,17 @@ test("a view the station opens itself (an agent's) shows who has it, driving or 
 });
 
 /// Moves `time` on 100 ms each time the station waits on it, until `done`: its time passes only while it waits, so
-/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is.
-async function passing(time: ReturnType<typeof testClock>, done: () => boolean) {
+/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is. Each
+/// step is what the station does, never a count of the loop's turns between: it began another wait, or `changed` (what `done`
+/// reads) came. Counted in turns (2,000 `setImmediate`s, some 20 ms), a runner slow to answer the helper's socket
+/// failed it before the helper was back (#6587's check-station (1), 2026-11-16).
+async function passing(time: ReturnType<typeof testClock>, done: () => boolean, changed: () => Promise<void>) {
   let seen = time.asked();
   for (let i = 0; i < 2_000 && !done(); i++) {
     if (time.asked() > seen) {
       seen = time.asked();
       await time.adjust(100);
-    } else await new Promise((r) => setImmediate(r));
+    } else await Promise.race([time.begun(seen + 1), changed()]);
   }
   assert.ok(done(), "never came to pass");
 }
@@ -1891,10 +1894,15 @@ test("the helper watched: ended by itself it is started again, once, its window 
   // it still under way as the helper went would start it, as it should).
   let backs = 0;
   let backing: Promise<void> = Promise.resolve();
-  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => (backs++, (backing = desktop.helperBack())) });
+  let told: (() => void)[] = [];
+  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => {
+    backs++;
+    backing = desktop.helperBack();
+    for (const tell of told.splice(0)) tell();
+  } });
   const desktop: Desktop = new Desktop({ supported: true, helper, changed: () => {}, lang: () => "en" });
   const back = async (n: number) => {
-    await passing(time, () => backs === n);
+    await passing(time, () => backs === n, () => new Promise<void>((r) => told.push(r)));
     await backing;
   };
   await assert.rejects(desktop.open({ maxWidth: 1920, maxHeight: 1080, codecs: ["h264"] }));
