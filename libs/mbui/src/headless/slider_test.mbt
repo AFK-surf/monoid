@@ -42,3 +42,34 @@ test "a slider is read out with its range and stepped by a screen reader, keys, 
   t.release(110.0, 15.0)
   assert_eq(told, [55.0, 60.0, 10.0, 60.0, 0.0, 100.0, 50.0])
 }
+
+///|
+test "a vertical slider runs up its height: a press near its foot is near min, near its top near max" {
+  let val = @signals.signal(50.0, same=fn(a : Double, b : Double) { a == b })
+  let told : Array[Double] = []
+  let t = window(fn(root) {
+    @headless.slider(
+      root,
+      fn() { "音量" },
+      fn() { val.get() },
+      min=0.0,
+      max=100.0,
+      step=10.0,
+      thumb_room=20.0,
+      vertical=true,
+      fn(next) {
+        told.push(next)
+        val.set(next)
+      },
+      fn(v, _) { v.width(Is(Some(30.0))).height(Is(Some(220.0))).ground(Is(c_rest)) |> ignore },
+    )
+    |> ignore
+  })
+  let (x, y, _, h) = t.get(Slider, label="音量").rect
+  // 30 over its foot: 20 along the 200 past its thumb room, 10; 30 under its top: 90
+  t.press_at(x + 15.0, y + h - 30.0)
+  t.release(x + 15.0, y + h - 30.0)
+  t.press_at(x + 15.0, y + 30.0)
+  t.release(x + 15.0, y + 30.0)
+  assert_eq(told, [10.0, 90.0])
+}
