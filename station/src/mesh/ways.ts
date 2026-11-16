@@ -238,7 +238,10 @@ export function setWay(ways: Ways, ws: string, way: string, on: boolean): WaysRe
   if (!isKind && relay === null) throw new WaysRefusal("no such way: a relay of the workspace's, or ours, lan, tailnet, direct");
   const id = relay ?? way;
   return ways.change(ws, (now) => {
-    const off = now.off.filter((w) => (id === "ours" ? w !== "ours" && !ours.some((o) => sameUrl(o) === sameUrl(w)) : isKind ? w !== id : sameUrl(w) !== sameUrl(id)));
+    // `ours` on takes back, with it, what the apps of before its one switch turned off alone and the panel no longer
+    // shows: one of still.fail's relays, `lan`, `tailnet`, `direct` (2026-11-16, Hypershell's 北京 and 深圳 off for good)
+    const legacy = (w: string) => w === "lan" || w === "tailnet" || w === "direct" || ours.some((o) => sameUrl(o) === sameUrl(w));
+    const off = now.off.filter((w) => (id === "ours" ? w !== "ours" && !(on && legacy(w)) && !ours.some((o) => sameUrl(o) === sameUrl(w)) : isKind ? w !== id : sameUrl(w) !== sameUrl(id)));
     if (!on) off.push(id);
     const isRelayOff = (u: string) => off.some((w) => sameUrl(w) === sameUrl(u)) || (off.includes("ours") && ours.some((o) => sameUrl(o) === sameUrl(u)));
     if (relays.every(isRelayOff)) throw new WaysRefusal("the last relay stays on: the web app and a device new to the workspace reach its stations by relays alone");

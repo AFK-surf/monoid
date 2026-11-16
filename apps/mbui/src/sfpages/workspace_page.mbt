@@ -716,13 +716,13 @@ fn ws_ways_panel(core : Core, here : Here, from : @sf.Anchor) -> Unit {
     let ways = fn() { items((core.topic)("workspaceWays", { "workspace": str(ws()) }).get().value, "ways") }
     let ours_ways = fn() { ways().filter(fn(w) { text(Some(w), "kind") == "relay" && !flag(Some(w), "own") }) }
     let relays = fn() { ways().filter(fn(w) { flag(Some(w), "own") }).map(fn(w) { text(Some(w), "id") }) }
-    // on only while every one of them is: one turned off alone (by the apps from before this one switch) shows it off,
-    // and turning it on takes them all back (station's mesh/ways.ts `setWay` of `ours`)
-    let ours_on = fn() { ours_ways().iter().all(fn(w) { flag(Some(w), "on") }) }
+    // on only while every one of them is, and the ways that are no relay: one turned off alone (by the apps from before
+    // this one switch) shows it off, and turning it on takes them all back (station's mesh/ways.ts `setWay` of `ours`)
+    let ours_on = fn() { ways().iter().all(fn(w) { flag(Some(w), "own") || flag(Some(w), "on") }) }
     let ours_note = fn() {
       if !manager() {
         ours_ways().map(fn(w) { text(Some(w), "name") }).filter(fn(n) { n != "" }).join("、")
-      } else if relays().is_empty() {
+      } else if relays().is_empty() && ours_on() {
         @sf.t("android-settings.ways.oursNeedOwn")
       } else {
         @sf.t("android-settings.ways.oursNote")

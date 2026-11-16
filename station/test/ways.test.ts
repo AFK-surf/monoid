@@ -208,7 +208,8 @@ test("one of still.fail's relays another workspace of the station's added as its
   assert.deepEqual(stillFails(cloud), ours);
   assert.deepEqual(setWay(ways, WS, PVG, false).off, [PVG]);
   setWay(ways, WS, OURS[1]!, false);
-  assert.deepEqual(setWay(ways, WS, "ours", true).off, [], "one switch takes every one of them back");
+  setWay(ways, WS, "tailnet", false);
+  assert.deepEqual(setWay(ways, WS, "ours", true).off, [], "one switch takes every one of them back, and the kinds no switch shows");
   // Kept across a restart of the station.
   await ways.written();
   assert.deepEqual(new Cloud(data, false).state?.stillfail_relays, ours);
