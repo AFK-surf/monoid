@@ -672,8 +672,12 @@ fn clamp_inst_clip(
     cr : Double,
     cs : Double,
   ) {
-    if a[b + xi] != mx || a[b + yi] != my {
-      let theirs = a[b + xi] == cx && a[b + yi] == cy
+    // (an edge moved by less than a millionth is where it was, as push_box_clip has it (clip_edge_is): the same edge
+    // worked out two ways, its own moved by a slide and the clip it is cut to, parts by that, and its corner squared
+    // there was round where the frame was built whole: a ripple's disc in a card on a page sliding off, its corner 26
+    // built whole and 0 painted alone, sfreplay's station-rename at 120 a second, 2026-11-16)
+    if !clip_edge_is(a[b + xi], mx) || !clip_edge_is(a[b + yi], my) {
+      let theirs = clip_edge_is(a[b + xi], cx) && clip_edge_is(a[b + yi], cy)
       a[b + 24 + j] = if theirs { cr } else { 0.0 }
       a[b + 28 + j] = if theirs { cs } else { 0.0 }
     }
