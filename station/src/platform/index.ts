@@ -236,8 +236,8 @@ export type Platform = {
   // Logins to command-line tools (logins/run.ts, logins/relay.ts).
   /// `program` with `args` in a pseudo-terminal of `cols` × `rows` (stdin a pipe, kept open: closing it ends the
   /// command), as the system's `script` gives one: the program and arguments to start; none where there is no such way
-  /// (Windows: the command runs on pipes).
-  terminal(program: string, args: string[], cols: number, rows: number): [string, string[]] | null;
+  /// (Windows: the command runs on pipes). Where `script` is is looked for off the station's thread.
+  terminalSoon(program: string, args: string[], cols: number, rows: number): Promise<[string, string[]] | null>;
   /// The processes `pid` started, and theirs (not itself).
   descendants(pid: number): Promise<number[]>;
   // Memory, as the station's queue and its watch over the agents' processes read it (jobs/admit.ts, jobs/memory.ts).

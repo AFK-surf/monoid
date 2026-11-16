@@ -677,7 +677,7 @@ export const windows: Platform = {
 
   // No `script`: a login's command runs on pipes (most say their link and code then). No process tree is read: only
   // the command itself is taken to listen.
-  terminal: () => null,
+  terminalSoon: async () => null,
   descendants: async () => [],
   // What is left of the memory says its pressure; the processes are not read (the watch over them is macOS's and Linux's).
   memoryPressure: async () => pressureOfAvailable(freemem(), totalmem()),

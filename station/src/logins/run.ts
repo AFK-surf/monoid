@@ -158,7 +158,8 @@ export class LoginRun {
     if (!this.active) return;
     if (foundEnv !== env) env = platform.prependPath(foundEnv, this.#o.shims) as Record<string, string>;
     keychainOutOfGit(env);
-    const wrapped = platform.terminal(program!, args, COLS, ROWS) ?? [program!, args];
+    const wrapped = (await platform.terminalSoon(program!, args, COLS, ROWS)) ?? [program!, args];
+    if (!this.active) return;
     const r = platform.runnable(wrapped[0], wrapped[1], env);
     let child: ChildProcess;
     try {

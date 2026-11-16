@@ -634,15 +634,15 @@ describe("what a profile runs Devin on", () => {
   });
 
   test("where there is no terminal to sign in in, the sign-in fails at once and says so", async () => {
-    const terminal = platform.terminal;
-    platform.terminal = () => null;
+    const terminal = platform.terminalSoon;
+    platform.terminalSoon = async () => null;
     const logins = new LoginManager(data, { claude: "claude", codex: "codex", devin: "devin" });
     try {
       const job = await logins.start({ id: "nt", runtime: "devin", home: join(data, "no-terminal") }, "en");
       assert.deepEqual([job.state, job.error], ["failed", tr("en", "station.login.devinNoTerminal")]);
       assert.equal(logins.get("nt")?.state, "failed");
     } finally {
-      platform.terminal = terminal;
+      platform.terminalSoon = terminal;
       await logins.close();
     }
   });

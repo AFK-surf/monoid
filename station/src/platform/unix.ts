@@ -309,6 +309,23 @@ function mounts(): string[] {
   return mounted.points;
 }
 
+/// Where Linux's `script` (util-linux's) may be.
+const SCRIPTS = ["/usr/bin/script", "/bin/script"];
+
+/// Platform.terminalSoon, given where Linux's `script` is (none: there is no pseudo-terminal to give).
+function inTerminal(script: string | undefined, program: string, args: string[], cols: number, rows: number): [string, string[]] | null {
+  // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
+  const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
+  // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
+  // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
+  if (MACOS) {
+    const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
+    const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
+    return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
+  }
+  return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
+}
+
 export const unix: Platform = {
   os: OS[process.platform] ?? process.platform,
   buildOs: process.platform === "darwin" || process.platform === "linux" ? process.platform : null,
@@ -612,18 +629,17 @@ export const unix: Platform = {
     return [...new Set(found)].filter(executable);
   },
   hasDisplay: (env) => MACOS || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY),
-  terminal(program, args, cols, rows) {
-    // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
-    const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
-    // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
-    // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
-    if (MACOS) {
-      const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
-      const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
-      return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
+  async terminalSoon(program, args, cols, rows) {
+    let script: string | undefined;
+    if (!MACOS) {
+      for (const p of SCRIPTS) {
+        if ((await stat(p).catch(() => null)) !== null) {
+          script = p;
+          break;
+        }
+      }
     }
-    const script = ["/usr/bin/script", "/bin/script"].find((p) => existsSync(p));
-    return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
+    return inTerminal(script, program, args, cols, rows);
   },
   descendants,
   async inputIdleMs() {

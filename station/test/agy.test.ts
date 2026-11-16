@@ -948,14 +948,14 @@ test("a Google account's tier, as people know its plan; a sign-in's file whole o
 });
 
 test("a Google account's sign-in: refused at once where there is no terminal; without a sign-in its allowance says signed out; its login command", async () => {
-  const terminal = platform.terminal;
-  platform.terminal = () => null;
+  const terminal = platform.terminalSoon;
+  platform.terminalSoon = async () => null;
   const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" });
   try {
     const job = await logins.start({ id: "nt", runtime: "agy", home: join(data, "no-terminal") }, "en");
     assert.deepEqual([job.state, job.error], ["failed", tr("en", "station.login.agyNoTerminal")]);
   } finally {
-    platform.terminal = terminal;
+    platform.terminalSoon = terminal;
     await logins.close();
   }
   const q = await checkQuota({ id: "p", runtime: "agy", home: join(data, "no-signin"), access: { kind: "subscription" } } as never, {}, undefined, undefined, "en");

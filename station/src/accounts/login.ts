@@ -8,7 +8,7 @@
 // - Grok Build: `grok login --device-auth` the same, its link at accounts.x.ai with the code in it; its home is the
 //   profile's grok/ (agents/grok.ts).
 // - Devin: `devin auth login --force-manual-token-flow` prints a link at app.devin.ai; after signing in, the page shows a
-//   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminal).
+//   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminalSoon).
 //   Its sign-in lands in the profile's devin/data/ (XDG_DATA_HOME, agents/devin.ts).
 // - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with an empty directory of its
 //   own as its HOME (<data>/run/agy-login/<profile>-<run>, removed as it ends) and told to keep its sign-in in a file
@@ -254,6 +254,11 @@ export class LoginManager {
 
   /// Starts a sign-in for a subscription profile, replacing any running one.
   async start(profile: LoginProfile, lang: Lang = stationLang()): Promise<LoginJob> {
+    // (a pseudo-terminal where its command reads only from one: looked for first, before anything is recorded)
+    const terminal =
+      profile.runtime === "devin" ? await platform.terminalSoon(this.commands.devin ?? "devin", ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS)
+      : profile.runtime === "agy" ? await platform.terminalSoon(this.commands.agy ?? "agy", [], DEVIN_COLS, DEVIN_ROWS)
+      : null;
     this.cancel(profile.id);
     this.finished.delete(profile.id);
     const noBrowser = this.noBrowserDir;
@@ -285,9 +290,8 @@ export class LoginManager {
       env.XDG_DATA_HOME = devinData(profile.home);
       dirs.push(env.XDG_DATA_HOME);
       pathCommand = this.commands.devin ?? "devin";
-      const wrapped = platform.terminal(pathCommand, ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS);
-      if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
-      [command, args] = wrapped;
+      if (terminal === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
+      [command, args] = terminal;
     } else if (stage !== null) {
       env.HOME = stage;
       // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
@@ -296,9 +300,8 @@ export class LoginManager {
       delete env.SSH_CONNECTION;
       env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
       pathCommand = this.commands.agy ?? "agy";
-      const wrapped = platform.terminal(pathCommand, [], DEVIN_COLS, DEVIN_ROWS);
-      if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.agyNoTerminal"));
-      [command, args] = wrapped;
+      if (terminal === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.agyNoTerminal"));
+      [command, args] = terminal;
     } else {
       env.CODEX_HOME = profile.home;
       [command, args] = [this.commands.codex, ["login", "--device-auth"]];
