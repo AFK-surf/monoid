@@ -1197,16 +1197,86 @@ export class Mesh {
     return !this.#waysFor(addr).some((r) => sameRelay(r, pinned));
   }
 
-  /// Told the ways the station's workspace turned off: each way open to it that goes one of them is closed (the requests
-  /// on it, if any, go on another: `link`).
-  #turnOff(addr: string, off: readonly string[]): void {
-    const was = this.#off.get(addr) ?? [];
-    if (was.length === off.length && was.every((o, i) => o === off[i])) return;
-    if (off.length > 0) this.#off.set(addr, [...off]);
-    else this.#off.delete(addr);
-    for (const w of this.#ways.get(addr) ?? []) if (this.#wayOff(addr, w.link)) w.link.close();
+  /// Told the peer's own relays (`theirs`) and the ways turned off for it (`off`), as they change: what `link` is given,
+  /// told as soon as it is known, not only with the next request. Each way open to it that goes a way it may not now is
+  /// closed; the requests on such a one move first to a way open that it may go and that answers its pings, and where
+  /// none is, the peer is dialled again at once on the ways it may go (the requests on it, if any, go on that: `link`).
+  setWays(addr: string, theirs?: readonly string[], off?: readonly string[]): void {
+    this.#setWays(addr, theirs, off, true);
+  }
+
+  /// `setWays`; not `redial` where a request is opening the link itself (`link`), which dials it.
+  #setWays(addr: string, theirs: readonly string[] | undefined, off: readonly string[] | undefined, redial: boolean): void {
+    let changed = false;
+    let more = false;
+    if (theirs !== undefined) {
+      const was = this.#theirs.get(addr) ?? [];
+      changed = was.length !== theirs.length || was.some((r, i) => r !== theirs[i]);
+      more = theirs.some((r) => !was.some((w) => sameRelay(w, r)));
+      this.#theirs.set(addr, [...theirs]);
+    }
+    if (off !== undefined) {
+      const was = this.#off.get(addr) ?? [];
+      if (was.length !== off.length || was.some((o, i) => o !== off[i])) {
+        changed = true;
+        // (a way turned on again is one more to dial)
+        more ||= was.some((o) => !off.includes(o));
+        if (off.length > 0) this.#off.set(addr, [...off]);
+        else this.#off.delete(addr);
+      }
+    }
+    if (!changed) return;
     const cur = this.current(addr);
-    if (cur !== null && this.#wayOff(addr, cur)) cur.close();
+    const curOff = cur !== null && cur.usable() && this.#wayOff(addr, cur);
+    if (curOff) {
+      const allowed = this.#live(addr).filter((w) => w.link !== cur && w.missed < DEAD_PINGS && !this.#wayOff(addr, w.link));
+      const fresh = allowed.filter((w) => w.missed === 0);
+      const best = this.#best(addr, this.#takeable(addr, fresh.length > 0 ? fresh : allowed));
+      if (best !== null) this.#promote(addr, best, "off");
+    }
+    // Each way it may not go now closed and let go of, with what came over it counted.
+    const ways = this.#ways.get(addr) ?? [];
+    const gone = ways.filter((w) => this.#wayOff(addr, w.link));
+    for (const w of gone) {
+      w.link.close();
+      this.#count(addr, w.link);
+    }
+    if (gone.length > 0) {
+      const left = ways.filter((w) => !gone.includes(w));
+      if (left.length > 0) this.#ways.set(addr, left);
+      else this.#ways.delete(addr);
+    }
+    const curGone = cur !== null && cur.usable() && this.#wayOff(addr, cur);
+    if (curGone) {
+      cur.close();
+      this.#count(addr, cur);
+    }
+    const closed = gone.length > 0 || curGone;
+    if (redial && !this.#closed) {
+      if (curOff && this.current(addr) === cur) {
+        // None left to go on: dialled again now on the ways it may go, not as the next request finds it gone; the relay
+        // endpoints none goes on then let go.
+        this.#env.runner.fork(Effect.andThen(Effect.ignore(this.link(addr, cur.credentials, undefined, undefined, "again"), { log: "Unhandled", message: "link opened" }), this.#letGo()));
+      } else if (this.#links.get(addr)?.result === null) {
+        // Being opened on the ways of before: tried beside on the ways it may go now (the first through on a way it may
+        // not go is let go: `link`).
+        const h = this.#hedges.get(addr);
+        if (h?.tx) {
+          const tx = h.tx;
+          h.tx = null;
+          this.#env.runner.fork(this.#hedge(addr, h.credentials, tx));
+        }
+      } else if (more && cur !== null && cur.usable()) {
+        // A way more it may go (a relay of its own added, one turned on again): dialled now, not at the next EXPLORE_MS;
+        // on the main endpoint, iroh told of the relays it is on.
+        if (this.#mainOn(addr)) this.#endpoint.addAddr({ id: endpointId(addr), relays: this.relaysFor(addr), ips: this.#straightAt(addr) });
+        else {
+          this.#exploredAt.delete(addr);
+          this.#env.runner.fork(this.#explore(addr, cur.credentials));
+        }
+      }
+      if (closed) this.#env.runner.fork(this.#letGo());
+    }
     // (a way turned on again is one more to choose between)
     this.#steerIf(addr);
   }
@@ -1218,8 +1288,7 @@ export class Mesh {
   /// itself), said on the dial's span: whether someone was waiting on a slow dial, or it came about in the background.
   link(addr: string, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      if (theirs !== undefined) this.#theirs.set(addr, [...theirs]);
-      if (off !== undefined) this.#turnOff(addr, off);
+      this.#setWays(addr, theirs, off, false);
       const existing = this.#links.get(addr);
       let fresh = false;
       if (existing) {
@@ -1291,6 +1360,18 @@ export class Mesh {
           span.own("hedged", true);
           link = raced.hedged;
         } else link = yield* Effect.result(first);
+        // Come through on a way the station's ways no longer let it go (told them while it was dialled: `setWays`): let
+        // go, and the one tried beside it on the ways it may go taken, or it dialled on those now.
+        if (link._tag === "Success" && self.#wayOff(addr, link.success)) {
+          link.success.close();
+          const h = self.#hedges.get(addr);
+          const beside = "first" in raced && h !== undefined && h.serial === serial && h.tx === null;
+          if (beside) link = yield* Effect.result(Deferred.await(hedged));
+          if (link._tag === "Success" && self.#wayOff(addr, link.success)) {
+            link.success.close();
+            link = yield* Effect.result(self.#dialAll(addr, self.#endpoint, credentials, fresh, span.context));
+          }
+        }
         if (self.#hedges.get(addr)?.serial === serial) self.#hedges.delete(addr);
         // (asked before `failedIn` says it with the time it failed at)
         const timeout = link._tag === "Failure" && link.failure instanceof OpeningTimeout ? link.failure : null;
@@ -1350,6 +1431,38 @@ export class Mesh {
     for (const w of this.#ways.get(addr) ?? []) w.link.conn.close(0, "woke");
     this.#ways.delete(addr);
     this.#tellHealth(addr);
+  }
+
+  /// Takes one way to the peer at `addr` for gone: `link` (what a stream that went silent came on), or the link
+  /// requests go on where none is named. Only that way is closed while another open way answers its pings: the requests
+  /// move to the best of those (one that answered its last ping first) at once. Where none does, every way is closed
+  /// (`dropLink`) and the peer dialled anew by the next request. 2026-11-16: a stream silent on a slow relay closed every
+  /// way, a quicker one answering every ping among them, again and again.
+  dropWay(addr: string, link?: Link): void {
+    const cur = this.current(addr);
+    const target = link ?? cur;
+    if (target === null) {
+      this.dropLink(addr);
+      return;
+    }
+    const others = this.#live(addr).filter((w) => w.link !== target && w.missed < DEAD_PINGS && !this.#wayOff(addr, w.link));
+    const keep = target !== cur && cur !== null && cur.usable();
+    const fresh = others.filter((w) => w.missed === 0);
+    const best = keep ? null : this.#best(addr, this.#takeable(addr, fresh.length > 0 ? fresh : others));
+    if (!keep && best === null) {
+      this.dropLink(addr);
+      return;
+    }
+    if (best !== null) this.#promote(addr, best, "lost");
+    this.#ways.set(
+      addr,
+      (this.#ways.get(addr) ?? []).filter((w) => w.link !== target),
+    );
+    target.conn.close(0, "lost");
+    this.#count(addr, target);
+    this.#tellHealth(addr);
+    // (its relay's endpoint, none going on it now, let go)
+    this.#env.runner.fork(this.#letGo());
   }
 
   /// Takes over the device key a page kept before the core existed (32 bytes): stored, the endpoint bound anew with
