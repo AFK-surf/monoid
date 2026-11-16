@@ -165,7 +165,7 @@ test "every page opened where what opens waits for what it shows: all its gate a
   if @ui.test_at_a_rate() {
     return
   }
-  @ui.host_image_bytes_known([("src/sfapp/declared_read_wbtest.mbt", 40000000)])
+  @ui.host_image_bytes_known([("src/sfapp/declared_read_wbtest.mbt", 10862)])
   let faults : Array[String] = []
   for s in switch_screens {
     let (name, w, h, platform) = s

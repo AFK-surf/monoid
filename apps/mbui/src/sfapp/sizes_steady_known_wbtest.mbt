@@ -7,10 +7,10 @@ fn init {
   @ui.sizes_steady_known([
     // (the board, at 60 and 120: its columns going from one width to another as the chat beside them slides, a card's
     // words a line fewer once they have the room (words wrap a line at a time, a card's height a line's at once))
-    ("src/sfapp/board_wbtest.mbt", 8),
+    ("src/sfapp/board_wbtest.mbt", 4),
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 中屏's 按天 goes -68 along its
     // row in a frame, 折合费用's -130, the workspace's column -130 in height; the framework's change for answers)
-    ("src/sfapp/answers_still_wbtest.mbt", 4),
+    ("src/sfapp/answers_still_wbtest.mbt", 2),
     // (小屏, a new chat's first words, the core answering a frame or more after: 预设's column comes 52 in a frame, at 60
     // and 120)
     ("src/sfapp/core_pace_presets_wbtest.mbt", 1),
@@ -25,11 +25,10 @@ fn init {
     // in, main -4.82, -12.41, -9.65 a frame round 1566.67, under what is judged; with every way at its exact moment
     // -4.74, -12.83, -9.41, over it. Taken away as the node composer takes its place)
     ("src/sfapp/quote_image_wbtest.mbt", 1),
-    ("src/sfapp/settings_wbtest.mbt", 4),
-    ("src/sfapp/squeeze_wbtest.mbt", 281),
+    ("src/sfapp/settings_wbtest.mbt", 1),
+    ("src/sfapp/squeeze_wbtest.mbt", 1),
     ("src/sfapp/stack_over_wbtest.mbt", 1),
     ("src/sfapp/tape.mbt", 1),
-    ("src/sfapp/viewer_media_over_wbtest.mbt", 1),
     // (the old list's row growing to the 5000 its page says, 中屏 on the tape, at 60: the words and the picture under
     // the page stop dead from 6.1 a frame as the old view's way to that height ends (9.3, 7.5, 6.1, then none). An old
     // fault, on main the same numbers a frame later, at 2066.67, one frame past where its test stopped looking, and

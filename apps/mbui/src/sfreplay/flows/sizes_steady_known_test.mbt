@@ -6,11 +6,8 @@
 fn init {
   @ui.sizes_steady_known([
     ("src/sfapp/tape.mbt", 1),
-    ("src/sfreplay/flows/archive_restore_test.mbt", 1),
     ("src/sfreplay/flows/glass_test.mbt", 1),
     ("src/sfreplay/flows/new_chat_test.mbt", 1),
-    ("src/sfreplay/flows/service_page_test.mbt", 1),
-    ("src/sfreplay/flows/settings_connect_test.mbt", 4),
     ("src/sfreplay/flows/settings_run_settings_test.mbt", 1),
     ("src/sfreplay/flows/settings_vault_item_test.mbt", 1),
     ("src/sfreplay/flows/share_new_chat_test.mbt", 1),
