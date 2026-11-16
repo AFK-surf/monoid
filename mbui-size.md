@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.91 | 123.5 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.7 | 123.15 |
 | [753c9aefd](https://github.com/AFK-surf/monoid/commit/753c9aefdd04834cfbf26549ed1f445a8e20af2a) iOS: the app is an iPad app too, not an iPhone app | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.71 | 117.25 |
 | [499a3a175](https://github.com/AFK-surf/monoid/commit/499a3a1750336e39a72d29270cc1b88c6d305b33) app: a picture in the preview closes by a tap on i | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.71 | 113.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 2.14 | 2.99 | 12.92 | 34.04 | 51.19 | 29.86 | 59.79 | 99.6 | 110.16 |
 | [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.84 | 59.77 | 99.58 | 112.52 |
 | [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 112.62 |
-| [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 2.14 | 2.99 | 12.92 | 34.02 | 51.19 | 29.85 | 59.76 | 99.63 | 120.92 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f69766ea6](https://github.com/AFK-surf/monoid/commit/f69766ea6c9d5818f78fa6f102933347fa7050ac) station: a device's reads say no words of their ow | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
 | [089aaddea](https://github.com/AFK-surf/monoid/commit/089aaddea58eb072f4a7b17ebccdebb9c0e769ee) fix(mbui): auto-switch Windows text to contrast-bo | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.13 |
 | [753c9aefd](https://github.com/AFK-surf/monoid/commit/753c9aefdd04834cfbf26549ed1f445a8e20af2a) iOS: the app is an iPad app too, not an iPhone app | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.41 |
 | [499a3a175](https://github.com/AFK-surf/monoid/commit/499a3a1750336e39a72d29270cc1b88c6d305b33) app: a picture in the preview closes by a tap on i | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.39 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c7b8387a9](https://github.com/AFK-surf/monoid/commit/c7b8387a965451a20bbf36394bb16d044996ce01) station: run the sending side of directory sync in | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [56fc65180](https://github.com/AFK-surf/monoid/commit/56fc65180e0fac5e2395bbd047946ba59a0b4976) mbui: a made-up core answers on its channel as a d | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
 | [a8713cb6c](https://github.com/AFK-surf/monoid/commit/a8713cb6cc348bd591bc8fbe3e5bf92a87430194) station: gather and place retired sessions' files  | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
-| [3f21d94c5](https://github.com/AFK-surf/monoid/commit/3f21d94c5b485a1d39dac75fd1410cdec817df19) app: every page, settings' page, the stations' pla | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.3 |
