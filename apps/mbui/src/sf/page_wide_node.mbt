@@ -58,6 +58,8 @@ fn wide_page_node(
   }
   v.box(made_for=loc, fn(sc) {
     sc.grow(Is(1.0)) |> ignore
+    // (only the block coming to be first or ceasing to be so lays out its top room again, not every block as blocks() grows)
+    let is_first = sc.selected(fn() { blocks().get(0) })
     // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
     sc.scrolls_window(scroll, items, bar=@ui.tree_scroll_bar(), est=pg_block_est, at_once=true, near_foot?, fn(s, item) {
       match item {
@@ -82,8 +84,7 @@ fn wide_page_node(
             col.box(fn(room) {
               room
               .padding(By(fn() {
-                let first = blocks().get(0) == Some(k)
-                (desk_column_in, if first { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
+                (desk_column_in, if is_first(k) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
               }))
               |> ignore
               block(room, k)
