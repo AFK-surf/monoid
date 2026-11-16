@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -139,6 +139,47 @@ test("a conversation the station kept but its CLI does not is not taken up: fail
   await resumed.prompt("again");
   await until(() => ended(events).length === 1);
   await resumed.dispose();
+});
+
+test("a conversation that went from one profile to another and back (P1, P2, P1): the home that wrote it last is brought in whole, what P1 kept of it before gone, its old -wal and -shm too; one P1 wrote last stays as it is", async () => {
+  const homes = mkdtempSync(join(data, "bring-"));
+  const id = "conv-1";
+  const cli = (name: string) => join(geminiDir(join(homes, name)), "antigravity-cli");
+  const put = (name: string, rel: string, text: string, at: number) => {
+    const path = join(cli(name), rel);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+    utimesSync(path, at, at);
+  };
+  // P1 ran it first and kept its database with a -wal and -shm of its own, then P2 took it on and wrote it later (its
+  // CLI ended: its -wal checkpointed into the database and gone).
+  put("P1", `conversations/${id}.db`, "old db", 1_700_000_000);
+  put("P1", `conversations/${id}.db-wal`, "old wal", 1_700_000_000);
+  put("P1", `conversations/${id}.db-shm`, "old shm", 1_700_000_000);
+  put("P1", `brain/${id}/stale.md`, "deleted since", 1_700_000_000);
+  put("P1", `annotations/${id}.pbtxt`, "old seen", 1_700_000_000);
+  put("P2", `conversations/${id}.db`, "new db", 1_700_000_100);
+  put("P2", `brain/${id}/plan.md`, "plan", 1_700_000_100);
+  // (another conversation of P1's is not touched)
+  put("P1", "conversations/other.db-wal", "other wal", 1_700_000_000);
+  assert.equal(await agyBringIn(join(homes, "P1"), id), "P2");
+  const conv = join(cli("P1"), "conversations");
+  assert.equal(readFileSync(join(conv, `${id}.db`), "utf8"), "new db");
+  assert.ok(!existsSync(join(conv, `${id}.db-wal`)), "P1's old -wal is not left beside P2's database");
+  assert.ok(!existsSync(join(conv, `${id}.db-shm`)), "nor its -shm");
+  assert.deepEqual(readdirSync(conv).sort(), [`${id}.db`, "other.db-wal"], "nothing of the copy left beside it");
+  assert.deepEqual(readdirSync(join(cli("P1"), "brain", id)), ["plan.md"], "its brain as P2's, nothing P2 no longer has");
+  assert.ok(!existsSync(join(cli("P1"), "annotations", `${id}.pbtxt`)), "nor an annotation P2 has none of");
+  assert.equal(readFileSync(join(conv, "other.db-wal"), "utf8"), "other wal");
+  assert.equal(await agyBringIn(join(homes, "P1"), id), null, "brought: P1's is as late as P2's, nothing brought again");
+  // P2 writes on with its -wal: brought with it.
+  put("P2", `conversations/${id}.db-wal`, "new wal", 1_700_000_200);
+  assert.equal(await agyBringIn(join(homes, "P1"), id), "P2");
+  assert.equal(readFileSync(join(conv, `${id}.db-wal`), "utf8"), "new wal");
+  // P1 writes it last: it stays as it is.
+  put("P1", `conversations/${id}.db-wal`, "P1 wal", 1_700_000_300);
+  assert.equal(await agyBringIn(join(homes, "P1"), id), null);
+  assert.equal(readFileSync(join(conv, `${id}.db-wal`), "utf8"), "P1 wal");
 });
 
 test("a process that could not reach its backend as the machine came up (no models) is opened again after a wait on the clock; the conversation resumed with its model, never refused as an unknown model", async () => {

@@ -7,7 +7,7 @@
 // transport of the test's (move-world.ts). The rest of the hand-over's tests are chat-handover-back, -moves and -told.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -463,6 +463,77 @@ test("a chat's files go a first time while it works, then only what changed sinc
   assert.ok(seen[1]!.sent > 40 * 1000, "the room went in the first pass");
   assert.equal(o.sentBytes! - seen[1]!.sent, "changed while it was going".length, "held, only what changed since went");
   assert.equal(readFileSync(join(b.rig.session(key).workspace, "f3.txt"), "utf8"), "changed while it was going");
+});
+
+/// What an Antigravity CLI keeps of its conversations in profile `profile`'s home under data directory `data`
+/// (replica/carry.ts `cliKept`).
+const agyCli = (data: string, profile: string) => join(data, "homes", profile, "agy", ".gemini", "antigravity-cli");
+const putFile = (path: string, text: string) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+};
+
+/// A chat of A's with a past Antigravity CLI conversation on account cc (B knows it as ccb, a login lent): its database
+/// with a -wal and its brain as the CLI was running, and another conversation of cc's beside it on both stations.
+async function agyChat(a: ReturnType<ReturnType<typeof world>["get"]>, b: ReturnType<ReturnType<typeof world>["get"]>) {
+  const { key } = await stillfailChat(a);
+  const id = "agy-conv-1";
+  a.rig.store.ranIn(key, id, "cc");
+  a.rig.store.db.prepare("UPDATE runtime_sessions SET runtime = 'agy' WHERE session_key = ? AND id = ?").run(key, id);
+  const cli = agyCli(a.rig.dir, "cc");
+  putFile(join(cli, "conversations", `${id}.db`), "the database as the CLI ran");
+  putFile(join(cli, "conversations", `${id}.db-wal`), "pages not yet in the database");
+  putFile(join(cli, "brain", id, "scratch.txt"), "deleted before it went");
+  putFile(join(cli, "brain", id, "plan.md"), "plan");
+  for (const st of [a, b]) for (const p of ["cc", "ccb"]) putFile(join(agyCli(st.rig.dir, p), "conversations", "other.db-wal"), `another conversation's, ${p}`);
+  // Held after its first pass: its CLI ended, its -wal checkpointed into the database and gone, a file of its brain too.
+  a.onFail = (step) => {
+    if (step !== "held") return;
+    writeFileSync(join(cli, "conversations", `${id}.db`), "the database with its -wal checkpointed in");
+    rmSync(join(cli, "conversations", `${id}.db-wal`));
+    rmSync(join(cli, "brain", id, "scratch.txt"));
+  };
+  return { key, id };
+}
+
+test("an Antigravity CLI conversation whose -wal its first pass sent and which was checkpointed and gone by the second: none of it is left there beside the newer database, nor a file of its brain gone since; another conversation's -wal stays", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, id } = await agyChat(a, b);
+  let first: string[] = [];
+  const there = agyCli(b.rig.dir, "cc");
+  b.placed = () => {
+    if (first.length === 0) first = readdirSync(join(there, "conversations")).sort();
+  };
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.deepEqual(first, [`${id}.db`, `${id}.db-wal`, "other.db-wal"], "its first pass placed the -wal as it was");
+  assert.equal(readFileSync(join(there, "conversations", `${id}.db`), "utf8"), "the database with its -wal checkpointed in");
+  assert.deepEqual(readdirSync(join(there, "conversations")).sort(), [`${id}.db`, "other.db-wal"], "the -wal its second pass did not name is gone");
+  assert.deepEqual(readdirSync(join(there, "brain", id)), ["plan.md"], "and the file of its brain gone there");
+  for (const p of ["cc", "ccb"]) assert.equal(readFileSync(join(agyCli(b.rig.dir, p), "conversations", "other.db-wal"), "utf8"), `another conversation's, ${p}`);
+});
+
+test("such a hand-over failing after its prune there: what was there before of the conversation is put back as it was, another conversation's -wal untouched", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key, id } = await agyChat(a, b);
+  // (B kept the conversation from an earlier trip: its -wal and its brain as they were then)
+  const there = agyCli(b.rig.dir, "cc");
+  putFile(join(there, "conversations", `${id}.db-wal`), "an earlier trip's");
+  putFile(join(there, "brain", id, "scratch.txt"), "an earlier trip's");
+  a.fails.add("counts");
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.notEqual(out.failed, null, "it failed");
+  assert.equal(readFileSync(join(there, "conversations", `${id}.db-wal`), "utf8"), "an earlier trip's", "put back");
+  assert.equal(readFileSync(join(there, "brain", id, "scratch.txt"), "utf8"), "an earlier trip's", "put back");
+  assert.ok(!existsSync(join(there, "conversations", `${id}.db`)), "what it placed where nothing was taken out");
+  assert.ok(!existsSync(join(there, "brain", id, "plan.md")), "what it placed where nothing was taken out");
+  for (const p of ["cc", "ccb"]) assert.equal(readFileSync(join(agyCli(b.rig.dir, p), "conversations", "other.db-wal"), "utf8"), `another conversation's, ${p}`);
 });
 
 test("a failure in the first pass of its files: the chat was never held, works here, and nothing of it is there", async () => {

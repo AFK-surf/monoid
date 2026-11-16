@@ -23,8 +23,9 @@
 // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { appendFile, link, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { appendFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
+import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
@@ -37,7 +38,7 @@ import { CHAT_TABLES, BY_N, MARKS, type ChatTable, type Counts, type ImportCtx, 
 import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
-import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry.ts";
+import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, cliKept, listFile } from "./carry.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
@@ -1544,9 +1545,13 @@ export class Handover {
     return { ok: true, placed: placed.placed, missing: placed.missing };
   }
 
-  /// What the chat's room and transcripts here hold that the lists sent no longer name, removed: this station's own
-  /// gathering of its sessions (as the rows put in say them) against the lists sent, so nothing is touched that a
-  /// gathering leaves out (what a build makes again, what git ignores) nor anything outside its room.
+  /// What the chat's room here holds that the lists sent no longer name, removed: this station's own gathering of its
+  /// sessions (as the rows put in say them) against the lists sent, so nothing is touched that a gathering leaves out
+  /// (what a build makes again, what git ignores) nor anything outside its room; and so what an Antigravity CLI keeps of
+  /// its conversations (carry.ts `cliKept`), by that gathering (under the profile it runs on here) and by what this
+  /// hand-over placed (`placed.txt`: under the profile it ran on there, which a login lent here names otherwise). A
+  /// first pass sends a conversation's `.db-wal` as it is written; its CLI ended, the second finds it checkpointed into
+  /// the `.db` and gone: left beside the newer `.db`, the CLI replayed it into a malformed database (2026-11-16).
   async #prune(i: In): Promise<Json> {
     if (i.carry === null) return { ok: true, removed: 0 };
     const files = inFiles(this.#d.data, i.id);
@@ -1574,6 +1579,17 @@ export class Handover {
     const g = await this.#work.gather(this.#d.data, join(this.#d.data, "stillfail.db"), i.ws, false, mine, undefined, null, i.keys);
     const own = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
     let removed = 0;
+    const cli = (path: string) => {
+      const rel = relative(this.#d.data, path);
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) && cliKept(rel.split(sep));
+    };
+    const prune = async (path: string) => {
+      // (put aside, not removed: one that is dropped puts it back)
+      if (!(await this.#putAside(i, path))) return;
+      removed++;
+      // (a conversation's `brain/<id>/` left empty goes too; a room's directories stay as they are)
+      if (cli(path)) await this.#emptied(dirname(path));
+    };
     for (const s of own.sessions) {
       for (const line of (await readFile(s.at, "utf8").catch(() => "")).split("\n")) {
         if (line === "") continue;
@@ -1583,13 +1599,23 @@ export class Handover {
         } catch {
           continue;
         }
-        if (named.has(path) || !path.startsWith(s.room + sep)) continue;
+        if (named.has(path) || !(path.startsWith(s.room + sep) || cli(path))) continue;
         // (a linked worktree's `.git`, which this station's git made as the chat's worktree was added here, names a
         // repository of this station's: the lists sent never name it, and it stays)
         if (basename(path) === ".git") continue;
-        // (put aside, not removed: one that is dropped puts it back)
-        await this.#putAside(i, path);
-        removed++;
+        named.add(path);
+        await prune(path);
+      }
+    }
+    // (what this hand-over placed of a CLI's conversation that the lists sent now no longer name: a line a file placed,
+    // `<path>\t<hash, size, time>`, read a line at a time, as a room's are as many)
+    const placed = join(dir(this.#d.data), "in", i.id, "placed.txt");
+    if (await stat(placed).then(() => true, () => false)) {
+      for await (const line of createInterface({ input: createReadStream(placed), crlfDelay: Infinity })) {
+        const path = line.slice(0, line.indexOf("\t"));
+        if (path === "" || named.has(path) || !cli(path)) continue;
+        named.add(path);
+        await prune(path);
       }
     }
     await rm(mine, { recursive: true, force: true });
@@ -1738,21 +1764,27 @@ export class Handover {
     }
   }
 
-  async #putAside(i: In, path: string): Promise<void> {
+  /// Whether there was one.
+  async #putAside(i: In, path: string): Promise<boolean> {
+    if (!(await lstat(path).then(() => true, () => false))) return false;
     const aside = inAside(this.#d.data, i.id);
     const list = join(aside, "list.txt");
     const had = await readFile(list, "utf8").catch(() => "");
     const made = await readFile(inMade(this.#d.data, i.id), "utf8").catch(() => "");
-    if (had.split("\n").some((l) => l.split("\t")[0] === path) || made.split("\n").includes(path)) return void (await rm(path, { force: true }));
+    if (had.split("\n").some((l) => l.split("\t")[0] === path) || made.split("\n").includes(path)) {
+      await rm(path, { force: true });
+      return true;
+    }
     await mkdir(aside, { recursive: true });
     const name = `${createHash("sha256").update(path).digest("hex").slice(0, 32)}-${randomBytes(4).toString("hex")}`;
     try {
       await rename(path, join(aside, name));
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw e;
     }
     await writeFile(list, `${path}\t${name}\n`, { flag: "a" });
+    return true;
   }
 
   /// What a hand-over that did not go put in here, taken out: its rows (store `dropImport`) and the files placed where

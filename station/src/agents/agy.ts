@@ -44,33 +44,58 @@ export const agyAccountFile = (home: string) => join(agyHome(home), "account.jso
 export const agyConversations = (home: string) => join(geminiDir(home), "antigravity-cli", "conversations");
 
 /// Conversation `id` brought into the CLI's store of profile home `home` from another home beside it (the station's
-/// `homes/`) that keeps it, where this one does not: its database (and `-wal`), `annotations/<id>.pbtxt` and
-/// `brain/<id>/` (replica/carry.ts `cliKept`), copied, the database last, so that one there is whole. A chat moved from
-/// another station comes with what its CLI kept under the id of the profile it ran on there, which may be known here
-/// by another (a login lent: `sh-…`); `session/load` finds the conversation only in the profile's own `--gemini-dir`.
-/// The name of the home it came from; null where nothing was brought.
+/// `homes/`) that kept it last: its database (and `-wal`), `annotations/<id>.pbtxt` and `brain/<id>/`
+/// (replica/carry.ts `cliKept`). A chat moved from another station comes with what its CLI kept under the id of the
+/// profile it ran on there, which may be known here by another (a login lent: `sh-…`); `session/load` finds the
+/// conversation only in the profile's own `--gemini-dir`. One that went from this profile to another and back (a
+/// quota's switch, a move there and back on another login) finds an older copy here: the home whose database or its
+/// `-wal` was written last is the one taken, here kept where none is later. What comes is that home's whole, never
+/// joined with what was here: its `-wal` with its database, or none (a `-wal` left beside a database it is not of is
+/// replayed into it, which the CLI then finds malformed, 2026-11-16), the `-shm` made again, `annotations` and `brain`
+/// as there. In the order that leaves a database here whole at every step: what was here of it out, the database put,
+/// then its `-wal`. The name of the home it came from; null where nothing was brought.
 export async function agyBringIn(home: string, id: string): Promise<string | null> {
   if (!SESSION_ID.test(id)) return null;
-  const here = join(geminiDir(home), "antigravity-cli");
-  if (await there(join(here, "conversations", `${id}.db`))) return null;
+  const cliOf = (h: string) => join(geminiDir(h), "antigravity-cli");
+  const here = cliOf(home);
   const homes = dirname(home);
+  let best: { name: string; cli: string; at: number } | null = null;
+  const mine = await lastWritten(here, id);
   for (const name of (await readdir(homes).catch(() => [] as string[])).sort()) {
     const other = join(homes, name);
     if (other === home) continue;
-    const cli = join(geminiDir(other), "antigravity-cli");
-    if (!(await there(join(cli, "conversations", `${id}.db`)))) continue;
-    for (const [dir, entry] of [["conversations", `${id}.db-wal`], ["annotations", `${id}.pbtxt`], ["brain", id]] as const) {
-      if (!(await there(join(cli, dir, entry)))) continue;
-      await mkdir(join(here, dir), { recursive: true });
-      await cp(join(cli, dir, entry), join(here, dir, entry), { recursive: true, preserveTimestamps: true });
-    }
-    const db = join(here, "conversations", `${id}.db`);
-    await cp(join(cli, "conversations", `${id}.db`), `${db}.bringing`, { preserveTimestamps: true });
-    await rename(`${db}.bringing`, db);
-    log.info("agy", "a conversation brought into the profile's CLI from another home of the station", { id, from: name, to: home });
-    return name;
+    const at = await lastWritten(cliOf(other), id);
+    if (at !== null && (mine === null || at > mine) && (best === null || at > best.at)) best = { name, cli: cliOf(other), at };
   }
-  return null;
+  if (best === null) return null;
+  const { name, cli } = best;
+  const db = join(here, "conversations", `${id}.db`);
+  await mkdir(join(here, "conversations"), { recursive: true });
+  const fromWal = (await there(join(cli, "conversations", `${id}.db-wal`))) ? join(cli, "conversations", `${id}.db-wal`) : null;
+  // (copied beside first, so that what was here goes only once all of it came)
+  await cp(join(cli, "conversations", `${id}.db`), `${db}.bringing`, { preserveTimestamps: true });
+  if (fromWal !== null) await cp(fromWal, `${db}-wal.bringing`, { preserveTimestamps: true });
+  for (const [dir, entry] of [["annotations", `${id}.pbtxt`], ["brain", id]] as const) {
+    await rm(join(here, dir, entry), { recursive: true, force: true });
+    if (!(await there(join(cli, dir, entry)))) continue;
+    await mkdir(join(here, dir), { recursive: true });
+    await cp(join(cli, dir, entry), join(here, dir, entry), { recursive: true, preserveTimestamps: true });
+  }
+  await rm(`${db}-wal`, { force: true });
+  await rm(`${db}-shm`, { force: true });
+  await rename(`${db}.bringing`, db);
+  if (fromWal !== null) await rename(`${db}-wal.bringing`, `${db}-wal`);
+  log.info("agy", "a conversation brought into the profile's CLI from another home of the station", { id, from: name, to: home });
+  return name;
+}
+
+/// When the CLI at `cli` last wrote conversation `id` (its database's time, or its `-wal`'s where later); null where it
+/// keeps none.
+async function lastWritten(cli: string, id: string): Promise<number | null> {
+  const db = await stat(join(cli, "conversations", `${id}.db`)).catch(() => null);
+  if (db === null) return null;
+  const wal = await stat(join(cli, "conversations", `${id}.db-wal`)).catch(() => null);
+  return Math.max(db.mtimeMs, wal?.mtimeMs ?? 0);
 }
 
 const there = (path: string): Promise<boolean> => stat(path).then(() => true, () => false);
