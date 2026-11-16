@@ -259,11 +259,20 @@ for (const own of OWN.filter((o) => o.runtime === "dsh" || o.runtime === "grok")
       let next: Awaited<ReturnType<typeof ownStation>> | null = null;
       try {
         const [key, thread] = newSession(first.hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
+        // Its reply read by the first station's program and taken by Node, which told the runner so (mb agents.mbt
+        // `take`, before the live view is given the batch): its runner having written it is not enough, the program
+        // may not have read it yet, and a crash then reads none of its turn again (the next station is given it live).
+        let told = false;
+        const watch = first.hub.live.subscribe(key, 0, 0, (m) => {
+          if (m.type === "step" && m.event.kind === "start" && m.event.step === "text") told = true;
+        });
         say(first.hub, thread.id, "ada@x.com", "test-hold");
         await until(() => first.store.getSession(key)?.running === true && first.store.lastTurn(key) !== undefined, "its turn begun");
         const out = outFile(data, runnerId(own.runtime as never, key));
         // (dsh's reply whole, Grok Build's in two chunks: "hold", "ing")
         await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"text":"hold'), "its reply written");
+        await until(() => told, "its reply read by the first station");
+        first.hub.live.unsubscribe(key, watch);
         await first.hub.handOver();
         await first.served.close(1000);
         assert.equal(first.hub.program()?.posted.get("event") ?? 0, 0);

@@ -212,6 +212,8 @@ class Host {
   /// them, else just past the line that ended the last one. Told to its runner with the ack of the line it changed on
   /// (`keepFrom`), which keeps it with that ack: never ahead of what was acknowledged, whatever of the acks is lost.
   private turnFrom = new Map<string, number>();
+  /// Calls off what a taken-up app-server lets go of after ORPHANS_MS (`adopt`).
+  stopOrphans: () => void = () => {};
   private keptFrom = -1;
   /// Where its output's last line read ends: where `keepFrom` goes once no turn runs.
   private readTo = 0;
@@ -308,12 +310,14 @@ class Host {
       host.handedFrom = from;
       host.turnFrom.set(BEFORE, from);
     }
-    wall.after(ORPHANS_MS, () => {
+    host.proc = HostedProcess.adopt(agents, info, host.hostedOptions(`codex app-server ${profile}`, true), null, null);
+    // (armed once there is a process to let go of, called off as it exits or is handed over)
+    host.stopOrphans = wall.after(ORPHANS_MS, () => {
+      if (host.proc.hasExited()) return;
       if (host.turnFrom.delete(BEFORE)) host.reckon(from!);
       // (what came for a thread nobody took up let go: the program says how much in the log)
       if (!host.proc.handed()) host.proc.orphansOff();
     });
-    host.proc = HostedProcess.adopt(agents, info, host.hostedOptions(`codex app-server ${profile}`, true), null, null);
     if (from !== undefined) host.reckon(from);
     return host;
   }
@@ -424,6 +428,7 @@ class Host {
   }
 
   private onExit(said: string, stderr: string) {
+    this.stopOrphans();
     const reason = `codex app-server exited (${said})${stderr === "" ? "" : `: ${stderr}`}`;
     for (const pending of this.pending.values()) pending.reject(new Error(reason));
     this.pending.clear();
@@ -470,6 +475,7 @@ class Host {
   }
 
   detach() {
+    this.stopOrphans();
     this.freeze();
     this.threads.clear();
     this.lives.clear();
@@ -1034,48 +1040,53 @@ export class CodexDriver implements AgentDriver {
     // (each thread's live steps read again by the program, which is given what they are made of: mb agents_codex.mbt
     // `replay`)
     const replay = this.agents.replay();
-    let notices: Json[][] = [];
-    const step = this.options.takeUpBytes ?? TAKE_UP_BYTES;
-    // Since the last tell: lines read, and where it was.
-    let read = 0;
-    let told = keep ?? 0;
-    for await (const { bytes, at: lineAt } of bytesWithin(out, keep ?? 0, at)) {
-      if (++read === TAKE_UP_LINES || lineAt - told >= step) {
-        read = 0;
-        told = lineAt;
-        this.options.taking?.();
-        replay.feed(notices);
-        notices = [];
-        await new Promise((resolve) => setImmediate(resolve));
+    let lives: Record<string, Json>;
+    try {
+      let notices: Json[][] = [];
+      const step = this.options.takeUpBytes ?? TAKE_UP_BYTES;
+      // Since the last tell: lines read, and where it was.
+      let read = 0;
+      let told = keep ?? 0;
+      for await (const { bytes, at: lineAt } of bytesWithin(out, keep ?? 0, at)) {
+        if (++read === TAKE_UP_LINES || lineAt - told >= step) {
+          read = 0;
+          told = lineAt;
+          this.options.taking?.();
+          replay.feed(notices);
+          notices = [];
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        if (untold(bytes)) continue;
+        let msg: Json;
+        try {
+          msg = JSON.parse(bytes.toString("utf8"));
+        } catch {
+          continue;
+        }
+        const thread = msg?.params?.threadId;
+        if (typeof msg?.method !== "string" || typeof thread !== "string") continue;
+        const r = recovered.get(thread) ?? { busy: false, turnId: null, live: NO_LIVE };
+        recovered.set(thread, r);
+        const item = msg.params.item;
+        const notice = item === undefined ? [msg.method, thread] : [msg.method, thread, item?.type ?? null, item?.id ?? null];
+        // (a run of one thread's deltas does to its live steps what one does)
+        const last = notices.at(-1);
+        if (item !== undefined || last === undefined || last.length !== 2 || last[0] !== msg.method || last[1] !== thread) notices.push(notice);
+        if (msg.method === "turn/started") {
+          r.busy = true;
+          if (!began.has(thread)) began.set(thread, lineAt);
+          if (typeof msg.params.turn?.id === "string") r.turnId = msg.params.turn.id;
+        } else if (msg.method === "turn/completed") {
+          began.delete(thread);
+          r.busy = false;
+          r.turnId = null;
+        }
       }
-      if (untold(bytes)) continue;
-      let msg: Json;
-      try {
-        msg = JSON.parse(bytes.toString("utf8"));
-      } catch {
-        continue;
-      }
-      const thread = msg?.params?.threadId;
-      if (typeof msg?.method !== "string" || typeof thread !== "string") continue;
-      const r = recovered.get(thread) ?? { busy: false, turnId: null, live: NO_LIVE };
-      recovered.set(thread, r);
-      const item = msg.params.item;
-      const notice = item === undefined ? [msg.method, thread] : [msg.method, thread, item?.type ?? null, item?.id ?? null];
-      // (a run of one thread's deltas does to its live steps what one does)
-      const last = notices.at(-1);
-      if (item !== undefined || last === undefined || last.length !== 2 || last[0] !== msg.method || last[1] !== thread) notices.push(notice);
-      if (msg.method === "turn/started") {
-        r.busy = true;
-        if (!began.has(thread)) began.set(thread, lineAt);
-        if (typeof msg.params.turn?.id === "string") r.turnId = msg.params.turn.id;
-      } else if (msg.method === "turn/completed") {
-        began.delete(thread);
-        r.busy = false;
-        r.turnId = null;
-      }
+      replay.feed(notices);
+      lives = await replay.done();
+    } finally {
+      replay.close();
     }
-    replay.feed(notices);
-    const lives = await replay.done();
     for (const [thread, r] of recovered) r.live = (lives[thread] as CodexLiveState | undefined) ?? NO_LIVE;
     // Its signature is the profile's if it runs with what the profile says now (the arguments carry the overrides).
     const same = JSON.stringify(info.args) === JSON.stringify(hostArgs(profile));
@@ -1528,12 +1539,15 @@ export class CodexSession implements AgentSession {
 
   /// A snapshot from an older station (or recovery after a crash) has no path. Ask the running app-server without
   /// holding up the handover; if it cannot say, the ordinary transcript lookup still works.
+  /// Where its transcript is, asked of the app-server; `transcriptKnown` resolves once that is known and kept.
   recoverTranscript() {
-    void this.transcriptKnown.then(() => {
-      if (this.transcriptPath !== null || this.state.closed) return;
-      return this.host.request("thread/read", { threadId: this.threadId, includeTurns: false })
-        .then((answer) => { if (!this.state.closed) return this.rememberTranscript(answer?.thread?.path); });
-    }).catch(() => {});
+    this.transcriptKnown = this.transcriptKnown
+      .then(() => {
+        if (this.transcriptPath !== null || this.state.closed) return;
+        return this.host.request("thread/read", { threadId: this.threadId, includeTurns: false })
+          .then((answer) => { if (!this.state.closed) return this.rememberTranscript(answer?.thread?.path); });
+      })
+      .catch(() => {});
   }
 
   mcpUrl() {

@@ -147,8 +147,8 @@ describe("the Codex driver", { concurrency: true }, () => {
     const taken = await next.adopt(options(p, { resume: one.id() }), snapshot, events.push);
     await taken.prompt("say:after");
     await events.until(ended(1));
-    // Rollout recovery reads the filesystem asynchronously, independently of turn completion.
-    await eventually(() => (taken as unknown as { transcriptPath: string | null }).transcriptPath === path);
+    // (where its transcript is, asked of the app-server as it was taken up, kept)
+    await (taken as any).transcriptKnown;
     const listed: string[] = [];
     const real = fs.readdirSync;
     fs.readdirSync = ((dir: fs.PathLike, ...args: unknown[]) => (listed.push(String(dir)), (real as (...xs: unknown[]) => unknown)(dir, ...args))) as typeof real;

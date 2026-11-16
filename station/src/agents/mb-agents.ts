@@ -89,7 +89,9 @@ export class AgentsHost {
   #next = 0;
   readonly #sessions = new Map<number, HostedProcess>();
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
-  readonly #replays = new Map<number, (live: Record<string, Json>) => void>();
+  /// A Codex app-server's output read again (`replay`), from when it is asked: what waits on its live steps, once it
+  /// waits (`done`).
+  readonly #replays = new Map<number, ((live: Record<string, Json>) => void) | null>();
   readonly #ownReplays = new Map<number, { done: (said: Json) => void; failed: (error: Error) => void }>();
   /// The processes whose reading a handover holds (`freeze`, till `thaw`): held again in a program started again.
   readonly #held = new Set<HostedProcess>();
@@ -159,14 +161,14 @@ export class AgentsHost {
       const r = this.#ownReplays.get(said.ownReplayed);
       this.#ownReplays.delete(said.ownReplayed);
       r?.done(said);
-      if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
+      this.#idleIfNone();
       return;
     }
     if (typeof said?.replayed === "number") {
       const done = this.#replays.get(said.replayed);
       this.#replays.delete(said.replayed);
       done?.(said.live ?? {});
-      if (this.#sessions.size === 0) this.#idle();
+      this.#idleIfNone();
       return;
     }
     if (typeof said?.frozen === "number") {
@@ -216,17 +218,27 @@ export class AgentsHost {
   /// What a crash reads again of a Codex app-server's output, given the program a piece at a time (`feed`: each thread's
   /// notification as what its live steps are made of, mb agents_codex.mbt `replay`): each thread's live steps as it
   /// comes to (`done`).
-  replay(): { feed: (notices: Json[][]) => void; done: () => Promise<Record<string, Json>> } {
+  /// It holds the program from when it is asked: another's end while it is fed lets nothing go. `close` once it is
+  /// done with (what was never waited on, or failed on the way, let go).
+  replay(): { feed: (notices: Json[][]) => void; done: () => Promise<Record<string, Json>>; close: () => void } {
     this.#ensure().hold(this.#user, true);
     const id = this.number();
+    this.#replays.set(id, null);
     return {
       feed: (notices) => {
         if (notices.length > 0) this.post({ codexReplay: id, notices });
       },
       done: () => new Promise((resolve) => {
+        // (let go meanwhile, the program's answer already given: none comes)
+        if (!this.#replays.has(id)) return resolve({});
         this.#replays.set(id, resolve);
         this.post({ codexReplayed: id });
       }),
+      close: () => {
+        if (this.#replays.get(id) !== null) return;
+        this.#replays.delete(id);
+        this.#idleIfNone();
+      },
     };
   }
 
@@ -243,6 +255,11 @@ export class AgentsHost {
   }
 
   /// Nothing of it read: the program let go (started again for the next).
+  /// Let go once nothing is read or read again.
+  #idleIfNone() {
+    if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
+  }
+
   #idle() {
     if (this.#proc === null) return;
     const proc = this.#proc;
@@ -263,7 +280,7 @@ export class AgentsHost {
     this.#sessions.delete(p.n);
     this.#held.delete(p);
     // (it runs while it has a process to read: started again for the next)
-    if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
+    this.#idleIfNone();
   }
 
   /// Every process's lines held (the station hands over): each one's turn and live steps as they stand then.
@@ -310,7 +327,7 @@ export class AgentsHost {
   #settle(why = "the program reading agents was let go while it read an output again") {
     for (const done of this.#freezes.values()) done({});
     this.#freezes.clear();
-    for (const done of this.#replays.values()) done({});
+    for (const done of this.#replays.values()) done?.({});
     this.#replays.clear();
     for (const r of this.#ownReplays.values()) r.failed(new Error(why));
     this.#ownReplays.clear();
