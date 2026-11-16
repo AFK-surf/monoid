@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 2.45 | 3.43 | 14.61 | 35.76 | 57.04 | 31.38 | 64.68 | 99.8 | 121.03 |
 | [120fb0394](https://github.com/AFK-surf/monoid/commit/120fb039449ef411858e11d061102c9f710f16f2) mbui: space Han and Latin words an eighth of an em | 2.45 | 3.43 | 14.61 | 35.76 | 57.04 | 31.38 | 64.68 | 99.8 | 121.03 |
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [499a3a175](https://github.com/AFK-surf/monoid/commit/499a3a1750336e39a72d29270cc1b88c6d305b33) app: a picture in the preview closes by a tap on i | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.71 | 113.4 |
 | [0141e628d](https://github.com/AFK-surf/monoid/commit/0141e628d218d9d9b94f95f9d9916f8bf4053fdd) mbui: a list scrolled past what is tucked over its | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.8 | 109.53 |
 | [9b9b7455d](https://github.com/AFK-surf/monoid/commit/9b9b7455d1b4f72a5627b6fa4486283e26207fd5) app: farview.pin to bfd0cec (a Farview tab's page  | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.78 | 117.94 |
-| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 2.42 | 3.36 | 14.22 | 35.34 | 55.45 | 31.01 | 63.37 | 99.7 | 113.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
 | [120fb0394](https://github.com/AFK-surf/monoid/commit/120fb039449ef411858e11d061102c9f710f16f2) mbui: space Han and Latin words an eighth of an em | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [499a3a175](https://github.com/AFK-surf/monoid/commit/499a3a1750336e39a72d29270cc1b88c6d305b33) app: a picture in the preview closes by a tap on i | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.39 |
 | [0141e628d](https://github.com/AFK-surf/monoid/commit/0141e628d218d9d9b94f95f9d9916f8bf4053fdd) mbui: a list scrolled past what is tucked over its | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.49 |
 | [9b9b7455d](https://github.com/AFK-surf/monoid/commit/9b9b7455d1b4f72a5627b6fa4486283e26207fd5) app: farview.pin to bfd0cec (a Farview tab's page  | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
-| [591401d5d](https://github.com/AFK-surf/monoid/commit/591401d5dd686b1a87401f9fffabb51f6b15eddb) mbui: words of no right-to-left character work out | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.55 | 4.11 | 57.28 |
