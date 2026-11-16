@@ -3,7 +3,8 @@
 // of 2026-11-16, 182 s between a VM and its own host). A pack's file that changes or goes as it is read is called off
 // and the rest go on in the same stream (not held), or fails it (held); one meeting no answer is sent again of what the
 // other lacks then; a file larger than the machine's heap goes through it in pieces; and a station from before, either
-// side, is sent a file a request as before.
+// side, is sent a file a request as before. What is sent is awaited as it is, never by `given`: zstd's work is on
+// libuv's threads, which `settle` does not see, so a slower machine "settled" before it was done (CI, 2026-11-16).
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
@@ -17,7 +18,6 @@ import { type Bytes, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import type { Endpoint } from "../src/mesh/native.ts";
 import { AskAgain } from "../src/move/module.ts";
 import { PACK_ENCODING, type PackEntry, type Sending, lackingIn, receiveFile, receivePack, sendGathered } from "../src/replica/sending.ts";
-import { given } from "./hub-fakes.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 import { A, B, WS, stillfailChat, world } from "./move-world.ts";
 
@@ -121,7 +121,7 @@ test("500 small files go in a pack, in zstd: one request where there were 500, a
       names.push(name);
       raw += b.length;
     }
-    const got = await given(settled(sendGathered(gathered(s.here, room, names), s.to(), true)), "the sending ended");
+    const got = await settled(sendGathered(gathered(s.here, room, names), s.to(), true));
     assert.ok("v" in got, `it went: ${"e" in got ? got.e.message : ""}`);
     const puts = s.heard.filter((h) => h.method === "put");
     // (the room's 500 in one pack, then the list in one of its own; the index alone, as a file)
@@ -164,7 +164,7 @@ test("a pack, not held, calls off a file truncated as it is read, one rewritten 
         return s.to().putPack!(entries, asItGoes(), strict);
       },
     });
-    const pass = await given(settled(sendGathered(gathered(s.here, room, names), to, false)), "the pass ended");
+    const pass = await settled(sendGathered(gathered(s.here, room, names), to, false));
     assert.ok("v" in pass, `the pass went on: ${"e" in pass ? pass.e.message : ""}`);
     assert.equal(packs, 1, "one pack: the five in one stream");
     const took = new Set(readdirSync(s.there));
@@ -173,19 +173,19 @@ test("a pack, not held, calls off a file truncated as it is read, one rewritten 
     assert.deepEqual(tmpsIn(s.there), [], "nothing half written left there");
     assert.deepEqual(s.took.map((f) => f.path), [join(room, "a-first.md"), join(room, "e-last.md")], "only those taken told");
     // Held: gathered again, they go as they now are.
-    const again = await given(settled(sendGathered(gathered(s.here, room, ["b-shorter.bin", "c-rewritten.bin"]), s.to(), true)), "the held pass ended");
+    const again = await settled(sendGathered(gathered(s.here, room, ["b-shorter.bin", "c-rewritten.bin"]), s.to(), true));
     assert.ok("v" in again, `held, it went: ${"e" in again ? again.e.message : ""}`);
     for (const n of ["b-shorter.bin", "c-rewritten.bin"]) assert.ok(existsSync(join(s.there, sha(readFileSync(join(room, n))))), `${n} as it now is, there`);
     // Held, one that changes as it is read, or goes, fails the pass in those words (the source's, not "no answer").
     write("f-changing.bin", randomBytes(100_000));
     write("g-going.bin", randomBytes(100_000));
-    const changing = await given(settled(sendGathered(gathered(s.here, room, ["f-changing.bin"]), s.to({
+    const changing = await settled(sendGathered(gathered(s.here, room, ["f-changing.bin"]), s.to({
       putPack: (entries, bytes, strict) => (writeFileSync(join(room, "f-changing.bin"), randomBytes(100_000)), s.to().putPack!(entries, bytes, strict)),
-    }), true)), "the held pass ended");
+    }), true));
     assert.ok("e" in changing && /a file changed as it was sent: gathered again/.test(changing.e.message), `changed: ${"e" in changing ? changing.e.message : "it went"}`);
-    const going = await given(settled(sendGathered(gathered(s.here, room, ["g-going.bin"]), s.to({
+    const going = await settled(sendGathered(gathered(s.here, room, ["g-going.bin"]), s.to({
       putPack: (entries, bytes, strict) => (rmSync(join(room, "g-going.bin")), s.to().putPack!(entries, bytes, strict)),
-    }), true)), "the held pass ended");
+    }), true));
     assert.ok("e" in going && /a file went as it was sent: gathered again/.test(going.e.message), `gone: ${"e" in going ? going.e.message : "it went"}`);
     assert.deepEqual(tmpsIn(s.there), []);
   } finally {
@@ -284,7 +284,7 @@ test("a station from before, either side: one that says nothing of packs is sent
     const room = roomOf(s.here);
     const names = ["a.md", "b.md", "c.md"];
     for (const n of names) writeFileSync(join(room, n), `${n}\n`);
-    const got = await given(settled(sendGathered(gathered(s.here, room, names), s.to(), true)), "the sending ended");
+    const got = await settled(sendGathered(gathered(s.here, room, names), s.to(), true));
     assert.ok("v" in got, `it went: ${"e" in got ? got.e.message : ""}`);
     assert.ok(s.heard.filter((h) => h.method === "put").every((h) => !h.pack), "no pack sent");
     assert.equal(s.heard.filter((h) => h.method === "put").length, 3 + 1 + 1, "a request each file, the list and the index");
