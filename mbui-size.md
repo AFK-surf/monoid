@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [917d06f6b](https://github.com/AFK-surf/monoid/commit/917d06f6b4479bdab783d2041db02ecc3ff9ff72) app tests: real_size's sweep stops working out unh | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 2.45 | 3.44 | 14.63 | 35.79 | 57.1 | 31.4 | 64.73 | 99.96 | 149.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.03 | 63.42 | 99.39 | 140.78 |
 | [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.39 | 125.68 |
 | [5c45cf07b](https://github.com/AFK-surf/monoid/commit/5c45cf07b36fc33f48d030ce6fb7e5a5fb7700ec) fix(mbui): avoid Windows message starvation, 512x5 | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
-| [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [917d06f6b](https://github.com/AFK-surf/monoid/commit/917d06f6b4479bdab783d2041db02ecc3ff9ff72) app tests: real_size's sweep stops working out unh | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.51 |
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.51 |
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6a896dd61](https://github.com/AFK-surf/monoid/commit/6a896dd6166105804c4365dafb0387405993a5c9) relay: the channel first, every bot's places once; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [5c45cf07b](https://github.com/AFK-surf/monoid/commit/5c45cf07b36fc33f48d030ce6fb7e5a5fb7700ec) fix(mbui): avoid Windows message starvation, 512x5 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
-| [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.71 |
