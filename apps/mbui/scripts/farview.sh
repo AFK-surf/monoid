@@ -20,7 +20,8 @@ if [ -n "${FARVIEW_DEPLOY_KEY:-}" ]; then
   urls="git@github.com:AFK-surf/farview.git ssh://git@ssh.github.com:443/AFK-surf/farview.git"
   export GIT_SSH_COMMAND="ssh -i '$tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 fi
-# (each way in turn, three rounds a short wait apart: a failed fetch's half begun repository started again)
+# (each way in turn, three rounds, no wait of a fixed time between (detlint's script-wait): a failed fetch's half
+# begun repository started again)
 fetched=
 for round in 1 2 3; do
   for url in $urls; do
@@ -29,7 +30,6 @@ for round in 1 2 3; do
     if git -C "$tmp/git" fetch -q --depth 1 "$url" "$pin"; then fetched=1; break 2; fi
     echo "farview.sh: fetching from $url failed (round $round)" >&2
   done
-  [ $round = 3 ] || sleep $((round * 2))
 done
 [ -n "$fetched" ] || { echo "farview.sh: farview at $pin not fetched" >&2; exit 1; }
 git -C "$tmp/git" checkout -q FETCH_HEAD
