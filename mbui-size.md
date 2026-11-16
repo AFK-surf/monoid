@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
 | [7a366f66b](https://github.com/AFK-surf/monoid/commit/7a366f66b6a7e7e938fbf480bdfd1ad8cf98b83d) mbui(win): 对齐 macOS CoreText 无 Hinting 纯几何文字光栅化与光学 | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
 | [cffbf7b74](https://github.com/AFK-surf/monoid/commit/cffbf7b74ba5939ea5581258d1b9ffd637eb0ebe) fix(mbui): stay in the profiles or stations place  | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.89 | 109.15 |
 | [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 2.42 | 3.36 | 14.23 | 35.35 | 55.51 | 31.03 | 63.42 | 99.68 | 112.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.62 | 115.86 |
 | [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 | [40cb44854](https://github.com/AFK-surf/monoid/commit/40cb4485494674768d243bd8e1c7e6317bae0158) station: read Codex app-servers' threads in MoonBi | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
-| [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.71 |
 | [7a366f66b](https://github.com/AFK-surf/monoid/commit/7a366f66b6a7e7e938fbf480bdfd1ad8cf98b83d) mbui(win): 对齐 macOS CoreText 无 Hinting 纯几何文字光栅化与光学 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.28 |
 | [cffbf7b74](https://github.com/AFK-surf/monoid/commit/cffbf7b74ba5939ea5581258d1b9ffd637eb0ebe) fix(mbui): stay in the profiles or stations place  | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
 | [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
 | [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
 | [40cb44854](https://github.com/AFK-surf/monoid/commit/40cb4485494674768d243bd8e1c7e6317bae0158) station: read Codex app-servers' threads in MoonBi | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.51 |
-| [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.59 |
