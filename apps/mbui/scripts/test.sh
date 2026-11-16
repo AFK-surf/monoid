@@ -482,7 +482,9 @@ for t in $targets; do
           # fourth, the second's pages on three programs: by the table 720, 355, 386 and 711 s of pages)
           # (dealt so, 43857300626: app 1/4 198 s, 2/4 116, 3/4 188, 4/4 234 with real_size's wide half there; that
           # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
-          *) specs="4,4,72,1 3,4,184,1 2,4,366,1 4,4,125,1" ;;
+          # (real_size's wide half on the fourth since (app_group_of), the second's reckoning raised for what ran there
+          # beside it all the same, 43864771728: by the table 715, 503, 393 and 561 s of pages)
+          *) specs="4,4,72,1 3,4,284,1 2,4,366,1 4,4,225,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -583,7 +585,10 @@ for t in $targets; do
       # (the wide window's on the second since, the one with the most room: on the first beside its pages on four
       # programs it ran 169 s, app 1/4 228 s (#6678's 43854977577); on the fourth 197 s beside its pages and
       # send_steady's three, app 4/4 234 s, where app 2/4 was 116 (43857300626))
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 2 ;;
+      # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
+      # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
+      # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
