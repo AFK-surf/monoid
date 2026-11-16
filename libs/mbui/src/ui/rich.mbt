@@ -1553,7 +1553,7 @@ fn Ctx::emit_rich_glyphs(
   alpha : Double,
   cy0 : Double,
   cy1 : Double,
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double, Double)],
+  unplaced? : Array[UnplacedGlyph],
   center_in? : Double = -1.0,
 ) -> Unit {
   let sc = self.scale
@@ -1613,11 +1613,11 @@ fn Ctx::emit_rich_glyphs(
     }
     // (made at the host's pixels a point; in a shot drawn at more, made that much larger and drawn that much smaller:
     // emit_text)
-    let (key, z) = match zoomed {
+    let (base_key, z) = match zoomed {
       Some(big) if big[c] >= 0 => (big[c], zoom)
       _ => (key, 1.0)
     }
-    let key = glyph_sub(key, ox + lay.xs[c] + lay.pre[c], sc, z)
+    let key = glyph_sub(base_key, ox + lay.xs[c] + lay.pre[c], sc, z)
     if rec_glyph_early(key, sc / zoom, ox + lay.xs[c], top, ox + lay.xs[c] + lay.adv[c], top + lay.line_h[l]) {
       rec_skip(top, top + lay.line_h[l])
       continue
@@ -1644,7 +1644,18 @@ fn Ctx::emit_rich_glyphs(
     // (where it is before it is set on the pixels, for what places it again elsewhere (view_blit), and what its own
     // look moves it by after that)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + lay.xs[c] + lay.pre[c], g.ox / z, top + lay.line_base[l], g.oy / z, gx - set_x, gy - set_y))
+      Some(u) =>
+        u.push({
+          at: self.ninst,
+          x: ox + lay.xs[c] + lay.pre[c],
+          ox: g.ox / z,
+          base: top + lay.line_base[l],
+          oy: g.oy / z,
+          own_x: gx - set_x,
+          own_y: gy - set_y,
+          key: base_key,
+          z,
+        })
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

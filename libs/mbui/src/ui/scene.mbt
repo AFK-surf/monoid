@@ -1130,7 +1130,7 @@ fn Ctx::emit_text(
   center_in? : Double = -1.0,
   spans? : Array[(Int, Int, Int64)] = [],
   font? : (Double, Int, Int, Double),
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double, Double)],
+  unplaced? : Array[UnplacedGlyph],
 ) -> Unit {
   let s = tl.shaped
   let n = s.starts.length()
@@ -1186,7 +1186,8 @@ fn Ctx::emit_text(
     } else {
       0.0
     }
-    let key = glyph_sub(key, ox + dx + tl.xs[c] + s.pad, sc, z)
+    let base_key = key
+    let key = glyph_sub(base_key, ox + dx + tl.xs[c] + s.pad, sc, z)
     if rec_whole.val {
       if rec_glyph_early(key, sc / zoom, ox + tl.xs[c], top, ox + tl.xs[c] + s.adv[c], top + tl.line_h) {
         rec_skip(top, top + tl.line_h)
@@ -1218,7 +1219,18 @@ fn Ctx::emit_text(
     // (where it is before it is set on the pixels, for what places it again elsewhere: a node's words, set on the
     // pixels where the scene composes them, view_blit; what its own look moves it by after that, as here)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + dx + tl.xs[c] + s.pad, g.ox / z, top + tl.ascent, g.oy / z, gx - set_x, gy - set_y))
+      Some(u) =>
+        u.push({
+          at: self.ninst,
+          x: ox + dx + tl.xs[c] + s.pad,
+          ox: g.ox / z,
+          base: top + tl.ascent,
+          oy: g.oy / z,
+          own_x: gx - set_x,
+          own_y: gy - set_y,
+          key: base_key,
+          z,
+        })
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

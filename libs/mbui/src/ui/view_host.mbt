@@ -216,6 +216,21 @@ let view_due_at : Ref[String] = Ref("")
 let view_blocks : ByNode[ViewBlock] = ByNode::new()
 
 ///|
+/// A glyph in a node's `ViewBlock` before it is set on the pixels, with its base key and zoom so its horizontal
+/// subpixel phase on Windows can be updated in place without rebuilding the block.
+priv struct UnplacedGlyph {
+  mut at : Int
+  x : Double
+  mut ox : Double
+  base : Double
+  mut oy : Double
+  own_x : Double
+  own_y : Double
+  key : Int
+  z : Double
+}
+
+///|
 /// A node's instances as made (`inst`, where it is its own) and, made where who drew what is kept (inst_owners_kept:
 /// a Tester's), each one's glyph cell across (`cells`, inst_owners' `cell`): what goes with them wherever they are
 /// composed, the node theirs (contrast.mbt, words_over.mbt).
@@ -234,9 +249,9 @@ priv struct ViewBlock {
   shares : Bool
   solid : Bool
   /// the pixels a point it was made for (its picture's curves cut for them: made again as they change, View::picture)
-  /// and the horizontal layout origin `ux` its subpixel glyph keys were chosen at
+  /// and the horizontal layout origin (`ux - glyphs_carried[0]`) its subpixel glyph keys were chosen at
   scale : Double
-  ux : Double
+  mut ux : Double
   /// the middle of what it draws, from its top left: the box round its instances (what it turns about where it says so,
   /// View::turn)
   drawn_mid : (Double, Double)
@@ -253,10 +268,9 @@ priv struct ViewBlock {
   cut : (Int, Int)
   w : Double
   h : Double
-  /// its glyphs where they are before they are set on the pixels (instance, x, the glyph's own offset across, the
-  /// line's baseline, the glyph's own offset from it), each set on them where the scene composes it, as an old view's
-  /// are where they are painted
-  glyphs : Array[(Int, Double, Double, Double, Double, Double, Double)]
+  /// its glyphs where they are before they are set on the pixels, each set on them where the scene composes it, as an
+  /// old view's are where they are painted
+  glyphs : Array[UnplacedGlyph]
   /// the glyphs it draws from, each where it was in the atlas as it was made (key, u, v): kept there as it is composed
   /// frame after frame, made again once one is not (view_glyphs_held)
   kept : Array[(Int, Double, Double)]
@@ -1938,14 +1952,17 @@ fn Ctx::view_drawn(
       (!tree_streams.is_empty() && tree_streams.contains(c.id)) ||
       (!tree_terminals.is_empty() && tree_terminals.contains(c.id))
     )
+  let origin_x = ux - glyphs_carried[0]
+  let plain_glyphs = c.halo.0 <= 0.0 && tree.glyphs_of(c.id) is None
   let block = match view_blocks.get(c.id) {
     // (made as glass was drawn then: solid or not; a picture or glyphs for the pixels it is drawn at now; its edge where
-    // it was; on Windows, or with a halo or per-glyph look, its glyphs made at this horizontal pixel phase)
+    // it was; with a halo or per-glyph look, made at this horizontal pixel phase; on Windows with plain glyphs, its
+    // glyph slots re-phased in place when `origin_x` crosses a subpixel phase without rebuilding the block)
     Some(b) if (c.glass is None || b.solid == glass_paint.solid) &&
       (c.picture is None || b.scale == self.scale) &&
       (b.glyphs.is_empty() ||
         (b.scale == self.scale &&
-          ((h_platform() != 3 && c.halo.0 <= 0.0 && tree.glyphs_of(c.id) is None) || ride_whole(ux - b.ux, self.scale)))) &&
+          (ride_whole(origin_x - b.ux, self.scale) || (plain_glyphs && (h_platform() != 3 || self.view_rephase(b, origin_x)))))) &&
       b.edge_after == edge_after => b
     _ => {
       // (made where it is its own, cut by nothing it is drawn in: what cuts it is the clip it is composed in, as each
@@ -2369,7 +2386,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   let solid = glass_paint.solid
   let mut glass_at = -1
   let mut cut = (0, 0)
-  let glyphs : Array[(Int, Double, Double, Double, Double, Double, Double)] = []
+  let glyphs : Array[UnplacedGlyph] = []
   // (the glyphs it draws from, told as they are drawn: kept in the atlas as long as it is composed, view_glyphs_held)
   let was_kept = glyphs_kept.val
   let kept : Array[(Int, Double, Double)] = []
@@ -2735,6 +2752,9 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   self.ninst = start
   self.spans_cut()
   glyphs_kept.val = was_kept
+  for gl in glyphs {
+    gl.at = gl.at - start
+  }
   {
     inst,
     cells,
@@ -2745,7 +2765,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
     scale: self.scale,
-    ux: glyph_origin_x.val,
+    ux: glyph_origin_x.val - glyphs_carried[0],
     drawn_mid: inst_middle(inst),
     ground_n,
     edge_after,
@@ -2753,9 +2773,59 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     cut,
     w: c.w,
     h: c.h,
-    glyphs: glyphs.map(fn(g) { (g.0 - start, g.1, g.2, g.3, g.4, g.5, g.6) }),
+    glyphs,
     kept,
   }
+}
+
+///|
+/// Updates a cached `ViewBlock`'s Windows subpixel glyph keys, offsets, and atlas rects in place when `origin_x`
+/// (`ux - glyphs_carried[0]`) shifts by a non-integer pixel amount, avoiding a full `view_made` rebuild.
+fn Ctx::view_rephase(self : Ctx, b : ViewBlock, origin_x : Double) -> Bool {
+  let sc = self.scale
+  let n = b.glyphs.length()
+  if b.kept.length() == n {
+    let mut same = true
+    for i in 0..<n {
+      let gl = b.glyphs[i]
+      if glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z) != b.kept[i].0 {
+        same = false
+        break
+      }
+    }
+    if same {
+      b.ux = origin_x
+      return true
+    }
+  }
+  let zoom = words_zoom.val
+  let was_kept = glyphs_kept.val
+  b.kept.clear()
+  glyphs_kept.val = Some(b.kept)
+  let mut ok = true
+  for i in 0..<n {
+    let gl = b.glyphs[i]
+    let key = glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z)
+    let g = glyph(key, sc / zoom)
+    if g.gw <= 0.0 {
+      ok = false
+      break
+    }
+    gl.ox = g.ox / gl.z
+    gl.oy = g.oy / gl.z
+    let off = gl.at * inst_size
+    b.inst[off + 2] = g.gw / gl.z
+    b.inst[off + 3] = g.gh / gl.z
+    b.inst[off + 12] = g.u
+    b.inst[off + 13] = g.v
+    b.inst[off + 14] = g.gw * (sc / zoom)
+    b.inst[off + 15] = g.gh * (sc / zoom)
+  }
+  glyphs_kept.val = was_kept
+  if ok {
+    b.ux = origin_x
+  }
+  ok
 }
 
 ///|
@@ -2833,10 +2903,9 @@ fn Ctx::view_blit(
   let sc = self.scale
   for gl in made.glyphs {
     // (and moved by its own look after that, View::glyphs_by: as an old view's glyph is, after it is set on the pixels)
-    let (i, gx, gox, base, goy, own_x, own_y) = gl
-    let b = at + i * inst_size
-    s.unsafe_set(b, (if lx == x { on_glyph_col(x + gx, gox, sc) } else { x + on_glyph_col(lx + gx, gox, sc) - lx }) + own_x)
-    s.unsafe_set(b + 1, (if ly == y { on_glyph_row(y, base, goy, sc) } else { y + on_glyph_row(ly, base, goy, sc) - ly }) + own_y)
+    let b = at + gl.at * inst_size
+    s.unsafe_set(b, (if lx == x { on_glyph_col(x + gl.x, gl.ox, sc) } else { x + on_glyph_col(lx + gl.x, gl.ox, sc) - lx }) + gl.own_x)
+    s.unsafe_set(b + 1, (if ly == y { on_glyph_row(y, gl.base, gl.oy, sc) } else { y + on_glyph_row(ly, gl.base, gl.oy, sc) - ly }) + gl.own_y)
   }
   // (its own ground drawn off where it is laid out, bigger and as round as it says (View::ground_drawn): before its
   // glass's capture is told where it is)
