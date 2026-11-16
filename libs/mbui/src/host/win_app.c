@@ -260,6 +260,15 @@ static void picks_between(void) {
 }
 static int presenting = 1;  // the frame under way is put on the screen
 
+static double win_scale(HWND h) {
+  const char *s = getenv("MBUI_SCALE");
+  if (s && *s) {
+    double v = atof(s);
+    if (v > 0) return v;
+  }
+  return GetDpiForWindow(h) / 96.0;
+}
+
 // A frame drawn: a scripted run's steps (MBUI_SCRIPT) go by the first window's.
 static void frame_counted(void) {
   if (win_active != 0) return;
@@ -288,7 +297,7 @@ static void draw_frame(void) {
     return;
   }
   double was = ws->scale;
-  ws->scale = GetDpiForWindow(ws->h) / 96.0;
+  ws->scale = win_scale(ws->h);
   if (ws->scale != was) {
     ime_place();  // the candidate window is placed in pixels
     mb_views_rescale();
@@ -896,13 +905,17 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       break;
     case WM_GETMINMAXINFO: {
+      MINMAXINFO *mm = (MINMAXINFO *)lp;
+      if (getenv("MBUI_WIN")) {
+        if (mm->ptMaxTrackSize.x < 4096) mm->ptMaxTrackSize.x = 4096;
+        if (mm->ptMaxTrackSize.y < 4096) mm->ptMaxTrackSize.y = 4096;
+      }
       // the least the app asked for (@hostapi.window_setup), as a client area at the window's scale
       if (setup_min_w > 0 || setup_min_h > 0) {
         UINT dpi = GetDpiForWindow(h);
-        double k = (dpi ? dpi : 96) / 96.0;
+        double k = win_scale(h);
         RECT r = {0, 0, (LONG)lround(setup_min_w * k), (LONG)lround(setup_min_h * k)};
         window_for_client(&r, dpi);
-        MINMAXINFO *mm = (MINMAXINFO *)lp;
         mm->ptMinTrackSize.x = r.right - r.left;
         mm->ptMinTrackSize.y = r.bottom - r.top;
       }
@@ -1090,7 +1103,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   win_slots[0].h = hwnd;
   // that client area at the monitor's scale
   UINT dpi = GetDpiForWindow(hwnd);
-  ws->scale = dpi / 96.0;
+  ws->scale = win_scale(hwnd);
   RECT r = {0, 0, (LONG)lround(ww * ws->scale), (LONG)lround(wh * ws->scale)};
   window_for_client(&r, dpi);
   // (SWP_FRAMECHANGED: its frame asked for again, an inset window's without the title bar: WM_NCCALCSIZE)

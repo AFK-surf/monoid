@@ -232,7 +232,9 @@ pub fn chat_row_node(
     let hover = fn() { !finger && (@sf.lit_in_node(hover_in) || menu_on()) }
     // (said by its whole row: shown once that is answered, held meanwhile by what reads it here)
     let shows_time = fn() { (hover() || held.get() || (finger && menu_on())) && @sfbase.whole_answered(src, item()) }
-    let archive_key = fn() { !finger && menu_ok() && hover() && !renaming() && !tray.parked.get() }
+    let archive_key = fn() {
+      !finger && menu_ok() && hover() && !renaming() && !tray.parked.get() && @sfbase.whole_answered(src, item())
+    }
     // its ground: a finger's, held or its menu open the ink at 5%, its chat in view the selected one's; a mouse's, the
     // pointer's eased in and out, the selected one's while its chat is in view (nav_ground_by's)
     // a finger's: its chat's page in view, its ground on; gone back from it, the ground stays while the page slides off

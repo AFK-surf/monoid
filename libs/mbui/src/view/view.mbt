@@ -7870,10 +7870,11 @@ fn View::let_go(self : View) -> Unit {
   guard self.live() is Some(n) else { return }
   // (on a flight's way, or one of an id: that flight over, its id counted no more, shared.mbt)
   self.tree.share_let_go(self.at)
-  // (what the pointer is over let go of, it or one it holds: pointed at no more, what holds it told so while it is
-  // still held by them, View::pointed_in; what it is over then the host's to find again, as what takes it changed)
+  // (what the pointer is over let go of, it or one it holds: pointed at what holds it that takes the pointer there
+  // instead, or no more where none does, View::pointed_in; what it is over then the host's to find again, as what takes
+  // it changed)
   if self.tree.pointed_within_at(self.at) {
-    self.tree.pointed_to(None)
+    self.tree.pointed_to(self.tree.pointed_fallback_above(self.at))
   }
   // (what it holds as this begins, each by its handle: one's going may take another out of it (View::lives_with, the
   // tip of a row held beside it in one layer), which is then let go already, its handle on nothing)
@@ -8352,7 +8353,7 @@ fn View::park(self : View, v : View, rest? : Bool = true) -> () -> Unit {
     None => ()
   }
   if self.tree.pointed_within_at(v.at) {
-    self.tree.pointed_to(None)
+    self.tree.pointed_to(self.tree.pointed_fallback_above(v.at))
   }
   self.tree.hold_lost_in(v.at)
   self.tree.focus_lost_in(v.at)
@@ -13424,6 +13425,42 @@ fn Tree::pointed_within_at(self : Tree, at : Int) -> Bool {
     i = self.nodes[i].parent
   }
   false
+}
+
+///|
+/// What enclosing node above `at` takes the pointer at its current place (`self.pointer_xy`) when `at` (which held
+/// `self.pointed`) is let go or parked: the nearest live ancestor that takes presses, drags, or points there, so
+/// `pointed_in` on that ancestor and what holds it stays true without dropping to `None` in between.
+fn Tree::pointed_fallback_above(self : Tree, at : Int) -> NodeId? {
+  guard !self.gone else {
+    self.points_hover = None
+    return None
+  }
+  let (px, py) = self.pointer_xy
+  guard px >= 0.0 && py >= 0.0 else {
+    self.points_hover = None
+    return None
+  }
+  let mut p = self.nodes[at].parent
+  while p > 0 {
+    let m = self.nodes[p]
+    if m.live && !m.slot && !self.letting.contains(p) {
+      let takes = m.points ||
+        (m.on_drag is Some(_) && m.claims is None && m.hold_only is None) ||
+        m.on_press is Some(_)
+      if takes && m.content is Some(c) {
+        let (cx, cy, _, s) = self.projected(p)
+        if self.finger_on(c, cx, cy, s, px, py, self.logic_said(), tracked=false) {
+          let id : NodeId = { at: p, gen: m.gen }
+          self.points_hover = if m.points { Some(id) } else { None }
+          return Some(id)
+        }
+      }
+    }
+    p = m.parent
+  }
+  self.points_hover = None
+  None
 }
 
 ///|
