@@ -15,7 +15,9 @@
 // profile's or station's topic held on open, and `profiles/down` mounts the broken accounts' 需处理 rows.
 // Written again, 2026-11-16: the stations' and the profiles' lists and an account's page made once as nodes on every
 // screen (sfpages stations_list.mbt, profiles_list.mbt): what their old views built is made now, counted as the tree's.
-
+// Written again, 2026-11-16: 已归档 made once as nodes (sfpages archive_node.mbt; the wide sidebar's lane, sfdesk
+// archive_side_node.mbt): what the old view built again at each change of the archive (its last number) is none now,
+// the rows that come or go made and let go in its place.
 ///|
 let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone board stations/host": (0, 0, 0, 0, 0, 0),
@@ -93,8 +95,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone chat-working chat compact/message": (0, 0, 0, 0, 20, 50),
   "phone chat-working chatJobs compact summary/job": (3, 0, 23, 0, 20, 17),
   "phone chat-working live/step": (0, 0, 0, 0, 20, 17),
-  "phone archived archive/down": (0, 0, 0, 0, 0, 101),
-  "phone archived archive/archived": (0, 0, 0, 0, 0, 111),
+  "phone archived archive/down": (68, 64, 55, 13, 0, 0),
+  "phone archived archive/archived": (64, 56, 58, 12, 0, 0),
   "phone place-stations stationNet/sample": (0, 0, 19, 3, 0, 0),
   "phone place-profiles profiles/quota": (0, 0, 0, 0, 0, 0),
   "phone place-profiles profiles/down": (23, 103, 59, 7, 0, 0),
@@ -1154,8 +1156,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-archive connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-archive vaults/item": (0, 0, 0, 0, 0, 0),
   "phone settings-archive profiles/quota": (0, 0, 0, 0, 0, 0),
-  "phone settings-archive archive/down": (0, 0, 0, 0, 0, 112),
-  "phone settings-archive archive/archived": (0, 0, 0, 0, 0, 118),
+  "phone settings-archive archive/down": (68, 64, 55, 13, 0, 0),
+  "phone settings-archive archive/archived": (64, 56, 58, 12, 0, 0),
   "phone settings-archive profiles/down": (0, 0, 7, 0, 0, 0),
   "phone settings-kept connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-kept vaults/item": (0, 0, 0, 0, 0, 0),
@@ -1683,8 +1685,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide chat-working chatJobs compact summary/job": (2, 0, 23, 0, 22, 17),
   "wide chat-working job/job": (0, 0, 0, 0, 22, 17),
   "wide chat-working live/step": (0, 0, 0, 0, 22, 17),
-  "wide archived archive/down": (0, 0, 0, 0, 0, 170),
-  "wide archived archive/archived": (0, 0, 0, 0, 0, 183),
+  "wide archived archive/down": (55, 74, 57, 8, 0, 0),
+  "wide archived archive/archived": (28, 35, 39, 4, 0, 0),
   "wide place-stations station/updating": (0, 0, 0, 0, 0, 0),
   "wide place-stations station/session": (0, 0, 0, 0, 0, 0),
   "wide place-stations station/quota": (0, 0, 0, 0, 0, 0),
@@ -2806,8 +2808,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide settings-usage profiles/down": (0, 0, 22, 2, 0, 0),
   "wide settings-usage usage/usage": (0, 0, 43, 4, 0, 0),
   "wide settings-prices usage/usage": (0, 0, 0, 0, 0, 0),
-  "wide settings-archive archive/down": (0, 0, 0, 0, 0, 105),
-  "wide settings-archive archive/archived": (0, 0, 0, 0, 0, 111),
+  "wide settings-archive archive/down": (101, 97, 85, 15, 0, 0),
+  "wide settings-archive archive/archived": (69, 87, 71, 12, 0, 0),
   "wide settings-archive connects/session": (0, 0, 0, 0, 0, 0),
   "wide settings-archive vaults/item": (0, 0, 0, 0, 0, 0),
   "wide settings-archive profiles/quota": (0, 0, 0, 0, 0, 0),

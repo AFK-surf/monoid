@@ -1401,6 +1401,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "keymap": fixture_keymap(f.keys, send_key=f.send_key),
         // the rail as the core says it (rail.ts railView), none kept: its default
         "railView": match fixture_kept("railView", {}, None) {
+          // (home-foot: no bell in the rail, what it would list in the sidebar's foot)
+          Some(Ok((v, _))) if f.mode.has_prefix("home-foot") => rail_unbelled(v)
           Some(Ok((v, _))) => v
           _ => Json::null()
         },
@@ -1419,7 +1421,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "shareIn" => fixture_share_topic(params)
     "imageNear" => fixture_image_near(params)
     // (待处理 open, Maple offline: decide_fixture.mbt)
-    "chats" if f.mode == "home-attention" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
+    "chats" if f.mode == "home-attention" || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
@@ -2908,3 +2910,40 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
 ///|
 /// How long after 重试 is pressed on chat-turn-failed-repeated its agent fails again alike, one more folded.
 pub let fix_failed_again_ms : Double = 1500.0
+
+///|
+/// The rail as the core says it (`railView`) with no bell in it (home-foot): 待处理 left out of every workspace's.
+fn rail_unbelled(v : Json) -> Json {
+  let out = fn(rail : Json?) -> Json {
+    match rail {
+      Some(Object(r)) => {
+        let o = r.copy()
+        match r.get("items") {
+          Some(Array(xs)) => o["items"] = Json::array(xs.filter(fn(x) { x != Json::string("attention") }))
+          _ => ()
+        }
+        Json::object(o)
+      }
+      Some(x) => x
+      None => Json::null()
+    }
+  }
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      o["all"] = out(m.get("all"))
+      match m.get("by") {
+        Some(Object(by)) => {
+          let b : Map[String, Json] = Map([])
+          for k, r in by {
+            b[k] = out(Some(r))
+          }
+          o["by"] = Json::object(b)
+        }
+        _ => ()
+      }
+      Json::object(o)
+    }
+    _ => v
+  }
+}

@@ -370,6 +370,13 @@ fn tape_made(
         context_node(p)
         @sfpages.about_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    // (已归档, none of its chats beside the side column's list of them: what it is)
+    Archived if pane_makes.val => made("archived", fn(p, _core, _here, _stint, _told, _acts) { archive_main_node(p) })
+    Setting(Archive) if pane_makes.val =>
+      made("archive", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.archive_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
     Setting(Memories) if pane_makes.val =>
       made("memories", fn(p, core, here, _stint, told, _acts) {
         context_node(p)

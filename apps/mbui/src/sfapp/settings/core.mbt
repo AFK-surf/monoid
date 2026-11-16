@@ -522,7 +522,6 @@ let left_core : Ref[Core?] = Ref(None)
 /// A page of the settings left the stack: what it kept goes (its words looked for, a sheet of its own).
 pub fn left(route : Route) -> Unit {
   match route {
-    Archive => archive_reset()
     Connects(_) => connects_mine.val = false
     Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
@@ -556,7 +555,6 @@ pub fn left(route : Route) -> Unit {
 ///|
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
-  archive_reset()
   local_said_kept.val = None
   profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
@@ -644,7 +642,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|

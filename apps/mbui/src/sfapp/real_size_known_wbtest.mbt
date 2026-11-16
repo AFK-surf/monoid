@@ -51,6 +51,9 @@
 
 // Written again, 2026-11-16: the stations' and the profiles' lists and an account's page made once as nodes on every
 // screen (sfpages stations_list.mbt, profiles_list.mbt): what their old views built is made now, counted as the tree's.
+// Raised once, 2026-11-16: 已归档 made once as nodes (sfpages archive_node.mbt, the page; on a wide screen the
+// sidebar's lane, its band and its foot, sfdesk archive_side_node.mbt, side_node.mbt): what their old views built as
+// they opened now made, laid out and measured by the window's tree, nothing more shown.
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone webdemo": (434, 499, 92),
@@ -153,7 +156,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-outline-away": (527, 592, 106),
   "phone chat-outline": (527, 592, 106),
   "phone chat-outline-find": (527, 592, 106),
-  "phone archived": (440, 503, 92),
+  "phone archived": (754, 822, 190),
   "phone history": (420, 504, 86),
   "phone history-details": (381, 483, 124),
   "phone drive": (44, 26, 0),
@@ -345,7 +348,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-memory": (477, 616, 190),
   "phone settings-memory-doc": (370, 464, 126),
   "phone settings-usage": (656, 778, 180),
-  "phone settings-archive": (311, 354, 52),
+  "phone settings-archive": (615, 662, 152),
   "phone settings-kept": (524, 635, 114),
   "phone settings-kept-many": (546, 645, 100),
   "phone settings-vault-off": (582, 689, 124),
@@ -527,7 +530,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide chat-outline-away": (1883, 2095, 302),
   "wide chat-outline": (1883, 2095, 302),
   "wide chat-outline-find": (1883, 2095, 302),
-  "wide archived": (844, 722, 96),
+  "wide archived": (1139, 1351, 248),
   "wide history": (1889, 2101, 304),
   "wide history-details": (1889, 2101, 304),
   "wide drive": (205, 180, 8),
@@ -719,7 +722,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-memory": (620, 796, 228),
   "wide settings-memory-doc": (527, 650, 148),
   "wide settings-usage": (749, 925, 240),
-  "wide settings-archive": (412, 486, 106),
+  "wide settings-archive": (814, 937, 208),
   "wide settings-kept": (651, 818, 176),
   "wide settings-kept-many": (742, 954, 174),
   "wide settings-vault-off": (729, 1591, 412),

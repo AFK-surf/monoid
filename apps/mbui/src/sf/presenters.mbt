@@ -185,6 +185,9 @@ priv struct PanelNodes {
   /// in the middle of the window, this share of its height down from its top, no close button, its room a row's (12)
   /// all round (panel_nodes' `top_share`; 0: in its middle as a dialog)
   top : Double
+  /// beside what opened it, how tall what it holds shows at most before it scrolls in it (panel_nodes' `most`; None: as
+  /// tall as the room beside what opened it leaves it)
+  most : (() -> Double)?
 }
 
 ///|
@@ -678,6 +681,8 @@ pub fn panel(
 /// across, that share of its height down from its top (⌘K's panel's 14%), over the night as a dialog, no close button
 /// (Escape, back and a press outside close it), a row's room (12) in all round, its corner a pane's. `hugs_centred`: as
 /// `hugs` in the middle of the window alone (a sheet on 小屏 keeps its share).
+/// `most`: beside what opened it, what it holds that tall at most, scrolling in its own scroll past that (a popover's
+/// list, as kit's in_room `most`); on 小屏 the sheet's room as ever.
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -705,6 +710,7 @@ pub fn panel_nodes(
   steps? : Bool = false,
   back? : () -> Unit,
   top_share? : Double = 0.0,
+  most? : () -> Double,
 ) -> Unit {
   present(
     Panel({
@@ -734,7 +740,7 @@ pub fn panel_nodes(
       match_panel,
       steps: false,
       on_back: back,
-      nodes: Some({ body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share }),
+      nodes: Some({ body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most }),
     }),
     from,
     gone~,
@@ -806,7 +812,7 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0 }) }
+              let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most }) }
               // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
               panel_page(p, step, p.from, left)
             }

@@ -177,6 +177,41 @@ pub fn rippled_node(
 }
 
 ///|
+/// A button in `parent` of mbui's headless button (`@headless.button`: read out a button named `label()`, `press` done
+/// as it is pressed, however it came), rippling as a finger or the pointer presses it (press_look's, heard through its
+/// `Hold`, as media_key_node's): `look` lays it out and draws it as it is made, saying how round it is (the ripple's
+/// corner, one following where it stands, as its ground's does). The node.
+#callsite(autofill(loc))
+pub fn ripple_button_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  look : (@view.View, @headless.Button) -> @view.Live[Double],
+  loc~ : SourceLoc,
+) -> @view.View {
+  let rippled : Ref[PressLook?] = Ref(None)
+  @headless.button(
+    made_for=loc,
+    parent,
+    label,
+    fn(_) { press() },
+    // (no hold of its own: a finger held on it still presses it as it is let go on it, as rippled_node's)
+    hold=@headless.Hold::new(
+      @ui.touch_slop(),
+      @ui.long_press_ms,
+      fn() { false },
+      down=fn(d) { if rippled.val is Some(r) { (r.down)(d) } },
+      tapped=fn(d) { if rippled.val is Some(r) { (r.tapped)(d) } },
+    ),
+    fn(v, b) {
+      let corner = look(v, b)
+      // (a pointer's press lights its ground: press_ripple's)
+      rippled.val = Some(press_look(loc~, v, corner, fn() { false }, pointer=false))
+    },
+  )
+}
+
+///|
 /// Words of `style` in node `w`, `words` as they are said, cut short on their line where `style` says so: `w=Cut`, or,
 /// on one line, filling it (`w=Full`), as an old view's line of `Fill` says it may be cut (ui's Ctx::squeeze_cut_said).
 fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.TextStyle) -> @view.View {
@@ -365,6 +400,25 @@ pub fn top_bar_actions_lent(v : @view.View) -> Unit {
 /// made, however late.
 pub fn look_node(v : @view.View) -> Look {
   part_of(v).look
+}
+
+///|
+/// A row standing on a page's ground, no card under it (a link row, its words text_in into its own ground), made by
+/// `make` in `parent`, a page's block: reaching out past the block by as much as puts its words on the line the page's
+/// title and its headings start on, its ground (lit under the hand, rippling) past them by its own room: narrow, 12
+/// into the page's room (heading_node's, the title's 24), wide on its column's edge (wide_head_node's title and what is
+/// under it).
+#callsite(autofill(loc))
+pub fn ground_row_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let out = match look_node(parent) {
+    Narrow => text_in - 12.0
+    Wide => text_in
+  }
+  parent.box(made_for=loc, fn(row) {
+    row.margin(Is((-out, 0.0, -out, 0.0))) |> ignore
+    make(row)
+  })
+  |> ignore
 }
 
 ///|
@@ -1375,6 +1429,19 @@ pub fn row_end_button_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   button_node(loc~, parent, label, press, tone=Ghost, busy~, disabled~).margin(Is((0.0, 0.0, -button_padx, 0.0)))
+}
+
+///|
+/// How far the ground of a key standing last on a link row's first line (link_row_node's `control`: a round key as tall
+/// as that line, its end where the row's words end) grows past it over, under and at its end, to stand corner_inset in
+/// from the row's top and end, round by small_corner, concentric with the row's row_corner: a narrow row's room over
+/// its first line and at its end are both text_in, so it stands in the row's corner and follows it (the corner rule's,
+/// at any size of words). None in a wide row (its first line wide_row_over under its top, out of that corner's way).
+pub fn row_end_key_grown(v : @view.View) -> Double {
+  match look_node(v) {
+    Narrow => text_in - corner_inset
+    Wide => 0.0
+  }
 }
 
 ///|

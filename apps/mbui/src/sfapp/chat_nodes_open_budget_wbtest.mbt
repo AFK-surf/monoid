@@ -21,11 +21,13 @@
 /// node, its icon turning with the mode, and the filter's and the stations' releases' keys no box of their own): before
 /// it (782, 38, 885, 150, 778). Again once a paragraph with no link holds no room for its links' cards either (sf
 /// words_links_node: nothing made for them till a link comes), the same at 60, 120, 24 and 7: before it 784, 343, 2569
-/// and 898 made, 683 and 998 made scrolling up.
+/// and 898 made, 683 and 998 made scrolling up. Wide cold made 2 more (2568 before) once the sidebar's band and foot are
+/// made as nodes (lists_band_node beside the system's bars too, lists_foot_node) and not hosted as old views: laid out
+/// 11 fewer (3693) and bindings 2 (2752).
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "phone cold": (783, 38, 894, 148, 784),
   "phone again": (342, 26, 245, 29, 299),
-  "wide cold": (2568, 483, 3693, 560, 2752),
+  "wide cold": (2570, 483, 3682, 560, 2750),
   "wide again": (897, 130, 882, 124, 1202),
   "phone up": (667, 762, 644, 92, 0),
   "wide up": (973, 795, 966, 129, 0),

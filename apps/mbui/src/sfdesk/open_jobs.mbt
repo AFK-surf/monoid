@@ -174,6 +174,13 @@ let open_job_box : @ui.Style = @ui.css("w=Full")
 let open_job_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_25 gap=S2_5 radius=Inner align=ACenter hovered{bg=Hover}")
 
 ///|
+/// A long job's row as nodes (open_job_node's): open_job_row's, what is beside its two lines on the first of them, its
+/// dot's column starting where its group's heading does (its ground reaching out past them by a row's reach); its hover
+/// grey open_job_node's own.
+// kept across runs: a value (no field of it changes)
+let open_job_row_lines : @ui.Style = @ui.css("row w=Full pl=S1_5 pr=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
+
+///|
 /// The dot, in the 16 column the icons of the rows under it take (openJobMark).
 // kept across runs: a value (no field of it changes)
 let open_job_mark : @ui.Style = @ui.css("w=S4 align=ACenter justify=JCenter")
@@ -203,14 +210,25 @@ let open_job_age : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=f
 let open_job_age_hidden : @ui.TextStyle = open_job_age.then(@ui.text_style(color=Clear))
 
 ///|
-/// Where its stop is (openJobStop: 6 from its right, in its middle).
+/// Where its stop is (openJobStop: 6 from the row's end): on its name's line, as far down as the row's words start
+/// (open_job_row_lines' py), across that line's middle (open_job_node gives it
+/// that line's height), as its dot and its time are, never across the middle of its two lines.
 // kept across runs: a value (no field of it changes)
-let open_job_stop_at : @ui.Style = @ui.css("w=Full h=Full pr=S1_5 align=AEnd justify=JCenter")
+let open_job_stop_at : @ui.Style = @ui.css("w=Full mt=S1_25 pr=S1_5 align=AEnd justify=JCenter")
+
+///|
+
 
 ///|
 /// Its stop (openJobStop): 24 square, an option's corner; red on the hover grey pointed at.
 // kept across runs: a value (no field of it changes)
 let open_job_stop : @ui.Style = @ui.css("w=S6 h=S6 radius=Xl align=ACenter justify=JCenter")
+
+///|
+/// Its stop made once (open_job_node's): its 24 square, its mark in its middle, no ground (the row's lit ground is the
+/// hand's look there).
+// kept across runs: a value (no field of it changes)
+let open_job_stop_node : @ui.Style = @ui.css("w=S6 h=S6 align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -228,3 +246,166 @@ let open_jobs_more_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted
 ///|
 // kept across runs: a value (no field of it changes)
 let open_jobs_more_lit : @ui.TextStyle = open_jobs_more_words.then(@ui.text_style(color=Fg))
+
+///|
+/// The workspace's long jobs (OpenJobs, open_jobs') as nodes in `v`, the list the sidebar's foot opens: each group under
+/// its heading, three of it and the rest under 还有 N 个 (pressed: all of it); nothing while there are none.
+fn open_jobs_node(v : @view.View, src : Source, w : Workspace) -> Unit {
+  let groups = fn() { items(src.topic("longJobs", { "scope": Json::string(w.id) }).get().value, "groups") }
+  // (what is said of a stop the pointer rests on: over the panel)
+  let tips = match @sf.panel_tips_of(v) {
+    Some(t) => t
+    None => @sf.TipLayer::new(fn() { None })
+  }
+  // (the groups opened past their first three, as open_jobs_all keeps them for the old view's)
+  let opened : @signals.Signal[Array[String]] = @signals.signal(open_jobs_all.keys().collect())
+  @sf.style_node(v, fn() { open_jobs_box })
+  v.each(
+    fn() { groups().filter(fn(g) { items(Some(g), "jobs").length() > 0 }) },
+    fn(g) { text(Some(g), "key") },
+    fn(gb, g) {
+      let gv = fn() { Some(g.get()) }
+      let key = fn() { text(gv(), "key") }
+      let list = fn() { items(gv(), "jobs") }
+      let shown = fn() {
+        let l = list()
+        if opened.get().contains(key()) || l.length() <= open_jobs_shown + 1 {
+          l
+        } else {
+          l[:open_jobs_shown].to_owned()
+        }
+      }
+      @sf.panel_group_node(gb, fn() { text(gv(), "head") }, fn(rows) {
+        rows.each(shown, fn(j) { text(Some(j), "station") + "/" + text(Some(j), "id") }, fn(row, j) {
+          open_job_node(row, src, tips, fn() { Some(j.get()) })
+        })
+        rows.show(fn() { shown().length() < list().length() }, fn(m) {
+          let label = fn() { @sf.t("web-main.jobs.more", args=[("n", (list().length() - shown().length()).to_string())]) }
+          @headless.button(m, label, fn(_) {
+            let k = @signals.untracked(key)
+            open_jobs_all[k] = true
+            opened.set(opened.untracked() + [k])
+          }, fn(b, _) {
+            @sf.style_node(b, fn() { open_jobs_more })
+            @sf.words_node(b, label, fn() { if @sf.lit_node(b) { open_jobs_more_lit } else { open_jobs_more_words } }) |> ignore
+          })
+          |> ignore
+        })
+      })
+    },
+  )
+}
+
+///|
+/// A job (open_job's) as nodes in `parent`, `job` as it is now: its dot in the icons' 16 column, its name over where it
+/// is, how long it has been up at its end; pointed at (or to a finger, always), its stop over the time. The row leads to
+/// its chat, a service to its 任务 tab there.
+fn open_job_node(parent : @view.View, src : Source, tips : @sf.TipLayer, job : () -> Json?) -> Unit {
+  let station = fn() { text(job(), "station") }
+  let stop_of = fn() { long_stop(station(), job()) }
+  let stopping = fn() {
+    let (call, _, on) = stop_of()
+    core_doing(src, [call], on)
+  }
+  let failed = fn() {
+    let (call, _, on) = stop_of()
+    core_failed(src, [call], on)
+  }
+  parent.box(fn(o) {
+    @sf.style_node(o, fn() { open_job_box })
+    // (no hover to tell: the stop shows over the time)
+    let over = fn() { !@sf.pointer_rests() || @sf.lit_in_node(o) || stopping() }
+    // (the row leads to its chat: a link, pressed as an old view's box with an id is)
+    o.box(fn(b) {
+      @sf.presses_node(b, fn() {
+        let j = @signals.untracked(job)
+        match @sfbase.job_chat(j) {
+          Some(r) => {
+            open_chat_ref(r)
+            if flag(j, "service") {
+              pick_job(text(j, "id"))
+              side_tab_open(src, r, "jobs")
+            }
+          }
+          None => ()
+        }
+      })
+      @sf.style_node(b, fn() { open_job_row_lines.then(jobs_pop_round) })
+      b.says(By(fn() { Some(@view.said(Link, label=text(job(), "name"))) })) |> ignore
+      // (the hover grey while the pointer is on it or on its stop over it, as the old row's: open_job_row's hovered)
+      @sf.hover_ground_node(b, lit=Some(fn() { @sf.lit_in_node(o) }))
+      // (its dot and how long on its name's line, as tall as that line is drawn, never across the middle of its two)
+      let name_line = fn() { @sf.node_sp(b, @ui.tree_theme().text_size(Ui).1) }
+      b.box(fn(m) {
+        @sf.style_node(m, fn() { open_job_mark }, in_row=true)
+        m.height(By(fn() { Some(name_line()) })) |> ignore
+        jobs_pop_dot(m, fn() { text(job(), "tone") })
+      })
+      |> ignore
+      b.box(fn(words) {
+        @sf.style_node(words, fn() { open_job_text }, in_row=true)
+        @sf.words_node(words, fn() { text(job(), "name") }, fn() { open_job_name }) |> ignore
+        @sf.words_node(words, fn() { text(job(), "whereText") }, fn() { open_job_where }) |> ignore
+      })
+      |> ignore
+      b.box(fn(age) {
+        // (its words across that line's middle, as the dot is: open_job_mark's justify)
+        age.height(By(fn() { Some(name_line()) })).lies_along(Is(Middle)) |> ignore
+        // (under its stop while that shows: not drawn, its room kept, so the name's line keeps its end)
+        @sf.words_node(age, fn() { text(job(), "age") }, fn() { open_job_age })
+        .alpha(By(fn() { if over() { 0.0 } else { 1.0 } }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    o.show(over, fn(s) {
+      s.over(Is(true)) |> ignore
+      s.box(fn(at) {
+        @sf.style_node(at, fn() { open_job_stop_at })
+        // (as tall as its name's line is drawn: its 24 stop across that line's middle, past it over and under)
+        at.height(By(fn() { Some(@sf.node_sp(at, @ui.tree_theme().text_size(Ui).1)) })) |> ignore
+        let word = fn() { text(field(job(), "stop"), "word") }
+        let label = fn() {
+          if word() != "" {
+            word() + " " + text(job(), "name")
+          } else {
+            @sf.t("web-main.jobs.stopNamed", args=[("name", text(job(), "name"))])
+          }
+        }
+        @headless.button(at, label, fn(_) {
+          if !@signals.untracked(stopping) {
+            let j = @signals.untracked(job)
+            let (call, params, _) = long_stop(text(j, "station"), j)
+            act(src, @sf.t("web-main.jobs.stopWhat", args=[("name", text(j, "name"))]), "", call, params)
+          }
+        }, fn(k, _) {
+          // (its mark alone, red under the hand: no ground of its own. On its name's line, 6 from the row's end, it stands
+          // 3 under the row's top, in its top end corner, where a ground of its 24 could be concentric with the row's 18
+          // only 3 in and round by 15, more than half of it (the corner rule's: a corner is at most half its side); the
+          // row's ground, lit while the pointer is on it or on its stop, is the hand's look there)
+          @sf.style_node(k, fn() { open_job_stop_node })
+          k.pick(fn() { if stopping() || failed() is Some(_) { 1 } else { 0 } }, fn(p, which) {
+            if which == 1 {
+              @sfpages.doing_mark_node(p, stopping, failed)
+            } else {
+              @sf.icon_node(p, "stop", open_job_stop_icon, By(fn() {
+                if @sf.lit_node(k) {
+                  @sf.theme().p.red
+                } else {
+                  @sf.theme().p.muted
+                }
+              }))
+              |> ignore
+            }
+          })
+          @sf.tip_node(tips, k, fn() { if word() != "" { word() } else { @sf.t("web-main.jobs.stop") } }, side=Top)
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+  })
+  |> ignore
+}

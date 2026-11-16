@@ -597,6 +597,9 @@ fn narrow_made_as(
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
     Setting(Changelog) =>
       made("changelog", fn(p, core, _here, frame, _stint, _acts) { @sfpages.changelog_node(p, core, on_back=core.pop, frame~) })
+    // (已归档 laid out Small: its page, the settings' 已归档)
+    Archived | Setting(Archive) =>
+      made("archive", fn(p, core, here, frame, _stint, _acts) { @sfpages.archive_node(p, core, here, on_back=core.pop, frame~) })
     Setting(Archiving) =>
       made("archiving", fn(p, core, here, frame, stint, _acts) {
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame~, stint~)

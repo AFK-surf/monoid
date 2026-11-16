@@ -2240,7 +2240,7 @@ fn fx_station(address : String) -> Json {
 }
 
 ///|
-fn fx_archive() -> Json {
+fn fx_archive(q? : String = "") -> Json {
   let all = [
     ("a1", "整理上个月的发票", "已经把 23 张发票按月份归好", "14:05", "今天", true),
     ("a2", "试一下新的图标尺寸", "三种尺寸的对比图放在共享文件夹里", "11:30", "今天", true),
@@ -2250,6 +2250,10 @@ fn fx_archive() -> Json {
   let days : Array[(String, Array[Json])] = []
   for a in all {
     if fx.restored.contains("s-" + a.0) {
+      continue
+    }
+    // (looked for: those whose title or last line has the words, as the core's archive search has them)
+    if q != "" && !a.1.contains(q) && !a.2.contains(q) {
       continue
     }
     let row = obj([
@@ -3397,7 +3401,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           details_pending=mode == "settings-usage-details-pending",
         ),
       )
-    "archive" => Some(fx_archive())
+    "archive" =>
+      Some(
+        fx_archive(
+          q=match params.get("q") {
+            Some(String(q)) => q
+            _ => ""
+          },
+        ),
+      )
     "memory" => Some(fx_memory())
     // (settings-me-reading: where the account is signed in not read yet, its wait line shown)
     "loginSessions" if mode.has_prefix("settings-me-reading") => None

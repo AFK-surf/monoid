@@ -3,31 +3,19 @@
 // sidebar beside these pages on a wider one) is sfpages' (settings_list.mbt), drawn by the frame's setting_route.
 
 ///|
-/// A page of the settings, by its route: call for the page the app's stack shows. `root`: a place of the bottom
-/// bar's at the stack's root, under the app's own top bar, so without its compact one. `top`: where
-/// that bar is over the page rather than above it, how far down what it shows starts (it scrolls under the bar).
+/// A page of the settings, by its route, as the app's stack shows it: every route's page is made once as nodes (each
+/// frame's setting_route draws it), so what is left here is what it is drawn in, `frame`'s (its core, where it stands,
+/// the sheet a fixture's mode puts up over it). `root`: a place of the bottom bar's at the stack's root, under the app's
+/// own top bar. `top`: where that bar is over the page rather than above it, how far down what it shows starts.
 pub fn page(
-  c : @ui.Ctx,
+  _c : @ui.Ctx,
   core : Core,
   here : Here,
-  route : Route,
+  _route : Route,
   root? : Bool = false,
   top? : Double = 0.0,
 ) -> Unit {
   frame(core, here, root~, top~)
-  // the wide frame's words as the web's settings pages size them (their rows 13, what is under them 12, a section's
-  // title 14): the scale's body (Lg), secondary (Sm) and values (Base) taken down there, every page's words with them,
-  // and Xl2 (Android's back, 17, which these pages never say) the web's body for a section's title (the desktop's own
-  // pages, ported from the web's, are src/sfdesk's, in the library's sizes)
-  if wide.val {
-    let t = c.theme()
-    c.with_theme({ ..t, text: { ..t.text, lg: wide_body, sm: wide_small, base: wide_body, xl2: wide_heading } }, fn() {
-      route_page(c, core, here, route)
-    })
-  } else {
-    // (laid out by its width, as a page of the library's is: the library's parts in it read it, @sf.look)
-    @sf.with_look(@sf.look_for(c.width), fn() { route_page(c, core, here, route) })
-  }
 }
 
 ///|
@@ -39,32 +27,6 @@ pub fn frame(core : Core, here : Here, root? : Bool = false, top? : Double = 0.0
   root_top.val = if root { top } else { 0.0 }
   left_core.val = Some(core)
   fixture_sheet(core, here)
-}
-
-///|
-/// The wide frame's body words (the web's text-ui: 13 on 20) and what is under them (text-meta: 12 on 18).
-let wide_body : (Double, Double) = (13.0, 20.0)
-
-///|
-let wide_small : (Double, Double) = (12.0, 18.0)
-
-///|
-/// A section's title in the wide frame (the web's text-body: 14 on 22).
-let wide_heading : (Double, Double) = (14.0, 22.0)
-
-///|
-fn route_page(c : @ui.Ctx, core : Core, here : Here, route : Route) -> Unit {
-  match route {
-    Archive => archive_page(c, core, here)
-    // one page for every frame (src/sfpages about.mbt; the list, sfpages' settings_list.mbt), drawn by the frame's
-    // setting_route
-    Home | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Appearance | Experimental | Fonts | BarSettings | Changelog | About | Memories | Memory(_) | AutoDecisions | UsagePrices(_) | Usage | Me | Workspace | Security | SecurityOpen | Vault | VaultItems | VaultItem(_, _) | Connects(_) | Connect(_, _) | Station(_) | Profile(_, _) | NewProfile(_) => ()
-    // (made once in every frame, the stations' and the profiles' lists and an account's page too: sfpages'
-    // stations_list.mbt, profiles_list.mbt)
-    Stations | Profiles(_) | ProfileAccount(_) => ()
-    // the web's desktop pages, one for every frame (src/sfpages), drawn by the frame's setting_route too
-    Shortcuts | Notifications | Permissions | Archiving | StationArchiving(_) | StationMove(_) | LocalStation | MemoryDoc(_, _, _) | AutoCompletion | AutoPolicy(_) => ()
-  }
 }
 
 ///|

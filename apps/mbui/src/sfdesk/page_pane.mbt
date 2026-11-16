@@ -300,6 +300,12 @@ fn pane_made(
       made("memory/" + address, fn(a, core, here, _stint, frame, width) {
         @sfpages.memory_node(a, core, here, address, on_back=core.pop, frame~, width~, tips~)
       })
+    // (已归档, none of its chats beside the sidebar's list of them: what it is)
+    Archived => made("archived", fn(a, _core, _here, _stint, _frame, _width) { archive_main_node(a) })
+    Setting(Archive) =>
+      made("archive", fn(a, core, here, _stint, frame, width) {
+        @sfpages.archive_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
+      })
     Setting(Archiving) =>
       // (its pictures asked for again each time it is come back to, not each frame it stays: nav_flat_view's stint)
       made("archiving", fn(a, core, here, stint, frame, width) {

@@ -27,7 +27,11 @@
 // policy pages 8 to 0). Held by page_fanout_wbtest.mbt.
 // Written again, 2026-11-16: the stations' and the profiles' lists and an account's page made once as nodes on every
 // screen (sfpages stations_list.mbt, profiles_list.mbt): what their old views built is made now, counted as the tree's.
-
+// Added 2026-11-16: 已归档 made once as nodes (sfpages archive_node.mbt; the wide sidebar's lane, sfdesk
+// archive_side_node.mbt), each block held by its own computed: a change of the archive runs those of the blocks it
+// reaches and the rows that come or go, where the old view built the list again uncounted; each row's keys mbui's
+// headless buttons (taking a press and the focus by whether they may) and where and when it was archived read out as
+// how (`how`).
 ///|
 let real_size_bindings_known : Map[String, Int] = {
   "phone home chats/down": 27,
@@ -530,6 +534,10 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-usage profiles/down": 12,
   "phone settings-usage usage/usage": 117,
   "phone settings-prices usage/usage": 2,
+  "phone archived archive/down": 72,
+  "phone archived archive/archived": 72,
+  "phone settings-archive archive/down": 72,
+  "phone settings-archive archive/archived": 72,
   "phone settings-archive profiles/down": 12,
   "phone settings-kept profiles/down": 12,
   "phone settings-kept-many profiles/down": 12,
@@ -705,7 +713,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat-working agentCard/step": 11,
   "wide chat-working agentCard/job": 11,
   "wide chat-working history/step": 15,
-  "wide archived archive/archived": 2,
+  "wide archived archive/down": 71,
+  "wide archived archive/archived": 43,
   "wide place-stations station/host": 13,
   "wide place-stations stationMove to= module=/moving": 32,
   "wide place-stations screens/screen": 67,
@@ -1247,6 +1256,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-usage profiles/down": 6,
   "wide settings-usage usage/usage": 134,
   "wide settings-prices usage/usage": 3,
+  "wide settings-archive archive/down": 112,
+  "wide settings-archive archive/archived": 82,
   "wide settings-archive profiles/down": 6,
   "wide settings-kept profiles/down": 6,
   "wide settings-kept-many profiles/down": 6,

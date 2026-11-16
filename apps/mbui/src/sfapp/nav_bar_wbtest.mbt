@@ -14,6 +14,7 @@ fn standard_head(mode : String) -> String? {
     "settings-run-accounts" => Some("选择账号")
     "settings-profiles" => Some("Profile")
     "settings-stations" => Some("Station")
+    "settings-archive" => Some("已归档")
     _ => None
   }
 }
