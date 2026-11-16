@@ -1761,7 +1761,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               _ => None
             }
           ToEnd => Some(most)
-          Centre(_) => None
+          Centre(_) | BringSought(_, _) => None
         }
         match to {
           // (far from there, more than two of its heights: there at once, as an old view's list's glide far)
@@ -2403,6 +2403,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     // down than its top's place it is put so far in this fill, worked out anew in each pass as the block is measured)
     let mut seeking = false
     let mut sought_by = 0.0
+    // (asked to put what a block marks sought this far under what covers its top: ListPlace::bring_sought)
+    let mut sought_under : Double? = None
     let mut to_end = false
     // (asked: put there, what it was on by itself stopped; else moved by as much as the anchor says)
     let mut asked = false
@@ -2427,6 +2429,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               Bring(k, off, seek) => {
                 seeking = seek
                 (k, Some(off))
+              }
+              BringSought(k, under) => {
+                seeking = true
+                sought_under = Some(under)
+                (k, Some(0.0))
               }
               Centre(k) => (k, None)
               ToEnd => panic()
@@ -2607,8 +2614,14 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         // the block's top shows `-aoff` under the list's top: list_sought.mbt)
         aoff = aoff - sought_by
         sought_by = 0.0
-        match sought_of(all, ai) {
-          Some((y0, y1)) => {
+        match (sought_of(all, ai), sought_under) {
+          // (its top `lead` under what covers the list's top, wherever it lies)
+          (Some((y0, _)), Some(lead)) => {
+            let cover = @signals.untracked(fn() { s.top_covered() })
+            sought_by = y0 - cover - lead - aoff
+            aoff = aoff + sought_by
+          }
+          (Some((y0, y1)), None) => {
             let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
             let mid = (y0 + y1) / 2.0
             if -aoff + mid > cover + 0.8 * (vh - under - cover) {
@@ -2616,7 +2629,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               aoff = aoff + sought_by
             }
           }
-          None => ()
+          (None, _) => ()
         }
       }
       let most = dmax(0.0, whole_now() - vh)
@@ -3718,6 +3731,8 @@ let glide_most : Double = 2.0
 /// the middle.
 priv enum ListAsk[K] {
   Bring(K, Double, Bool)
+  /// what the block marks sought (View::sought) put this far under what covers its top (ListPlace::bring_sought)
+  BringSought(K, Double)
   Centre(K)
   ToEnd
 }
@@ -3772,6 +3787,25 @@ pub fn[K] ListPlace::bring(
   }
   self.asked = Some(Bring(key, offset, sought))
   (self.laid_again)()
+}
+
+///|
+/// Block `key` brought so that what it marks sought (View::sought: a place in its words, where a text was left or a
+/// find goes) stands `under` under what covers the list's top (Scroll::top_covered), its top that far down the room,
+/// wherever in the block it lies, as far as the list goes; where the block marks none, its top there. In one fill, the
+/// block measured as it is laid out (a reader's column opened where it was left: an old view's list scrolled there a
+/// frame after its height was laid out). Not gliding.
+pub fn[K] ListPlace::bring_sought(self : ListPlace[K], key : K, under? : Double = 0.0) -> Unit {
+  self.from = None
+  self.asked = Some(BringSought(key, under))
+  (self.laid_again)()
+}
+
+///|
+/// Whether something asked of it (a block brought, its foot) is still to be done by its list's next layout: what it
+/// has in sight told meanwhile (ListPlace::on_sight, at the input that asked it) is where it was, not where it goes.
+pub fn[K] ListPlace::asking(self : ListPlace[K]) -> Bool {
+  self.asked is Some(_)
 }
 
 ///|

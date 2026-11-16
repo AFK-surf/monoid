@@ -69,10 +69,13 @@ let bars_body : @ui.Style = @ui.style(w=Full, h=@sf.grow)
 /// The status bar's height: what a page's top bar is padded by.
 fn status_top() -> Double {
   let top = @ui.system_bars().top
+  // (whether the buttons are in its top row read first, as the frame began, followed: a node's binding that reads
+  // this (the viewers' room, viewer_host_of) is worked out again as it changes, whatever the width said then)
+  let inset = @ui.window_inset_now()
   // a desktop's window with its buttons in the app's top row (macOS: its title bar the app's; Windows: the app's
   // own buttons, @sf.window_keys), a phone's page in it: the buttons' band over the page, as a status bar is
-  if top == 0.0 && @sf.layout(@ui.current().window_size().0) is Small && @ui.window_inset() {
-    window_band()
+  if top == 0.0 && inset && @sf.layout(@ui.current().window_size().0) is Small {
+    window_band_now()
   } else {
     top
   }

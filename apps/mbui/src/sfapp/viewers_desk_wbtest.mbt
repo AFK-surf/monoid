@@ -215,10 +215,10 @@ test "desk: a drive's text over the whole window, back to its folder; 目录 doc
   // 目录, the first of its four tools
   t.tap(desk_tool_x(3), 22.0)
   let r = @sf.reading_for(reader_key({ station: "ws1/st1", root: Some(fix_docs), path: "长篇小说.txt" }))
-  assert_true(r.panel == @sf.ReaderPanel::Contents)
+  assert_true(r.panel.get() == @sf.ReaderPanel::Contents)
   assert_true(t.find("在全文中搜索") is Some(_))
   t.key(@ui.key_escape)
-  assert_true(r.panel == @sf.ReaderPanel::NoPanel)
+  assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
   t.key(@ui.key_escape)
   assert_false(app.nav.top() is DriveRead(_))
 }
@@ -250,4 +250,16 @@ test "desk: a trackpad's two fingers going down a picture take it down; stopped 
   assert_eq(v.zoom.pulled_at(t.time()), 0.0, msg="a mouse's wheel: not taken down")
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get() is Some(_), msg="a mouse's wheel: open")
+}
+
+///|
+test "desk: a drive's text read on by the wheel: its place on, the bar gone up as it is read on down" {
+  let t = desk_tester("reader")
+  t.run_for(@sf.reader_place_ms)
+  let r = @sf.reading_for(reader_key({ station: "ws1/st1", root: Some(fix_docs), path: "长篇小说.txt" }))
+  let was = r.place.get()
+  t.wheel(640.0, 400.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(r.place.get() != was, msg="read on from \{Repr(was)}: \{Repr(r.place.get())}")
+  assert_true(r.bar_hidden.get(), msg="the bar gone up")
 }

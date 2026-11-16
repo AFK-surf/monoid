@@ -5,7 +5,8 @@
 /// A chip in `parent` (chip's, its own corner): `label`, `icon` before it (none: ""), in `ink` (the words' ink where
 /// none), 30 high and 30 wide at least, 10 in either side where it has words, 10 round; on a tint of its ink, deeper
 /// under the hand; drawn whole in bones. Named `said` (read out a button, its tip in `tips`) where said; `press` done as
-/// it is pressed. The node.
+/// it is pressed. While `disabled()`, at 35%, taking no press. `capsule`: round as a capsule (its half its height), not
+/// 10: where it lies in the corner of a card concentric with it (a reader's chapter's chips, chip's `inner`). The node.
 #callsite(autofill(loc))
 pub fn chip_node(
   parent : @view.View,
@@ -15,6 +16,8 @@ pub fn chip_node(
   ink? : () -> Int64 = fn() { theme().p.text },
   said? : () -> String = fn() { "" },
   tips? : TipLayer,
+  disabled? : () -> Bool = fn() { false },
+  capsule? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.button(
@@ -29,8 +32,9 @@ pub fn chip_node(
       }
     },
     fn(_) { press() },
+    disabled~,
     fn(v, b) {
-      let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
+      let lit = fn() { !disabled() && (b.focus_shown() || b.hovered() || b.pressed()) }
       let hand = EdgeWay::new(0.0)
       v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       v
@@ -41,10 +45,11 @@ pub fn chip_node(
       .gap(Is(2.0))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
-      .radius(Is(10.0))
       .ground(By(fn() { alpha(ink(), 0.07 + 0.05 * hand.shown(v)) }))
+      .alpha(By(fn() { if disabled() { chip_off } else { 1.0 } }))
       .bone_whole(Is(true))
       |> ignore
+      v.radius(Is(if capsule { 15.0 } else { 10.0 })) |> ignore
       if icon != "" {
         icon_node(v, icon, 16.0, By(ink)) |> ignore
       }
@@ -62,6 +67,10 @@ pub fn chip_node(
     },
   )
 }
+
+///|
+/// How a chip that cannot be pressed shows (chip's `disabled`: 35%).
+let chip_off : Double = 0.35
 
 ///|
 fn tone_colours(tone : PillTone) -> (Int64, Int64) {

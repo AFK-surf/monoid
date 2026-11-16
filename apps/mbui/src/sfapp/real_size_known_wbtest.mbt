@@ -28,6 +28,9 @@
 // Raised once, 2026-11-16: the chat's sheets (its info, an agent's card, its services and jobs, its letters) and what is
 // shared made as nodes (sheets.mbt, sheet.mbt, share.mbt): what their old bodies built after the frame they opened in is
 // made, laid out and measured by the window's tree in it, nothing more shown.
+// Raised once, 2026-11-16: the reader (sf reader_node.mbt) and a viewer's stage of a text, a table or a page (sfbase
+// viewer_stage_node.mbt) made as nodes of the window's tree, DriveRead on every screen a page of nodes: what their old
+// views built as they opened now made, laid out and measured by the window's tree, nothing more shown.
 ///|
 let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone webdemo": (434, 499, 92),
@@ -99,10 +102,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-preview-apk": (607, 697, 122),
   "phone chat-preview-audio": (615, 679, 116),
   "phone chat-preview-code": (570, 638, 108),
-  "phone chat-preview-csv": (580, 658, 112),
+  "phone chat-preview-csv": (674, 788, 160),
   "phone chat-preview-html": (580, 658, 112),
   "phone chat-preview-image": (592, 656, 108),
-  "phone chat-preview-md": (541, 600, 106),
+  "phone chat-preview-md": (651, 718, 118),
   "phone chat-preview-none": (602, 691, 120),
   "phone chat-preview-pdf": (570, 638, 108),
   "phone chat-preview-step": (596, 660, 108),
@@ -151,11 +154,11 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone files-tree": (44, 26, 0),
   "phone place-stations": (35, 21, 0),
   "phone place-profiles": (35, 21, 0),
-  "phone reader": (48, 28, 0),
-  "phone reader-bars": (48, 28, 0),
-  "phone reader-contents": (48, 28, 0),
-  "phone reader-layout": (186, 201, 74),
-  "phone reader-md": (48, 28, 0),
+  "phone reader": (103, 84, 2),
+  "phone reader-bars": (152, 157, 22),
+  "phone reader-contents": (240, 277, 49),
+  "phone reader-layout": (289, 359, 99),
+  "phone reader-md": (227, 236, 30),
   "phone newchat": (451, 509, 92),
   "phone newchat-files": (451, 509, 92),
   "phone newchat-lend": (451, 509, 92),
@@ -469,7 +472,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide chat-preview-apk": (1965, 3732, 656),
   "wide chat-preview-audio": (1998, 2225, 318),
   "wide chat-preview-code": (1933, 2144, 312),
-  "wide chat-preview-csv": (1946, 2165, 316),
+  "wide chat-preview-csv": (1992, 2220, 360),
   "wide chat-preview-html": (1946, 2165, 316),
   "wide chat-preview-image": (1954, 2162, 312),
   "wide chat-preview-md": (1898, 2103, 302),
@@ -521,11 +524,11 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide files-tree": (205, 180, 8),
   "wide place-stations": (555, 1088, 272),
   "wide place-profiles": (241, 245, 14),
-  "wide reader": (209, 182, 8),
-  "wide reader-bars": (209, 182, 8),
-  "wide reader-contents": (209, 182, 8),
-  "wide reader-layout": (448, 511, 108),
-  "wide reader-md": (209, 182, 8),
+  "wide reader": (277, 259, 20),
+  "wide reader-bars": (285, 292, 25),
+  "wide reader-contents": (364, 382, 49),
+  "wide reader-layout": (523, 621, 125),
+  "wide reader-md": (401, 404, 48),
   "wide newchat": (1321, 1337, 142),
   "wide newchat-files": (1321, 1337, 142),
   "wide newchat-lend": (1321, 1337, 142),

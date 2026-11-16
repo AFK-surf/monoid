@@ -238,16 +238,14 @@ pub fn open_drive_fixture(mode : String) -> Unit {
       app.nav.push(DriveRead(at))
       let r = @sf.reading_for(reader_key(at))
       if mode != "reader" && mode != "reader-md" {
-        r.chrome = true
+        r.chrome.set(true)
       }
       if mode == "reader-contents" {
-        r.panel = @sf.ReaderPanel::Contents
-        r.contents_put = false
+        r.panel.set(@sf.ReaderPanel::Contents)
       }
       if mode == "reader-layout" {
         // (the layout's panel, nodes of the window's tree, told it is open)
         @sf.reader_panel_set(r, @sf.ReaderPanel::Layout)
-        r.contents_put = false
       }
     }
     // (chat-station-files: ＋'s Station 文件 put up as the app's source is made, fixture_station_files)

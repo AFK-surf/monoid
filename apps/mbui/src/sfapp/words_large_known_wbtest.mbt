@@ -10,7 +10,6 @@
 let words_large_known : Map[String, Int] = {
   let known = Map([])
   for k in [
-    ("phone-zh chat-preview-csv", 6),
     ("phone-zh chat-screens", 4),
     ("phone-zh share-card", 3),
     ("phone-zh share-card-dark", 3),
@@ -45,7 +44,7 @@ let words_large_known : Map[String, Int] = {
     ("phone-en chat-info", 2),
     ("phone-en chat-letters-info", 4),
     ("phone-en chat-info-pulls", 2),
-    ("phone-en chat-preview-csv", 7),
+    ("phone-en chat-preview-csv", 1),
     ("phone-en chat-preview-html", 1),
     ("phone-en chat-publish", 1),
     ("phone-en chat-screens", 4),

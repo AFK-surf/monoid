@@ -7,7 +7,7 @@
 
 ///|
 /// The file `at.path` of `at.root` on `at.station`, as its folder (the `drive` topic, as last read) lists it.
-pub fn drive_viewer_file(c : @ui.Ctx, src : Source, at : DriveAt) -> @sf.ViewerFile {
+pub fn drive_viewer_file(src : Source, at : DriveAt) -> @sf.ViewerFile {
   let root = at.root.unwrap_or("")
   let dir = dv_parent(at.path)
   let name = dv_name(at.path)
@@ -115,9 +115,11 @@ pub fn drive_viewer_file(c : @ui.Ctx, src : Source, at : DriveAt) -> @sf.ViewerF
         }
       })
     },
+    // (at the press's moment: the core told then)
     save: fn() {
-      say(c, @sf.t("android-misc.drive.downloading", args=[("name", name)]))
-      download_drive_file(c, src, at.station, root, at.path, name, listed=listed)
+      toast_later(@sf.t("android-misc.drive.downloading", args=[("name", name)]))
+      let (mtime, size) = listed.unwrap_or((0.0, 0.0))
+      download_start_drive(src, at.station, root, at.path, name, size, mtime)
     },
     facts: @sf.no_facts,
   }
@@ -198,17 +200,20 @@ pub fn reader_key(at : DriveAt) -> String {
 }
 
 ///|
-/// The text `at.path` of `at.root` on `at.station`, read (the web's Reader): back to its folder by name (`back`).
-pub fn drive_reader(c : @ui.Ctx, src : Source, at : DriveAt, back : () -> Unit) -> Unit {
-  let file = drive_viewer_file(c, src, at)
-  @sf.reader(
-    c,
+/// The text `at.path` of `at.root` on `at.station`, read (the web's Reader) as nodes in `parent` (all of its room):
+/// back to its folder by name (`back`). The file as its folder lists it as the reader is made (its size, where it was
+/// left, how it is read and saved).
+pub fn drive_reader_node(parent : @view.View, src : Source, at : DriveAt, back : () -> Unit) -> Unit {
+  let file = @signals.untracked(fn() { drive_viewer_file(src, at) })
+  @sf.reader_node(
+    parent,
     reader_key(at),
     file,
     markdown=@sf.reads_as_markdown(file.name),
-    back_label=viewer_folder_label(src, at.station, at.root.unwrap_or(""), dv_parent(at.path)),
+    back_label=fn() { viewer_folder_label(src, at.station, at.root.unwrap_or(""), dv_parent(at.path)) },
     on_back=back,
   )
+  |> ignore
 }
 
 ///|
@@ -217,7 +222,7 @@ pub fn drive_reader(c : @ui.Ctx, src : Source, at : DriveAt, back : () -> Unit) 
 pub fn drive_player(c : @ui.Ctx, src : Source, at : DriveAt, back : () -> Unit, go : (DriveAt) -> Unit) -> Unit {
   let root = at.root.unwrap_or("")
   let dir = dv_parent(at.path)
-  let file = drive_viewer_file(c, src, at)
+  let file = drive_viewer_file(src, at)
   let entries = dv_entries(src, at.station, root, dir).unwrap_or([])
   let siblings : Array[@sf.ViewerEntry] = entries.map(fn(e) {
     { name: e.name, size: e.size, mtime: e.mtime, mime: e.mime, kind: e.kind, dir: e.dir }

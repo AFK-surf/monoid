@@ -392,7 +392,7 @@ priv struct RichKept {
 /// The paragraphs laid out, by rich_key: a frame measures a node's paragraph as the tree is laid out and lays it out
 /// again to draw it (view_runs_measure_set, view_runs_laid), in a width or two, frame after frame; each of those after
 /// the first is what it was. Kept till they come to rich_kept_most, then those the frame did not ask for let go.
-// kept across runs: what is kept is told apart by all it was laid out by, so another run's is no other's
+// put back as a Tester begins (its shapes and their glyphs' keys another run's)
 let rich_kept : Map[Int64, RichKept] = Map([])
 
 ///|

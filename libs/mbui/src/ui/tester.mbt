@@ -158,6 +158,10 @@ fn reset_globals() -> Unit {
   reset_glass()
   reveal_reset()
   clear_shapes()
+  // (the paragraphs laid out of those shapes with them: their glyphs' keys the run before's, which a run whose host
+  // gave others (a Tester over another kept text) would draw as its own; text_cache.generation, put back below, does
+  // not tell the two runs apart)
+  rich_kept.clear()
   text_cache.fonts.clear()
   text_cache.metrics.clear()
   glyphs_forget()

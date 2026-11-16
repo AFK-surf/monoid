@@ -302,7 +302,7 @@ fn side_view_node(
         None => None
       }
       @sfbase.InChat(thread, r.session)
-    })
+    }, fn() { side_whole(src, s) })
   })
   |> ignore
 }

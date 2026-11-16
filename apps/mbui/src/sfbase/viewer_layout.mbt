@@ -68,16 +68,6 @@ fn viewer_top(_c : @ui.Ctx) -> Double {
 }
 
 ///|
-/// How far the system's navigation bar reaches over the window's foot, as viewer_top.
-fn viewer_foot(c : @ui.Ctx) -> Double {
-  if @sf.layout(c.width) is Small {
-    0.0
-  } else {
-    (@sf.viewer_host().room)().1
-  }
-}
-
-///|
 pub let desk_pdf_gap : Double = 20.0
 
 ///|
@@ -132,29 +122,6 @@ pub let plain_small_side : Double = 16.0
 
 ///|
 pub let plain_small_foot : Double = 48.0
-
-///|
-/// How far down a document starts on its stage: over the whole window, `under` under the system's status bar (where
-/// the floating bar or the bar across the top leaves it: viewer_top); in a tab beside a chat (Viewer's `beside`), `own`
-/// under the tab's tools, nothing of the window's bars over it.
-fn Viewer::stage_top(self : Viewer, c : @ui.Ctx, under : Double, own : Double) -> Double {
-  if self.beside {
-    own
-  } else {
-    viewer_top(c) + under
-  }
-}
-
-///|
-/// What a stage's list (its scroll, what it laid out) is kept by: the whole window's `key`; a tab's its own, the two
-/// shown at once (全屏 from the tab).
-fn Viewer::stage_key(self : Viewer, key : String) -> String {
-  if self.beside {
-    "beside/" + key
-  } else {
-    key
-  }
-}
 
 ///|
 /// Code, words and Markdown in a tab beside a chat: this far under its tools.

@@ -349,9 +349,21 @@ pub(all) struct Thumb {
   /// where its list shows it with nothing over it (under the chat's bar, over its composer: note_list), top and
   /// bottom; None, nothing is drawn over it (a composer's tile)
   clear : (Double, Double)?
-  /// what it draws over its picture (a film's play mark, its name's band), drawn in its box at the opacity given:
-  /// carried by the picture as it flies, going as it leaves the thumbnail and coming back as it lands
-  over : (Double) -> Unit
+  /// what it draws over its picture (a film's capsule: its length, how far it is brought), drawn in its box: carried by
+  /// the picture as it flies, going as it leaves the thumbnail and coming back as it lands; None, nothing
+  over : ThumbOver?
+}
+
+///|
+/// What a film's thumbnail draws over its picture (its capsule in its foot's start corner, @sf.video_capsule_node's):
+/// the film's length, how far the core has brought it (None: all here), the thumbnail's corner, and how far the capsule
+/// is seen there (a film sent from here: none till its still has landed).
+#derive(Eq, Debug)
+pub(all) struct ThumbOver {
+  duration : Double
+  coming : Double?
+  corner : Double
+  seen : Double
 }
 
 ///|
@@ -365,10 +377,8 @@ pub(all) struct ThumbLook {
   id : Int
   /// the list it is in (note_list), "" none
   list : String
-  /// what it draws over its picture (Thumb's)
-  over : (Double) -> Unit
-  /// what decides how that looks, as its chat said it (note_thumb's `said`): told as it changes (thumbs_said)
-  said : String
+  /// what it draws over its picture (Thumb's), as its chat said it last: told as it changes (thumbs_said)
+  over : ThumbOver?
 }
 
 ///|
@@ -641,8 +651,8 @@ pub let pv_hidden : @signals.Signal[String] = @signals.signal("", same=fn(a, b) 
 ///|
 /// A thumbnail of the chat built this frame as node `node`, showing `picture`: where it is
 /// laid out kept as it moves (@motion.measure), under the viewer too, for the viewer to fly from and back into; in
-/// chat list `list` (note_list), if it is in one. `over`: what it draws over its picture, at an opacity (Thumb's);
-/// `said`: what decides how that looks (what draws it in flight is told as it changes: thumbs_said).
+/// chat list `list` (note_list), if it is in one. `over`: what it draws over its picture (Thumb's; what draws it in
+/// flight told as it changes: thumbs_said).
 pub fn note_thumb(
   c : @ui.Ctx,
   id : String,
@@ -652,54 +662,46 @@ pub fn note_thumb(
   letterbox? : Bool = false,
   start_crop? : Bool = false,
   list? : String = "",
-  over? : (Double) -> Unit = fn(_) {  },
-  said? : String = "",
+  over? : ThumbOver? = None,
 ) -> Unit {
   @motion.measure(c, node, "pv-thumb/" + id)
-  let changed = match pv_thumbs.get(id) {
-    Some(was) => was.said != said
-    None => said != ""
-  }
-  pv_thumbs[id] = { radius, letterbox, start_crop, picture, id: c.node_id(node), list, over, said }
-  if changed {
-    match thumbs_said.get(id) {
-      Some(s) => s.set(said)
-      None => ()
-    }
+  pv_thumbs[id] = { radius, letterbox, start_crop, picture, id: c.node_id(node), list, over }
+  match thumbs_said.get(id) {
+    Some(s) => s.set(over)
+    None => ()
   }
 }
 
 ///|
-/// What its thumbnail draws over its picture (ThumbLook's over), as its chat said it last, followed as what decides
-/// how that looks changes (thumbs_said, its own); its chat's not drawn any more, the one it flew from (fly_from's); else
-/// none. Its place read none.
-pub fn Viewer::thumb_over(self : Viewer) -> (Double) -> Unit {
+/// What its thumbnail draws over its picture (ThumbLook's over), as its chat said it last, followed as that changes
+/// (thumbs_said, its own); its chat's not drawn any more, the one it flew from (fly_from's); else none. Its place read
+/// none.
+pub fn Viewer::thumb_over(self : Viewer) -> ThumbOver? {
   let id = self.thumb_id()
   let said = match thumbs_said.get(id) {
     Some(s) => s
     None => {
-      let s = @signals.signal(pv_thumbs.get(id).map_or("", fn(l) { l.said }), same=fn(a, b) { a == b })
+      let s = @signals.signal(pv_thumbs.get(id).bind(fn(l) { l.over }))
       thumbs_said[id] = s
       s
     }
   }
-  said.get() |> ignore
-  match pv_thumbs.get(id) {
-    Some(l) => l.over
+  match said.get() {
+    Some(o) => Some(o)
     None =>
-      match self.fly_from {
-        Some(t) => t.over
-        None => fn(_) {  }
+      match pv_thumbs.get(id) {
+        Some(_) => None
+        None => self.fly_from.bind(fn(t) { t.over })
       }
   }
 }
 
 ///|
-/// What decides each thumbnail's look over its picture (note_thumb's `said`: its capsule's length, how far it is
-/// brought, as its chat says it), by its thumbnail's id, as a signal of its own made as it is first read
-/// (Viewer::thumb_over): told as that thumbnail's changes, not as another's.
+/// What each thumbnail draws over its picture (note_thumb's `over`: its capsule's length, how far it is brought, as its
+/// chat says it), by its thumbnail's id, as a signal of its own made as it is first read (Viewer::thumb_over): told as
+/// that thumbnail's changes, not as another's.
 // kept across runs: said as each changes; put back with the thumbnails
-let thumbs_said : Map[String, @signals.Signal[String]] = Map([])
+let thumbs_said : Map[String, @signals.Signal[ThumbOver?]] = Map([])
 
 ///|
 /// What is drawn over each chat's list (by its key, as last built): how much of its top the bar takes, how much of
@@ -2202,59 +2204,11 @@ pub fn Viewer::coming(self : Viewer) -> Bool {
 }
 
 ///|
-/// The stage: what the file shows as, as the window's tree hosts it (viewer_tree.mbt's viewer_hosted, its outer stage
-/// Hosted: read whole, not told of, nothing failed): words read as they come, words in the reader, a PDF, a page, a
-/// table, code. (A film or a song is the player's: viewer_tree.mbt's viewer_player.)
-pub fn Viewer::content(self : Viewer, c : @ui.Ctx, src : Source, stage : Int) -> Unit {
-  let v = self
-  // (预览 or 源码, as it is told: Viewer::set_source)
-  v.source_told.get() |> ignore
-  let kind = v.shown_kind()
-  if v.flowing() {
-    match (v.flow, kind) {
-      (Some(f), Some(k)) => v.flow_stage(c, src, f, k, stage)
-      _ => ()
-    }
-  } else {
-    match (kind, v.bytes.get()) {
-      // a text and Markdown read in the reader, as a drive's are
-      (_, Some(b)) if vf_reads(v) => vf_read(v, c, src, b)
-      (Some(KPdf), Some(b)) => v.pdf_stage(c, b, stage)
-      (Some(KMbui), Some(b)) if !v.source =>
-        match viz_mbui_parse_bytes(v.file.name, b) {
-          Some(widget) => {
-            let place = (if v.beside { "beside/" } else { "full/" }) + v.id()
-            c.box(style=viewer_mbui_ctx_room, fn() {
-              viz_mbui_ctx(c, place, widget, Json::null(), {
-                keep: Some(fn(s) { viz_keep(src, v.station, v.key, v.file.path, s) }),
-                failed: None,
-                follow_up: Some(viz_follow_up(v.station, v.chat_session())),
-              })
-            })
-            |> ignore
-          }
-          None => v.text_stage(c, KMbui, b, stage)
-        }
-      (Some(k), Some(b)) => v.text_stage(c, k, b, stage)
-      _ => ()
-    }
-  }
-}
-
-///|
 /// Taps on the stage (not on what is over it) show or hide the bars.
 pub fn tap_stage(c : @ui.Ctx, v : Viewer, stage : Int) -> Unit {
   c.on_press(stage, fn() {
     v.toggle()
   })
-}
-
-///|
-/// A note in the middle of the stage: 24 round it, what it holds 14 apart.
-pub fn Viewer::note(self : Viewer, c : @ui.Ctx, body : () -> Unit) -> Unit {
-  ignore(self)
-  c.box(w=Fill(1.0), h=Fill(1.0), pad=24.0, gap=14.0, align=ACenter, justify=JCenter, fn() { body() })
-  |> ignore
 }
 
 ///|
@@ -2266,10 +2220,6 @@ pub fn reading_pill(c : @ui.Ctx, words : String) -> Unit {
   })
   |> ignore
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let viewer_mbui_ctx_room : @ui.Style = @ui.css("w=Full p=S4")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3209,276 +3159,7 @@ pub fn picture_button(
   }
 }
 
-// ── a PDF ──────────────────────────────────────────────────────────────
-
-///|
-/// Pages drawn by the system, each as it scrolls near, as wide as the screen allows: 12
-/// round them and between them, a page not drawn yet its shape on the bubble's grey.
-pub fn Viewer::pdf_stage(self : Viewer, c : @ui.Ctx, b : Bytes, stage : Int) -> Unit {
-  let v = self
-  let t = @sf.theme()
-  let pdf = match v.pdf {
-    Some(p) => p
-    None => {
-      let p = @ui.Pdf::open(b)
-      v.pdf = Some(p)
-      @ui.log("preview: \{v.name}: a PDF of \{p.pages} pages")
-      p
-    }
-  }
-  if pdf.pages < 0 {
-    tap_stage(c, v, stage)
-    v.note(c, fn() {
-      c.text(
-        pv_fill("android-chat.file.pdf.failed", [("error", if @ui.platform() >= 3 {
- @sf.t("android-chat.preview.noPdf") } else { "" })]),
-        size=t.t.body,
-        color=t.p.muted,
-        center=true,
-      )
-      |> ignore
-    })
-    return
-  }
-  tap_stage(c, v, stage)
-  // as the web's: 76 down, as wide as 1000 less 56 allows, 20 apart; under 640, 60 down,
-  // 12 round them and between them
-  let small = c.width <= @sf.viewer_small_w
-  let w = if small { c.width - 2.0 * pdf_small_in } else { desk_pdf_width(c.width) }
-  let side = (c.width - w) / 2.0
-  let gap = if small { pdf_small_in } else { desk_pdf_gap }
-  let top = v.stage_top(c, if small { page_small_top } else { desk_page_top }, gap)
-  let foot = if v.beside { gap } else if small { pdf_small_in } else { viewer_foot(c) + desk_pdf_foot }
-  let none = 0.0
-  c.list(v.stage_key("preview/pdf/" + v.file.path), pdf.pages + 2, 400.0, fn(i) {
-    if i == 0 {
-      c.box(w=Fill(1.0), h=Px(top), fn() {  }) |> ignore
-    } else if i == pdf.pages + 1 {
-      c.box(w=Fill(1.0), h=Px(foot), fn() {  }) |> ignore
-    } else {
-      let (pw, ph) = pdf.sizes[i - 1]
-      let h = if pw > 0.0 { w * ph / pw } else { w * 1.294 }
-      c.box(w=Fill(1.0), pl=side, pr=side, pb=if i < pdf.pages { gap } else { none }, fn() {
-        c.box(w=Px(w), h=Px(h), bg=0xFFFFFFFFL, shadow=@sf.page_raised.sigma, shadow_y=@sf.page_raised.dy, shadow_color=@sf.page_raised.color, fn() {
-          c.image(pdf.page_src(i - 1), w=Px(w), h=Px(h), fit=FitFill, bg=t.p.neutral_bg) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
 // ── text ───────────────────────────────────────────────────────────────
-
-///|
-/// Markdown rendered, CSV a table, HTML a page (each, or its source); code and text as they are, in the code face.
-pub fn Viewer::text_stage(self : Viewer, c : @ui.Ctx, kind : PKind, b : Bytes, stage : Int) -> Unit {
-  let v = self
-  let t = @sf.theme()
-  let cut = b.length() > show_limit
-  let words = match v.text {
-    Some(s) => s
-    None => {
-      let s = @codec.utf8_text(b, show_limit)
-      v.text = Some(s)
-      s
-    }
-  }
-  if kind == KHtml && !v.source {
-    // its scripts run, in a page of its own that reaches nothing of the app's
-    let page = match v.page {
-      Some(p) => p
-      None => {
-        let head = words.clamped_view(end=if words.length() < 2048 { words.length() } else { 2048 }).to_owned()
-        let low = @sf.lower(head)
-        let html = if low.contains("<!doctype") || low.contains("<html") {
-          words
-        } else {
-          "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><body style=\"margin:0;padding:16px;font-family:system-ui,sans-serif\">" +
-          words
-        }
-        // (made once, from the file's words, which no build changes; the build places it, so it is made in it)
-        let p = @ui.NativeView::page(html)
-        v.page = Some(p)
-        p
-      }
-    }
-    // under the bar: 60 under the status bar, a desktop's 76
-    let top = v.stage_top(c, if c.width <= @sf.viewer_small_w { page_small_top } else { desk_page_top }, 0.0)
-    c.box(w=Fill(1.0), h=Fill(1.0), pt=top, fn() {
-      if page.here() && !v.closing {
-        c.native(page) |> ignore
-      } else if !page.here() {
-        v.note(c, fn() {
-          c.text(pv("android-chat.file.cantPreview"), size=t.t.body, color=t.p.muted) |> ignore
-        })
-      }
-    })
-    |> ignore
-    return
-  }
-  tap_stage(c, v, stage)
-  if kind == KCsv && !v.source {
-    csv_table(c, v, words, @sf.lower(v.name).has_suffix(".tsv"), cut)
-    return
-  }
-  let lines = words.split("\n").map(fn(s) { s.to_owned() }).to_array()
-  // code in the colours the core says of its language (`code.ink`), as a whole, then cut at its lines; Markdown's
-  // source, plain text and what is past HIGHLIGHT_LIMIT as they are
-  let colored = match v.colored {
-    Some(cl) if v.colored_dark == t.dark => cl
-    _ => {
-      let (_, _, language) = preview_kind(v.name)
-      let lang = if kind == KMarkdown || kind == KCsv || kind == KText { "" } else { language }
-      let said = if lang != "" && words.length() <= highlight_limit {
-        @sf.code_ink(c, words, lang)
-      } else {
-        Some(None)
-      }
-      match said {
-        Some(ink) => {
-          let cl = match ink {
-            Some(ink) => runs_by_line(@sf.ink_runs(words, ink, t.dark))
-            None => []
-          }
-          v.colored = Some(cl)
-          v.colored_dark = t.dark
-          cl
-        }
-        // (asked: plain until the core says)
-        None => []
-      }
-    }
-  }
-  let cut = if cut {
-    Some(pv_fill("android-chat.file.cut", [("size", @sf.file_size(show_limit.to_double()))]))
-  } else {
-    None
-  }
-  v.lines_stage(
-    c,
-    kind,
-    lines.length(),
-    fn(k) { lines[k] },
-    fn(k) { colored.get(k) },
-    cut,
-    markdown=if kind == KMarkdown && !v.source { Some(words) } else { None },
-  )
-  |> ignore
-}
-
-///|
-/// Code and text in the code face, `count` lines (`line(k)`, coloured as `colored(k)` says, else plain), in rows of 60
-/// lines so a long file lays out only what is in view; or `markdown` rendered; `cut`: what it says over them of a file
-/// shown only in part. Whether its last rows are in view (flow_ahead of them: a text shown as it comes reads on).
-pub fn Viewer::lines_stage(
-  self : Viewer,
-  c : @ui.Ctx,
-  kind : PKind,
-  count : Int,
-  line : (Int) -> String,
-  colored : (Int) -> Array[@ui.Run]?,
-  cut : String?,
-  markdown? : String? = None,
-) -> Bool {
-  let v = self
-  let t = @sf.theme()
-  let chunks = if markdown is Some(_) { 1 } else { (count + 59) / 60 }
-  let code = markdown is None && kind != KText && kind != KCsv
-  // as the web's (FilePreview.css.ts fpCode 64 and the block's 16 down, 32 in, 12 on 1.6; fpPlain 76 down, 32 in, 12
-  // on 1.65; under 640, 60 down, 16 in, 48 under)
-  let small = c.width <= @sf.viewer_small_w && !code && markdown is None
-  let top = v.stage_top(
-    c,
-    if small {
-      page_small_top
-    } else if markdown is Some(_) {
-      64.0
-    } else if code {
-      80.0
-    } else {
-      desk_page_top
-    },
-    beside_text_top,
-  )
-  let foot = if markdown is Some(_) { 64.0 } else if small { plain_small_foot } else { desk_text_foot }
-  let size = desk_code_size
-  let height = if code { desk_code_line } else { desk_plain_line }
-  let side = if small { plain_small_side } else { desk_text_side }
-  let key = v.stage_key("preview/text/" + v.file.path + (if v.source { "/source" } else { "" }))
-  c.list(key, chunks + 3, 400.0, fn(i) {
-    if i == 0 {
-      if cut is Some(_) {
-        c.box(w=Fill(1.0), pl=20.0, pr=20.0, pt=8.0, pb=8.0, bg=@sf.alpha(t.p.red, 0.0), fn() {  })
-        |> ignore
-      }
-      c.box(w=Fill(1.0), h=Px(top), fn() {  })
-      |> ignore
-      match cut {
-        Some(words) => cut_line(c, words)
-        None => ()
-      }
-    } else if i == chunks + 1 {
-      c.box(w=Fill(1.0), h=Px(foot), fn() {  }) |> ignore
-    } else if i == chunks + 2 {
-      ()
-    } else if markdown is Some(words) {
-      c.box(w=Fill(1.0), pl=18.0, pr=18.0, fn() {
-        @sf.markdown(c, words, key=v.stage_key("preview-md")) |> ignore
-      })
-      |> ignore
-    } else {
-      let from = (i - 1) * 60
-      let to = if from + 60 < count { from + 60 } else { count }
-      let sb = StringBuilder()
-      let runs : Array[@ui.Run] = []
-      let mut inked = true
-      for k in from..<to {
-        if k > from {
-          sb.write_char('\n')
-          runs.push(@ui.span("\n", mono=true))
-        }
-        let words = line(k)
-        sb.write_string(words)
-        match colored(k) {
-          Some(l) => runs.push_iter(l.iter())
-          None => {
-            inked = inked && words == ""
-            runs.push(@ui.span(words, mono=true))
-          }
-        }
-      }
-      let words = fn() {
-        c.rich(
-          if inked { runs } else { [@ui.span(sb.to_string(), mono=true)] },
-          size~,
-          color=t.p.text,
-          line=height,
-          wrap=!code,
-          breaks=code,
-        )
-        |> ignore
-      }
-      if code {
-        // scrolled across, its rows as one (32 in from its sides)
-        c.sideways(v.stage_key("preview/code/" + v.file.path), across=true, padx=32.0, words) |> ignore
-      } else {
-        c.box(w=Fill(1.0), pl=side, pr=side, words) |> ignore
-      }
-    }
-  })
-  |> ignore
-  // (built again only as that changes, not at each step of a scroll)
-  let at_end = fn(i : @ui.ListInfo?) {
-    match i {
-      Some(i) => i.last >= chunks - flow_ahead
-      None => false
-    }
-  }
-  at_end(c.list_info_as(key, at_end))
-}
 
 ///|
 /// Past this a file shows as plain text, unhighlighted.
@@ -3500,88 +3181,6 @@ pub fn runs_by_line(runs : Array[@ui.Run]) -> Array[Array[@ui.Run]] {
     }
   }
   out
-}
-
-///|
-/// A file shown only in part: the warning's words on its tint.
-pub fn cut_line(c : @ui.Ctx, words : String) -> Unit {
-  let warn = 0xD9962BFFL
-  c.box(w=Fill(1.0), pl=20.0, pr=20.0, pt=8.0, pb=8.0, bg=@sf.alpha(warn, 0.14), fn() {
-    c.text(words, size=@sf.theme().t.meta, color=warn) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A table: a row number, then its columns, each as wide as what it holds (by its
-/// characters here: 48 to 420), the head on the canvas with a hairline under it.
-pub fn csv_table(c : @ui.Ctx, v : Viewer, words : String, tab : Bool, cut : Bool) -> Unit {
-  let t = @sf.theme()
-  let rows = @codec.parse_csv(words, if tab { '\t' } else { ',' }, table_rows + 1)
-  if rows.length() == 0 {
-    return
-  }
-  let head = rows[0]
-  let body_n = if rows.length() - 1 > table_rows { table_rows } else { rows.length() - 1 }
-  let more = rows.length() - 1 > table_rows
-  let widths = head.mapi(fn(j, _) {
-    let mut most = 0.0
-    for r in 0..<(if rows.length() < 201 { rows.length() } else { 201 }) {
-      match rows[r].get(j) {
-        Some(cell) => {
-          let mut w = 0.0
-          for ch in cell {
-            w = w + (if ch.to_int() < 0x2E80 { 8.4 } else { 15.0 })
-          }
-          most = dmax(most, dmin(w, 80.0 * 8.4))
-        }
-        None => ()
-      }
-    }
-    dmax(48.0, dmin(420.0, most + 32.0))
-  })
-  let number = "\{body_n}".length().to_double() * 8.4 + 36.0
-  // a desktop's in the page's 13, 68 down to its head; a phone's in 15
-  let size = desk_cell_size
-  let top = v.stage_top(c, desk_table_top, 0.0)
-  let cell = fn(s : String, w : Double, weight : Int, color : Int64) {
-    c.box(w=Px(w), padx=16.0, pady=8.0, clip=true, fn() {
-      c.text(s, size~, weight~, color~, wrap=false) |> ignore
-    })
-    |> ignore
-  }
-  c.list(v.stage_key("preview/csv/" + v.file.path), body_n + 3, 37.0, fn(i) {
-    if i == 0 {
-      c.box(w=Fill(1.0), h=Px(top), fn() {  }) |> ignore
-    } else if i == 1 {
-      c.box(dir=Row, bg=t.p.canvas, border=0.0, fn() {
-        c.box(w=Px(number), fn() {  }) |> ignore
-        for j, h in head {
-          cell(h, widths[j], 600, t.p.text)
-        }
-      })
-      |> ignore
-      c.box(w=Fill(1.0), h=Px(1.0), bg=t.p.line, fn() {  }) |> ignore
-    } else if i == body_n + 2 {
-      if more || cut {
-        cut_line(c, pv_fill("android-chat.file.cut.rows", [("n", "\{table_rows}")]))
-      }
-      c.box(w=Fill(1.0), h=Px(48.0), fn() {  }) |> ignore
-    } else {
-      let r = rows[i - 1]
-      c.box(dir=Row, fn() {
-        c.box(w=Px(number), pl=20.0, pr=16.0, pt=8.0, pb=8.0, align=AEnd, fn() {
-          c.text("\{i - 1}", size~, color=t.p.muted, wrap=false) |> ignore
-        })
-        |> ignore
-        for j, _ in head {
-          cell(r.get(j).unwrap_or(""), widths[j], 400, t.p.text)
-        }
-      })
-      |> ignore
-    }
-  })
-  |> ignore
 }
 
 // ── the bar ────────────────────────────────────────────────────────────
@@ -3677,7 +3276,7 @@ fn video_still_known(src : Source, station : String, owner : String, a : Attachm
 }
 
 ///|
-/// 源码 (`on`) or 预览 shown, told at once to what shows it and what says it (Viewer::content, its bars,
+/// 源码 (`on`) or 预览 shown, told at once to what shows it and what says it (viewer_stage_node, its bars,
 /// Viewer::bars_shown): the page under the canvas let go while its source shows (and made again as it comes back).
 pub fn Viewer::set_source(self : Viewer, on : Bool) -> Unit {
   if on == self.source {

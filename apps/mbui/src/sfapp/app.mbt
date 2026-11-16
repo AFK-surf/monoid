@@ -369,7 +369,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   @sf.set_shortcuts(@sfdesk.tip_keys(src))
   // the library's words, the app's catalog's; what its viewers ask of the page (viewer_host.mbt)
   @sf.set_words(fill)
-  @sf.set_viewer_host(viewer_host_of(c, src))
+  @sf.set_viewer_host(viewer_host_of(src))
   // a chat's file downloaded by the core, all here: kept where the system keeps downloads, whatever page shows
   // (downloads.mbt)
   downloads_frame(c, src)
@@ -538,6 +538,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // nodes is made: what one says on its first frame is its words in that language, not their keys or the device's
     // laid out and then said again; the old frame tells them each build, the same)
     @sf.set_words(fill)
+    // (what its viewers ask of the page, said before any page of nodes is made: a text a reader of nodes reads as it is
+    // made read by the core, viewer_host.mbt)
+    @sf.set_viewer_host(viewer_host_of(src))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
     root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
     // (the chat page this device makes, as chosen in 外观's 试用新对话页, told before any page of nodes is made: the first
@@ -902,7 +905,8 @@ fn page_view(
         // 文件: a place of the bar at the stack's root, else a page pushed
         Files => files_page(c, src, w, place=root)
         Drive(at) => drive_page(c, src, w, at)
-        DriveRead(at) => @sfpages.reader_page(c, src, at)
+        // (made once: narrow_shell.mbt's reader_page_node)
+        DriveRead(_) => ()
         DrivePlay(at) => @sfpages.play_page(c, src, at)
         Service(station, job) => service_page(c, src, station, job)
         PreviewFile(station, key, path, name) => preview_file_page(c, src, station, key, path, name)

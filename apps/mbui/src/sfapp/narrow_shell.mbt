@@ -669,6 +669,12 @@ fn narrow_made_as(
       made("connect/" + station + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame~, stint~)
       })
+    // a drive's text read: the whole window, the reader's own bars over it (sfpages' reader_page_node)
+    DriveRead(at) =>
+      made("drive-read/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.reader_page_node(p, src, at)
+      })
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>
       made("terminal/" + at.station + "/" + at.terminal, fn(p, core, _here, frame, _stint, _acts) {

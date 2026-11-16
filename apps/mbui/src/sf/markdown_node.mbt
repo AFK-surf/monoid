@@ -7,7 +7,9 @@
 
 ///|
 /// `text` as Markdown in `parent` (markdown's): `tree`, its reading where it is told one (a message's `md`: nothing
-/// asked of the core); `size` its words', as it changes (0: the theme's body), on lines `line` times it high;
+/// asked of the core); `size` its words', as it changes (0: the theme's body), on lines `line` times it high, as it
+/// changes (0: Md::lh's); `apart`: a part after another (a reader's block after the one over it), its first block as far
+/// below it as after a paragraph, or its own margin where that is more (markdown_part's);
 /// `ink` (0: the theme's text); `document`: its headings a document's; `bleed`: how far past its column either side its
 /// tables scroll; `copy`: its tables offer to be copied; `fit_tables`: each table shown whole in the column, as much
 /// smaller as makes it fit, rather than part of it left to scroll to (a chat's shared picture: markdown's); `paths`: the files its paths name are a session's (chips);
@@ -22,6 +24,8 @@
 /// link to a chat reads as; `code`, a fenced block of a language drawn another way (what draws it, its code as it
 /// changes); `files`, the files it names by their names, drawn where it names them (a paragraph of only a link to one,
 /// or its images); `screens`, its links to screens: a paragraph of only one its card, one bare in a sentence its title.
+/// `serif`: its words (not its code) in the serif face, as it says now (a reader's layout); `nodes`: its blocks as the core
+/// read them told, its nodes of `text` (a reader's block of a book: none asked of the core).
 /// The node.
 #callsite(autofill(loc))
 pub fn markdown_node(
@@ -29,7 +33,8 @@ pub fn markdown_node(
   text : () -> String,
   tree? : () -> Json? = fn() { None },
   size? : () -> Double = fn() { 0.0 },
-  line? : Double = 0.0,
+  line? : () -> Double = fn() { 0.0 },
+  apart? : Bool = false,
   ink? : () -> Int64 = fn() { 0L },
   document? : Bool = false,
   bleed? : Double = 0.0,
@@ -53,6 +58,8 @@ pub fn markdown_node(
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
+  serif? : () -> Bool = fn() { false },
+  nodes? : () -> Array[Json],
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(col) {
@@ -77,6 +84,7 @@ pub fn markdown_node(
         if now > 0.0 { now } else { theme().t.body }
       },
       line,
+      apart,
       ink: fn() {
         let i = ink()
         if i != 0L { i } else { theme().p.text }
@@ -105,8 +113,14 @@ pub fn markdown_node(
       across_of,
       text_face,
       code_face,
+      serif,
     }
-    let blocks = @signals.computed(fn(_) { md_node_blocks(text(), tree()) })
+    // (where its nodes are told (`nodes`: a reader's block of a book the core read, its own nodes of the whole
+    // `text`), its blocks those; else as its words are read)
+    let blocks = match nodes {
+      Some(given) => @signals.computed(fn(_) { core_blocks(given(), text()) })
+      None => @signals.computed(fn(_) { md_node_blocks(text(), tree()) })
+    }
     if one_line {
       // (its first block's words on one line, cut short: markdown's one_line)
       md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, wrap=false, cut=true)
@@ -179,7 +193,10 @@ pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
 /// What every block of a markdown_node is drawn with (Md's, of the window's tree).
 priv struct MdNode {
   size : () -> Double
-  line : Double
+  /// a line as a share of the words' size, as it changes (0: Md::lh's)
+  line : () -> Double
+  /// a part after another: its first block apart from it (markdown_node's `apart`)
+  apart : Bool
   ink : () -> Int64
   document : Bool
   bleed : Double
@@ -219,6 +236,8 @@ priv struct MdNode {
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
   code_face : () -> Int?
+  /// its words in the serif face (a reader's layout: code stays in the code face), as it is now
+  serif : () -> Bool
 }
 
 ///|
@@ -283,7 +302,16 @@ fn md_blocks_node(
   let block_slot = fn(slot : @view.View, block : () -> MdBlock?, i : Int) {
     // (the first, or a table's rows or a list's items after its first piece's: right under those over them, as far as
     // its first row or item keeps itself)
-    if i == 0 || (md.table_rows is Some((r, _)) && r > 0) {
+    if i == 0 && md.apart && md.table_rows is None {
+      // (a part after another: as far below it as after a paragraph, or its first block's own margin where more)
+      let top_pad = @signals.computed(fn(_) {
+        match block() {
+          Some(b) => dmax(paragraph_after, md_node_margins(md, b, tight).0)
+          None => 0.0
+        }
+      })
+      slot.padding(By(fn() { (0.0, top_pad.get(), 0.0, 0.0) })) |> ignore
+    } else if i == 0 || (md.table_rows is Some((r, _)) && r > 0) {
       slot.padding(Is((0.0, 0.0, 0.0, 0.0))) |> ignore
     } else {
       let top_pad = @signals.computed(fn(_) {
@@ -761,6 +789,7 @@ fn md_words_node(
     // (in the faces tried, where it is told them: Md::words')
     let text_face = (md.text_face)()
     let code_face = (md.code_face)()
+    let runs = if (md.serif)() { runs.map(fn(x) { if x.mono || x.code { x } else { { ..x, serif: true } } }) } else { runs }
     if text_face is None && code_face is None {
       runs
     } else {
@@ -778,7 +807,8 @@ fn md_words_node(
     let size = size()
     // (a line said as a share of the size (`line`): that share of the words as they are drawn, the system's size of
     // words applied first, as the old view's paragraph's line_em; else Md::lh's points)
-    let line = if md.line > 0.0 { -md.line } else { md_line(md, size) }
+    let share = (md.line)()
+    let line = if share > 0.0 { -share } else { md_line(md, size) }
     { size, weight: if weight > 0 { weight } else { 400 }, line, wrap, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
   let words = p.box(made_for=loc, fn(w) {
@@ -899,8 +929,9 @@ pub fn words_links_node(
 ///|
 /// A line of `size`'s words (Md::lh's).
 fn md_line(md : MdNode, size : Double) -> Double {
-  if md.line > 0.0 {
-    return (size * md.line).round()
+  let share = (md.line)()
+  if share > 0.0 {
+    return (size * share).round()
   }
   let k : Float = 1.65
   (Float::from_double(size) * k).to_double()

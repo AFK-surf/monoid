@@ -1126,6 +1126,7 @@
     "one": "1 found",
     "other": "{n} found"
   },
+  "web-pages.drive.reader.position": "Reading position",
   "web-pages.drive.reader.notFound": "Not found",
   "web-pages.drive.reader.serif": "Serif",
   "web-pages.drive.reader.sans": "Sans",

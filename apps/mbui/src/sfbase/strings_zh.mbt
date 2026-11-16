@@ -2137,6 +2137,7 @@ let zh : Map[String, String] = {
   "web-pages.drive.reader.nextChapter": "下一章",
   "web-pages.drive.reader.noChapters": "此文件中未找到章节，可使用进度条跳转",
   "web-pages.drive.reader.notFound": "未找到",
+  "web-pages.drive.reader.position": "阅读进度",
   "web-pages.drive.reader.paper": "背景",
   "web-pages.drive.reader.paper.green": "护眼",
   "web-pages.drive.reader.paper.grey": "浅灰",

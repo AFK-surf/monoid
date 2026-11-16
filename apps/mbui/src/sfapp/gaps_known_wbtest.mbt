@@ -31,12 +31,13 @@
 /// now 8 all round), rule 8 eight more, newly seen: a small panel's title 16 in over rows whose marks are 22 in
 /// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)); the same day, each language's
 /// windows in two halves, a run each (corners_check): rule 4's 84 Chinese 4 and 80, its 86 English 5 and 81, the two
-/// wide windows' chats' heads in the second half).
+/// wide windows' chats' heads in the second half); 2026-11-16, rule 4's one fewer in each first half: a table's head
+/// (its stage of nodes) a row scrolled across with its rows, its ground and its cells as far in as theirs.
 let gaps_known : Map[String, Int] = {
   "zh 0/2 rule 1": 0,
   "zh 0/2 rule 2": 0,
   "zh 0/2 rule 3": 0,
-  "zh 0/2 rule 4": 4,
+  "zh 0/2 rule 4": 3,
   "zh 0/2 rule 5": 1,
   "zh 0/2 rule 6": 0,
   "zh 0/2 rule 7": 0,
@@ -54,7 +55,7 @@ let gaps_known : Map[String, Int] = {
   "en 0/2 rule 1": 0,
   "en 0/2 rule 2": 0,
   "en 0/2 rule 3": 0,
-  "en 0/2 rule 4": 5,
+  "en 0/2 rule 4": 4,
   "en 0/2 rule 5": 1,
   "en 0/2 rule 6": 0,
   "en 0/2 rule 7": 0,

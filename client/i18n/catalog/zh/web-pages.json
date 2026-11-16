@@ -1075,6 +1075,7 @@
     "one": "找到 {n} 处",
     "other": "找到 {n} 处"
   },
+  "web-pages.drive.reader.position": "阅读进度",
   "web-pages.drive.reader.notFound": "未找到",
   "web-pages.drive.reader.serif": "宋体",
   "web-pages.drive.reader.sans": "黑体",

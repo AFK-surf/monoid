@@ -757,7 +757,7 @@ pub fn viz_full_layer(c : @ui.Ctx, src : Source) -> Unit {
       let t = @sf.theme()
       let (top, foot) = (@sf.viewer_host().room)()
       c.take_back(fn() { viz_close_full() })
-      // under the bar, as a file's page is (Viewer::text_stage)
+      // under the bar, as a file's page is (viewer_stage_node's)
       let under = if native { top } else if c.width <= @sf.viewer_small_w { top + page_small_top } else { viewer_top(c) + desk_page_top }
       c.layer(fn() {
         c.box(style=viz_ground, fn() {

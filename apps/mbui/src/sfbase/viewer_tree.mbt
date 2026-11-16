@@ -280,7 +280,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   if vw.played() {
     viewer_player(n, src, vw)
   } else if !vw.markable() {
-    viewer_hosted(n, src, vw)
+    viewer_hosted(n, src, vw, fn() { stage().0 })
   } else {
     // the canvas: what a finger does on it, the picture drawn in it, as far in as its fade has come (as its ground is; a
     // flight's fade is put in whole, its picture the flight's own), sampled as its ground is
@@ -435,7 +435,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       })
       |> ignore
       // (its whole picture read and said not to decode: why, alone in the middle of the stage, 24 in from its sides, as
-      // Viewer::note has it; in the theme's muted ink, as the viewer's other words: a picture lies on the page's own
+      // stage_note_node has it; in the theme's muted ink, as the viewer's other words: a picture lies on the page's own
       // canvas, Viewer::dark)
       canvas.show(fn() { vw.picture_failed() }, fn(f) {
         f.over(Is(true)).padding(Is((24.0, 24.0, 24.0, 24.0))).lines_up(Is(Some(Middle))) |> ignore
@@ -1650,9 +1650,9 @@ struct ThumbDrawn {
 }
 
 ///|
-/// What the stage of a viewer that shows no picture of its own shows (Viewer::content's, as it is told: its kind
-/// sniffed, its bytes, a read failed, what has come of it, 源码): told of (facts), coming, failed, or what the old views
-/// show of it (read in the reader, as it comes, a page, a table, code, a PDF).
+/// What the stage of a viewer that shows no picture of its own shows (as it is told: its kind sniffed, its bytes, a
+/// read failed, what has come of it, 源码): told of (facts), coming, failed, or what its stage's nodes show of it (read
+/// in the reader, as it comes, a page, a table, code, a PDF: viewer_stage_node).
 #derive(Eq)
 priv enum OuterStage {
   Hosted
@@ -1685,11 +1685,11 @@ fn Viewer::outer_stage(self : Viewer) -> OuterStage {
 ///|
 /// What viewer `vw` shows of anything but a picture of its own (a picture too big to show, told of; a page, a table,
 /// code, words read as they come or in the reader, a PDF, a file of no kind), in node `n`, as far in as its way has
-/// come (Viewer::words_share): told of, coming, failed, its nodes (in the middle of the stage, 24 in, 14 apart, as
-/// Viewer::note has a note); else what Viewer::content shows of it, its old views hosted there. What is round them is the window's tree's (image_layer: the modal layer, its keys and back, its
-/// ground, its bars, its way in and out, what it reads asked); its keys theirs only where they read them first (a
-/// reader's find, its contents, Viewer::key_on).
-fn viewer_hosted(n : @view.View, src : Source, vw : Viewer) -> Unit {
+/// come (Viewer::words_share): told of, coming, failed, its nodes (in the middle of the stage, 24 in, 14 apart); else
+/// what its stage's nodes show of it (viewer_stage_node), the stage `width()` wide. What is round them is the window's
+/// tree's (image_layer: the modal layer, its keys and back, its ground, its bars, its way in and out, what it reads
+/// asked); its keys theirs only where they read them first (a reader's find, its contents, Viewer::key_on).
+fn viewer_hosted(n : @view.View, src : Source, vw : Viewer, width : () -> Double) -> Unit {
   let stage = fn() { vw.outer_stage() }
   n.box(fn(s) {
     s
@@ -1710,23 +1710,7 @@ fn viewer_hosted(n : @view.View, src : Source, vw : Viewer) -> Unit {
     s.show(fn() { stage() == Hosted && viewer_mbui_rendered(vw) }, fn(m) {
       viewer_mbui_node(m, src, vw, bars=true)
     })
-    s.show(fn() { stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
-      h.over(Is(true)) |> ignore
-      @ui.old(h, fn(c) {
-        // (what marking and what reads stamp by: this source's clock, as the old frame's layer said it each frame)
-        src_now.val = src.now
-        let stage = c.id("preview/stage")
-        // (a ground: a click round what it shows closes it, the bars come and go on a tap)
-        c.cursor(stage, Arrow)
-        @ui.capture(c, stage, zooms=true)
-        // (its words picked with the pointer, a mouse's drag or a finger's hold, as a page's are)
-        c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
-          c.box(style=stage_whole, id=stage, fn() { vw.content(c, src, stage) }) |> ignore
-        })
-      })
-      .over(Is(true))
-      |> ignore
-    })
+    s.show(fn() { stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) { viewer_stage_node(h, src, vw, width) })
     s.show(fn() { stage() != Hosted }, fn(note) { viewer_note_node(note, src, vw, stage) })
   })
   |> ignore
@@ -1900,11 +1884,22 @@ fn film_flight(
           }
         }))
         |> ignore
-        // (what it draws over its picture alone, as its chat said it last (Viewer::thumb_over): where it is and how big
-        // the flight's, followed by the nodes round it; none of its place read here)
-        @ui.old(o, fn(_c) { (vw.thumb_over())(1.0) })
-        .over(Is(true))
-        |> ignore
+        // (what it draws over its picture, as its chat said it last (Viewer::thumb_over): its capsule in its foot's
+        // start corner, as the thumbnail's own (@sf.video_capsule_node), where it is and how big the flight's, followed
+        // by the nodes round it; none of its place read here)
+        o.pick(
+          fn() { vw.thumb_over().map(fn(t) { (t.duration, t.corner, t.coming is Some(_)) }) },
+          fn(p, made) {
+            p.over(Is(true)).alpha(By(fn() { vw.thumb_over().map_or(0.0, fn(t) { t.seen }) })) |> ignore
+            match made {
+              Some((duration, corner, true)) =>
+                @sf.video_capsule_node(p, duration, corner~, coming=fn() { vw.thumb_over().bind(fn(t) { t.coming }) })
+              Some((duration, corner, false)) => @sf.video_capsule_node(p, duration, corner~)
+              None => ()
+            }
+          },
+          at_once=true,
+        )
       })
       |> ignore
     })

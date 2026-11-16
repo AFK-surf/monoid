@@ -1,10 +1,10 @@
 // The reader's layout (排版: Reader.tsx Layout) as nodes of the window's tree, laid over the reader where its panel is
-// (reader.mbt's, an old view): the day's papers, the size with its keys, the lines and the margins on sliders, the
+// (reader_node.mbt's): the day's papers, the size with its keys, the lines and the margins on sliders, the
 // face and the indent each a choice (seg_node), each changed as it is picked (the host's set_reader_style). While a
 // reading's layout is open (layout_open, reader_panel_set): on 小屏 a sheet from the window's foot, half of it tall, on
 // the page's own ground (sheet_node, as the reader's other panels are the host's sheets there); else docked at the
 // window's right under the reader's bar, 320 wide, on its paper (the old panel's place, desk_panel's: the text kept
-// clear of it as reader_column has it), its head the title and its close. It follows the tier as the window changes,
+// clear of it as reader_sides has it), its head the title and its close. It follows the tier as the window changes,
 // as the old panel did; closed (Escape, its close, the sheet let go, gone back), it goes as the sheet goes, or at once.
 // A reader in a tab beside a chat has the same docked panel in the tab's own stage (reader_layout_docked, laid by
 // sfbase's viewer_tab_node), going and coming back with the tab.

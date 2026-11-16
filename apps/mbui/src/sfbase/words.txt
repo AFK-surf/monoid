@@ -2124,6 +2124,7 @@ web-pages.drive.reader.more
 web-pages.drive.reader.nextChapter
 web-pages.drive.reader.noChapters
 web-pages.drive.reader.notFound
+web-pages.drive.reader.position
 web-pages.drive.reader.paper
 web-pages.drive.reader.paper.green
 web-pages.drive.reader.paper.grey

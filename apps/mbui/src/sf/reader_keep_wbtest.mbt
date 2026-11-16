@@ -30,7 +30,7 @@ fn keep_reading(key : String, told : Array[(Double, Double)]) -> Reading {
 test "a reader left where it last held still tells nothing again" {
   let told : Array[(Double, Double)] = []
   let r = keep_reading("keep-still", told)
-  r.chunk = 2
+  r.place.set((2, 0.0))
   reader_keep(r, keep_book())
   assert_eq(told, [(2.0, 4.0)])
   // left where it was kept: nothing more said
@@ -42,10 +42,10 @@ test "a reader left where it last held still tells nothing again" {
 test "a reader left after it moved tells where once" {
   let told : Array[(Double, Double)] = []
   let r = keep_reading("keep-moved", told)
-  r.chunk = 1
+  r.place.set((1, 0.0))
   reader_keep(r, keep_book())
   // moved on, and left before it held still there
-  r.chunk = 3
+  r.place.set((3, 0.0))
   reader_let_go("keep-moved")
   assert_eq(told, [(1.0, 4.0), (3.0, 4.0)])
 }

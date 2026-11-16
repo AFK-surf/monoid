@@ -2,7 +2,7 @@
 // same viewer as over the whole window (viewer.mbt) made for the tab (Viewer's `beside`), one a tab, kept by the chat's
 // tabs' key and the tab while the tab is open, let go as it is closed. What it shows is the whole window's: a picture
 // fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @kit.Zoom); a PDF, a page,
-// a table, code, words read in the reader, as Viewer::content shows them (an old view hosted in the panel's island);
+// a table, code, words read in the reader, as the whole window's stage shows them (viewer_stage_node, by the tab's width);
 // a film or a song in the one player embedded in the stage as part of the pane (@sf.player_view's `embedded`: on the
 // pane's own ground, its picture or a song's cover fitted in the room over its controls as a tab's picture is, the
 // controls always there under it in the pane's colours, laid out by the stage's width; its own player and view, not
@@ -367,11 +367,11 @@ pub fn Viewer::full_window(self : Viewer, steps : Stepping) -> Unit {
 ///|
 /// The file of tab `tab` beside the chat whose tabs are kept by `chat`, in node `q` (the panel under its bar): its tools
 /// (tab_tools_node), then its stage, the rest: a picture its nodes (tab_picture_node), anything else as the whole
-/// window's stage shows it, its old views hosted in `island` (the panel's), told of, coming or failed its nodes
+/// window's stage shows it (viewer_stage_node), told of, coming or failed its nodes
 /// (viewer_note_node); a film or a song its player embedded (Viewer::player_stage, hosted in `island` too). What it reads
 /// asked of the core as what it needs comes; 下载 told the core as it is asked. Made as the person asked the file beside
 /// just now (tab_asked), its film or song plays at once; let go (the tab no longer shown), it is paused. `steps`: what
-/// its picture steps through over the whole window (全屏).
+/// its picture steps through over the whole window (全屏); `width()`, how wide the tab is.
 pub fn viewer_tab_node(
   q : @view.View,
   src : Source,
@@ -379,6 +379,7 @@ pub fn viewer_tab_node(
   tab : String,
   island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
   steps : () -> Stepping,
+  width : () -> Double,
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
@@ -467,24 +468,9 @@ pub fn viewer_tab_node(
     let stage = fn() { vw.outer_stage() }
     let mbui = fn() { !played && !picture() && stage() == Hosted && viewer_mbui_rendered(vw) }
     s.show(mbui, fn(m) { viewer_mbui_node(m, src, vw) })
-    // (what the old views show of it: hosted in the panel's island, its words picked as a page's are)
+    // (what its stage's nodes show of it, its words picked as a page's are: viewer_stage_node)
     s.show(fn() { !played && !picture() && stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
-      h.over(Is(true)) |> ignore
-      island(
-        h,
-        fn(c) {
-          src_now.val = src.now
-          let stage = c.id("preview/beside-stage")
-          c.cursor(stage, Arrow)
-          @ui.capture(c, stage, zooms=true)
-          c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
-            c.box(style=stage_whole, id=stage, fn() { vw.content(c, src, stage) }) |> ignore
-          })
-        },
-        false,
-      )
-      .over(Is(true))
-      |> ignore
+      viewer_stage_node(h, src, vw, width)
     })
     s.show(fn() { !played && !picture() && stage() != Hosted }, fn(note) {
       viewer_note_node(note, src, vw, stage, bars=false)

@@ -2162,6 +2162,7 @@ let en : Map[String, String] = {
   "web-pages.drive.reader.nextChapter": "Next",
   "web-pages.drive.reader.noChapters": "No chapters found in this file; jump with the progress bar",
   "web-pages.drive.reader.notFound": "Not found",
+  "web-pages.drive.reader.position": "Reading position",
   "web-pages.drive.reader.paper": "Paper",
   "web-pages.drive.reader.paper.green": "Green",
   "web-pages.drive.reader.paper.grey": "Grey",
