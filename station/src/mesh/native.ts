@@ -28,7 +28,35 @@ export type Mesh = Endpoints & {
   /// Where the endpoint is the front's (mesh/front.ts `withFront`): whether this process is linked to it now, or is
   /// linking to it again. Absent where this process binds the endpoint itself.
   frontLink?(): "ok" | "reconnecting";
+  /// Whether a relay holds an endpoint bound here inactive for another of the same id (another station on this
+  /// station's key: the relays carry each peer's packets to the other one only, ops/health.ts `conflict`).
+  relayConflict?(): boolean;
 };
+
+/// Whether any of `endpoints` is held inactive by a relay for another of its id.
+export function relaysConflict(endpoints: Iterable<Endpoint>): boolean {
+  for (const e of endpoints) if (e.relayStatus?.().some((r) => r.conflict === true)) return true;
+  return false;
+}
+
+/// The addon binding the endpoints itself (no front): what it bound kept until closed, for `relayConflict`.
+export function withRelays(mesh: Mesh): Mesh {
+  const bound = new Set<Endpoint>();
+  return {
+    ...mesh,
+    bind: async (options: Bind) => {
+      const endpoint = await mesh.bind(options);
+      bound.add(endpoint);
+      const close = endpoint.close.bind(endpoint);
+      endpoint.close = () => {
+        bound.delete(endpoint);
+        return close();
+      };
+      return endpoint;
+    },
+    relayConflict: () => relaysConflict(bound),
+  };
+}
 
 /// Loaded once: the mesh (services.ts) and the thumbnails (drive/thumbs.ts) share it.
 let loaded: Mesh | undefined;

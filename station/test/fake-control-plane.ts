@@ -57,6 +57,9 @@ export class FakeControlPlane {
   /// The workspaces the station joined besides ws1, as the state frame says them.
   joined: { workspace: string; workspace_name: string; name: string; peers: unknown[]; revocations: unknown[] }[] = [];
   readonly joins: boolean;
+  /// Each presence socket closed as replaced as soon as it opened, as still.fail cloud does when another station
+  /// connects with the same key (cloud/src/station.ts: close code 4000).
+  replacing = false;
   origin = "";
   private server: Server;
   private wss = new WebSocketServer({ noServer: true });
@@ -97,6 +100,7 @@ export class FakeControlPlane {
           else this.heard.push(JSON.parse(text));
         });
         ws.send(JSON.stringify(this.state(station)));
+        if (this.replacing) ws.close(4000, "replaced");
       });
     });
   }

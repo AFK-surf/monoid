@@ -118,3 +118,65 @@ test("whether the endpoint is linked to the front is said as its link goes and c
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// Another station on this station's key at a relay (2026-11-16): the relay holds this endpoint inactive and says so in its
+// status (`conflict`), which the mesh says (`relayConflict`, health.json). Whether the endpoint is the front's or the
+// addon's own; and the front's linked again says what the front it is linked to now says, not the one gone.
+test("a relay holding an endpoint inactive for another of its key is said by the mesh, the front's and the addon's", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "front-relays-"));
+  const sock = join(dir, "front.sock");
+  const links: Socket[] = [];
+  // Each link's front says its relays: the first's held inactive, the next's not (it came back, the other gone).
+  const relaysOf = (link: number) => [{ url: "https://r.example/", connected: true, access: "https://r.example/", conflict: link === 0 }];
+  const server = createServer((s) => {
+    const link = links.push(s) - 1;
+    let pending = "";
+    s.on("data", (chunk) => {
+      pending += chunk;
+      for (let at; (at = pending.indexOf("\n")) >= 0; pending = pending.slice(at + 1)) {
+        const asked = JSON.parse(pending.slice(0, at));
+        s.write(JSON.stringify({ id: asked.id, ok: asked.op === "bind" ? { id: "station", sockets: [] } : asked.op === "relayStatus" ? relaysOf(link) : null }) + "\n");
+      }
+    });
+    s.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(sock, resolve));
+  try {
+    const mesh = withFront({} as Mesh, sock);
+    assert.equal(mesh.relayConflict?.(), false, "none bound: none held inactive");
+    const endpoint = await mesh.bind({ secretKey: Buffer.alloc(32), alpns: [], relayUrls: [] });
+    // As bound: its relays as the front said them then.
+    assert.equal(mesh.relayConflict!(), true);
+    // The front gone and another linked: what that one says, at once.
+    links[0]!.destroy();
+    while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
+    while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
+    assert.equal(mesh.relayConflict!(), false, "what the front gone said of its relays is not this one's");
+    await endpoint.close();
+  } finally {
+    for (const s of links) s.destroy();
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  // The addon's endpoint (no front): kept while bound, its status read as asked.
+  const said = { conflict: false };
+  let closed = 0;
+  const addon = {
+    bind: async () => ({
+      relayStatus: () => [{ url: "https://r.example/", connected: true, access: "https://r.example/", conflict: said.conflict }],
+      close: async () => void closed++,
+    }),
+  } as unknown as Mesh;
+  const native = await import("../src/mesh/native.ts");
+  const own = (native as Record<string, unknown>).withRelays as ((m: Mesh) => Mesh) | undefined;
+  assert.equal(typeof own, "function", "the addon's mesh keeps what it binds (withRelays)");
+  const mesh = own!(addon);
+  const endpoint = await mesh.bind({ secretKey: Buffer.alloc(32), alpns: [], relayUrls: [] });
+  assert.equal(mesh.relayConflict!(), false);
+  said.conflict = true;
+  assert.equal(mesh.relayConflict!(), true);
+  await endpoint.close();
+  assert.equal(closed, 1);
+  assert.equal(mesh.relayConflict!(), false, "closed: no longer counted");
+});

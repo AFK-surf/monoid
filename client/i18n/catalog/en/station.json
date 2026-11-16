@@ -211,6 +211,7 @@
   "station.cli.status.stopped": "Work: stopped (the station isn't running: it doesn't connect to Slack or run agents and jobs). To start it: stillfail start",
   "station.cli.status.unresponsive": "Work: failing (the station's process hasn't responded for {secs} s; devices and agents are waiting on it. The launcher ends and restarts it by itself; if this persists for a few minutes, restart the station service on this machine)",
   "station.cli.status.frontDown": "Work: failing (the local mesh front is disconnected and reconnecting; devices can't reach this station until it's back. The launcher restarts the front by itself)",
+  "station.cli.status.keyConflict": "Work: failing (another machine or process is using this station's key, and each keeps replacing the other's connection, so devices connect and drop; stop the station running elsewhere, or enroll one of them again as a new station)",
   "station.cli.status.limited": "Work: limited (not connected to still.fail cloud yet, retrying; devices may not find this station until then — see the “Online” line above for why)",
   "station.cli.unknownChannel": "Unknown channel {channel}",
   "station.connect.heldElsewhere": "This bot is already connected on the station {station}. A connect runs on one station of the workspace: move it there instead of adding it again.",

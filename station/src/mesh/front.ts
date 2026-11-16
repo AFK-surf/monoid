@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import type { Addr, Connection, Endpoint, Mesh, Stream, Traffic } from "./native.ts";
+import { type Addr, type Connection, type Endpoint, type Mesh, type Stream, type Traffic, relaysConflict } from "./native.ts";
 
 /// What frames say besides a length (client/shell's PIPE_END, PIPE_FAILED); the longest a frame written here is.
 const END = 0xffff_fffe;
@@ -35,6 +35,8 @@ export function withFront(mesh: Mesh, socket: string): Mesh {
       return endpoint;
     },
     frontLink: () => ([...bound].every((e) => e.linked()) ? "ok" : "reconnecting"),
+    // (each ask of it asks the front again for the next: read every HELD_EVERY_MS with health.json, main.ts)
+    relayConflict: () => relaysConflict(bound),
   };
 }
 
@@ -517,7 +519,7 @@ class FrontEndpoint implements Endpoint {
   readonly #bind: Record<string, unknown>;
   #front: Front;
   #said: { id: string; sockets: string[] };
-  #relays: { url: string; connected: boolean }[] = [];
+  #relays: { url: string; connected: boolean; access: string; conflict?: boolean }[] = [];
   #asking = false;
   #closed = false;
   /// The link made again, once it is.
@@ -578,6 +580,8 @@ class FrontEndpoint implements Endpoint {
             if (this.#closed) return next.close();
             this.#front = next;
             this.#said = said;
+            // (what the front gone said of the relays is not this one's)
+            this.#relays = await next.ask("relayStatus").catch(() => []);
             this.#watch(next);
             if (this.#routed) await next.ask("route", this.#routed).catch(() => {});
             log.info("mesh", "linked to the front again", { station: said.id });

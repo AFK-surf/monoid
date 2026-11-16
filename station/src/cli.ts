@@ -243,11 +243,12 @@ export function status(data: string, now = wall.now()): string {
   else out.push(say("station.cli.status.offline"));
   if (state.removed_at === undefined) {
     const health = running ? healthOf(read(healthPath(data))) : null;
-    const working = workingOf({ running: running !== null, health, healthAlive: health !== null && alive(health.pid), online: presence?.online === true, now });
+    const working = workingOf({ running: running !== null, health, healthAlive: health !== null && alive(health.pid), online: presence?.online === true, conflict: presence?.conflict === true, now });
     out.push(
       working.is === "stopped" ? say("station.cli.status.stopped")
         : working.is === "unresponsive" ? say("station.cli.status.unresponsive", { secs: Math.round(working.silentMs / 1000) })
         : working.is === "front" ? say("station.cli.status.frontDown")
+        : working.is === "conflict" ? say("station.cli.status.keyConflict")
         : working.is === "offline" ? say("station.cli.status.limited")
         : say(state.rig !== undefined ? "station.cli.rig.working" : "station.cli.status.working"),
     );

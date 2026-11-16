@@ -3,7 +3,8 @@
 // what it takes back. Signed at connect like enrollment. Reconnects with backoff; once removed from its workspace, asks
 // again only now and then, or at once when enrolled anew meanwhile. Which control plane, and how it is spoken to, is
 // the provider's (provider.ts), read anew at every connect.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Clock, Effect, Stream, SubscriptionRef } from "effect";
 import WebSocket from "ws";
@@ -22,6 +23,17 @@ import { wall } from "../ops/fibers.ts";
 const PING_MS = 30_000;
 /// How the cloud closes the socket of a station removed from its workspace.
 const CLOSE_REMOVED = 4004;
+/// How the cloud closes a station's socket as another of the same station's (its key) connects (cloud/src/station.ts).
+export const CLOSE_REPLACED = 4000;
+/// So many sockets in a row replaced before they held a heartbeat (`steady`): another station connects with this one's
+/// key (a copy of its data on another machine, a second process here). One station's own new socket replaces its old
+/// one once, a handover's twice at most, and the one replaced does not connect again.
+export const REPLACED_IN_A_ROW = 3;
+/// How long a station whose key another uses waits before it connects again: each connecting replaces the other, so
+/// at the backoff's start the two took each other's place every second (2026-11-16), and the relays its endpoint too.
+export const CONFLICT_BACKOFF_MS = 60_000;
+/// What presence.json says of it, for `stillfail status`.
+export const CONFLICT_ERROR = "another station is using this station's key: still.fail cloud keeps replacing one's presence socket with the other's; stop the other or enroll one of them again";
 const CONNECT_TIMEOUT_MS = 20_000;
 /// How long the roster the cloud said last counts as reached once its socket ended. A socket the cloud closes is back
 /// within seconds (one station's about every 20 minutes, 2026-10-29): those seconds are not shown as cut off. The roster itself
@@ -31,9 +43,20 @@ export const ROSTER_GRACE_MS = 60_000;
 
 /// Whether the station is online at still.fail cloud, and since when or why not: <data>/run/presence.json, for
 /// `stillfail status`.
-function writePresence(data: string, online: boolean, error: string | null) {
-  mkdirSync(join(data, "run"), { recursive: true });
-  writeFileSync(join(data, "run", "presence.json"), JSON.stringify({ online, at: nowSecs(), error }) + "\n");
+/// Each write after the one before (in the order said), whole: to a file of this process's beside it, renamed into place.
+function presenceWriter(data: string): (online: boolean, error: string | null, conflict?: boolean) => void {
+  const path = join(data, "run", "presence.json");
+  let written: Promise<void> = Promise.resolve();
+  return (online, error, conflict = false) => {
+    const text = JSON.stringify({ online, at: nowSecs(), error, ...(conflict ? { conflict } : {}) }) + "\n";
+    written = written
+      .then(async () => {
+        await mkdir(join(data, "run"), { recursive: true });
+        await writeFile(`${path}.${process.pid}`, text);
+        await rename(`${path}.${process.pid}`, path);
+      })
+      .catch((e: Error) => log.warn("presence", "presence.json not written", { error: e.message }));
+  };
 }
 
 /// What the presence socket is given: cloud.json and its changes, the key, whether the station answers, and the
@@ -45,12 +68,48 @@ export type PresenceParts = {
   spec: () => ProviderSpec;
   /// What the cloud tells the station of besides its state (plane.ts `told`).
   said?: (event: CloudSaid) => void;
+  /// The heartbeat's timer (tests: theirs).
+  every?: (ms: number, f: () => void) => () => void;
 };
 
+/// Whether another station uses this one's key, as its sockets end (`ended`) and hold (`steady`): REPLACED_IN_A_ROW
+/// replaced in a row before they held is a conflict, which only a socket that held a heartbeat ends. Not on its open:
+/// the other takes its place again a moment later, and `stillfail status` would flicker back to normal.
+export class Replaced {
+  inARow = 0;
+  conflict = false;
+  private readonly told: (conflict: boolean) => void;
+  constructor(told: (conflict: boolean) => void = () => {}) {
+    this.told = told;
+  }
+
+  /// A socket ended: with the close code the cloud gave (none: it broke), having held a heartbeat or not.
+  ended(code: number | null, held: boolean) {
+    if (code === CLOSE_REPLACED && !held) this.inARow++;
+    else if (code !== null) this.inARow = 0;
+    if (this.inARow >= REPLACED_IN_A_ROW && !this.conflict) {
+      this.conflict = true;
+      log.error("presence", "another station is using this station's key (presence socket replaced repeatedly)", { inARow: this.inARow });
+      this.told(true);
+    }
+  }
+
+  /// A socket held a heartbeat (the cloud answered its first ping).
+  steady() {
+    this.inARow = 0;
+    if (!this.conflict) return;
+    this.conflict = false;
+    log.info("presence", "this station's presence socket holds again: no other station uses its key now");
+    this.told(false);
+  }
+}
+
 /// Keeps the socket for good (until interrupted): open while the station is up.
-export const presence = ({ cloud, key, up, spec, said }: PresenceParts) => Effect.gen(function* () {
+export const presence = ({ cloud, key, up, spec, said, every = wall.every }: PresenceParts) => Effect.gen(function* () {
   const until = (wanted: boolean) => SubscriptionRef.changes(up).pipe(Stream.filter((now) => now === wanted), Stream.runHead);
   let backoff = 1000;
+  const writePresence = presenceWriter(cloud.state.data);
+  const replaced = new Replaced((conflict) => writePresence(!conflict, conflict ? CONFLICT_ERROR : null, conflict));
   for (;;) {
     if (!(yield* SubscriptionRef.get(up))) {
       yield* until(true);
@@ -61,22 +120,28 @@ export const presence = ({ cloud, key, up, spec, said }: PresenceParts) => Effec
     if (s.removed()) {
       // The cloud forgot the station as it removed it: only enrolling it again (by the station, which changes
       // cloud.json) brings it back, and nothing else is asked until then.
-      writePresence(s.data, false, "removed from its workspace; enroll it again to bring it back");
+      writePresence(false, "removed from its workspace; enroll it again to bring it back");
       yield* cloud.changes.pipe(Stream.filter(() => !s.removed()), Stream.runHead);
       continue;
     }
     const started = yield* Clock.currentTimeMillis;
     const plane = spec();
     // The socket, until it ends or the station stops answering (then it is closed: offline at the cloud).
-    const ended = yield* Effect.result(Effect.raceFirst(connect(s, key, plane, said), Effect.as(until(false), `station not answering; went offline at ${plane.name}`)));
+    const notAnswering = { why: `station not answering; went offline at ${plane.name}`, code: null, held: false };
+    const ended = yield* Effect.result(Effect.raceFirst(connect(s, key, plane, said, every, replaced, writePresence), Effect.as(until(false), notAnswering)));
     lapse(s);
-    const why = ended._tag === "Success" ? ended.success : failureText(ended.failure);
-    writePresence(s.data, false, why);
-    if (ended._tag === "Success") log.info("presence", why);
-    else log.warn("presence", `no presence socket to ${plane.name}`, { error: why });
-    // A socket that held a while starts over quickly; failing again and again backs off to a minute.
+    if (ended._tag === "Success") replaced.ended(ended.success.code, ended.success.held);
+    const why = ended._tag === "Success" ? ended.success.why : failureText(ended.failure);
+    writePresence(false, replaced.conflict ? `${CONFLICT_ERROR} (${why})` : why, replaced.conflict);
+    if (ended._tag === "Success") {
+      // (each replaced socket said once a conflict is known: replaced.ended said it)
+      if (!replaced.conflict) log.info("presence", why);
+    } else log.warn("presence", `no presence socket to ${plane.name}`, { error: why });
+    // A socket that held a while starts over quickly; failing again and again backs off to a minute; another station
+    // on this key waits the minute at once.
     if ((yield* Clock.currentTimeMillis) - started > 60_000) backoff = 1000;
-    yield* Effect.sleep(backoff);
+    if (replaced.conflict) backoff = CONFLICT_BACKOFF_MS;
+    yield* Effect.sleep(backoff); // timer: a retry after a failure, with a backoff
     backoff = Math.min(backoff * 2, 60_000);
   }
 });
@@ -113,10 +178,10 @@ function cloudSaid(event: unknown, said?: (event: CloudSaid) => void): boolean {
   return true;
 }
 
-/// One socket, signed at connect like enrollment: succeeds with why it ended when the cloud closes it, fails when it
-/// can't be had or breaks; closed when interrupted.
-const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (event: CloudSaid) => void) =>
-  Effect.callback<string, Error>((resume) => {
+/// One socket, signed at connect like enrollment: succeeds with why it ended when the cloud closes it (its code, and
+/// whether it held a heartbeat first), fails when it can't be had or breaks; closed when interrupted.
+const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((event: CloudSaid) => void) | undefined, every: (ms: number, f: () => void) => () => void, replaced: Replaced, writePresence: ReturnType<typeof presenceWriter>) =>
+  Effect.callback<{ why: string; code: number | null; held: boolean }, Error>((resume) => {
     const state = s.state!;
     const ts = nowSecs();
     // New clouds read the canonical proof; old clouds their original one.
@@ -124,6 +189,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (ev
     const socket = new WebSocket(`${state.origin.replace("http", "ws")}${plane.connectPath}`, { headers, handshakeTimeout: CONNECT_TIMEOUT_MS });
     let ping: (() => void) | undefined;
     let answered = true;
+    let held = false;
     const { tell, askPending } = planeTeller(s, (frame) => socket.send(JSON.stringify(frame)), () => socket.readyState === WebSocket.OPEN);
     tell();
     const unlisten = s.listen(tell);
@@ -140,10 +206,11 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (ev
     socket.on("error", (error) => (failed ??= error));
     socket.on("open", () => {
       takenBack(s, plane);
-      writePresence(s.data, true, null);
+      // Another station on this key still, until this socket holds (Replaced).
+      writePresence(true, replaced.conflict ? CONFLICT_ERROR : null, replaced.conflict);
       log.info("presence", `online at ${plane.name}`);
       // The cloud's answering is in the machine's time.
-      ping = wall.every(PING_MS, () => {
+      ping = every(PING_MS, () => { // timer: a heartbeat that keeps the connection
         // No pong since the last ping: gone even if the socket has not noticed.
         if (!answered) {
           failed = new Error(`${plane.name} stopped answering`);
@@ -160,6 +227,10 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (ev
       const text = data.toString();
       if (text === "pong") {
         answered = true;
+        if (!held) {
+          held = true;
+          replaced.steady();
+        }
         return;
       }
       // Each frame is told by its parsed `type`, never by where that field sits in the text: a provider's encoder may
@@ -180,7 +251,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said?: (ev
       if (code === CLOSE_REMOVED) removed(s, CLOSE_REMOVED);
       // With its code and reason: replaced by another socket of this station's (4000), silent (4008), the cloud restarting (1001, 1012)…
       const why = reason.length > 0 ? `${code} ${reason.toString("utf8")}` : String(code);
-      resume(failed ? Effect.fail(failed) : Effect.succeed(`${plane.name} closed the presence socket (${why})`));
+      resume(failed ? Effect.fail(failed) : Effect.succeed({ why: `${plane.name} closed the presence socket (${why})`, code, held }));
     });
     return Effect.sync(() => {
       ping?.();

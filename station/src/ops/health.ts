@@ -21,6 +21,9 @@ export type Health = {
   front: FrontLink;
   /// Whether it hears the cloud on its presence socket.
   presenceOnline: boolean;
+  /// Whether a relay holds its endpoint inactive for another of its id (mesh/native.ts `relayConflict`): another
+  /// station on its key. None from a release from before it said it.
+  relayConflict?: boolean;
 };
 
 /// What written longer ago than this is taken for the word of a process that no longer runs its loop: some six windows
@@ -43,7 +46,7 @@ export function healthOf(text: unknown): Health | null {
   const h = text as Partial<Health> | null;
   if (h === null || typeof h !== "object") return null;
   if (!Number.isInteger(h.pid) || typeof h.updatedAt !== "number" || !["ok", "reconnecting", "direct"].includes(h.front as string)) return null;
-  return { pid: h.pid!, updatedAt: h.updatedAt, heldMaxMs: typeof h.heldMaxMs === "number" ? h.heldMaxMs : 0, front: h.front!, presenceOnline: h.presenceOnline === true };
+  return { pid: h.pid!, updatedAt: h.updatedAt, heldMaxMs: typeof h.heldMaxMs === "number" ? h.heldMaxMs : 0, front: h.front!, presenceOnline: h.presenceOnline === true, ...(h.relayConflict === true ? { relayConflict: true } : {}) };
 }
 
 /// How the station works, for `stillfail status`: from whether it runs (station.json's launcher there), what its process
@@ -55,17 +58,24 @@ export type Working =
   /// Its process there, but its main thread said nothing for `silentMs`.
   | { is: "unresponsive"; silentMs: number }
   | { is: "front" }
+  /// Another station (another machine with a copy of its data, or a second process here, a front left from before)
+  /// connects with its key: the cloud takes each one's presence socket in turn (presence.ts `Replaced`), or a relay
+  /// holds its endpoint inactive for the other's (health.json's `relayConflict`), so devices reach the other one.
+  | { is: "conflict" }
   | { is: "offline" }
   | { is: "normal" };
 
-export function workingOf(i: { running: boolean; health: Health | null; healthAlive: boolean; online: boolean; now: number }): Working {
+export function workingOf(i: { running: boolean; health: Health | null; healthAlive: boolean; online: boolean; conflict?: boolean; now: number }): Working {
   if (!i.running) return { is: "stopped" };
   const h = i.health;
   if (h !== null && i.healthAlive) {
     const silentMs = i.now - h.updatedAt;
     if (silentMs > HEALTH_FRESH_MS) return { is: "unresponsive", silentMs };
     if (h.front === "reconnecting") return { is: "front" };
+    if (h.relayConflict === true) return { is: "conflict" };
   }
+  // (the cloud's word: its presence socket replaced again and again, cloud/presence.ts `Replaced`)
+  if (i.conflict === true) return { is: "conflict" };
   if (!i.online) return { is: "offline" };
   return { is: "normal" };
 }

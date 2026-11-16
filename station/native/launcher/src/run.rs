@@ -629,6 +629,10 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     // a release before this one: one started here, before the Node the handover starts, so a station that only ever
     // updates comes to have one without being started again.
     let front = front.and_then(crate::front::Front::current).or_else(|| crate::front::Front::start(&options.app, &options.data));
+    // Kept: any other of this data directory's is left from before (one a launcher before front.pid lost, 2026-11-16).
+    if let Some(kept) = &front {
+        crate::front::clean_orphans(&options.data, Some(kept.pid));
+    }
     let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
@@ -644,6 +648,11 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
 fn serve(station: &mut Lifecycle<System>, signals: OwnedFd) -> i32 {
     loop {
         if let Some(exit) = station.finished() {
+            // Not left to end with its stdin alone: one whose thread that reads it is held would keep the station's
+            // endpoint up on the relays with no launcher, beside the next launcher's.
+            if let Some(front) = station.os.front.take() {
+                front.end();
+            }
             log::info("stopped");
             return exit;
         }

@@ -843,6 +843,89 @@ fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     assert!(station.wait().success());
 }
 
+/// A front of `station`'s data directory left from before (2026-11-16: a launcher killed, or one from before front.pid,
+/// left its front running beside the next one's, both on the station's key): a process of this user with a front's
+/// arguments for its socket, no launcher's child (its parent gone), with no front.pid naming it, that does not end
+/// with its stdin. Its pid.
+fn orphan_front(station: &Station) -> i32 {
+    let socket = station.data.join("run/front.sock");
+    let script = "sh -c 'trap \"\" HUP TERM; while :; do sleep 1; done' stillfail-reader --builder mesh --socket \"$1\" --shell-dir \"$1.d\" </dev/null >/dev/null 2>&1 & echo $!";
+    let out = output(Command::new("/bin/sh").arg("-c").arg(script).arg("sh").arg(&socket).stdin(Stdio::null()));
+    let pid: i32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
+    assert!(alive(pid));
+    pid
+}
+
+/// Ended by the test, if the launcher did not end it.
+fn ended_by_test(pid: i32) -> bool {
+    let was = alive(pid);
+    // SAFETY: a signal to a process this test started.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    was
+}
+
+#[test]
+fn a_front_left_from_before_is_ended_as_the_launcher_starts() {
+    let mut station = Station::new("orphanstart");
+    release_front(&station);
+    let orphan = orphan_front(&station);
+    station.start("");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    let left = ended_by_test(orphan);
+    assert!(!left, "the front left from before still runs beside the launcher's: {}", station.launcher_log());
+    assert!(station.launcher_log().contains(&format!("left from before (pid {orphan})")), "{}", station.launcher_log());
+    assert!(alive(fronts[0]));
+    assert_eq!(station.file("front.pid").map(|p| p.trim().to_string()), Some(fronts[0].to_string()));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(!alive(fronts[0]));
+    assert_eq!(station.file("front.pid"), None);
+}
+
+#[test]
+fn a_front_left_from_before_is_ended_by_the_launcher_that_takes_over_and_the_one_kept_lives() {
+    let mut station = Station::new("orphanrenew");
+    release_front(&station);
+    station.start("");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    // one left by a launcher from before front.pid (an update taken up from 0.1.9230), found as the release's launcher
+    // takes this one's place
+    let orphan = orphan_front(&station);
+    release_launcher(&station, "exec \"$BUILT\" \"$@\"\n");
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    let left = ended_by_test(orphan);
+    assert!(!left, "the front left from before still runs beside the one kept: {}", station.launcher_log());
+    assert_eq!(station.fronts(), fronts, "the front kept is the one serving");
+    assert!(alive(fronts[0]));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(!alive(fronts[0]));
+}
+
+#[test]
+fn a_front_that_does_not_end_with_its_stdin_is_killed_as_the_launcher_stops() {
+    let mut station = Station::new("frontstuck");
+    // a front whose thread reading stdin is held: its end of the pipe is never read
+    let path = station.app.join("station/stillfail-reader");
+    let fronts = station.data.join("fronts");
+    std::fs::write(&path, format!("#!/bin/sh\necho $$ >> '{}'\nprintf '{{\"listening\":\"%s\",\"streams\":4}}\\n' \"$4\"\nexec sleep 1000000\n", fronts.display())).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    station.start("");
+    station.up();
+    let front = station.fronts()[0];
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    let left = ended_by_test(front);
+    assert!(!left, "the front outlived the launcher: {}", station.launcher_log());
+    assert!(station.launcher_log().contains("did not end with its stdin"), "{}", station.launcher_log());
+}
+
 impl Station {
     fn launcher_log(&self) -> String {
         std::fs::read_to_string(self.dir.join("launcher.log")).unwrap_or_default()

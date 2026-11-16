@@ -23,6 +23,7 @@ import { Browser } from "./browser/service.ts";
 import { dataDir, flag, ownData, positionals } from "./ops/files.ts";
 import { setStationLang, stationLang, tr } from "./ops/i18n.ts";
 import { type Control, launcher } from "./ops/launcher.ts";
+import { HELD, heldBy } from "./ops/held.ts";
 import { hearErrors, hearLines, log } from "./ops/log.ts";
 import { stationLog } from "./ops/log-export.ts";
 import { ConfigFile } from "./ops/config.ts";
@@ -173,6 +174,12 @@ const BecameRig = Layer.effectDiscard(
 function run() {
   const app = flag(args, "--app");
   if (!app) usage();
+  // On its own (no launcher took the data directory's lock for it): refused where a station runs it already, as the
+  // launcher refuses (ops/held.ts).
+  if (!flag(args, "--launcher-fds") && !flag(args, "--launcher-pipe") && heldBy(data) !== null) {
+    console.error(tr(stationLang(), "station.cli.held", { dir: data }));
+    process.exit(HELD);
+  }
   // Read the essential files before telling the launcher this process is ready. In particular, do not start with
   // defaults when another program has made config.json unreadable.
   const settings = new ConfigFile(data);
@@ -269,7 +276,7 @@ function run() {
     let healthWritten: Promise<void> = Promise.resolve();
     const sayHealth = () => {
       if (!healthSaid) return;
-      const health = { pid: process.pid, updatedAt: wall.now(), heldMaxMs: Math.round(heldMs), front: mesh.frontLink?.() ?? "direct" as const, presenceOnline: plane.state.reached };
+      const health = { pid: process.pid, updatedAt: wall.now(), heldMaxMs: Math.round(heldMs), front: mesh.frontLink?.() ?? "direct" as const, presenceOnline: plane.state.reached, relayConflict: mesh.relayConflict?.() === true };
       healthWritten = healthWritten.then(() => writeHealth(data, health)).catch((e: Error) => log.warn("station", "health.json not written", { error: e.message }));
     };
     sayHealth();

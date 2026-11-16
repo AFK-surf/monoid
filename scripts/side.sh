@@ -18,7 +18,7 @@ for part in $parts; do
     # (side/lock-pair-iroh.test.ts).
     core-ts) (cd client/core-ts && pnpm side) || status=1 ;;
     # The station's of real processes and the file system as they take their time (station/side): a lock across
-    # processes, logs followed by fs.watch.
+    # processes, logs followed by fs.watch, two endpoints on one station's key at a real iroh-relay.
     station) (cd station && pnpm test:side) || status=1 ;;
     # The native parts' tests of real processes' timing (#[ignore = "side: …"]): a handover with no gap on real ports,
     # restarts' backoff, a signal that leaves a grandchild be.
