@@ -24,9 +24,9 @@ import { BOTS, CALL, EVENT, HOLDS, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, R
 type Json = any;
 
 /// What a connect's secret is known by across the workspace without being said: its platform's token (Slack's bot
-/// token, a Comma line's token) or its app (Feishu's), hashed. Null: one that has none yet.
+/// token, a Comma line's token, a group connect's key) or its app (Feishu's), hashed. Null: one that has none yet.
 export function fingerprint(kind: string, own: Json): string | null {
-  const secret = kind === "feishu" ? own?.appId : kind === "comma" ? own?.token : own?.botToken;
+  const secret = kind === "feishu" ? own?.appId : kind === "comma" ? own?.token : kind === "group" ? own?.key : own?.botToken;
   return typeof secret === "string" && secret !== "" ? createHash("sha256").update(`${kind}\n${secret}`).digest("hex") : null;
 }
 

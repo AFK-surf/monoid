@@ -3413,6 +3413,48 @@ test("connect_wizard_offers_comma_where_its_station_has_it_and_adds_a_connect_of
   core.close();
 });
 
+test("connect_wizard_offers_group_where_its_station_has_it_and_adds_a_connect_of_its_server_relays_and_code", async () => {
+  const { host, core } = await choosing();
+  stationReplies(host, (req) => {
+    const path = req.url.replace("https://stillfail.test/admin/api", "");
+    if (path === "/group/connects") return { id: "claude" };
+    return undefined;
+  });
+  const ui = core.connect();
+  const topic = connectTopic("group");
+  const form = { station: "ws/st", form: "group" };
+  await ask(host, core, ui, 1, "connect.flow.open", form);
+  const flow = core.inner.forms.connects;
+  withFeishu(core, []);
+  assert.deepEqual(flow.value(topic).platforms, ["slack", "feishu"], "a station from before the group connect does not offer it");
+  const at = { topic: "overview", station: "ws/st" };
+  core.inner.data.set(at, { ...(structuredClone(core.inner.store.get(at)) as J), group: true });
+  assert.deepEqual(flow.value(topic).platforms, ["slack", "feishu", "group"]);
+  flow.go(topic, ui, "groupBind");
+  let view = flow.value(topic);
+  assert.deepEqual([view.step, view.platform, view.back, view.number, view.total], ["groupBind", "group", "platform", 2, 3]);
+  await ask(host, core, ui, 2, "pick.set", { station: "ws/st", of: "connect-new:group", model: "gpt-6-astra", runtime: "codex" });
+  await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "connect-new:group" });
+  flow.go(topic, ui, "groupForm");
+  const server = "ab".repeat(32);
+  flow.edit(topic, ui, { group: { server: "not-an-id", relays: "ftp://relay.test", code: "abc" } });
+  view = flow.value(topic);
+  assert.deepEqual([view.group.ready, !!view.group.serverError, !!view.group.relaysError, !!view.group.codeError], [false, true, true, true]);
+  assert.throws(() => flow.begin(topic, ui, "create", {}, false), "not with what is wrong");
+  flow.edit(topic, ui, { group: { server: server.toUpperCase(), relays: "https://r1.test\nhttps://r2.test", code: "abcd-efgh-jkmn-pqrs", botName: " Claude " } });
+  view = flow.value(topic);
+  assert.deepEqual([view.step, view.back, view.title, view.group.ready, view.group.serverError], ["groupForm", "groupBind", "加入 Group 服务器", true, null]);
+  const shaped = present.decorate(topic, structuredClone(view), { now: 0, offsetMin: 0 });
+  assert.ok("ok" in conform("ConnectFlowView", shaped), JSON.stringify(conform("ConnectFlowView", shaped)));
+  await ask(host, core, ui, 4, "connect.flow.create", form);
+  const sent = stationPosted(host, "/group/connects");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].group, { server, relays: ["https://r1.test", "https://r2.test"], code: "abcd-efgh-jkmn-pqrs", botName: "Claude" });
+  assert.deepEqual([sent[0].bind.runtime, sent[0].bind.model, sent[0].mode, sent[0].requireMention], ["codex", "gpt-6-astra", "multi-session", true]);
+  assert.equal(flow.value(topic).step, "done");
+  core.close();
+});
+
 test("connect_wizard_checks_a_feishu_app_of_ones_own_and_lets_go_of_a_bot_not_made", async () => {
   const { host, core } = await choosing();
   let verified = 0;

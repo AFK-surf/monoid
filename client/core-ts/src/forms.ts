@@ -403,6 +403,24 @@ const FEISHU_STEPS = ["feishuBind", "feishuWay", "feishuScan", "feishuApp"];
 /// The Comma path's own: its agents' model, then the line Comma's still.fail plugin shows (`comma <server> <token>`).
 const COMMA_STEPS = ["commaBind", "commaLine"];
 
+/// The group path's own: its agents' model and how its conversations become sessions, then the server it joins (its
+/// endpoint id, its relays, the code it joins by, the name it joins as).
+const GROUP_STEPS = ["groupBind", "groupForm"];
+const groupBlank = (): J => ({ server: "", relays: "", code: "", botName: "", error: null });
+/// The relays as typed: one a line (or apart by commas, spaces).
+const relaysOf = (typed: string): string[] => typed.split(/[\s,]+/).map((r) => r.trim()).filter((r) => r !== "");
+/// What is wrong with the server as typed, said as the field it is of; none once it can be added.
+function groupFaults(g: J): { server: string | null; relays: string | null; code: string | null } {
+  const server = str(g.server).trim().toLowerCase();
+  const relays = relaysOf(str(g.relays));
+  const code = str(g.code).toUpperCase().replace(/[\s-]/g, "");
+  return {
+    server: server !== "" && !/^[0-9a-f]{64}$/.test(server) ? t("core-misc.connect.group.badServer") : null,
+    relays: relays.some((r) => !/^https?:\/\/[^\s/]+/.test(r)) ? t("core-misc.connect.group.badRelay") : null,
+    code: code !== "" && !/^[2-9A-HJ-NP-Z]{16}$/.test(code) ? t("core-misc.connect.group.badCode") : null,
+  };
+}
+
 /// Whether `line` reads as the line Comma shows: `comma`, Comma's address, the token.
 // (Comma shows its connector's address, `wss://…` in production: the station takes either and connects the same way.)
 const commaLineReady = (line: string) => /^comma\s+(https?|wss?):\/\/\S+\s+[A-Za-z0-9_-]{8,512}$/.test(line.trim());
@@ -416,6 +434,7 @@ function initial(input: J): J {
     platform: resume ? "slack" : null,
     feishu: feishuBlank(),
     comma: { line: "", error: null },
+    group: groupBlank(),
     resume: get(input, "resume") ?? null,
     mobile: get(input, "mobile") === true,
     team: null,
@@ -530,11 +549,18 @@ export class ConnectFlows {
     for (const field of ["adding", "requireMention", "threads"]) if (get(patch, field) !== undefined && typeof patch[field] !== "boolean") throw CoreError.invalid(t("core-misc.params.not_bool"));
     if (get(patch, "mode") !== undefined && patch.mode !== "single-session" && patch.mode !== "multi-session") throw CoreError.invalid(t("core-misc.connect.no_such_mode"));
     const platform = get(patch, "platform");
-    if (platform !== undefined && platform !== "slack" && platform !== "feishu" && platform !== "comma") throw CoreError.invalid(t("core-misc.connect.not_ready"));
+    if (platform !== undefined && platform !== "slack" && platform !== "feishu" && platform !== "comma" && platform !== "group") throw CoreError.invalid(t("core-misc.connect.not_ready"));
     const comma = get(patch, "comma");
     if (comma !== undefined) {
       if (!isObject(comma) || (get(comma, "line") !== undefined && typeof comma.line !== "string")) throw CoreError.invalid(t("core-misc.params.not_text"));
       if (typeof comma.line === "string") Object.assign(d.value.comma, { line: comma.line, error: null });
+    }
+    const group = get(patch, "group");
+    if (group !== undefined) {
+      if (!isObject(group)) throw CoreError.invalid(t("core-misc.params.not_text"));
+      for (const field of ["server", "relays", "code", "botName"]) if (get(group, field) !== undefined && typeof group[field] !== "string") throw CoreError.invalid(t("core-misc.params.not_text"));
+      d.value.group ??= groupBlank();
+      for (const field of ["server", "relays", "code", "botName"]) if (get(group, field) !== undefined) Object.assign(d.value.group, { [field]: group[field], error: null });
     }
     const feishu = get(patch, "feishu");
     if (feishu !== undefined) {
@@ -556,7 +582,8 @@ export class ConnectFlows {
     const step = str(view.step, "team");
     const allowed =
       to === "back" ||
-      (step === "platform" && (target === "team" || (target === "feishuBind" && view.platforms.includes("feishu")) || (target === "commaBind" && view.platforms.includes("comma")))) ||
+      (step === "platform" && (target === "team" || (target === "feishuBind" && view.platforms.includes("feishu")) || (target === "commaBind" && view.platforms.includes("comma")) || (target === "groupBind" && view.platforms.includes("group")))) ||
+      (step === "groupBind" && target === "groupForm" && view.canCreate === true) ||
       (step === "commaBind" && target === "commaLine" && view.canCreate === true) ||
       (step === "feishuBind" && target === "feishuWay" && view.canCreate === true) ||
       (step === "feishuWay" && target === "feishuApp") ||
@@ -568,7 +595,7 @@ export class ConnectFlows {
     if (!allowed) throw CoreError.invalid(t("core-misc.connect.not_ready"));
     const d = this.#own(topic, owner);
     if (d.pending) throw CoreError.invalid(t("core-misc.connect.busy"));
-    if (step === "platform") d.value.platform = target === "team" ? "slack" : target === "commaBind" ? "comma" : "feishu";
+    if (step === "platform") d.value.platform = target === "team" ? "slack" : target === "commaBind" ? "comma" : target === "groupBind" ? "group" : "feishu";
     d.value.step = target;
     this.#store.invalidate(topic);
     return {};
@@ -590,16 +617,19 @@ export class ConnectFlows {
     // A station without the Feishu connect (one from before it) says no `feishuRegistrations`: Slack's at once.
     const feishuOffered = Array.isArray(get(overview, "feishuRegistrations"));
     // One with the Comma connect says `comma` in its overview.
-    v.platforms = [...(feishuOffered ? ["slack", "feishu"] : ["slack"]), ...(get(overview, "comma") === true ? ["comma"] : [])];
+    // One with the group connect says `group`.
+    v.platforms = [...(feishuOffered ? ["slack", "feishu"] : ["slack"]), ...(get(overview, "comma") === true ? ["comma"] : []), ...(get(overview, "group") === true ? ["group"] : [])];
     let step = str(v.step, "team");
     if (step === "platform" && !feishuOffered) step = "team";
     v.step = step;
     const feishu = v.platform === "feishu" && (FEISHU_STEPS.includes(step) || step === "done");
     const comma = v.platform === "comma" && (COMMA_STEPS.includes(step) || step === "done");
+    const group = v.platform === "group" && (GROUP_STEPS.includes(step) || step === "done");
     const mobile = v.mobile === true;
     const title = step === "platform" ? "core-misc.connect.title.platform"
-      : step === "feishuBind" || step === "commaBind" ? "core-misc.connect.title.bind"
+      : step === "feishuBind" || step === "commaBind" || step === "groupBind" ? "core-misc.connect.title.bind"
       : step === "commaLine" ? "core-misc.connect.title.commaLine"
+      : step === "groupForm" ? "core-misc.connect.title.groupForm"
       : FEISHU_STEPS.includes(step) ? `core-misc.connect.title.${step}`
       : step === "team" && !mobile && teams.length === 0
         ? "core-misc.connect.title.get_token"
@@ -613,13 +643,16 @@ export class ConnectFlows {
     const slackOrder = step === "manual" || (step === "bind" && (v.madeId === null || v.madeId === undefined)) ? ["manual", "bind"] : ["team", "app", "install", "bind"];
     const order = comma
       ? ["platform", ...COMMA_STEPS]
+      : group
+      ? ["platform", ...GROUP_STEPS]
       : feishu
       ? ["platform", "feishuBind", "feishuWay", step === "feishuApp" ? "feishuApp" : "feishuScan"]
       : feishuOffered && typeof v.resume !== "string" ? ["platform", ...slackOrder] : slackOrder;
     const back =
       step === "platform" ? "close"
-        : step === "feishuBind" || step === "commaBind" ? "platform"
+        : step === "feishuBind" || step === "commaBind" || step === "groupBind" ? "platform"
         : step === "commaLine" ? "commaBind"
+        : step === "groupForm" ? "groupBind"
         : step === "feishuWay" ? "feishuBind"
         : step === "feishuScan" || step === "feishuApp" ? "feishuWay"
         : step === "team"
@@ -649,7 +682,8 @@ export class ConnectFlows {
     v.pick = picked;
     v.feishu = feishuView(v.feishu, overview, d.pending);
     v.comma = { line: str(v.comma?.line), ready: commaLineReady(str(v.comma?.line)), error: v.comma?.error ?? null };
-    v.modeWords = present.modeWords(feishu ? "feishu" : null);
+    v.group = groupView(v.group ?? groupBlank());
+    v.modeWords = present.modeWords(feishu ? "feishu" : group ? "group" : null);
     v.sections = present.slackSections();
     return v;
   }
@@ -671,6 +705,12 @@ export class ConnectFlows {
       [name, p] = ["feishu.createConnect", { feishu: v.threads === true ? { ...app, threads: true } : app, bind: bindOf(v.pick), mode: v.mode, requireMention: v.requireMention }];
     }
     else if (action === "create" && step === "commaLine" && v.canCreate === true && v.comma.ready === true) [name, p] = ["comma.createConnect", { line: v.comma.line.trim(), bind: bindOf(v.pick) }];
+    else if (action === "create" && step === "groupForm" && v.canCreate === true && v.group.ready === true) {
+      const g = v.group;
+      const group: J = { server: g.server.trim().toLowerCase(), relays: relaysOf(g.relays), code: g.code.trim() };
+      if (g.botName.trim() !== "") group.botName = g.botName.trim();
+      [name, p] = ["group.createConnect", { group, bind: bindOf(v.pick), mode: v.mode, requireMention: v.requireMention }];
+    }
     else if (action === "create" && step === "bind" && v.canCreate === true && verified) {
       let slack: J = { ...tokenInput };
       if (typeof get(v.made, "state") === "string") slack = { appToken: tokenInput.appToken ?? null, install: v.made.state };
@@ -730,6 +770,7 @@ export class ConnectFlows {
     if (action === "create") d.value.feishu.creating = false;
     if ("err" in result && d.value.platform === "feishu" && (action === "create" || action === "register")) d.value.feishu.error = result.err.message;
     if ("err" in result && d.value.platform === "comma" && action === "create") d.value.comma.error = result.err.message;
+    if ("err" in result && d.value.platform === "group" && action === "create") (d.value.group ??= groupBlank()).error = result.err.message;
     if ("ok" in result) {
       const r = result.ok;
       if (action === "config") Object.assign(d.value, { team: get(r, "teamId") ?? null, config: "", adding: false, step: "app" });
@@ -766,6 +807,24 @@ let drawn: [string, ReturnType<typeof qr>] | null = null;
 function qrOf(url: string): ReturnType<typeof qr> {
   if (drawn === null || drawn[0] !== url) drawn = [url, qr(url)];
   return drawn[1];
+}
+
+/// The group path as drawn: what is typed, what is wrong with it field by field, whether it can be added, why adding it
+/// failed.
+function groupView(g: J): J {
+  const faults = groupFaults(g);
+  const filled = str(g.server).trim() !== "" && relaysOf(str(g.relays)).length > 0 && str(g.code).trim() !== "";
+  return {
+    server: str(g.server),
+    relays: str(g.relays),
+    code: str(g.code),
+    botName: str(g.botName),
+    serverError: faults.server,
+    relaysError: faults.relays,
+    codeError: faults.code,
+    ready: filled && faults.server === null && faults.relays === null && faults.code === null,
+    error: g.error ?? null,
+  };
 }
 
 /// An app of one's own as the station takes it.

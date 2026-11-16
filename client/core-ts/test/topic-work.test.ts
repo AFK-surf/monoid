@@ -117,7 +117,9 @@ const OVER_READ: Record<string, number> = {
 /// The same, asked again.
 const OVER_READ_AGAIN: Record<string, number> = {};
 /// Those whose reading grows faster than what they send with a knob, by name (`<name> again` warm) and knob: what each
-/// reads with that thing held three times, KB rounded up to a multiple of 8.
+/// reads with that thing held three times, KB rounded up to a multiple of 8. (Three of the station's parts went up a
+/// step with profiles as the fixture's first station gained a group connect, 2026-11-16: more data held, read the same
+/// way.)
 const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   connect: { chats: 624 },
   railCard: { chats: 1016, stations: 1024 },
@@ -127,9 +129,9 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   "start 大屏/idle": { chats: 1136, stations: 1192 },
   "stationPart archiving": { people: 16 },
   "stationPart automaticDecisions": { people: 16 },
-  "stationPart machineLogins": { profiles: 56 },
-  "stationPart logins": { profiles: 56 },
-  "stationPart updates": { profiles: 56 },
+  "stationPart machineLogins": { profiles: 64 },
+  "stationPart logins": { profiles: 64 },
+  "stationPart updates": { profiles: 64 },
   profiles: { profiles: 80, stations: 96 },
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },

@@ -170,6 +170,7 @@ export const NOTES: [number, string][] = [
   [163, "station_move plan and status answer a summary (each module's counts, what cannot move grouped by why with a few examples, what moving an item alone would stop, what is lent and what is stopped); a module's items come a page at a time with module (after, limit), one with item; its `room` says the chats' files in bytes and what is free there, and a move that would not leave that station 20 GB (or a tenth of its disk) free is refused (skill stillfail-move)."],
   [164, "browser takes engine (chrome or farview: this chat's browser, kept for it, where the station has Farview) and, on Farview, action open (url) and close (tab), tab for endpoint and status: a chat's Farview tabs share one profile, and a page's new window is a tab of its own."],
   [165, "Pi is available where the station has Pi 1.0 or newer installed and a profile it runs on (a provider's key, an OpenCode Go or Anthropic key, or custom variables): chat_create takes runtime \"pi\"."],
+  [166, "Messages can come from group (IM) chats, via=\"group\": a conversation's thread is its id twice (a private chat calls you with every message, a group with an @ of your name); mention people as @name; a card shows there as its question and numbered options in the text, and the answer comes as the option's words; chat_leave stops following a group until someone mentions you again."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

@@ -374,5 +374,9 @@
   "core-misc.feedback.heading": "still.fail 团队回复了 FB-{number}",
   "core-misc.presets.none": "这个预设已经不在了，或者还没读到：重新打开预设列表再试",
   "core-misc.presets.notYours": "这是别人的预设，只能查看、用它开对话或复制一份成自己的再改",
-  "core-misc.presets.signedOut": "没有能进入这个工作区的已登录账号：先登录再改预设"
+  "core-misc.presets.signedOut": "没有能进入这个工作区的已登录账号：先登录再改预设",
+  "core-misc.connect.title.groupForm": "加入 Group 服务器",
+  "core-misc.connect.group.badServer": "Server ID 是 64 位十六进制",
+  "core-misc.connect.group.badRelay": "每个中继地址都要以 https:// 或 http:// 开头",
+  "core-misc.connect.group.badCode": "加入码是 16 位，形如 XXXX-XXXX-XXXX-XXXX"
 }

@@ -199,7 +199,7 @@ export const CHAT_STATE = {
 export const CHAT_LEAVE = {
   name: "chat_leave",
   description:
-    "Stop following a Slack or Feishu thread you take part in, when people there tell you to (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
+    "Stop following a Slack, Feishu or group thread you are in, when people there ask (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
   inputSchema: {
     "type": "object",
     "properties": {

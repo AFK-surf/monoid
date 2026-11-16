@@ -112,6 +112,7 @@ fn Known::places(self : Known) -> Map[String, Place] raise {
         Some("feishu") =>
           out[id] = { id, name: text(jget(jget(jget(Some(c), "feishu"), "tenant"), "name")).unwrap_or(""), book: "feishu" }
         Some("comma") => out[id] = { id, name: "", book: "comma" }
+        Some("group") => out[id] = { id, name: "", book: "group" }
         _ => {
           let team = jget(jget(Some(c), "slack"), "team")
           match text(jget(team, "id")) {
@@ -132,6 +133,7 @@ fn Known::book(self : Known, platform : String) -> @jsjson.JValue raise {
   let file = match platform {
     "feishu" => "feishu-names.json"
     "comma" => "comma-names.json"
+    "group" => "group-names.json"
     _ => "slack-names.json"
   }
   if self.books.get(file) is Some(b) {

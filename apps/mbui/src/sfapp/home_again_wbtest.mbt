@@ -363,7 +363,7 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let first = if place == "profiles" {
         (7, 0, 10)
       } else if place == "connects" {
-        (412, 0, 285)
+        (444, 0, 306)
       } else {
         (348, 0, 274)
       }

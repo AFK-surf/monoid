@@ -577,6 +577,22 @@ export interface FeishuApp {
 	console?: string;
 }
 
+/** A group connect: the IM server of AFK-surf/group it is a member of. */
+export interface GroupConnect {
+	/** The IM server's endpoint id (64 hex). */
+	server: string;
+	/** The relays the server is on. */
+	relays: string[];
+	/** The name it asked to join as. */
+	botName?: string;
+	/** Who it is on the server, once it joined. */
+	memberId?: string;
+	/** Its device's endpoint id on the server (its key's public half). */
+	device?: string;
+	/** It waits to join by a code given (not used yet). */
+	joining: boolean;
+}
+
 export interface SlackIdentity {
 	team: string;
 	teamId: string;
@@ -643,6 +659,8 @@ export interface Connect {
 	slack: SlackTokens;
 	/** A Feishu (Lark) connect's app; absent for another kind. */
 	feishu?: FeishuApp;
+	/** A group connect's server and who it is there; absent for another kind. */
+	group?: GroupConnect;
 	connection: ConnectState;
 	createdBy?: Owner;
 	sessions: number;
@@ -1390,6 +1408,8 @@ export interface Overview {
 	slackApps?: MadeSlackApp[];
 	/** The station has the Comma connect: Comma is offered as a platform. Absent from one without it. */
 	comma?: boolean;
+	/** The station has the group connect: Group is offered as a platform. Absent from one without it. */
+	group?: boolean;
 	/**
 	 * The Feishu bots the viewer is making by scanning. Absent from a station without the Feishu
 	 * connect, which is then not offered.

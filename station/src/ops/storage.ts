@@ -83,6 +83,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "comma-indexes", class: "authoritative", what: "Comma's indexes" },
   { name: "feishu-threads.json", class: "authoritative", what: "Feishu's threads" },
   { name: "feishu-registrations.json", class: "authoritative", what: "Feishu's registrations" },
+  { name: "group-threads.json", class: "authoritative", what: "what the group connects heard of their IM servers" },
   { name: "windows.json", class: "authoritative", what: "Windows' install settings" },
   { name: "uninstalled", class: "authoritative", what: "taken away here, its data kept (stillfail uninstall, the app's 卸载本机 Station; an install removes it)" },
   { name: "drive-grant.key", class: "authoritative", what: "the drive's grant key" },

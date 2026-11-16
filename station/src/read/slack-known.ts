@@ -29,7 +29,7 @@ function readJson<T>(path: string, empty: T, shape: (v: Json) => T): T {
   return value;
 }
 
-/// Each connect's Slack workspace (`slack.team`), as config.json has it; a Feishu or Comma connect's names are keyed by
+/// Each connect's Slack workspace (`slack.team`), as config.json has it; a Feishu, Comma or group connect's names are keyed by
 /// the connect itself (src/feishu, src/comma: its people's ids are its app's own, or its Comma Group's), a Feishu one's
 /// company its team. `book`: the platform whose names book has them.
 type Team = { id: string; name: string; book: keyof typeof NAMES_FILE };
@@ -44,6 +44,10 @@ export function teams(s: Store): Map<string, Team> {
       }
       if (c?.kind === "comma") {
         out.set(c.id, { id: c.id, name: "", book: "comma" });
+        continue;
+      }
+      if (c?.kind === "group") {
+        out.set(c.id, { id: c.id, name: "", book: "group" });
         continue;
       }
       const team = c?.slack?.team;
@@ -64,7 +68,7 @@ export function teams(s: Store): Map<string, Team> {
   return others.size === 0 ? own : new Map([...others, ...own]);
 }
 
-/// The names book a connect's are in: Slack's (<data>/slack-names.json), Feishu's (feishu-names.json) or Comma's.
+/// The names book a connect's are in: Slack's (<data>/slack-names.json), Feishu's (feishu-names.json), Comma's or a group's.
 export function book(s: Store, platform: keyof typeof NAMES_FILE = "slack"): Record<string, Json> {
   return readJson(join(s.dataDir, NAMES_FILE[platform]), {}, (v) => (v !== null && typeof v === "object" && !Array.isArray(v) ? v : {}));
 }

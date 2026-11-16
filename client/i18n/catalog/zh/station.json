@@ -809,5 +809,13 @@
   "station.move.self": "这就是这台 station：请选另一台。",
   "station.move.pick": "请说明要迁移什么：一个模块和其中的一项，或者全部。",
   "station.move.notRunning": "这台 station 上没有正在进行的迁移，无需停止。",
-  "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。"
+  "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。",
+  "station.group.answerOptions": "回复编号或选项文字即可回答。",
+  "station.group.answerText": "直接回复即可回答。",
+  "station.group.badServer": "Server ID 是服务器的 64 位十六进制 ID",
+  "station.group.noRelay": "至少需要一个中继地址",
+  "station.group.badRelay": "中继地址要以 https:// 或 http:// 开头",
+  "station.group.noCode": "请填写加入码（邀请码或设备码，16 位）",
+  "station.group.badCode": "加入码是 16 位字母数字，形如 XXXX-XXXX-XXXX-XXXX",
+  "station.group.longName": "成员名称最多 {most} 个字"
 }

@@ -144,6 +144,7 @@ pub fn origin_mark_name(kind : String) -> String {
   match kind {
     "feishu" => "feishu"
     "comma" => "comma"
+    "group" => "group"
     _ => "slack"
   }
 }

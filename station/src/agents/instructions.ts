@@ -78,15 +78,15 @@ export function overgrown(files: [string, string][]): string {
   return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
 
 Messages:
-- Each message comes as <message via="web|slack|feishu|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
+- Each message comes as <message via="web|slack|feishu|group|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
 - One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.
 - before="TS" means it was written before your post TS, without seeing it.
 - A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.
 - A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…领导的/Led by <a chat's link> is a part of that chat's work: work in it with chat_post; its leader hears how your turns end and is who you ask (need_human reaches it, not a person); report your conclusions and their evidence apart, and what you would drop, found no gain in, or think needs a person as a proposal for it to decide. One headed …为你开的/Opened for you by <a chat's link> is your person's: work for them as in any chat. One headed 由…开的/Opened by: its opener hears how your turns end.
-- Told to stop following a Slack or Feishu thread: say so in a sentence and chat_leave it.
+- Told to stop following a Slack, Feishu or group thread: say so in a sentence and chat_leave it.
 - Write in the language the chat's people write in. Code, commits and pull requests follow their repository.
 
 Answering:
@@ -109,11 +109,11 @@ End every turn with one state, given as kind on your last chat_post or with chat
 - Otherwise do not end the turn: a post that says what you do next means you go on doing it now.
 
 Formatting: GitHub Markdown everywhere. Differences:
-| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu |
-|---|---|---|---|
-| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> |
-| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text |
-| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text |
+| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu | group |
+|---|---|---|---|---|
+| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> | @name |
+| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text | sent with the text |
+| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text | Unicode plain text |
 Write file names as \`code\`.
 
 Where you work:
@@ -213,6 +213,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
   const [channel, ts] = [v.slice(0, at), v.slice(at + 1)];
   // A Feishu chat's: its chat id and the message or topic it began with.
   if (/^oc_[A-Za-z0-9]+$/.test(channel) && /^om(t)?_[A-Za-z0-9]+$/.test(ts)) return [channel, ts];
+  // A group connect's: its conversation's id, twice (src/group: a conversation is one thread).
+  if (/^[0-9a-f]{16}$/.test(channel) && ts === channel) return [channel, ts];
   const dot = ts.indexOf(".");
   if (dot < 0) return null;
   const [secs, micros] = [ts.slice(0, dot), ts.slice(dot + 1)];
@@ -258,15 +260,15 @@ export function messageForAgent(m: MessageRow): string {
   return parts.filter((p) => p !== "").join("\n\n");
 }
 
-const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : "slack");
+const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : surface.startsWith("group:") ? "group" : "slack");
 
 /// The still.fail app a message was sent from, as an attribute; nothing for one that did not say.
 const clientAttr = (m: MessageRow) => (m.client !== null && m.client !== undefined ? ` client="${escapeAttr(m.client)}"` : "");
 
-/// Slack and app message IDs are seconds since the epoch; Comma's are sequence numbers, and Feishu's are opaque.
+/// Slack and app message IDs are seconds since the epoch; Comma's and a group's are sequence numbers, and Feishu's are opaque.
 /// For the latter two only the time the station recorded the message is known (which can be later than it was sent).
 function timeAttr(m: MessageRow, surface: string): string {
-  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
+  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && via(surface) !== "group" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
   const sent = Number.isFinite(numeric) && numeric <= 8.64e15 ? numeric : null;
   const recorded = Number.isFinite(m.createdAt) && m.createdAt > 0 && m.createdAt <= 8.64e15 ? m.createdAt : null;
   const at = sent ?? recorded;

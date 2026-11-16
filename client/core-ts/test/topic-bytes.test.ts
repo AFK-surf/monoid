@@ -174,11 +174,11 @@ const EMPTY: Record<string, Record<string, string>> = {
   "profile": { "profile.usedBy": NONE },
   "profile key": { "profile.quota.resets": NONE },
   "connects": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
-  "connects mine": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
+  "connects mine": { "items[].connect.group.relays": "the viewer made no group connect (another member made the one there is)", "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
   // (asked for its last line alone, a job's row: no lines, jobs.ts log)
   "jobLog line": { lines: ASKED_SO },
   // (a single-session connect's session, and the one weighed is many sessions')
-  "connect": { "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
+  "connect": { "connect.group.relays": "the page weighed is a Slack connect's (c-slack-1), which has no group server", "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
   "newChat": { "pick.value.profiles": STATE },
   // (a new chat's pick names no account's allowance, choose.ts `#now` quiet; the model it takes with nothing chosen,
   // Fable, runs on one runtime and takes no Devin sidekick; borrow: a model only another station has, picked)

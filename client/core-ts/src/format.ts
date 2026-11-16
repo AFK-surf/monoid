@@ -511,7 +511,7 @@ export function connection(state: unknown, kind?: string | null): [string, strin
     case "disabled":
       return [said("core-logic.format.connection.disabled"), "offline"];
     default:
-      return [said(kind === "feishu" ? "core-logic.format.connection.no_feishu" : kind === "comma" ? "core-logic.format.connection.no_comma" : "core-logic.format.connection.no_slack"), "offline"];
+      return [said(kind === "feishu" ? "core-logic.format.connection.no_feishu" : kind === "comma" ? "core-logic.format.connection.no_comma" : kind === "group" ? "core-logic.format.connection.no_group" : "core-logic.format.connection.no_slack"), "offline"];
   }
 }
 

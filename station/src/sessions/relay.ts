@@ -54,6 +54,8 @@ function connectsFor(hub: Hub, session: string): { id: string; chat: ChatSurface
     .config()
     .connects.filter((c) => c.enabled && (home === null || (c.workspace ?? home) === ws))
     .flatMap((c) => {
+      // (a group connect's conversations are not offered here yet: the app's relay knows Slack's and Feishu's)
+      if (c.kind === "group") return [];
       const chat = hub.chatOf(c.id);
       if (chat === undefined || !chat.places || !chat.begin) return [];
       const kind: RelayConnect["kind"] = c.kind === "feishu" ? (chat.platform?.() === "lark" ? "lark" : "feishu") : "slack";

@@ -818,5 +818,13 @@
   "station.move.self": "That is this station: pick another one.",
   "station.move.pick": "Say what to move: a module and one of its items, or everything.",
   "station.move.notRunning": "No move is under way on this station: there is nothing to stop.",
-  "station.move.restarted": "This station restarted during the move: what had moved stays moved, the rest is here as it was. Ask again to go on."
+  "station.move.restarted": "This station restarted during the move: what had moved stays moved, the rest is here as it was. Ask again to go on.",
+  "station.group.answerOptions": "Reply with a number or an option's words to answer.",
+  "station.group.answerText": "Reply to answer.",
+  "station.group.badServer": "The server ID is the server's 64-character hex ID",
+  "station.group.noRelay": "Give at least one relay address",
+  "station.group.badRelay": "A relay address starts with https:// or http://",
+  "station.group.noCode": "Give a join code (an invitation or a device code, 16 characters)",
+  "station.group.badCode": "A join code is 16 letters and digits, like XXXX-XXXX-XXXX-XXXX",
+  "station.group.longName": "A member's name is {most} characters at most"
 }

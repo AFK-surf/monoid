@@ -54,7 +54,7 @@ fn chat_title(t : Json, first_text : Json, channel_name : Json, untitled : Strin
   }
   let name = @jscase.trim_white(match channel_name { String(s) => s; _ => "" })
   if name != "" {
-    return if surface.has_prefix("feishu:") { name } else { "#" + name }
+    return if surface.has_prefix("feishu:") || surface.has_prefix("group:") { name } else { "#" + name }
   }
   if text("channel").has_prefix("D") {
     return direct

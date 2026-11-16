@@ -356,10 +356,12 @@ function originOf(connect: J, origin: J): { originKind: string; originText: stri
   const feishu = text("surface")?.startsWith("feishu:") === true || format.isFeishuChat(text("channel") ?? "");
   // A Comma Task's: Comma and the Group, no place (a Task is not in a channel).
   const comma = text("surface")?.startsWith("comma:") === true;
+  // A group connect's: its conversation by name (a group's, a private chat's other member's), no #.
+  const group = text("surface")?.startsWith("group:") === true;
   const place = comma || (text("channel") === null && channelName === null) ? null : format.placeName(text("surface") ?? "slack", text("channel") ?? "", channelName ?? "");
   return {
-    originKind: comma ? "comma" : feishu ? "feishu" : "slack",
-    originText: [comma ? "Comma" : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
+    originKind: comma ? "comma" : group ? "group" : feishu ? "feishu" : "slack",
+    originText: [comma ? "Comma" : group ? t("core-views.group") : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
   };
 }
 

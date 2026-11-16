@@ -18,6 +18,13 @@ priv struct NcFlow {
   /// the line Comma's still.fail plugin shows, as typed
   comma_line : @ui.Field
   mut comma_line_sent : String
+  /// the group server's fields as typed (its endpoint id, relays, join code, the member's name), and whether the
+  /// core's draft was put in them once
+  group_server : @ui.Field
+  group_relays : @ui.Field
+  group_code : @ui.Field
+  group_name : @ui.Field
+  mut group_filled : Bool
   mut app_id_sent : String
   mut look : SaDraft?
   mut look_sent : String
@@ -58,6 +65,11 @@ pub fn new_connect_dialog(src : Source, core : Core, here : Here, station : Stri
     app_secret: @ui.Field::new(),
     comma_line: @ui.Field::new(),
     comma_line_sent: "",
+    group_server: @ui.Field::new(),
+    group_relays: @ui.Field::new(),
+    group_code: @ui.Field::new(),
+    group_name: @ui.Field::new(),
+    group_filled: false,
     app_id_sent: "",
     look: None,
     look_sent: "",
@@ -167,12 +179,16 @@ fn nc_step(
 ///|
 /// The dialog's steps brought to the wizard's as the core has it now: its first as it is first said; gone on to
 /// another, that one slides in (its words as the core says them while it shows, back on it the wizard's); gone back to
-/// the one under the top, the top slides away.
+/// the one under the top, the top slides away. Done is no step of its own: the step it was done on shows it as the
+/// dialog closes onto what was made (each step's body and foot say `| "done"`), so it is never pushed over that step,
+/// whose fields a second page of the same step would give to two editors at once; a dialog let go follows nothing.
 fn nc_follow(src : Source, core : Core, here : Here, f : NcFlow, view : () -> Json?, v : Json?, back : () -> Unit) -> Unit {
-  guard v is Some(Object(_)) else { return }
+  guard v is Some(Object(_)) && !f.gone else { return }
   let step = text(v, "step")
   let n = f.pages.length()
-  if n == 0 {
+  if step == "done" && n > 0 {
+    ()
+  } else if n == 0 {
     f.pages.push(step)
   } else if f.pages[n - 1] == step {
     ()
@@ -270,6 +286,7 @@ fn nc_added(core : Core, f : NcFlow, id : String, close : () -> Unit, platform :
       match platform {
         "feishu" => "web-pages.connect.feishu.added"
         "comma" => "web-pages.connect.added.comma"
+        "group" => "web-pages.connect.added.group"
         _ => "web-pages.connect.added"
       },
     ),
@@ -300,8 +317,9 @@ fn nc_body(
   let step = if step == "" { text(v, "step") } else { step }
   let fe = field(v, "feishu")
   let error = nc_error(core, f)
-  // added on its own (a bot made by scanning): its page, once the frame is built
-  if step == "done" && opt_text(fe, "connect") is Some(_) && !f.gone {
+  // added on its own (a bot made by scanning): its page, once the frame is built (the wizard's done, shown on the
+  // step it was done on: nc_follow)
+  if text(v, "step") == "done" && opt_text(fe, "connect") is Some(_) && !f.gone {
     c.tell("nc-added/" + f.form, fn() { nc_watch_added(core, f, v, close) })
   }
   c.box(style=nc_body_box, fn() {
@@ -309,6 +327,7 @@ fn nc_body(
       "platform" => {
         let offered = strings(v, "platforms").contains("feishu")
         let comma = strings(v, "platforms").contains("comma")
+        let group = strings(v, "platforms").contains("group")
         let platform = opt_text(v, "platform").unwrap_or("slack")
         let platforms = [
           ("slack", "Slack", @sf.t("web-pages.connect.feishu.slackNote")),
@@ -321,6 +340,10 @@ fn nc_body(
         // (offered only by a station with the Comma connect)
         if comma {
           platforms.push(("comma", "Comma", @sf.t("web-pages.connect.comma.note")))
+        }
+        // (offered only by a station with the group connect)
+        if group {
+          platforms.push(("group", @sf.t("web-pages.connect.group.name"), @sf.t("web-pages.connect.group.note")))
         }
         let picked = @sf.choices(
           c,
@@ -344,6 +367,17 @@ fn nc_body(
       "commaLine" | "done" if text(v, "platform") == "comma" => nc_comma_line(c, core, f, field(v, "comma"), error)
       // (a Comma connect has one way, a session a Task: the station makes it so, and Comma has no threads to choose by)
       "commaBind" => nc_models(c, src, core, f, v)
+      "groupForm" | "done" if text(v, "platform") == "group" => nc_group_form(c, core, f, field(v, "group"), error)
+      // (a group connect's way: a session a conversation, or one for all; a private chat and a group are each one)
+      "groupBind" => {
+        nc_models(c, src, core, f, v)
+        @sf.field(c, @sf.t("web-pages.connect.mode"), fn() {
+          let (m, r, _) = mode_choices(c, "nc-mode/" + f.form, field(v, "modeWords"), text(v, "mode"), flag(v, "requireMention"), false)
+          if m != text(v, "mode") || r != flag(v, "requireMention") {
+            nc_edit(core, f, obj([("mode", str(m)), ("requireMention", Json::boolean(r))]))
+          }
+        })
+      }
       "feishuBind" | "bind" => {
         nc_models(c, src, core, f, v)
         @sf.field(c, @sf.t("web-pages.connect.mode"), fn() {
@@ -719,6 +753,44 @@ fn nc_comma_line(c : @ui.Ctx, core : Core, f : NcFlow, cm : Json?, error : Strin
 }
 
 ///|
+/// The group path's last step: the server it joins (its endpoint id, its relays one a line, the code it joins by, the
+/// name it joins as), each field's fault under it as the core finds it, why adding it failed.
+fn nc_group_form(c : @ui.Ctx, core : Core, f : NcFlow, g : Json?, error : String) -> Unit {
+  // (the fields echo what is typed; the core has it a moment later: what it kept is put in them once, as they open)
+  if !f.group_filled {
+    f.group_filled = true
+    f.group_server.set(text(g, "server"))
+    f.group_relays.set(text(g, "relays"))
+    f.group_code.set(text(g, "code"))
+    f.group_name.set(text(g, "botName"))
+  }
+  let edit = fn(name : String, typed : String) { nc_edit(core, f, obj([("group", obj([(name, str(typed))]))])) }
+  @sf.field(c, @sf.t("web-pages.connect.group.server"), hint=@sf.t("web-pages.connect.group.serverHint"), error=opt_text(g, "serverError").unwrap_or(""), fn() {
+    @sf.input(c, "nc-group-server/" + f.form, placeholder="0123abcd…", field=f.group_server, on_change=fn(typed) { edit("server", typed) })
+    |> ignore
+  })
+  @sf.field(c, @sf.t("web-pages.connect.group.relays"), hint=@sf.t("web-pages.connect.group.relaysHint"), error=opt_text(g, "relaysError").unwrap_or(""), fn() {
+    @sf.textarea(c, "nc-group-relays/" + f.form, placeholder="https://relay.example.com", field=f.group_relays, on_change=fn(typed) { edit("relays", typed) })
+    |> ignore
+  })
+  @sf.field(c, @sf.t("web-pages.connect.group.code"), hint=@sf.t("web-pages.connect.group.codeHint"), error=opt_text(g, "codeError").unwrap_or(""), fn() {
+    @sf.input(c, "nc-group-code/" + f.form, placeholder="XXXX-XXXX-XXXX-XXXX", field=f.group_code, on_change=fn(typed) { edit("code", typed) })
+    |> ignore
+  })
+  @sf.field(c, @sf.t("web-pages.connect.group.botName"), hint=@sf.t("web-pages.connect.group.botNameHint"), fn() {
+    @sf.input(c, "nc-group-name/" + f.form, placeholder="Claude", field=f.group_name, on_change=fn(typed) { edit("botName", typed) })
+    |> ignore
+  })
+  let said = match opt_text(g, "error") {
+    Some(e) => e
+    None => error
+  }
+  if said != "" {
+    @sf.page_note(c, said, bad=true)
+  }
+}
+
+///|
 /// The dialog's buttons for its step `step` (CoreNewConnectDialog's footer; useFeishuStep's): 取消 where the wizard's
 /// back closes it (back a step is the step's head's, the dialog's steps following the wizard's), and the way on, each
 /// as the core says the step stands.
@@ -757,8 +829,19 @@ fn nc_foot(
       cancel()
       let feishu = opt_text(v, "platform") == Some("feishu") && strings(v, "platforms").contains("feishu")
       let comma = opt_text(v, "platform") == Some("comma") && strings(v, "platforms").contains("comma")
+      let group = opt_text(v, "platform") == Some("group") && strings(v, "platforms").contains("group")
       next(@sf.t("web-pages.connect.next"), false, false, fn() {
-        nc_go(core, f, if feishu { "feishuBind" } else if comma { "commaBind" } else { "team" }, close)
+        nc_go(core, f, if feishu { "feishuBind" } else if comma { "commaBind" } else if group { "groupBind" } else { "team" }, close)
+      })
+    }
+    "groupBind" => {
+      cancel()
+      next(@sf.t("web-pages.connect.next"), !flag(v, "canCreate"), false, fn() { nc_go(core, f, "groupForm", close) })
+    }
+    "groupForm" | "done" if text(v, "platform") == "group" => {
+      cancel()
+      next(@sf.t("web-pages.connect.addConnect"), !flag(field(v, "group"), "ready"), busy, fn() {
+        nc_act(core, f, "create", done=fn(a) { nc_added(core, f, text(Some(a), "id"), close, "group") })
       })
     }
     "commaBind" => {

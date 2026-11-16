@@ -32,7 +32,7 @@ import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo
 import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces, transcriptSources } from "../read/transcript.ts";
-import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -1532,6 +1532,7 @@ export class Hub {
     const kind = this.config().connects.find((c) => c.id === connect)?.kind;
     if (kind === "feishu") return feishuSurface(connect);
     if (kind === "comma") return commaSurface(connect);
+    if (kind === "group") return groupSurface(connect);
     return slackSurface(connect, this.chatOf(connect)?.workspace() ?? null);
   }
 
