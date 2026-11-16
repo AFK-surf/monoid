@@ -1588,6 +1588,166 @@ sim("reaches_a_station_through_its_workspaces_own_relay", async (s) => {
   await close(s, station, mesh);
 });
 
+/// Two ways open to a station (its workspace turned the main endpoint's punched paths off: a way on each relay's own
+/// endpoint), both answering their pings; and a wire over them that knows of that.
+async function twoWays(s: Sim) {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id: bare } = await onRelays(s, [a, b]);
+  const id = `w/${bare}`;
+  const status = new Status(s.host, s.runner);
+  const wire = new MeshWire({ mesh: () => Effect.succeed(mesh), meshNow: () => mesh, credentials: () => grants("ok", { n: 0 }), relays: () => [], off: () => [DIRECT], status: () => status });
+  const addr = StationAddr.parse(id);
+  // A read as the core asks one, whole; what it came with (`drop`, as link.ts calls it when a stream goes silent).
+  const read = () =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/overview", headers: [] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r))));
+  assert.equal((await read()).status, 200);
+  await s.until(() => mesh.ways(id).length === 2 && mesh.ways(id).every((w) => w.samples > 0 && w.missed === 0), 2 * 60_000);
+  return { station, mesh, id, wire, addr, read };
+}
+
+/// 2026-11-16: a station's event stream gone silent on a slow way (link.ts `STREAM_IDLE_MS`) closed every way to it,
+/// one through the workspace's own relay answering every ping among them, 50 times in an evening. That way alone goes;
+/// the requests move to the other at once, nothing dialled again.
+sim("a_stream_gone_silent_takes_its_own_way_for_gone_and_the_others_answering_stay", async (s) => {
+  const { station, mesh, id, wire, addr, read } = await twoWays(s);
+  const reply = await read();
+  const cur = mesh.current(id)!;
+  const other = mesh.ways(id).find((w) => w.link !== cur)!.link;
+  // Its stream silent: the way it came on taken for gone, as link.ts does (a wire from before had only `reset`).
+  (reply.drop ?? (() => wire.reset(addr)))();
+  assert.equal(cur.usable(), false, "the silent way is closed");
+  assert.equal(other.usable(), true, "the other way, answering, is not");
+  assert.equal(mesh.current(id), other, "the requests go on it at once");
+  const tries = s.net.tries.length;
+  assert.equal((await read()).status, 200);
+  assert.equal(mesh.current(id), other);
+  // The way gone dialled again in its time (EXPLORE_MS), and two open again.
+  await s.until(() => mesh.ways(id).length === 2 && mesh.ways(id).every((w) => w.samples > 0 && w.missed === 0), EXPLORE_MS + 2 * 60_000);
+  assert.ok(s.net.tries.length > tries);
+  // A stream not answered at all within as long (link.ts `slow`, no reply to say its way): the way requests go on now
+  // goes, the other stays.
+  const now = mesh.current(id)!;
+  const left = mesh.ways(id).find((w) => w.link !== now)!.link;
+  wire.reset(addr);
+  assert.equal(now.usable(), false);
+  assert.equal(left.usable(), true);
+  assert.equal(mesh.current(id), left);
+  assert.equal((await read()).status, 200);
+  await close(s, station, mesh);
+});
+
+/// No other way answering: every way closed, as before, and the station dialled anew by the next request.
+sim("a_stream_gone_silent_on_the_one_way_answering_drops_the_link", async (s) => {
+  const { station, mesh, id, wire, addr, read } = await twoWays(s);
+  const cur = mesh.current(id)!;
+  const other = mesh.ways(id).find((w) => w.link !== cur)!;
+  other.missed = 3;
+  wire.reset(addr);
+  assert.equal(cur.usable(), false);
+  assert.equal(other.link.usable(), false);
+  assert.equal(mesh.current(id), null);
+  assert.equal((await read()).status, 200);
+  await close(s, station, mesh);
+});
+
+/// 2026-11-16: a workspace's own relay added and still.fail's turned off, as its stations told it (views/ways-stations.ts),
+/// while a stream was open on still.fail's relays: told the mesh at once, not with a request that opens a link, its
+/// links go the ways it may now, with no request.
+sim("ways_told_as_they_change_move_the_open_links_at_once", async (s) => {
+  const ours = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const own = s.relay("https://own.relay.test/", { device: { ms: 60 }, station: { ms: 60 } });
+  const station = await s.stationOn(ours, [own]);
+  // The endpoints the mesh binds on one relay alone (a way pinned to it), by that relay.
+  const pinned: [string, { closed: boolean }][] = [];
+  const bind = s.iroh.bind.bind(s.iroh);
+  s.iroh = {
+    bind: (o) =>
+      Effect.map(bind(o), (e) => {
+        if (!o.relayOnly || o.relayUrls.length !== 1) return e;
+        const seen = { closed: false };
+        pinned.push([o.relayUrls[0]!, seen]);
+        const close = e.close.bind(e);
+        e.close = () => Effect.suspend(() => ((seen.closed = true), close()));
+        return e;
+      }),
+  };
+  const mesh = await s.run(Mesh.make(env(s), [ours]));
+  const id = `w/${station.id()}`;
+  const onOurs = (l: Link | null) => l !== null && l.usable() && (l.pinned === null || sameRelay(l.via(), ours) || sameRelay(l.pinned, ours));
+  // Opened before its ways were known: on still.fail's relay.
+  const first = await s.run(mesh.link(id, grants("ok", { n: 0 }), [], []));
+  assert.ok(sameRelay(first.via(), ours), `${first.via()}`);
+  const dialled = s.net.tries.length;
+  // Its own relay, and still.fail's off: no way open goes a way it may, so the station is dialled again on its own relay
+  // at once; nothing is left open on still.fail's.
+  mesh.setWays(id, [own], ["ours"]);
+  assert.equal(first.usable(), false, "the way turned off is closed");
+  await s.until(() => mesh.current(id)?.usable() === true, CONNECT_TIMEOUT_MS);
+  assert.ok(s.net.tries.length > dialled, "dialled again without a request");
+  const now = mesh.current(id)!;
+  assert.ok(sameRelay(now.via(), own), `${now.via()}`);
+  assert.ok(![now, ...mesh.ways(id).map((w) => w.link)].some(onOurs), JSON.stringify(mesh.measured(id)));
+  assert.equal((await request(s, now, head("/admin/api/overview"))).status, 200);
+  // Both on, the punched paths off (a way on each relay's own endpoint), the requests on still.fail's: turned off again,
+  // they move to the way open on its own at once, before it is closed.
+  mesh.setWays(id, [own], [DIRECT]);
+  await s.until(() => mesh.ways(id).length === 2 && mesh.ways(id).every((w) => w.samples > 0 && w.missed === 0), EXPLORE_MS + 2 * 60_000);
+  const onOwn = mesh.ways(id).find((w) => sameRelay(w.link.pinned, own))!.link;
+  const viaOurs = mesh.ways(id).find((w) => sameRelay(w.link.pinned, ours))!.link;
+  // (the requests move to still.fail's, the quicker, once they stayed on its own a while)
+  await s.until(() => mesh.current(id) === viaOurs, MIN_STAY_MS + 2 * 60_000);
+  const tries = s.net.tries.length;
+  assert.ok(pinned.some(([r, e]) => sameRelay(r, ours) && !e.closed), "a way on still.fail's relay's own endpoint");
+  mesh.setWays(id, [own], [DIRECT, "ours"]);
+  assert.equal(mesh.current(id), onOwn);
+  assert.equal(viaOurs.usable(), false);
+  assert.equal(onOwn.usable(), true);
+  assert.equal(s.net.tries.length, tries, "nothing dialled");
+  // Its relay's endpoint, nothing on it now, let go: not held on a relay turned off.
+  await s.until(() => pinned.filter(([r]) => sameRelay(r, ours)).every(([, e]) => e.closed), TICK_MS);
+  assert.ok(pinned.some(([r, e]) => sameRelay(r, own) && !e.closed));
+  await close(s, station, mesh);
+});
+
+/// A relay of its own added (still.fail's still on, the punched paths off: a way on each relay's own endpoint): dialled
+/// as it is told, not at the next EXPLORE_MS.
+sim("a_relay_told_added_is_dialled_at_once", async (s) => {
+  const ours = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const own = s.relay("https://own.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const station = await s.stationOn(ours, [own]);
+  const mesh = await s.run(Mesh.make(env(s), [ours]));
+  const id = `w/${station.id()}`;
+  await s.run(mesh.link(id, grants("ok", { n: 0 }), [], [DIRECT]));
+  await s.time.pass(2 * TICK_MS);
+  assert.ok(!mesh.ways(id).some((w) => sameRelay(w.link.pinned, own)));
+  mesh.setWays(id, [own], [DIRECT]);
+  await s.until(() => mesh.ways(id).some((w) => sameRelay(w.link.pinned, own) && w.link.usable()), CONNECT_TIMEOUT_MS);
+  await close(s, station, mesh);
+});
+
+/// Its ways told while its link is still being dialled on the ways of before (one station's ways read as another of
+/// the workspace's is still opening): the link it opens goes a way it may go, dialled beside at once, never one closed
+/// as it came through.
+sim("ways_told_while_a_link_opens_give_a_link_on_the_ways_it_may_go", async (s) => {
+  const ours = s.relay("https://a.relay.test/", { device: { ms: 1_500 }, station: { ms: 1_500 } });
+  const own = s.relay("https://own.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const station = await s.stationOn(ours, [own]);
+  const mesh = await s.run(Mesh.make(env(s), [ours]));
+  const id = `w/${station.id()}`;
+  const opening = s.runner.run(mesh.link(id, grants("ok", { n: 0 }), [], []));
+  await s.time.pass(200);
+  const told = s.time.now();
+  mesh.setWays(id, [own], ["ours"]);
+  const link = await s.settle(opening);
+  assert.equal(link.usable(), true, "a link closed as it came through");
+  assert.ok(sameRelay(link.pinned, own), `${link.pinned} ${link.via()}`);
+  assert.ok(s.time.now() - told < 4 * 1_500, "dialled beside at once, not after the first");
+  assert.ok(![mesh.current(id), ...mesh.ways(id).map((w) => w.link)].some((l) => l !== null && l.usable() && l.pinned === null));
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
 // ── adb.rs ──
 
 import { Adb } from "../src/adb.ts";

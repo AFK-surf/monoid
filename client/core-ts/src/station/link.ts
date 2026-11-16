@@ -668,10 +668,11 @@ export class Links {
             const replaced = self.#requests.wire.replaced ? self.#requests.wire.replaced(link.addr).pipe(Effect.as({ replaced: true } as const)) : Effect.never;
             const gone = Effect.suspend(() => core.wakes.until((w) => !races && w.dropsStream(heard))).pipe(Effect.as({ gone: true } as const));
             const idle = Effect.sleep(STREAM_IDLE_MS).pipe(Effect.as({ idle: true } as const));
+            const lost = () => (opened.success.drop ? opened.success.drop() : self.#requests.wire.reset?.(link.addr));
             for (;;) {
               const next = yield* Effect.raceAllFirst([Effect.result(Effect.mapError(body.take, asCoreError)).pipe(Effect.map((r) => ({ chunk: r }) as const)), gone, replaced, idle]);
               if ("gone" in next) {
-                self.#requests.wire.reset?.(link.addr);
+                lost();
                 why = GONE;
                 break;
               }
@@ -680,8 +681,9 @@ export class Links {
                 break;
               }
               if ("idle" in next) {
-                // Silent past its keepalive: the way to it is taken for gone too, not asked again on the same.
-                self.#requests.wire.reset?.(link.addr);
+                // Silent past its keepalive: the way it came on is taken for gone too, not asked again on the same (the
+                // other ways to the station that answer stay: `WireReply.drop`).
+                lost();
                 why = t("station.core.streamIdle");
                 break;
               }
