@@ -7,6 +7,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
+| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
 | [54a442122](https://github.com/AFK-surf/monoid/commit/54a442122fc73c5fdacfa203df6398994b12b563) ci: each GitHub image keeps its own units, and a b | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.8 | 119.85 |
 | [c94b14180](https://github.com/AFK-surf/monoid/commit/c94b141807a6ca280fc02db5788b70bff2917113) mbui android: the app made on a thread of its own, | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.8 | 119.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 2.45 | 3.44 | 14.63 | 35.79 | 57.1 | 31.4 | 64.73 | 99.96 | 149.05 |
 | [cd752a297](https://github.com/AFK-surf/monoid/commit/cd752a29782d13cd09939e347bec22228eb2d479) mbui headless: checkbox Space/mixed, slider Page U | 2.45 | 3.44 | 14.63 | 35.79 | 57.1 | 31.4 | 64.73 | 99.96 | 149.05 |
-| [a0c2727c2](https://github.com/AFK-surf/monoid/commit/a0c2727c25f0ee9fb326d3ce6163519c931bfcee) shell, mesh: the front's lines in stillfail.log ca | 2.45 | 3.44 | 14.63 | 35.79 | 57.09 | 31.38 | 64.68 | 99.96 | 149.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [54a442122](https://github.com/AFK-surf/monoid/commit/54a442122fc73c5fdacfa203df6398994b12b563) ci: each GitHub image keeps its own units, and a b | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [cd752a297](https://github.com/AFK-surf/monoid/commit/cd752a29782d13cd09939e347bec22228eb2d479) mbui headless: checkbox Space/mixed, slider Page U | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
-| [a0c2727c2](https://github.com/AFK-surf/monoid/commit/a0c2727c25f0ee9fb326d3ce6163519c931bfcee) shell, mesh: the front's lines in stillfail.log ca | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
