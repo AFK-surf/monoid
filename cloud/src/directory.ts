@@ -16,14 +16,14 @@ import { DurableObject } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { STATIONS_PER_WORKSPACE } from "../../client/limits.ts";
 import { CODE_TTL_DAYS, isAdmin, newCode, normalizeCode } from "./admin";
-import { digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
+import { clock, digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
 import { header, publicOrigins } from "./compat";
 import type { Env } from "./env";
 import { grantKeys } from "./grants";
 import { langOf, setCloud, type Lang } from "./i18n.ts";
 import { isIconUrl } from "./icons";
 import { showsOf, type Shows } from "./noticeText";
-import { MAX_RELAYS, parseRelays, relays, relayUrls, sameUrl, waysOf } from "./relays";
+import { MAX_RELAYS, parseRelays, relays, relayUrls, sameUrl, WAY_KINDS, waysOf } from "./relays";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
 import type { AccountEvent, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
@@ -184,6 +184,11 @@ export class Directory extends DurableObject<Env> {
     if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "relays")) this.#run("ALTER TABLE workspaces ADD COLUMN relays TEXT");
     // Nor ways turned off (a JSON array of relay URLs and kinds of way, null for none: setWay), before they could be.
     if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "ways_off")) this.#run("ALTER TABLE workspaces ADD COLUMN ways_off TEXT");
+    // Nor which record of its stations' those two are (`ways_at` its time in ms, `ways_station` the station that made
+    // it, "" a change made here: #waysPut), before the stations said theirs.
+    for (const column of ["ways_at INTEGER", "ways_station TEXT"]) {
+      if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === column.split(" ")[0])) this.#run(`ALTER TABLE workspaces ADD COLUMN ${column}`);
+    }
     // Nor did push keep a device's language, before there were languages.
     if (!this.#rows("PRAGMA table_info(push)").some((r) => r.name === "lang")) this.#run("ALTER TABLE push ADD COLUMN lang TEXT");
     // Nor what a device shows of notices (JSON: noticeText.ts Shows; null all, in full), before a device said.
@@ -1144,7 +1149,7 @@ export class Directory extends DurableObject<Env> {
       : filtered.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
     this.ctx.storage.transactionSync(() => {
       this.#run("UPDATE workspaces SET relays = ? WHERE id = ?", list.length ? JSON.stringify(list) : null, id);
-      this.#run("UPDATE workspaces SET ways_off = ? WHERE id = ?", kept.length ? JSON.stringify(kept) : null, id);
+      this.#run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", kept.length ? JSON.stringify(kept) : null, clock.now(), id);
     });
     this.#changed(id, true);
     return this.#view(sub, id);
@@ -1174,7 +1179,7 @@ export class Directory extends DurableObject<Env> {
       off = ways.filter((w) => (w === target ? !on : !w.on)).map((w) => w.id);
     }
     if (!waysOf(this.env, own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
-    this.#run("UPDATE workspaces SET ways_off = ? WHERE id = ?", off.length ? JSON.stringify(off) : null, id);
+    this.#run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", off.length ? JSON.stringify(off) : null, clock.now(), id);
     this.#changed(id, true);
     return this.#view(sub, id);
   }
@@ -2342,7 +2347,8 @@ export class Directory extends DurableObject<Env> {
 
   /** "ping" is answered by the runtime; a station speaks otherwise only of the workspace locks: it asks for entries it
    * lacks (`lock.get {after}`, answered `{type: "lock", entries}`) or brings ones the cloud lacks (`lock.put`), of its
-   * home's lock, or of another workspace's it is in that it names (`workspace`, said back with the entries). */
+   * home's lock, or of another workspace's it is in that it names (`workspace`, said back with the entries); and of
+   * the ways it keeps of a workspace it names (`ways.put`, #waysPut). */
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as Attachment;
     if (typeof message !== "string" || !("station" in attachment)) return;
@@ -2372,7 +2378,49 @@ export class Directory extends DurableObject<Env> {
       // what the station keeps of the lock that the cloud's chain parted from (its head an entry that lost), kept by
       // the fork choice (a station from before says none, and is answered as before).
       await this.#appendLock(workspace, body.entries, body.keep === true).catch(() => this.#sendState(station));
+    } else if (body.type === "ways.put" && named !== null) {
+      this.#waysPut(station, workspace, body as Record<string, unknown>);
     }
+  }
+
+  /**
+   * A workspace's ways as one of its stations keeps them (station/src/cloud/presence.ts `waysTeller`): theirs, kept here
+   * for those that reach no station yet (an app from before the stations kept them; a browser or a device new to the
+   * workspace, which learns its relays from `/v1/me` alone, 2026-11-16). The newest record kept, as the stations keep
+   * it (`at`, then the larger station id: station/src/mesh/ways.ts); one of a rig's, which keeps none, not. Cleaned as
+   * setRelays and setWay clean, never every relay off. Told only when the ways changed: each station says its record
+   * again as its socket opens.
+   */
+  #waysPut(station: string, workspace: string, body: Record<string, unknown>): void {
+    const { at, station: by } = body;
+    if (!Number.isSafeInteger(at) || (at as number) < 0 || typeof by !== "string" || by.length > 128 || !Array.isArray(body.relays) || !Array.isArray(body.off)) return;
+    if (this.#one("SELECT rig FROM station_members WHERE station = ? AND workspace = ?", station, workspace)?.rig === 1) return;
+    const row = this.#one("SELECT relays, ways_off, ways_at, ways_station FROM workspaces WHERE id = ?", workspace);
+    if (!row) return;
+    const was = { at: row.ways_at as number | null, station: (row.ways_station as string | null) ?? "" };
+    if (was.at !== null && !((at as number) > was.at || (at === was.at && by > was.station))) return;
+    const ours = relayUrls(this.env);
+    const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
+    const list: string[] = [];
+    for (const raw of body.relays) {
+      const url = typeof raw === "string" && URL.canParse(raw.trim()) ? new URL(raw.trim()) : null;
+      if (!url || !(url.protocol === "https:" || (insecure && url.protocol === "http:")) || url.username || url.password || url.search || url.hash) continue;
+      const clean = url.href.replace(/\/+$/, "");
+      if (list.length < MAX_RELAYS && !ours.some((u) => sameUrl(u) === sameUrl(clean)) && !list.some((u) => sameUrl(u) === sameUrl(clean))) list.push(clean);
+    }
+    // What is off: `ours`, a kind of way, or a relay of still.fail's or of its own (as listed); else nothing.
+    let off: string[] = [];
+    for (const w of body.off) {
+      if (typeof w !== "string") continue;
+      const id = w === "ours" || (WAY_KINDS as readonly string[]).includes(w) ? w : [...ours, ...list].find((u) => sameUrl(u) === sameUrl(w));
+      if (id !== undefined && !off.includes(id)) off.push(id);
+    }
+    // (as the stations' keepRelayOn: still.fail's back on rather than none)
+    if (!waysOf(this.env, list, off).some((w) => w.kind === "relay" && w.on)) off = off.filter((o) => o !== "ours" && !ours.some((u) => sameUrl(u) === sameUrl(o)));
+    const relays = list.length ? JSON.stringify(list) : null;
+    const waysOff = off.length ? JSON.stringify(off) : null;
+    this.#run("UPDATE workspaces SET relays = ?, ways_off = ?, ways_at = ?, ways_station = ? WHERE id = ?", relays, waysOff, at as number, by, workspace);
+    if (relays !== ((row.relays as string | null) ?? null) || waysOff !== ((row.ways_off as string | null) ?? null)) this.#changed(workspace, true);
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {

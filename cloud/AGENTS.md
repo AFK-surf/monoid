@@ -5,9 +5,11 @@
   use it is that member's signature, checked by the machine, never the cloud's to say; listing it as the other kind
   changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation,
   still.fail's relays. A workspace's own relays and the ways it turned off are its stations'
-  (`station/src/mesh/ways.ts`): what is kept of them here is for the stations and devices from before, and told to
-  stations once as their first. A station's chats, sessions, runtime accounts and usage are the station's; the cloud
-  never holds them nor passes a request on to a station (the root AGENTS.md, No way into a station from outside).
+  (`station/src/mesh/ways.ts`): what is kept of them here is for the stations and devices from before, and for a
+  browser or a device that reaches no station yet (its relays only `/v1/me` names), told to stations once as their
+  first. The stations say theirs on their presence sockets (`ways.put`), the newest record kept (`#waysPut`). A
+  station's chats, sessions, runtime accounts and usage are the station's; the cloud never holds them nor passes a
+  request on to a station (the root AGENTS.md, No way into a station from outside).
 - Workers, each deployed on its own (`deploy.py` lists them, `wrangler*.jsonc` route them): the API
   (`src/index.ts`), the relay (`src/relay-worker.ts`: deploying it drops every relay connection, so it is deployed
   only when it changed), the static web, admin, preview, status, site and the component library's page (kit). Their

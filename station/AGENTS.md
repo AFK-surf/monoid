@@ -262,7 +262,9 @@
   stations, read by devices (`GET /ways`) and told changed (`ways`). An agent adds a relay with the `relays` tool and
   nobody approves it (the user, 2026-11-11: 「要手动加太不 ai native 了」): a relay carries only end-to-end encrypted
   packets and one that is slow is not taken, so an approval would guard nothing; the tool adds one only once this
-  station reached it as a relay, and who added it is kept and shown.
+  station reached it as a relay, and who added it is kept and shown. Each station tells still.fail's cloud the record it
+  keeps on its presence socket (`src/cloud/presence.ts` `waysTeller`), never waiting on it: a browser or a device new
+  to the workspace learns its relays from `/v1/me` alone, and with still.fail's off nothing else reaches a station.
 - A relay a workspace turns off is off for its stations too, not only its devices (`src/mesh/relays.ts`): a station is
   kept on the relays its workspaces keep on (`wantedRelays`, still.fail's where it is in none) and dials another
   station through those of the workspaces both are in, the relays all of them turn off disabled (`stationAddr`,

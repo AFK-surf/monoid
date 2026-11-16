@@ -18,6 +18,7 @@ import type { StationKey } from "./key.ts";
 import type { CloudSaid } from "./plane.ts";
 import { type ProviderSpec, signedHeaders } from "./provider.ts";
 import { wall } from "../ops/fibers.ts";
+import { type Ways, waysOf } from "../mesh/ways.ts";
 
 /// The cloud expects a "ping" this often and drops a station silent for three of them.
 const PING_MS = 30_000;
@@ -185,6 +186,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
     let created: WebSocket | undefined;
     let ping: (() => void) | undefined;
     let unlisten = () => {};
+    let unlistenWays = () => {};
     try {
       const state = s.state!;
       const ts = nowSecs();
@@ -195,9 +197,17 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
       const socket = created = regional ? s.transport.websocket(url, headers, WebSocket) : new WebSocket(url, { headers, handshakeTimeout: CONNECT_TIMEOUT_MS });
       let answered = true;
       let held = false;
-      const { tell, askPending } = planeTeller(s, (frame) => socket.send(JSON.stringify(frame)), () => socket.readyState === WebSocket.OPEN);
+      const send = (frame: unknown) => socket.send(JSON.stringify(frame));
+      const open = () => socket.readyState === WebSocket.OPEN;
+      const { tell, askPending } = planeTeller(s, send, open);
+      // The workspaces' ways, to still.fail's cloud alone (Comma's plane keeps none: provider.ts).
+      const tellWays = plane.provider === "stillfail" ? waysTeller(s, waysOf(s), send, open) : () => {};
       tell();
-      unlisten = s.listen(tell);
+      unlisten = s.listen(() => {
+        tell();
+        tellWays();
+      });
+      if (plane.provider === "stillfail") unlistenWays = waysOf(s).listen(tellWays);
       let failed: Error | null = null;
       socket.on("unexpected-response", (_, response) => {
         if (response.statusCode === 404) {
@@ -214,6 +224,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
         // Another station on this key still, until this socket holds (Replaced).
         writePresence(true, replaced.conflict ? CONFLICT_ERROR : null, replaced.conflict);
         log.info("presence", `online at ${plane.name}`);
+        tellWays();
         // The cloud's answering is in the machine's time.
         ping = every(PING_MS, () => { // timer: a heartbeat that keeps the connection
           // No pong since the last ping: gone even if the socket has not noticed.
@@ -253,6 +264,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
       socket.on("close", (code, reason) => {
         ping?.();
         unlisten();
+        unlistenWays();
         if (code === CLOSE_REMOVED) removed(s, CLOSE_REMOVED);
         // With its code and reason: replaced by another socket of this station's (4000), silent (4008), the cloud restarting (1001, 1012)…
         const why = reason.length > 0 ? `${code} ${reason.toString("utf8")}` : String(code);
@@ -261,6 +273,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
       return Effect.sync(() => {
         ping?.();
         unlisten();
+        unlistenWays();
         if (regional) socket.terminate();
         else socket.close();
       });
@@ -268,6 +281,7 @@ const connect = (s: CloudState, key: StationKey, plane: ProviderSpec, said: ((ev
       // Connection preparation can fail before a socket emits an error. Keep the same status and retry path.
       ping?.();
       unlisten();
+      unlistenWays();
       if (created) {
         created.removeAllListeners();
         created.on("error", () => {});
@@ -311,6 +325,26 @@ export function planeTeller(s: CloudState, send: (frame: unknown) => void, open:
     askPending();
   };
   return { tell, askPending };
+}
+
+/// What a station tells still.fail's cloud of its workspaces' ways on one socket (`send`, while `open`): the record it
+/// keeps of each workspace it is in (mesh/ways.ts), as the socket opens and as one changes, each record once a socket.
+/// The cloud keeps the newest of its stations' (cloud/src/directory.ts `#waysPut`) for those that reach no station yet:
+/// an app from before the stations kept them, and a browser or a device new to the workspace, which learn its relays
+/// only from `/v1/me` (2026-11-16, Hypershell: still.fail's relays off on its stations, the web app reached none). Only
+/// told, never waited on, and the station never goes by it back once it keeps a record (mesh/ways.ts `view`). A rig
+/// tells none: the cloud takes none of it.
+export function waysTeller(s: CloudState, ways: Ways, send: (frame: unknown) => void, open: () => boolean): () => void {
+  const told = new Map<string, string>();
+  return () => {
+    if (!open() || s.state?.rig !== undefined) return;
+    for (const m of s.memberships()) {
+      const r = ways.record(m.workspace);
+      if (r === null || told.get(m.workspace) === `${r.at}:${r.station}`) continue;
+      told.set(m.workspace, `${r.at}:${r.station}`);
+      send({ type: "ways.put", workspace: m.workspace, relays: r.relays.map((x) => x.url), off: r.off, at: r.at, station: r.station });
+    }
+  };
 }
 
 /// A device tool request pushed on the socket (`{type: "tool", id, request}`, contract §8 presence transport): run

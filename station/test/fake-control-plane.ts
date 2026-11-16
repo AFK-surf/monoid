@@ -60,6 +60,7 @@ export class FakeControlPlane {
   /// Each presence socket closed as replaced as soon as it opened, as still.fail cloud does when another station
   /// connects with the same key (cloud/src/station.ts: close code 4000).
   replacing = false;
+  private waits: { what: () => boolean; resolve: () => void }[] = [];
   origin = "";
   private server: Server;
   private wss = new WebSocketServer({ noServer: true });
@@ -98,11 +99,27 @@ export class FakeControlPlane {
           const text = data.toString();
           if (text === "ping") ws.send("pong");
           else this.heard.push(JSON.parse(text));
+          this.#looked();
         });
+        ws.on("close", () => this.#looked());
         ws.send(JSON.stringify(this.state(station)));
         if (this.replacing) ws.close(4000, "replaced");
+        this.#looked();
       });
     });
+  }
+
+  /// Once `what` holds, looked at again as each socket opens, says something or closes (no timer).
+  when(what: () => boolean): Promise<void> {
+    if (what()) return Promise.resolve();
+    return new Promise((resolve) => this.waits.push({ what, resolve }));
+  }
+
+  #looked() {
+    for (const w of [...this.waits]) if (w.what()) {
+      this.waits.splice(this.waits.indexOf(w), 1);
+      w.resolve();
+    }
   }
 
   state(station: string) {
