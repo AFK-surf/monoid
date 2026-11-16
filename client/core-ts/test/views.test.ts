@@ -771,6 +771,23 @@ test("a_models_own_window_is_said_of_that_model_alone", () => {
   assert.equal(agyOn("anthropic/claude-opus-4-6").spent.until, 9000);
   assert.equal(agyOn(null).quota.windows.length, 2, "falls back to the profile's own default model");
   assert.equal(quotaFor(agyOv.profiles[0]!.quota, null).windows.length, 4, "the account's own page keeps all four windows");
+  const agyProOv = {
+    profiles: [{
+      id: "gp", name: "GP", runtimes: ["agy"], model: "gemini-4-argon-medium",
+      models: ["gemini-4-argon-medium", "gemini-4-hydrogen-medium", "claude-opus-5-5-medium"],
+      check: { state: "ok" },
+      quota: {
+        state: "ok",
+        windows: agyWin,
+        scoped: [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 9500, scope: "Argon" }],
+      },
+    }],
+  };
+  const agyProOn = (model: string | null) => runnableOn(agyProOv, { runtime: "agy", profile: "gp", model }, 0)[0];
+  assert.equal(agyProOn("gemini-4-argon-medium").spent.until, 9500);
+  assert.equal(agyProOn("gemini-4-argon-medium").quota.windows.length, 3);
+  assert.equal(agyProOn("gemini-4-hydrogen-medium").spent, null);
+  assert.equal(agyProOn("gemini-4-hydrogen-medium").quota.windows.length, 2);
 });
 
 test("an_agent_can_be_moved_to_the_profiles_of_its_runtime", () => {

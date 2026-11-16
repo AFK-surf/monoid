@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, statSync,
 import { devNull } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agyScopeForModel } from "../src/accounts/agy-quota.ts";
+import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
 import { claudeOAuthToken, RefreshLock } from "../src/accounts/oauth.ts";
 import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
@@ -170,6 +170,49 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(agyScopeForModel("google/gemini-3.1-pro"), "gemini");
     assert.equal(agyScopeForModel("us.google.gemma-3-27b"), "gemini");
     assert.equal(agyScopeForModel("anthropic/claude-opus-4-6"), "3p");
+
+    // Paid Pro accounts carry a separate weekly bucket for Gemini 4 Argon (`gemini-argon-wtu-weekly`), which goes into
+    // `scoped` under `Argon` rather than duplicating `每周 · Gemini` in `windows`.
+    const proAllowance = agyAllowance({
+      command: {
+        data: {
+          groups: [
+            {
+              name: "Gemini Models",
+              buckets: [
+                { id: "gemini-weekly", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-23T04:49:34Z" },
+                { id: "gemini-5h", window: "5h", remaining_fraction: 0.99, reset_time: "2026-11-16T09:49:34Z" },
+              ],
+            },
+            {
+              name: "Claude and GPT models",
+              buckets: [
+                { id: "3p-weekly", window: "weekly", remaining_fraction: 1, reset_time: "2026-11-22T13:43:14Z" },
+                { id: "3p-5h", window: "5h", remaining_fraction: 1, reset_time: "2026-11-16T09:58:00Z" },
+              ],
+            },
+            {
+              name: "Gemini 4 Argon",
+              buckets: [
+                { id: "gemini-argon-wtu-weekly", window: "weekly", remaining_fraction: 0.87, reset_time: "2026-11-23T04:25:54Z" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    assert.deepEqual(
+      proAllowance.windows.map((w) => [w.label, w.scope, w.usedPercent]),
+      [
+        ["每周 · Gemini", "gemini", 0],
+        ["5 小时 · Gemini", "gemini", 1],
+        ["每周 · Claude / GPT", "3p", 0],
+        ["5 小时 · Claude / GPT", "3p", 0],
+      ],
+    );
+    assert.deepEqual(proAllowance.scoped, [
+      { label: "每周 · Argon", usedPercent: 13, resetsAt: Date.parse("2026-11-23T04:25:54Z"), minutes: 10080, scope: "Argon" },
+    ]);
   });
 
   test("a codex login's allowance is read with its auth.json's tokens", async () => {

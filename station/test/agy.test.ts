@@ -786,6 +786,29 @@ test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on
   assert.equal(pool.runOn("s-gemini").id, "ag1");
   // Claude on ag1 sees only the 3P window (refills at 6000), while ag2's 3P window is also full (8500): stays on ag1 and refills at 6000.
   assert.equal(pool.refillsAt("s-claude"), 6000);
+
+  // On a Pro account whose separate Argon weekly cap (`scoped`) is used up, Argon sessions move off it while Hydrogen
+  // and Flash sessions on the same account remain healthy under the main Gemini pool.
+  sessions.set("s-argon", { key: "s-argon", runtime: "agy", profile: "ag1", profilePinned: false, model: "gemini-4-argon-medium", effort: null });
+  sessions.set("s-hydrogen", { key: "s-hydrogen", runtime: "agy", profile: "ag1", profilePinned: false, model: "gemini-4-hydrogen-medium", effort: null });
+  pool.setHealth((id) => ({
+    check: { state: "ok", detail: "ok", models: ["gemini-4-argon-medium", "gemini-4-hydrogen-medium", "claude-opus-5-5-medium"], checkedAt: 1500 },
+    quota:
+      id === "ag1"
+        ? { ...ag1Quota, scoped: [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 9500, scope: "Argon" }] }
+        : {
+            state: "ok",
+            checkedAt: 1500,
+            windows: [
+              { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 7000, scope: "gemini" },
+              { label: "每周 · Gemini", usedPercent: 20, resetsAt: 8000, scope: "gemini" },
+              { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: 8500, scope: "3p" },
+              { label: "每周 · Claude / GPT", usedPercent: 10, resetsAt: 9000, scope: "3p" },
+            ],
+          },
+  }));
+  assert.equal(pool.runOn("s-argon").id, "ag2");
+  assert.equal(pool.runOn("s-hydrogen").id, "ag1");
 });
 
 test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had moved into the machine's one keychain item is taken back only by the profile whose account it is", async () => {

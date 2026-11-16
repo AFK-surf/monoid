@@ -158,16 +158,16 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
   } else if base.length() > 0 {
     parts.push(("", base))
   }
+  let has_pool = base.length() == 0 && order.iter().any(fn(s) { counts.get(s).unwrap_or(0) > 1 })
   let single : Array[Json] = []
   for s in order {
-    if counts.get(s).unwrap_or(0) > 1 {
-      let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
-      parts.push((quota_group_name(group_wins[0]), group_wins))
+    let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
+    let gname = if group_wins.length() > 0 { quota_group_name(group_wins[0]) } else { "" }
+    if counts.get(s).unwrap_or(0) > 1 || (has_pool && gname != "" && chip_str(Some(group_wins[0]), "mark").has_prefix(gname + " ")) {
+      parts.push((gname, group_wins))
     } else {
-      for w in windows {
-        if chip_str(Some(w), "scope") == s {
-          single.push(w)
-        }
+      for w in group_wins {
+        single.push(w)
       }
     }
   }
