@@ -2162,6 +2162,7 @@ pub fn figures(c : @ui.Ctx, figures : Array[(String, String, String)]) -> Unit {
 ///|
 /// A dial's figure (Dial): what is left large (`number` and its `unit`), `fill` of its ten cells lit (0–100) in its
 /// `level`'s colour (green while plenty; amber, warn, red), its `label` and a quiet `note` under.
+#derive(Eq)
 pub(all) struct Dial {
   number : String
   unit : String

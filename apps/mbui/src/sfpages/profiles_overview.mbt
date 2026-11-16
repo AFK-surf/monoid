@@ -1168,17 +1168,17 @@ fn ov_time_axis_node(parent : @view.View, end_days : Int) -> Unit {
 }
 
 ///|
-/// Single-line reactive pool tab (`Claude      ● 4/7`) at `8px` concentric inset (`ug_row_corner`).
+/// Single-line reactive pool tab (`Claude      ● 4/7`) at `8px` concentric inset (`ug_row_corner`). Its title, its count
+/// and whether it runs short (`low`) each worked out by the caller on its own (a computed each), so what a pool's change
+/// leaves as it was runs none of what shows it.
 fn ov_pool_pill_node(
   parent : @view.View,
-  pool : () -> ModelPool,
+  title : () -> String,
+  count_txt : () -> String,
+  low : () -> Bool,
   selected : () -> Bool,
   on_select : () -> Unit,
 ) -> Unit {
-  let count_txt = fn() {
-    let p = pool()
-    p.ready.to_string() + "/" + p.total.to_string()
-  }
   parent.box(fn(pill) {
     pill
     .row(Is(true))
@@ -1200,11 +1200,11 @@ fn ov_pool_pill_node(
         @ui.tree_theme().color(Tint)
       }
     }))
-    .says(By(fn() { Some(@view.said(Button, label=pool().title + " " + count_txt())) }))
+    .says(By(fn() { Some(@view.said(Button, label=title() + " " + count_txt())) }))
     |> ignore
     @sf.presses_node(pill, on_select)
 
-    @sf.words_node(pill, fn() { pool().title }, fn() {
+    @sf.words_node(pill, title, fn() {
       if selected() {
         ug_named_title.then(@ui.text_style(color=AccentText, w=@sf.grow))
       } else {
@@ -1226,7 +1226,7 @@ fn ov_pool_pill_node(
       .shrink(Is(0.0))
       .ground(By(fn() {
         let t = @sf.theme()
-        if pool().net_today < 0 { t.p.red } else { t.p.green }
+        if low() { t.p.red } else { t.p.green }
       }))
       |> ignore
     })
@@ -1245,14 +1245,16 @@ fn ov_pools_card_node(
   pools : () -> Array[ModelPool],
   api_keys : () -> Array[(Json, String)],
 ) -> Unit {
-  let active_idx = fn() -> Int {
+  // (the pool shown: the one picked, else the one running down fastest; worked out once for all that shows it, told
+  // only as it comes out otherwise, never as another pool changes)
+  let active_now = @signals.computed(fn(_) -> ModelPool? {
     let ps = pools()
     if ps.length() == 0 {
-      -1
+      None
     } else {
       let picked = ov_picked_pool.get()
-      match ps.search_by(fn(p) { p.title == picked }) {
-        Some(i) => i
+      match ps.iter().find_first(fn(p) { p.title == picked }) {
+        Some(p) => Some(p)
         None => {
           let mut worst = 0
           for i in 1..<ps.length() {
@@ -1260,17 +1262,12 @@ fn ov_pools_card_node(
               worst = i
             }
           }
-          worst
+          Some(ps[worst])
         }
       }
     }
-  }
-
-  let active_pool = fn() -> ModelPool? {
-    let ps = pools()
-    let i = active_idx()
-    if i >= 0 && i < ps.length() { Some(ps[i]) } else { None }
-  }
+  })
+  let active_pool = fn() { active_now.get() }
 
   let scale_top_of = fn(p : ModelPool) -> Double {
     let mut max_abs_v = 20.0
@@ -1292,38 +1289,30 @@ fn ov_pools_card_node(
 
     card.show(fn() { active_pool() is Some(_) }, fn(has_pools) {
       has_pools.gap(Is(4.0)) |> ignore
+      // (the one shown, by its title: a pill is told only as it comes to be shown or stops being so: View::selected)
+      let shown_is = has_pools.selected(fn() { active_pool().map(fn(p) { p.title }) })
 
       // 1. Reactive Pool Selector Grid (2 columns on phone widths, up to 4 across wider panes)
       has_pools.grid(fn() { pools().length() }, min_col_w=136.0, gap=6.0, row_gap=6.0, max_cols=4, fn(slot, idx) {
         slot.row(Is(true)) |> ignore
-        let pool_at = fn() {
-          let ps = pools()
-          if idx < ps.length() {
-            ps[idx]
-          } else {
-            {
-              title: "",
-              ready: 0,
-              total: 0,
-              now_pct: 0,
-              net_today: 0,
-              exhaust_hours: None,
-              traj: [],
-              will_starve: [],
-              net_bars: [],
-            }
+        // (its pool's title, count and whether it runs short, each worked out once of the pools, told only as that comes
+        // out otherwise: another pool's change runs none of this pill)
+        let pool_at = fn() -> ModelPool? { pools().get(idx) }
+        let title = @signals.computed(fn(_) { pool_at().map(fn(p) { p.title }).unwrap_or("") })
+        let count = @signals.computed(fn(_) {
+          match pool_at() {
+            Some(p) => p.ready.to_string() + "/" + p.total.to_string()
+            None => "0/0"
           }
-        }
+        })
+        let low = @signals.computed(fn(_) { pool_at().map(fn(p) { p.net_today < 0 }).unwrap_or(false) })
         ov_pool_pill_node(
           slot,
-          pool_at,
-          fn() {
-            match active_pool() {
-              Some(ap) => ap.title == pool_at().title
-              None => false
-            }
-          },
-          fn() { ov_picked_pool.set(@signals.untracked(fn() { pool_at().title })) },
+          fn() { title.get() },
+          fn() { count.get() },
+          fn() { low.get() },
+          fn() { shown_is(title.get()) },
+          fn() { ov_picked_pool.set(@signals.untracked(fn() { title.get() })) },
         )
       })
       |> ignore
@@ -1550,9 +1539,14 @@ pub fn profiles_overview_node(
   let list = fn() { list_now.get() }
   let pools_now = @signals.computed(fn(_) { ov_build_pools(list()) }, same=fn(a, b) { a == b })
   let pools = fn() { pools_now.get() }
-  let balance_keys = fn() { ov_balance_keys(list()) }
-  let broken_items = fn() { list().filter(fn(e) { ov_needs_fix(Some(e)) }) }
-  let waste_items = fn() {
+  let has_accounts_tab = on_show_accounts is Some(_)
+  // (what it lists, each worked out once of the accounts for all that reads it, told only as it comes out otherwise: an
+  // account's change that leaves a list as it was runs none of what shows it)
+  let balance_now = @signals.computed(fn(_) { ov_balance_keys(list()) })
+  let balance_keys = fn() { balance_now.get() }
+  let broken_now = @signals.computed(fn(_) { list().filter(fn(e) { ov_needs_fix(Some(e)) }) })
+  let broken_items = fn() { broken_now.get() }
+  let waste_now = @signals.computed(fn(_) {
     let out : Array[(Json, Int, String)] = []
     for e in list() {
       match ov_expiring_waste(Some(e)) {
@@ -1561,8 +1555,22 @@ pub fn profiles_overview_node(
       }
     }
     out
-  }
-  let has_accounts_tab = on_show_accounts is Some(_)
+  })
+  let waste_items = fn() { waste_now.get() }
+  // (its blocks, worked out once: what reads them is told only as one comes or goes)
+  let blocks_now = @signals.computed(fn(_) {
+    let out : Array[String] = []
+    if has_accounts_tab {
+      out.push("choice")
+    }
+    if pools().length() > 0 || balance_keys().length() > 0 {
+      out.push("pools")
+    }
+    if broken_items().length() > 0 || waste_items().length() > 0 {
+      out.push("alerts")
+    }
+    out
+  })
   let page_title = fn() {
     if has_accounts_tab {
       @sf.t("android-misc.bar.place.profiles")
@@ -1595,19 +1603,7 @@ pub fn profiles_overview_node(
     said?,
     width?,
     tips?,
-    fn() {
-      let out : Array[String] = []
-      if has_accounts_tab {
-        out.push("choice")
-      }
-      if pools().length() > 0 || balance_keys().length() > 0 {
-        out.push("pools")
-      }
-      if broken_items().length() > 0 || waste_items().length() > 0 {
-        out.push("alerts")
-      }
-      out
-    },
+    fn() { blocks_now.get() },
     fn(b, key) {
       if key == "choice" {
         @sf.page_choice_node(

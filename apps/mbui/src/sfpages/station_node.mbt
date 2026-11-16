@@ -189,7 +189,11 @@ fn station_view_node(
       None => part()
     }
   }
-  let blocks = fn() {
+  // (what its blocks are worked out of: the station as their keys read it, so a change of what no key reads runs none
+  // of what reads them; and the blocks worked out once, told only as one comes, goes or moves)
+  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation"])
+  let blocks_now = @signals.computed(fn(_) {
+    let s = keyed
     // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
     // of it moved to another station, moving, stopped or failed: station_move_node.mbt's)
     let out = if station_moving_shown(s()) {
@@ -209,18 +213,24 @@ fn station_view_node(
       },
     )
     out
-  }
+  })
+  let blocks = fn() { blocks_now.get() }
+  // (what most parts read of it: all it says of itself, none of its overview, whether it has a machine)
+  let top = station_narrowed(s, [])
   let block = fn(b : @view.View, key : String) {
     match key {
       "parts" => station_parts_node(b, chosen, press)
-      "resources" => station_resources_node(b, core, here, s, fn() { press("processes") })
-      k if k == "allScreens" || k.has_prefix("allScreens/") => all_screens_block(b, core, here, s, k)
-      "userPages" => station_user_pages_node(b, core, here, s)
-      "agentPages" => station_agent_pages_node(b, core, here, s)
-      "screens" => station_screens_node(b, core, here, s)
-      "profiles" => station_profiles_node(b, core, here, s)
-      "connects" => station_connects_node(b, core, s)
-      "drive" => station_drive_node(b, s)
+      "resources" =>
+        station_resources_node(b, core, here, station_narrowed(s, ["processes", "processesText"], host=true), fn() {
+          press("processes")
+        })
+      k if k == "allScreens" || k.has_prefix("allScreens/") => all_screens_block(b, core, here, top, k)
+      "userPages" => station_user_pages_node(b, core, here, top)
+      "agentPages" => station_agent_pages_node(b, core, here, top)
+      "screens" => station_screens_node(b, core, here, top)
+      "profiles" => station_profiles_node(b, core, here, top)
+      "connects" => station_connects_node(b, core, station_narrowed(s, ["connects"]))
+      "drive" => station_drive_node(b, station_narrowed(s, ["drive"]))
       // its devices, and adding one: any member but one who only reads (a whole station's are every chat's)
       "devices" => {
         let id = text(@signals.untracked(s), "id")
@@ -230,25 +240,25 @@ fn station_view_node(
         })
       }
       "more" => station_more_node(b, core, address)
-      "processes" => station_processes_node(b, core, here, s, if bones is None { Some(rs) } else { None })
+      "processes" => station_processes_node(b, core, here, top, if bones is None { Some(rs) } else { None })
       k if k.has_prefix("processes/") => rs_block_node(b, core, address, rs, k)
       "offline" => @sf.group_node(b, fn(g) { said_row_node(g, fn() { @sf.t("web-pages.stations.settingsOffline") }) })
-      "system" => station_system_node(b, core, address, s, manager)
-      "logins" => station_logins_node(b, core, address, fn() { flag(s(), "online") })
-      "permissions" => station_permissions_node(b, core, address, fn() { field(field(s(), "overview"), "permissions") })
-      "env" => station_env_node(b, core, address, fn() { field(field(s(), "overview"), "agentEnv") }, manager)
-      "search" => station_search_node(b, core, address, fn() { field(field(s(), "overview"), "search") }, manager)
-      "context" => station_context_node(b, core, address, fn() { field(field(s(), "overview"), "context") }, manager)
-      "diagnostics" =>
-        station_diagnostics_node(b, core, address, fn() { field(field(s(), "overview"), "diagnostics") }, manager)
-      "elevation" => station_elevation_node(b, core, address, fn() { field(field(s(), "overview"), "elevation") })
+      "system" =>
+        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation"]), manager)
+      "logins" => station_logins_node(b, core, address, fn() { flag(top(), "online") })
+      "permissions" => station_permissions_node(b, core, address, station_overview_of(s, "permissions"))
+      "env" => station_env_node(b, core, address, station_overview_of(s, "agentEnv"), manager)
+      "search" => station_search_node(b, core, address, station_overview_of(s, "search"), manager)
+      "context" => station_context_node(b, core, address, station_overview_of(s, "context"), manager)
+      "diagnostics" => station_diagnostics_node(b, core, address, station_overview_of(s, "diagnostics"), manager)
+      "elevation" => station_elevation_node(b, core, address, station_overview_of(s, "elevation"))
       "workspaces" => station_workspaces_node(b, core, address)
-      "network" => station_network_node(b, core, address, fn() { field(field(s(), "overview"), "network") }, manager)
-      "copies" => station_copies_node(b, core, address, fn() { field(field(s(), "overview"), "copies") })
-      "moving" => station_moving_node(b, core, here, s, manager)
+      "network" => station_network_node(b, core, address, station_overview_of(s, "network"), manager)
+      "copies" => station_copies_node(b, core, address, station_overview_of(s, "copies"))
+      "moving" => station_moving_node(b, core, here, station_narrowed(s, ["copies"]), manager)
       "move" => station_move_section(b, core, address)
-      "software" => station_software_node(b, core, s, manager, tips)
-      "device" => station_device_node(b, s)
+      "software" => station_software_node(b, core, station_narrowed(s, ["updates"]), manager, tips)
+      "device" => station_device_node(b, station_narrowed(s, [], host=true))
       _ => ()
     }
   }
@@ -270,15 +280,63 @@ fn station_view_node(
     said?,
     width?,
     tips~,
-    // its head says its name: no title over it (StationSettings: Head, then Body)
-    head=fn(h) { station_head_node(h, core, here, s, host, manager, bones is Some(_), stint, tips) },
+    // its head says its name: no title over it (StationSettings: Head, then Body). (It reads all the station says of
+    // itself, none of its overview or its machine: what the machine is worked out of it whole on its own, its ⋯ the
+    // station whole as it is pressed)
+    head=fn(h) { station_head_node(h, core, here, top, s, host, manager, bones is Some(_), stint, tips) },
     // (what its head does, on back's line over it where the page puts it there: own_head's back_line)
     actions=fn(a) {
       if bones is None {
-        station_actions_node(a, core, here, s, fn() { local_stopped_in(address, host.get()) }, manager, tips)
+        station_actions_node(a, core, here, top, s, fn() { local_stopped_in(address, host.get()) }, manager, tips)
       }
     },
   )
+}
+
+///|
+/// Station `s` (whole) as a part of its page reads it: all it says of itself but its `overview` and its machine (its
+/// name, mark, how it is, what is wrong with it: a few words, which change as it does), of its overview only `overview`'s
+/// fields, and its machine (`host`) whole where `host` says so, else only whether it has one (a `{}` in its place).
+/// Worked out once of it whole, told only as that comes out otherwise (a computed, Json's equality): a change of what
+/// the part does not read (a profile's quota, its 归档's line, the machine's meters) runs none of what shows it.
+fn station_narrowed(s : () -> Json?, overview : Array[String], host? : Bool = false) -> () -> Json? {
+  let now = @signals.computed(fn(_) {
+    match s() {
+      Some(Object(m)) => {
+        let out : Map[String, Json] = Map([])
+        for k, v in m {
+          if k == "overview" {
+            let o : Map[String, Json] = Map([])
+            for f in overview {
+              match field(Some(v), f) {
+                Some(x) => o[f] = x
+                None => ()
+              }
+            }
+            out[k] = Json::object(o)
+          } else if k == "host" {
+            out[k] = match v {
+              Object(_) if !host => Json::object(Map([]))
+              _ => v
+            }
+          } else {
+            out[k] = v
+          }
+        }
+        Some(Json::object(out))
+      }
+      other => other
+    }
+  })
+  fn() { now.get() }
+}
+
+///|
+/// Field `key` of station `s`'s overview, worked out once of it whole, told only as it comes out otherwise (a computed):
+/// what a part of the page that shows that field alone reads.
+fn station_overview_of(s : () -> Json?, key : String) -> () -> Json? {
+  let now = @signals.computed(fn(_) { field(field(s(), "overview"), key) })
+  fn() { now.get() }
 }
 
 ///|
@@ -457,12 +515,14 @@ fn station_part_then(_address : String, _s : Json?, _part : String) -> (((String
 /// before it), what the machine is, its version, where it is from; what is wrong with it under them; at its end trying
 /// it again while away or silent, 启动 where it is this machine's and stopped here, its ⋯. This machine's as the host
 /// says it, asked again every few seconds from when it is made (it starts, stops and updates on its own time: a
-/// moment said each time). `bones`: all of it in its bones while what it says is read the first time.
+/// moment said each time). `bones`: all of it in its bones while what it says is read the first time. `s`: the station
+/// as its head reads it (station_narrowed's: none of its overview or its machine), `whole` all of it.
 fn station_head_node(
   h : @view.View,
   core : Core,
   here : () -> Here,
   s : () -> Json?,
+  whole : () -> Json?,
   host : @signals.Signal[String],
   manager : Bool,
   bones : Bool,
@@ -470,7 +530,7 @@ fn station_head_node(
   tips : @sf.TipLayer,
 ) -> Unit {
   if bones {
-    @sf.waiting_node(h, fn(w) { station_head_node(w, core, here, s, host, manager, false, stint, tips) })
+    @sf.waiting_node(h, fn(w) { station_head_node(w, core, here, s, whole, host, manager, false, stint, tips) })
     return
   }
   let address = text(@signals.untracked(s), "station")
@@ -484,6 +544,10 @@ fn station_head_node(
     }
   }
   let name = fn() { text(s(), "name") }
+  // (what the machine is, its version, where it is from: worked out once of the station whole, told only as it reads
+  // otherwise, so its machine's figures changing run nothing of the head)
+  let facts_now = @signals.computed(fn(_) { station_head_facts(whole()) })
+  let facts = fn() { facts_now.get() }
   @sf.own_head_node(
     h,
     fn(m, side) {
@@ -529,14 +593,14 @@ fn station_head_node(
     rename_label=fn() { @sf.t("web-pages.settings.stations.rename") },
     // (what the machine is, none for one never reached: no line, and no dot before nothing)
     lines=fn() {
-      match station_head_facts(s()) {
+      match facts() {
         "" => []
         facts => [facts]
       }
     },
     // its dot before what it says of how it is (reconnecting …; this machine's, how it stands here: 已停止, 正在更新),
     // else before what the machine is
-    dot=fn() { if state().0 == "" && station_head_facts(s()) != "" { dot() } else { "" } },
+    dot=fn() { if state().0 == "" && facts() != "" { dot() } else { "" } },
     state=fn(k) {
       @sf.state_dot_node(k, fn() { if state().1 && stopped() is Some(_) { "busy" } else { dot() } })
       @sf.words_node(k, fn() { state().0 }, fn() { if state().1 { st_fact_busy } else { st_fact } }) |> ignore
@@ -550,18 +614,20 @@ fn station_head_node(
       }
       out
     },
-    actions=fn(a) { station_actions_node(a, core, here, s, stopped, manager, tips) },
+    actions=fn(a) { station_actions_node(a, core, here, s, whole, stopped, manager, tips) },
   )
 }
 
 ///|
 /// What its head does at its end (station_head's): trying it again while away or silent, 启动 where it is this
-/// machine's and stopped here (`stopped`), how its renaming goes and its ⋯ for its managers.
+/// machine's and stopped here (`stopped`), how its renaming goes and its ⋯ for its managers. `s`: the station as they
+/// read it (station_narrowed's), `whole` all of it, which its ⋯ reads as it is pressed.
 fn station_actions_node(
   a : @view.View,
   core : Core,
   here : () -> Here,
   s : () -> Json?,
+  whole : () -> Json?,
   stopped : () -> Json?,
   manager : Bool,
   tips : @sf.TipLayer,
@@ -610,7 +676,7 @@ fn station_actions_node(
     // its ⋯ (station_menu's), beside it
     @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {
       let (x, y, w, h) = m.placed_window_now()
-      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(s)), from=At(x, y, w, h), along=End)
+      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(whole)), from=At(x, y, w, h), along=End)
     })
     |> ignore
   }

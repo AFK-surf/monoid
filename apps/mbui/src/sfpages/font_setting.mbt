@@ -179,16 +179,16 @@ fn face_rows_node(
   let chosen = fn() { chosen_of(place) }
   let none = if place == "text" { "web-pages.appearance.fonts.followUi" } else { "web-pages.appearance.fonts.default" }
   face_row_node(rows, core, place, "", fn() { @sf.t(none) }, own, fn() { chosen() == "" }, fn() { ("", false) })
+  // (the place's faces kept by their ids: a row reads its own, told only as that one changes: View::keyed_by)
+  let by_id = rows.keyed_by(fn() { all().filter(fn(f) { flag(Some(f), "mono") == (place == "code") }) }, fn(f) {
+    text(Some(f), "id")
+  })
   rows.each(
-    fn() {
-      all()
-      .filter(fn(f) { flag(Some(f), "mono") == (place == "code") })
-      .map(fn(f) { text(Some(f), "id") })
-    },
+    fn() { by_id.keys() },
     fn(k) { k },
     fn(r, id) {
       let id = id.untracked()
-      let fv = fn() { all().iter().find_first(fn(f) { text(Some(f), "id") == id }) }
+      let fv = fn() { by_id.get(id) }
       let status = fn() {
         let st = files_state()
         let fetching = field(field(st, "fetching"), id)

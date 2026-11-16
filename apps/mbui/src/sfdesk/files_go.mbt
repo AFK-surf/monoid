@@ -340,16 +340,19 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
   v.show(fn() { rows().length() > 0 }, fn(list) {
     @sf.style_node(list, fn() { go_list })
     list.says(Is(Some(@view.said(Listbox)))) |> ignore
+    // (the one chosen, by its words: a row is told only as it comes to be chosen or stops being so: View::selected)
+    let chosen_is = list.selected(fn() { rows().get(go.at.get()).map(fn(x) { x.0 }) })
+    // (where a row is among them now: found as the pointer moves onto it, never as rows are made or bound)
+    let index_of = fn(label : String) { rows().search_by(fn(x) { x.0 == label }).unwrap_or(-1) }
     list.each(rows, fn(r) { r.0 }, fn(row, r) {
       let label = @signals.untracked(fn() { r.get().0 })
-      let i = fn() { rows().search_by(fn(x) { x.0 == label }).unwrap_or(-1) }
-      let on = fn() { i() == go.at.get() }
+      let on = fn() { chosen_is(label) }
       @sf.style_node(row, fn() { if on() { go_row_on } else { go_row } })
       row
       .on_press(fn() { open(r.get().2) })
       // (pointed at: the one chosen)
       .on_pointer_moved(fn() {
-        let n = i()
+        let n = @signals.untracked(fn() { index_of(label) })
         if n >= 0 {
           go.at.set(n)
         }

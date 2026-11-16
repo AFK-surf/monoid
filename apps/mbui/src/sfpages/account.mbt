@@ -43,7 +43,6 @@ pub fn me_node(
     let sub = here().sub
     accounts().filter(fn(a) { text(Some(a), "sub") != sub })
   }
-  let other_of = fn(sub : String) { others().iter().find_first(fn(a) { text(Some(a), "sub") == sub }) }
   // a picture picked as theirs, once read: made their face and put up (own_picture's reading, as it is picked)
   v.pick(fn() { own_picture.reading.get() }, fn(r, src) {
     guard src != "" else { return }
@@ -140,9 +139,11 @@ pub fn me_node(
               |> ignore
             },
           )
-          g.each(fn() { others().map(fn(a) { text(Some(a), "sub") }) }, fn(k) { k }, fn(row, sub) {
+          // (the others kept by who they are: a row reads its own, told only as that one changes: View::keyed_by)
+          let others_by = g.keyed_by(others, fn(a) { text(Some(a), "sub") })
+          g.each(fn() { others_by.keys() }, fn(k) { k }, fn(row, sub) {
             let sub = sub.untracked()
-            let a = fn() { other_of(sub) }
+            let a = fn() { others_by.get(sub) }
             let email = fn() { text(a(), "email") }
             let shown = fn() { if text(a(), "name") != "" { text(a(), "name") } else { email() } }
             // each with their face, changed by pressing it as the one in view's
@@ -318,9 +319,11 @@ fn acc_devices_node(parent : @view.View, core : Core, here : () -> Here) -> Unit
 /// until when under them.
 fn devices_list_node(parent : @view.View, core : Core, here : () -> Here, list : () -> Array[Json]) -> Unit {
   @sf.group_node(parent, fn(g) {
-    g.each(fn() { list().map(fn(d) { text(Some(d), "id") }) }, fn(k) { k }, fn(row, id) {
+    // (kept by their ids: a row reads its own device, told only as that one changes: View::keyed_by)
+    let by_id = g.keyed_by(list, fn(d) { text(Some(d), "id") })
+    g.each(fn() { by_id.keys() }, fn(k) { k }, fn(row, id) {
       let id = id.untracked()
-      let dv = fn() { list().iter().find_first(fn(d) { text(Some(d), "id") == id }) }
+      let dv = fn() { by_id.get(id) }
       let current = fn() { flag(dv(), "current") }
       let name = fn() {
         match text(dv(), "name") {
