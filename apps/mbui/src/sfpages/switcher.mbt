@@ -189,7 +189,19 @@ pub fn finder_typed(words : String) -> Unit {
 }
 
 ///|
-/// Esc or back: in one kind's list, back to all of them. Whether it went back (else the frame closes the search).
+/// Esc: words typed, cleared first (a Mac's search field's Esc: the owner, 2026-11-16, 照苹果的来); then as
+/// finder_back. Whether it took it (else the frame closes the search).
+pub fn finder_escape() -> Bool {
+  if finder.field.text() != "" {
+    finder.field.set("")
+    finder_typed("")
+    return true
+  }
+  finder_back()
+}
+
+///|
+/// In one kind's list, back to all of them (全部结果, back, and Esc with nothing typed). Whether it went back.
 pub fn finder_back() -> Bool {
   if finder.kind == "" {
     return false

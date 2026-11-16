@@ -5,7 +5,8 @@
 // by the words (pick_found: a choice's label, note and value), Enter in it picks the first found, none found said so
 // (common.noMatch). Its list scrolls past pick_list_most (View::scrolls), each choice a row of its own as menu_item
 // draws it (its mark or icon in a column before its words, its value after them, its note under them, the one chosen
-// in the accent): pressed, chosen. Escape, back and a press outside close it.
+// in the accent): pressed, chosen. Escape clears what is typed in its search, then closes it; back and a press outside
+// close it.
 
 ///|
 /// A long pick in `parent` while `open()` (let go of at once once not): `title` (what it is called), `choices`, the one
@@ -61,7 +62,11 @@ pub fn pick_node(
       }
     })
     .on_key(fn(k) {
-      if k.code == @ui.key_escape {
+      // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
+      if k.code == @ui.key_escape && line.text() != "" {
+        line.set("")
+        true
+      } else if k.code == @ui.key_escape {
         cancel()
         true
       } else {

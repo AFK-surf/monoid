@@ -141,3 +141,19 @@ test "大屏: a confirm of what can be undone: Enter with the focus its own does
   t.run_for(@ui.move_most_ms)
   assert_eq((by_enter, on, runs.val, @sf.presenting()), ((1, false), Some("取消"), 1, false))
 }
+
+///|
+test "大屏 on a Mac: ⌘. closes a confirm as Escape does (a Mac's cancel), its action not done" {
+  new_run()
+  let src = fixture("chat")
+  open_chat(chat_a)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=840.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let runs = Ref(0)
+  @sf.confirm("归档", "归档这个对话？", "归档", fn() { runs.val += 1 })
+  t.draw()
+  let up = @sf.presenting()
+  t.key(@ui.key_of_char('.'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_eq((up, runs.val, @sf.presenting()), (true, 0, false))
+}

@@ -373,7 +373,7 @@ fn search_page(c : @ui.Ctx, src : Source, w : Workspace, inset : Double, at : @s
     // (Esc: the keymap's search.escape where the search is up, at its key's moment)
     c.key_context("Search")
     c.on_action("search.escape", fn() {
-      if !finder_back() {
+      if !finder_escape() {
         search_close(c)
       }
       true
@@ -554,8 +554,14 @@ pub fn search_page_node(
       search_gone()
     }
   }
+  // (back: one kind first, then the search away; Escape clears what is typed before that, as a Mac's search field)
   let back = fn() {
     if !finder_back() {
+      search_close_now()
+    }
+  }
+  let escape = fn() {
+    if !finder_escape() {
       search_close_now()
     }
   }
@@ -565,7 +571,7 @@ pub fn search_page_node(
   .takes_back(fn() { if !search.leaving { back() } })
   .on_key(fn(k) {
     if k.code == @ui.key_escape && !search.leaving {
-      back()
+      escape()
       true
     } else {
       false

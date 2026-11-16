@@ -6,11 +6,12 @@
 // high as the screen's pick row at least, its icon or a choice's check in a column before its words where one has one,
 // a danger's in red, one not to be chosen faint), headings and lines between parts; what it holds scrolling where it is
 // taller than the window leaves it. Its rows are one roving group, the one with the focus lit: Up and Down move the
-// focus along them (not round), Home and End to the ends, letters typed (alone or with Shift) to the first whose words
-// start with them (a second's worth together), shown, what holds them bringing it into sight; the pointer moving onto
-// one gives it the focus, unseen. Enter, Space, a tap or a click choose one (it closes, then what it does goes on); a
-// press on what of its panel cannot be chosen does nothing. Escape, back and a press outside close it. Opened by the
-// keyboard, the focus on its first row, shown; else on its panel, nothing lit, till a key or the pointer moves it.
+// focus along them (round past either end, as a Mac's), Home and End to the ends, letters typed (alone or with
+// Shift) to the first whose words start with them (a second's worth together), shown, what holds them bringing it
+// into sight; the pointer moving onto one gives it the focus, unseen. Enter, Space, a tap or a click choose one (it
+// closes, then what it does goes on); a press on what of its panel cannot be chosen does nothing. Escape, back and a
+// press outside close it. Opened by the keyboard, the focus on its first row, shown; else on its panel, nothing lit,
+// till a key or the pointer moves it.
 
 ///|
 /// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
@@ -197,12 +198,15 @@ pub fn menu_node(
           false
         } else if k.code == @ui.key_code_down || k.code == @ui.key_code_up {
           let down = k.code == @ui.key_code_down
-          // (from nothing lit, Down to the first and Up to the last; on from one, not round)
+          // (from nothing lit, Down to the first and Up to the last; on from one, round past either end to the other, as a
+          // Mac's menus go: the owner, 2026-11-16, 照苹果的来)
+          let first = first_live(items, 0, 1)
+          let last = first_live(items, items.length() - 1, -1)
           let next = if now < 0 {
-            if down { first_live(items, 0, 1) } else { first_live(items, items.length() - 1, -1) }
+            if down { first } else { last }
           } else {
             match first_live(items, now + (if down { 1 } else { -1 }), if down { 1 } else { -1 }) {
-              -1 => now
+              -1 => if down { first } else { last }
               n => n
             }
           }

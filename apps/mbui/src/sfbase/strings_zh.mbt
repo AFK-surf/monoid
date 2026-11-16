@@ -695,7 +695,7 @@ let zh : Map[String, String] = {
   "common.back": "返回",
   "common.cancel": "取消",
   "common.close": "关闭",
-  "common.confirm": "确定",
+  "common.confirm": "好",
   "common.connecting": "正在连接",
   "common.copied": "已复制",
   "common.copy": "复制",

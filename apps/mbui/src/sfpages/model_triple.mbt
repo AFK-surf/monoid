@@ -256,7 +256,7 @@ fn pick_save(
   for k, v in patch {
     p[k] = v
   }
-  act(src, @sf.t("common.confirm"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
+  act(src, @sf.t("common.save"), "pick.save/" + station + "/" + of, "pick.save", Json::object(p), done~, ok~, failed~)
 }
 
 ///|

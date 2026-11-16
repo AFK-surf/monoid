@@ -442,7 +442,7 @@
   "station.session.noProfileForModel": "No {runtime} Profile can run {model}: turn it on in a Profile first",
   "station.slack.answerUnconfirmed": "Could not confirm your answer. Please check and try again.",
   "station.slack.chooseFirst": "Choose an option first",
-  "station.slack.confirm": "OK",
+  "station.slack.confirm": "Submit",
   "station.slack.fileNotFetched": "[Couldn't fetch file {name}: {error}]",
   "station.chat.archived": "This chat was archived manually and can't receive messages. Restore it from the archive first.",
   "station.slack.standsDone": "Done: {done}",

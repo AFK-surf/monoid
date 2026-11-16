@@ -2064,6 +2064,7 @@ fn wheel_taken() -> Unit {
 
 ///|
 fn on_key(code : Int, mods : Int) -> Unit {
+  let (code, mods) = cancel_key(code, mods)
   rows_steady_hand()
   // (one event, at its own moment: view_host.mbt)
   view_event(fn() {
@@ -2073,6 +2074,23 @@ fn on_key(code : Int, mods : Int) -> Unit {
     // (what a field of the window's tree gave up of its words by it, told at its moment: tree_field.mbt)
     tree_field_said()
   }, what="key")
+}
+
+///|
+/// A key as what is up takes it: ⌘. typed as a Mac's keys go, while a modal layer is up (the tree's or an old view's),
+/// is Escape, as AppKit's cancelOperation: a dialog's, a sheet's or a menu's cancel (the owner, 2026-11-16: 照苹果的来).
+/// With none up, ⌘. is the app's own keys' (a chat's stop).
+fn cancel_key(code : Int, mods : Int) -> (Int, Int) {
+  guard keys_system() == 0 && mods == mod_cmd && code == key_of_char('.') else { return (code, mods) }
+  let tree_modal = match view_app.val {
+    Some(t) => t.modal_top() is Some(_)
+    None => false
+  }
+  if tree_modal || g().last_layers.iter().any(fn(l) { l.modal }) {
+    (key_escape, 0)
+  } else {
+    (code, mods)
+  }
 }
 
 ///|
