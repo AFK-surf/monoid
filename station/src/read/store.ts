@@ -8,7 +8,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { Refused } from "../api/request.ts";
 import { hasRuntimeOrderIndex } from "../store/schema.ts";
-import { CARD_POSTS_PENDING, CARD_POST_LATEST, cardPostsReady } from "../store/card-post-index.ts";
+import { CARD_POSTS_PENDING, cardPostsReady } from "../store/card-post-index.ts";
+import { ANSWER_AFTER, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING } from "../store/card-kinds.ts";
 import { legacyMergedNeedsRepair, legacyMergedReadReady } from "../store/legacy-edits-build.ts";
 import { boundedEditKey as readBoundedEditKey, LAST_MESSAGE_WITH_EDIT } from "../store/legacy-edits-read.ts";
 import { hasLegacySaid } from "../store/legacy-said-build.ts";
@@ -137,14 +138,27 @@ export function pendingCardNumber(s: Store, thread: number): number | null {
       if (indexed && threadsWithCards(s, [thread]).length === 0) return null;
       throw new Refused(503, CARD_POSTS_PENDING + JSON.stringify([thread]));
     }
-    const asked = one(s, CARD_POST_LATEST, thread);
+    // A system card waiting comes first: it is settled only where it is decided (store/card-kinds.ts).
+    const system = one(s, SYSTEM_CARD_WAITING, thread);
+    if (system !== undefined) return system.n;
+    const asked = one(s, CONVERSATION_CARD_LATEST, thread);
     if (asked === undefined) return null;
     const post = one(s, "SELECT card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, asked.n);
     if (!post || cardOf(post.card, post.options) === undefined) return null;
-    if (one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, asked.n)) return null;
+    if (one(s, ANSWER_AFTER, thread, asked.n)) return null;
     if (one(s, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked.n)) return null;
     return asked.n;
   } finally { s.db.exec("RELEASE pending_card_number_read"); }
+}
+
+/// Whether the card posted at `n` still waits (store/card-kinds.ts): a system card until it is closed; a
+/// conversational one while it is the chat's latest, not closed, and no person's message after it reached its agent.
+export function cardWaits(s: Store, thread: number, n: number): boolean {
+  if (one(s, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n)) return false;
+  if (one(s, SYSTEM_CARD_AT, thread, n)) return one(s, SYSTEM_CARD_KEPT, thread, n) !== undefined;
+  if (!cardPostsReady(s.db, thread)) throw new Refused(503, CARD_POSTS_PENDING + JSON.stringify([thread]));
+  if (one(s, CONVERSATION_CARD_LATEST, thread)?.n !== n) return false;
+  return one(s, ANSWER_AFTER, thread, n) === undefined;
 }
 
 /// The latest pending card a need can point to. Its original timestamp and time never depend on edits.
@@ -188,8 +202,7 @@ export function stateQuestion(s: Store, key: string, threads: number[], ts: stri
       if (!m) continue;
       if (m.authorKind !== "agent" || m.author !== key || m.text.trim() === "") return { kind: "invalid" };
       const carded = entry.card != null || entry.options != null;
-      const answered = carded ? pendingCardNumber(s, thread) !== m.n
-        : one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, m.n) !== undefined;
+      const answered = carded ? !cardWaits(s, thread, m.n) : one(s, ANSWER_AFTER, thread, m.n) !== undefined;
       return answered ? { kind: "answered" } : { kind: "found", about: [m.thread, m.n, m.ts] };
     }
     return { kind: "missing" };

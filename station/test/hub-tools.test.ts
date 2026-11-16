@@ -282,6 +282,22 @@ test("a post carries a card, kept with it and checked", async () => {
   await r.close();
 });
 
+test("a post with a card still waiting that ends the turn with no state ends it need_human on that card", async () => {
+  const r = new Rig({ maxNudges: 2 });
+  const [key, thread] = await newSession(r.hub, web());
+  sayIn(r.hub, thread.id, "ada@x.com", "改一下");
+  await settle();
+  const s = r.claude.last();
+  await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "选一个？", card: { type: "options", options: [{ label: "A" }, { label: "B" }] } });
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 1, "not asked again");
+  const turn = r.store.lastTurn(key)!;
+  assert.equal(turn.ending, "need_help");
+  assert.equal((turn.about as { thread: number }).thread, thread.id);
+  await r.close();
+});
+
 test("answering a clarification cannot silently restore need_human", async () => {
   const r = new Rig();
   const [key, thread] = await newSession(r.hub, web());
@@ -450,7 +466,7 @@ test("a choice that closes a card comes with a station notice too, and waits whe
   }
 });
 
-test("a closed authorization card tells its agent how to reask the same request", async () => {
+test("an authorization card waits through what its person says meanwhile: its agent is told nothing ended it", async () => {
   for (const [extra, action] of [
     [{ vault: { request: "r_test" } }, 'secret_reask {request: "r_test"}'],
     [{ adb: { request: "p_test", reason: "check the screen" } }, 'phone_use {reason: "check the screen", reask: true}'],
@@ -464,8 +480,10 @@ test("a closed authorization card tells its agent how to reask the same request"
       r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "agent", author: key, text: "需要授权", card: { type: "options", options: [{ label: "允许" }], ...extra } });
       sayIn(r.hub, thread.id, "ada@x.com", "为什么需要？");
       await settle();
+      // (settled only where it is decided, store/card-kinds.ts: no reask is needed, none is said)
       const prompt = r.claude.last().steers.at(-1)!;
-      assert.ok(prompt.includes("no longer pending") && prompt.includes(action), prompt);
+      assert.ok(!prompt.includes("no longer pending") && !prompt.includes(action), prompt);
+      assert.equal(r.store.pendingCard(thread.id)?.[0].text, "需要授权");
     } finally {
       await r.close();
     }
@@ -1280,7 +1298,7 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   assert.deepEqual(listed().get(child).opener, { session: keyA, title: sender(r.hub, keyA)[0], led: true });
   assert.equal(listed().get(keyA).opener, undefined);
   // the opener's row lists the chats it opened
-  assert.deepEqual(listed().get(keyA).opened, [{ session: child, title: "安卓构建" }]);
+  assert.deepEqual(listed().get(keyA).opened, [{ session: child, title: "安卓构建", led: true, active: true }]);
   r.store.setArchived(keyA, true, "manual");
   assert.deepEqual(listed().get(child).opener?.session, keyA);
   r.store.setArchived(keyA, false, "manual");
@@ -1491,7 +1509,7 @@ test("an agent opens a chat on another station: made there once per key, its fir
   assert.deepEqual(row.opener, { station: "near", session: keyA, title: sender(near.hub, keyA)[0], led: true });
   // and the opener's here, the chat there it opened
   const opener = chats(makeStore(near.store.db, near.dir), LIST_VIEWER, false).find((x: any) => x.id === keyA);
-  assert.deepEqual(opener.opened, [{ station: "far", session: child, title: "跑测试" }]);
+  assert.deepEqual(opener.opened, [{ station: "far", session: child, title: "跑测试", led: true, active: true }]);
   assert.deepEqual(near.store.openedBy(keyA).map((o) => [o.childStation, o.child]), [["far", child]]);
   const thread = far.store.homeChat(child!)!;
   assert.equal(thread.title, "跑测试");

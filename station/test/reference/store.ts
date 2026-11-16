@@ -16,7 +16,7 @@ import { usageSince as storeUsageSince } from "../../src/store/usage.ts";
 import { type UsageChatCoverage, usageCardOutcomesComplete, usageChatStatsReady } from "../../src/store/usage-chat-stats.ts";
 import { REMOTE_RUNS_ALL, REMOTE_RUNS_OF } from "../../src/store/remote-runs.ts";
 import { CC_INDEX_VERSION, CC_SESSIONS_PENDING, CcSessionsUnavailable, ccSessionReady, indexedCcThreads } from "../../src/store/cc-thread-index.ts";
-import { CARD_POSTS_PENDING, CARD_POST_BEFORE, CARD_POST_LATEST, CARD_POST_NEXT, CARD_POST_SAMPLE, cardPostsReady } from "./backfill/card-post-index.ts";
+import { CARD_POSTS_PENDING, CARD_POST_NEXT, CARD_POST_SAMPLE, cardPostsReady } from "./backfill/card-post-index.ts";
 import { CLOSED_CARDS_INDEXED, CLOSED_CARDS_PENDING, CLOSED_CHAT_SAMPLE, CLOSED_SAMPLE_LIMIT, CLOSED_TIME_SAMPLE, LEGACY_CLOSED_CARDS, closedCardsReady, hasClosedCardsTimeIndex, hasLegacyClosedCards, hasNativeClosedCards } from "./backfill/legacy-closed-cards.ts";
 import { LEGACY_FIRST_PERSON_SINCE, LEGACY_HAS_PEOPLE_SINCE, LEGACY_PEOPLE_AFTER, PEOPLE_TIME_PENDING, PEOPLE_TIME_SAMPLE_LIMIT, SMALL_PEOPLE_AFTER, SMALL_PEOPLE_FIRST, SMALL_PEOPLE_HAS, hasLegacyPeopleSince, hasNativePeopleSince, peopleSinceReady } from "./backfill/legacy-people-since.ts";
 import { SESSION_LIST_CONNECT, SESSION_LIST_PENDING, SESSION_LIST_SCOPE, SESSION_LIST_SCOPE_CONNECT, sessionListReady } from "./backfill/session-list-index.ts";
@@ -30,6 +30,7 @@ import { PAGE_LETTER_KEYS, PAGE_LETTER_KEYS_AFTER, pageLetterReady } from "./bac
 import { legacyMergedReadReady } from "../../src/store/legacy-edits-build.ts";
 import { legacySaidPageState, legacySaidReadBoundary, legacySaidReadHead, legacySaidThreadNeedsDrain, LEGACY_HAS_UNREAD, LEGACY_SAID_SCAN, LEGACY_UNREAD } from "./backfill/legacy-said-build.ts";
 import { LEGACY_ASKED_DURING } from "../../src/store/legacy-agent-build.ts";
+import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
 import { TURN_COUNT_BATCH } from "./turn-state.ts";
 import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";
 import * as rows from "../../src/store/rows.ts";
@@ -1119,7 +1120,7 @@ export function archiveVerdict(s: Store, thread: number): Json | null {
 export const SHARES_OF = "SELECT * FROM chat_shares WHERE session IN (SELECT value FROM json_each(?))";
 const OPENERS = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent";
 export const OPENERS_OF = `${OPENERS} WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))`;
-const OPENED = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child";
+const OPENED = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child";
 export const OPENED_OF = `${OPENED} WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid`;
 
 /// What each chat shared with other workspaces is shared with now (its shares not lapsed, store/rows.ts), by the
@@ -1166,17 +1167,22 @@ export function openers(s: Store, children: string[] | null = null): Map<string,
 /// The chats each session of this station opened (chat_create), by its key, the first first: each on its station
 /// (null: this one), its session, and its title as given then, else (one of this station's) its session's.
 /// Of those `parents` name alone (a sidebar's items a change touched), or of all.
-export function openedChats(s: Store, parents: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null }[]> {
+/// One it leads (chat_create for me: `led`) is `active` while not archived and not ended done or stopped: what keeps its
+/// leader at work (client/core-ts chat-stage.ts).
+export function openedChats(s: Store, parents: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true }[]> {
   let rows: Json[];
   try {
     rows = parents === null ? all(s, `${OPENED} WHERE o.parent_station = '' ORDER BY o.created_at, o.rowid`) : all(s, OPENED_OF, JSON.stringify(parents));
   } catch {
     return new Map();
   }
-  const out = new Map<string, { station: string | null; session: string; title: string | null }[]>();
+  const out = new Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true }[]>();
   for (const r of rows) {
     const list = out.get(r.parent) ?? [];
-    list.push({ station: r.child_station === "" ? null : (r.child_station as string), session: r.child as string, title: (r.title ?? r.child_title ?? null) as string | null });
+    const led = Number(r.led) === 1;
+    const active = led && r.child_archived == null && r.state !== "all_done" && r.state !== "stopped";
+    list.push({ station: r.child_station === "" ? null : (r.child_station as string), session: r.child as string, title: (r.title ?? r.child_title ?? null) as string | null,
+      ...(led ? { led: true as const } : {}), ...(active ? { active: true as const } : {}) });
     out.set(r.parent, list);
   }
   return out;
@@ -1211,7 +1217,8 @@ export function pendingCard(s: Store, thread: number): [MessageRow, Json] | null
       if (threadsWithCards(s, [thread]).length === 0) return null;
       throw new Refused(503, CARD_POSTS_PENDING + JSON.stringify([thread]));
     }
-    const asked = one(s, CARD_POST_LATEST, thread);
+    // A system card waiting comes first (store/card-kinds.ts).
+    const asked = one(s, SYSTEM_CARD_WAITING, thread) ?? one(s, CONVERSATION_CARD_LATEST, thread);
     return asked === undefined ? null : cardAt(s, thread, asked.n);
   } finally { s.db.exec("RELEASE pending_card_read"); }
 }
@@ -1220,14 +1227,14 @@ export function pendingCard(s: Store, thread: number): [MessageRow, Json] | null
 export function deliveryCardState(s: Store, thread: number, n: number): DeliveryCardState | null {
   s.db.exec("SAVEPOINT delivery_card_state_read");
   try {
-    if (!one(s, "SELECT 1 FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND author_kind = 'person'", thread, n)) return null;
+    if (!one(s, ANSWER_AT, thread, n)) return null;
     if (!cardPostsReady(s.db, thread)) {
       if (threadsWithCards(s, [thread]).length === 0) return null;
       throw new Refused(503, CARD_POSTS_PENDING + JSON.stringify([thread]));
     }
-    const asked = one(s, CARD_POST_BEFORE, thread, n)?.n;
+    const asked = one(s, CONVERSATION_CARD_BEFORE, thread, n)?.n;
     if (asked === null || asked === undefined) return null;
-    if (one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n)) return null;
+    if (one(s, ANSWER_BETWEEN, thread, asked, n)) return null;
     if (one(s, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked)) return null;
     const post = one(s, "SELECT ts, author, card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, asked);
     if (!post) return null;
@@ -1257,6 +1264,11 @@ export function pendingCards(s: Store, threads: number[]): { at: Map<number, num
   }
   const list = JSON.stringify(threads);
   const at = new Map<number, number>(all(s, "SELECT thread, n FROM pending_cards WHERE thread IN (SELECT value FROM json_each(?))", list).map((r) => [r.thread, r.n]));
+  // A system card waiting comes first (store/card-kinds.ts), kept apart.
+  for (const t of threads) {
+    const system = one(s, SYSTEM_CARD_WAITING, t);
+    if (system !== undefined) at.set(t, system.n);
+  }
   // A card or options posted before the cards were kept, by their own indexes: the chat's first of each.
   const before = new Set<number>(
     threads.filter((t) => !at.has(t) && (
@@ -1273,8 +1285,10 @@ export function cardAt(s: Store, thread: number, n: number): [MessageRow, Json] 
   try {
     const asked = one(s, "SELECT card, options FROM entries WHERE thread = ? AND n = ?", thread, n);
     if (!asked) return null;
-    const answered = one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
     const closed = one(s, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined;
+    // A system card waits until it is closed, a conversational one until a person's message after it reached its agent.
+    const answered = one(s, SYSTEM_CARD_AT, thread, n) !== undefined ? one(s, SYSTEM_CARD_KEPT, thread, n) === undefined
+      : one(s, ANSWER_AFTER, thread, n) !== undefined;
     if (answered || closed) return null;
     const card = cardOf(asked.card, asked.options);
     if (card === undefined) return null;
@@ -1294,9 +1308,11 @@ export const ASKED_DURING = "SELECT max(n) AS n FROM entries WHERE thread = ? AN
 /// The message an agent's need without a card asks with, while no person has written after it: the one its turn is
 /// about (`about`), else the agent's latest message during the turn; with the two messages before it.
 export function askingMessage(s: Store, thread: number, about: number | null, during: [number, number | bigint]): [MessageRow, MessageRow[]] | null {
-  const n: number | null = about ?? one(s, s.legacyAgent ? LEGACY_ASKED_DURING : ASKED_DURING, thread, during[0], during[1]).n;
+  // With no message in its turn, the agent's latest before it ended (store/card-kinds.ts ASKED_LATEST).
+  const n: number | null = about ?? one(s, s.legacyAgent ? LEGACY_ASKED_DURING : ASKED_DURING, thread, during[0], during[1]).n ??
+    (s.legacyAgent ? null : one(s, ASKED_LATEST, thread, during[1])?.n ?? null);
   if (n === null) return null;
-  const answered = one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
+  const answered = one(s, ANSWER_AFTER, thread, n) !== undefined;
   // A post with a card is pending_card's: one no longer pending was answered, closed or withdrawn.
   const carded = one(s, "SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", thread, n) !== undefined;
   if (answered || carded) return null;
@@ -1492,7 +1508,7 @@ function answersSinceInSnapshot(s: Store, since: number, threads: number[]): Car
     throw error;
   }
   const askedBefore = (thread: number, n: number): number | null => {
-    return one(s, CARD_POST_BEFORE, thread, n).n as number | null;
+    return (one(s, CONVERSATION_CARD_BEFORE, thread, n)?.n ?? null) as number | null;
   };
   let mergedReady: boolean | undefined;
   const messageAt = (thread: number, n: number): MessageRow | null => {
@@ -1509,10 +1525,12 @@ function answersSinceInSnapshot(s: Store, since: number, threads: number[]): Car
     return m ? [m, card] : null;
   };
   for (const { thread, n } of said) {
+    // Only a word that reached its agent answers a card (store/card-kinds.ts), and no system card.
+    if (one(s, ANSWER_AT, thread, n) === undefined) continue;
     const asked = askedBefore(thread, n);
     if (asked === null) continue;
     // Only the first word after it answers it; one closed (by a choice or withdrawn) was answered then.
-    const earlier = one(s, "SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n) !== undefined;
+    const earlier = one(s, ANSWER_BETWEEN, thread, asked, n) !== undefined;
     const closed = one(s, "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked) !== undefined;
     if (earlier || closed) continue;
     const found = cardAt(thread, asked);

@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import * as readStore from "./reference/store.ts";
-import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
@@ -14,7 +14,7 @@ import { Rig } from "./hub-fakes.ts";
 import { formatDelivery } from "../src/sessions/actor.ts";
 
 
-const card = JSON.stringify({ type: "options", options: [{ label: "yes" }], vault: { request: "request-1" } });
+const card = JSON.stringify({ type: "options", options: [{ label: "yes" }], assignee: "a@x.com" });
 const state = readStore.deliveryCardState;
 
 function put(store: Store, thread: number, n: number, authorKind: string, value: string | null = null) {
@@ -111,7 +111,7 @@ test("the ended and current card states use one snapshot", () => {
     let changed = false;
     const observed = new Proxy(store.db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare(`INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at)
             VALUES(?,4,'message','4.1','person','person','answer',4)`).run(thread);
@@ -143,7 +143,8 @@ test("delivery formats card state through its reader", async () => {
       assert.equal(id, thread);
       assert.equal(signal.aborted, false);
       asked.push(n);
-      return { ended: { author: "worker", ts: "1.1" }, card: JSON.parse(card), current: { ts: "3.1" } };
+      // (a reader of before told a vault's card ended so: its agent is told how to ask again)
+      return { ended: { author: "worker", ts: "1.1" }, card: { ...JSON.parse(card), vault: { request: "request-1" } }, current: { ts: "3.1" } };
     };
     rig.store.cardEndedByMessage = () => { throw new Error("station ended card lookup used"); };
     rig.store.pendingCard = () => { throw new Error("station pending card lookup used"); };
@@ -176,7 +177,6 @@ test("delivery formats a real reader's card state", async () => {
     const [text] = await formatDelivery(rig.hub.deps, "worker", rig.store.pendingMessages("worker"), new AbortController().signal) as [string, unknown];
     assert.match(text, /Your card is no longer pending/);
     assert.match(text, /message ts 3\.1/);
-    assert.match(text, /secret_reask/);
   } finally { readers.close(); await rig.close(); }
 });
 

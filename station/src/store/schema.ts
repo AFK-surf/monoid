@@ -7,6 +7,7 @@ import { hasLegacyLoginCards, installLegacyLoginCards } from "./legacy-login-car
 import { hasLegacyEdits, hasOldEditIndex, installLegacyEdits, legacyEditLatest, legacyEditsUseOldIndex, usesLegacyEdits } from "./legacy-edits-build.ts";
 import { repairWidgetSourceBeforeAdd, widgetSourceBeforeAddNeedsRepair } from "./widget-sources.ts";
 import { COMPACTED_FROM, STILLFAIL_SURFACE } from "./rows.ts";
+import { systemCardSql } from "./card-kinds.ts";
 import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 
 /// Bump on a change a station before it cannot open. 12 is the Rust station's, brought up on open (store.ts
@@ -1279,6 +1280,62 @@ export function addPendingCards(db: DatabaseSync): void {
       db.exec(PENDING_CARDS);
       db.exec("INSERT INTO pending_cards_from VALUES (1, COALESCE((SELECT MAX(rowid) FROM entries), 0))");
     }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/// The system cards each chat waits on (store/card-kinds.ts: a login, a vault's secret, a phone, a rig, a sign-in),
+/// several at once, kept apart from PENDING_CARDS, which from here on keeps the conversational card each chat waits on:
+/// a system card is let go only as it is closed (its outcome, its withdrawal), a conversational one as a person's
+/// message reaches its agent (in a still.fail chat as it is written; in a platform's thread as it is handed to a
+/// session, `pending_cards_delivered`), and neither replaces the other. Those waiting as it is made are taken from
+/// PENDING_CARDS (one a chat, the way they were read before): nothing older is looked for.
+const PENDING_SYSTEM_CARDS = `
+CREATE TABLE pending_system_cards (
+  thread INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY (thread, n)
+) WITHOUT ROWID;
+INSERT OR IGNORE INTO pending_system_cards
+  SELECT p.thread, p.n FROM pending_cards p JOIN entries e ON e.thread = p.thread AND e.n = p.n
+  WHERE e.kind = 'message' AND ${systemCardSql("e.card")};
+DELETE FROM pending_cards WHERE EXISTS (SELECT 1 FROM pending_system_cards s WHERE s.thread = pending_cards.thread AND s.n = pending_cards.n);
+CREATE TRIGGER pending_system_cards_post AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND ${systemCardSql("NEW.card")} BEGIN
+  INSERT OR IGNORE INTO pending_system_cards VALUES (NEW.thread, NEW.n);
+END;
+CREATE TRIGGER pending_system_cards_closed AFTER INSERT ON closed_cards BEGIN
+  DELETE FROM pending_system_cards WHERE thread = NEW.thread AND n = NEW.n;
+END;
+CREATE TRIGGER pending_system_cards_gone AFTER DELETE ON threads BEGIN
+  DELETE FROM pending_system_cards WHERE thread = OLD.id;
+END;
+DROP TRIGGER IF EXISTS pending_cards_post;
+CREATE TRIGGER pending_cards_post AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND (NEW.card IS NOT NULL OR NEW.options IS NOT NULL) AND NOT ${systemCardSql("NEW.card")} BEGIN
+  INSERT INTO pending_cards VALUES (NEW.thread, NEW.n) ON CONFLICT (thread) DO UPDATE SET n = excluded.n WHERE excluded.n > pending_cards.n;
+END;
+DROP TRIGGER IF EXISTS pending_cards_answered;
+CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;
+CREATE TRIGGER pending_cards_delivered AFTER INSERT ON deliveries
+WHEN EXISTS (SELECT 1 FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message' AND e.author_kind = 'person') BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;
+`;
+
+/// The system cards kept apart (PENDING_SYSTEM_CARDS), from now on.
+export function addPendingSystemCards(db: DatabaseSync): void {
+  const made = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pending_system_cards'").get() !== undefined;
+  if (made()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!made()) db.exec(PENDING_SYSTEM_CARDS);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

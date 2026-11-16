@@ -1,3 +1,4 @@
+import { CONVERSATION_CARD_BEFORE } from "../src/store/card-kinds.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answersSince, makeStore } from "./reference/store.ts";
@@ -45,7 +46,7 @@ for (const column of ["card", "options"] as const) {
       const traced = new Proxy(db, {
         get(target, property) {
           if (property === "prepare") return (sql: string) => target.prepare(
-            sql === CARD_POST_BEFORE ? sql.replace("n<?", "n<? AND visited_store_card(n)=n") : sql,
+            sql === CONVERSATION_CARD_BEFORE ? sql.replace("c.n < ?2", "c.n < ?2 AND visited_store_card(c.n)=c.n") : sql,
           );
           const value = Reflect.get(target, property, target);
           return typeof value === "function" ? value.bind(target) : value;

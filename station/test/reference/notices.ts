@@ -55,11 +55,12 @@ function emailsOf(s: Store, creator: string | null, said: string[], sessions: st
 /// A notice of a chat: its name and whom to tell, each looked up alone. As lists have the chat, its every message was
 /// counted besides (unread, for no one): many pages of a chat of many messages, 3 to 16 s each time on a station short of
 /// memory (2026-11-02), every telling after it waiting.
-function notice(s: Store, thread: number, seq: number | null, session: string, kind: string, by: string, text: string, except: string | null): Notice | null {
+function notice(s: Store, thread: number, seq: number | null, session: string, kind: string, by: string, text: string, except: string | null, only: string | null = null): Notice | null {
   const t = store.getThread(s, thread);
   if (t === null) return null;
   const sessions = store.threadSessions(s, thread).map((m) => m.session);
-  const recipients = emailsOf(s, t.createdBy, store.threadPeople(s, thread, t.surface), sessions, except);
+  // (what a card asks of one person, its assignee, is told to them alone)
+  const recipients = only !== null ? [only.toLowerCase()] : emailsOf(s, t.createdBy, store.threadPeople(s, thread, t.surface), sessions, except);
   const muted = store.mutedViewers(s, thread, recipients);
   const to = recipients.filter((email) => !muted.has(email));
   if (to.length === 0) return null;
@@ -76,6 +77,8 @@ export function turnNotices(s: Store, key: string, since: number, ended: number 
   const at = turn?.endedAt;
   if (turn === null || typeof at !== "number" || at < since) return { ended, notices: [] };
   if (at === ended) return { ended, notices: [] };
+  // A chat another chat's agent leads (chat_create for me) asks that agent, not its people: they are told nothing.
+  if (store.one(s, "SELECT 1 FROM opened_chats WHERE child_station = '' AND child = ? AND led = 1", key) !== undefined) return { ended: at, notices: [] };
   const api = apiOf(s);
   const missing: number[] = [];
   const found: { thread: ReturnType<typeof store.sessionThreads>[number]; last: MessageRow | null }[] = [];
@@ -97,7 +100,9 @@ export function turnNotices(s: Store, key: string, since: number, ended: number 
     const told = turnNotice(turn, last, key, translate(lang, "station.notice.file"), fresh);
     if (told === null) continue;
     const by = authorNames(api, thread.id)("agent", key) ?? "";
-    const n = notice(s, thread.id, last?.n ?? null, key, told[0], by, told[1], null);
+    const card = told[0] === "block" ? store.pendingCard(s, thread.id)?.[1] : undefined;
+    const assignee = typeof card?.assignee === "string" && card.assignee.includes("@") ? card.assignee as string : null;
+    const n = notice(s, thread.id, last?.n ?? null, key, told[0], by, told[1], null, assignee);
     if (n !== null) out.push(n);
   }
   return { ended: at, notices: out };

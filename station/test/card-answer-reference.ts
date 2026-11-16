@@ -1,3 +1,4 @@
+import { ANSWER_AT, ANSWER_BETWEEN, systemCardSql } from "../src/store/card-kinds.ts";
 // An intentionally unbounded reference for tests of the scoped reader, never used by a running station.
 import { cardOf, toMessage, type CardAnswer, type Json, type MessageRow } from "../src/store/rows.ts";
 import type { Store } from "../src/store/store.ts";
@@ -15,11 +16,12 @@ export function referenceAnswersSince(store: Store, since: number): CardAnswer[]
   const people = db.prepare(`SELECT thread,n FROM entries
     WHERE author_kind='person' AND kind='message' AND at>=? ORDER BY at,rowid`).all(since) as Json[];
   for (const { thread, n } of people) {
+    // (a word that reached its agent answers the conversational card before it: store/card-kinds.ts)
+    if (one(ANSWER_AT, thread, n) === undefined) continue;
     const asked = one(`SELECT MAX(n) AS n FROM entries WHERE thread=? AND n<? AND kind='message'
-      AND (card IS NOT NULL OR options IS NOT NULL)`, thread, n)!.n as number | null;
+      AND (card IS NOT NULL OR options IS NOT NULL) AND NOT ${systemCardSql("card")}`, thread, n)!.n as number | null;
     if (asked === null) continue;
-    const earlier = one(`SELECT 1 FROM entries WHERE thread=? AND kind='message' AND author_kind='person'
-      AND n>? AND n<? LIMIT 1`, thread, asked, n);
+    const earlier = one(ANSWER_BETWEEN, thread, asked, n);
     if (earlier || one("SELECT 1 FROM closed_cards WHERE thread=? AND n=?", thread, asked)) continue;
     const found = cardAt(thread, asked);
     const answer = one("SELECT * FROM merged WHERE thread=? AND n=?", thread, n);

@@ -8,7 +8,7 @@ import { Readers } from "../src/read/pool.ts";
 import * as readStore from "./reference/store.ts";
 import { threadHistory } from "../src/sessions/conversations.ts";
 import type { Hub } from "../src/sessions/hub.ts";
-import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
@@ -72,7 +72,7 @@ test("the pending number and its answer use one snapshot", () => {
     let changed = false;
     const observed = new Proxy(db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,2,'message','2.1','person','p','yes',2)").run(thread);
         }

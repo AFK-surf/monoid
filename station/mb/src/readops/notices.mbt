@@ -167,6 +167,7 @@ fn notice(
   by : String,
   text : String,
   except : String?,
+  only? : String,
 ) -> Json? raise {
   guard one(db, "SELECT * FROM threads WHERE id = ?", [thread]) is Some(t) else { return None }
   let sessions = db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [thread]).map(m => field(m, "session"))
@@ -187,14 +188,19 @@ fn notice(
   let not_ = except.map(@jscase.lower)
   let seen : Set[String] = Set::new()
   let recipients : Array[String] = []
-  for p in known.people(Json::array(refs)) {
-    guard p.value("email") is Some(String(e)) else { continue }
-    let e = @jscase.lower(e)
-    if Some(e) == not_ || seen.contains(e) {
-      continue
-    }
-    seen.add(e)
-    recipients.push(e)
+  // (what a card asks of one person, its assignee, is told to them alone)
+  match only {
+    Some(o) => recipients.push(@jscase.lower(o))
+    None =>
+      for p in known.people(Json::array(refs)) {
+        guard p.value("email") is Some(String(e)) else { continue }
+        let e = @jscase.lower(e)
+        if Some(e) == not_ || seen.contains(e) {
+          continue
+        }
+        seen.add(e)
+        recipients.push(e)
+      }
   }
   let muted : Set[String] = Set::new()
   if recipients.length() > 0 {
@@ -248,6 +254,10 @@ pub fn turn_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
   if turn is Null || !(at is Number(_, ..)) || num(at) < since || at == ended {
     return { "ended": ended, "notices": Json::array([]) }
   }
+  // (a chat another chat's agent leads asks that agent, not its people: they are told nothing)
+  if one(db, "SELECT 1 AS x FROM opened_chats WHERE child_station = '' AND child = ? AND led = 1", [Json::string(key)]) is Some(_) {
+    return { "ended": at, "notices": Json::array([]) }
+  }
   let missing : Array[Json] = []
   let found : Array[(Map[String, Json], Json)] = []
   for t in db.all("SELECT t.* FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ? ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?", [Json::string(key), Json::string("ember"), Json::number(-1.0)]) {
@@ -278,7 +288,19 @@ pub fn turn_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
     let fresh = turn.value("declared") == Some(Json::string("block")) && blocked_fresh(db, id, key, turn)
     guard turn_notice(turn, last, key, word_of(args, "file"), fresh) is Some((kind, text)) else { continue }
     let by = match known.author_names(db, id).name("agent", key) { String(s) => s; _ => "" }
-    if notice(db, known, word_of(args, "untitled"), id, last.value("n").unwrap_or(Json::null()), Json::string(key), kind, by, text, None) is Some(n) {
+    let only = if kind == "block" {
+      match review_pending_card(db, { "thread": id }) {
+        Array([_, card]) =>
+          match card.value("assignee") {
+            Some(String(a)) if a.contains("@") => Some(a)
+            _ => None
+          }
+        _ => None
+      }
+    } else {
+      None
+    }
+    if notice(db, known, word_of(args, "untitled"), id, last.value("n").unwrap_or(Json::null()), Json::string(key), kind, by, text, None, only?) is Some(n) {
       out.push(n)
     }
   }

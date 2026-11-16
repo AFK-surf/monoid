@@ -80,6 +80,11 @@ export type SessionStore = {
   postsAfter(key: string, messages: readonly { thread: number; n: number }[]): (string | null)[];
   cardEndedByMessage(thread: number, n: number): [MessageRow, any] | null;
   pendingCard(thread: number): [MessageRow, any] | null;
+  /// What a turn that said no state asked (actor_run.mbt `on_turn_ended`, mb-actor.ts `cardAsks`, `keepAsk`): the
+  /// session's recent threads, an agent's question there, and whether a card there was closed since (ms).
+  recentSessionThreads(session: string): { threads: { thread: { id: number } }[] };
+  askingMessage(thread: number, about: number | null, during: [number, number]): [MessageRow, MessageRow[]] | null;
+  cardClosedSince(thread: number, since: number): boolean;
   threadSessions(thread: number): { session: string; connect: string }[];
   /// Whether the session left this thread (chat_leave) and was not mentioned there since (optional: never without it).
   leftThread?(session: string, connect: string, channel: string, threadTs: string): boolean;

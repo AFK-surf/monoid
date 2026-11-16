@@ -248,16 +248,25 @@ fn require_card_posts(db : @sql.Db, threads : Array[Json]) -> Unit raise {
 fn asking_message(db : @sql.Db, thread : Json, about : Json, from : Json, to : Json) -> (Json, Array[Json])? raise {
   let n = match about {
     Null =>
-      match one(db, if @legacy.has_legacy_agent(db) { legacy_asked_during_sql } else { asked_during_sql }, [thread, from, to]) {
-        Some(r) => field(r, "n")
-        None => Json::null()
+      {
+        let legacy = @legacy.has_legacy_agent(db)
+        match one(db, if legacy { legacy_asked_during_sql } else { asked_during_sql }, [thread, from, to]) {
+          Some(r) if !(field(r, "n") is Null) => field(r, "n")
+          // (none in its turn: the agent's latest before it ended, card-kinds.ts ASKED_LATEST)
+          _ if !legacy =>
+            match one(db, asked_latest_sql, [thread, to]) {
+              Some(r) => field(r, "n")
+              None => Json::null()
+            }
+          _ => Json::null()
+        }
       }
     n => n
   }
   if n is Null {
     return None
   }
-  let answered = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", [thread, n]) is Some(_)
+  let answered = one(db, answer_after_sql, [thread, n]) is Some(_)
   let carded = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", [thread, n]) is Some(_)
   if answered || carded {
     return None
@@ -597,14 +606,12 @@ fn answers_since(db : @sql.Db, since : Json, threads : Array[Json]) -> Array[Ans
   }
   for pair in said {
     let (thread, n) = pair
-    let asked = match one(db, card_post_before_sql, [thread, n]) {
-      Some(r) => field(r, "n")
-      None => Json::null()
-    }
-    if asked is Null {
+    // (only a word that reached its agent answers a card, and no system card: card-kinds.ts)
+    if one(db, answer_at_sql, [thread, n]) is None {
       continue
     }
-    let earlier = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", [thread, asked, n]) is Some(_)
+    guard n_of(one(db, conversation_card_before_sql, [thread, n])) is Some(asked) else { continue }
+    let earlier = one(db, answer_between_sql, [thread, asked, n]) is Some(_)
     let closed = one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, asked]) is Some(_)
     if earlier || closed {
       continue
@@ -713,7 +720,7 @@ fn archive_verdict(db : @sql.Db, thread : Json) -> Json raise {
 
 ///|
 /// views.ts `named`: a chat opened or opened from, as a row names it.
-fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = false) -> Json {
+fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = false, active~ : Bool = false) -> Json {
   let out : Map[String, Json] = Map([])
   if !(station is Null) {
     out["station"] = station
@@ -724,6 +731,9 @@ fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = fals
   }
   if led {
     out["led"] = Json::boolean(true)
+  }
+  if active {
+    out["active"] = Json::boolean(true)
   }
   Json::object(out)
 }
@@ -736,7 +746,7 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
   let opened : Map[String, Array[Json]] = Map([])
   let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
   let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
-  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
   let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
   let rows = try {
@@ -757,7 +767,11 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
   }
   if rows is Some(rows) {
     for r in rows {
-      let item = opened_named(station(field(r, "child_station")), field(r, "child"), or_else(field(r, "title"), field(r, "child_title")))
+      // (one it leads is active while not archived and not ended done or stopped: what keeps its leader at work)
+      let led = field(r, "led") is Number(1.0, ..)
+      let state = field(r, "state")
+      let active = led && field(r, "child_archived") is Null && state != Json::string("all_done") && state != Json::string("stopped")
+      let item = opened_named(station(field(r, "child_station")), field(r, "child"), or_else(field(r, "title"), field(r, "child_title")), led~, active~)
       let key = js_text(field(r, "parent"))
       match opened.get(key) {
         Some(a) => a.push(item)

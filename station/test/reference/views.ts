@@ -21,6 +21,7 @@ import { trim } from "../../../client/core-ts/src/whitespace.ts";
 import * as chatRow from "../../../client/core-ts/src/chat-row.ts";
 import { knownChannel, knownPerson, slackCreator, teamName } from "./slack-known.ts";
 import { log } from "../../src/ops/log.ts";
+import { WAITS_ON_JOB, WAITS_ON_LED } from "../../src/store/card-kinds.ts";
 import { type AuthorKind, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, STILLFAIL_SURFACE, takeChars } from "./store.ts";
 import { STILLFAIL_CONNECT } from "../../src/store/rows.ts";
 import { readFileSync, statSync } from "node:fs";
@@ -436,7 +437,7 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
   stage("answered");
   const kept = [...store.keptChats(s, viewer.email, own.map((t) => t.thread.id))];
   const pins = Object.fromEntries(store.pins(s, viewer.email, scope === null ? null : keys));
-  const named = (o: { station: string | null; session: string; title: string | null; led?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}) });
+  const named = (o: { station: string | null; session: string; title: string | null; led?: true; active?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}), ...(o.active === true ? { active: true } : {}) });
   const openers = Object.fromEntries([...store.openers(s, keys)].map(([k, o]) => [k, named(o)]));
   const opened = Object.fromEntries([...store.openedChats(s, keys)].map(([k, list]) => [k, list.map(named)]));
   const shares = Object.fromEntries([...store.chatShares(s, keys)].map(([k, v]) => [k, { to: v.to.map((t) => t.workspace), write: v.write }]));
@@ -530,6 +531,8 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
     };
     const watch = watches.get(key);
     if (watch !== undefined) v.watch = watch;
+    // (it waits on work it started that is not a watch: client/core-ts chat-stage.ts keeps such a chat at work)
+    if (!titlesOnly && (store.one(s, WAITS_ON_JOB, key) !== undefined || store.one(s, WAITS_ON_LED, key) !== undefined)) v.waitingAsync = true;
     return v;
   };
   // The sidebar's own threads alone; the archive's, all of them.
@@ -721,7 +724,7 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
   const openers = store.openers(s, ids);
   // and the chats it opened, the first first, for its own list of them
   const opened = store.openedChats(s, ids);
-  const named = (o: { station: string | null; session: string; title: string | null; led?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}) });
+  const named = (o: { station: string | null; session: string; title: string | null; led?: true; active?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}), ...(o.active === true ? { active: true } : {}) });
   for (const row of rows) {
     if (typeof row.id !== "string") continue;
     const o = openers.get(row.id);

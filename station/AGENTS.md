@@ -238,7 +238,14 @@
 - An agent's own answer is never forwarded: it posts with `chat_post` and ends each turn with a state (`all_done`,
   `need_human`, `waiting`); a turn ended without one is asked again, and so is one where a post with no state
   came after its `all_done` or `need_human` (it said it goes on: `goesOn`, 2026-11-15, a chat shown done that worked on
-  for 78 minutes).
+  for 78 minutes). Asked again it stays running, never shown stopped meanwhile; one that posted is asked once and then
+  ends all_done, and one that posted a card still waiting ends need_human on it (2026-11-16: no ⚠️ under an answer
+  given, `mb/src/reader/actor_run.mbt` `on_turn_ended`).
+- What a chat waits on of a person is of two kinds (`src/store/card-kinds.ts`): a system card (a login, a vault's
+  secret, a phone, a rig, a sign-in) waits until it is decided or withdrawn, whatever is said meanwhile; a
+  conversational one (options, a text field) until a person's message reaches its agent, in a platform's thread only one
+  handed to a session (a colleague's word there not mentioning it leaves it waiting). The station's store, its reads in
+  `mb/` and `test/reference/` go by that one text.
 
 ## The agents' memory
 

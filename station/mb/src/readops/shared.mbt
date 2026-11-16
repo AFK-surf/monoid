@@ -318,6 +318,10 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     if watches.get(key) is Some(w) {
       v["watch"] = w
     }
+    // (it waits on work it started that is not a watch: client/core-ts chat-stage.ts keeps such a chat at work)
+    if one(db, waits_on_job_sql, [Json::string(key)]) is Some(_) || one(db, waits_on_led_sql, [Json::string(key)]) is Some(_) {
+      v["waitingAsync"] = true
+    }
     Json::object(v)
   }
   // Per agent: the Slack thread it came from (the latest one it is in), whether it has a chat of its own, and who wrote

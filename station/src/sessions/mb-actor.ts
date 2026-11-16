@@ -16,7 +16,7 @@ import { CommandMissing } from "../agents/runner.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
 import * as instructions from "../agents/instructions.ts";
-import { handedOf, type PendingMessage, type RunChange } from "../store/rows.ts";
+import { handedOf, type MessageRow, type PendingMessage, type RunChange } from "../store/rows.ts";
 import { runChangeWords } from "./run-change.ts";
 import {
   FALLBACK_MOST, SPENT_BEFORE, cannotStartWords, codexTooOld, compactFailed, compactFailedNotice, failureNotice, formatDelivery,
@@ -648,6 +648,48 @@ export class MbActor {
     switch (name) {
       case "words": return this.#words(args[0], args.slice(1));
       case "uuid": return crypto.randomUUID();
+      // A turn that ended with no state on a card it posted (since `started`), still waiting: it ends need_human on it
+      // (store/card-kinds.ts; actor_run.mbt `on_turn_ended`). Whether it does.
+      case "cardAsks": {
+        const [id, started] = args as [string, number | null];
+        let found: MessageRow | null = null;
+        for (const t of deps.store.recentSessionThreads(this.key).threads) {
+          const card = deps.store.pendingCard(t.thread.id)?.[0] ?? null;
+          if (card === null || card.authorKind !== "agent" || card.author !== this.key) continue;
+          if (typeof started === "number" && card.createdAt < started) continue;
+          if (found === null || card.createdAt >= found.createdAt) found = card;
+        }
+        if (found === null) return false;
+        deps.store.setAbout(id, [found.thread, found.n, found.ts]);
+        deps.store.declareTurn(id, "need_help", null);
+        return true;
+      }
+      // A turn its background work woke, that waits on: what the turn before it (`before`, its summary) asked is asked
+      // still, unless a card of the session's chats was closed since (a person decided). Whether it is.
+      case "keepAsk": {
+        const [id, before] = args as [string, Json];
+        const since = typeof before?.endedAt === "number" ? before.endedAt : null;
+        if (since === null) return false;
+        const threads = deps.store.recentSessionThreads(this.key).threads.map((t) => t.thread.id);
+        if (threads.some((thread) => deps.store.cardClosedSince(thread, since))) return false;
+        const about = before.about;
+        let asked: [number, number, string] | null = about !== null && typeof about === "object" && Number.isInteger(about.seq)
+          ? [about.thread, about.seq, about.ts] : null;
+        if (asked === null) {
+          const during: [number, number] = [typeof before.startedAt === "number" ? before.startedAt : 0, since];
+          for (const thread of threads) {
+            const m = deps.store.askingMessage(thread, null, during)?.[0];
+            if (m !== undefined) {
+              asked = [m.thread, m.n, m.ts];
+              break;
+            }
+          }
+        }
+        if (typeof before.need === "string" && before.need !== "") deps.store.setNeed(id, before.need);
+        deps.store.setAbout(id, asked);
+        deps.store.declareTurn(id, "need_help", null);
+        return true;
+      }
       case "timed": return timed(args[0], this.#program.now());
       case "withChoices": {
         const [text, told] = await handedWithChoices(deps, this.key, this.#program.now(), args[0]);

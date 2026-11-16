@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import * as readStore from "./reference/store.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
-import { CARD_POST_LATEST, CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";
+import { CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -53,7 +54,7 @@ test("default cards and their answer checks use the same snapshot", () => {
     let changed = false;
     const observed = new Proxy(store.db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,2,'message','answer','person','p','yes',2)").run(thread);
         }

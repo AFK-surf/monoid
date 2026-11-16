@@ -27,7 +27,7 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
@@ -65,7 +65,8 @@ import { checkWidgetSources, installWidgetSources, widgetSourceBeforeAddNeedsRep
 import { indexedCcThreads, installCcIndex } from "./cc-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, SESSION_CHAT_SMALL, SESSION_CHAT_VERSION, SessionChatUnavailable } from "./session-chat-index.ts";
 import { installLatestThreadIndex, LATEST_THREAD_ATTEMPT, LATEST_THREADS_INDEXED, LATEST_THREAD_VERSION } from "./latest-thread-index.ts";
-import { CARD_POST_BEFORE, CARD_POST_LATEST, cardPostsReady, installCardPosts } from "./card-post-index.ts";
+import { cardPostsReady, installCardPosts } from "./card-post-index.ts";
+import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING, systemCardSql } from "./card-kinds.ts";
 import { installClosedCardsIndex } from "./legacy-closed-cards.ts";
 import { installSaidState, SAID_BATCH_SIZE, SAID_LATEST, SAID_SCAN, SAID_STATE, saidBoundary } from "./said-state.ts";
 import { archiveLastRead, installArchiveLast } from "./archive-last.ts";
@@ -112,9 +113,15 @@ export const MEMBER_JOIN_IF_NEEDED = `INSERT INTO thread_sessions (thread, sessi
   SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS
     (SELECT 1 FROM thread_sessions WHERE thread = ?1 AND session = ?2 AND left_at IS NULL)
   ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL WHERE thread_sessions.left_at IS NOT NULL`;
+// The sessions that lead the one an UPDATE of sessions changes (chat_create for me), as JSON.
+const LEADERS_RETURNING = "RETURNING (SELECT json_group_array(parent) FROM opened_chats WHERE child_station = '' AND child = sessions.key AND parent_station = '' AND led = 1) AS leaders";
+// Each gives, of a delivery made, the conversational card the thread waited on as it was made: RETURNING is worked out
+// before the AFTER triggers run (schema.ts pending_cards_delivered, which settles it), so a delivery tells what it
+// settled with no statement more on the main thread (test/main-thread-waits.test.ts).
+const WAITED_RETURNING = "RETURNING (SELECT n FROM pending_cards WHERE thread = ?1) AS waited";
 export const DELIVERY_INSERT_IF_ABSENT = `INSERT OR IGNORE INTO deliveries (thread, n, session)
   SELECT ?1, ?2, ?3 WHERE NOT EXISTS
-    (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3)`;
+    (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3) ${WAITED_RETURNING}`;
 // A Router write keeps its original targets across a retry. Check they still exist, belong to the chat and can hear it
 // in the same statement as the insertion, so a concurrent deletion cannot recreate a delivery for a removed session.
 export const DELIVERY_INSERT_IF_MEMBER = `INSERT OR IGNORE INTO deliveries (thread, n, session)
@@ -122,7 +129,7 @@ export const DELIVERY_INSERT_IF_MEMBER = `INSERT OR IGNORE INTO deliveries (thre
     (SELECT 1 FROM thread_sessions ts JOIN sessions s ON s.key = ts.session
      WHERE ts.thread = ?1 AND ts.session = ?3 AND ts.left_at IS NULL AND (s.archived_by IS NULL OR s.archived_by <> ?4))
   AND EXISTS (SELECT 1 FROM entries WHERE thread = ?1 AND n = ?2 AND kind = 'message')
-  AND NOT EXISTS (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3)`;
+  AND NOT EXISTS (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3) ${WAITED_RETURNING}`;
 // A Router may only deliver while the whole chat still belongs to the requesting workspace.
 export const ROUTER_WORKSPACE_MISMATCH = `SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session
   WHERE ts.thread = ?1 AND (s.key IS NULL OR COALESCE(s.ws, ?2) IS NOT ?3) LIMIT 1`;
@@ -781,6 +788,7 @@ export class Store {
       addSessionTurns(db);
       addSessionWork(db, clock.currentTimeMillisUnsafe());
       addPendingCards(db);
+      addPendingSystemCards(db);
       addTellIndexes(db);
       installSaidState(db);
       installArchiveLast(db);
@@ -1461,7 +1469,12 @@ export class Store {
 
   /// How a chat opened from here last ended a turn, as its station told.
   setOpenedState(childStation: string, child: string, state: string): void {
-    this.#run("UPDATE opened_chats SET state = ? WHERE child_station = ? AND child = ?", state, childStation, child);
+    this.#with((changes) => {
+      // (its opener's row says whether a chat it leads is still at work: read/views opened's `active`)
+      for (const r of this.#all("UPDATE opened_chats SET state = ? WHERE child_station = ? AND child = ? RETURNING parent, parent_station", state, childStation, child)) {
+        if (r.parent_station === "") changes.push({ type: "session", key: r.parent as string });
+      }
+    });
   }
 
   /// The runtime sessions the session has run in, the first first, ending with the one it runs in now.
@@ -2774,14 +2787,30 @@ export class Store {
   /// Hands a message to sessions. Those that did not have it yet.
   deliver(thread: number, n: number, sessions: string[], workspace?: { expected: string | null; fallback: string | null }): string[] {
     return this.#with((changes) => {
+      // The conversational card a person's message settles as it is handed over (schema.ts pending_cards_delivered):
+      // told, so that where a platform shows it, it shows it closed. What waited is the first delivery's (later ones see
+      // it settled already).
+      let waited: number | null | undefined;
+      const insert = (sql: string, ...args: (string | number)[]): boolean => {
+        const r = this.#one(sql, ...args);
+        if (r === undefined) return false;
+        if (waited === undefined) waited = (r.waited as number | null) ?? null;
+        return true;
+      };
+      const settled = () => {
+        if (waited === undefined || waited === null || waited >= n) return;
+        const by = this.#one("SELECT author, ts FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND author_kind = 'person'", thread, n);
+        if (by !== undefined) changes.push({ type: "thread", id: thread, entries: [], answered: { n, author: by.author, ts: by.ts ?? "" } });
+      };
       if (workspace === undefined) {
         const added: string[] = [];
         for (const s of sessions) {
-          if (this.#run(DELIVERY_INSERT_IF_ABSENT, thread, n, s) > 0) {
+          if (insert(DELIVERY_INSERT_IF_ABSENT, thread, n, s)) {
             added.push(s);
             changes.push({ type: "session", key: s });
           }
         }
+        if (added.length > 0) settled();
         return added;
       }
       // The workspace check and all Router deliveries see one write-locked snapshot. A concurrent move must not
@@ -2793,11 +2822,12 @@ export class Store {
         ) throw new Error("no such chat of the workspace");
         const added: string[] = [];
         for (const s of sessions) {
-          if (this.#run(DELIVERY_INSERT_IF_MEMBER, thread, n, s, MANUAL) > 0) added.push(s);
+          if (insert(DELIVERY_INSERT_IF_MEMBER, thread, n, s, MANUAL)) added.push(s);
         }
         return added;
       }, true);
       for (const s of added) changes.push({ type: "session", key: s });
+      if (added.length > 0) settled();
       return added;
     });
   }
@@ -3119,43 +3149,61 @@ export class Store {
   }
 
   #pendingCardNumber(thread: number): number | undefined {
+    // A system card waiting comes first: it is settled only where it is decided (card-kinds.ts).
+    const system = this.#one(SYSTEM_CARD_WAITING, thread)?.n;
+    if (system !== undefined) return system;
     let n: number | undefined;
-    if (cardPostsReady(this.db, thread)) n = this.#one(CARD_POST_LATEST, thread)?.n;
+    if (cardPostsReady(this.db, thread)) n = this.#one(CONVERSATION_CARD_LATEST, thread)?.n;
     else {
       // Until an old thread is prepared, preserve its synchronous event-time answer using the original indexes.
       const latest = (column: string): Json | undefined =>
-        this.#one(`SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND ${column} IS NOT NULL ORDER BY n DESC LIMIT 1`, thread);
+        this.#one(`SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND ${column} IS NOT NULL AND NOT ${systemCardSql("card")} ORDER BY n DESC LIMIT 1`, thread);
       const a = latest("card"), b = latest("options");
       n = a && b ? Math.max(a.n, b.n) : (a ?? b)?.n;
     }
     if (n === undefined) return undefined;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
-    const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined;
-    if (answered || closed) return undefined;
+    if (!this.#cardWaits(thread, n)) return undefined;
     return n;
   }
 
-  /// A prepared thread seeks the previous post directly. An old thread still being prepared uses the original query:
-  /// callers that tell a connect about this event must answer now, from the event's current state.
+  /// Whether the card posted at `n` still waits (not its replacement by a newer one: the callers see to that): a
+  /// system card until it is closed, a conversational one until it is closed or a person's message after it reached
+  /// its agent (card-kinds.ts).
+  #cardWaits(thread: number, n: number): boolean {
+    if (this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined) return false;
+    if (this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return this.#one(SYSTEM_CARD_KEPT, thread, n) !== undefined;
+    return this.#one(ANSWER_AFTER, thread, n) === undefined;
+  }
+
+  /// The conversational card posted before `n`. A prepared thread seeks it directly. An old thread still being prepared
+  /// uses the original query: callers that tell a connect about this event must answer now, from the event's current
+  /// state.
   #previousCard(thread: number, n: number): number | null {
-    if (cardPostsReady(this.db, thread)) return this.#one(CARD_POST_BEFORE, thread, n).n;
-    return this.#one(CARD_BEFORE_LATEST_PERSON, thread, n).n;
+    if (cardPostsReady(this.db, thread)) return this.#one(CONVERSATION_CARD_BEFORE, thread, n)?.n ?? null;
+    const before = this.#one(CARD_BEFORE_LATEST_PERSON, thread, n).n;
+    return before === null || this.#one(SYSTEM_CARD_AT, thread, before) !== undefined ? null : before;
   }
 
+  /// Whether the card at `n` stopped waiting after it was posted, with nothing closing it: a conversational card by a
+  /// person's message that reached its agent or a newer conversational card; a system card never so.
   #cardEndedAfter(thread: number, n: number): boolean {
-    const sql = cardPostsReady(this.db, thread) ? CLOSED_CARD_AFTER_POSTS : CLOSED_CARD_AFTER;
-    return this.#one(sql, thread, n)!.ended !== 0;
+    if (this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return false;
+    if (this.#one(ANSWER_AFTER, thread, n) !== undefined) return true;
+    if (cardPostsReady(this.db, thread)) {
+      return this.#one(`SELECT 1 FROM card_posts c JOIN entries e ON e.thread = c.thread AND e.n = c.n
+        WHERE c.thread = ?1 AND c.n > ?2 AND NOT ${systemCardSql("e.card")} LIMIT 1`, thread, n) !== undefined;
+    }
+    return this.#one(CLOSED_CARD_AFTER, thread, n)!.ended !== 0;
   }
 
-  /// The card whose wait ended with this person's message. This follows the same entry-order rules as pendingCard and
-  /// answersSince, so a message written before a new card cannot be mistaken for its answer. A card already withdrawn
-  /// or closed is not attributed to a later message.
+  /// The card whose wait ended with this person's message (as it reached its agent: card-kinds.ts). This follows the
+  /// same entry-order rules as pendingCard and answersSince, so a message written before a new card cannot be mistaken
+  /// for its answer. A card already withdrawn or closed is not attributed to a later message, nor is a system card.
   cardEndedByMessage(thread: number, n: number): [MessageRow, Json] | null {
-    const person = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND author_kind = 'person'", thread, n);
-    if (!person) return null;
+    if (this.#one(ANSWER_AT, thread, n) === undefined) return null;
     const asked = this.#previousCard(thread, n);
     if (asked === null) return null;
-    const earlier = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n);
+    const earlier = this.#one(ANSWER_BETWEEN, thread, asked, n);
     const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked);
     if (earlier || closed) return null;
     const row = this.#one("SELECT card, options FROM entries WHERE thread = ? AND n = ?", thread, asked);
@@ -3164,14 +3212,15 @@ export class Store {
     return card === undefined || !message ? null : [toMessage(message), card];
   }
 
-  /// The card a new card (the post at `n`) replaced: the thread's card before it, if it was still pending then (no
-  /// person wrote after it, nor was it closed or withdrawn).
+  /// The card a new card (the post at `n`) replaced: the thread's conversational card before it, if it was still
+  /// pending then (no person's message after it reached its agent, nor was it closed or withdrawn). A system card
+  /// replaces none and is replaced by none.
   cardReplacedBy(thread: number, n: number): [MessageRow, Json] | null {
-    const carded = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND (card IS NOT NULL OR options IS NOT NULL)", thread, n);
-    if (!carded) return null;
+    const carded = this.#one("SELECT card FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND (card IS NOT NULL OR options IS NOT NULL)", thread, n);
+    if (!carded || this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return null;
     const asked = this.#previousCard(thread, n);
     if (asked === null) return null;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n);
+    const answered = this.#one(ANSWER_BETWEEN, thread, asked, n);
     const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked);
     if (answered || closed) return null;
     return this.#cardPost(thread, asked);
@@ -3201,15 +3250,21 @@ export class Store {
   askingMessage(thread: number, about: number | null, during: [number, number]): [MessageRow, MessageRow[]] | null {
     const n: number | null =
       about ??
-      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?", thread, during[0], during[1]).n;
+      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?", thread, during[0], during[1]).n ??
+      (this.#legacyAgent ? null : this.#one(ASKED_LATEST, thread, during[1])?.n ?? null);
     if (n === null) return null;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
+    const answered = this.#one(ANSWER_AFTER, thread, n) !== undefined;
     // A post with a card is pendingCard's: one no longer pending was answered, closed or withdrawn.
     const carded = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", thread, n) !== undefined;
     if (answered || carded) return null;
     const messages = this.messagesBefore(thread, n + 1, 3);
     const m = messages.pop();
     return m && m.n === n && m.authorKind === "agent" ? [m, messages] : null;
+  }
+
+  /// Whether a card of the thread was closed since `since` (ms): a person decided it, or its agent withdrew it.
+  cardClosedSince(thread: number, since: number): boolean {
+    return this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND at >= ? LIMIT 1", thread, since) !== undefined;
   }
 
   /// The cards a viewer dismissed, as "thread:n" (read/store.ts's key for the Rust's (thread, n)).
@@ -4358,17 +4413,19 @@ export class Store {
 
   #setArchived(key: string, archived: boolean, by: string, changes: Changes): void {
     const now = this.now();
+    let leaders: string[] = [];
     this.#tx(() => {
-      if (archived) {
-        this.#run("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?", now, by, key);
-      } else {
-        const shown = by === MANUAL ? now : null;
-        this.#run("UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ?", shown, key);
-      }
+      // (with the chats that lead it, if any: its leader's row shows whether a chat it leads is still at work, read/views
+      // opened's `active`; one statement, test/main-thread-waits.test.ts)
+      const row = archived
+        ? this.#one(`UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ? ${LEADERS_RETURNING}`, now, by, key)
+        : this.#one(`UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? ${LEADERS_RETURNING}`, by === MANUAL ? now : null, key);
+      leaders = row === undefined ? [] : (JSON.parse(String(row.leaders ?? "[]")) as string[]);
       this.#run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", archived ? now : null, archived ? by : null, key);
     });
     for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
     changes.push({ type: "session", key });
+    for (const parent of leaders) changes.push({ type: "session", key: parent });
   }
 
   #setThreadHidden(thread: number, hidden: boolean, by: string, changes: Changes): void {

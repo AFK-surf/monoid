@@ -205,10 +205,13 @@ pub fn review_pending_card(db : @sql.Db, args : Json) -> Json raise {
     }
     raise pending(thread)
   }
-  guard one(db, "SELECT CAST(n AS TEXT) AS n FROM card_posts WHERE thread=? ORDER BY card_posts.n DESC LIMIT 1", [thread]) is Some(asked) else {
-    return Json::null()
+  // (a system card waiting comes first)
+  let asked = match n_of(one(db, system_card_waiting_sql, [thread])) {
+    Some(n) => Some(n)
+    None => n_of(one(db, conversation_card_latest_sql, [thread]))
   }
-  card_at(db, thread, number_of(field(asked, "n")))
+  guard asked is Some(n) else { return Json::null() }
+  card_at(db, thread, n)
 }
 
 ///|
@@ -219,9 +222,7 @@ fn card_at(db : @sql.Db, thread : Json, n : Json) -> Json raise {
   guard one(db, "SELECT card, options FROM entries WHERE thread = ? AND n = ?", [thread, n]) is Some(asked) else {
     return Json::null()
   }
-  let answered = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", [thread, n]) is Some(_)
-  let closed = one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) is Some(_)
-  if answered || closed {
+  if !card_still_waits(db, thread, n) {
     return Json::null()
   }
   guard card_of(field(asked, "card"), field(asked, "options")) is Some(card) else { return Json::null() }
@@ -274,9 +275,9 @@ pub fn state_question(db : @sql.Db, args : Json) -> Json raise {
     }
     let carded = !(field(entry, "card") is Null) || !(field(entry, "options") is Null)
     let answered = if carded {
-      pending_card_number(db, thread) != field(mm, "n")
+      !card_waits(db, thread, field(mm, "n"))
     } else {
-      one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", [thread, field(mm, "n")]) is Some(_)
+      one(db, answer_after_sql, [thread, field(mm, "n")]) is Some(_)
     }
     return if answered {
       { "kind": "answered" }

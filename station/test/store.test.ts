@@ -1406,7 +1406,8 @@ test("an agent withdraws its own card only", () => {
 test("a card stops waiting as a person writes, a newer card comes, its agent withdraws it or someone closes it: each said once", () => {
   const store = memory();
   session(store, "a");
-  const thread = store.openThread("slack", "C1", "1.1", null, null);
+  // (a still.fail chat: every person's message reaches its agent; a platform's thread's as it is handed over, card-ends.test.ts)
+  const thread = store.openThread("ember", "C1", "1.1", null, null);
   const h = heard(store);
   const ended = () => h.changes.splice(0).flatMap((c) => cardsEnded(store, c)).map((e) => [e.message.ts, e.end]);
   const options = { type: "options", options: [{ label: "合并", action: "close" }, { label: "先不" }] };

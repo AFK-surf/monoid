@@ -57,6 +57,12 @@ fn pending_cards(db : @sql.Db, threads : Array[Json]) -> (Map[String, Json], Set
   for r in db.all("SELECT thread, n FROM pending_cards WHERE thread IN (SELECT value FROM json_each(?))", [ids_json(threads)]) {
     at[js_text(field(r, "thread"))] = field(r, "n")
   }
+  // (a system card waiting comes first, kept apart: card-kinds.ts)
+  for t in threads {
+    if n_of(one(db, system_card_waiting_sql, [t])) is Some(n) {
+      at[js_text(t)] = n
+    }
+  }
   let before : Set[String] = Set::new()
   let first = (sql : String, t : Json) => match one(db, sql, [t]) {
     Some(r) if field(r, "rowid") is Number(n, ..) => n <= from

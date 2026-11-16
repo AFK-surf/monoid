@@ -208,11 +208,6 @@ let answer_next_person_sql : String =
   #|  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND n > ? ORDER BY n LIMIT 1
 
 ///|
-/// store/card-post-index.ts CARD_POST_BEFORE.
-let card_post_before_sql : String =
-  #|SELECT MAX(n) AS n FROM card_posts WHERE thread=? AND n<?
-
-///|
 /// station/test/reference/backfill/card-post-index.ts CARD_POST_NEXT.
 let card_post_next_sql : String =
   #|SELECT n FROM card_posts WHERE thread=? AND n>=? ORDER BY n LIMIT 1
@@ -264,9 +259,21 @@ let openers_of_sql : String =
 ///|
 /// read/store.ts OPENED_OF.
 let opened_of_sql : String =
-  #|SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid
+  #|SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid
 
 ///|
 /// read/store.ts SHOWN_SESSIONS.
 let shown_sessions_sql : String =
   #|SELECT * FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC
+
+///|
+/// store/card-kinds.ts WAITS_ON_JOB.
+let waits_on_job_sql : String =
+  #|SELECT 1 AS x FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND session_key = ?1 AND watch = 0 LIMIT 1
+
+///|
+/// store/card-kinds.ts WAITS_ON_LED.
+let waits_on_led_sql : String =
+  #|SELECT 1 AS x FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child
+  #|  WHERE o.parent_station = '' AND o.parent = ?1 AND o.led = 1 AND c.archived_at IS NULL
+  #|  AND (o.state IS NULL OR o.state NOT IN ('all_done', 'stopped')) LIMIT 1

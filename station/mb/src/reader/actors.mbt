@@ -18,6 +18,9 @@ priv struct Turn {
   auth_retried : Bool
   mut codex_retried : Bool
   by : Json
+  // (a turn its background work woke, `job`: the need of the turn before it, still asked of a person as it began, so
+  // that a turn that only says how that work goes and waits on asks the same; `begin_turn`)
+  asked_before : Json?
 }
 
 ///|

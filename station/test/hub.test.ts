@@ -1470,7 +1470,7 @@ test("a process that exits while its turn waits on its background work: it goes 
   await r.close();
 });
 
-test("a turn given up on after its nudges shows the agent's last words, unless it posted", async () => {
+test("a turn given up on after its nudges shows the agent's last words; one that posted ends done after one reminder", async () => {
   const r = new Rig({ maxNudges: 1 });
   const m = message();
   await r.accept(m);
@@ -1491,7 +1491,72 @@ test("a turn given up on after its nudges shows the agent's last words, unless i
   await settle();
   s.complete();
   await settle();
-  assert.ok(r.chat.lastText().includes("未产出结果"), r.chat.lastText());
+  // (it answered: no ⚠️ under its answer, the turn ends done)
+  assert.equal(r.chat.lastText(), "Now it fails.");
+  assert.equal(r.store.lastTurn(sessionKey("cl", "C1", m.threadTs))!.ending, "all_done");
+  await r.close();
+});
+
+test("a turn that posted and said no state is asked once, whatever the most nudges, then ends done", async () => {
+  const r = new Rig({ maxNudges: 3 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const s = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "答好了。" });
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 2, "asked once");
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 2, "not asked again");
+  assert.equal(r.store.lastTurn(key)!.ending, "all_done");
+  assert.ok(!r.chat.texts().some((t) => t.startsWith("⚠️")), r.chat.texts().join("\n"));
+  await r.close();
+});
+
+test("a turn with no state is never told stopped before it is asked again", async () => {
+  const r = new Rig({ maxNudges: 1 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  // (what a device would read as each change is told: cold, its last turn ended with no state, is 意外停止)
+  const cold: unknown[] = [];
+  const stop = r.store.subscribe((c) => {
+    if (c.type !== "session" || c.key !== key) return;
+    const t = r.store.lastTurn(key);
+    if (r.store.getSession(key)?.running !== true && t !== null && t.endedAt !== null && t.declared === null) cold.push(t);
+  });
+  r.claude.last().complete();
+  await settle();
+  assert.equal(r.claude.last().prompts.length, 2, "asked again");
+  assert.deepEqual(cold, []);
+  stop();
+  await r.close();
+});
+
+test("a turn its background work woke that only waits on keeps asking what the turn before it asked", async () => {
+  const r = new Rig({ maxNudges: 0 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const to = `C1/${m.threadTs}`;
+  await r.call(key, "chat_post", { to, text: "要不要清理旧的缓存？", kind: "need_human", need: "清理缓存" });
+  r.claude.last().complete();
+  await settle();
+  assert.equal(r.store.lastTurn(key)!.ending, "need_help");
+  r.hub.notify(key, "a job ended: build 3 passed");
+  await settle();
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "构建" });
+  r.claude.last().complete();
+  await settle();
+  const kept = r.store.lastTurn(key)!;
+  assert.equal(kept.ending, "need_help");
+  assert.equal(kept.need, "清理缓存");
+  assert.notEqual(kept.about, null);
   await r.close();
 });
 

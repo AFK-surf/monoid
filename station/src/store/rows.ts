@@ -282,7 +282,9 @@ export type StoreChange =
   | { type: "sessionRemoved"; key: string; ws?: string | null }
   /// Entries were appended there (contiguous, in order), or its sessions changed (none); `closed`: the post (its n)
   /// whose card was closed or withdrawn without a message (closed_cards).
-  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number }
+  /// `answered`: a person's message handed to a session in a platform's thread that settled the conversational card
+  /// waiting there (store/card-kinds.ts; in a still.fail chat it is settled as it is written).
+  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number; answered?: { n: number; author: string; ts: string } }
   /// Letters were kept in its own log of them (schema.ts LETTERS; contiguous, in order).
   | { type: "letters"; id: number; letters: EntryRow[] }
   /// It went, with every entry it had; `ws` as its session's.
