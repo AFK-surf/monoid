@@ -40,7 +40,8 @@
 // pages show here (`said`), with nothing read first. What else a change touches (the shared chat list, a session's
 // summary, a job) is read by the station's own reader (`told`: read/pool.ts), which nothing a device asks
 // takes: on a station (2026-11-02) both shared two readers, and a message just said was told 50 s late.
-import { type FSWatcher, existsSync, mkdirSync, readFileSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Viewer, readOnly } from "../mesh/credential.ts";
 import type { Lang } from "../ops/i18n.ts";
@@ -167,9 +168,9 @@ type Handed = {
 };
 
 /// Removes what was handed over (taken up, or not to be): never a throw, as a stream waits on the taking up.
-function removeHanded(file: string) {
+async function removeHanded(file: string): Promise<void> {
   try {
-    rmSync(file, { force: true });
+    await rm(file, { force: true });
   } catch (error) {
     log.warn("events", "what was handed over is not removed", { error: (error as Error).message });
   }
@@ -240,6 +241,11 @@ export class Events {
   /// Until what the process before this one handed over is taken up (`takeUp`): no stream is answered before, and what
   /// is to be told waits (`early`, in order), to be told after what it goes on from.
   private taking: Promise<void> | null = null;
+  /// The taking up itself, once the process before is gone (a read of a file): a handover meanwhile waits for it, so
+  /// that what is there is either taken up or left for the next, never removed under it.
+  private takingUp: Promise<void> | null = null;
+  /// What the handovers wrote, numbered: a second write of this process's never shares the first's file beside.
+  private handings = 0;
   private early: (() => void)[] = [];
   /// Handed over to the next process: nothing more is told.
   private handed = false;
@@ -250,7 +256,7 @@ export class Events {
     deps.subscribe((change) => this.storeChanged(change));
     const handover = deps.handover;
     if (handover) {
-      const take = () => this.takeUp(handover.file, handover.previous.pid);
+      const take = () => (this.takingUp = this.takeUp(handover.file, handover.previous.pid));
       // Never fails: every stream waits on it, and a failure nobody waits on would end the process.
       this.taking = handover.previous.gone.then(take, take).catch((error) => log.warn("events", "what the process before told is not taken up", { error: (error as Error).message }));
     }
@@ -261,15 +267,24 @@ export class Events {
   /// and kept from now as while nobody follows; so a stream that comes back here is resumed as it would have been there.
   /// None (a crash), another's than the process before (`from`), older than KEPT_MS, or not read: a run of its own, as
   /// before. What was to be told meanwhile is told then, after it.
-  private takeUp(file: string, from: number | null) {
-    this.taking = null;
-    const early = this.early;
-    this.early = [];
+  private async takeUp(file: string, from: number | null): Promise<void> {
     // Stopped before it was its turn: what is there is the next one's, and nothing more is told.
-    if (this.handed) return;
-    if (existsSync(file)) {
+    if (this.handed) return void this.tookUp();
+    let text: string | null = null;
+    let unread: Error | null = null;
+    try {
+      text = await readFile(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") unread = error as Error;
+    }
+    if (text !== null || unread !== null) await removeHanded(file);
+    // (Only taken up here: a handover waits for this before it looks whether it was its turn.)
+    if (this.handed) return void this.tookUp();
+    const early = this.tookUp();
+    if (text !== null || unread !== null) {
       try {
-        const handed: Handed = JSON.parse(readFileSync(file, "utf8"));
+        if (unread !== null) throw unread;
+        const handed: Handed = JSON.parse(text!);
         const now = this.time.now();
         // From the one that held the station before, or, none holding it, the one that let go of it last as it stopped.
         // Another's was written by one waited for in vain, after a process since went on with a run of its own: what
@@ -292,10 +307,17 @@ export class Events {
       } catch (error) {
         log.warn("events", "what the process before told does not read; its streams are not resumed", { error: (error as Error).message });
       }
-      removeHanded(file);
     }
     // What was to be told meanwhile, as it came: numbered on from what is gone on from (no stream heard any of it).
     for (const tell of early) tell();
+  }
+
+  /// The taking up is over: streams are answered from now, and what was to be told meanwhile is given back (in order).
+  private tookUp(): (() => void)[] {
+    this.taking = null;
+    const early = this.early;
+    this.early = [];
+    return early;
   }
 
   /// Hands what is told over to the next process, as this one stops (after its sessions are handed over): all being
@@ -317,6 +339,8 @@ export class Events {
       if (telling.length === 0) break;
       await Promise.allSettled(telling);
     }
+    // A taking up under way (the file's read) is waited for: whether it was this one's turn is known after it.
+    if (this.takingUp !== null) await this.takingUp;
     const listening = this.listening();
     const turn = this.taking === null;
     const at = this.time.now();
@@ -324,7 +348,7 @@ export class Events {
     this.stopTimers();
     await this.time.close();
     if (!turn) return;
-    if (!listening) return removeHanded(file);
+    if (!listening) return await removeHanded(file);
     // Who followed last, to read a thread's entries with: not their device's lock proof.
     const last = this.last && { viewer: { ...this.last.viewer, lockDevice: undefined }, lang: this.last.lang };
     const shared = this.keepsShared() && this.sharedTold !== null
@@ -332,10 +356,10 @@ export class Events {
       : undefined;
     const handed: Handed = { pid: process.pid, at, log: this.log.kept(), overviews: [...this.overviewTold], last, shared };
     try {
-      mkdirSync(dirname(file), { recursive: true });
-      const tmp = `${file}.tmp-${process.pid}`;
-      writeFileSync(tmp, JSON.stringify(handed), { mode: 0o600 });
-      renameSync(tmp, file);
+      await mkdir(dirname(file), { recursive: true });
+      const tmp = `${file}.tmp-${process.pid}.${++this.handings}`;
+      await writeFile(tmp, JSON.stringify(handed), { mode: 0o600 });
+      await rename(tmp, file);
       log.info("events", "what was told is handed over", { ...this.log.state(), viewers: this.overviewTold.size });
     } catch (error) {
       log.warn("events", "what was told is not handed over; its streams are not resumed", { error: (error as Error).message });

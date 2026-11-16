@@ -8,7 +8,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import type { ScreenBrowser, Screens } from "../screens/source.ts";
 import type { Cdp, CdpEvent } from "./cdp.ts";
-import { type ChromeHost, type Running, readState, writeState } from "./chrome.ts";
+import { BrowserState, type ChromeHost, type Running } from "./chrome.ts";
 import { Owners } from "./owners.ts";
 import { Authenticators } from "./passkeys.ts";
 import { BEHIND } from "./gate.ts";
@@ -141,6 +141,10 @@ export class StationBrowser implements ScreenBrowser {
   #closed = false;
   /// Which session opened each tab (owners.ts).
   readonly #owners: Owners;
+  /// Its state.json (its last use): the Chrome host's, shared.
+  readonly #state: BrowserState;
+  /// Its last use as state.json said it, read as it was made: taken before a Chrome is started or taken up.
+  readonly #loaded: Promise<void>;
   /// Whether a Chrome was found on the machine, and when it was looked for.
   #installed: { at: number; is: boolean } | null = null;
 
@@ -149,7 +153,9 @@ export class StationBrowser implements ScreenBrowser {
     this.#owners = new Owners(o.dir);
     this.#fibers = new Fibers("browser", o.clock);
     this.#idleMs = o.idleMs ?? IDLE_MS;
-    this.#lastUse = readState(o.dir).lastUse ?? 0;
+    this.#state = o.chrome.state ?? new BrowserState(o.dir);
+    // A use since it was made is newer than what the file says.
+    this.#loaded = this.#state.read().then((s) => void (this.#lastUse = Math.max(this.#lastUse, s.lastUse ?? 0)));
     this.#userTabs = new UserTabs({
       dir: o.dir,
       screens: o.screens,
@@ -163,7 +169,7 @@ export class StationBrowser implements ScreenBrowser {
 
   /// Takes up the Chrome an earlier station process left running, if there is one (its tabs become screens again).
   async resume(): Promise<void> {
-    await this.#userTabs.ready();
+    await Promise.all([this.#userTabs.ready(), this.#owners.ready(), this.#loaded]);
     if (this.#closed || this.#up || this.#starting) return;
     const found = await this.#o.chrome.find().catch(() => null);
     if (found === null || this.#closed || this.#up || this.#starting) return;
@@ -398,6 +404,8 @@ export class StationBrowser implements ScreenBrowser {
       await this.#userTabs.close();
     }
     this.#note();
+    // What the next station process takes up: written down before this one lets go.
+    await Promise.all([this.#owners.written(), this.#state.written()]);
     await this.#fibers.close();
   }
 
@@ -421,7 +429,7 @@ export class StationBrowser implements ScreenBrowser {
     if (this.#starting) return this.#starting;
     this.#restart();
     const starting = (async () => {
-      await this.#userTabs.ready();
+      await Promise.all([this.#userTabs.ready(), this.#owners.ready(), this.#loaded]);
       // One left running by an earlier station process, else a new one.
       const found = await this.#o.chrome.find().catch(() => null);
       return this.#take(found ?? (await this.#o.chrome.launch()));
@@ -627,8 +635,7 @@ export class StationBrowser implements ScreenBrowser {
   #note() {
     this.#noted = this.#fibers.now();
     const lastUse = this.#lastUse;
-    try {
-      writeState(this.#o.dir, (s) => ({ ...s, lastUse }));
-    } catch {}
+    // Never older than what is there (read as it was made: a note before that is not to undo it).
+    void this.#state.change((s) => ({ ...s, lastUse: Math.max(s.lastUse ?? 0, lastUse) })).catch(() => {});
   }
 }

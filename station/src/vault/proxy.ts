@@ -5,7 +5,7 @@
 // request or the answer is touched. HTTPS to any other host is passed through as it is, unopened: a placeholder sent
 // there is only a placeholder. Plain HTTP is refused, so the secret never goes out unencrypted.
 import { type KeyObject, createPrivateKey, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import { type RequestOptions, request as httpsRequest } from "node:https";
 import { type Socket, connect } from "node:net";
@@ -42,6 +42,10 @@ export class Proxy {
   readonly #runs = new Map<string, Run>();
   readonly #leaves = new Map<string, { context: SecureContext; made: number }>();
   #ca: { cert: Buffer; key: KeyObject } | null = null;
+  /// The CA being read or made: a second start meanwhile waits for the same.
+  #loadingCa: Promise<{ cert: Buffer; key: KeyObject }> | null = null;
+  /// A listen under way: a second start meanwhile waits for the same port.
+  #starting: Promise<number> | null = null;
   #server: Server | null = null;
   #port = 0;
   /// The roots the hosts' own certificates are checked against: Node's by default (a test's own).
@@ -59,28 +63,46 @@ export class Proxy {
     return join(this.#dir, "ca-bundle.pem");
   }
 
-  #loadCa(): { cert: Buffer; key: KeyObject } {
-    if (this.#ca !== null) return this.#ca;
-    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
+  /// The CA, read from `dir` or made there the first time, and the bundle written beside it.
+  #loadCa(): Promise<{ cert: Buffer; key: KeyObject }> {
+    if (this.#ca !== null) return Promise.resolve(this.#ca);
+    this.#loadingCa ??= this.#readCa().then(
+      (ca) => (this.#ca = ca),
+      (e) => {
+        this.#loadingCa = null;
+        throw e;
+      },
+    );
+    return this.#loadingCa;
+  }
+
+  async #readCa(): Promise<{ cert: Buffer; key: KeyObject }> {
+    await mkdir(this.#dir, { recursive: true, mode: 0o700 });
     const keyPath = join(this.#dir, "ca.key");
     const certPath = join(this.#dir, "ca.pem");
-    if (existsSync(keyPath) && existsSync(certPath)) {
-      const der = Buffer.from(readFileSync(certPath, "utf8").replace(/-----[^-]+-----|\s+/g, ""), "base64");
-      this.#ca = { cert: der, key: createPrivateKey(readFileSync(keyPath)) };
+    const [key, cert] = await Promise.all([readFile(keyPath).catch(absent), readFile(certPath, "utf8").catch(absent)]);
+    let ca: { cert: Buffer; key: KeyObject };
+    if (key !== null && cert !== null) {
+      ca = { cert: Buffer.from(cert.replace(/-----[^-]+-----|\s+/g, ""), "base64"), key: createPrivateKey(key) };
     } else {
-      this.#ca = makeCa(this.#now(), CA_NAME);
-      writeFileSync(keyPath, this.#ca.key.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
-      chmodSync(keyPath, 0o600);
-      writeFileSync(certPath, pem(this.#ca.cert));
+      ca = makeCa(this.#now(), CA_NAME);
+      await writeFile(keyPath, ca.key.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+      await chmod(keyPath, 0o600);
+      await writeFile(certPath, pem(ca.cert));
     }
-    writeFileSync(this.bundle, [...rootCertificates, pem(this.#ca.cert)].join("\n"));
-    return this.#ca;
+    await writeFile(this.bundle, [...rootCertificates, pem(ca.cert)].join("\n"));
+    return ca;
   }
 
   /// Listens on 127.0.0.1 (any free port); the port.
-  async start(): Promise<number> {
-    if (this.#server !== null) return this.#port;
-    this.#loadCa();
+  start(): Promise<number> {
+    if (this.#server !== null) return Promise.resolve(this.#port);
+    this.#starting ??= this.#listen().finally(() => (this.#starting = null));
+    return this.#starting;
+  }
+
+  async #listen(): Promise<number> {
+    await this.#loadCa();
     const server = createServer((_req, res) => res.writeHead(405, { "content-type": "text/plain" }).end("the vault's proxy carries HTTPS only (CONNECT)\n"));
     server.on("connect", (req: IncomingMessage, socket: Socket, head: Buffer) => this.#connect(req, socket, head));
     await new Promise<void>((resolve, reject) => {
@@ -186,9 +208,17 @@ export class Proxy {
     const had = this.#leaves.get(host);
     const now = this.#now();
     if (had !== undefined && now - had.made < LEAF_MS) return had.context;
-    const leaf = makeLeaf(this.#loadCa(), CA_NAME, host, now);
-    const context = createSecureContext({ key: leaf.key.export({ format: "pem", type: "pkcs8" }), cert: pem(leaf.cert) + pem(this.#loadCa().cert) });
+    // Read as the proxy started, before it took any connection.
+    const ca = this.#ca!;
+    const leaf = makeLeaf(ca, CA_NAME, host, now);
+    const context = createSecureContext({ key: leaf.key.export({ format: "pem", type: "pkcs8" }), cert: pem(leaf.cert) + pem(ca.cert) });
     this.#leaves.set(host, { context, made: now });
     return context;
   }
+}
+
+/// A file not there (read as null); any other failure is thrown.
+function absent(e: NodeJS.ErrnoException): null {
+  if (e.code === "ENOENT") return null;
+  throw e;
 }

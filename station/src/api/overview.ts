@@ -1,7 +1,7 @@
 // GET /overview: the station as its settings pages show it — still.fail cloud, connects,
 // profiles, the agents' processes, counts, the disk, logins, updates — as the viewer sees it. Answered on the main
 // thread from what is in memory and the config; told again on /events when it changes (`overview`).
-import { statfsSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Accounts } from "../accounts/index.ts";
 import { facts } from "../accounts/catalog.ts";
@@ -83,10 +83,10 @@ async function keptMemory(d: OverviewDeps, pgids: number[]): Promise<Map<number,
 }
 
 /// The data disk's room: what clients warn of when it runs low.
-function diskRoom(path: string): unknown {
+async function diskRoom(path: string): Promise<unknown> {
   if (process.env.STILLFAIL_TEST_HOST === "1") return { freeBytes: 50_000_000_000, totalBytes: 100_000_000_000 };
   try {
-    const s = statfsSync(path);
+    const s = await statfs(path);
     return { freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize };
   } catch {
     return null;
@@ -110,6 +110,8 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
   const states = [...d.hub.processes()].filter(([key]) => sees(viewer, d.store.sessionWs(key) ?? null)).map(([, state]) => state);
   // The agents' runtime processes; background jobs' groups are recorded too (to be reaped), but they are jobs.
   const processes = d.store.listProcesses().filter((p) => p.runtime !== "job");
+  // (The disk's room asked meanwhile: it never fails.)
+  const disk = diskRoom(d.hub.config().dataDir);
   const memory = await keptMemory(d, processes.map((p) => p.pgid));
   const connects = visibleConnects.map((c: any) => {
     const mode = c.mode ?? "multi-session";
@@ -174,7 +176,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     }),
     counts: { sessions: sessionsOf(null), running: states.filter((s) => s === "running").length, warm: states.filter((s) => s === "warm").length },
     slackUsers: d.store.slackIdentities(viewer.email),
-    disk: diskRoom(d.hub.config().dataDir),
+    disk: await disk,
     logins: d.accounts?.loginsView(viewer) ?? [],
     apiProviders: d.accounts?.apiProviders() ?? [],
     machineLogins: d.accounts?.machineLogins() ?? [],
