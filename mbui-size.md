@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
 | [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 | [f42bc9cda](https://github.com/AFK-surf/monoid/commit/f42bc9cdacf8e21ded3214489582f68241f836b0) app, mbui: a press changes once on main's switches | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.88 | 120.9 |
-| [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 2.42 | 3.37 | 14.26 | 35.38 | 55.61 | 31.06 | 63.48 | 99.73 | 120.44 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [f42bc9cda](https://github.com/AFK-surf/monoid/commit/f42bc9cdacf8e21ded3214489582f68241f836b0) app, mbui: a press changes once on main's switches | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [215b44663](https://github.com/AFK-surf/monoid/commit/215b446631e747615e9a416a430057e4151345e5) fix(mbui/win): optical stem convergence at high DP | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [c14b06297](https://github.com/AFK-surf/monoid/commit/c14b06297931087d15f7c85f6acc697fc51822ea) station: keep the front's endpoint across a handov | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [be3f5ca79](https://github.com/AFK-surf/monoid/commit/be3f5ca7942162225b60617cf9270e6dd1891a51) station tests: the Antigravity trajectory test wai | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
-| [f52278b5a](https://github.com/AFK-surf/monoid/commit/f52278b5a725e24e705b47757e3943e7f8b8c8a7) app: a chat's row on the page made as nodes holds  | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
