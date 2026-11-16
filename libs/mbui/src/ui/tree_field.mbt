@@ -22,7 +22,8 @@ priv struct TreeField {
   hint : () -> String
   shorter : Array[String]
   trim : Bool
-  submitted : (String) -> Unit
+  /// what is told its words as they are given up (Enter); none: that Enter presses its layer's default (View::default_press)
+  submitted : ((String) -> Unit)?
   pasted : (String) -> Unit
   /// what is told files pasted into it (⌘V with files or a picture on the clipboard), where it takes them
   files : ((Array[(String, Bytes)]) -> Unit)?
@@ -85,7 +86,8 @@ fn view_words_found(d : @view.Drawn) -> String {
 /// it; `files`: what it is told files pasted into it, where it takes them, as Ctx::editor's `files` and
 /// Ctx::field_files), as tall as
 /// its words lay out between `min_lines` (one unless said) and `max_lines` (Field::laid), read out as a field of its words. `submitted`: what
-/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment; `pasted`, a
+/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment (none said:
+/// that Enter presses the default of the layer it is in, View::default_press); `pasted`, a
 /// paste of `paste_limit` characters or more, not put in, once, at that paste's; `edited`: its words as the person's
 /// edit changes them (a key, the input method's words, a paste, an undo: Ctx::editor's `on_change`), once, at that
 /// edit's moment, never as the app puts words in it (Field::set, Field::follow). `placeholder_by`: its placeholder as
@@ -111,7 +113,7 @@ pub fn field(
   secret? : Bool = false,
   words? : Bool = false,
   look? : (String) -> (String, Array[(Int, Int, Int64)]),
-  submitted? : (String) -> Unit = fn(_) {  },
+  submitted? : (String) -> Unit,
   pasted? : (String) -> Unit = fn(_) {  },
   edited? : (String) -> Unit,
   files? : (Array[(String, Bytes)]) -> Unit,
@@ -920,7 +922,15 @@ fn tree_field_told(tf : TreeField) -> Unit {
   match tf.st.submitted {
     Some(words) => {
       tf.st.submitted = None
-      (tf.submitted)(words)
+      match tf.submitted {
+        Some(f) => f(words)
+        // (none takes them: the Enter that gave them up the default's of its layer, as AppKit's field's Return is)
+        None =>
+          match view_app.val {
+            Some(tree) => view_default_pressed(tree, Some(tf.view.id())) |> ignore
+            None => ()
+          }
+      }
     }
     None => ()
   }

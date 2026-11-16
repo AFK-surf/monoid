@@ -88,12 +88,12 @@ test "大屏: a confirm asked and closed in one change, never shown: no confirm 
 }
 
 ///|
-test "大屏: a confirm opened from what has the focus: the focus on none of its buttons, its own (no frame waited for, and a frame on); Enter does nothing; Escape closes it, the focus back where it was" {
+test "大屏: a confirm of what cannot be undone opened from what has the focus: the focus on none of its buttons, its own (no frame waited for, and a frame on); Enter does nothing (it has no default); Escape closes it, the focus back where it was" {
   let t = confirm_wide()
   t.act(Button, Focus, label="新建对话")
   let before = t.focused().map(fn(s) { s.label })
   let runs = Ref(0)
-  @sf.confirm("删除", "删除这个对话？", "删除", fn() { runs.val += 1 })
+  @sf.confirm("删除", "删除这个对话？", "删除", fn() { runs.val += 1 }, danger=true)
   // (no frame drawn: where the focus is as it opens)
   let at_once = (t.focused().map(fn(s) { s.label }), t.ctx().focus != 0)
   t.draw()
@@ -122,4 +122,22 @@ test "大屏: a confirm opened, the focus its own: Tab to its cancel, its action
   t.tab()
   t.enter()
   assert_eq((stops, runs.val), ([Some("取消"), Some("删除"), Some("取消")], 1))
+}
+
+///|
+test "大屏: a confirm of what can be undone: Enter with the focus its own does its action and closes it; Enter on its cancel cancels" {
+  let t = confirm_wide()
+  let runs = Ref(0)
+  @sf.confirm("归档", "归档这个对话？", "归档", fn() { runs.val += 1 })
+  t.draw()
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  let by_enter = (runs.val, @sf.presenting())
+  @sf.confirm("归档", "归档这个对话？", "归档", fn() { runs.val += 1 })
+  t.draw()
+  t.tab()
+  let on = t.focused().map(fn(s) { s.label })
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq((by_enter, on, runs.val, @sf.presenting()), ((1, false), Some("取消"), 1, false))
 }

@@ -4854,8 +4854,22 @@ fn view_key(code : Int, mods : Int) -> Bool {
       _ => ()
     }
   }
-  // (a node's own keys first (View::on_key: a panel's Escape), then the keymap's actions)
-  tree.key_at(code, mods, view_moment(), above=old_keys, within=if field { held } else { None }) || actions()
+  // (a node's own keys first (View::on_key: a panel's Escape), then the keymap's actions; Enter none of them took, the
+  // default of the layer the focus is in: View::default_press)
+  tree.key_at(code, mods, view_moment(), above=old_keys, within=if field { held } else { None }) ||
+  actions() ||
+  (mods == 0 && code == key_enter && !field && view_default_pressed(tree, held))
+}
+
+///|
+/// Enter that nothing with the focus took pressing the default of the layer the focus is in (`held`: the node it is
+/// in, None in none of the tree's), at the key's moment (@view.Tree::press_default_at). Whether it did.
+fn view_default_pressed(tree : @view.Tree, held : @view.NodeId?) -> Bool {
+  let took = tree.press_default_at(view_moment(), from=held)
+  if took {
+    h_frame_owed()
+  }
+  took
 }
 
 ///|

@@ -484,6 +484,8 @@ struct Node {
   /// the piece of its anchor it goes beside (View::beside's `piece`: asked as it is placed, given how big the anchor is
   /// laid out; none: all of it)
   mut beside_piece : ((Double, Double) -> (Double, Double, Double, Double)?)?
+  /// whether Enter that nothing with the focus takes presses it, in its layer (View::default_press)
+  mut default_press : Bool
   mut focus_keys : Int
   /// whether Tab stops on it as it takes the focus (View::focusable's `tab`)
   mut focus_tab : Bool
@@ -1154,6 +1156,8 @@ pub struct Tree {
   mut bones_set : Int
   /// how many nodes are said not in use (View::in_use): none, that not asked of what holds a node
   mut behind_set : Int
+  /// how many nodes are said pressed by Enter that nothing with the focus takes (View::default_press): none, none looked for
+  mut defaults_set : Int
   /// the width each node that says it lays what it holds out at (View::lays_anew), by node: what a Tester's steadiness
   /// judges take a step of as that node's own, in the frame it steps
   laid_said : Map[Int, Double]
@@ -1546,6 +1550,7 @@ pub fn Tree::new(
     hand: fn(_) {  },
     bones_set: 0,
     behind_set: 0,
+    defaults_set: 0,
     laid_said: Map([]),
     downs: [],
     changed: [],
@@ -1721,6 +1726,10 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         self.behind_set -= 1
       }
       n.behind = false
+      if n.default_press {
+        self.defaults_set -= 1
+      }
+      n.default_press = false
       if n.bones != 0L {
         self.bones_set -= 1
       }
@@ -1927,6 +1936,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         beside_last: None,
         beside_point: None,
         beside_piece: None,
+        default_press: false,
         focus_keys: 0,
         focus_tab: true,
         tab_by_stop: false,
@@ -3595,6 +3605,7 @@ priv enum Prop {
   GlyphsBy
   InUse
   LaysAnew
+  DefaultPress
 }
 
 ///|
@@ -3694,6 +3705,7 @@ impl Show for Prop with output(self, logger) {
       GlyphsBy => "GlyphsBy"
       InUse => "InUse"
       LaysAnew => "LaysAnew"
+      DefaultPress => "DefaultPress"
     },
   )
 }
@@ -3785,6 +3797,7 @@ fn Prop::ord(self : Prop) -> Int {
     EllipsisPast => 54
     WordsBreaks => 87
     WordsHalo => 90
+    DefaultPress => 91
     Points => 55
     Picture => 56
     Drop => 57
@@ -7950,6 +7963,10 @@ fn View::let_go(self : View) -> Unit {
     self.tree.behind_set -= 1
   }
   n.behind = false
+  if n.default_press {
+    self.tree.defaults_set -= 1
+  }
+  n.default_press = false
   if n.bones != 0L {
     self.tree.bones_set -= 1
   }

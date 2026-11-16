@@ -1054,6 +1054,7 @@ pub struct Tree {
   mut hand : (Double) -> Unit
   mut bones_set : Int32
   mut behind_set : Int32
+  mut defaults_set : Int32
   laid_said : Map[Int32, Double]
   downs : Array[Int32]
   changed : Array[NodeId]
@@ -1134,6 +1135,7 @@ pub fn Tree::composed(Self) -> Array[NodeId]
 pub fn Tree::cursor_of(Self, NodeId) -> Cursor
 pub fn Tree::cut_soft_of(Self, NodeId) -> (Double, Double, Double)?
 pub fn Tree::cycle_read(Self) -> Bool
+pub fn Tree::default_of(Self, NodeId?) -> NodeId?
 pub fn Tree::dispose(Self) -> Unit
 pub fn Tree::drag_at(Self, NodeId, DragIs, Double, Double, Double, finger? : Int32, track? : Array[(Double, Double, Double)]) -> Bool
 pub fn Tree::drawn(Self) -> Array[Drawn]
@@ -1282,6 +1284,7 @@ pub fn Tree::pointer_said(Self) -> (Double, Double)
 pub fn Tree::points_now(Self) -> NodeId?
 pub fn Tree::press(Self, Double, Double) -> Bool
 pub fn Tree::press_boxes(Self) -> Array[(NodeId, (Double, Double, Double, Double), Int32, Int32)]
+pub fn Tree::press_default_at(Self, Double, from~ : NodeId?) -> Bool
 pub fn Tree::press_focused_at(Self, NodeId, Double) -> Bool
 pub fn Tree::press_held(Self, NodeId) -> Bool
 pub fn Tree::press_least(Self, () -> Double) -> Unit
@@ -1411,6 +1414,7 @@ pub fn View::cursor(Self, Live[Cursor?], loc~ : SourceLoc) -> Self
 pub fn View::cuts(Self, Live[Bool], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::cuts_softly(Self, Live[Bool], loc~ : SourceLoc) -> Self
+pub fn View::default_press(Self, Live[Bool]) -> Self
 pub fn View::cycle(Self, Double) -> Double
 pub fn View::cycle_resident(Self, Double) -> Double
 #callsite(autofill(loc))

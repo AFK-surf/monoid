@@ -5,8 +5,9 @@
 // draws it (confirm_w wide at most, the window less dialog_margin; dialog_r round, the panel's ground, its line, its
 // shadow; its title, its words, then cancel and the action at its foot's end), coming in by @kit.dialog_in and going
 // by @kit.pop_out from the moments it opens and closes; read out a dialog named by its title. Escape, back and cancel
-// close it (`cancel`); the action does `confirm`. The focus on its own ground as it opens (confirm_dialog's: a layer
-// that traps it with no stop of its own), back to what had it as it goes.
+// close it (`cancel`); the action does `confirm`, and so does Enter where it can be undone (its default: not where
+// `danger`). The focus on its own ground as it opens (confirm_dialog's: a layer that traps it with no stop of its
+// own), back to what had it as it goes.
 
 ///|
 /// A confirm in `parent` while `open()` (going over pop_out_ms once not): `title`, its `words`, `action` (solid red
@@ -32,7 +33,8 @@ pub fn confirm_node(
   dialog_layer_node(parent, open, cancel, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {
     confirm_panel(across, layer, look, veil, title, words, warning, action, danger, cancel, confirm) |> ignore
     // (the focus on its own ground as it opens, as confirm_dialog's (an overlay that traps it, with no stop of its own:
-    // the layer's own), Enter and Space doing nothing there; back to what had it as it goes)
+    // the layer's own), Space doing nothing there, Enter its default's: its action unless `danger`; back to what had it
+    // as it goes)
     layer
   })
 }
@@ -274,7 +276,14 @@ fn confirm_panel(
       f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       // (going, they take nothing: what is leaving takes no press, focus or key; drawn as they were, going with it)
       let no = button_node(f, fn() { t("common.cancel") }, cancel, tone=Ghost)
-      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }) |> ignore
+      // (its action the default where it can be undone: Enter that nothing with the focus takes does it; one that cannot
+      // be undone none, so that Enter never does it: the owner, 2026-11-16, after Apple's)
+      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }, default_on?=if danger {
+        None
+      } else {
+        Some(fn() { true })
+      })
+      |> ignore
       cancel_at.val = Some(no)
     })
     |> ignore
