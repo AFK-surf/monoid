@@ -45,11 +45,17 @@ let switches_left_out : Map[String, String] = Map([])
 let switch_heard : Array[Int] = []
 
 ///|
-/// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id.
+/// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id,
+/// but for the answer of a call whose answer nobody reads.
 fn switch_heard_of(m : String) -> Unit {
   guard m.has_prefix("in ") else { return }
   let j = @json.parse(m.unsafe_substring(start=3, end=m.length())) catch { _ => return }
   guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
+  // (the answer of a call nobody reads (@core.Client::call: no on_done) runs nothing and builds nothing: no answer
+  // that changes what is seen, said or not)
+  if (o.contains("ok") || o.contains("error")) && @core.client.call_unread(n.to_int()) {
+    return
+  }
   switch_heard.push(n.to_int())
 }
 

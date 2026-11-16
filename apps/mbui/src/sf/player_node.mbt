@@ -1936,13 +1936,10 @@ fn phone_player_node(
       }
     }
     middle_node(n, pn, file.name, pill)
-    let shown = fn(node : @view.View) {
-      if pn.drag.get() == DownClose || pn.taken_down.get() || going() {
-        0.0
-      } else {
-        pn.shown.shown(node)
-      }
-    }
+    // (closed, drawn as it leaves, or dragged down to close: its controls away at once, none of them seen, pressed or
+    // read out (View::hides) from that moment, not when it is gone)
+    let away = fn() { pn.drag.get() == DownClose || pn.taken_down.get() || going() }
+    let shown = fn(node : @view.View) { if away() { 0.0 } else { pn.shown.shown(node) } }
     let live = fn() { pn.on() && pn.drag.get() != DownClose && !pn.taken_down.get() && !flying() && !going() }
     let tips_at : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { tips_at.val })
@@ -1957,6 +1954,7 @@ fn phone_player_node(
           (l, @ui.Space::S1_5.px(), r, @ui.Space::S1_5.px())
         }))
         .alpha(By(fn() { shown(place) }))
+        .hides(By(away))
         |> ignore
         place.box(fn(h) {
           h
@@ -2007,6 +2005,7 @@ fn phone_player_node(
         .fills_across(Is(true))
         .lines_up(Is(Some(Middle)))
         .alpha(By(fn() { shown(place) }))
+        .hides(By(away))
         |> ignore
         place.box(fn(c) {
           c

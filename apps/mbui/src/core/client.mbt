@@ -950,8 +950,9 @@ pub fn Client::quiet(self : Client, name : String, f : (Json) -> Bool) -> Unit {
 ///|
 /// Whether the call this client made as `id` is one whose answer nobody reads (Client::call: no on_done, or unread):
 /// awaited by nothing, so a scripted run cannot wait for its answer (src/sfreplay/emit.mbt writes no `answered` line
-/// for it). Asked as the call goes out, before its answer.
-fn Client::call_unread(self : Client, id : Int) -> Bool {
+/// for it), and what a test that looks at what a press changed takes as no answer that changes anything
+/// (src/sfapp/switches_still_wbtest.mbt). Asked before its answer is taken.
+pub fn Client::call_unread(self : Client, id : Int) -> Bool {
   self.unread_calls.contains(id)
 }
 
