@@ -17,6 +17,7 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "user32.lib")
 
 static const WCHAR *FAMILY = L"Segoe UI";
 static const WCHAR *MONO = L"Consolas";  // the code face (style & 2)
@@ -37,7 +38,7 @@ typedef struct {
 
 static IDWriteFactory2 *dw;
 static IDWriteFontFallback *fallback;
-static IDWriteRenderingParams *params, *params_ct;
+static IDWriteRenderingParams *params, *params_gray, *params_ct;
 static ID2D1Factory *d2d;
 static IWICImagingFactory *wic;
 // Where a glyph is drawn: a bitmap of RT_SIZE pixels, Direct2D's target over it at the scale it was made for, white
@@ -67,6 +68,71 @@ static uint8_t *held_px;
 static struct { double size; int weight; int style; IDWriteTextFormat *f; } formats[32];
 static int n_formats;
 
+// Whether a monitor's EDID friendly name names an OLED panel (or a known QD-OLED / WOLED model whose EDID omits
+// "OLED"), whose triangular or RWBG subpixels do not match ClearType's horizontal RGB stripes.
+static bool is_oled_name(const WCHAR *name) {
+  static const WCHAR *const tags[] = {
+      L"OLED",     L"AW3225",   L"AW2725",   L"AW3423",   L"PG32UCD",  L"PG27AQD",  L"PG27UCD",  L"PG34WCD",
+      L"XG27AQD",  L"MPG 321",  L"MPG 271",  L"MAG 321",  L"MAG 271",  L"MPG 341",  L"FO32U",    L"FO27Q",
+      L"MO34WQC",  L"G80SD",    L"G60SD",    L"32GS95",   L"27GS95",   L"27GR95",   L"34GS95",   L"39GS95",
+      L"45GS95",   L"LG TV",
+  };
+  for (size_t k = 0; k < sizeof tags / sizeof tags[0]; k++) {
+    const WCHAR *t = tags[k];
+    size_t tlen = wcslen(t);
+    for (const WCHAR *p = name; *p; p++) {
+      if (_wcsnicmp(p, t, tlen) == 0) return true;
+    }
+  }
+  return false;
+}
+
+// Subpixel geometry of the machine's active display: FLAT when an active physical monitor is an OLED panel or when a
+// physical monitor is attached and the user turned ClearType off in Windows; BGR when configured so; else RGB.
+static DWRITE_PIXEL_GEOMETRY detect_pixel_geometry(void) {
+  bool has_edid_monitor = false;
+  bool has_oled = false;
+  UINT32 np = 0, nm = 0;
+  if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) == ERROR_SUCCESS && np > 0) {
+    DISPLAYCONFIG_PATH_INFO *paths = (DISPLAYCONFIG_PATH_INFO *)calloc(np, sizeof *paths);
+    DISPLAYCONFIG_MODE_INFO *modes = (DISPLAYCONFIG_MODE_INFO *)calloc(nm, sizeof *modes);
+    if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS) {
+      for (UINT32 i = 0; i < np; i++) {
+        DISPLAYCONFIG_TARGET_DEVICE_NAME tn = {};
+        tn.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tn.header.size = sizeof tn;
+        tn.header.adapterId = paths[i].targetInfo.adapterId;
+        tn.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&tn.header) == ERROR_SUCCESS && tn.flags.edidIdsValid) {
+          has_edid_monitor = true;
+          if (is_oled_name(tn.monitorFriendlyDeviceName)) has_oled = true;
+        }
+      }
+    }
+    free(paths);
+    free(modes);
+  }
+  if (has_oled) return DWRITE_PIXEL_GEOMETRY_FLAT;
+  if (has_edid_monitor) {
+    BOOL smoothing = TRUE;
+    UINT type = FE_FONTSMOOTHINGCLEARTYPE;
+    if (SystemParametersInfoW(SPI_GETFONTSMOOTHING, 0, &smoothing, 0) && !smoothing) return DWRITE_PIXEL_GEOMETRY_FLAT;
+    if (SystemParametersInfoW(SPI_GETFONTSMOOTHINGTYPE, 0, &type, 0) && type != FE_FONTSMOOTHINGCLEARTYPE)
+      return DWRITE_PIXEL_GEOMETRY_FLAT;
+    IDWriteRenderingParams *sys = NULL;
+    if (SUCCEEDED(dw->CreateRenderingParams(&sys)) && sys) {
+      DWRITE_PIXEL_GEOMETRY g = sys->GetPixelGeometry();
+      FLOAT ct = sys->GetClearTypeLevel();
+      sys->Release();
+      if (g == DWRITE_PIXEL_GEOMETRY_FLAT || ct <= 0.0f) return DWRITE_PIXEL_GEOMETRY_FLAT;
+      if (g == DWRITE_PIXEL_GEOMETRY_BGR) return DWRITE_PIXEL_GEOMETRY_BGR;
+    }
+  }
+  return DWRITE_PIXEL_GEOMETRY_RGB;
+}
+
+static bool use_cleartype(double sc) { return params_ct != NULL && sc < 1.5; }
+
 static void init(void) {
   if (dw) return;
   DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2), (IUnknown **)&dw);
@@ -86,22 +152,29 @@ static void init(void) {
   b->Release();
   // the font's own features, ligatures with them, as DirectWrite draws any app's text: a ligature is one
   // cluster of its letters (GetClusterMetrics), drawn whole
-  // plain coverage without hinting or contrast boost, like Core Text with
-  // smoothing off
+  // plain coverage without contrast boost for colour glyphs (emojis)
   IDWriteRenderingParams2 *p2 = NULL;
   dw->CreateCustomRenderingParams(1.0f, 0.0f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
                                   DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
                                   DWRITE_GRID_FIT_MODE_DEFAULT, &p2);
   params = p2;
-  // A glyph in one colour drawn with ClearType, as Windows draws any app's text (the user, 2026-10-29, beside Chrome:
-  // gray coverage looked soft): each of a pixel's three stripes, red, green, blue left to right, covered on its own,
-  // with vertical grid-fitting, natural 6x1 ClearType at UI sizes (DWRITE_RENDERING_MODE_DEFAULT: no vertical blur on
-  // horizontal strokes), and contrast boost (0.5) at linear gamma (1.0, so black-on-white rasterization does not bend
-  // mid-tone coverage down toward white); a colour glyph (an emoji) in gray as before.
-  IDWriteRenderingParams2 *c2 = NULL;
-  dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 1.0f, DWRITE_PIXEL_GEOMETRY_RGB,
-                                  DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
-  params_ct = c2;
+  // Monochrome text in grayscale (used at 150%+ high-DPI scaling, on OLED panels, or when ClearType is off in Windows):
+  // vertical grid-fitting, natural 6x1 vertical crispness at UI sizes (DWRITE_RENDERING_MODE_DEFAULT), and contrast
+  // boost (0.5) at linear gamma (1.0), without RGB subpixel fringing.
+  IDWriteRenderingParams2 *g2 = NULL;
+  dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                                  DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &g2);
+  params_gray = g2;
+  // A glyph in one colour drawn with ClearType at < 150% on an RGB/BGR LCD: each of a pixel's three stripes covered on
+  // its own, with vertical grid-fitting, natural 6x1 ClearType at UI sizes (DWRITE_RENDERING_MODE_DEFAULT), and
+  // contrast boost (0.5) at linear gamma (1.0).
+  DWRITE_PIXEL_GEOMETRY geom = detect_pixel_geometry();
+  if (geom != DWRITE_PIXEL_GEOMETRY_FLAT) {
+    IDWriteRenderingParams2 *c2 = NULL;
+    dw->CreateCustomRenderingParams(1.0f, 0.5f, 0.5f, 1.0f, geom,
+                                    DWRITE_RENDERING_MODE_DEFAULT, DWRITE_GRID_FIT_MODE_DEFAULT, &c2);
+    params_ct = c2;
+  }
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&d2d);
   CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
   CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory),
@@ -740,21 +813,23 @@ static void draw_layout(IDWriteTextLayout *l, double sc, double dx, Target *t, D
   if (pw <= 0 || ph <= 0 || pw > RT_SIZE || ph > RT_SIZE) return;
   target_ensure(t, sc);
   if (!t->rt) return;
-  // One colour: drawn black with ClearType on opaque white so Direct2D's gamma (1.8) and contrast (0.5) shape coverage
-  // as on a light page, each stripe's coverage (255 - s) in its channel (the shader blends a mask stripe by stripe:
-  // win_render.cpp fmain), its alpha their mean. Straight on the target: in a layer made for ClearType
+  // One colour: drawn black on opaque white so Direct2D's contrast (0.5) at linear gamma (1.0) shapes coverage (with
+  // ClearType at < 150% on RGB/BGR LCDs, or contrast-boosted grayscale at 150%+ / on OLED / when ClearType is off),
+  // each stripe's coverage (255 - s) in its channel (the shader blends a mask stripe by stripe: win_render.cpp fmain),
+  // its alpha their mean. Straight on the target: in a layer made for ClearType
   // (D2D1_LAYER_OPTIONS_INITIALIZE_FOR_CLEARTYPE) Direct2D drew it gray after all.
-  bool stripes = params_ct && !color;
+  bool mono = !color && (params_ct || params_gray);
+  bool ct = mono && use_cleartype(sc);
   t->rt->BeginDraw();
-  t->rt->Clear(stripes ? D2D1::ColorF(1, 1, 1, 1) : D2D1::ColorF(0, 0, 0, 0));
-  if (stripes) {
-    t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-    t->rt->SetTextRenderingParams(params_ct);
+  t->rt->Clear(mono ? D2D1::ColorF(1, 1, 1, 1) : D2D1::ColorF(0, 0, 0, 0));
+  if (mono) {
+    t->rt->SetTextAntialiasMode(ct ? D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE : D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    t->rt->SetTextRenderingParams(ct ? params_ct : params_gray);
   }
-  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, stripes ? t->black : t->white,
+  t->rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-x0 + dx), (FLOAT)-y0), l, mono ? t->black : t->white,
                         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
   t->rt->EndDraw();
-  if (stripes) {
+  if (mono) {
     t->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     t->rt->SetTextRenderingParams(params);
   }
@@ -770,10 +845,10 @@ static void draw_layout(IDWriteTextLayout *l, double sc, double dx, Target *t, D
       const BYTE *s = src + (size_t)y * stride;
       uint8_t *o = px + (size_t)y * pw * 4;
       for (int x = 0; x < pw; x++, s += 4, o += 4) {
-        o[0] = stripes ? (uint8_t)(255 - s[2]) : s[2];
-        o[1] = stripes ? (uint8_t)(255 - s[1]) : s[1];
-        o[2] = stripes ? (uint8_t)(255 - s[0]) : s[0];
-        o[3] = stripes ? (uint8_t)((o[0] + o[1] + o[2] + 1) / 3) : s[3];
+        o[0] = mono ? (uint8_t)(255 - s[2]) : s[2];
+        o[1] = mono ? (uint8_t)(255 - s[1]) : s[1];
+        o[2] = mono ? (uint8_t)(255 - s[0]) : s[0];
+        o[3] = mono ? (uint8_t)((o[0] + o[1] + o[2] + 1) / 3) : s[3];
         // premultiplied: drawn in white, a mask's pixel has its colour equal to its alpha; an emoji's does not
         if (color == 1 && o[3] > 64 && (o[0] + 32 < o[3] || o[1] + 32 < o[3] || o[2] + 32 < o[3])) color = 2;
       }
@@ -1147,8 +1222,9 @@ extern "C" void mb_host_ref_begin(double w, double h, double scale, int32_t bg) 
       D2D1_RENDER_TARGET_TYPE_SOFTWARE,
       D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
   d2d->CreateWicBitmapRenderTarget(ref_bmp, &p, &ref_rt);
-  ref_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-  ref_rt->SetTextRenderingParams(params_ct);
+  bool ct = use_cleartype(scale);
+  ref_rt->SetTextAntialiasMode(ct ? D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE : D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+  ref_rt->SetTextRenderingParams(ct ? params_ct : params_gray);
   ref_rt->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &ref_brush);
   ref_rt->BeginDraw();
   ref_rt->Clear(rgb(bg));
