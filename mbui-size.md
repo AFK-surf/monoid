@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.78 | 118.76 |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.4 | 64.73 | 99.96 | 120.85 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 2.45 | 3.44 | 14.63 | 35.79 | 57.1 | 31.4 | 64.73 | 99.96 | 149.05 |
-| [cd752a297](https://github.com/AFK-surf/monoid/commit/cd752a29782d13cd09939e347bec22228eb2d479) mbui headless: checkbox Space/mixed, slider Page U | 2.45 | 3.44 | 14.63 | 35.79 | 57.1 | 31.4 | 64.73 | 99.96 | 149.05 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1bb38c6f7](https://github.com/AFK-surf/monoid/commit/1bb38c6f76603ff6c6fdf456d6ef743a311d84f3) mbui, app: Apple HIG fixes (menus go round, ⌘. can | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.51 |
 | [a4e32683d](https://github.com/AFK-surf/monoid/commit/a4e32683df694f17798e0fb617dda5971984cd84) mbui: a layer's default button, pressed by Enter ( | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
 | [65739aeae](https://github.com/AFK-surf/monoid/commit/65739aeae8d81c6864571b3f37dee5a3c91e00aa) app: the trackpad's pointer and the station's are  | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
-| [cd752a297](https://github.com/AFK-surf/monoid/commit/cd752a29782d13cd09939e347bec22228eb2d479) mbui headless: checkbox Space/mixed, slider Page U | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
