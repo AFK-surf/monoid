@@ -475,7 +475,8 @@ test("a chat that comes back is started with the transcript of what was said whe
         symlinkSync(join(base, "target"), join(base, "via"));
         process.env.TMPDIR = join(base, "via");
       } else process.env.TMPDIR = base;
-      const w = world();
+      // (a pack a file, so that each file's request names it: what is sent is counted by its hash below)
+      const w = world(undefined, { packMost: { files: 1 } });
       process.env.TMPDIR = was;
       const a = w.get(A);
       const b = w.get(B);
