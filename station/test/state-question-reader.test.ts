@@ -39,7 +39,7 @@ for (const index of ["entries_cards", "entries_options"] as const) {
 test("named questions retain their visibility and pending-card rules through the reader", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const person = r.said(thread.id).at(-1)!, to = `CHAT/${thread.threadTs}`;
@@ -101,7 +101,7 @@ test("a question and its latest edit come from one snapshot", () => {
 test("a need about a visible question reads its current state away from the station's merged lookup", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -124,7 +124,7 @@ test("an answer during a question read cannot leave the state waiting for that a
   const r = new Rig();
   const release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -151,7 +151,7 @@ test("an answer during a question read cannot leave the state waiting for that a
 test("an answer after the question read but before the state queue cannot leave the turn waiting", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });
@@ -175,7 +175,7 @@ test("an answer after the question read but before the state queue cannot leave 
 test("a posted update reports when its question was answered before its state was recorded", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -208,7 +208,7 @@ test("a busy external writer is waited for off the actor queue and its answer is
   readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   const original = r.store.db, blocked = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });
@@ -245,7 +245,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
   test(`${tool} cannot apply a named question read to a later turn`, async () => {
     const r = new Rig(), release = Promise.withResolvers<void>();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const to = `CHAT/${thread.threadTs}`;
@@ -284,7 +284,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
 test("a post sent after its turn ends does not declare a later turn", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -322,7 +322,7 @@ for (const change of ["edit", "withdraw"] as const) {
   test(`${change} during a question read is checked before a state is recorded`, async () => {
     const r = new Rig(), release = Promise.withResolvers<void>();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const to = `CHAT/${thread.threadTs}`;
@@ -360,7 +360,7 @@ test("a question is checked again when another database connection records an an
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
   readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });
@@ -392,7 +392,7 @@ test("unrelated writes from another connection do not keep a valid question from
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
   readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });
@@ -422,7 +422,7 @@ test("a removed native edit index is not scanned on the station thread during co
   readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   const original = r.store.db;
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });
@@ -466,7 +466,7 @@ test("unrelated writes do not starve a question when the native edit index is re
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
   readers.repairEdits = () => repairMergedEditLookup(r.store.db);
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?" });

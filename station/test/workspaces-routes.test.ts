@@ -67,7 +67,7 @@ function rig() {
 async function chats(r: ReturnType<typeof rig>) {
   const [, w] = await r.ask(home, "POST", "/sessions", { runtime: "claude", title: "home's" });
   const [, b] = await r.ask(joined, "POST", "/sessions", { runtime: "claude", title: "joined's" });
-  const [old, oldChat] = newSession(r.hub, { runtime: "claude", createdBy: "h@x", title: "from before" });
+  const [old, oldChat] = await newSession(r.hub, { runtime: "claude", createdBy: "h@x", title: "from before" });
   assert.deepEqual([r.store.getSession(w.key)!.ws, r.store.getSession(b.key)!.ws, r.store.getSession(old)!.ws], ["W", "B", null]);
   return { w: { key: w.key as string, thread: w.thread.id as number }, b: { key: b.key as string, thread: b.thread.id as number }, old: { key: old, thread: oldChat.id } };
 }

@@ -300,7 +300,7 @@ export async function endTurn(st: Station, key: string, driver: "claude" | "code
 
 /// A still.fail chat of A's with a turn behind it (its runtime session `claude-1` on account cc) and a file of its own.
 export async function stillfailChat(st: Station) {
-  const [key, thread] = newSession(st.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  const [key, thread] = await newSession(st.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   say(st.rig.hub, thread.id, "p@x", "look at the build");
   await st.rig.quiet();
   await endTurn(st, key);

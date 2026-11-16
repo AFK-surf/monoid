@@ -225,7 +225,7 @@ const CLAUDE_LOGIN = { ".credentials.json": { claudeAiOauth: { accessToken: "x",
 
 /// A still.fail chat of A's on profile `pid`, a turn behind it.
 async function chatOn(st: Station, pid: string) {
-  const [key, thread] = newSession(st.rig.hub, { runtime: "claude", profile: pid, createdBy: "p@x" });
+  const [key, thread] = await newSession(st.rig.hub, { runtime: "claude", profile: pid, createdBy: "p@x" });
   say(st.rig.hub, thread.id, "p@x", "look at the build");
   await endTurn(st, key);
   return { key, thread: thread.id };
@@ -367,7 +367,7 @@ test("a login lent stays lent while anything on the other station runs on it: a 
   assert.equal(later.failed, null, JSON.stringify(later));
   assert.deepEqual(sorted(lentShares(a)[share]?.for), sorted([`chats ${one.key}`, `chats ${two.key}`]), "lent for both");
   // A chat B begins on the login it borrows (as a connect moved there begins one).
-  const [mine, mineThread] = newSession(b.rig.hub, { runtime: "claude", profile: ofShare(b, share).id, createdBy: "p@x" });
+  const [mine, mineThread] = await newSession(b.rig.hub, { runtime: "claude", profile: ofShare(b, share).id, createdBy: "p@x" });
   // The first back: lent still, for the second.
   await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
   await quiet();
@@ -400,7 +400,7 @@ test("a lent login is taken back as its last use on the station it is lent to en
     await quiet();
     const share = present(a, "max").share.id as string;
     // (a chat B begins on the login it borrows; the one it was lent for back: lent still, for B's)
-    const [mine] = newSession(b.rig.hub, { runtime: "claude", profile: ofShare(b, share).id, createdBy: "p@x" });
+    const [mine] = await newSession(b.rig.hub, { runtime: "claude", profile: ofShare(b, share).id, createdBy: "p@x" });
     await quiet();
     await a.moves.scheduler.back(WS, B, { module: "chats", item: one.key });
     await quiet();
@@ -637,8 +637,8 @@ test("a login that cannot be shared (a Kimi sign-in) moves as it is: gone from h
   const { a, b, quiet } = world([KIMI]);
   assert.notEqual(shareRefusal(KIMI), null);
   signIn(a, "kimi", {});
-  const [k1] = newSession(a.rig.hub, { runtime: "claude", profile: "kimi", createdBy: "p@x" });
-  const [k2] = newSession(a.rig.hub, { runtime: "claude", profile: "kimi", createdBy: "p@x" });
+  const [k1] = await newSession(a.rig.hub, { runtime: "claude", profile: "kimi", createdBy: "p@x" });
+  const [k2] = await newSession(a.rig.hub, { runtime: "claude", profile: "kimi", createdBy: "p@x" });
   await quiet();
   const account = `own:kimi@${A}`;
   const plan = await a.moves.scheduler.plan(WS, B);
@@ -931,7 +931,7 @@ for (const [name, login, allow] of [["a login that cannot be shared (a Kimi sign
       await a.sharing.shareProfile(login.id, true, [...allow]);
       await quiet();
     }
-    const [k1, t1] = newSession(a.rig.hub, { runtime: "claude", profile: login.id, createdBy: "p@x" });
+    const [k1, t1] = await newSession(a.rig.hub, { runtime: "claude", profile: login.id, createdBy: "p@x" });
     const first = message({ text: "<@UBOT> look" });
     await a.rig.accept(first, "cl");
     const k2 = sessionKey("cl", first.channel, first.threadTs);

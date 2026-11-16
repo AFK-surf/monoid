@@ -3,7 +3,6 @@
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
 import { type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
-import { mkdirSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -134,19 +133,22 @@ export function say(hub: Hub, thread: number, user: string, text: string, attach
 /// A session of its own, talked to in the station's chat: the runtime, model and effort chosen by whoever starts it
 /// rather than a connect's, and the profile: one given keeps it there; else the pool picks one with the model on. Only
 /// the profiles allowed in its workspace.
-export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): [string, ThreadRow] {
+export async function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): Promise<[string, ThreadRow]> {
   const config = hub.config();
   const client = trimmed(options.clientKey);
   // A reply can be lost when the station restarts. The same request must find the rows already made, including when
   // the process stopped between inserting the session, the thread and its membership.
   const key = client === null ? newChatKey() : chatKey(`c-${createHash("sha256").update(JSON.stringify([options.ws ?? null, options.createdBy, client])).digest("hex").slice(0, 32)}`, (k) => hub.store.getSession(k) !== null);
-  const existing = hub.store.getSession(key);
-  if (existing !== null) {
+  const made = (): [string, ThreadRow] | null => {
+    const existing = hub.store.getSession(key);
+    if (existing === null) return null;
     if (client !== null) hub.clientKeysMade.set(key, [client, hub.now()]);
     const thread = hub.store.homeChat(key) ?? openChat(hub, key, options.createdBy, existing.title);
     hub.store.joinThread(thread.id, key, INTERNAL_CONNECT);
     return [key, thread];
-  }
+  };
+  const before = made();
+  if (before !== null) return before;
   const runtime = options.runtime;
   const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
   if (all.length === 0) throw new Error(`no ${runtime} profile configured`);
@@ -164,7 +166,7 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
   const model = trimmed(options.model);
   // (what its preset binds it to, held here too: an app from before or another way in changes none of it)
   const preset = trimmed(options.preset);
-  const bound = options.presetCopy ?? (preset !== null ? hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
+  const bound = options.presetCopy ?? (preset !== null ? await hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
   const refused = bound === null ? null : presetRefusal(bound, hub.station(), { runtime, model }, lang);
   if (refused !== null) throw new Error(refused);
   let profile;
@@ -188,11 +190,14 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
     if (!allowed.includes(effort)) throw new Error(`effort must be one of ${allowed.join(", ")}`);
   }
   const workspace = chatWorkspace(config.dataDir, key);
-  mkdirSync(workspace, { recursive: true });
+  await mkdir(workspace, { recursive: true });
   // (before its rows: one that names no preset of its workspace makes no chat)
-  if (options.presetCopy) keepCopy(workspace, options.presetCopy);
-  else if (preset !== null) hub.presets.keepFor(workspace, options.ws ?? hub.workspaces()[0] ?? null, preset);
-  mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+  if (options.presetCopy) await keepCopy(workspace, options.presetCopy);
+  else if (preset !== null) await hub.presets.keepFor(workspace, options.ws ?? hub.workspaces()[0] ?? null, preset);
+  await mkdir(join(config.dataDir, "repos"), { recursive: true });
+  // The same request again (its client's key) while this one waited on the disk: what that one made, once.
+  const meanwhile = made();
+  if (meanwhile !== null) return meanwhile;
   const now = hub.now();
   // Known before its rows are (their events can reach the client before this answers), and for a while after.
   if (client !== null) {
@@ -296,9 +301,9 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
   const row = known ?? hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
   if (!archived) {
-    const shown = () => {
+    const shown = async () => {
       hub.store.setArchived(key, false, by);
-      rmSync(transcriptCopy(hub, key), { force: true });
+      await rm(transcriptCopy(hub, key), { force: true });
     };
     const restoring = hub.cold.restore(key);
     return restoring ? restoring.then(shown) : shown();

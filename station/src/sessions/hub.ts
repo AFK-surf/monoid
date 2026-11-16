@@ -20,8 +20,8 @@
 // file (`takeUp`), and from the runners a crashed station left (no snapshot), then `recover` resumes the turns marked
 // running that nothing took up.
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
@@ -53,7 +53,7 @@ import { FEW_MOST, USED_WITHIN_MS, candidates as modelsRun, few } from "./model-
 import { CHAT_KEY, INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./internal.ts";
 import { LiveHub } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
-import { agentHomePaths, workspaceAgentHome } from "./agent-home.ts";
+import { agentHomePaths, workspaceAgentHome, workspaceAgentHomePath } from "./agent-home.ts";
 import { Presets, RepoIndex } from "./presets.ts";
 import { Clones } from "./clones.ts";
 import { type Roots, roots as machineRoots } from "../read/machine.ts";
@@ -283,7 +283,7 @@ export class Hub {
   /// The station's background jobs (made after the hub, which tells their agents).
   jobs: Jobs | null = null;
   /// Each workspace's presets, in its agent home (presets.ts).
-  readonly presets = new Presets((ws) => workspaceAgentHome(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now(), {
+  readonly presets = new Presets((ws) => workspaceAgentHomePath(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now(), {
     station: () => this.station(),
     workspace: (ws) => ws ?? this.workspaces()[0] ?? null,
     stationName: (id) => this.options.stationName?.(id) ?? null,
@@ -649,8 +649,8 @@ export class Hub {
     this.stopTimers();
     const handed: Handover = { sessions };
     const file = handoverFile(this.config().dataDir);
-    mkdirSync(join(file, ".."), { recursive: true });
-    writeFileSync(file, JSON.stringify(handed));
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, JSON.stringify(handed));
     log.info("hub", "handed over", { sessions: sessions.length });
     return handed;
   }
@@ -672,13 +672,15 @@ export class Hub {
   async takeUp() {
     const file = handoverFile(this.config().dataDir);
     let handed: Handover = { sessions: [] };
-    if (existsSync(file)) {
+    const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : error));
+    if (text !== null) {
       try {
-        handed = JSON.parse(readFileSync(file, "utf8"));
+        if (text instanceof Error) throw text;
+        handed = JSON.parse(text);
       } catch (error) {
         log.warn("hub", "the handover file does not read; sessions resume the usual way", { error: (error as Error).message });
       }
-      rmSync(file, { force: true });
+      await rm(file, { force: true });
     }
     // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
     const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
@@ -1699,7 +1701,11 @@ export class Hub {
   private sessionDeps(): SessionDeps {
     return {
       store: this.store,
-      linkSkills: (row) => this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps),
+      // (its workspace's agent home made first where it is a joined one's not made yet: its memory and skills)
+      linkSkills: async (row) => {
+        await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);
+        return this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps);
+      },
       pendingDeliveries: async (key, signal) => this.pendingDeliveries
         ? this.pendingDeliveries(key, signal) : this.store.pendingMessages(key),
       deliveryCardState: async (thread, n, signal) => {
@@ -1732,7 +1738,7 @@ export class Hub {
         const me = this.options.station?.() ?? null;
         return me === null ? "" : (this.options.stationName?.(me) ?? "");
       },
-      memoryPath: (key) => agentHomePaths(workspaceAgentHome(this.config().agentHome, this.wsOf(key), this.workspaces()[0] ?? null))[0],
+      memoryPath: (key) => agentHomePaths(workspaceAgentHomePath(this.config().agentHome, this.wsOf(key), this.workspaces()[0] ?? null))[0],
       maxNudges: () => this.config().maxNudges,
       untitled: (key) => (this.config().askToName ? untitledChat(this, key) : null),
       backgroundOnMessage: (key) => {

@@ -74,6 +74,15 @@ function keyOf(args: Json): string {
   return key;
 }
 
+/// The key a chat is opened with, null where it is not one (refused as it is made, `keyOf`).
+function keyOr(args: Json): string | null {
+  try {
+    return keyOf(args);
+  } catch {
+    return null;
+  }
+}
+
 /// The person who started session `key`'s chat (whom a chat it opens goes to).
 function starterOf(hub: Hub, key: string): string {
   let thread = null;
@@ -89,7 +98,7 @@ function starterOf(hub: Hub, key: string): string {
 /// own default otherwise: Codex's for gpt-6.1-terra is low, where its people run max), unless a preset's model
 /// configuration is what it runs (`bound`: as the app opens one, the model's own default where the preset names none).
 /// In workspace `ws` (the opener's). `more`: what else it is opened with, as the app would (its preset, Fast, context).
-function makeChat(
+async function makeChat(
   hub: Hub,
   o: { runtime: RuntimeName; model: string | null; effort: string | null; inherited: boolean; title: string | null; createdBy: string; ws: string | null; bound?: boolean },
   more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "context" | "profile" | "profiles">> = {},
@@ -97,22 +106,22 @@ function makeChat(
   const usual = o.effort === null && o.bound !== true ? usualEffort(hub, o.createdBy, o.runtime, o.model) : null;
   const options: NewChat = { ...more, runtime: o.runtime, model: o.model, effort: o.effort ?? usual, title: o.title, createdBy: o.createdBy, ws: o.ws };
   try {
-    return newSession(hub, options);
+    return await newSession(hub, options);
   } catch (error) {
     if (usual !== null) {
       try {
-        return newSession(hub, { ...options, effort: null });
+        return await newSession(hub, { ...options, effort: null });
       } catch {}
     }
     if (!o.inherited || (o.model === null && o.effort === null)) throw error;
-    return newSession(hub, { ...options, model: null, effort: null });
+    return await newSession(hub, { ...options, model: null, effort: null });
   }
 }
 
 /// The preset an agent names (chat_create `preset`): one this station keeps in workspace `ws` (whoever's, wherever it
 /// was made: sessions/presets.ts), by its id or its name.
-function presetNamed(hub: Hub, ws: string | null, named: string): Preset {
-  const all = hub.presets.list(ws ?? hub.workspaces()[0] ?? null);
+async function presetNamed(hub: Hub, ws: string | null, named: string): Promise<Preset> {
+  const all = await hub.presets.list(ws ?? hub.workspaces()[0] ?? null);
   const lower = named.toLowerCase();
   const found = all.find((p) => p.id === named) ?? all.find((p) => p.name.toLowerCase() === lower);
   if (found) return found;
@@ -234,8 +243,28 @@ async function firstMessageInTurn(hub: Hub, thread: number, send: () => Promise<
   }
 }
 
+/// The chats being opened by their keys, of each hub: one asked again while it is made (a retry) waits for it, then
+/// finds it made (`openedWith`), as it did while making one waited on nothing.
+const opening = new WeakMap<Hub, Map<string, Promise<unknown>>>();
+function oneByKey<T>(hub: Hub, id: string, f: () => Promise<T>): Promise<T> {
+  let mine = opening.get(hub);
+  if (mine === undefined) opening.set(hub, (mine = new Map()));
+  const run = (mine.get(id) ?? Promise.resolve()).then(f, f);
+  const done = run.then(() => {}, () => {});
+  mine.set(id, done);
+  void done.then(() => {
+    if (mine.get(id) === done) mine.delete(id);
+  });
+  return run;
+}
+
 /// chat_create from session `key`.
 export async function chatCreate(hub: Hub, key: string, args: Args): Promise<string> {
+  const k = keyOr(args);
+  return k === null ? chatCreateNow(hub, key, args) : oneByKey(hub, JSON.stringify(["", key, k]), () => chatCreateNow(hub, key, args));
+}
+
+async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string> {
   const row = hub.store.getSession(key);
   if (!row) throw new Error("unknown session");
   // (one opened for its person is theirs, and opens chats as theirs do)
@@ -257,7 +286,7 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
   // 就只能直接用预设，或者设置用户也能手动指定的部分，没有特权」): where it names its model configuration nothing of it is
   // given beside it; where it names stations, the chat opens on one of them (the one, where it names one).
   const presetName = given(args, "preset");
-  const preset = presetName === null ? null : presetNamed(hub, row.ws ?? null, presetName);
+  const preset = presetName === null ? null : await presetNamed(hub, row.ws ?? null, presetName);
   if (preset?.model && (runtime !== null || model !== null || effort !== null || fast !== null || context !== null)) {
     throw new Error(`the preset ${preset.name} runs ${preset.model.model} as it says (its runtime, effort, Fast and context too): leave runtime, model, effort, fast and context out, or leave preset out to choose them yourself`);
   }
@@ -298,7 +327,7 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
     const bound = preset?.model ? boundHere(hub, row.ws ?? null, preset.model, preset.name) : null;
     const chosen = bound !== null ? bound.choice : model === null ? chosenHere(hub, createdBy, row.ws ?? null, runtime as RuntimeName | null) : choice;
     const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, context, ...bound?.more };
-    const [child, chat] = makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
+    const [child, chat] = await makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
     const link = hub.link(child) ?? null;
     hub.store.insertOpened({ childStation: "", child, parentStation: "", parent: key, key: k, title, link, openerTitle: from, led });
     const thread: SessionThread = { thread: chat, connect: INTERNAL_CONNECT };
@@ -348,6 +377,11 @@ export async function chatCreate(hub: Hub, key: string, args: Args): Promise<str
 /// A chat another station's session opens here (chat_create there, from station `peer`): made once per its key, in the
 /// workspace it was asked in (`ws`); the answer says whether its first message has come yet.
 export async function createForPeer(hub: Hub, peer: string, request: Json, ws: string | null = null): Promise<Json> {
+  const [parent, k] = [typeof request?.session === "string" ? request.session : "", keyOr(request)];
+  return k === null ? createForPeerNow(hub, peer, request, ws) : oneByKey(hub, JSON.stringify([peer, parent, k]), () => createForPeerNow(hub, peer, request, ws));
+}
+
+async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: string | null): Promise<Json> {
   const parent = typeof request?.session === "string" ? request.session : "";
   if (parent === "") throw new Error("session is required");
   const k = keyOf(request);
@@ -377,7 +411,7 @@ export async function createForPeer(hub: Hub, peer: string, request: Json, ws: s
     ...(copy !== null ? { presetCopy: copy } : {}),
     ...bound?.more,
   };
-  const [child] = makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
+  const [child] = await makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
   // What its opener was called (its chat's way back to it says so while that chat is not in the viewer's list).
   const openerTitle = typeof request?.from?.title === "string" && request.from.title !== "" ? (request.from.title as string) : null;
   // (a station from before `for` sends none: told and asked as before it, led)

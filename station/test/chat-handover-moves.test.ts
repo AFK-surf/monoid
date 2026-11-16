@@ -27,7 +27,7 @@ test("a whole station handed over chat by chat: one whose account cannot go is l
   const b = w.get(B);
   const one = await stillfailChat(a);
   const two = await stillfailChat(a);
-  const [mine] = newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const [mine] = await newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
   const out = await a.moves.scheduler.move(WS, B, { all: true, follow: ["jobs"] });
   await w.quiet();
   assert.equal(out.failed, null, JSON.stringify(out.failed));
@@ -45,7 +45,7 @@ test("a failed item stops only what needs it: of three chats and their logins mo
   const b = w.get(B);
   const one = await stillfailChat(a);
   const mid = await stillfailChat(a);
-  const [three] = newSession(a.rig.hub, { runtime: "codex", profile: "cx", createdBy: "p@x" });
+  const [three] = await newSession(a.rig.hub, { runtime: "codex", profile: "cx", createdBy: "p@x" });
   a.jobs.push({ id: "a-dev", session: mid.key, name: "dev", command: "npm run dev", cwd: a.rig.session(mid.key).workspace, port: 3000, watch: false });
   w.tamper((to, r) => {
     if (to === B && r.method === "handover.begin" && Array.isArray(r.keys) && r.keys.includes(mid.key)) throw new Refused("the middle one refused"); // (as the other station answers a refusal: its words)
@@ -216,7 +216,7 @@ test("arriveStopped, by a person's POST /move and by station_move: a chat whose 
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
   const chat = async () => {
-    const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+    const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
     say(a.rig.hub, t.id, "p@x", "hi");
     await endTurn(a, key);
     return key;
@@ -246,7 +246,7 @@ test("what moves nothing is asked first, and what moved for an item that then di
   const a = w.get(A);
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   const account = `own:solo@${A}`;
   const solo = (st: Station) => st.rig.raw.profiles.some((p: Json) => p.id === "solo");
   // In a turn, not to be waited for: refused, its login not moved.
@@ -277,7 +277,7 @@ test("what moves nothing is asked first, and what moved for an item that then di
 test("a chat held as what it needs moved away says so as its process ends, not that the station is in no workspace", async () => {
   const w = world();
   const a = w.get(A);
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "work on it");
   await a.rig.quiet();
   const lines: string[] = [];
@@ -302,7 +302,7 @@ test("an account that cannot be borrowed moved first: its chats here stop, namin
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
   const make = async () => {
-    const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+    const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
     say(a.rig.hub, t.id, "p@x", "hi");
     await endTurn(a, key);
     return { key, thread: t.id };
@@ -338,7 +338,7 @@ test("a chat stopped as its account moved away says once what it waits for, as a
   const w = world();
   const a = w.get(A);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:solo@${A}` });
@@ -363,7 +363,7 @@ test("an account that cannot be borrowed moved, then back: its chats here stoppe
   const w = world();
   const a = w.get(A);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:solo@${A}` });
@@ -384,7 +384,7 @@ test("an account that cannot be borrowed and its chat, both moved: the chat come
   const a = w.get(A);
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   const account = `own:solo@${A}`;
@@ -643,7 +643,7 @@ test("a repository the other station had already stays there as its move is take
 test("a chat in a turn, asked to move with wait false, is refused and goes on here", async () => {
   const w = world();
   const a = w.get(A);
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "busy now");
   await a.rig.quiet();
   assert.equal(a.rig.hub.busy(key), true);
@@ -659,7 +659,7 @@ test("a chat sent ahead of its account (arriveStopped) arrives stopped there, an
   const a = w.get(A);
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, arriveStopped: true });
@@ -680,7 +680,7 @@ test("a chat stopped for its account whose hand-over fails in the first pass of 
   const w = world();
   const a = w.get(A);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   const out = await a.moves.scheduler.move(WS, B, { module: "accounts", item: `own:solo@${A}` });
@@ -707,7 +707,7 @@ test("a whole module moved goes through every chat, a page at a time: 12 chats w
   a.moves = a.make();
   const keys: string[] = [];
   for (let i = 0; i < 12; i++) {
-    const [key] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+    const [key] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
     keys.push(key);
   }
   const chats = (p: Awaited<ReturnType<Moves["scheduler"]["plan"]>>) => p.items.filter((x) => x.module === "chats");
@@ -1008,7 +1008,7 @@ test("a chat that only ran before on a login of this machine's own (which cannot
   const { key } = await stillfailChat(a);
   // (it ran on `mine`, this machine's own, before; it runs on `cc`, shared, now)
   a.rig.store.ranIn(key, "run-mine", "mine");
-  const [onMine] = newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const [onMine] = await newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
   const plan = await a.moves.scheduler.plan(WS, B);
   const item = plan.items.find((x) => x.module === "chats" && x.id === key)!;
   assert.equal(item.cannot, undefined, `no cannot: ${item.cannot}`);

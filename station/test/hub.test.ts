@@ -1781,8 +1781,8 @@ test("a chat opened on the admin page reaches the session like Slack, and the ag
 
 test("a person's message in a chat with several agents reaches each of them once", async () => {
   const r = new Rig();
-  const one = newSession(r.hub, chat("claude"));
-  const two = newSession(r.hub, chat("codex"));
+  const one = await newSession(r.hub, chat("claude"));
+  const two = await newSession(r.hub, chat("codex"));
   addToThread(r.hub, one[1].id, two[0]);
   const quote = { author: "Claude", role: "agent", ts: "1.000001", text: "上一条", comment: "这里" };
   sayIn(r.hub, one[1].id, "a@example.com", "你们俩分一下工", [], [quote]);
@@ -1934,7 +1934,7 @@ test("idle chats that are done are archived by the station; busy, blocked, unrea
   await r.call(blocked, "chat_state", { kind: "block" });
   r.claude.last().complete();
   await settle();
-  const [web, thread] = newSession(r.hub, chat());
+  const [web, thread] = await newSession(r.hub, chat());
   sayIn(r.hub, thread.id, "local", "hi");
   await settle();
   // The agent's answer is unread: the chat stays.
@@ -2001,7 +2001,7 @@ test("a session heard only in Slack is archived after three idle days even when 
   await r.call(blocked, "chat_state", { kind: "block" });
   r.claude.last().complete();
   await settle();
-  const [web, thread] = newSession(r.hub, chat());
+  const [web, thread] = await newSession(r.hub, chat());
   sayIn(r.hub, thread.id, "local", "hi");
   await settle();
   await r.call(web, "chat_state", { kind: "block" });
@@ -2025,7 +2025,7 @@ test("a session heard only in Slack is archived after three idle days even when 
 
 test("pinned chats survive idle archiving, their agent's other chats too, but can be archived by hand", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.store.setPin("alice", key, true);
   autoArchive(r.hub, Date.now() + 3 * 86_400_000);
   assert.equal(r.session(key).archivedAt, null);
@@ -2043,7 +2043,7 @@ test("pinned chats survive idle archiving, their agent's other chats too, but ca
 
 test("kept chats survive idle archiving but can be archived by hand", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.store.keepChat("alice", thread.id);
   autoArchive(r.hub, Date.now() + 3 * 86_400_000);
   assert.equal(r.session(key).archivedAt, null);
@@ -2063,7 +2063,7 @@ test("kept chats survive idle archiving but can be archived by hand", async () =
 test("where only what the archive review recommended is archived on its own, an idle chat waits for its recommendation", async () => {
   const r = new Rig();
   const later = Date.now() + 3 * 86_400_000;
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.edit((raw: any) => { raw.autoArchiveReviewed = true; });
   autoArchive(r.hub, later);
   assert.equal(r.session(key).archivedAt, null, "the review is off: nothing goes");
@@ -2517,8 +2517,8 @@ test("a disabled profile cannot run a new or pinned session, and its existing se
     assert.deepEqual([r.session(key).profile, r.session(key).profilePinned], ["cc2", false]);
     assert.ok(!r.hub.profilesIn(null).some((p) => p.id === "cc"));
     assert.throws(() => r.hub.accounts.change(key, { profile: "cc" }), /停用/);
-    assert.throws(() => newSession(r.hub, { ...chat(), model: "opus", profile: "cc" }), /停用/);
-    const [next] = newSession(r.hub, { ...chat(), model: "opus" });
+    await assert.rejects(async () => await newSession(r.hub, { ...chat(), model: "opus", profile: "cc" }), /停用/);
+    const [next] = await newSession(r.hub, { ...chat(), model: "opus" });
     assert.equal(r.session(next).profile, "cc2");
     r.edit((raw) => { delete raw.profiles.find((p: any) => p.id === "cc").enabled; });
     assert.ok(r.hub.profilesIn(null).some((p) => p.id === "cc"), "enabled again without deleting its settings");
@@ -2538,10 +2538,10 @@ test("a connect or a new chat can keep its sessions to one profile; otherwise th
   assert.deepEqual([row.profile, row.profilePinned], ["cc2", true]);
   // A new chat given a profile keeps to it; one that has not the model on is refused.
   const pinned = (model: string) => ({ ...chat(), model, profile: "cc2" });
-  const [key] = newSession(r.hub, pinned("opus"));
+  const [key] = await newSession(r.hub, pinned("opus"));
   assert.deepEqual([r.session(key).profile, r.session(key).profilePinned], ["cc2", true]);
-  assert.throws(() => newSession(r.hub, pinned("sonnet")), /无法运行 sonnet/);
-  const [auto] = newSession(r.hub, chat());
+  await assert.rejects(async () => await newSession(r.hub, pinned("sonnet")), /无法运行 sonnet/);
+  const [auto] = await newSession(r.hub, chat());
   assert.ok(!r.session(auto).profilePinned);
   await r.close();
 });
@@ -2593,8 +2593,8 @@ test("agents in one thread hear each other: a post reaches the thread's other se
 
 test("in a chat on the station's page with several agents, what one posts reaches the others", async () => {
   const r = new Rig();
-  const one = newSession(r.hub, chat("claude"));
-  const two = newSession(r.hub, chat("codex"));
+  const one = await newSession(r.hub, chat("claude"));
+  const two = await newSession(r.hub, chat("codex"));
   addToThread(r.hub, one[1].id, two[0]);
   sayIn(r.hub, one[1].id, "local", "分一下工");
   await settle();
@@ -3419,11 +3419,11 @@ test("codex model efforts validate new chats, changes and pinned accounts", asyn
     },
   }));
   const fresh = (profile: string | null, effort: string) => ({ runtime: "codex" as const, profile, model: "openai/gpt-6-astra", effort, createdBy: "local" });
-  const [key] = newSession(r.hub, fresh(null, "max"));
+  const [key] = await newSession(r.hub, fresh(null, "max"));
   assert.equal(r.session(key).effort, "max");
-  assert.throws(() => newSession(r.hub, fresh(null, "minimal")));
-  assert.throws(() => newSession(r.hub, fresh(null, "ultra")));
-  const [pinned] = newSession(r.hub, fresh("cx", "ultra"));
+  await assert.rejects(async () => await newSession(r.hub, fresh(null, "minimal")));
+  await assert.rejects(async () => await newSession(r.hub, fresh(null, "ultra")));
+  const [pinned] = await newSession(r.hub, fresh("cx", "ultra"));
   assert.equal(r.session(pinned).effort, "ultra");
   // A profile change must not carry an unsupported depth to the destination.
   await assert.rejects(configure(r.hub, pinned, { profile: "limited" }));
@@ -3467,8 +3467,8 @@ test("a session from before a change is told it once, and a new one never", asyn
 
 test("fast is per session, on Codex and Claude Code, and null restores the account's default", async () => {
   const r = new Rig();
-  const [a] = newSession(r.hub, { ...chat("codex"), fast: true });
-  const [b] = newSession(r.hub, chat("codex"));
+  const [a] = await newSession(r.hub, { ...chat("codex"), fast: true });
+  const [b] = await newSession(r.hub, chat("codex"));
   assert.equal(r.session(a).fast, true);
   assert.equal(r.session(b).fast, null);
   r.store.setRuntimeSessionId(a, "thread-a");
@@ -3481,7 +3481,7 @@ test("fast is per session, on Codex and Claude Code, and null restores the accou
   await configure(r.hub, a, { fast: null });
   assert.equal(r.session(a).fast, null);
   // Claude Code takes it too (on an Anthropic key: its driver says fastMode as it starts).
-  const [claude] = newSession(r.hub, { ...chat("claude"), fast: true });
+  const [claude] = await newSession(r.hub, { ...chat("claude"), fast: true });
   assert.equal(r.session(claude).fast, true);
   await configure(r.hub, claude, { fast: false });
   assert.equal(r.session(claude).fast, false);

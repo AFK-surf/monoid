@@ -146,7 +146,7 @@ test("two still.fail chats of the same ts, one here and one there: handed over, 
   const a = w.get(A);
   const b = w.get(B);
   const { key, thread } = await stillfailChat(a);
-  const [other, ot] = newSession(b.rig.hub, { runtime: "claude", profile: "ccb", createdBy: "q@x" });
+  const [other, ot] = await newSession(b.rig.hub, { runtime: "claude", profile: "ccb", createdBy: "q@x" });
   say(b.rig.hub, ot.id, "q@x", "b's own chat");
   await endTurn(b, other);
   // (the same ts as A's chat: each station mints its own)
@@ -610,7 +610,7 @@ test("the station stopped in the middle of a turn: started again, what waited fo
   const w = world();
   const a = w.get(A);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   a.profileHangs = true;
@@ -640,7 +640,7 @@ test("the tell that an item came is lost: the station it came from heard again, 
   const a = w.get(A);
   const b = w.get(B);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, key);
   await a.moves.scheduler.move(WS, B, { module: "chats", item: key, arriveStopped: true });
@@ -682,7 +682,7 @@ test("a thread found there that has an arriving entry already, at a lower number
     const w = world();
     const a = w.get(A);
     const b = w.get(B);
-    const [key, made] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+    const [key, made] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
     const thread = made.id;
     mkdirSync(a.rig.session(key).workspace, { recursive: true });
     // B's leftover of it (a retirement's): the session and its thread, found there by what it is
@@ -722,7 +722,7 @@ test("a thread found there that has an arriving entry already, at a lower number
     console.log(`# ${shape}: looked up by ts there: ${byTs.n}`);
     if (shape === "alone") {
       // A chat whose thread is put in fresh there, three entries: none looked up by its ts.
-      const [fresh, freshThread] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+      const [fresh, freshThread] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
       mkdirSync(a.rig.session(fresh).workspace, { recursive: true });
       for (let k = 1; k <= 3; k++) put(a, freshThread.id, k, `1794627400.00000${k}`, "gpt-ember", 1794627400000 + k, `fresh ${k}`);
       const freshByTs = countByTs(b);

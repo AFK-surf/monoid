@@ -133,7 +133,7 @@ test("chat_leave stops a thread's messages reaching its agent until someone ment
 
 test("chat_leave refuses a still.fail chat", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, { runtime: "claude" as const, createdBy: "ada@x.com" });
+  const [key, thread] = await newSession(r.hub, { runtime: "claude" as const, createdBy: "ada@x.com" });
   assert.ok((await r.refused(key, "chat_leave", { to: `CHAT/${thread.threadTs}` })).includes("cannot be left"));
   await r.close();
 });
@@ -216,7 +216,7 @@ const web = (createdBy = "ada@x.com") => ({ runtime: "claude" as const, createdB
 
 test("a post carries a card, kept with it and checked", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "fix the spacing");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -284,7 +284,7 @@ test("a post carries a card, kept with it and checked", async () => {
 
 test("answering a clarification cannot silently restore need_human", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "改一下");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -306,7 +306,7 @@ test("answering a clarification cannot silently restore need_human", async () =>
 test("a clarification tells the agent its card stopped waiting, and it cannot reuse that card as the wait", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -337,7 +337,7 @@ test("a clarification tells the agent its card stopped waiting, and it cannot re
 test("a newer card remains pending when an unread clarification ended the earlier card", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -366,7 +366,7 @@ test("a newer card remains pending when an unread clarification ended the earlie
 test("a card withdrawn before a message is not attributed to that message", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -385,7 +385,7 @@ test("a card withdrawn before a message is not attributed to that message", asyn
 test("a choice that closes a card is told to its agent once, before what it is next handed, as an earlier choice", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -426,7 +426,7 @@ test("a choice that closes a card is told to its agent once, before what it is n
 test("a choice that closes a card comes with a station notice too, and waits when the notice cannot be handed", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -458,7 +458,7 @@ test("a closed authorization card tells its agent how to reask the same request"
   ] as const) {
     const r = new Rig();
     try {
-      const [key, thread] = newSession(r.hub, web());
+      const [key, thread] = await newSession(r.hub, web());
       sayIn(r.hub, thread.id, "ada@x.com", "做这个");
       await settle();
       r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "agent", author: key, text: "需要授权", card: { type: "options", options: [{ label: "允许" }], ...extra } });
@@ -475,7 +475,7 @@ test("a closed authorization card tells its agent how to reask the same request"
 test("a message the agent had not read holds a card back; sent after it, the card is pending", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -497,7 +497,7 @@ test("a message the agent had not read holds a card back; sent after it, the car
 
 test("a state says which message it is about, the pending card by default", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "上线吧");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -555,7 +555,7 @@ test("options are refused where the chat shows no cards", async () => {
 
 test("a card is pending until a person writes, and a newer one replaces it", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "fix the spacing");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -659,7 +659,7 @@ test("a turn ends all_done, needing a decision or help, or waiting, and the word
 
 test("a login card names its login, and closes for everyone as the login ends", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   const kept = () => {
     const n = r.said(thread.id).at(-1)!.n;
@@ -689,7 +689,7 @@ test("a card waits for no account an agent runs on, unless that person wrote in 
     raw.profiles[0].name = "Model@Example.com";
     raw.profiles[1].email = "codex@example.com";
   });
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "person", author: "person@example.com", text: "要不要修？" });
   const card = (assignee: string) => ({ type: "options", options: [{ label: "修" }], assignee });
@@ -713,7 +713,7 @@ test("a card waits for no account an agent runs on, unless that person wrote in 
 
 test("an agent can withdraw its own card without posting or finishing work", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   await r.call(key, "chat_post", { to, text: "保留吗？", card: { type: "text" } });
   const first = r.said(thread.id).at(-1)!;
@@ -750,7 +750,7 @@ test("only explicit, valid option actions close silently; cards keep explicit as
 
 test("web posts deliver local file links, and refuse missing files before posting", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const workspace = r.session(key).workspace;
   const source = join(workspace, "report.txt");
   writeFileSync(source, "original report");
@@ -796,7 +796,7 @@ test("files posted to Slack go into the thread; apps without files:write link to
 
 test("an agent can name a chat as soon as its topic is clear without posting a message", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "登录失败了，帮我排查");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -807,7 +807,7 @@ test("an agent can name a chat as soon as its topic is clear without posting a m
   assert.equal(r.store.getThread(thread.id)!.autoTitle, "登录 排查", "the first title appears even while the chat is open");
   assert.equal(r.said(thread.id).length, before, "titling alone does not add a message");
   assert.equal(await r.call(key, "chat_post", { to, title: "登录 排查" }), "The chat already has that title.");
-  const [other] = newSession(r.hub, web("other"));
+  const [other] = await newSession(r.hub, web("other"));
   assert.ok((await r.refused(other, "chat_post", { to, title: "别人的对话" })).includes("not a conversation of this session"));
   assert.ok((await r.refused(key, "chat_post", { to, title: " 。 " })).includes("title is empty"));
   assert.ok((await r.refused(key, "chat_post", { to, title: "登录", kind: "all_done", done: "完成" })).includes("only to and title"));
@@ -837,7 +837,7 @@ test("naming a Slack conversation alone does not send a Slack message", async ()
 
 test("an agent names its chat once, and again immediately when allowed even while open; never over people's name", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "帮我看下这个");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -898,7 +898,7 @@ test("a Slack agent names its list entry, with the same rename limits and a manu
 
 test("a chat that starts a watch may be renamed for it at once", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "帮我盯着 CI");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -912,7 +912,7 @@ test("a chat that starts a watch may be renamed for it at once", async () => {
 
 test("a watch permits renaming without reading its session's job history", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   try {
     r.store.setAutoTitle(thread.id, "CI", false);
     const job = (id: string, state: string, watch: boolean) => ({ id, sessionKey: key, name: id, command: "true", cwd: "/", port: null,
@@ -992,7 +992,7 @@ test("slack_api with save_files saves the files in its answer into the session's
 
 test("a still.fail chat calls slack_api as the station's Slack bot, chosen by name when several fit", async () => {
   const r = new Rig();
-  const [key] = newSession(r.hub, web());
+  const [key] = await newSession(r.hub, web());
   await settle();
   // Two Slack bots are bound to Claude here (cl and team): which one is the chat's to say.
   const refusal = await r.refused(key, "slack_api", { method: "chat.postMessage", params: { channel: "C5", text: "hi" } });
@@ -1563,9 +1563,9 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
     if (request.method === CREATE || request.method === CREATE_PRESET) return createForPeer(far.hub, "st", request);
     return fromPeer(far.hub, "st", request);
   });
-  const review = near.hub.presets.add(null, { name: "Review", dirs: [], instructions: "Read every line.", model: { model: "opus", runtime: "claude" } }, "local");
-  near.hub.presets.add(null, { name: "Loose", dirs: [], instructions: "" }, "local");
-  near.hub.presets.add(null, { name: "Far", dirs: [], instructions: "On orchard.", station: "ws/far" }, "local");
+  const review = await near.hub.presets.add(null, { name: "Review", dirs: [], instructions: "Read every line.", model: { model: "opus", runtime: "claude" } }, "local");
+  await near.hub.presets.add(null, { name: "Loose", dirs: [], instructions: "" }, "local");
+  await near.hub.presets.add(null, { name: "Far", dirs: [], instructions: "On orchard.", station: "ws/far" }, "local");
 
   // One that names its model runs it as it says; nothing of it can be given beside it.
   const said = await near.call(keyA, "chat_create", { for: "me", key: "review", text: "review the PR", preset: "review" });
@@ -1895,7 +1895,7 @@ test("station_* reach the transport, pretty-printed; adb_devices and feedback_se
   const one = await adbTools(() => [{ serial: "127.0.0.1:37123", adb: "connected" }])[0]!.run("s", {});
   assert.ok(one.includes("127.0.0.1:37123") && one.includes("adb -s <serial>") && one.includes("phone_use") && !one.includes("http"));
   const r = new Rig();
-  const [key] = newSession(r.hub, web("local"));
+  const [key] = await newSession(r.hub, web("local"));
   const sent: Json[] = [];
   const feedback = feedbackTools(r.store, () => "https://x/o/1", () => async (report) => (sent.push(report), { number: 7 }))[0]!;
   assert.equal(await feedback.run(key, { to: "CHAT/1.1", title: "chat_post fails", body: "it said 500", area: "station", reporter: "Ada" }), "Sent to the still.fail team as FB-7.");

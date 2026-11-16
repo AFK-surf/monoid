@@ -20,7 +20,7 @@ test("a session kept to a subset of accounts rotates, repicks and fails over onl
       );
     });
     // Created with two of the three accounts: unpinned, restricted to [cc, cc2].
-    const [key] = newSession(r.hub, { ...chat(), model: "opus", profiles: ["cc", "cc2"] });
+    const [key] = await newSession(r.hub, { ...chat(), model: "opus", profiles: ["cc", "cc2"] });
     let row = r.session(key);
     assert.equal(row.profilePinned, false);
     assert.deepEqual(row.profiles, ["cc", "cc2"]);
@@ -101,7 +101,7 @@ test("a session left to the station whose runtime has no other account for its m
       raw.profiles[0].models = ["gemini-4-argon"];
       raw.profiles[1].models = ["gemini-4-argon"];
     });
-    const [key] = newSession(r.hub, { ...chat(), model: "gemini-4-argon" });
+    const [key] = await newSession(r.hub, { ...chat(), model: "gemini-4-argon" });
     assert.equal(r.session(key).profile, "cc");
 
     // Its account spent and no other of Claude Code's runs the model: it moves to the Codex account that does.
@@ -111,7 +111,7 @@ test("a session left to the station whose runtime has no other account for its m
     assert.deepEqual([row.runtime, row.profile, row.model, row.profilePinned], ["codex", "cx", "gemini-4-argon", false]);
 
     // Kept to its accounts it does not cross: spent there, it waits.
-    const [kept] = newSession(r.hub, { ...chat(), model: "gemini-4-argon", profiles: ["cc"] });
+    const [kept] = await newSession(r.hub, { ...chat(), model: "gemini-4-argon", profiles: ["cc"] });
     assert.equal(r.hub.accounts.spend(kept, "cc"), null);
     assert.equal(r.session(kept).runtime, "claude");
   } finally {
@@ -126,7 +126,7 @@ test("a session whose model no other runtime's account runs stays on its runtime
       raw.profiles[0].models = ["opus"];
       raw.profiles[1].models = ["gpt-6-sol"];
     });
-    const [key] = newSession(r.hub, { ...chat(), model: "opus" });
+    const [key] = await newSession(r.hub, { ...chat(), model: "opus" });
     assert.equal(r.hub.accounts.spend(key, "cc"), null);
     assert.equal(r.session(key).runtime, "claude");
   } finally {
@@ -201,11 +201,11 @@ test("before a turn, a session left to the station whose runtime has no account 
     assert.equal(moves().length, before + 2, r.chat.texts().join("\n"));
 
     // Kept to its accounts it does not cross: it waits on them.
-    const [kept] = newSession(r.hub, { ...chat(), model: "gemini-4-argon", profiles: ["cc", "cc2"] });
+    const [kept] = await newSession(r.hub, { ...chat(), model: "gemini-4-argon", profiles: ["cc", "cc2"] });
     assert.ok(r.hub.accounts.runOn(kept, false, false, true).runtimes.includes("claude"));
     assert.equal(r.session(kept).runtime, "claude");
     // Asked without `across` (taken over, configured by hand), one left to the station stays on its runtime.
-    const [left] = newSession(r.hub, { ...chat(), model: "gemini-4-argon" });
+    const [left] = await newSession(r.hub, { ...chat(), model: "gemini-4-argon" });
     assert.ok(r.hub.accounts.runOn(left).runtimes.includes("claude"));
     assert.equal(r.session(left).runtime, "claude");
     // It wakes when another runtime's account could take it on: at once while one can, else at its refill; a reset of
