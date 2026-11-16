@@ -17,7 +17,6 @@
 // an integer comes first, a number past 2^53 rounds (serde_json keeps each as written). Transcripts rarely have them.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { isPlanTool } from "./plan.ts";
-import { tr } from "../../src/read/views.ts";
 import type { Json } from "../../src/read/store.ts";
 import type { RuntimeKind } from "../../src/agents/runtime.ts";
 import { unpackedWhole } from "../../src/read/packed.ts";
@@ -148,7 +147,7 @@ export const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /// How lines are read into entries (`timelineOf`): a change to how many entries a line gives, or which, takes this one
 /// higher, so what was counted and marked of transcripts the way before is read anew (read/transcripts.ts).
-export const READING = 2;
+export const READING = 3;
 
 /**
  * An entry as an execution history shows it before it is opened (`brief: true` when anything was left out; the whole of
@@ -560,7 +559,7 @@ function codexTimeline(r: Json, state: ReadState, out: TimelineEntry[]) {
     const count = callId === undefined ? 0 : (state.inner.get(callId) ?? 0);
     // Done with: what is kept between lines (and at every mark, read/transcripts.ts) is the scripts still running.
     if (callId !== undefined) state.inner.delete(callId);
-    for (let i = 0; i < count; i++) out.push(result(!failed, `${callId ?? ""}#${i}`, tr("station.transcript.inScriptOutput")));
+    for (let i = 0; i < count; i++) out.push({ ...result(!failed, `${callId ?? ""}#${i}`, ""), inScript: true });
   }
 }
 

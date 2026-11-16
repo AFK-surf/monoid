@@ -14,6 +14,8 @@ pub(all) struct Entry {
   call_id : String?
   subagent : Bool
   said : String?
+  /// A call's result that is in its script's output (transcript.ts `inScript`): its text "", its words the client's.
+  in_script : Bool
 }
 
 ///|

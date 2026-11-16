@@ -99,8 +99,9 @@ test("the chat list is made once for everyone: a viewer's row is it with what is
     // Each viewer's: the same chat and name, their own unread and whether it is theirs.
     const mine = chats(read, viewer, false)[0]!;
     const yours = chats(read, other, false)[0]!;
-    assert.deepEqual([mine.title, mine.unread, mine.mine], ["部署", false, true]);
-    assert.deepEqual([yours.title, yours.unread, yours.mine], ["部署", true, false]);
+    // (named by what names it, its words the client's: core-ts chat-row.ts `worded`)
+    assert.deepEqual([mine.named.thread.autoTitle, mine.unread, mine.mine], ["部署", false, true]);
+    assert.deepEqual([yours.named.thread.autoTitle, yours.unread, yours.mine], ["部署", true, false]);
     assert.equal(mine.hidden, true);
     assert.equal(yours.hidden, false);
     assert.equal(store.getThread(thread)!.hiddenAt, null, "personal hiding does not archive the chat");

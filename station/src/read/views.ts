@@ -90,8 +90,9 @@ export function titleOf(thread: ThreadRow, firstText: string | null, channelName
 /// An author's name; `picture`, where given, their picture's address (a Slack person's own, as their Slack shows it).
 export type Names = ((kind: AuthorKind, author: string) => string | null) & { picture?: (kind: AuthorKind, author: string) => string | null };
 
-/// Who wrote in a thread, in words and pictures: each author asked once.
-export function authorNames(api: Api, thread: number): Names {
+/// Who wrote in a thread, in words and pictures: each author asked once. The local page's admin is named `admin`: none
+/// for a device, whose client names them (core-ts entries.ts `authorNameOf`); the station's own word in its notices.
+export function authorNames(api: Api, thread: number, admin: string | null = null): Names {
   const th = store.getThread(api.store, thread);
   const members = store.threadSessions(api.store, thread);
   const names = new Map<string, string | null>();
@@ -109,7 +110,7 @@ export function authorNames(api: Api, thread: number): Names {
       const c = api.connects.find((c) => c.id === connect);
       name = c ? c.name : (session?.title ?? null);
     } else if (th !== null && th.surface === STILLFAIL_SURFACE) {
-      name = author === "local" ? tr("station.author.admin") : (api.store.names.get(author) ?? author);
+      name = author === "local" ? admin : (api.store.names.get(author) ?? author);
     } else {
       // A Slack person: by the name their connect's Slack gives them, as far as known.
       const connect = members.map((m) => m.connect).find((c) => c !== STILLFAIL_CONNECT) ?? null;

@@ -15,6 +15,7 @@ import { after, test } from "node:test";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { SEGMENT } from "../src/read/packed.ts";
 import { cost, price, priceTable, sessionUsage, usageNow } from "./reference/usage.ts";
+import { tr } from "../src/ops/i18n.ts";
 import { packFile } from "../src/sessions/archive.ts";
 import { iso, parseIso, rememberCodexRollout } from "./reference/transcript.ts";
 import { type StoreChange, type UsageGroup, Store, newMessage } from "../src/store/store.ts";
@@ -162,8 +163,10 @@ test("GPT usage has a price, and unknown variants do not borrow one", () => {
 });
 
 test("the price note finishes its explanation in both languages", () => {
-  assert.ok((priceTable("zh") as any).note.endsWith("。"));
-  assert.ok((priceTable("en") as any).note.endsWith("."));
+  // (said by the client, core-ts views/usage.ts: the station's table carries no words)
+  assert.equal((priceTable("zh") as any).note, undefined);
+  assert.ok(tr("zh", "station.usage.priceNote").endsWith("。"));
+  assert.ok(tr("en", "station.usage.priceNote").endsWith("."));
 });
 
 type Rig = { data: string; store: Store; usage: UsageCounter };

@@ -129,13 +129,10 @@ export class Served {
   /// A program that listens told all it is to know.
   #settle(server: Server) {
     const words = Object.fromEntries((["zh", "en"] as const).map((lang) => [lang, {
-      localPage: tr(lang, "station.creator.localPage"), admin: tr(lang, "station.author.admin"),
-      untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage"),
-      quotedOnly: tr(lang, "station.chat.quotedOnly"), updateApp: tr(lang, "station.admin.updateApp"), badN: tr(lang, "station.admin.badN"),
+      // (a device's reads say no words: the client says them, read/pool.ts `WORDED`; what it is refused writing is said)
+      updateApp: tr(lang, "station.admin.updateApp"), badN: tr(lang, "station.admin.badN"),
       postOnlyStillfail: tr(lang, "station.admin.postOnlyStillfail"), emptyMessage: tr(lang, "station.admin.emptyMessage"),
       renameOnlyStillfail: tr(lang, "station.admin.renameOnlyStillfail"), nothingWaiting: tr(lang, "station.admin.nothingWaiting"), updateClientForOption: tr(lang, "station.admin.updateClientForOption"),
-      notInteger: Object.fromEntries(["after", "before", "from", "to"].map((name) => [name, tr(lang, "station.admin.notInteger", { name })])),
-      fromAndTo: tr(lang, "station.admin.fromAndTo"), inScriptOutput: tr(lang, "station.transcript.inScriptOutput"),
       // (a write to a chat handed to another station: seen.ts `went`)
       movedThere: tr(lang, "station.move.movedThere"),
     }]));

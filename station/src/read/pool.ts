@@ -126,8 +126,7 @@ function filling(op: string, args: unknown): boolean {
 const PAGES = new Set(["timeline", "machineSessions"]);
 /// A session's history, read by the MoonBit reader (station/mb src/history's transcripts.mbt) where its program is
 /// there, on the pages' readers still: both its pages and where its reading stands (`transcriptState`, its live view's
-/// start), so that each reads on from what the reader it was read in last keeps (`homes`). Given the words a Codex
-/// script's calls are said in, in the language its args name (sessions.ts `timeline` says them so).
+/// start), so that each reads on from what the reader it was read in last keeps (`homes`).
 const HISTORY = new Set(["timeline", "transcriptState"]);
 /// The reads the MoonBit reader answers itself (station/mb src/readops), on readers of their own (`moved`): with HISTORY
 /// and the checkpoint, every read there is.
@@ -136,37 +135,28 @@ const MOVED = new Set(["job", "jobLog", "historyPendingCard", "statePendingCard"
 /// this process's environment (read/machine.ts `roots`).
 const MACHINE = new Set(["machineSessions", "machineSession"]);
 /// A file a session's message names (read/sessions.ts `sessionPlace`): the program is given what only this process
-/// knows (its HOME, its home directory, whether macOS's folder permissions apply), the words of its refusals in the
-/// language its args name, and the time (the git listings it keeps a minute, macOS's mounts two seconds).
+/// knows (its HOME, its home directory, whether macOS's folder permissions apply) and the time (the git listings it
+/// keeps a minute, macOS's mounts two seconds). It refuses by the key of its words, which the client says.
 const placeOf = (args: unknown) => {
-  const lang = argsLang(args) ?? "zh";
   return {
     ...(args as object),
     env: { home: process.env.HOME ?? "", homedir: homedir(), mac: platform.hasFolderPermissions },
-    words: { notFound: tr(lang, "station.files.notFound"), protected: tr(lang, "station.files.protected"), outside: tr(lang, "station.files.outside") },
     now: wall.now(),
   };
 };
-/// The reads that say who someone is in the station's words (read/views.ts `creator`, `authorNames`: the local page, its
-/// admin), and go by the time of day (a share used lately, a card answered lately): the MoonBit reader keeps no words
-/// and its clock is no wall's, so it is given these in the language asked, and the time as the read is asked.
-/// A thread's pages (`entries`, `letters`) are given the words of their refusals too; notices, a file's and an unnamed chat's.
+/// The reads that go by the time of day (a share used lately, a card answered lately): the MoonBit reader's clock is no
+/// wall's, so it is given the time as the read is asked. A device's reads are given no words: what a station would
+/// say there (a chat with no name, the local page and its admin, a refusal) the client says in its own language (the
+/// owner, 2026-11-09; core-ts chat-row.ts `worded`, entries.ts `authorNameOf`). Only what the station says itself is
+/// worded: its notices (a file's, an unnamed chat's) and what it sends Comma (`SAID`).
 const WORDED = new Set(["sharedOf", "sharedChats", "chatMarks", "entries", "letters", "summary", "sessions", "session", "threads", "thread", "turnNotices", "saidNotices", "chats", "chatRows", "outflowChats", "openJobs", "resourceChats", "usage"]);
-const argsLang = (args: unknown): Ask["lang"] | undefined => {
-  const lang = (args as { lang?: unknown } | null)?.lang;
-  return lang === "zh" || lang === "en" ? lang : undefined;
-};
-const wordsIn = (op: string, lang: Ask["lang"]) => ({
+/// The reads whose words the station says itself, in the language asked.
+const SAID = new Set(["turnNotices", "saidNotices", "outflowChats"]);
+const wordsIn = (op: string, lang: Ask["lang"]) => !SAID.has(op) ? {} : {
   localPage: tr(lang, "station.creator.localPage"), admin: tr(lang, "station.author.admin"),
-  ...(op === "entries" || op === "letters" ? {
-    notInteger: Object.fromEntries(["after", "before", "from", "to"].map((name) => [name, tr(lang, "station.admin.notInteger", { name })])),
-    fromAndTo: tr(lang, "station.admin.fromAndTo"),
-  } : {}),
   ...(op === "turnNotices" || op === "saidNotices" ? { file: tr(lang, "station.notice.file"), untitled: tr(lang, "station.chat.untitled") } : {}),
-  ...(op === "usage" ? { priceNote: tr(lang, "station.usage.priceNote") } : {}),
-  ...(op === "outflowChats" || op === "openJobs" || op === "resourceChats" || op === "usage" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage") } : {}),
-  ...(op === "chats" || op === "chatRows" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage"), quotedOnly: tr(lang, "station.chat.quotedOnly") } : {}),
-});
+  ...(op === "outflowChats" ? { untitled: tr(lang, "station.chat.untitled"), directMessage: tr(lang, "station.chat.directMessage") } : {}),
+};
 
 /// `changed`'s list's own args, given the words and the time its read is given (`WORDED`).
 const changedOf = (args: unknown, lang: Ask["lang"]) => {
@@ -717,14 +707,13 @@ export class Readers {
     // reads it from disk (read/transcripts.ts).
     const session = (op === "timeline" || op === "transcriptState") && typeof (args as { key?: unknown })?.key === "string" ? (args as { key: string }).key : null;
     const home = session !== null ? this.homes.get(session) : undefined;
-    const given = history ? { ...(args as object), words: { inScriptOutput: tr(argsLang(args) ?? "zh", "station.transcript.inScriptOutput") } }
+    const given = history ? args
       : line !== this.moved ? args
       : MACHINE.has(op) ? { ...(args as object), roots: machineRoots() }
       : op === "sessionPlace" ? placeOf(args)
       // (what of a list changed: the list read as its own read is, given its words; test/reference/digest.ts `changedOf`)
       : op === "changed" && WORDED.has((args as { op?: string }).op ?? "") ? changedOf(args, lang)
-      // (the usage page says its words in the language its args name, as test/reference/ops-usage.ts reads it)
-      : WORDED.has(op) ? { ...(args as object), words: wordsIn(op, op === "usage" ? argsLang(args) ?? lang : lang), now: wall.now() }
+      : WORDED.has(op) ? { ...(args as object), words: wordsIn(op, lang), now: wall.now() }
       : args;
     const ask: Ask = { id: this.next++, op, args: given, lang, names: [], processes: [], clientKeys: [] };
     return new Promise((resolve, reject) => {

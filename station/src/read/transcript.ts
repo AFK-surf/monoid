@@ -9,7 +9,8 @@ import { runtimeKind, type RuntimeKind } from "../agents/runtime.ts";
 
 /// TimelineEntry as serde writes it: `tool`, `ok`, `callId`, `subagent` left out when none; `brief` when what it says is
 /// cut to what a history shows before it is opened (`brief`).
-export type TimelineEntry = { at: string | null; kind: string; text: string; tool?: string; ok?: boolean; callId?: string; subagent?: boolean; brief?: boolean };
+/// `inScript`: a call's result that is in its script's output (said so by the client in its words, its text "").
+export type TimelineEntry = { at: string | null; kind: string; text: string; tool?: string; ok?: boolean; callId?: string; subagent?: boolean; brief?: boolean; inScript?: true };
 
 /// Where a transcript's reading stands (mb/src/history `Tail` `snapshot`): where its next read goes on from and what it
 /// keeps between reads, without the entries read; a read made from it reads on as the one it was taken of would.

@@ -294,8 +294,9 @@ fn cost(g : Group) -> Json {
 }
 
 ///|
-/// usage.ts `priceTable`: the prices `cost` uses, of the station's table and of the models the rows name.
-fn price_table(note : String, models : Array[Json]) -> Json {
+/// usage.ts `priceTable`: the prices `cost` uses, of the station's table and of the models the rows name (what its
+/// numbers mean the client says: core-ts views/usage.ts).
+fn price_table(models : Array[Json]) -> Json {
   let keys : Array[String] = []
   let seen : Set[String] = Set::new()
   let add = (k : String) => if !seen.contains(k) {
@@ -323,5 +324,5 @@ fn price_table(note : String, models : Array[Json]) -> Json {
       "output": Json::number(p.output),
     })
   }
-  { "note": Json::string(note), "rows": Json::array(rows) }
+  { "rows": Json::array(rows) }
 }

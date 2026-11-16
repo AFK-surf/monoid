@@ -120,7 +120,7 @@ export function saidNotices(s: Store, id: number, entries: EntryRow[], since: nu
   if (session === undefined) return [];
   const out: Notice[] = [];
   if (person !== undefined) {
-    const by = authorNames(apiOf(s), id)("person", person.author) ?? person.author;
+    const by = authorNames(apiOf(s), id, translate(lang, "station.author.admin"))("person", person.author) ?? person.author;
     const text = person.text !== null && person.text.trim() !== "" ? person.text : translate(lang, "station.notice.file");
     const n = notice(s, id, person.n, session, "message", by, text, person.author);
     if (n !== null) out.push(n);

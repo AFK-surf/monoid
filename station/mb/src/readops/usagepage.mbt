@@ -1,7 +1,7 @@
 // What the agents spent, as the usage page reads it (station/src/read/usage.ts `usage`, GET /usage) and as a Comma
 // connect sends it (read/outflow.ts `outflowUsage`): the day's groups (usagegroups.mbt) with what they cost, the threads,
-// people and accounts they name, the prices, the tasks other stations ran here and the page's year. The station's own
-// words (the local page, the prices' note, an unnamed chat) the pool gives with the read (`words`).
+// people and accounts they name, the prices, the tasks other stations ran here and the page's year. It says no words of
+// its own: an unnamed chat's title is "" and the local page has no name, for the client to say.
 
 ///|
 /// store.ts `usageSince` and usage-detail.ts `usageDetailSince`: from when every call was counted, and from when the
@@ -1002,7 +1002,7 @@ fn usage_answer(
   let since = usage_since(db)
   let detail = if a.metadata { detail_since(db) } else { Json::null() }
   let prices = if a.metadata {
-    Some(price_table(word("priceNote"), visible.map(g => g.model)))
+    Some(price_table(visible.map(g => g.model)))
   } else {
     None
   }

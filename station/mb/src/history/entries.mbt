@@ -3,13 +3,8 @@
 // an execution history shows it before it is opened (`brief`).
 
 ///|
-/// What the station says of a call taken out of a script once the script's output comes (station.transcript
-/// .inScriptOutput): in the language a read is asked in, as the pool gives it (a search's: Chinese).
-pub let in_script_output : Ref[String] = { val: "（结果在脚本的输出里）" }
-
-///|
 fn entry(at : String?, kind : String, text : String, tool? : String, ok? : Bool, call_id? : String, subagent? : Bool = false) -> Entry {
-  { at, kind, text, tool, ok, call_id, subagent, said: None }
+  { at, kind, text, tool, ok, call_id, subagent, said: None, in_script: false }
 }
 
 ///|
@@ -442,7 +437,7 @@ fn codex(r : @jsjson.JValue, state : ReadState, out : Array[Entry]) -> Unit {
       state.inner.remove(id)
     }
     for i in 0..<count {
-      out.push(result(!failed, Some("\{call_id.unwrap_or("")}#\{i}"), in_script_output.val))
+      out.push({ ..result(!failed, Some("\{call_id.unwrap_or("")}#\{i}"), ""), in_script: true })
     }
   }
 }
@@ -695,7 +690,7 @@ pub fn brief(e : Entry) -> (Entry, Bool) {
 }
 
 ///|
-/// An entry as JSON, its fields as transcript.ts's object has them (at, kind, text, tool, ok, callId, subagent, brief).
+/// An entry as JSON, its fields as transcript.ts's object has them (at, kind, text, tool, ok, callId, subagent, brief, inScript).
 pub fn entry_json(e : Entry, briefed : Bool) -> Json {
   let out : Map[String, Json] = {
     "at": match e.at { Some(a) => Json::string(a); None => Json::null() },
@@ -716,6 +711,9 @@ pub fn entry_json(e : Entry, briefed : Bool) -> Json {
   }
   if briefed {
     out["brief"] = Json::boolean(true)
+  }
+  if e.in_script {
+    out["inScript"] = Json::boolean(true)
   }
   Json::object(out)
 }

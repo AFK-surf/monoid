@@ -86,6 +86,11 @@
   of before in `test/workers/`), on the same data. At a handover the next process opens it while the one serving
   writes: every connection waits its turn (a busy timeout), and a transaction that writes begins `BEGIN IMMEDIATE`
   (`scripts/check.sh` refuses what a change adds otherwise).
+- A station's reads give a device no words of their own (the user, 2026-11-09): a chat with no name and an unnamed
+  direct message (`named` kept, a title of ""), the local page and its admin (no name), a refusal (by its words' key,
+  `station.files.*`; a developer's in English), a call's result in its script's output (`inScript`) are said by the
+  client in its language (`client/core-ts/src/chat-row.ts` `worded`, `entries.ts` `authorNameOf`). What the station
+  says itself (its notices, what it sends Comma) keeps its words (`src/read/pool.ts` `SAID`).
 - A read answers by an index and a limit, never by going through all a station has (a station keeps months of chats):
   the `*-bounded.test.ts` tests count the rows a read fetches; a new read gets one. Old data a new index needs is
   built in the background (`src/read/*-builder.ts`), its batches taking one shared permit and yielding to writes

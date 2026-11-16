@@ -8,7 +8,7 @@
 ///|
 /// test/reference/transcript.ts READING: what a line gives changes with it, so marks of another are read anew. The same number
 /// as there: a change to what a line gives here or there raises both.
-let reading : Int = 2
+let reading : Int = 3
 
 ///|
 /// read/transcripts.ts KEPT, KEPT_BYTES; test/reference/tail.ts PIECE, MARK_EVERY, MARK_BYTES; read/transcripts.ts PIECE_READ.

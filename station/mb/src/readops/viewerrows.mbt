@@ -1,7 +1,7 @@
 // The chat list as one viewer has it, made by the station for a device that does not make it itself (station/src/read/
 // views.ts `chats`, `chatRows`, `archivedPage`: GET /chats, and a page of the archive): each shared row with what is the
 // viewer's own (client/core-ts/src/chat-row.ts `rowFor`) and in the viewer's words (`worded`: its title by the one rule
-// client/core-ts/src/titles.ts names a chat by), the words given by the pool in the language asked.
+// client/core-ts/src/titles.ts names a chat by) where the pool gives words; a device's rows are left for its client to say.
 
 ///|
 /// views.ts ARCHIVE_PAGE.
@@ -88,8 +88,10 @@ fn row_for(shared : Json, own : Own, words : Json) -> Json {
   row.remove("said")
   row.remove("answeredBy")
   row.remove("ws")
-  // chat-row.ts `worded`
-  if row.get("named") is Some(named) {
+  // chat-row.ts `worded`, where the pool gives the words; a device's rows keep what names them (`named`) and a last
+  // message that only quotes marked so, for the client to say in its own language (data.ts `inWords`)
+  let worded = words.value("untitled") is Some(String(_))
+  if worded && row.get("named") is Some(named) {
     row.remove("named")
     row["title"] = Json::string(chat_title(
       named.value("thread").unwrap_or(Json::null()),
@@ -99,7 +101,7 @@ fn row_for(shared : Json, own : Own, words : Json) -> Json {
       word("directMessage"),
     ))
   }
-  if row.get("last") is Some(Object(l)) && l.get("quotedOnly") == Some(Json::boolean(true)) {
+  if worded && row.get("last") is Some(Object(l)) && l.get("quotedOnly") == Some(Json::boolean(true)) {
     let last = Map::from_array(l.to_array())
     last.remove("quotedOnly")
     last["text"] = Json::string(word("quotedOnly"))

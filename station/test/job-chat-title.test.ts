@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { openJobs } from "./reference/jobs.ts";
 import { firstText, lastSaid, makeStore } from "./reference/store.ts";
 import { chats } from "./reference/views.ts";
+import { worded } from "../../client/core-ts/src/chat-row.ts";
 import { installLegacyEdits, legacyEditDrain, legacyEditStep } from "../src/store/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
@@ -30,7 +31,9 @@ function oldEdits(store: Store, thread: number) {
   addClientColumn(db);
 }
 const jobChats = (rows: any[]) => rows.map((j) => [j.id, j.chat?.id, j.chat?.title, j.chat?.archived]);
-const titleRows = (rows: any[]) => rows.map((r) => [r.id, r.title, r.agents.map((a: any) => a.key)]);
+// (a row's title in the client's words: the station leaves them to it, core-ts chat-row.ts `worded`)
+const words = { untitled: "Untitled", directMessage: "Direct message", quotedOnly: "Quoted" };
+const titleRows = (rows: any[]) => rows.map((r) => [r.id, worded(r, words).title, r.agents.map((a: any) => a.key)]);
 
 for (const title of ["Given title", null]) test(`a job's own chat with title ${title} does not need its message edits`, () => {
   const store = Store.open(":memory:");
