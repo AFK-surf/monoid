@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { given } from "./hub-fakes.ts";
 import { WS, A, B, ANSWER_MS, type Station, world, stillfailChat, gitEnv, filesOf, retiredCopy } from "./move-world.ts";
 
 type Json = any;
@@ -299,6 +300,30 @@ test("the station a chat leaves started again as its placing there works: the ha
   assert.equal(a.moves.handover.outOf(key)?.dropOwed, false);
   assert.deepEqual(b.moves.handover.ins().map((i) => i.step), ["dropped"]);
   assert.deepEqual(inSightOn(w, key), ["A"]);
+});
+
+test("a turn stopped while the chat's placing there works ten minutes: the chat is here again at once, the step there let go; that station takes out what it placed once its placing ends, nothing of it left", async () => {
+  const w = world([A, B], { answerMs: true });
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const h = hold();
+  let placings = 0;
+  b.placing = async () => void (++placings === 1 && (await h.wait()));
+  const turn = a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await h.at;
+  assert.equal(a.moves.scheduler.stopTurn("o@x"), true, "a turn under way stopped");
+  // (no time passes: the stop waits for nothing that grows with the chat)
+  const out = await given(turn, "the turn ended as it was stopped, the placing there still under way");
+  assert.notEqual(out.failed, null, "the chat did not go");
+  assert.deepEqual(inSightOn(w, key), ["A"], "here again");
+  assert.equal(a.rig.hub.chatHeld(key), null, "it goes on here");
+  assert.equal(a.moves.handover.outOf(key)?.dropOwed, false, "its drop answered there");
+  h.release();
+  await w.quiet();
+  assert.deepEqual(late(w), []);
+  assert.deepEqual(b.moves.handover.ins().map((i) => i.step), ["dropped"]);
+  assert.equal(existsSync(join(b.rig.dir, "sessions")) ? Object.keys(filesOf(join(b.rig.dir, "sessions"))).length : 0, 0, "nothing of it there");
 });
 
 // ── the rule for every request ──

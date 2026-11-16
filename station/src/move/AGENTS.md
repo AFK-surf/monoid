@@ -106,7 +106,9 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   a hand-over's drop is answered as it is marked and taken out by that station itself (replica/AGENTS.md). The station
   asked starts it and answers `under`, tells how it goes every `TOLD_EVERY_MS` (`move.told`) and its end until
   answered; the asker waits with no clock on its length, asks it again after `TOLD_SILENT_MS` of silence or as the
-  other is heard from after one, and only that ask failing fails it (a station found gone, above). Each step can run
+  other is heard from after one, and only that ask failing fails it (a station found gone, above); a stopped turn lets
+  go of the step it waits on at once (handover.ts `abandon`, told.ts `letGo`), the other taking out what it put once
+  the step ends there. Each step can run
   again: a process that did not know it starts it on that ask. `chat-handover-steps.test.ts` holds every request a move
   asks to its time, with all the work there held ten minutes, and fails on one it does not know: a new request is put
   in its table with what bounds it.

@@ -110,6 +110,8 @@ export type Out = {
   done: number; total: number; sentBytes?: number;
   /// How far its placing there is (files), as that station tells it (move/told.ts): while its files are placed.
   placing?: { done: number; total: number };
+  /// The told step there it waits on now (move/told.ts), let go as it is given up (`abandon`).
+  waitsOn?: string;
   /// When each of its steps began (the station's clock, the wall's: a step of that clock as it runs skews one step's ms,
   /// which a log line can bear), in order: `begin`, `first` (the first pass's gathering and sending),
   /// `turn`, `hold`, `held` (the held pass), `rows`, `counts`, `gone`: what its line at gone says each took; then `show`
@@ -714,7 +716,25 @@ export class Handover {
   /// The move under way asked to stop: each hand-over not gone yet gives up at its next step, undone as a failure there
   /// is (the chat goes on here); one gone completes.
   abandon(): void {
-    for (const o of this.#everyOut("abandon")) if (o.step === "files" || o.step === "held" || o.step === "rows") o.abandoned = true;
+    for (const o of this.#everyOut("abandon")) {
+      if (o.step !== "files" && o.step !== "held" && o.step !== "rows") continue;
+      o.abandoned = true;
+      // (a step there waited on, its placing or its pruning, is let go now: a stop never waits for work that grows with
+      // the chat; that station takes out what it put as its drop comes, after the step ends there)
+      if (o.waitsOn !== undefined) this.#d.told.letGo(o.to, o.waitsOn, new Said(why("abandoned")));
+    }
+  }
+
+  /// Told step `key` of hand-over `o`'s asked there and waited on (`make` its request), as given up where it was asked to
+  /// stop.
+  async #waitStep(o: Out, key: string, make: () => Json, progress?: (p: Json) => void): Promise<Json> {
+    this.#given(o);
+    o.waitsOn = key;
+    try {
+      return await this.#d.told.asked(o.to, key, make, progress);
+    } finally {
+      if (o.waitsOn === key) delete o.waitsOn;
+    }
   }
 
   /// Thrown where hand-over `o` was asked to stop.
@@ -956,7 +976,7 @@ export class Handover {
     if (carry === null) throw new Said(why("stopping"));
     // (placed there by itself, told back as it goes and as it ends: a placing of minutes waits on no request's answer)
     const key = `place:${o.id}:${held ? "held" : "first"}:${carry}`;
-    const placed = await d.told.asked(o.to, key, () => ({ method: "handover.place", workspace: o.ws, origin: here, id: o.id, carry, held, told: key }), (p) => {
+    const placed = await this.#waitStep(o, key, () => ({ method: "handover.place", workspace: o.ws, origin: here, id: o.id, carry, held, told: key }), (p) => {
       if (typeof p?.done !== "number" || typeof p?.total !== "number") return;
       o.placing = { done: p.done, total: p.total };
       d.changed?.(o.id);
@@ -980,7 +1000,7 @@ export class Handover {
     const sent = await this.#sendRows(o, ask, null);
     // (what the room there has that this one's lists no longer name goes there: a mirror of it)
     const pruning = `prune:${o.id}`;
-    await d.told.asked(o.to, pruning, () => ({ method: "handover.prune", workspace: o.ws, origin: here, id: o.id, told: pruning }));
+    await this.#waitStep(o, pruning, () => ({ method: "handover.prune", workspace: o.ws, origin: here, id: o.id, told: pruning }));
     this.#mark(o, "counts");
     const counts = (await ask({ method: "handover.counts" }))?.counts as Counts | undefined;
     d.fail?.("counts");

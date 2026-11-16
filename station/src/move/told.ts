@@ -130,6 +130,12 @@ export class Told {
     return { ok: true };
   }
 
+  /// Step `key` of station `to` no longer waited on: failed here with `error` at once (its hand-over given up). The
+  /// station running it ends it as it would; its end, told late, is answered and taken as of nothing waited on.
+  letGo(to: string, key: string, error: Error): void {
+    this.#waiting.get(`${to}\n${key}`)?.reject(error);
+  }
+
   /// Station `peer` heard from: each step of it this station waited on with no word for a while asked again now (its
   /// link opened again).
   reached(peer: string): void {
