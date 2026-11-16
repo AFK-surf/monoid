@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.65 | 184.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 | [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
-| [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
 | [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
 | [9f7fe0d1d](https://github.com/AFK-surf/monoid/commit/9f7fe0d1d6ff90e1bd9f7be2218555c805641a80) mbui: forbid ES 3.00 fragment shaders without high | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
-| [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
