@@ -480,7 +480,9 @@ for t in $targets; do
           # 2/4 203 (its pages on two programs the longest), 3/4 170, 4/4 139 (send_steady's three 38-60 s). Each
           # reckoned again so that what was dealt would have ended as it ran, the wide window's real_size on the
           # fourth, the second's pages on three programs: by the table 720, 355, 386 and 711 s of pages)
-          *) specs="4,4,54,1 3,4,418,1 2,4,286,1 4,4,62,1" ;;
+          # (dealt so, 43857300626: app 1/4 198 s, 2/4 116, 3/4 188, 4/4 234 with real_size's wide half there; that
+          # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
+          *) specs="4,4,72,1 3,4,184,1 2,4,366,1 4,4,125,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -578,10 +580,10 @@ for t in $targets; do
       # (its tests cut at each of its two sweeps since #6627 put a quick test of its own first: cut in two halves, the
       # first was that test alone and the second both sweeps, "--index 1-3", matched by none of these and dealt to the
       # fourth beside its 142 files of pages, 306 s, app 4/4 cut at its 5 minutes on main 202a54dc 43822504735)
-      # (the wide window's on the fourth since, whose send_steady three skip the frames nothing asks for (38-60 s, where
-      # they were 95-136): on the first beside its pages on four programs it ran 169 s, app 1/4 228 s, where app 4/4
-      # was 157, #6678's 43854977577)
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
+      # (the wide window's on the second since, the one with the most room: on the first beside its pages on four
+      # programs it ran 169 s, app 1/4 228 s (#6678's 43854977577); on the fourth 197 s beside its pages and
+      # send_steady's three, app 4/4 234 s, where app 2/4 was 116 (43857300626))
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 2 ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
