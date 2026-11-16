@@ -26,7 +26,7 @@ export const routes = ({ config, changed }: DiagnosticsDeps): Route[] => [
         return error(400, "invalid JSON");
       }
       if (typeof on !== "boolean") return error(400, "logs is true or false");
-      config.update((raw) => {
+      await config.updateSoon((raw) => {
         const telemetry = raw.telemetry !== null && typeof raw.telemetry === "object" ? { ...raw.telemetry } : {};
         if (on) delete telemetry.logs;
         else telemetry.logs = false;

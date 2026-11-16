@@ -99,9 +99,10 @@ function world(profiles: Json[], o: { third?: boolean; slack?: boolean; cUp?: bo
     const listeners = new Set<(raw: Json) => void>();
     const config = {
       raw: () => rig.raw,
-      update: (f: (raw: Json) => void) => {
+      updateSoon: async (f: (raw: Json) => void) => {
         f(rig.raw);
         for (const l of listeners) l(rig.raw);
+        return rig.raw;
       },
       listen: (l: (raw: Json) => void) => (listeners.add(l), () => listeners.delete(l)),
     } as unknown as ConfigFile;

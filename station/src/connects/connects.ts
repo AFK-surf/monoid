@@ -71,7 +71,7 @@ export function makeConnects<C extends ConnectBase>(options: ConnectsOptions, pl
     else await connections.stopAll();
   };
 
-  const rememberIdentities = () => {
+  const rememberIdentities = async () => {
     const seen = new Map<string, (entry: Json) => void>();
     for (const c of connects()) {
       const identity = connections.chat(c.id)?.identity();
@@ -81,7 +81,7 @@ export function makeConnects<C extends ConnectBase>(options: ConnectsOptions, pl
     }
     if (seen.size === 0) return;
     try {
-      config.update((raw) => {
+      await config.updateSoon((raw) => {
         for (const entry of Array.isArray(raw.connects) ? raw.connects : []) {
           if ((entry?.kind ?? "slack") === platform.kind) seen.get(entry.id)?.(entry);
         }
@@ -92,6 +92,8 @@ export function makeConnects<C extends ConnectBase>(options: ConnectsOptions, pl
   };
   // Looked at once after a burst of changes, not inside them.
   let remembering = false;
+  /// The identities' last edit of config.json, waited for as it closes (nothing written into a directory gone).
+  let remembered: Promise<void> = Promise.resolve();
   const listeners = new Set<() => void>();
   /// Tells those that hear of the connects that what `state` reports may have changed.
   const tell = () => {
@@ -107,7 +109,7 @@ export function makeConnects<C extends ConnectBase>(options: ConnectsOptions, pl
     remembering = true;
     setImmediate(() => {
       remembering = false;
-      if (!closed) rememberIdentities();
+      if (!closed) remembered = rememberIdentities();
     });
   });
 
@@ -146,6 +148,9 @@ export function makeConnects<C extends ConnectBase>(options: ConnectsOptions, pl
       unlisten();
       listeners.clear();
       await connections.stopAll();
+      await remembered;
+      // (and what else of config.json is on its way: nothing written into a directory gone)
+      await config.written();
       await names.close();
     },
   };

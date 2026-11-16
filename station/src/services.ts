@@ -319,7 +319,11 @@ export class StationConfig extends Context.Service<StationConfig, ConfigFile>()(
         const config = new ConfigFile(data);
         config.watch();
         return config;
-      }), (config) => Effect.sync(() => config.unwatch()));
+      }), (config) => Effect.promise(async () => {
+        config.unwatch();
+        // What was taken is on disk before the next process reads it.
+        await config.written();
+      }));
     }),
   );
 }

@@ -35,7 +35,7 @@ export const routes = ({ config, changed }: ToolsDeps): Route[] => [
       }
       if (typeof asked !== "string" || !ACCESS.includes(asked as Access)) return error(400, `access is one of ${ACCESS.join(", ")}`);
       try {
-        config.update((raw) => {
+        await config.updateSoon((raw) => {
           raw.tools = { ...(raw.tools !== null && typeof raw.tools === "object" ? raw.tools : {}), access: asked };
         });
       } catch (e) {

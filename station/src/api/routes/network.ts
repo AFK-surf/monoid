@@ -22,7 +22,7 @@ export const routes = ({ config, changed, restart }: { config: ConfigFile; chang
       set.congestion = body.congestion;
     }
     if (Object.keys(set).length === 0) return error(400, "expected congestion");
-    config.update((raw) => { raw.network = { ...raw.network, ...set }; });
+    await config.updateSoon((raw) => { raw.network = { ...raw.network, ...set }; });
     changed?.();
     return json(200, JSON.stringify(networkView(config.raw())));
   },

@@ -3,7 +3,7 @@
 // moved to another station by hand (POST /connects/:id/move); on the station a chat runs on, the events taken and the
 // connect's surface asked; on every one, whether a connect being added runs on another station already.
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Effect, Layer } from "effect";
@@ -34,7 +34,7 @@ export type WorkspaceConnectsDeps = {
   data: string;
   hub: () => Hub;
   store: StoreT;
-  config: { raw(): Json; update(f: (raw: Json) => void): void };
+  config: { raw(): Json; updateSoon(f: (raw: Json) => void): Promise<unknown> };
   /// This station's id, and its home workspace.
   here: () => string;
   home: () => string | null;
@@ -50,6 +50,7 @@ export class WorkspaceConnects {
   private readonly d: WorkspaceConnectsDeps;
   /// The files a chat of another station posts, until they are posted.
   private readonly uploads: string;
+  readonly #uploadsCleared: Promise<void>;
   /// One event at a time per thread: a conversation's first message is handed on before its next is looked at.
   private readonly gates = new Map<string, Promise<void>>();
   /// What a platform says of a workspace whose chats this station hands to another (hub `quiet`), acknowledged and kept
@@ -63,7 +64,8 @@ export class WorkspaceConnects {
     this.d = d;
     this.uploads = join(d.data, "run", "connect-uploads");
     this.heldFile = join(d.data, "replica", "held-events.jsonl");
-    rmSync(this.uploads, { recursive: true, force: true });
+    // What a process before left of the files remote chats posted, taken away off the thread; the first upload waits for it.
+    this.#uploadsCleared = rm(this.uploads, { recursive: true, force: true }).catch(() => {});
     try {
       const kept = JSON.parse(readFileSync(join(d.data, "replica", "awaiting.json"), "utf8")) as Record<string, string[]>; // sync: read once, before the station serves
       for (const [id, keys] of Object.entries(kept)) if (Array.isArray(keys) && keys.length > 0) this.awaiting.set(id, new Set(keys));
@@ -101,7 +103,7 @@ export class WorkspaceConnects {
         const id = localOf(known, d.here());
         const entry = this.entryOf(id);
         return entry !== undefined && this.workspaceOf(entry) === workspace ? this.own(id) : undefined;
-      }, this.uploads),
+      }, this.uploads, this.#uploadsCleared),
     );
     // Whether one of this station's connects of that workspace has that secret.
     d.bus.on(LIST, async (_peer, request, workspace) => {
@@ -304,7 +306,7 @@ export class WorkspaceConnects {
     const d = this.described(id);
     const known = knownOf(id, this.d.here());
     this.handing.set(id, { to: Promise.resolve(to), ws });
-    this.d.config.update((raw) => {
+    await this.d.config.updateSoon((raw) => {
       raw.connects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: Json) => c?.id !== id);
     });
     this.d.store.dropConnectThreads(id);
@@ -605,7 +607,7 @@ export class WorkspaceConnects {
     this.handing.delete(id);
     // (one of its home workspace says none, as one added here would)
     const { workspace: _, ...rest } = entry;
-    this.d.config.update((raw) => {
+    await this.d.config.updateSoon((raw) => {
       const connects = Array.isArray(raw.connects) ? raw.connects : (raw.connects = []);
       connects.push({ ...rest, id, ...(workspace !== this.d.home() ? { workspace } : {}) });
     });

@@ -22,7 +22,7 @@ export const SETTINGS = ["sandboxes", "agentEnv", "askToName", "maxNudges", "war
 
 export type SettingsDeps = {
   data: string;
-  config: { raw(): Json; update(f: (raw: Json) => void): void };
+  config: { raw(): Json; updateSoon(f: (raw: Json) => void): Promise<unknown> };
   ask: (station: string, request: Json) => Promise<Json>;
 };
 
@@ -110,7 +110,7 @@ export class SettingsModule implements Module {
       if (mine === undefined || mine === null) {
         this.#former[key] = { from: peer, whole: true };
         await this.#save();
-        this.#d.config.update((r) => void (r[key] = structuredClone(value)));
+        await this.#d.config.updateSoon((r) => void (r[key] = structuredClone(value)));
         return { ok: true };
       }
       if (same(mine, value)) return { ok: true };
@@ -119,7 +119,7 @@ export class SettingsModule implements Module {
         if (keys.length === 0) return { ok: true };
         this.#former[key] = { from: peer, keys };
         await this.#save();
-        this.#d.config.update((r) => {
+        await this.#d.config.updateSoon((r) => {
           r[key] = { ...(isMap(r[key]) ? r[key] : {}) };
           for (const k of keys) r[key][k] = structuredClone(value[k]);
         });
@@ -130,7 +130,7 @@ export class SettingsModule implements Module {
     if (request.method === "move.setting.back") {
       const f = this.#former[key];
       if (f === undefined) return { ok: true };
-      this.#d.config.update((r) => {
+      await this.#d.config.updateSoon((r) => {
         if (f.whole === true) delete r[key];
         else if (f.keys !== undefined) {
           if (isMap(r[key])) {

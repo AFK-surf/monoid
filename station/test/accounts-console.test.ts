@@ -122,7 +122,7 @@ test("a profile signed in to OpenCode runs on its token, renewed, kept through e
     assert.equal((await readConsole(join(data, "homes", made)))!.refresh, "rt_2");
     assert.equal((await accounts.check(made, "zh")).state, "ok");
     // An edit keeps the sign-in; a key given in its place ends it.
-    accounts.putProfile(made, { name: "Go" }, owner, "zh");
+    await accounts.putProfile(made, { name: "Go" }, owner, "zh");
     assert.deepEqual(raw(made).access, { kind: "opencode-go", key: "st_2", login: true });
 
     // Signed out on the Console: renewing is refused, and the check asks for a sign-in rather than a key.
@@ -131,7 +131,7 @@ test("a profile signed in to OpenCode runs on its token, renewed, kept through e
     assert.equal(raw(made).access.key, "st_2");
     const out = await accounts.check(made, "zh");
     assert.deepEqual([out.state, out.detail], ["login", "OpenCode 登录已失效"]);
-    accounts.putProfile(made, { access: { kind: "opencode-go", key: "sk-instead" } }, owner, "zh");
+    await accounts.putProfile(made, { access: { kind: "opencode-go", key: "sk-instead" } }, owner, "zh");
     assert.deepEqual(raw(made).access, { kind: "opencode-go", key: "sk-instead" });
 
     // A profile on a key signs in from its page: the token takes the key's place.
@@ -157,9 +157,9 @@ test("a key given while its OpenCode token is renewed stays: the renewed token d
   config.check = checkConfig;
   let accounts: Accounts | null = null;
   // The key is given while the Console's answer to the renewal is on its way.
-  const p = await provider((a) => {
+  const p = await provider(async (a) => {
     if (a.url !== "/console/auth/device/token" || a.form.refresh_token !== "rt_1") return { status: 400, body: { error: "invalid_grant" } };
-    accounts!.putProfile("go", { access: { kind: "opencode-go", key: "sk-instead" } }, owner, "zh");
+    await accounts!.putProfile("go", { access: { kind: "opencode-go", key: "sk-instead" } }, owner, "zh");
     return { status: 200, body: { access_token: "st_2", refresh_token: "rt_2", expires_in: 2_592_000, org_id: "wrk_1" } };
   });
   accounts = new Accounts({

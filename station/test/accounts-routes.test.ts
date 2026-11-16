@@ -102,6 +102,8 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
   const profile = (id: string) => accounts.profiles().find((p) => p.id === id);
   const view = (id: string) => accounts.profilesView().find((p) => p.id === id);
   await accounts.homesReadSoon();
+  // (what its start edited of config.json on disk, as a test reads the file)
+  await config.written();
   return { data, path, config, store, accounts, call, profile, view, close: () => accounts.close() };
 }
 

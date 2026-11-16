@@ -111,7 +111,7 @@ export function routes({ drive: whole, config, home = homedir(), changed, stage 
           const clean = before.find((b) => b === p) ?? (await drive.checkRoot(p));
           if (!roots.includes(clean)) roots.push(clean);
         }
-        config.update((raw) => {
+        await config.updateSoon((raw) => {
           const was = raw.drive !== null && typeof raw.drive === "object" ? raw.drive : {};
           raw.drive = ws === null ? { ...was, roots } : { ...was, workspaces: { ...(was.workspaces ?? {}), [ws]: roots } };
         });

@@ -150,7 +150,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean; packMost?
     Object.defineProperty(rig, "config", { get: config, configurable: true });
     rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? st.local.get(c) : undefined) ?? st.connects.remote.surface(c) });
     st.connects = new WorkspaceConnects({
-      data: rig.dir, hub: () => rig.hub, store: rig.store, config: { raw: () => rig.raw, update: (f) => f(rig.raw) }, bus: st.bus,
+      data: rig.dir, hub: () => rig.hub, store: rig.store, config: { raw: () => rig.raw, updateSoon: async (f) => f(rig.raw) }, bus: st.bus,
       here: () => id, home: () => WS, stations: (ws) => (ws === WS ? roster : []), names: () => null,
     });
     st.fibers = new Fibers("move", t.clock);
@@ -231,7 +231,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean; packMost?
           return waited;
         },
         git: st.git,
-        config: { raw: () => rig.raw, update: (f) => (st.onUpdate?.(), f(rig.raw)) },
+        config: { raw: () => rig.raw, updateSoon: async (f) => (st.onUpdate?.(), f(rig.raw)) },
         moveOn: () => st.on,
         planPage: st.page,
         hold: () => {

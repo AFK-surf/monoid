@@ -2,7 +2,6 @@
 // (parts.ts): the transfers into it, run here and kept in its data directory, told to the asker's streams as they
 // change (`drive-transfers`); its routes (api/routes/transfers.ts); and what another station of the workspace reads of
 // this one's drive with a grant of its own (`drive.walk`, `drive.part`, `drive.release` on the bus).
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import { routes } from "../api/routes/transfers.ts";
@@ -135,14 +134,10 @@ export function peerSource(ask: (station: string, request: Json) => Promise<Json
   };
 }
 
-/// This station's id (mesh/cloud.json, as the remote tasks read it); null when it has none.
-function ownId(data: string): string | null {
-  try {
-    const id = JSON.parse(readFileSync(join(data, "mesh", "cloud.json"), "utf8"))?.station;
-    return typeof id === "string" && id !== "" ? id : null;
-  } catch {
-    return null;
-  }
+/// This station's id (mesh/cloud.json, as the control plane keeps it in memory); null when it has none.
+function ownId(cloud: { state: { station?: string } | null }): string | null {
+  const id = cloud.state?.station;
+  return typeof id === "string" && id !== "" ? id : null;
 }
 
 export const DriveTransfersLive = Layer.effectDiscard(
@@ -170,6 +165,6 @@ export const DriveTransfersLive = Layer.effectDiscard(
       (t) => Effect.promise(() => t.close()),
     );
     bus.on("drive.", (_peer, request, workspace) => driveForPeer(drive, key, request, workspace ?? null, now()));
-    parts.routes(routes({ drive, transfers, key, self: () => ownId(data), nameOf: (station) => nameOf(cloud, station), now }));
+    parts.routes(routes({ drive, transfers, key, self: () => ownId(cloud), nameOf: (station) => nameOf(cloud, station), now }));
   }),
 );

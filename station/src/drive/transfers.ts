@@ -179,11 +179,11 @@ export class Transfers {
 
   constructor(deps: TransfersDeps) {
     this.#deps = deps;
-    mkdirSync(deps.dir, { recursive: true, mode: 0o700 });
-    for (const name of readdirSync(deps.dir)) {
+    mkdirSync(deps.dir, { recursive: true, mode: 0o700 }); // sync: once, before the station serves (drive/module.ts)
+    for (const name of readdirSync(deps.dir)) { // sync: read once, before the station serves
       if (!name.endsWith(".json")) continue;
       try {
-        const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer;
+        const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer; // sync: read once, before the station serves
         if (typeof t?.id !== "string") continue;
         if (t.endedAt !== undefined && deps.now() - t.endedAt > KEPT_MS) {
           this.#cleaning.push(rm(join(deps.dir, name), { force: true }).catch(() => {}));

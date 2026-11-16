@@ -139,7 +139,7 @@ test("a profile signed in to Kimi runs Claude Code on a token renewed in its hom
     assert.equal(readFileSync(join(home, KIMI_TOKEN_FILE), "utf8"), "kt_2");
     assert.equal(raw(made).access.key, undefined);
     // An edit keeps the sign-in.
-    accounts.putProfile(made, { name: "Kimi" }, owner, "zh");
+    await accounts.putProfile(made, { name: "Kimi" }, owner, "zh");
     assert.deepEqual(raw(made).access, { kind: "api-provider", provider: "kimi-code", login: true });
 
     // Signed out on Kimi: renewing is refused, and the check asks for a sign-in.

@@ -746,7 +746,7 @@ test("what a platform says while a workspace is quiet is kept, and goes to the s
   try {
     const asked: [string, string, string | undefined][] = [];
     const wc = new WorkspaceConnects({
-      data: r.dir, hub: () => r.hub, store: r.store, config: { raw: () => r.raw, update: (f) => f(r.raw) },
+      data: r.dir, hub: () => r.hub, store: r.store, config: { raw: () => r.raw, updateSoon: async (f) => f(r.raw) },
       here: () => "A", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
       // (the bots of its connects told to the others, connect.bots, are not what this looks at)
       bus: { ask: async (s, req) => (req.method === "connect.bots" ? null : asked.push([s, req.method, req.event?.message?.text]), { ok: true }), on: () => {} },
@@ -776,13 +776,13 @@ test("a person's message kept while the chats paused is taken on the station the
     // (B's connects answer A's requests as the mesh carries them)
     const inboxes = new Map<string, (peer: string, request: Json, workspace?: string) => Promise<Json>>();
     const wb = new WorkspaceConnects({
-      data: b.dir, hub: () => b.hub, store: b.store, config: { raw: () => b.raw, update: (f) => b.edit(f) },
+      data: b.dir, hub: () => b.hub, store: b.store, config: { raw: () => b.raw, updateSoon: async (f) => b.edit(f) },
       here: () => "B", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
       bus: { ask: async () => ({ ok: true }), on: (method, inbox) => void inboxes.set(method, inbox) },
       names: () => null,
     });
     const wa = new WorkspaceConnects({
-      data: a.dir, hub: () => a.hub, store: a.store, config: { raw: () => a.raw, update: (f) => f(a.raw) },
+      data: a.dir, hub: () => a.hub, store: a.store, config: { raw: () => a.raw, updateSoon: async (f) => f(a.raw) },
       here: () => "A", home: () => "home", stations: () => [{ id: "A", name: "a" }, { id: "B", name: "b" }],
       bus: { ask: async (s, req) => (s === "B" ? inboxes.get(req.method)!("A", JSON.parse(JSON.stringify(req)), req.workspace) : { ok: true }), on: () => {} },
       names: () => null,

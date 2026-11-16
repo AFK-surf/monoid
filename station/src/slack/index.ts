@@ -140,9 +140,9 @@ export function makeConnections(options: SlackOptions) {
   const apps = new SlackApps({
     client,
     load: () => configTokens(config.raw()),
-    save: (token) => {
+    save: async (token) => {
       try {
-        config.update((raw) => {
+        await config.updateSoon((raw) => {
           raw.slackConfigTokens = upsertToken(Array.isArray(raw.slackConfigTokens) ? raw.slackConfigTokens : [], token);
         });
       } catch (error) {

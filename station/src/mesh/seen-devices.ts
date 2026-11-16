@@ -26,6 +26,7 @@ export class SeenDevices {
     this.#file = path === null ? null : new PrivateFile(path);
     if (path === null) return;
     try {
+      // sync: read once, before the station serves (mesh.ts makes it before the first hello)
       for (const r of JSON.parse(readFileSync(path, "utf8")) as Seen[]) if (typeof r?.device === "string" && typeof r.sub === "string" && typeof r.workspace === "string") this.#rows.set(key(r), r);
     } catch {}
   }

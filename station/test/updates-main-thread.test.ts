@@ -25,8 +25,11 @@ delete process.env.STILLFAIL_CONFIG;
 
 const dirs: string[] = [];
 const servers: Server[] = [];
-after(() => {
+const configs: ConfigFile[] = [];
+after(async () => {
   for (const s of servers) s.close();
+  for (const c of configs) c.unwatch();
+  await Promise.all(configs.map((c) => c.written()));
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 function scratch(): string {
@@ -59,6 +62,7 @@ function installed(data: string, more: Partial<UpdatesOptions>, installer?: stri
   if (installer !== undefined) writeFileSync(join(app, "bin", "install.zh.sh"), installer);
   const config = new ConfigFile(data);
   config.watch();
+  configs.push(config);
   return new Updates({ app, data, config, origin: () => null, env: { PATH: "/nowhere" }, trusted, timing: { followLook: 200 }, ...more });
 }
 
@@ -229,6 +233,6 @@ test("`stillfail-station channel` asking the running station, and its answer, wa
   assert.equal(updates.channel(), "beta");
   // The answer taken, the ask gone: nothing left for the next.
   assert.deepEqual(readdirSync(runDir).filter((f) => f.startsWith("channel-")), []);
-  // The config kept with the channel is written as every edit of it is (ops/config.ts `update`): that file's, apart.
-  assert.deepEqual(calls.filter((c) => !/ConfigFile\.(update|stamp)/.test(c)), []);
+  // The config kept with the channel is written off the thread too (ops/config.ts `updateSoon`).
+  assert.deepEqual(calls, []);
 });
