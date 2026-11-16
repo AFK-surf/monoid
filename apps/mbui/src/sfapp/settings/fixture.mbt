@@ -311,6 +311,12 @@ let fx_google : Ref[String] = Ref("")
 let fx_google_login : Ref[String] = Ref("")
 
 ///|
+/// An Anthropic plan's sign-in for a new profile (settings-new-profile-login…) given its whole code: signed in, its
+/// profile made (cc); before, waiting on the code.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_new_login_done : Ref[Bool] = Ref(false)
+
+///|
 /// Whether Google accounts are among the profiles (settings-profiles-google): a company's and a person's.
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
 let fx_google_profiles : Ref[Bool] = Ref(false)
@@ -428,6 +434,7 @@ fn fixture_reset() -> Unit {
   fx_group_made.val = false
   fx_google.val = ""
   fx_google_login.val = ""
+  fx_new_login_done.val = false
   fx_google_profiles.val = false
   fx_connects_waiting.val = false
 }
@@ -575,6 +582,8 @@ pub fn fixture_page(mode : String) -> String {
   } else {
     mode
   }
+  // (the stable channel's: the same page, as a stable app shows it, sffixture's fixture_stable_mode)
+  let m = if m.has_suffix("-stable") { m.unsafe_substring(start=0, end=m.length() - 7) } else { m }
   // a sheet up over the page, or the page scrolled down (fixture_open; the library's pages too)
   @sf.page_list_opened.val = fn(c, key, rows) { fixture_scroll(c, key, rows~) }
   let up = fn(sheet : String, list : String, block : Int) {
@@ -713,6 +722,8 @@ pub fn fixture_page(mode : String) -> String {
     }
     "settings-profiles-several" => fx.several = true
     "settings-profiles-offer" => fx.offer_quota = true
+    // (an account on several stations' own page: its members those of a profile's hosts)
+    "settings-profile-account" => fx.profile_hosts = true
     "settings-profiles-sum-a" => {
       fx.summary = true
       profiles_narrow_overview.set(true)
@@ -914,8 +925,13 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-copy" => "profile:ws1/st1#bx"
     "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
     "settings-profile-quota-kinds" => "profile:ws1/st1#cc"
+    // (an account on several stations by its key, and one station's profiles from its page)
+    "settings-profile-account" => "profile-account:ws1/st1/cc"
+    "settings-profiles-station" => "profiles:ws1/st1"
     "settings-me-reading" => "me"
-    "settings-usage-details-pending" => "usage"
+    "settings-usage-details-pending" | "settings-usage-real" => "usage"
+    // (its prices of the same workspace's: usage_real's)
+    "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
     | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
@@ -2034,6 +2050,8 @@ fn fx_station(address : String) -> Json {
                   ("created", if fx_google_login.val == "done" { str("gw") } else { Json::null() }),
                 ]),
               ]
+            } else if fx.new_login && fx_new_login_done.val {
+              [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "done")), ("created", str("cc"))])]
             } else if fx.new_login {
               [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])]
             } else {
@@ -2231,7 +2249,7 @@ fn fx_station(address : String) -> Json {
 }
 
 ///|
-fn fx_archive() -> Json {
+fn fx_archive(q? : String = "") -> Json {
   let all = [
     ("a1", "整理上个月的发票", "已经把 23 张发票按月份归好", "14:05", "今天", true),
     ("a2", "试一下新的图标尺寸", "三种尺寸的对比图放在共享文件夹里", "11:30", "今天", true),
@@ -2241,6 +2259,10 @@ fn fx_archive() -> Json {
   let days : Array[(String, Array[Json])] = []
   for a in all {
     if fx.restored.contains("s-" + a.0) {
+      continue
+    }
+    // (looked for: those whose title or last line has the words, as the core's archive search has them)
+    if q != "" && !a.1.contains(q) && !a.2.contains(q) {
       continue
     }
     let row = obj([
@@ -3349,6 +3371,19 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     }
+    // (what the core makes of a workspace spread over three stations as real ones are: usage_real.mbt; split as asked,
+    // the core's choice where none is, all of it where a part or a day is picked)
+    "usage" if mode.has_prefix("settings-usage-real") =>
+      usage_real(
+        match params.get("days") {
+          Some(Number(n, ..)) => n.to_int()
+          _ => 7
+        },
+        match params.get("split") {
+          Some(String(l)) => l
+          _ => ""
+        },
+      )
     "usage" =>
       Some(
         fx_usage(
@@ -3375,7 +3410,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           details_pending=mode == "settings-usage-details-pending",
         ),
       )
-    "archive" => Some(fx_archive())
+    "archive" =>
+      Some(
+        fx_archive(
+          q=match params.get("q") {
+            Some(String(q)) => q
+            _ => ""
+          },
+        ),
+      )
     "memory" => Some(fx_memory())
     // (settings-me-reading: where the account is signed in not read yet, its wait line shown)
     "loginSessions" if mode.has_prefix("settings-me-reading") => None
@@ -3720,6 +3763,30 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     // the drafts' forms (a new profile's, a new connect's, the decisions' and the archive policy's), opened and edited
     // an Anthropic plan's sign-in for a new profile, begun (settings-new-profile-login…)
     "login.new" if fx.new_login => Some(Ok(obj([("id", str("login-new")), ("job", fx_login_job("login-new", "needs_code"))])))
+    // a code pasted back for Claude's sign-in, as the station takes it (station/src/accounts/login.ts claudeCodeOf):
+    // refused without its `#` and what follows it, the sign-in still waiting; whole, signed in
+    "login.code" if fx.new_login =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx_new_login_done.val = true
+            fx_changed()
+            Ok(obj([("job", fx_login_job("login-new", "done"))]))
+          }
+        },
+      )
+    "profile.loginCode" if fx.login == "needs_code" =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx.login = "done"
+            fx_changed()
+            Ok(obj([]))
+          }
+        },
+      )
     // Google's sign-in, begun; its code taken (a company's then asks for its project), its project taken
     "login.new" if fx_google.val != "" => {
       // (one under way already, as a mode put it: as it is)
@@ -3981,6 +4048,18 @@ fn fx_words() -> Array[String] {
     "amber", "basin", "cedar", "delta", "ember", "fable", "grove", "harbor", "island", "jasper", "kettle", "lantern", "meadow",
     "nectar", "orbit", "pebble", "quarry", "river", "saddle", "timber", "umbra", "velvet", "willow", "zephyr",
   ]
+}
+
+///|
+/// Why the station would refuse `code` pasted back for Claude's sign-in (no `#`, or nothing on a side of it), as its
+/// refusal comes to the app; None where it takes it.
+fn fx_claude_code(code : String) -> Json? {
+  let parts = code.split("#").to_array()
+  if parts.length() == 2 && parts[0].trim(chars=" ").length() > 0 && parts[1].trim(chars=" ").length() > 0 {
+    None
+  } else {
+    Some(obj([("code", str("http")), ("message", str("授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）"))]))
+  }
 }
 
 ///|

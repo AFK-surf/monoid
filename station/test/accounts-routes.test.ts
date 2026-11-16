@@ -92,6 +92,8 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
       const found = route.method === method ? route.pattern.exec(path) : null;
       if (found) {
         const a = await route.handle(r, found.slice(1));
+        // (what the profiles' homes say read off the station's thread, as the overview reads it before it is made)
+        await accounts.homesReadSoon();
         return [a.status, JSON.parse(String(a.body))];
       }
     }
@@ -99,6 +101,7 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
   };
   const profile = (id: string) => accounts.profiles().find((p) => p.id === id);
   const view = (id: string) => accounts.profilesView().find((p) => p.id === id);
+  await accounts.homesReadSoon();
   return { data, path, config, store, accounts, call, profile, view, close: () => accounts.close() };
 }
 
@@ -280,12 +283,16 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.call("POST", "/profiles/sub/login");
     const job = await wait("sub", "needs_code");
     assert.ok(job.url.startsWith("https://claude.com/cai/oauth/authorize?"));
-    await t.call("POST", "/profiles/sub/login-code", { code: "wrong" });
+    // A code Claude's command would not take: refused at once, saying what to paste; the sign-in waits on.
+    assert.deepEqual(await t.call("POST", "/profiles/sub/login-code", { code: "good-code" }), [400, { error: "授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）" }]);
+    assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "good-code#other" }))[0], 400);
+    assert.equal(t.view("sub")!.login.state, "needs_code");
+    await t.call("POST", "/profiles/sub/login-code", { code: "wrong#y" });
     assert.ok((await wait("sub", "failed")).error.includes("invalid code"));
     assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "again" }))[0], 400);
     await t.call("POST", "/profiles/sub/login");
     await wait("sub", "needs_code");
-    await t.call("POST", "/profiles/sub/login-code", { code: " good-code " });
+    await t.call("POST", "/profiles/sub/login-code", { code: " good-code#y " });
     await wait("sub", "done");
 
     await t.call("PUT", "/profiles/cxs", { runtime: "codex", access: { kind: "subscription" } });
@@ -398,7 +405,9 @@ describe("the accounts routes", { concurrency: true }, () => {
       assert.equal(await t.accounts.logins.openPage(started.id, "zh"), "browser:T2");
       const stateForNew = b.options.get("T2")!.stateFile!;
       assert.equal(stateForNew(), join(dir, "homes", started.id, LOGIN_BROWSER_FILE));
-      await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" });
+      assert.equal((await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" }))[0], 400);
+      assert.equal(t.accounts.logins.get(started.id)?.state, "needs_code");
+      await t.call("POST", `/logins/${started.id}/code`, { code: "https://platform.claude.com/oauth/code/callback?code=good-code&state=y" });
       const created = await upon(
         (wake) => t.accounts.onChange(wake),
         () => t.accounts.loginsView().find((l) => l.id === started.id)?.created as string | undefined,
@@ -745,7 +754,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     await s.close();
   });
 
-  test("a profile's home is read on the thread for its first view alone; what changes in it shows once read again off the thread, ten seconds on", async () => {
+  test("a profile's home is read off the thread before its first view; what changes in it shows once read again, ten seconds on", async () => {
     // Its time moves only as the test says.
     const time = testClock();
     const data = temp("homes-read");
@@ -757,13 +766,50 @@ describe("the accounts routes", { concurrency: true }, () => {
     mkdirSync(home, { recursive: true });
     const claims = Buffer.from(JSON.stringify({ email: "b@x.com" })).toString("base64url");
     writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
-    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read on the thread again");
+    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read again at once");
     await time.adjust(10_000);
     const seen = await upon((wake) => t.accounts.onChange(wake), () => {
       const v = t.view("sx")!;
       return v.email === "b@x.com" && v.homeExists;
     }, "the home read again");
     assert.ok(seen);
+    await t.close();
+  });
+
+  test("a home read under way as a sign-in changes it is not the one the overview waits for; one asked by a view meanwhile is told", async () => {
+    const data = temp("homes-merged");
+    writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "sx", runtime: "codex", home: "homes/sx", access: { kind: "subscription" } }], connects: [] }));
+    const t = await rig({ data, clock: testClock().clock });
+    const home = join(data, "homes", "sx");
+    const signIn = (email: string) => {
+      mkdirSync(home, { recursive: true });
+      const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+    };
+    // What a sign-in's end does (Accounts.start, logins.changes): what the home says read anew.
+    const told = () => {
+      const a = t.accounts as any;
+      a.homes.delete("sx");
+      a.homesChanged++;
+    };
+    told();
+    signIn("a@x.com");
+    // A view reads it (its reading under way), then a sign-in ends: the overview waits for a reading of after it.
+    assert.equal(t.accounts.profilesView().find((p) => p.id === "sx")!.email, null, "not read yet");
+    told();
+    await t.accounts.homesReadSoon();
+    assert.equal(t.view("sx")!.email, "a@x.com");
+    // The overview's reading under way, then a view asks: what it finds is told.
+    told();
+    signIn("b@x.com");
+    let changes = 0;
+    const stop = t.accounts.onChange(() => changes++);
+    const overview = t.accounts.homesReadSoon();
+    t.accounts.profilesView();
+    await overview;
+    stop();
+    assert.equal(changes, 1, "the view's ask told once read");
+    assert.equal(t.view("sx")!.email, "b@x.com");
     await t.close();
   });
 

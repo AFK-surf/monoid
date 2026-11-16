@@ -482,6 +482,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_overload_notice(rich_chat(f.older), f.mode == "chat-overload-after", f.step > 0)
           } else if f.mode == "chat-turn-failed" {
             with_failed_turn(rich_chat(f.older), f.step > 0)
+          } else if f.mode == "chat-turn-failed-repeated" {
+            // (重试 pressed: its agent at it (1), then failing again alike (2: one more folded))
+            with_failed_turn(rich_chat(f.older), f.step == 1, repeated=if f.step >= 2 { 12 } else { 11 })
           } else if f.mode == "chat-turn-limit" {
             with_limit_turn(rich_chat(f.older), f.step > 0)
           } else if f.mode == "chat-turn-unanswered" {
@@ -2847,13 +2850,20 @@ fn with_overload_notice(v : Json, after : Bool, canceled : Bool) -> Json {
 
 ///|
 /// The chat `v` ending on a turn that lost its connection to the model's service ("chat-turn-failed"): its notice offers
-/// 重试 till it is pressed (`retried`: its agent goes on, the notice says it no more).
-fn with_failed_turn(v : Json, retried : Bool) -> Json {
+/// 重试 till it is pressed (`retried`: its agent goes on, the notice says it no more). `repeated`
+/// ("chat-turn-failed-repeated"): so many of them one after another, folded by the core into one (views.ts
+/// foldNotices: ×11, the last's seq and failure in words).
+fn with_failed_turn(v : Json, retried : Bool, repeated? : Int = 0) -> Json {
   match v {
     Object(m) => {
       let o = m.copy()
       let words = if @sf.language() == "en" { "Connection lost; reply to retry" } else { "与模型服务的连接中断，回复即可重试" }
       let notice : Map[String, Json] = { "failed": true, "words": Json::string(words) }
+      if repeated > 1 {
+        notice["count"] = Json::number(repeated.to_double())
+        notice["lastSeq"] = Json::number((7 + repeated).to_double())
+        notice["detail"] = Json::string("API Error: Connection error (request req_011CVa\{repeated}: read ECONNRESET)")
+      }
       if !retried {
         notice["againSession"] = "s-c1"
       }

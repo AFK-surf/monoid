@@ -275,11 +275,11 @@ export const connectRoutes = (deps: ConnectRoutesDeps): Route[] => {
     {
       method: "POST",
       pattern: /^\/*connects\/+([^/]+)\/+session(?:\/.*)?$/,
-      handle: answer((r, [raw]) => {
+      handle: answer(async (r, [raw]) => {
         const id = mine(r, segment(raw!));
         const i = input(r);
         const target = str(i.session);
-        const key = bindSingle(hub(), id, target !== undefined && target !== "" ? target : null, str(i.title) ?? null, idOf(r.viewer));
+        const key = await bindSingle(hub(), id, target !== undefined && target !== "" ? target : null, str(i.title) ?? null, idOf(r.viewer));
         log.info("admin", "single-session binding changed from the admin page", { connect: id, session: key, by: idOf(r.viewer) });
         return ok({ session: key });
       }),

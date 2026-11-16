@@ -73,18 +73,28 @@ pub fn fill_chip_node(
     b.box(fn(w) {
       style_node(w, fn() {
         let s = if small { chip_words_small } else { chip_words }
-        if chip_joined(mark(), words()) {
+        if mark() == "" || chip_joined(mark(), words()) {
           s.then(chip_joined_gap)
         } else {
           s
         }
       })
-      w.show(fn() { mark() != "" }, fn(m) { words_node(m, mark, fn() { chip_text }) |> ignore })
-      let f = words_node(w, words, fn() { chip_text })
-      // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are)
+      // (its mark made with it, none where it says none: a chip whose mark comes is the same chip, never one making its
+      // way in across its words)
+      // (a mark run on into its words, 磁盘剩 420 G, one line of words, never two touching)
+      let joined = fn() { chip_joined(mark(), words()) }
+      let k = words_node(w, fn() { if joined() { "" } else { mark() } }, fn() { chip_text })
+      let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() { chip_text })
+      // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are;
+      // else whole, its mark and figure never squeezed over each other, so a line short of the room for it gives it
+      // up whole: View::drops)
       if squeezes {
         w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         f.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+      } else {
+        w.shrink(Is(0.0)) |> ignore
+        k.shrink(Is(0.0)) |> ignore
+        f.shrink(Is(0.0)) |> ignore
       }
     })
     |> ignore
@@ -361,3 +371,73 @@ let chip_kept : Ref[WordsBoxKept?] = Ref(None)
 ///|
 // kept across runs: the same of a small fill chip
 let chip_small_kept : Ref[WordsBoxKept?] = Ref(None)
+
+///|
+/// An allowance's windows worded (quota_chips' `worded`, as a node) in `parent`, `q` as the core says it now: each
+/// window's name and what is left in words, as a machine's chips say theirs (每周剩 78%: a profile's row, where a touch
+/// has no tip to say what W is), the line said one way for all its chips, the longest its room holds whole (by that
+/// room: View::by_room), 5 小时剩 62%, then 5 小时 62%, then 5H 62%, never one chip a way of its own nor one cut short;
+/// `gap` apart; nothing while the core cannot say or there is no window. Each says what is left of it and when it fills
+/// again over it while it is pointed at, in `tips`.
+#callsite(autofill(loc))
+pub fn quota_worded_node(
+  parent : @view.View,
+  q : () -> Json?,
+  gap? : Double = 8.0,
+  tips? : TipLayer,
+  loc~ : SourceLoc,
+) -> Unit {
+  let windows = fn() {
+    match chip_field(q(), "windows") {
+      Some(Array(a)) => a
+      _ => []
+    }
+  }
+  parent.show(fn() { has_quota(q()) }, fn(x) {
+    x.by_room(loc~, fn(held, given) {
+      // (how wide a line of its chips said `form`'s way stands, `gap` apart: each chip its words' room and theirs)
+      let wide = fn(form : Int) {
+        let look = @ui.style_words(chip_text)
+        let size = node_sp(held, look.size)
+        let across = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+        let side = @ui.Space::S2.px()
+        let mut used = 0.0
+        for i, w in windows() {
+          let (mark, words) = quota_worded(Some(w), form)
+          let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
+          used = used + (if i > 0 { gap } else { 0.0 }) + 2.0 * side + across(mark) + between + across(words)
+        }
+        used
+      }
+      let form = fn() {
+        if wide(0) <= given.width() + 0.01 {
+          0
+        } else if wide(1) <= given.width() + 0.01 {
+          1
+        } else {
+          2
+        }
+      }
+      held.box(fn(r) {
+        style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
+        r.wraps(Is(Some(gap))) |> ignore
+        r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+          let k = i.untracked()
+          let w = fn() { windows().get(k) }
+          fill_chip_node(
+            c,
+            fn() { chip_left(w()) },
+            fn() { chip_str(w(), "level") },
+            fn() { quota_worded(w(), form()).0 },
+            fn() { quota_worded(w(), form()).1 },
+            said=fn() { quota_said(w()) },
+            tips?,
+          )
+          |> ignore
+        })
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+}

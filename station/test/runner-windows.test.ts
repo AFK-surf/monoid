@@ -11,7 +11,8 @@ import { test } from "node:test";
 import { findRunner } from "../src/agents/process.ts";
 import { AgentProcess } from "./reference/process.ts";
 import { AgentsHost, HostedProcess, type HostedOptions } from "../src/agents/mb-agents.ts";
-import { RunnerConnection, allLeft, existingRunners, runnerBinary, startRunner } from "../src/agents/runner.ts";
+import { RunnerConnection, allLeft, runnerBinary, startRunner } from "../src/agents/runner.ts";
+import { existingRunners } from "./runners-kept.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { keepRunnerIn } from "../src/platform/processes.ts";
 

@@ -12,14 +12,12 @@ import { hubConfig } from "../sessions/config.ts";
 import type { LiveHub } from "../sessions/live.ts";
 import { Parts, Paths, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { log } from "../ops/log.ts";
-import { Fibers } from "../ops/fibers.ts";
 import type { Store as StationStore } from "../store/store.ts";
-import type { InWorkspace } from "../store/rows.ts";
-import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
+import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import { stopUsageIndexes, usageIndexesLeft } from "../store/usage-retire.ts";
-import { hasCompactUsage, installCompactUsage, installUsageSummaryChanges } from "../store/usage-compact.ts";
-import { hasUsageSummaryBlocks, installUsageSummaryBlocks, type UsageSummaryKey, type UsageSummaryRange } from "../store/usage-summary-blocks.ts";
-import { installUsageHistory } from "../store/usage-history.ts";
+import { installCompactUsage } from "../store/usage-compact.ts";
+import { usage15mSince } from "../store/usage-15m.ts";
+import { drainUsageChatDirty } from "../store/usage-chat-stats.ts";
 import { UsageCounter } from "./counter.ts";
 
 /// A session's usage as its summary says it (store.ts `setSessionUsage`): as recorded now (read/usage.ts `usageNow`).
@@ -42,7 +40,8 @@ export function keepCounted(store: StationStore, live: LiveHub, counter: UsageCo
   });
 }
 
-/// Install the new writers and stop the old ones without waiting behind another connection on the station thread.
+/// Keep the contexts with the station's own writers and stop the old statistics' writers, without waiting behind another
+/// connection on the station thread.
 function tryStopUsageIndexes(store: StationStore): boolean {
   const priority = new Int32Array(store.backfillPriority);
   const owner = -1; // Background workers use positive thread ids.
@@ -51,23 +50,14 @@ function tryStopUsageIndexes(store: StationStore): boolean {
     const timeout = (store.db.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout;
     store.db.exec("PRAGMA busy_timeout = 0");
     try {
-      try {
-        installCompactUsage(store.db, () => store.now());
-        installUsageSummaryChanges(store.db);
-        installUsageSummaryBlocks(store.db);
-      } catch (error) {
-        const code = (error as { errcode?: number }).errcode;
-        if (code !== undefined && [5, 6].includes(code & 255)) throw error;
-        // Even if the new statistics cannot be installed, do not leave the old per-call writers running.
-        log.warn("usage", "compact usage statistics could not be installed", { error: (error as Error).message });
-      }
-      stopUsageIndexes(store.db);
-      try { installUsageHistory(store.db, store.now()); }
+      try { installCompactUsage(store.db); }
       catch (error) {
         const code = (error as { errcode?: number }).errcode;
         if (code !== undefined && [5, 6].includes(code & 255)) throw error;
-        log.warn("usage", "the usage history could not be installed", { error: (error as Error).message });
+        // Even if the contexts cannot be kept, do not leave the old per-call writers running.
+        log.warn("usage", "the usage contexts could not be installed", { error: (error as Error).message });
       }
+      stopUsageIndexes(store.db);
       return true;
     } catch (error) {
       const code = (error as { errcode?: number }).errcode;
@@ -79,9 +69,10 @@ function tryStopUsageIndexes(store: StationStore): boolean {
   } finally { giveBackfill(priority, owner); }
 }
 
-/// An older station may still use these indexes during handover. Stop their writers only after it actually exits.
-/// `binary`: the MoonBit program, a test's own where it gives one.
-export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string, installed: () => void = () => {}) {
+/// An older station reads and writes the old statistics during handover. Stop their writers only after it actually
+/// exits, then free them and take in the calls from before the quarters (store/usage-15m.ts). `binary`: the MoonBit
+/// program, a test's own where it gives one. True once all of it is done.
+export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string) {
   let stopped = false;
   return Effect.gen(function* () {
     yield* Effect.tryPromise({ try: () => exited, catch: (error) => error });
@@ -89,28 +80,24 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       yield* Effect.sleep(50);
     }
     stopped = true;
-    if (hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db)) {
-      installed();
-      // A page may have opened before handover and received unavailable statistics. Wake it even if no call follows.
-      store.usageChanged([], undefined, true);
-    }
     const path = store.db.location();
     if (path === null) {
-      if (usageIndexesLeft(store.db)) log.warn("usage", "the usage retirement requires a file-backed store");
-      return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db);
+      // (no builder opens a database in memory: what it would free and take in stays, its writers stopped)
+      if (usageIndexesLeft(store.db) || usage15mSince(store.db) !== null) log.warn("usage", "the usage retirement requires a file-backed store");
+      return true;
     }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
     yield* Effect.tryPromise({ try: () => retireByProgram(store, binary ?? readerBinary(), path), catch: (error) => error });
-    return hasCompactUsage(store.db) && hasUsageSummaryBlocks(store.db);
+    return true;
   }).pipe(Effect.catch((error) => Effect.sync(() => {
-    log.warn("usage", stopped ? "usage indexes could not be removed" : "usage index writers could not be stopped", { error: (error as Error).message });
+    log.warn("usage", stopped ? "the old usage statistics could not be removed" : "the old usage statistics' writers could not be stopped", { error: (error as Error).message });
     return false;
   })));
 }
 
-/// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired indexes freed, then the old calls
-/// taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old days
-/// came in.
+/// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired statistics freed, then the old
+/// calls taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old
+/// days came in.
 async function retireByProgram(store: StationStore, mb: string, path: string): Promise<void> {
   const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
   // (one that cannot start says so, then ends: its end fails what was asked)
@@ -133,198 +120,60 @@ async function retireByProgram(store: StationStore, mb: string, path: string): P
       filled = true;
       await wall.sleep(Math.max(200, (performance.now() - started) * 9));
     }
-    // The days before the statistics began have just come in: pages open now read them again.
+    // The days before the quarters began have just come in: pages open now read them again.
     if (filled) store.usageChanged([], undefined, true);
   } finally { await program.terminate(); }
 }
 
 /// Retry temporary installation or cleanup failures after stopping the old writers.
-export function retireUntilComplete(store: StationStore, exited: Promise<void>, binary?: string, installed: () => void = () => {}) {
+export function retireUntilComplete(store: StationStore, exited: Promise<void>, binary?: string) {
   return Effect.gen(function* () {
     let retryMs = 250;
-    while (!(yield* retireAfterPrevious(store, exited, binary, installed))) {
+    while (!(yield* retireAfterPrevious(store, exited, binary))) {
       yield* Effect.sleep(retryMs);
       retryMs = Math.min(retryMs * 2, 30_000);
     }
   });
 }
 
-/// A worker moves changed ownership and accounts a workspace's totals when that workspace asks for them.
-export function watchCompactMoves(store: StationStore, exited: Promise<void>): {
-  wake: () => void; read: (viewer: InWorkspace | null) => void;
-  waitSummary: (viewer: InWorkspace | null, range: UsageSummaryRange, signal?: AbortSignal) => Promise<void>; close: () => Promise<void>;
-} {
-  const path = store.db.location();
-  const retries = new Fibers("usage workspace", store.clock);
-  let closed = false;
+/// The chats of sessions that moved between workspaces (usage_chat_dirty) given their new workspace, a batch at a
+/// time, the station's thread given back between them: once the station before has gone, and again each time
+/// sessions move. Pages open are told once none waits (the page's chats are whole again: `chatsIncomplete` no more).
+/// The function returned stops it.
+export function drainUsageChats(store: StationStore, exited: Promise<void>, batch = 32): { drained: () => Promise<void>; stop: () => void } {
+  let stopped = false;
   let ready = false;
-  let moves = true;
-  type Work = { scope?: string; range?: UsageSummaryRange };
-  const scopes = new Map<string, Work>();
-  const workId = (work: Work) => work.range === undefined ? work.scope! : JSON.stringify([work.scope, String(work.range.from), String(work.range.to)]);
-  const waiting = new Set<{ scopes: Set<string>; finish: (error?: Error) => void }>();
-  const scopesOf = (viewer: InWorkspace | null) => viewer === null ? ["G"]
-    : viewer.home === false ? [`W${viewer.workspace}`] : [`W${viewer.workspace}`, "H"];
-  // A page cannot use a total until all its pending buckets are accounted. Remember only the earliest changed time
-  // for each requested scope, so intermediate batches do not send it back to read an unavailable total again.
-  const totals = new Map<string, { from: number | undefined }>();
-  let held: Work | null = null;
-  let preferMoves = false;
-  let retryMs = 250;
-  let cancelRetry: (() => void) | null = null;
-  let worker: Worker | MbBackfill | null = null;
-  const interested = (id: string) => [...waiting].some((waiter) => waiter.scopes.has(id));
-  const requeue = (work: Work) => {
-    if (work.scope === undefined) moves = true;
-    else if (work.range === undefined || interested(workId(work))) scopes.set(workId(work), work);
-  };
-  const enqueue = (work: Work) => {
-    const id = workId(work);
-    if ((held === null || workId(held) !== id) && !scopes.has(id)) scopes.set(id, work);
-  };
-  const dispatch = () => {
-    if (worker === null || held !== null || cancelRetry !== null) return;
-    let work: Work;
-    if (moves && (preferMoves || scopes.size === 0)) { moves = false; preferMoves = false; work = {}; }
-    else if (scopes.size > 0) {
-      const [id, next] = scopes.entries().next().value!;
-      scopes.delete(id);
-      preferMoves = true;
-      work = next;
-    } else return;
-    held = work;
-    worker.postMessage({ wake: true, ...work });
-  };
-  const retry = () => {
-    if (closed || cancelRetry !== null) return;
-    const delay = retryMs;
-    retryMs = Math.min(retryMs * 2, 30_000);
-    cancelRetry = retries.after(delay, () => {
-      cancelRetry = null;
-      start();
-      dispatch();
-    });
-  };
-  const start = () => {
-    if (closed || !ready || path === null || worker !== null) return;
-    // (by the MoonBit builder, station/mb's src/usagefill scope.mbt: `MbBackfill`)
-    let current: MbBackfill;
-    try { current = new MbBackfill(readerBinary(), ["--builder", "usage-scope", "--db", path], store.backfillPriority, 20); }
-    catch (error) {
-      log.warn("usage", "the usage workspace builder could not start", { error: (error as Error).message });
-      retry();
-      return;
-    }
-    const owner = current.threadId;
-    worker = current;
-    current.unref();
-    current.on("message", (answer: { done: boolean; session?: string; sessions?: string[]; from?: number; after?: UsageSummaryKey; converted?: boolean; error?: string }) => {
-      if (closed) return;
-      const work = held;
-      held = null;
-      if (work === null) return;
-      if (!answer.done) {
-        if (work.range !== undefined) {
-          if (answer.after !== undefined) work.range.after = answer.after;
-          if (answer.converted) work.range.converted = true;
+  let running: Promise<void> | null = null;
+  let again = false;
+  const run = async () => {
+    do {
+      again = false;
+      let moved = false;
+      for (;;) {
+        if (stopped) return;
+        let step: { done: boolean; processed: number };
+        try { step = drainUsageChatDirty(store.db, batch); }
+        catch (error) {
+          log.warn("usage", "the chats of moved sessions could not be counted again", { error: (error as Error).message });
+          return;
         }
-        requeue(work);
+        if (step.processed > 0) moved = true;
+        if (step.done) break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
-      if (answer.error) {
-        log.warn("usage", "a usage statistics batch stopped", { error: answer.error });
-        retry();
-        return;
-      }
-      if (answer.session) store.usageChanged([answer.session], undefined, true);
-      if (work.scope !== undefined) {
-        if (work.range === undefined) {
-          if (answer.sessions?.length) {
-            const prior = totals.get(work.scope);
-            const from = prior === undefined ? answer.from : prior.from === undefined || answer.from === undefined
-              ? undefined : Math.min(prior.from, answer.from);
-            totals.set(work.scope, { from });
-          }
-          const complete = answer.done ? totals.get(work.scope) : undefined;
-          if (complete !== undefined) {
-            totals.delete(work.scope);
-            store.usageChanged([], complete.from, true);
-          }
-        }
-        if (answer.done) for (const waiter of waiting) {
-          waiter.scopes.delete(workId(work));
-          if (waiter.scopes.size === 0) waiter.finish();
-        }
-      }
-      retryMs = 250;
-      dispatch();
-    });
-    current.once("error", (error) => log.warn("usage", "the usage workspace worker failed", { error: error.message }));
-    current.once("exit", (code) => {
-      releaseStoppedBackfill(store.backfillPriority, owner);
-      if (worker === current) worker = null;
-      if (held !== null) requeue(held);
-      held = null;
-      moves = true;
-      if (!closed) {
-        log.warn("usage", "the usage workspace worker stopped", { code });
-        retry();
-      }
-    });
-    dispatch();
+      if (moved) store.usageChanged([], undefined, true);
+    } while (again && !stopped);
   };
   const wake = () => {
-    cancelRetry?.();
-    cancelRetry = null;
-    moves = true;
-    start();
-    dispatch();
-  };
-  const read = (viewer: InWorkspace | null) => {
-    cancelRetry?.();
-    cancelRetry = null;
-    for (const scope of scopesOf(viewer)) enqueue({ scope });
-    start();
-    dispatch();
-  };
-  const waitSummary = (viewer: InWorkspace | null, range: UsageSummaryRange, signal?: AbortSignal): Promise<void> => {
-    if (closed || path === null) return Promise.reject(new Error("station stopping"));
-    if (signal?.aborted) return Promise.reject(new Error("read cancelled"));
-    return new Promise<void>((resolve, reject) => {
-      const work = scopesOf(viewer).map((scope) => ({ scope, range: { from: range.from, to: range.to } }));
-      const waiter = { scopes: new Set(work.map(workId)), finish: (error?: Error) => {
-        waiting.delete(waiter);
-        signal?.removeEventListener("abort", abort);
-        for (const id of waiter.scopes) if (!interested(id)) scopes.delete(id);
-        if (error) reject(error); else resolve();
-      } };
-      const abort = () => waiter.finish(new Error("read cancelled"));
-      waiting.add(waiter);
-      signal?.addEventListener("abort", abort, { once: true });
-      try { for (const item of work) enqueue(item); start(); dispatch(); }
-      catch (cause) { waiter.finish(cause instanceof Error ? cause : new Error(String(cause))); }
-    });
+    if (stopped || !ready) return;
+    if (running !== null) { again = true; return; }
+    running = run().finally(() => { running = null; });
   };
   const unsubscribe = store.onSessionWorkspaceChange(wake);
-  const unsubscribeUsage = store.subscribe((change) => {
-    if (change.type === "usage" && !change.statisticsOnly) wake();
-  });
-  void exited.then(() => { ready = true; start(); }).catch((cause) => {
-    const error = cause instanceof Error ? cause : new Error(String(cause));
-    log.warn("usage", "could not start usage workspace worker", { error: error.message });
-    for (const waiter of waiting) waiter.finish(error);
-  });
+  void exited.then(() => { ready = true; wake(); }, () => {});
   return {
-    wake,
-    read,
-    waitSummary,
-    close: async () => {
-      closed = true;
-      for (const waiter of waiting) waiter.finish(new Error("station stopping"));
-      unsubscribe();
-      unsubscribeUsage();
-      await retries.close();
-      if (worker !== null) await worker.terminate();
-    },
+    drained: async () => { while (running !== null) await running; },
+    stop: () => { stopped = true; unsubscribe(); },
   };
 }
 
@@ -336,11 +185,11 @@ export const UsageLive = Layer.effectDiscard(
     const { hub } = yield* Agents;
     const previous = yield* Previous;
     const readers = yield* Readers;
-    const mover = yield* Effect.acquireRelease(
-      Effect.sync(() => watchCompactMoves(store, previous.exited)),
-      (m) => Effect.promise(() => m.close()),
+    yield* Effect.forkScoped(retireUntilComplete(store, previous.exited).pipe(Effect.provideService(Clock.Clock, hub.clock)));
+    yield* Effect.acquireRelease(
+      Effect.sync(() => drainUsageChats(store, previous.exited)),
+      (drain) => Effect.sync(() => drain.stop()),
     );
-    yield* Effect.forkScoped(retireUntilComplete(store, previous.exited, undefined, mover.wake).pipe(Effect.provideService(Clock.Clock, hub.clock)));
     const usage = yield* Effect.acquireRelease(
       Effect.sync(() => new UsageCounter({
         store, config: () => ({ dataDir: data, profiles: hubConfig(config.raw(), data).profiles }), clock: hub.clock,
@@ -354,6 +203,6 @@ export const UsageLive = Layer.effectDiscard(
       Effect.sync(() => keepCounted(store, hub.live, usage)),
       (unsubscribe) => Effect.sync(unsubscribe),
     );
-    (yield* Parts).routes((tools) => usageRoutes(tools, () => usage.readingAll(), mover.read, mover.waitSummary));
+    (yield* Parts).routes((tools) => usageRoutes(tools, () => usage.readingAll()));
   }),
 );

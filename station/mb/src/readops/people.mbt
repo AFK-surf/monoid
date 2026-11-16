@@ -183,10 +183,25 @@ fn Known::config(self : Known) -> (Array[(String, String)], Bool) raise {
 }
 
 ///|
+/// slack-known.ts `teamOf`: a connect's place by its id, or, for one named `<connect>@<station>` (a connect moved here
+/// from another station, as its chats said it before), by the connect of that name here.
+fn Known::place(self : Known, connect : String) -> Place? raise {
+  let places = self.places()
+  match places.get(connect) {
+    Some(p) => Some(p)
+    None =>
+      match connect.find("@") {
+        Some(at) if at > 0 => places.get(connect.view(end_offset=at).to_owned())
+        _ => None
+      }
+  }
+}
+
+///|
 /// slack-known.ts `knownPerson`: a person of a connect's platform, as far as known: (name, email, picture), "" for
 /// what is not.
 fn Known::person(self : Known, connect : String, user : String) -> (String, String, String)? raise {
-  let place = self.places().get(connect)
+  let place = self.place(connect)
   let book = self.book(match place { Some(p) => p.book; None => "slack" })
   let person = jget(jget(Some(book), "u:\{match place { Some(p) => p.id; None => "?" }}:\{user}"), "person")
   guard jget(person, "name") is Some(Str(name)) else { return None }
@@ -201,7 +216,7 @@ fn Known::person(self : Known, connect : String, user : String) -> (String, Stri
 /// slack-known.ts `knownChannel`.
 fn Known::channel(self : Known, connect : String?, channel : Json) -> Json raise {
   guard connect is Some(connect) else { return Json::null() }
-  let place = self.places().get(connect)
+  let place = self.place(connect)
   let book = self.book(match place { Some(p) => p.book; None => "slack" })
   match jget(jget(Some(book), "c:\{match place { Some(p) => p.id; None => "?" }}:\{js_text(channel)}"), "channel") {
     Some(Str(name)) => Json::string(@jsjson.text(name))
@@ -236,7 +251,7 @@ fn Known::creator(self : Known, reference : Json) -> Json raise {
           "id": Json::string(r),
           "name": Json::string(match person { Some((n, _, _)) if n != "" => n; _ => user }),
           "email": match person { Some((_, e, _)) if e != "" => Json::string(e); _ => Json::null() },
-          "via": Json::string(match self.places().get(connect) { Some(p) => p.book; None => "slack" }),
+          "via": Json::string(match self.place(connect) { Some(p) => p.book; None => "slack" }),
         }
         if person is Some((_, _, p)) && p != "" {
           out["picture"] = Json::string(p)

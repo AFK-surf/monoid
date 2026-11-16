@@ -131,7 +131,8 @@ class Mesh {
       const there = this.nodes.get(to);
       if (there === undefined || there.down || node.down) throw new Error("station unreachable");
       count(request);
-      if (request?.method === "retire.put") node.puts++;
+      // (the files sent: a pack says how many it holds)
+      if (request?.method === "retire.put") node.puts += typeof request?.count === "number" ? request.count : 1;
       if (request?.method === "retire.lacking" && there.gate !== null) {
         there.gated?.();
         await there.gate;

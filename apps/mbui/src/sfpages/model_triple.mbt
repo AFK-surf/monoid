@@ -1258,6 +1258,8 @@ fn triple_body_node(
           @sf.style_node(c, fn() { triple_first_rows })
           c.margin(Is(if up { (0.0, -back, 0.0, 0.0) } else { (0.0, 0.0, 0.0, -back) })) |> ignore
         })
+        // (its combos by key once: each row reads its own, told only as that one changes)
+        let combos_by = col.keyed_by(combos, fn(x) { triple_combo_key(Some(x)) })
         col.each(first_keys, fn(k) { k }, fn(r, k) {
           let k = k.untracked()
           // (each with the room between it and the next in its own, on its side towards the panel's far end from what
@@ -1275,7 +1277,7 @@ fn triple_body_node(
             model_row(r, k.exact_view(start=6).to_owned())
           } else {
             let combo = fn() {
-              match combos().iter().find_first(fn(x) { triple_combo_key(Some(x)) == k }) {
+              match combos_by.get(k) {
                 Some(x) => Some(x)
                 None => leaving.get().get(k)
               }

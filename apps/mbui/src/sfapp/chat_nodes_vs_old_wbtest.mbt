@@ -1,5 +1,5 @@
 // A chat of real size opened again from Home (or the sidebar) with the chat held, on the chat's page made as nodes
-// (外观's 试用新对话页) and on the old page it replaces, the same press in the same window: what the heaviest frame
+// (实验性功能's 试用新对话页) and on the old page it replaces, the same press in the same window: what the heaviest frame
 // does on each, counted alike. The old page builds its list as an old view (a Ctx, built whole as a frame builds it)
 // and the new one makes it as nodes (the window's tree), so each is counted as both: nodes made in the tree and the
 // old view's nodes built over what the shell's old islands build at rest (`Δctx`), and laid out the same way.
@@ -99,6 +99,9 @@ fn chat_vs_again(
       None => {
         reset()
         @sfbase.chat_page_nodes.set(nodes)
+        // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
+        // the key off Home under both pages alike)
+        @sfbase.board_feature.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
         let s = @sffixture.round_trip_again(
           chat_vs_source(c.source(@sffixture.fixture("chat")), card),
@@ -252,7 +255,9 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// structure, no pick where it is not shown smaller): before that md's 1828, 2272, 1420 and 1285 of the old one's
 /// nodes; the same at every rate of frames (60, 120, 24, 7), each bar the least that holds it, rounded up. Again once a
 /// paragraph with no link holds no room for its links' cards (sf words_links_node): before that phone card's 2744 and
-/// md's 1808 of the old one's nodes, its laid out bars loose (1230, 998) and brought to what is laid out now.
+/// md's 1808 of the old one's nodes, its laid out bars loose (1230, 998) and brought to what is laid out now. Wide's laid
+/// out more (card 1115, md 1073 before) once the sidebar's foot is made as nodes (lists_foot_node): the new page laid
+/// out as before, the old one's old views a node less, its foot no old view of the shell's any more.
 let chat_vs_bars : Map[String, (Int, Int)] = {
   "phone card": (2736, 895),
   "phone md": (1788, 939),
@@ -260,8 +265,8 @@ let chat_vs_bars : Map[String, (Int, Int)] = {
   "plp_narrow md": (2216, 885),
   "tape card": (1350, 1192),
   "tape md": (1400, 1166),
-  "wide card": (1280, 1115),
-  "wide md": (1272, 1073),
+  "wide card": (1280, 1117),
+  "wide md": (1272, 1074),
 }
 
 ///|
@@ -277,7 +282,8 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// differs: phone's 1128 and 1077, plp_narrow md's 1071 at the default rate, 967, 903 and 1006 at the others), once a
 /// table's cells are made with fewer nodes: before that md's 1419, 1750, 1419 and 1284 of the old one's nodes. Again
 /// once a paragraph with no link holds no room for its links' cards: before that 1721, 1405, 1759, 1736 of phone's and
-/// plp_narrow's (the most of the five rates, each rounded up).
+/// plp_narrow's (the most of the five rates, each rounded up). Wide's laid out more (1115, 1073 before) once the
+/// sidebar's foot is made as nodes, as chat_vs_bars' are.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
   "phone card": (1716, 1121),
   "phone md": (1390, 1065),
@@ -285,8 +291,8 @@ let chat_vs_motion_bars : Map[String, (Int, Int)] = {
   "plp_narrow md": (1709, 1051),
   "tape card": (1350, 1192),
   "tape md": (1400, 1166),
-  "wide card": (1280, 1115),
-  "wide md": (1272, 1073),
+  "wide card": (1280, 1117),
+  "wide md": (1272, 1074),
 }
 
 ///|

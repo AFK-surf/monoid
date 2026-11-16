@@ -121,7 +121,7 @@ fn notice_pill_node(
       let ts = @signals.untracked(m).ts
       opened[ts] = !opened.get(ts).unwrap_or(false)
     })
-    p.says(By(fn() { Some(@view.said(Button, label=m().notice_words)) })) |> ignore
+    p.says(By(fn() { Some(@view.said(Button, label=notice_label(m()))) })) |> ignore
     p.box(fn(line) {
       @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
       line.box(fn(room) {
@@ -131,6 +131,18 @@ fn notice_pill_node(
         room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) })
       })
       |> ignore
+      // (what follows its words held to the foot of their first line: notice_end_strut)
+      let strut = fn() {
+        match notice_words_of(m(), false) {
+          Md(_) => notice_end_strut(@ui.tree_theme().leading(notice_leading).unwrap_or(0.0), line.words_scale())
+          _ => 0.0
+        }
+      }
+      // (how many it folds, after its words, never cut short with them: system_notice's)
+      line.show(fn() { m().notice_count > 1 }, along_row=true, fn(n) {
+        @sf.style_node(n, fn() { notice_count_room.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
+        @sf.words_node(n, fn() { "×\{m().notice_count}" }, fn() { notice_count_words.then(@ui.text_style(color=ink())) }) |> ignore
+      })
       let end = fn() {
         let now = m()
         match now.install {
@@ -149,7 +161,7 @@ fn notice_pill_node(
         match which {
           Install => {
             let i = fn() { m().install.unwrap_or(mine_installed) }
-            notice_action_node(e, fn() { i().action }, ink, fn() { install_busy(src, here.station, i()) }, fn() {
+            notice_action_node(e, fn() { i().action }, ink, fn() { install_busy(src, here.station, i()) }, strut~, fn() {
               install_runtime(src, here.station, @signals.untracked(i))
             })
           }
@@ -166,7 +178,7 @@ fn notice_pill_node(
               }
             }
             let on = fn() { [("station", here.station), ("key", after().0)] }
-            notice_action_node(e, fn() { after().1 }, ink, fn() { src.read_only || (here.view)().offline || core_doing(src, [after().2], on()) }, fn() {
+            notice_action_node(e, fn() { after().1 }, ink, fn() { src.read_only || (here.view)().offline || core_doing(src, [after().2], on()) }, strut~, fn() {
               let now = @signals.untracked(m)
               let (session, label, call) = @signals.untracked(after)
               if !src.read_only && !(here.view)().offline {
@@ -174,12 +186,13 @@ fn notice_pill_node(
                   "station": Json::string(here.station),
                   "key": Json::string(session),
                   "thread": Json::number(now.thread),
-                  "seq": Json::number(now.seq),
+                  // (of a notice folding several, the last: what its turn is bound to)
+                  "seq": Json::number(now.notice_last_seq),
                 })
               }
             })
           }
-          Report => notice_report_node(e, src, here, m, ink)
+          Report => notice_report_node(e, src, here, m, ink, strut~)
           NoEnd => ()
         }
       })
@@ -200,6 +213,16 @@ fn notice_pill_node(
     })
   })
   |> ignore
+}
+
+///|
+/// What a notice's pill is read out as: its words, and how many it folds where it folds several (×n).
+fn notice_label(m : Message) -> String {
+  if m.notice_count > 1 {
+    "\{m.notice_words} ×\{m.notice_count}"
+  } else {
+    m.notice_words
+  }
 }
 
 ///|
@@ -329,10 +352,11 @@ fn notice_action_node(
   action : () -> String,
   ink : () -> @ui.Color,
   busy : () -> Bool,
+  strut? : () -> Double = fn() { 0.0 },
   run : () -> Unit,
 ) -> Unit {
   v.box(fn(e) {
-    @sf.style_node(e, fn() { notice_end }, in_row=true)
+    @sf.style_node(e, fn() { notice_end.then(@ui.style(min_h=Fixed(strut()))) }, in_row=true)
     e.box(fn(d) {
       @sf.style_node(d, fn() { notice_dot_room }, in_row=true)
       @sf.words_node(d, fn() { "·" }, fn() { if ink() == Danger { notice_dot_failed } else { notice_dot } }) |> ignore
@@ -366,13 +390,20 @@ fn notice_action_node(
 ///|
 /// A failure sent to the still.fail team (report_action's) in `v`: · 上报, asked first, saying what goes; what it was
 /// filed as said once sent; not offered while it goes.
-fn notice_report_node(v : @view.View, src : Source, here : MessageNodeHere, m : () -> Message, ink : () -> @ui.Color) -> Unit {
+fn notice_report_node(
+  v : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+  m : () -> Message,
+  ink : () -> @ui.Color,
+  strut? : () -> Double = fn() { 0.0 },
+) -> Unit {
   let action = fn() { @sf.t("common.report.action") }
   let on = fn() {
     let now = m()
-    [("station", here.station), ("thread", now.thread.to_int().to_string()), ("seq", now.seq.to_int().to_string())]
+    [("station", here.station), ("thread", now.thread.to_int().to_string()), ("seq", now.notice_last_seq.to_int().to_string())]
   }
-  notice_action_node(v, action, ink, fn() { core_doing(src, ["chat.report"], on()) }, fn() {
+  notice_action_node(v, action, ink, fn() { core_doing(src, ["chat.report"], on()) }, strut~, fn() {
     let now = @signals.untracked(m)
     let said = @signals.untracked(action)
     @sf.confirm(@sf.t("common.report.title"), @sf.t("common.report.lead") + "\n\n" + @sf.t("common.report.sends"), said, fn() {
@@ -381,7 +412,7 @@ fn notice_report_node(v : @view.View, src : Source, here : MessageNodeHere, m : 
         said,
         "",
         "chat.report",
-        { "station": Json::string(here.station), "thread": Json::number(now.thread), "seq": Json::number(now.seq) },
+        { "station": Json::string(here.station), "thread": Json::number(now.thread), "seq": Json::number(now.notice_last_seq) },
         ok=fn(v) {
           @ui.haptic(Confirm)
           let number = match field(Some(v), "number") {

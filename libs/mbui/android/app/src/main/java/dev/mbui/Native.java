@@ -22,6 +22,8 @@ final class Native {
     static native void appState(int state);
     /** Over another app (OverActivity) or not: what the app does not paint is left clear (android_host.c present). */
     static native void overOther(boolean on);
+    /** The device slowed for its heat or not (MainActivity's thermal listener): glass drawn solid (android_host.c). */
+    static native void thermal(boolean hot);
     /** A message for the app's next frame on `channel` (post.h's mb_post: any thread): its JSON's UTF-8. */
     static native void postBytes(String channel, byte[] json);
     /** A browser session's end (WebAuth): the URL it came back to, or why not (one of the two null). */

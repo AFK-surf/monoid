@@ -21,19 +21,19 @@ test("incomplete statistics stay unavailable without a background history writer
       id: "old-call", at: 1, model: "m", subagent: false, fast: false, input: 1, cacheRead: 0, cacheWrite: 0,
       cacheWriteLong: 0, output: 1, calls: 1, context: 1, window: 100,
     }, { turn: null, thread: null, person: null, profile: "cc" }]]);
-    store.db.exec(`UPDATE usage_detail_all SET after_session = NULL, done = 0;
-      UPDATE usage_chat_progress SET stage = 0, done = 0;
-      UPDATE usage_minute_all SET after_session = NULL, done = 0;
-      UPDATE remote_run_progress SET after_seq = NULL, done = 0`);
+    // (as on a station whose calls from before the quarters are still to be taken in: rollup_counted = 0)
+    store.db.exec(`UPDATE usage_chat_progress SET stage = 0, done = 0;
+      UPDATE remote_run_progress SET after_seq = NULL, done = 0;
+      UPDATE usage SET rollup_counted = 0; UPDATE usage_15m_meta SET since = 1000`);
     const progress = (table: string) => store.db.prepare(`SELECT * FROM ${table}`).get();
-    const tables = ["usage_detail_all", "usage_chat_progress", "usage_minute_all", "remote_run_progress"];
+    const tables = ["usage_chat_progress", "remote_run_progress", "usage_15m_meta"];
     const before = tables.map(progress);
     reader = new MinuteReader(path);
-    await assert.rejects(reader.ready(null), /minute.*unavailable/i);
-    await assert.rejects(reader.readyDetail(null), /detail.*unavailable/i);
     await assert.rejects(reader.readyChats(null), /chat.*unavailable/i);
     await assert.rejects(reader.readyRemote(), /remote.*unavailable/i);
     assert.deepEqual(tables.map(progress), before);
+    assert.deepEqual(store.db.prepare("SELECT rollup_counted FROM usage").all().map((r) => r.rollup_counted), [0],
+      "the checker takes in no call from before the quarters");
     assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n, 1,
       "the original call remains intact");
   } finally {

@@ -4,20 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { mock, test } from "node:test";
-import { Worker } from "node:worker_threads";
-import { MbBackfill } from "../src/read/mb-reader.ts";
 import { Effect, Fiber } from "effect";
 import { usageRoutes } from "../src/api/routes/usage.ts";
 import { makeStore, USAGE_CALLS_EARLIER, USAGE_CALLS_SAME, usageCallsPage, usageGroups, usageSince } from "./reference/store.ts";
 import { usage, usageHistory, usageNow } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
-import { compactQuery, compactScopeReady, compactTotal, compactTotalsStep, installCompactUsage, moveCompactStep } from "./reference/backfill/usage-compact.ts";
+import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
-import { keepUsage, retireAfterPrevious, watchCompactMoves } from "../src/usage/module.ts";
+import { keepUsage, retireAfterPrevious } from "../src/usage/module.ts";
 import { testClock } from "./hub-fakes.ts";
-import { dbFile } from "./temp-dir.ts";
 
-const compactUsage = (store: Store) => { installCompactUsage(store.db, () => store.now()); retireUsageIndexes(store.db); };
+const compactUsage = (store: Store) => { installCompactUsage(store.db); retireUsageIndexes(store.db); };
 
 test("workspace-change listeners only wake for changes of session ownership", () => {
   const store = Store.open(":memory:");
@@ -36,7 +33,7 @@ test("workspace-change listeners only wake for changes of session ownership", ()
   } finally { store.close(); }
 });
 
-test("recording another call leaves an unchanged workspace scope alone", () => {
+test("recording another call leaves an unchanged workspace scope alone, and a session's move moves its calls at once", () => {
   const store = Store.open(":memory:");
   try {
     store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
@@ -48,17 +45,18 @@ test("recording another call leaves an unchanged workspace scope alone", () => {
     store.db.exec(`CREATE TABLE scope_changes (session TEXT);
       CREATE TRIGGER count_scope_changes AFTER UPDATE ON usage_minute_scope BEGIN
         INSERT INTO scope_changes VALUES (NEW.session);
+      END;
+      CREATE TRIGGER count_quarter_moves AFTER UPDATE OF scope ON usage_15m BEGIN
+        INSERT INTO scope_changes VALUES (NEW.session);
       END;`);
     store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [[{ ...call, id: "two", at: 120_000 }, owner]]);
     assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM scope_changes").get() as { n: number }).n, 0);
     store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run("B", "a");
     store.recordUsage("/a", { session: "a", offset: 3, model: "m" }, "claude", [[{ ...call, id: "three", at: 180_000 }, owner]]);
     const reader = makeStore(store.db, ".");
-    assert.throws(() => usageGroups(reader, 0n, 240_000n, 0n, { workspace: "B", home: false }), /moving between workspaces/);
-    while (!moveCompactStep(store.db, 2).done) { /* One bounded batch at a time. */ }
     assert.deepEqual(usageGroups(reader, 0n, 240_000n, 0n, { workspace: "A", home: false }), []);
     assert.equal(usageGroups(reader, 0n, 240_000n, 0n, { workspace: "B", home: false })[0]!.calls, 3);
-    assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM scope_changes").get() as { n: number }).n, 1);
+    assert.equal((store.db.prepare("SELECT COUNT(*) AS n FROM scope_changes").get() as { n: number }).n, 1, "its one quarter row moved, once");
   } finally { store.close(); }
 });
 
@@ -145,39 +143,7 @@ for (const recursive of [false, true]) test(`an older writer grows calls recorde
   } finally { store.close(); }
 });
 
-test("a time range does not visit sessions with only older statistics", () => {
-  const store = Store.open(":memory:");
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = { id: "one", at: 60_000, model: "m", subagent: false, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null };
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[call, owner]]);
-    let visits = 0;
-    store.db.function("inspected_session", (session) => { visits++; return session; });
-    const q = compactQuery(60_000n, 120_000n, 0n, { workspace: "A", home: false });
-    const sql = q.sql.replace("GROUP BY day", "AND inspected_session(c.session) IS NOT NULL GROUP BY day");
-    assert.notEqual(sql, q.sql, "the test counts each candidate statistics row");
-    const read = () => {
-      visits = 0;
-      const rows = store.db.prepare(sql).all(...q.args) as { session: string; calls: number }[];
-      assert.deepEqual(rows.map((row) => [row.session, row.calls]), [["a", 1]]);
-      return visits;
-    };
-    const before = read();
-    const scope = store.db.prepare("INSERT INTO usage_minute_scope (session, ws, done) VALUES (?, 'A', 1)");
-    const old = store.db.prepare("INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast, records, calls, input, cache_read, cache_write, cache_write_long, output, scope) VALUES (?, -1, 0, 'p', 'cc', 'claude', 'm', 0, 1, 1, 1, 0, 0, 0, 1, 'WA')");
-    for (let n = 0; n < 200; n++) { scope.run(`old-${n}`); old.run(`old-${n}`); }
-    const other = store.db.prepare("INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast, records, calls, input, cache_read, cache_write, cache_write_long, output, scope) VALUES (?, 1, 0, 'p', 'cc', 'claude', 'm', 0, 1, 1, 1, 0, 0, 0, 1, 'WB')");
-    for (let n = 0; n < 200; n++) other.run(`other-${n}`);
-    assert.equal(read(), before, "older sessions outside the requested range do not increase lookup work");
-    const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.args) as { detail: string }[]).map((row) => row.detail).join(" | ");
-    assert.match(plan, /usage_compact_scope_time \(scope=\? AND minute>\? AND minute<\?\)/);
-  } finally { store.close(); }
-});
-
-test("compact usage keeps exact millisecond boundaries and workspace visibility", () => {
+test("usage keeps exact millisecond boundaries and workspace visibility", () => {
   const store = Store.open(":memory:");
   try {
     for (const [key, ws] of [["a", "A"], ["b", "B"], ["home", null]] as const) {
@@ -205,7 +171,7 @@ test("compact usage keeps exact millisecond boundaries and workspace visibility"
   } finally { store.close(); }
 });
 
-test("compact usage agrees with calls across dates and arbitrary bounds", () => {
+test("usage agrees with calls across dates and arbitrary bounds", () => {
   const store = Store.open(":memory:");
   try {
     const sessions = [["a", "A"], ["b", "B"], ["home", null]] as const;
@@ -273,32 +239,7 @@ test("partial-minute reads find sessions occurring only at either edge", () => {
   } finally { store.close(); }
 });
 
-test("a partial-minute edge looks only at sessions with a bucket at that edge", () => {
-  const store = Store.open(":memory:");
-  try {
-    store.insertSession({ key: "edge", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",
-      token: "edge", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = { id: "edge", at: 1_001, model: "m", subagent: false, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 1, context: null, window: null };
-    store.recordUsage("/edge", { session: "edge", offset: 1, model: "m" }, "claude", [[call, owner]]);
-    const scope = store.db.prepare("INSERT INTO usage_minute_scope (session, ws, done) VALUES (?, 'A', 1)");
-    const bucket = store.db.prepare("INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast, records, calls, input, cache_read, cache_write, cache_write_long, output, scope) VALUES (?, 1, 0, 'p', 'cc', 'claude', 'm', 0, 1, 1, 1, 0, 0, 0, 0, 'WA')");
-    for (let n = 0; n < 200; n++) { scope.run(`middle-${n}`); bucket.run(`middle-${n}`); }
-    const q = compactQuery(1_001n, 120_000n, 0n, { workspace: "A", home: false });
-    let visits = 0;
-    store.db.function("edge_looked", (session) => { visits++; return session; });
-    const sql = q.sql.replaceAll("c.session = p.session AND c.minute =", "c.session = edge_looked(p.session) AND c.minute =")
-      .replaceAll("ON p.session = c.session", "ON p.session = edge_looked(c.session)");
-    assert.notEqual(sql, q.sql, "count the outer sessions looked up for the edge");
-    const rows = store.db.prepare(sql).all(...q.args) as { session: string }[];
-    assert.equal(rows.length, 201);
-    assert.equal(visits, 1, "sessions which have only middle-minute buckets do not cause edge lookups");
-  } finally { store.close(); }
-});
-
-test("compact usage does not read sessions again after selecting its workspace", () => {
+test("usage does not read sessions to tell a viewer's calls, and keeps a session gone in its workspace", () => {
   const store = Store.open(":memory:");
   try {
     for (const [key, ws] of [["a", "A"], ["b", "B"], ["home", null]] as const) {
@@ -325,184 +266,17 @@ test("compact usage does not read sessions again after selecting its workspace",
     assert.deepEqual(read("B", false), ["b"]);
 
     store.db.prepare("UPDATE sessions SET ws = 'B' WHERE key = 'a'").run();
-    assert.throws(() => read("A", false), /moving between workspaces/);
-    while (!moveCompactStep(store.db, 2).done) { /* One bounded batch at a time. */ }
     assert.deepEqual(read("A", false), []);
     assert.deepEqual(read("B", false), ["a", "b"]);
 
+    // A session gone: what it spent stays its workspace's.
     store.deleteSession("b");
-    while (!moveCompactStep(store.db, 2).done) { /* Its usage becomes home usage. */ }
-    assert.deepEqual(read("B", false), ["a"]);
-    assert.deepEqual(read("A", true), ["b", "home"]);
+    assert.deepEqual(read("B", false), ["a", "b"]);
+    assert.deepEqual(read("A", true), ["home"]);
   } finally { store.close(); }
 });
 
-test("a usage summary checks a session's workspace once for its minutes", () => {
-  const store = Store.open(":memory:");
-  try {
-    const sessions = [["a", "A"], ["b", "A"], ["other", "B"], ["old", "A"]] as const;
-    for (const [key, ws] of sessions) {
-      store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, ws, createdAt: 0, lastActiveAt: 0 });
-    }
-    compactUsage(store);
-    const scope = store.db.prepare("INSERT INTO usage_minute_scope (session, ws, done) VALUES (?, ?, 1)");
-    const bucket = store.db.prepare("INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast, records, calls, input, cache_read, cache_write, cache_write_long, output, scope) VALUES (?, ?, 0, 'p', 'cc', 'claude', 'm', 0, 1, 1, 1, 0, 0, 0, 0, ?)");
-    for (const [key, ws] of sessions) {
-      scope.run(key, ws);
-      for (let minute = 0; minute < 60; minute++) bucket.run(key, key === "old" ? minute - 120 : minute, `W${ws}`);
-    }
-    let visits = 0;
-    store.db.function("inspected_scope_session", (session) => { visits++; return session; });
-    const query = compactQuery(0n, 3_600_000n, 0n, { workspace: "A", home: false });
-    const counted = query.sql.replace(/sc\.session = ([a-z]+)\.session/, "sc.session = inspected_scope_session($1.session)");
-    assert.notEqual(counted, query.sql, "the test counts lookups of a session's workspace");
-    const before = (store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
-    const rows = store.db.prepare(counted).all(...query.args) as { session: string; calls: number; input: number }[];
-    assert.deepEqual(rows.map((r) => [r.session, r.calls, r.input]).sort(), [["a", 60, 60], ["b", 60, 60]]);
-    assert.equal(visits, 2, "each relevant session's scope is looked up once, not once per minute");
-    const edge = compactQuery(1n, 3_600_000n, 0n, { workspace: "A", home: false });
-    const countedEdge = edge.sql.replaceAll(/sc\.session = ([a-z]+)\.session/g, "sc.session = inspected_scope_session($1.session)");
-    assert.notEqual(countedEdge, edge.sql);
-    visits = 0;
-    const partial = store.db.prepare(countedEdge).all(...edge.args) as { session: string; calls: number; input: number }[];
-    assert.deepEqual(partial.map((r) => [r.session, r.calls, r.input]).sort(), [["a", 59, 59], ["b", 59, 59]]);
-    assert.equal(visits, 2, "a partial-minute edge also checks each session once, not once per bucket");
-    assert.equal((store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n, before, "reading writes nothing");
-  } finally { store.close(); }
-});
-
-test("usage summary diagnostics distinguish candidates from contributing statistics", () => {
-  const store = Store.open(":memory:");
-  try {
-    for (const [key, ws] of [["a", "A"], ["other", "B"]] as const) {
-      store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, ws, createdAt: 0, lastActiveAt: 0 });
-    }
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = (id: string, at: number) => ({ id, at, model: "m", subagent: true, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null });
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude",
-      [[call("a1", 60_000), owner], [call("a2", 61_000), owner], [call("a3", 120_000), owner]]);
-    store.recordUsage("/other", { session: "other", offset: 1, model: "m" }, "claude", [[call("b", 60_000), owner]]);
-    // A pending empty bucket can be visited by the time index without contributing to the answer.
-    store.db.prepare(`INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast,
-      records, calls, input, cache_read, cache_write, cache_write_long, output, scope)
-      VALUES ('a', 1, 0, 'tombstone', 'cc', 'claude', 'm', 0, 0, 0, 0, 0, 0, 0, 0, 'WA')`).run();
-    const reader = makeStore(store.db, ".");
-    const viewer = { workspace: "A", home: false };
-    const before = (store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
-    for (const [from, to, parts, calls] of [[60_000n, 180_000n, 2, 3], [60_001n, 180_001n, 2, 2]] as const) {
-      const diagnostics: { parts?: number; candidates?: number; selectedMs?: number } = {};
-      const result = usageGroups(reader, from, to, 0n, viewer, diagnostics);
-      assert.deepEqual(result, usageGroups(reader, from, to, 0n, viewer));
-      assert.equal(result[0]!.calls, calls);
-      assert.equal(diagnostics.parts, parts, "only the visible minute buckets or partial-edge calls are counted");
-      if (from === 60_000n) {
-        assert.equal(diagnostics.candidates, 3, "the index includes an empty bucket, but not another workspace");
-        assert.equal(typeof diagnostics.selectedMs, "number", "the query records when selection finished");
-      }
-    }
-    const query = compactQuery(60_000n, 180_000n, 0n, viewer, true, true);
-    let candidates = 0;
-    let whenSelected = -1;
-    store.db.function("usage_summary_candidate", () => { candidates++; return 1; });
-    store.db.function("usage_summary_selected", () => { whenSelected = candidates; return 1; });
-    const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${query.sql}`).all(...query.args) as { detail: string }[]).map((r) => r.detail).join(" | ");
-    assert.match(plan, /SEARCH usage_compact USING COVERING INDEX usage_compact_scope_time/);
-    assert.match(plan, /SEARCH c USING PRIMARY KEY/);
-    store.db.prepare(query.sql).all(...query.args);
-    assert.equal(candidates, 3);
-    assert.equal(whenSelected, 3, "selection is marked only after every indexed candidate has been examined");
-    assert.equal((store.db.prepare("SELECT total_changes() AS n").get() as { n: number }).n, before, "diagnostics write nothing");
-  } finally { store.close(); }
-});
-
-test("a partial minute does not visit other workspaces or calls outside its bounds", () => {
-  const store = Store.open(":memory:");
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = (id: string, at: number) => ({ id, at, model: "m", subagent: false, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 1, context: null, window: null });
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[call("wanted", 1_001), owner]]);
-    let buckets = 0;
-    let calls = 0;
-    store.db.function("edge_bucket", () => { buckets++; return 1; });
-    store.db.function("edge_call", () => { calls++; return 1; });
-    const q = compactQuery(1_001n, 1_002n, 0n, { workspace: "A", home: false });
-    const sql = q.sql.replace("c.minute = ", "edge_bucket() AND c.minute = ")
-      .replace("WHERE u.compact_counted = 1", "WHERE edge_call() AND u.compact_counted = 1");
-    assert.notEqual(sql, q.sql);
-    const read = () => {
-      buckets = 0;
-      calls = 0;
-      const rows = store.db.prepare(sql).all(...q.args) as { session: string; calls: number; input: number }[];
-      assert.deepEqual(rows.map((r) => [r.session, r.calls, r.input]), [["a", 1, 1]]);
-      return [buckets, calls];
-    };
-    const before = read();
-    const scope = store.db.prepare("INSERT INTO usage_minute_scope (session, ws, done) VALUES (?, ?, 1)");
-    const bucket = store.db.prepare("INSERT INTO usage_compact (session, minute, thread, person, profile, runtime, model, fast, records, calls, input, cache_read, cache_write, cache_write_long, output, scope) VALUES (?, ?, 0, 'p', 'cc', 'claude', 'm', 0, 1, 1, 1, 0, 0, 0, 0, ?)");
-    for (let n = 0; n < 200; n++) {
-      scope.run(`old-${n}`, "A");
-      bucket.run(`old-${n}`, -1, "WA");
-      scope.run(`other-${n}`, "B");
-      bucket.run(`other-${n}`, 0, "WB");
-    }
-    store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude",
-      Array.from({ length: 300 }, (_, n) => [call(`earlier-${n}`, 500), owner]));
-    assert.deepEqual(read(), before, "unrelated statistics and calls do not increase edge work");
-    const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.args) as { detail: string }[]).map((r) => r.detail).join(" | ");
-    assert.match(plan, /SEARCH usage_compact USING COVERING INDEX usage_compact_scope_time/);
-    assert.match(plan, /SEARCH c USING PRIMARY KEY/);
-    assert.match(plan, /usage_session \(session=\? AND at>\? AND at<\?\)/);
-  } finally { store.close(); }
-});
-
-test("a moved session's statistics are re-scoped in bounded batches and follow another move", () => {
-  const store = Store.open(":memory:");
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = (n: number) => ({ id: `call-${n}`, at: n * 60_000, model: "m", subagent: true, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null });
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", Array.from({ length: 7 }, (_, i) => [call(i + 1), owner]));
-    let updates = 0;
-    store.db.function("bucket_was_moved", () => { updates++; return 0; });
-    store.db.exec("CREATE TEMP TRIGGER count_bucket_moves AFTER UPDATE OF scope ON usage_compact BEGIN SELECT bucket_was_moved(); END");
-    store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run("B", "a");
-    assert.equal(compactScopeReady(store.db, { workspace: "A", home: false }), false);
-    assert.equal(compactScopeReady(store.db, { workspace: "B", home: false }), false);
-    assert.equal(compactScopeReady(store.db, { workspace: "C", home: false }), true);
-    moveCompactStep(store.db, 2);
-    assert.equal(updates, 2);
-    store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [[call(0), owner]]);
-    store.db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run("C", "a");
-    const addScope = store.db.prepare("INSERT INTO usage_compact_moving_scope VALUES (?, 'a')");
-    for (let n = 0; n < 5; n++) addScope.run(`Wprevious-${n}`);
-    const scopes = () => (store.db.prepare("SELECT COUNT(*) AS n FROM usage_compact_moving_scope WHERE session = 'a'").get() as { n: number }).n;
-    for (;;) {
-      const before = updates;
-      const beforeScopes = scopes();
-      const step = moveCompactStep(store.db, 2);
-      assert.ok(updates - before <= 2, "one transaction moves at most one batch");
-      assert.ok(beforeScopes - scopes() <= 2, "one transaction removes at most one batch of affected workspaces");
-      if (step.done) break;
-    }
-    const reader = makeStore(store.db, ".");
-    assert.deepEqual(usageGroups(reader, 0n, 600_000n, 0n, { workspace: "A", home: false }), []);
-    assert.deepEqual(usageGroups(reader, 0n, 600_000n, 0n, { workspace: "B", home: false }), []);
-    assert.equal(usageGroups(reader, 0n, 600_000n, 0n, { workspace: "C", home: false })[0]!.calls, 8);
-    assert.deepEqual(compactTotal(store.db, { workspace: "A", home: false }), { calls: 0, tokens: 0 });
-    assert.deepEqual(compactTotal(store.db, { workspace: "B", home: false }), { calls: 0, tokens: 0 });
-    assert.deepEqual(compactTotal(store.db, { workspace: "C", home: false }), { calls: 8, tokens: 16 });
-    assert.deepEqual(compactTotal(store.db, null), { calls: 8, tokens: 16 });
-  } finally { store.close(); }
-});
-
-test("an omitted home flag includes home usage in compact histories, time edges and moving checks", () => {
+test("an omitted home flag includes home usage in histories and time edges", () => {
   const store = Store.open(":memory:");
   try {
     store.insertSession({ key: "h", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "h", ws: null,
@@ -516,91 +290,9 @@ test("an omitted home flag includes home usage in compact histories, time edges 
     assert.deepEqual(usageHistory(makeStore(store.db, "."), 0n, viewer)!.days.map((row: { tokens: number }) => row.tokens), [2]);
     assert.deepEqual(usageGroups(makeStore(store.db, "."), 500n, 2_000n, 0n, viewer).map((row) => row.input), [1]);
     store.db.exec("UPDATE sessions SET ws = 'B' WHERE key = 'h'");
-    assert.equal(compactScopeReady(store.db, viewer), false);
-    assert.equal(compactScopeReady(store.db, { workspace: "A", home: false }), true);
+    assert.deepEqual(usageGroups(makeStore(store.db, "."), 500n, 2_000n, 0n, viewer), [], "moved out of the home workspace at once");
+    assert.deepEqual(usageGroups(makeStore(store.db, "."), 500n, 2_000n, 0n, { workspace: "B", home: false }).map((row) => row.input), [1]);
   } finally { store.close(); }
-});
-
-test("a worker resumes an interrupted workspace move and wakes for the next one", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "compact-scope-worker-"));
-  const path = join(dir, "station.db");
-  let store = Store.open(path);
-  let mover: ReturnType<typeof watchCompactMoves> | null = null;
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const calls = Array.from({ length: 270 }, (_, i) => [{ id: `call-${i}`, at: i * 60_000, model: "m", subagent: true,
-      fast: false, input: 1, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null }, owner] as const);
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", calls as never);
-    store.setSessionsWs("A", "B");
-    moveCompactStep(store.db, 2);
-    store.close();
-    store = Store.open(path);
-    const waitForMove = () => new Promise<void>((resolve) => {
-      const unsubscribe = store.subscribe((change) => {
-        if (change.type === "usage" && change.sessions.includes("a")) { unsubscribe(); resolve(); }
-      });
-    });
-    const resumed = waitForMove();
-    mover = watchCompactMoves(store, Promise.resolve());
-    await resumed;
-    assert.equal(compactScopeReady(store.db, { workspace: "B", home: false }), true);
-    assert.equal(usageGroups(makeStore(store.db, dir), 0n, 18_000_000n, 0n, { workspace: "B", home: false })[0]!.calls, 270);
-    const moved = waitForMove();
-    store.setSessionsWs("B", "C");
-    await moved;
-    assert.equal(compactScopeReady(store.db, { workspace: "C", home: false }), true);
-    assert.equal(usageGroups(makeStore(store.db, dir), 0n, 18_000_000n, 0n, { workspace: "C", home: false })[0]!.calls, 270);
-  } finally { if (mover !== null) await mover.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("a stopped workspace worker retries a pending move without another change", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "compact-scope-retry-"));
-  const time = testClock();
-  const store = Store.open(join(dir, "station.db"), null, time.clock);
-  let mover: ReturnType<typeof watchCompactMoves> | null = null;
-  let wakes = 0;
-  let stopped!: () => void;
-  const firstExit = new Promise<void>((resolve) => { stopped = resolve; });
-  // (the worker, or the MoonBit builder in its place: the first wake stops it instead)
-  const stop = (self: Worker | MbBackfill, message: unknown): boolean => {
-    if (message === null || typeof message !== "object" || !("wake" in message) || ++wakes !== 1) return false;
-    self.once("exit", stopped);
-    void self.terminate();
-    return true;
-  };
-  const postWorker = Worker.prototype.postMessage, postMb = MbBackfill.prototype.postMessage;
-  const interceptions = [
-    mock.method(Worker.prototype, "postMessage", function (this: Worker, message: unknown) { if (!stop(this, message)) postWorker.call(this, message); }),
-    mock.method(MbBackfill.prototype, "postMessage", function (this: MbBackfill, message: unknown) { if (!stop(this, message)) postMb.call(this, message); }),
-  ];
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = { id: "one", at: 60_000, model: "m", subagent: true, fast: false, input: 1,
-      cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null };
-    store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[call, owner]]);
-    store.setSessionsWs("A", "B");
-    const finished = new Promise<void>((resolve) => {
-      const unsubscribe = store.subscribe((change) => {
-        if (change.type === "usage" && change.sessions.includes("a")) { unsubscribe(); resolve(); }
-      });
-    });
-    mover = watchCompactMoves(store, Promise.resolve());
-    await firstExit;
-    await time.adjust(250);
-    assert.equal(wakes, 2, "the worker is restarted without waiting for another session change");
-    await finished;
-    assert.equal(compactScopeReady(store.db, { workspace: "B", home: false }), true);
-    assert.equal(usageGroups(makeStore(store.db, dir), 0n, 120_000n, 0n, { workspace: "B", home: false })[0]!.calls, 1);
-  } finally {
-    for (const interception of interceptions) interception.mock.restore();
-    if (mover !== null) await mover.close();
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("a call moved to a session without earlier calls follows its workspace", () => {
@@ -631,9 +323,9 @@ test("a growing response adjusts its existing bucket without replacing it", () =
       cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null };
     store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[call, owner]]);
     store.db.exec(`CREATE TABLE bucket_changes (kind TEXT);
-      CREATE TRIGGER bucket_added AFTER INSERT ON usage_compact BEGIN INSERT INTO bucket_changes VALUES ('add'); END;
-      CREATE TRIGGER bucket_updated AFTER UPDATE ON usage_compact BEGIN INSERT INTO bucket_changes VALUES ('update'); END;
-      CREATE TRIGGER bucket_deleted AFTER DELETE ON usage_compact BEGIN INSERT INTO bucket_changes VALUES ('delete'); END;`);
+      CREATE TRIGGER bucket_added AFTER INSERT ON usage_15m BEGIN INSERT INTO bucket_changes VALUES ('add'); END;
+      CREATE TRIGGER bucket_updated AFTER UPDATE ON usage_15m BEGIN INSERT INTO bucket_changes VALUES ('update'); END;
+      CREATE TRIGGER bucket_deleted AFTER DELETE ON usage_15m BEGIN INSERT INTO bucket_changes VALUES ('delete'); END;`);
     store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [[{ ...call, output: 9 }, owner]]);
     assert.deepEqual(store.db.prepare("SELECT kind FROM bucket_changes").all().map((row) => row.kind), ["update"]);
     assert.deepEqual(usageGroups(makeStore(store.db, "."), 0n, 120_000n, 0n, { workspace: "A", home: false })
@@ -659,7 +351,7 @@ test("a later reading of the same call keeps its original time and coverage", ()
   } finally { store.close(); }
 });
 
-test("a duplicate insert cannot silently corrupt statistics with either SQLite trigger mode", () => {
+test("a duplicate insert, ignored or replacing, keeps the statistics exact with either SQLite trigger mode", () => {
   for (const recursive of ["OFF", "ON"]) {
     const store = Store.open(":memory:");
     try {
@@ -672,9 +364,14 @@ test("a duplicate insert cannot silently corrupt statistics with either SQLite t
       store.db.exec(`PRAGMA recursive_triggers = ${recursive}`);
       const groups = () => usageGroups(makeStore(store.db, "."), 0n, 120_000n, 0n, { workspace: "A", home: false })
         .map((row) => [row.calls, row.input, row.output]);
-      assert.throws(() => store.db.exec("INSERT OR IGNORE INTO usage SELECT * FROM usage WHERE id = 'one'"), /updated in place/);
-      assert.throws(() => store.db.exec("INSERT OR REPLACE INTO usage SELECT * FROM usage WHERE id = 'one'"), /updated in place/);
-      assert.deepEqual(groups(), [[1, 3, 1]], `rejected inserts leave the call intact with recursive triggers ${recursive}`);
+      store.db.exec("INSERT OR IGNORE INTO usage SELECT * FROM usage WHERE id = 'one'");
+      assert.deepEqual(groups(), [[1, 3, 1]], `an ignored insert changes nothing with recursive triggers ${recursive}`);
+      store.db.exec("INSERT OR REPLACE INTO usage SELECT * FROM usage WHERE id = 'one'");
+      assert.deepEqual(groups(), [[1, 3, 1]], `a call replaced by itself is counted once with recursive triggers ${recursive}`);
+      store.db.exec("INSERT OR REPLACE INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, compact_counted, rollup_counted) SELECT id, at + 900000, session, turn, thread, person, profile, runtime, model, subagent, fast, input + 1, cache_read, cache_write, cache_write_long, output, calls, context, context_window, compact_counted, rollup_counted FROM usage WHERE id = 'one'");
+      assert.deepEqual(usageGroups(makeStore(store.db, "."), 0n, 1_800_000n, 0n, { workspace: "A", home: false }).map((row) => [row.calls, row.input, row.output]),
+        [[1, 4, 1]], `a call replaced by another in its place is counted where it is now with recursive triggers ${recursive}`);
+      store.db.exec("INSERT OR REPLACE INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, compact_counted, rollup_counted) SELECT id, at - 900000, session, turn, thread, person, profile, runtime, model, subagent, fast, input - 1, cache_read, cache_write, cache_write_long, output, calls, context, context_window, compact_counted, rollup_counted FROM usage WHERE id = 'one'");
       store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [[{ ...call, output: 9 }, owner]]);
       assert.deepEqual(groups(), [[1, 3, 9]], `growing the call with recursive triggers ${recursive}`);
     } finally { store.close(); }
@@ -699,9 +396,9 @@ test("a recent context compaction does not add a discarded legacy event", () => 
   } finally { store.close(); }
 });
 
-test("after handover old per-call indexes are removed and new statistics remain readable", async () => {
+test("after handover the old main-call index is removed and the statistics remain readable", async () => {
   const time = testClock();
-  const store = Store.open(dbFile("usage-handover-"), null, time.clock);
+  const store = Store.open(":memory:", null, time.clock);
   try {
     store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: -100_000, lastActiveAt: 0 });
     const owner = { turn: null, thread: null, person: "p", profile: "cc" };
@@ -711,10 +408,12 @@ test("after handover old per-call indexes are removed and new statistics remain 
     let handedOver!: () => void;
     const fiber = Effect.runFork(retireAfterPrevious(store, new Promise<void>((resolve) => { handedOver = resolve; })));
     const table = (name: string) => !!store.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
-    assert.ok(table("usage_detail") && table("usage_main_calls"), "the previous process can still read until it exits");
+    assert.ok(table("usage_main_calls"), "the previous process can still read until it exits");
     handedOver();
     await Effect.runPromise(Fiber.join(fiber));
-    for (const name of ["usage_detail", "usage_detail_lookup", "usage_main_calls"]) {
+    // (in memory no builder frees it: as the builder does on a file)
+    retireUsageIndexes(store.db);
+    for (const name of ["usage_main_calls"]) {
       assert.equal(table(name), false, `${name} no longer duplicates historical calls`);
     }
     store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [call("new", 60_000, 4)] as never);
@@ -745,29 +444,6 @@ test("an old response growing after handover updates the preserved daily total",
     assert.deepEqual(usageHistory(makeStore(store.db, "."), 0n, { workspace: "A", home: false })!.days.map((row: { calls: number; tokens: number }) =>
       [row.calls, row.tokens]), [[1, 11]]);
     assert.deepEqual(store.usageOfSession("a").map((row) => [row.calls, row.input, row.output]), [[1, 2, 9]]);
-  } finally { store.close(); }
-});
-
-test("compact coverage keeps its own first call without reading or maintaining the old span", async () => {
-  const time = testClock();
-  await time.adjust(60_000);
-  const store = Store.open(":memory:", null, time.clock);
-  try {
-    store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "a", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    compactUsage(store);
-    const owner = { turn: null, thread: null, person: "p", profile: "cc" };
-    const call = { id: "first", at: 120_123, model: "m", subagent: false, fast: false, input: 1, cacheRead: 0,
-      cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null };
-    store.db.setAuthorizer((action, name) => name === "usage_span" && [constants.SQLITE_READ, constants.SQLITE_UPDATE].includes(action)
-      ? constants.SQLITE_DENY : constants.SQLITE_OK);
-    try {
-      store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[call, owner]]);
-      assert.equal(store.usageSince(), 120_123);
-      assert.equal(usageSince(makeStore(store.db, ".")), 120_123);
-      store.db.prepare("DELETE FROM usage WHERE id = ?").run("first");
-      store.recordUsage("/a", { session: "a", offset: 2, model: "m" }, "claude", [[{ ...call, id: "later", at: 180_000 }, owner]]);
-      assert.equal(store.usageSince(), 60_000, "after deleting the earliest call the coverage start remains a safe bound");
-    } finally { store.db.setAuthorizer(null); }
   } finally { store.close(); }
 });
 
@@ -872,7 +548,7 @@ test("a file-backed station retires the old indexes on a worker after handover",
   try {
     let handedOver!: () => void;
     const fiber = Effect.runFork(retireAfterPrevious(store, new Promise<void>((resolve) => { handedOver = resolve; })));
-    assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_detail'").get());
+    assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_main_calls'").get());
     handedOver();
     await Effect.runPromise(Fiber.join(fiber));
     assert.deepEqual(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('usage_detail', 'usage_detail_lookup', 'usage_main_calls')").all(), []);
@@ -959,42 +635,25 @@ test("the call-page cursor preserves SQLite rowids beyond JavaScript's integer p
   assert.equal((captured as { beforeSeq: string }).beforeSeq, "9007199254740993");
 });
 
-test("the optional usage chart range reaches the reader and wakes pending totals", async () => {
-  let captured: unknown, woken: unknown, wakes = 0;
+test("the optional usage chart range and the tasks' start reach the reader at once", async () => {
+  let captured: unknown;
+  let reads = 0;
   const route = usageRoutes({ read: (_request: unknown, _operation: string, args: unknown) => {
     captured = args;
+    reads++;
     return Promise.resolve({ status: 200, headers: {}, body: Buffer.alloc(0) });
-  } } as never, () => false, (viewer) => { wakes++; woken = viewer; })[1]!;
+  } } as never, () => false)[1]!;
   const request = { lang: "en", headers: {}, query: [["history", "1"], ["historyFrom", "0"], ["historyTo", "86400000"]], viewer: { workspace: "A", home: false } };
   await route.handle(request as never, []);
   assert.deepEqual((captured as { historyRange: unknown }).historyRange, { from: "0", to: "86400000" });
-  assert.equal(wakes, 1);
-  assert.deepEqual(woken, request.viewer);
+  assert.equal((captured as { remoteFrom?: unknown }).remoteFrom, undefined, "the tasks from `from`, where not asked otherwise");
+  await route.handle({ ...request, query: [["from", "100"], ["remoteFrom", "50"]] } as never, []);
+  assert.equal((captured as { remoteFrom: unknown }).remoteFrom, "50");
+  assert.equal(reads, 2, "one read a request: nothing to wait for or settle");
+  await assert.rejects(() => route.handle({ ...request, query: [["remoteFrom", "x"]] } as never, []), /remoteFrom must be an integer/);
   await assert.rejects(() => route.handle({ ...request, query: [["historyFrom", "0"]] } as never, []), /both bounds/);
   await assert.rejects(() => route.handle({ ...request, query: [["historyFrom", "0"], ["historyTo", "60000"]] } as never, []), /invalid history range/);
-  assert.equal(wakes, 1);
-});
-
-test("an unbounded usage history asks its workspace to settle pending new statistics", async () => {
-  const woken: unknown[] = [];
-  const answer = { status: 200, headers: {}, body: Buffer.alloc(0) };
-  let finish!: (value: typeof answer) => void;
-  const pending = new Promise<typeof answer>((resolve) => { finish = resolve; });
-  const noteWake = (viewer: unknown) => { woken.push(viewer); };
-  const route = usageRoutes({ read: () => pending } as never,
-    () => false, noteWake)[1]!;
-  const viewer = { workspace: "A", home: false };
-  const result = route.handle({ lang: "en", headers: {}, query: [["history", "1"]], viewer } as never, []);
-  assert.equal(woken.length, 0, "accounting waits for the current usage read to finish");
-  finish(answer);
-  await result;
-  assert.deepEqual(woken, [viewer]);
-  await route.handle({ lang: "en", headers: {}, query: [], viewer } as never, []);
-  assert.deepEqual(woken, [viewer], "a summary without history does not cause extra accounting");
-  const failed = usageRoutes({ read: () => Promise.resolve({ ...answer, status: 503 }) } as never,
-    () => false, noteWake)[1]!;
-  await failed.handle({ lang: "en", headers: {}, query: [["history", "1"]], viewer } as never, []);
-  assert.deepEqual(woken, [viewer], "a failed read does not start accounting");
+  assert.equal(reads, 2);
 });
 
 test("pages calls at the same time past SQLite rowids above JavaScript's integer precision", () => {

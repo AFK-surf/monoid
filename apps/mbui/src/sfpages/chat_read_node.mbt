@@ -84,8 +84,9 @@ fn chat_read_node(
         while i >= 0 {
           match rs.get(rs.keys[i]).map(fn(row) { row.entry }) {
             Some(Said(m)) => {
-              if m.seq > a.whole {
-                a.whole = m.seq
+              // (a notice folding several is read to its last: notice_last_seq)
+              if m.notice_last_seq > a.whole {
+                a.whole = m.notice_last_seq
               }
               break
             }

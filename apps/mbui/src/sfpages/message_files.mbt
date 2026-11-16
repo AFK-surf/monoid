@@ -477,7 +477,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   })
   let thumb = @sfbase.thumb_place(here.station + "/" + owner + "/" + a.path, here.station, here.session, at)
   let downloading = download_of(src, here.station, owner, stored_name(a.path))
-  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   // the picture covering the whole box; a letterboxed one's covering its own proportions centred in it, all it and
   // what it waits on take, the box's corners cutting it (imageBox.ts letterbox; any: its frame's, concentric with
   // what holds it where it is in a corner of that, a quote's card)
@@ -681,7 +681,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
       ),
     ]
   }
-  let more = [beside_option(here, a, at), download_option(src, here, a, owner)]
+  let more = file_options([beside_option(here, a, at), download_option(src, here, a, owner)])
   more.append(load)
   file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~)
   // (its name, which nothing over its picture says)
@@ -759,7 +759,7 @@ fn card_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, by~ 
   let failed = text(dl, "state") == "failed"
   let place = @sfbase.thumb_occurrence(here.station, here.session, at)
   let key = "msg-card/" + place + "/" + @sfbase.file_key(a)
-  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   let id = text(dl, "id")
   @sf.file_card(
     c,
@@ -1114,4 +1114,16 @@ fn list_of(here : MessageHere) -> String {
     Some(l) => l.rk
     None => ""
   }
+}
+
+///|
+/// A file's menu's own choices, those offered here (one not, None, is no line between them: @sf.menu's None is one).
+fn file_options(offered : Array[@sf.MenuItem?]) -> Array[@sf.MenuItem?] {
+  let out : Array[@sf.MenuItem?] = []
+  for x in offered {
+    if x is Some(_) {
+      out.push(x)
+    }
+  }
+  out
 }

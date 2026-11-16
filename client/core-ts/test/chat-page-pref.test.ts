@@ -1,4 +1,4 @@
-// Which chat page this device makes (the prefs' `chatPage`: 外观 → 试用新对话页): kept on the device as every pref is.
+// Which chat page this device makes (the prefs' `chatPage`, an older app's: now 实验性功能 → 试用新对话页, features.ts): kept on the device as every pref is.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Core } from "../src/core.ts";

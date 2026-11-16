@@ -155,19 +155,21 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // (a station's, 2026-11-15: 屏幕、浏览器与终端 a block a row, its card drawn as pieces of one ground meeting edge to
   // edge where it was one; every glyph at the same place, and what lies under the window's foot made only as it comes)
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
+  // (the wide ones again, 2026-11-16: a setting's switch on its title's line, line_end_node's, never across the middle
+  // of the title and its note)
   inspect(out.to_string(), content=(
     #|settings narrow 79224:1e1c4ba
     #|station narrow 77764:dfaaba87
     #|me-reading narrow 24226:e04f7391
-    #|settings wide 183891:88273550
-    #|station wide 247752:38dd31b2
-    #|me-reading wide 178610:9a65fafb
+    #|settings wide 195015:9ca02af6
+    #|station wide 259460:258dd26a
+    #|me-reading wide 189734:e3381a0a
     #|settings-dark narrow 79492:72dbe261
     #|station-dark narrow 77674:804e74b
     #|me-reading-dark narrow 24354:78389ffb
-    #|settings-dark wide 183799:3b8279ab
-    #|station-dark wide 247443:9b28d061
-    #|me-reading-dark wide 178584:3dfeb7f7
+    #|settings-dark wide 194911:64609096
+    #|station-dark wide 259139:3213ba24
+    #|me-reading-dark wide 189696:c4771d1b
     #|
 
 

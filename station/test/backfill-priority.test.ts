@@ -30,19 +30,19 @@ test("the station marks its writes as pending until they finish, including failu
 test("a read-only coverage check does not wait for the previous process", async () => {
   const dir = mkdtempSync(join(tmpdir(), "backfill-coverage-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
-  // (the minutes not filled: the checker, not the readers' knowing all is complete, answers)
-  store.db.exec("UPDATE usage_minute_all SET done = 0");
+  // (the chats not filled: the checker, not the readers' knowing all is complete, answers)
+  store.db.exec("UPDATE usage_chat_progress SET done = 0");
   let finish!: () => void;
   const previousGone = new Promise<void>((resolve) => { finish = resolve; });
   const reader = new MinuteReader(path, { previousGone });
   try {
-    await assert.rejects(reader.ready(null), /historical minute statistics are unavailable/, "answered before handover ends");
+    await assert.rejects(reader.readyChats(null), /historical chat and card statistics are unavailable/, "answered before handover ends");
     finish();
 
     let finishOther!: () => void;
     const otherHandover = new Promise<void>((resolve) => { finishOther = resolve; });
     const stopping = new MinuteReader(path, { previousGone: otherHandover });
-    const waiting = assert.rejects(stopping.ready(null), /station stopping/);
+    const waiting = assert.rejects(stopping.readyChats(null), /station stopping/);
     await stopping.close();
     await waiting;
     finishOther();

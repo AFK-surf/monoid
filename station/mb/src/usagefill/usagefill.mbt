@@ -1,7 +1,7 @@
 // What the station does once the previous station has left its usage statistics (station/src/usage/module.ts
-// `retireAfterPrevious`): the retired per-call indexes freed in bounded deletes (station/test/reference/backfill/usage-retire.ts
-// `dropUsageIndexStep`), then the calls from before the compact statistics began taken in, newest first, whole quarters
-// at a time (station/test/reference/usage-fill.ts `fillUsageStep`), here for the MoonBit builder.
+// `retireAfterPrevious`): the statistics of before the quarters freed in bounded deletes (test/reference/backfill/usage-retire.ts
+// `dropUsageIndexStep`), then the calls from before the quarters began taken in, newest first, whole quarters at a time
+// (test/reference/backfill/usage-retire.ts `fillUsage15mStep`), here for the MoonBit builder.
 
 ///|
 fn get(row : Map[String, Json], name : String) -> Json {
@@ -22,12 +22,24 @@ fn quote(name : String) -> String {
 }
 
 ///|
-/// One bounded delete of a retired index table, by its primary key; the table dropped once empty (`dropUsageIndexStep`).
-/// Whether none is left.
+/// usage-retire.ts RETIRED_TABLES.
+let retired_tables : String = "(name = 'usage_detail' OR name GLOB 'usage_detail_*' OR name = 'usage_main_calls'\n  OR name = 'usage_minute' OR name IN ('usage_minute_all', 'usage_minute_seen', 'usage_minute_sessions')\n  OR name IN ('usage_day_quarters', 'usage_quarters') OR name = 'usage_compact' OR name GLOB 'usage_compact_*'\n  OR name GLOB 'usage_summary_*' OR name = 'usage_history' OR name GLOB 'usage_history_*' OR name = 'usage_retired_detail')"
+
+///|
+/// usage-retire.ts RETIRED_TRIGGERS.
+let retired_triggers : String = "(name GLOB 'usage_detail_*' OR name GLOB 'usage_daily_detail_*' OR name GLOB 'usage_main_calls_*'\n  OR name = 'usage_compactions_add' OR name GLOB 'usage_minute_*' OR name GLOB 'usage_quarters_*'\n  OR name GLOB 'usage_compact_*' OR name GLOB 'usage_summary_*' OR name GLOB 'usage_history_*')"
+
+///|
+/// One bounded delete of a retired table, by its primary key; the table dropped once empty (`dropUsageIndexStep`).
+/// Whether none is left; none taken while their writers still run (the station stops them first: then nothing is left
+/// to do now, and a later start takes them).
 pub fn drop_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
+  if first(db, "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND \{retired_triggers} LIMIT 1", []) is Some(_) {
+    return true
+  }
   guard first(
       db,
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND (name = 'usage_detail' OR name GLOB 'usage_detail_*' OR name = 'usage_main_calls') ORDER BY name LIMIT 1",
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND \{retired_tables} ORDER BY name LIMIT 1",
       [],
     )
     is Some(row) &&
@@ -65,29 +77,10 @@ pub fn drop_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
   false
 }
 
-// The fill (test/reference/usage-fill.ts) and what it uses of the compact statistics (usage-compact.ts) and the year
-// (usage-history.ts).
+// The fill (test/reference/backfill/usage-retire.ts `fillUsage15mStep`).
 
 ///|
-let quarter_ms : Int = 900000
-
-///|
-let context_columns : Array[String] = [
-  "id", "at", "session", "turn", "profile", "runtime", "model", "subagent", "fast", "context", "context_window", "cache_write",
-  "cache_write_long",
-]
-
-///|
-fn invalidate_context(session : String) -> String {
-  "UPDATE usage_totals SET compact_context = NULL WHERE session = \{session} AND (1) AND (runtime, model, fast) = (SELECT context_runtime, context_model, context_fast FROM usage_minute_scope WHERE session = \{session}) AND compact_context IS NOT NULL; UPDATE usage_minute_scope SET context_runtime = NULL, context_model = NULL, context_fast = NULL, context_uncertain = 1, context_after = (SELECT at FROM usage INDEXED BY usage_session WHERE session = \{session} ORDER BY at DESC LIMIT 1) WHERE session = \{session} AND (1);"
-}
-
-///|
-/// The context trigger as the compact statistics have it now (`contextChange`): an old call taken in changes nothing.
-pub fn context_change() -> String {
-  let changed = context_columns.map(c => "OLD.\{c} IS NOT NEW.\{c}").join(" OR ")
-  "CREATE TRIGGER usage_compact_context_change AFTER UPDATE OF \{context_columns.join(", ")} ON usage WHEN (OLD.subagent = 0 OR NEW.subagent = 0) AND (\{changed}) BEGIN \{invalidate_context("OLD.session")} \{invalidate_context("NEW.session")} END;"
-}
+let quarter_ms : Double = 900000.0
 
 ///|
 fn has_table(db : @sql.Db, name : String) -> Bool raise {
@@ -95,45 +88,24 @@ fn has_table(db : @sql.Db, name : String) -> Bool raise {
 }
 
 ///|
-fn number(row : Map[String, Json]?, name : String) -> Json {
-  match row {
-    Some(r) => get(r, name)
-    None => Json::null()
-  }
-}
-
-///|
-/// One batch of at least `batch` calls, or those left, and whole quarters (`fillUsageStep`): true when no call is left
-/// before the two `since`.
+/// One batch of at least `batch` calls from before the quarters, or those left, and whole quarters, newest first, with
+/// the `since` it moves back to (`fillUsage15mStep`): true when none is left.
 pub fn fill_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
-  if !has_table(db, "usage_compact_since") || !has_table(db, "usage_history_since") {
+  if !has_table(db, "usage_15m_meta") {
     return true
   }
   db.exec("BEGIN IMMEDIATE")
   errdefer (db.exec("ROLLBACK") catch { _ => () })
-  // (`keepContextOnFill`: a context trigger from before the fill is replaced)
-  if first(db, "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'usage_compact_context_change'", [])
-    is Some(t) &&
-    get(t, "sql") is String(sql) &&
-    sql.contains("compact_counted") {
-    db.exec("DROP TRIGGER usage_compact_context_change; \{context_change()}")
+  // (millisecond times, exact in a Double as in JavaScript)
+  let since = match first(db, "SELECT since FROM usage_15m_meta WHERE id = 1", []) {
+    Some(r) => get(r, "since")
+    None => Json::null()
   }
-  // (the quarter the fill reaches up to, and its time: millisecond times, exact in a Double as in JavaScript)
-  let since = first(db, "SELECT h.since AS history, c.since AS coverage FROM usage_history_since h, usage_compact_since c WHERE h.id = 1 AND c.id = 1", [])
-  let history = number(since, "history")
-  let coverage = number(since, "coverage")
-  let q = quarter_ms.to_double()
-  let c = match coverage {
-    Number(v, ..) => v
-    _ => raise Failure("usage compact coverage is missing")
+  guard since is Number(c, ..) else {
+    db.exec("COMMIT")
+    return true
   }
-  let h = match history {
-    Number(v, ..) => v
-    _ => c
-  }
-  let end_q = ((if c > h { c } else { h }) / q).ceil()
-  let end = Json::number(end_q)
-  let before = Json::number(end_q * q)
+  let before = Json::number((c / quarter_ms).ceil() * quarter_ms)
   let next = match
     first(db, "SELECT at FROM usage INDEXED BY usage_at WHERE at < ? ORDER BY at DESC LIMIT 1 OFFSET ?", [
       before,
@@ -143,9 +115,7 @@ pub fn fill_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
     None => first(db, "SELECT at FROM usage INDEXED BY usage_at WHERE at < ? ORDER BY at LIMIT 1", [before])
   }
   guard next is Some(n) else {
-    if !(history is Null) {
-      ignore(db.run("UPDATE usage_history_since SET since = ? WHERE id = 1", [Json::null()]))
-    }
+    ignore(db.run("UPDATE usage_15m_meta SET since = NULL WHERE id = 1", []))
     db.exec("COMMIT")
     return true
   }
@@ -153,34 +123,18 @@ pub fn fill_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
     Number(v, ..) => v
     _ => raise Failure("a call has no time")
   }
-  let start_q = (at / q).floor()
-  let start = Json::number(start_q)
-  let from = Json::number(start_q * q)
+  let from = (at / quarter_ms).floor() * quarter_ms
   ignore(
     db.run(
-      "UPDATE usage INDEXED BY usage_at SET compact_counted = 1 WHERE at >= ? AND at < ? AND compact_counted = 0",
-      [from, before],
+      "UPDATE usage INDEXED BY usage_at SET rollup_counted = 1 WHERE at >= ? AND at < ? AND rollup_counted = 0",
+      [Json::number(from), before],
     ),
   )
-  if start_q * q < c {
-    ignore(db.run("UPDATE usage_compact_since SET since = ? WHERE id = 1", [from]))
-  }
-  if !(history is Null) {
-    // (`setUsageHistoryQuarters`, then `setUsageHistorySince`)
-    ignore(
-      db.run(
-        "DELETE FROM usage_history WHERE scope IN (SELECT scope FROM usage_history_total) AND quarter >= ? AND quarter < ?",
-        [start, end],
-      ),
-    )
-    ignore(
-      db.run(
-        "INSERT INTO usage_history (scope, quarter, calls, tokens) SELECT COALESCE((SELECT ws FROM sessions WHERE key = u.session), ''), (CASE WHEN u.at >= 0 THEN u.at / \{quarter_ms} ELSE -1 - ((-1 - u.at) / \{quarter_ms}) END), SUM(u.calls), SUM((u.input + u.cache_read + u.cache_write + u.cache_write_long + u.output)) FROM usage u INDEXED BY usage_at WHERE u.at >= ? * \{quarter_ms} AND u.at < ? * \{quarter_ms} GROUP BY 1, 2",
-        [start, end],
-      ),
-    )
-    ignore(db.run("UPDATE usage_history_since SET since = ? WHERE id = 1", [from]))
-  }
+  ignore(
+    db.run("UPDATE usage_15m_meta SET since = ? WHERE id = 1", [
+      Json::number(if from < c { from } else { c }),
+    ]),
+  )
   db.exec("COMMIT")
   false
 }

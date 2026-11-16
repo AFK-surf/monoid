@@ -485,6 +485,12 @@ fn increase_contrast() -> Bool {
 }
 
 ///|
+/// Whether the system is slowing the device down for its heat: a browser says none, never.
+fn thermal_throttled() -> Bool {
+  false
+}
+
+///|
 /// The GPU's time for the last frame drawn, in ms (-1: not known here).
 fn gpu_ms() -> Double {
   js_gpu_ms()

@@ -137,10 +137,11 @@ fn board_archive_go(src : Source) -> Unit {
 
 ///|
 /// What 列表 does on the tape besides showing the list: the sidebar brought over, the list in use (nothing left in the
-/// page's panel to look at).
+/// page's panel to look at); only while Home is what the page's panel shows (the board turned off from 实验性功能
+/// leaves the panel on that page, as it was).
 fn board_listed_back() -> Unit {
   @sfbase.board_listed.val = fn() {
-    if wide.tape.get() {
+    if wide.tape.get() && app.nav.top() is Home {
       wide.tape_ask.set(Some(Side))
     }
   }

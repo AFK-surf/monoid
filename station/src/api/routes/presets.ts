@@ -47,20 +47,20 @@ export const routes = ({ presets, reposDir, index, clones, changed }: PresetDeps
     method: "GET",
     pattern: /^\/presets$/,
     handle: async (r: Request): Promise<Answer> => {
-      const list = presets.listed(wsOf(r));
-      const offered = await candidates(reposDir(), presets.list(wsOf(r)), (await index?.repos(changed)) ?? [], (s) => presets.isHere(s));
+      const [list, all] = await Promise.all([presets.listed(wsOf(r)), presets.list(wsOf(r))]);
+      const offered = await candidates(reposDir(), all, (await index?.repos(changed)) ?? [], (s) => presets.isHere(s));
       return json(200, JSON.stringify({ presets: list, candidates: offered, clones: clones?.list(wsOf(r)) ?? [] }));
     },
   },
   {
     method: "GET",
     pattern: /^\/presets\/kept$/,
-    handle: async (r: Request): Promise<Answer> => json(200, JSON.stringify({ records: presets.kept(wsOf(r), askerOf(r)) })),
+    handle: async (r: Request): Promise<Answer> => json(200, JSON.stringify({ records: await presets.kept(wsOf(r), askerOf(r)) })),
   },
   {
     method: "GET",
     pattern: /^\/presets\/others$/,
-    handle: async (r: Request): Promise<Answer> => json(200, JSON.stringify({ records: presets.others(wsOf(r), askerOf(r)) })),
+    handle: async (r: Request): Promise<Answer> => json(200, JSON.stringify({ records: await presets.others(wsOf(r), askerOf(r)) })),
   },
   {
     method: "PUT",
@@ -77,7 +77,7 @@ export const routes = ({ presets, reposDir, index, clones, changed }: PresetDeps
       if (given.length > CARRIED_MOST) return error(413, `at most ${CARRIED_MOST} records at a time`);
       const who = askerOf(r);
       if (who.sub === "") return error(403, "records are taken only from a person's own devices");
-      const carried = presets.carry(wsOf(r), who, given);
+      const carried = await presets.carry(wsOf(r), who, given);
       if (carried.changed) {
         log.info("presets", "records carried here", { by: r.viewer.email, given: given.length, refused: carried.refused.length });
         changed?.();
@@ -116,7 +116,7 @@ export const routes = ({ presets, reposDir, index, clones, changed }: PresetDeps
     pattern: /^\/presets$/,
     handle: async (r: Request): Promise<Answer> => {
       try {
-        const p = presets.add(wsOf(r), body(r), r.viewer.email, r.viewer.sub ?? "");
+        const p = await presets.add(wsOf(r), body(r), r.viewer.email, r.viewer.sub ?? "");
         log.info("presets", "preset made", { id: p.id, dirs: p.dirs.length, by: r.viewer.email });
         changed?.();
         return json(200, JSON.stringify(p));
@@ -130,7 +130,7 @@ export const routes = ({ presets, reposDir, index, clones, changed }: PresetDeps
     pattern: /^\/presets\/([A-Za-z0-9_-]+)$/,
     handle: async (r: Request, [id]: string[]): Promise<Answer> => {
       try {
-        const p = presets.put(wsOf(r), id!, body(r), askerOf(r));
+        const p = await presets.put(wsOf(r), id!, body(r), askerOf(r));
         log.info("presets", "preset changed", { id: p.id, by: r.viewer.email });
         changed?.();
         return json(200, JSON.stringify(p));
@@ -144,7 +144,7 @@ export const routes = ({ presets, reposDir, index, clones, changed }: PresetDeps
     pattern: /^\/presets\/([A-Za-z0-9_-]+)$/,
     handle: async (r: Request, [id]: string[]): Promise<Answer> => {
       try {
-        presets.delete(wsOf(r), id!, askerOf(r));
+        await presets.delete(wsOf(r), id!, askerOf(r));
         log.info("presets", "preset removed", { id, by: r.viewer.email });
         changed?.();
         return json(200, JSON.stringify({ ok: true }));

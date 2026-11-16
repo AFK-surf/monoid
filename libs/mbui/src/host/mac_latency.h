@@ -14,9 +14,11 @@
 //   drag    the left button down at the point, moved 3 points up or down an event (30 each way), every 4 to 12 ms
 //   anim    no input: what moves by itself, its frames only (how many of the refreshes show a new one)
 // An event is taken to arrive as it is posted, so the time the main thread was busy counts. The frame showing it is
-// the next one the main thread presents after it was handled. What it took is said as its parts: waiting for the main
-// thread (queue), handling it (handle), to the frame's start (tick: the display link's next), building, laying out and
-// painting it (build), a buffer of the ring and the instances into it (upload), waiting for a drawable (drawable),
+// the next one the main thread makes after it was handled (or the one that took that one's place before it was drawn:
+// apple_render.m's frame waiting). What it took is said as its parts: waiting for the main thread (queue), handling it
+// (handle), to the frame's start (tick: the display link's next), building, laying out and painting it and waiting for
+// the renderer's queue to take it (build), a buffer of the ring and the instances into it (upload), waiting for a
+// drawable (drawable),
 // encoding and presenting (encode), and from the present to the screen (screen: the GPU, the window server's
 // composite, the display). Of the frames: how long they waited for a drawable, how many more than 4 ms, what share
 // of the refreshes from the first frame shown to the last showed a new one, and of the frames presented, how many
@@ -60,18 +62,44 @@ static void lat_frame_begins(void) {
   if (lat_running) lat_frame_start = CACurrentMediaTime();
 }
 
-void mb_latency_presenting(id<CAMetalDrawable> d, double p0, double p1, double p2, double p3) {
-  if (!lat_running || ![NSThread isMainThread]) return;
-  double now = CACurrentMediaTime();
+// a frame made (apple_render.m mb_render_present, the main thread): the events handled before it are its; its number
+int mb_latency_built(void) {
+  if (!lat_running || ![NSThread isMainThread]) return -1;
   pthread_mutex_lock(&lat_mu);
   if (lat_nfr >= LAT_MAX) {
     pthread_mutex_unlock(&lat_mu);
-    return;
+    return -1;
   }
   int k = lat_nfr++;
-  lat_frames[k] = (lat_frame){lat_frame_start, p0, p1, p2, p3, now, -1, -1, lat_measuring};
+  lat_frames[k] = (lat_frame){lat_frame_start, -1, -1, -1, -1, -1, -1, -1, lat_measuring};
   for (int i = lat_pending0; i < lat_nev; i++) lat_events[i].frame = k;
   lat_pending0 = lat_nev;
+  pthread_mutex_unlock(&lat_mu);
+  return k;
+}
+
+// frame `from` replaced by frame `to` before it was drawn (the renderer's one frame waiting): its events are `to`'s,
+// and it is no frame presented
+void mb_latency_merged(int from, int to) {
+  if (from < 0 || to < 0) return;
+  pthread_mutex_lock(&lat_mu);
+  for (int i = 0; i < lat_nev; i++)
+    if (lat_events[i].frame == from) lat_events[i].frame = to;
+  lat_frames[from].measured = 0;
+  pthread_mutex_unlock(&lat_mu);
+}
+
+// frame `k`'s drawable about to be presented (on the thread that draws it): when its drawing asked for a buffer of the
+// ring (p0), had one (p1), asked for the drawable (p2) and had it (p3)
+void mb_latency_presenting(id<CAMetalDrawable> d, int k, double p0, double p1, double p2, double p3) {
+  if (k < 0) return;
+  double now = CACurrentMediaTime();
+  pthread_mutex_lock(&lat_mu);
+  lat_frames[k].p0 = p0;
+  lat_frames[k].p1 = p1;
+  lat_frames[k].p2 = p2;
+  lat_frames[k].p3 = p3;
+  lat_frames[k].presented = now;
   pthread_mutex_unlock(&lat_mu);
   [d addPresentedHandler:^(id<MTLDrawable> shown) {
     double at = shown.presentedTime, told = CACurrentMediaTime();

@@ -16,7 +16,7 @@
 // - Devin keeps its sessions in a database of its own: the driver keeps the transcript itself (acp.ts KeptTranscript),
 //   which the history and the usage read.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { peerHttpBase } from "../tools/http.ts";
 import { rulesFolder as folderOf } from "./rules-folder.ts";
@@ -42,9 +42,9 @@ const AUTH = "auth";
 
 /// The key the profile's sign-in left (`devin auth login` writes credentials.toml in its data directory), null when it
 /// has none.
-export function devinKey(home: string): string | null {
+export async function devinKey(home: string): Promise<string | null> {
   try {
-    const text = readFileSync(join(devinData(home), "devin", "credentials.toml"), "utf8");
+    const text = await readFile(join(devinData(home), "devin", "credentials.toml"), "utf8");
     const m = /^\s*windsurf_api_key\s*=\s*"([^"]+)"/m.exec(text);
     return m ? m[1]! : null;
   } catch {
@@ -68,7 +68,7 @@ export const devinRules = (instructions: string) =>
 /// The station's instructions as the rules of a folder of the session's own, beside its working directory, with the
 /// skills of its workspace (`skills`) linked in as .devin/skills: Devin reads a workspace directory it is given as a
 /// project's, without them being written into the person's project.
-export function rulesFolder(home: string, key: string, instructions: string, skills?: string): string {
+export function rulesFolder(home: string, key: string, instructions: string, skills?: string): Promise<string> {
   const rule = `---\ndescription: still.fail station\ntrigger: always_on\n---\n${devinRules(instructions)}\n`;
   return folderOf(devinHome(home), key, ".devin", { file: "stillfail.md", text: rule }, "Devin", skills);
 }
@@ -223,22 +223,22 @@ export class DevinDriver extends AcpDriver<DevinSession> {
     return new DevinSession(this, events, options);
   }
 
-  protected starting(options: OpenOptions): AcpStart {
+  protected async starting(options: OpenOptions): Promise<AcpStart> {
     const home = options.profile.home;
     const sessions = join(devinHome(home), SESSIONS);
-    mkdirSync(join(sessions, STORE), { recursive: true });
+    await mkdir(join(sessions, STORE), { recursive: true });
     // Not one the station kept.
-    if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) throw new Error(`no Devin session ${options.resume}`);
+    if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) throw new Error(`no Devin session ${options.resume}`);
     const config = join(devinHome(home), "config.json");
-    writeFileSync(config, `${JSON.stringify(CONFIG, null, 2)}\n`);
-    const rules = rulesFolder(home, options.key, options.instructions, options.skills);
+    await writeFile(config, `${JSON.stringify(CONFIG, null, 2)}\n`);
+    const rules = await rulesFolder(home, options.key, options.instructions, options.skills);
     const model = options.model ?? profileModel(options.profile);
     return { command: this.command, args: devinArgs(config, model, options.effort), env: devinEnv(options), opening: { additionalDirectories: [rules] } };
   }
 
   /// The profile's sign-in; custom variables bring their own (WINDSURF_API_KEY).
   protected async initialized(session: DevinSession, _answer: Json, options: OpenOptions) {
-    const key = devinKey(options.profile.home);
+    const key = await devinKey(options.profile.home);
     if (key !== null) await session.request(AUTH, "authenticate", { methodId: "devin-browser", _meta: { api_key: key } });
   }
 

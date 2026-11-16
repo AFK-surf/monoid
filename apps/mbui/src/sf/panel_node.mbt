@@ -307,6 +307,13 @@ fn panel_node(
             b
             .shrink(Is(1.0))
             .min_height(Is(Some(0.0)))
+            // (`most`: what it holds that tall at most, scrolling past it, panel_nodes')
+            .max_height(
+              match x.nodes {
+                Some({ most: Some(m), .. }) => By(fn() { Some(m()) })
+                _ => Is(None)
+              },
+            )
             .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
             // (the focus its own as it opens where it takes it (`focus`, kit's popover's: on what holds its body, said
             // nothing of itself): no key presses it)

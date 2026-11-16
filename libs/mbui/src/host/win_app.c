@@ -1312,13 +1312,12 @@ void mb_host_wake_after(double ms) {
   if (wake_at < 0 || t < wake_at) wake_at = t;
 }
 
-#include "groups.h"
-
+// (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a frame built while the window is not shown: nothing of it on the screen)
   if (!presenting) return;
   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
-  if (mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b) && ws->held) ws->held = 2;
+  if (mb_render_present(buf, count, r, g, b) && ws->held) ws->held = 2;
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,
@@ -1782,6 +1781,9 @@ int32_t mb_host_increase_contrast(void) {
   if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0)) return 0;
   return (hc.dwFlags & HCF_HIGHCONTRASTON) ? 1 : 0;
 }
+
+// (no heat of the machine Windows tells an app of: never slowed)
+int32_t mb_host_thermal_throttled(void) { return 0; }
 
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {

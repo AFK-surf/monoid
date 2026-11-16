@@ -23,6 +23,8 @@
 #include "corner_sl.h"
 #include "contained.h"
 #include "bands.h"
+// the groups of instances the host keeps, drawn out as a frame is taken (submit)
+#include "groups.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -1388,9 +1390,10 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   cut_on = 0;
 }
 
-// The frame's instances into the vertex buffer and kept (a snapshot draws them again), then drawn into the target: a
-// window's (`chain`) into the canvas, only the parts that differ where it holds the frame before; how many in
-// `parts_out` (-1 all of it, 0 none), the parts in `cuts`.
+// The frame's instances into the vertex buffer and kept (a snapshot draws them again), as floats with its groups'
+// headers drawn out (groups.h: one pass, into what is kept), then drawn into the target: a window's (`chain`) into the
+// canvas, only the parts that differ where it holds the frame before; how many in `parts_out` (-1 all of it, 0 none),
+// the parts in `cuts`.
 static int submit(const double *inst, int32_t count, double r, double g, double b, int *parts_out = NULL,
                   D3D11_RECT *cuts = NULL) {
   if (!rtv) return 0;
@@ -1412,7 +1415,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     last_cap = need * 2;
     last_inst = (float *)realloc(last_inst, last_cap);
   }
-  for (int32_t i = 0; i < n; i++) last_inst[i] = (float)inst[i];
+  mb_groups_floats(last_inst, inst, count);
   memcpy(f, last_inst, (size_t)n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));

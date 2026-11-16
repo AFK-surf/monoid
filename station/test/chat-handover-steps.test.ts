@@ -333,7 +333,7 @@ test("a turn stopped while the chat's placing there works ten minutes: the chat 
 const BOUNDED: Record<string, string> = {
   "handover.begin": "small; an older hand-over's drop only marked (its files a step of that station's own)",
   "handover.lacking": "at most lackMost hashes, a stat a path, and HASH_MOST bytes read",
-  "handover.put": "one file streamed, each piece within the mesh's idle time",
+  "handover.put": "one file streamed, or a pack of at most PACK_MAX_FILES files and PACK_MAX_BYTES (one larger alone) streamed in zstd, each piece within the mesh's idle time",
   "handover.place": "a told step",
   "handover.rows": "500 rows a page",
   "handover.prune": "a told step",

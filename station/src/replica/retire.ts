@@ -53,7 +53,7 @@ import { FolderPlace } from "./places.ts";
 import type { Ask } from "./peers.ts";
 import { type Outcome, moved, outcomeFile, readyFile, restoreDir } from "./restore.ts";
 import { mergeAgentHome } from "./agent-carry.ts";
-import { lackingIn, receiveFile, sendGathered } from "./sending.ts";
+import { PACK_ENCODING, lackingIn, receiveFile, receivePack, sendGathered } from "./sending.ts";
 import { movedSaid } from "../jobs/jobs.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
 
@@ -988,6 +988,11 @@ export class Retire {
     return await sendGathered(g, {
       lacking: (hashes) => this.#d.ask(s.to, { method: "retire.lacking", workspace: s.workspace, origin: here, hashes }),
       put: (hash, bytes) => this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: hash }, bytes)),
+      // (where its `retire.lacking` says it takes packs; a pack of one names its file, as a file's request does)
+      putPack: (entries, bytes, strict) => this.#d.ask(s.to, withBytes({
+        method: "retire.put", workspace: s.workspace, origin: here, pack: PACK_ENCODING, strict, count: entries.length,
+        ...(entries.length === 1 ? { name: entries[0]!.hash } : {}),
+      }, bytes)),
       most: this.#lackMost,
       stopping: () => this.#stopping,
       total: (bytes) => {
@@ -1286,9 +1291,20 @@ export class Retire {
             if (hashes.length > this.#lackMost || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(`at most ${this.#lackMost} files' hashes`);
             const t = this.#taking.get(peer);
             if (t === undefined || t.workspace !== ws) throw new Refused("not begun: retire.begin first");
-            return { lacking: await lackingIn(join(this.#carried.dir(ws, peer), "files"), hashes) };
+            return { lacking: await lackingIn(join(this.#carried.dir(ws, peer), "files"), hashes), pack: PACK_ENCODING };
           }
           case "retire.put": {
+            if (request.pack === PACK_ENCODING) {
+              const named = request.name === undefined ? undefined : String(request.name);
+              if (bytes === null || (named !== undefined && !HASH.test(named))) throw new Refused("not a pack");
+              const t = this.#taking.get(peer);
+              if (t === undefined || t.workspace !== ws) throw new Refused("not begun: retire.begin first");
+              await receivePack(join(this.#carried.dir(ws, peer), "files"), bytes as Bytes, {
+                strict: request.strict !== false, ...(named !== undefined ? { name: named } : {}),
+                ...(typeof request.count === "number" ? { count: request.count } : {}),
+              });
+              return { ok: true };
+            }
             const name = String(request.name ?? "");
             if (bytes === null || !HASH.test(name)) throw new Refused("not a file's hash");
             const t = this.#taking.get(peer);

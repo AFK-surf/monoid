@@ -170,7 +170,7 @@ export type Platform = {
   /// Whether a directory's entries can be made durable by syncing it (not on Windows: NTFS journals them).
   syncsDirectories: boolean;
   /// `link` the same file as `target`, kept so: a symbolic link, or where one is refused a hard link.
-  shareFile(target: string, link: string): void;
+  shareFile(target: string, link: string): Promise<void>;
 
   // The runner (agents/runner.ts).
   /// Whether a runner's socket is a file that can be looked at without connecting (not a Windows pipe).
@@ -209,10 +209,10 @@ export type Platform = {
   startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean>;
   /// How a runtime found as a package manager's of this machine's kind is updated (Windows: winget's package, Vite+'s
   /// shim beside vp.exe, npm's .cmd in its prefix), none for the shared rules.
-  shimUpdate(found: Found, pkg: string, env: Env): How | "no-npm" | null;
+  shimUpdate(found: Found, pkg: string, env: Env): Promise<How | "no-npm" | null>;
   /// `command` (a command npm installed in its global prefix) linked into `dir` under its name, where nothing of that
   /// name is: whether it now is (not on Windows: npm's .cmd finds its package beside itself, and its prefix is on PATH).
-  linkCommand(command: string, dir: string): boolean;
+  linkCommand(command: string, dir: string): Promise<boolean>;
   /// Whether Codex's standalone install updates by its installer here, and installs by it (a shell script: not on
   /// Windows).
   codexStandalone: boolean;

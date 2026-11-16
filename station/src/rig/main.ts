@@ -137,7 +137,7 @@ export const RigLive = (control: Control) =>
       const updates = makeUpdates({ app, data, config, origin: () => plane.releaseBase(), running: () => 0, stationOnly: true });
       updates.start();
       plane.told("release", () => void updates.check().catch((error) => log.warn("updates", "the release not read", { error: String(error) })));
-      control.on("hup", () => updates.answerChannelAsk());
+      control.on("hup", () => void updates.answerChannelAsk());
 
       // In its workspace or out of it, as cloud.json says: out of it, what it runs for the stations stops.
       const bound = () => rig.self() !== null;

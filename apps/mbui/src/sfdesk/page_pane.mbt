@@ -263,7 +263,7 @@ fn pane_made(
     // (Home: the board while it is chosen, else its ground: board.mbt)
     Home => Some(board_home_made(src, tips))
     // (the settings come to beside their list: its first row's page, made once as that page is)
-    Settings => pane_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
+    Settings | Setting(Home) => pane_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     Setting(About) =>
       made("about", fn(a, core, _here, _stint, frame, width) {
         @sfpages.about_node(a, core, on_back=core.pop, frame~, width~)
@@ -299,6 +299,12 @@ fn pane_made(
     Setting(Memory(address)) =>
       made("memory/" + address, fn(a, core, here, _stint, frame, width) {
         @sfpages.memory_node(a, core, here, address, on_back=core.pop, frame~, width~, tips~)
+      })
+    // (已归档, none of its chats beside the sidebar's list of them: what it is)
+    Archived => made("archived", fn(a, _core, _here, _stint, _frame, _width) { archive_main_node(a) })
+    Setting(Archive) =>
+      made("archive", fn(a, core, here, _stint, frame, width) {
+        @sfpages.archive_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
       })
     Setting(Archiving) =>
       // (its pictures asked for again each time it is come back to, not each frame it stays: nav_flat_view's stint)
@@ -339,6 +345,8 @@ fn pane_made(
       })
     Setting(Appearance) =>
       made("appearance", fn(a, core, _here, _stint, frame, width) { @sfpages.appearance_node(a, core, on_back=core.pop, frame~, width~) })
+    Setting(Experimental) =>
+      made("experimental", fn(a, core, _here, _stint, frame, width) { @sfpages.experimental_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
       made("profiles-overview", fn(a, core, here, _stint, frame, width) {
         @sfpages.profiles_overview_node(
@@ -351,6 +359,20 @@ fn pane_made(
           tips~,
           on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
         )
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt)
+    Setting(Stations) =>
+      made("stations", fn(a, core, here, _stint, frame, width) {
+        @sfpages.stations_list_node(a, core, here, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(a, core, here, _stint, frame, width) {
+        @sfpages.profiles_list_node(a, core, here, only, on_back=core.pop, frame~, width~, tips~)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(a, core, here, _stint, frame, width) {
+        @sfpages.profile_account_node(a, core, here, key, on_back=core.pop, frame~, width~, tips~)
       })
     // (by its station and id: another's another page)
     Setting(Profile(address, id)) =>
@@ -447,7 +469,7 @@ fn pane_made(
     page if @sfbase.chat_page_is(page) =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             // (beside it its side panel, the tree's, reading by the page's source, let go with it: side_panel_node)
             v.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

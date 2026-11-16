@@ -370,6 +370,13 @@ fn tape_made(
         context_node(p)
         @sfpages.about_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    // (已归档, none of its chats beside the side column's list of them: what it is)
+    Archived if pane_makes.val => made("archived", fn(p, _core, _here, _stint, _told, _acts) { archive_main_node(p) })
+    Setting(Archive) if pane_makes.val =>
+      made("archive", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.archive_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
     Setting(Memories) if pane_makes.val =>
       made("memories", fn(p, core, here, _stint, told, _acts) {
         context_node(p)
@@ -403,7 +410,7 @@ fn tape_made(
         _ => None
       }
     // (the settings come to beside their list: its first row's page, made once as that page is)
-    Settings => tape_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
+    Settings | Setting(Home) => tape_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     // (by its station: another station's another page, not this one become it)
     Setting(Memory(address)) if pane_makes.val =>
       made("memory/" + address, fn(p, core, here, _stint, told, _acts) {
@@ -437,6 +444,10 @@ fn tape_made(
       made("appearance", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.appearance_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Experimental) if pane_makes.val =>
+      made("experimental", fn(p, core, _here, _stint, told, _acts) {
+        @sfpages.experimental_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
       made("profiles-overview", fn(p, core, here, _stint, told, _acts) {
         context_node(p)
@@ -451,6 +462,24 @@ fn tape_made(
           tips~,
           on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
         )
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt), their ＋ in the bar; made in every case, as they have no
+    // old view
+    Setting(Stations) =>
+      made("stations", fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.profiles_list_node(p, core, here, only, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.profile_account_node(p, core, here, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (by its station and id: another's another page; made in every case, as it has no old view)
     Setting(Profile(address, id)) =>
@@ -595,7 +624,7 @@ fn tape_made(
     page if pane_makes.val && @sfbase.chat_page_is(page) =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the panel's corners as a
             // page's bar on the tape does; the tape's head over it none, tape_bar_head)
@@ -676,6 +705,11 @@ fn tape_made_bar(under : Page?, place : Bool, said : @sf.PageSaid?) -> PaneBarSa
   let back = match under {
     Some(u) if !place && u is (Setting(_) | Place(_)) => Some(@sfbase.back_label(u))
     _ => None
+  }
+  // (back as the page says it, where it says it: a station's profiles, that station's name; page_node's `back_as`)
+  let back = match (back, said) {
+    (Some(_), Some(s)) if s.back != "" => Some(s.back)
+    _ => back
   }
   match said {
     Some(s) => { back, title: s.title, small: "", about: s.about }

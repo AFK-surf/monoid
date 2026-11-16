@@ -2846,6 +2846,8 @@ pub(all) struct Message {
   notice_again_session : String
   notice_reassign_session : String
   notice_detail : String
+  notice_count : Int32
+  notice_last_seq : Double
   notice_short : String
   notice_lines : Array[String]
   notice_sides : RunSides?

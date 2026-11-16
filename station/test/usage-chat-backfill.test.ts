@@ -60,7 +60,7 @@ test("old chat totals fill in bounded resumable batches while writes and workspa
     const reader = makeStore(store.db, dir);
     assert.throws(() => usageChatTotals(reader, null), /chat statistics.*being filled/);
     store.db.setAuthorizer((action, table) => action === constants.SQLITE_READ && table === "usage" ? constants.SQLITE_DENY : constants.SQLITE_OK);
-    try { assert.equal(usage(reader, "en", 0n, 1n, 0n, false, null, true).history.chatsIncomplete, true); }
+    try { assert.equal(usage(reader, "en", 0n, 900_000n, 0n, false, null, true).history.chatsIncomplete, true); }
     finally { store.db.setAuthorizer(null); }
     assert.deepEqual(backfillUsageChatStats(store.db, 4), { done: false, processed: 4 });
 
@@ -118,13 +118,13 @@ test("chat summary waiters are released on shutdown and ready summaries skip oth
   const dir = mkdtempSync(join(tmpdir(), "usage-chat-ready-"));
   const path = join(dir, "stillfail.db");
   const store = Store.open(path);
-  store.db.exec("UPDATE usage_minute_all SET done = 0 WHERE id = 1");
+  store.db.exec("UPDATE remote_run_progress SET done = 0 WHERE id = 1");
   const priority = new SharedArrayBuffer(8);
   Atomics.store(new Int32Array(priority), 0, 1);
   const reader = new MinuteReader(path, { priority });
   try {
     await reader.readyChats();
-    assert.equal((store.db.prepare("SELECT done FROM usage_minute_all").get() as { done: number }).done, 0);
+    assert.equal((store.db.prepare("SELECT done FROM remote_run_progress").get() as { done: number }).done, 0);
   } finally { await reader.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 

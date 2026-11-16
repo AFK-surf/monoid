@@ -122,6 +122,8 @@ pub(all) enum Route {
   Home
   Me
   Appearance
+  /// 设置 › 实验性功能
+  Experimental
   /// 外观 › 字体
   Fonts
   /// the workspace: its name, its people, its invitations
@@ -520,7 +522,6 @@ let left_core : Ref[Core?] = Ref(None)
 /// A page of the settings left the stack: what it kept goes (its words looked for, a sheet of its own).
 pub fn left(route : Route) -> Unit {
   match route {
-    Archive => archive_reset()
     Connects(_) => connects_mine.val = false
     Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
@@ -554,7 +555,6 @@ pub fn left(route : Route) -> Unit {
 ///|
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
-  archive_reset()
   local_said_kept.val = None
   profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
@@ -574,6 +574,7 @@ pub fn reset() -> Unit {
   notify_switched.set(None)
   connects_mine.val = false
   chosen.clear()
+  features_reset()
   builtin_open.clear()
   panels_core.set(None)
   frame_core.val = None
@@ -641,18 +642,19 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings)
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
 /// A page by its name, for opening one from the start (MBUI_FIXTURE=settings-<name>, a scripted run): home, me,
-/// appearance, fonts, workspace, security, vault, vault-items, stations, station:<address>, profiles, connects, memories, memory:<address>,
+/// appearance, fonts, workspace, security, vault, vault-items, stations, station:<address>, profiles, profile-account:<key>, connects, memories, memory:<address>,
 /// usage, archive.
 pub fn route_of(name : String) -> Route? {
   match name {
     "" | "home" => Some(Home)
     "me" => Some(Me)
     "appearance" => Some(Appearance)
+    "experimental" => Some(Experimental)
     "fonts" => Some(Fonts)
     "workspace" => Some(Workspace)
     "security" => Some(Security)
@@ -705,6 +707,8 @@ pub fn route_of(name : String) -> Route? {
             "memory-doc" => Some(MemoryDoc(address, id, 0))
             "profiles" => Some(Profiles(arg))
             "profile" => Some(Profile(address, id))
+            // (an account on several stations, by its key in the workspace's profiles)
+            "profile-account" => Some(ProfileAccount(arg))
             // (the pages its models were ticked on, gone: every model it lists runs, 2026-11-02)
             "pick-models" | "profile-models" => Some(Profile(address, id))
             "connects" => Some(Connects(arg))

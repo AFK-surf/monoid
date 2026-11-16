@@ -1,8 +1,8 @@
 // A chat's own tabs beside it on 中屏 (the tape's panel, tape_side_node) and 大屏 (beside the page, side_panel_node),
 // made as nodes of the window's tree (sfdesk's jobs_tab_node, letters_tab_node; sfpages' things_node): 任务's list,
 // a job picked and its output, a service opening its own tab; agent 往来's chats, one opened and back; 图片、文件和链接's
-// kinds, chosen here and by things_choose; and on the tape a Farview tab, its screen (side_farview_node), not an
-// agent's history.
+// kinds, chosen here and by things_choose; and on the tape a Farview tab drawn here (实验性功能 on), its screen
+// (side_farview_node), not an agent's history.
 
 ///|
 /// 大屏 beside the page, 中屏 the tape's panel (corners_wbtest's windows).
@@ -104,6 +104,8 @@ test "中屏, 大屏: 图片、文件和链接 beside the chat, nodes: its pictu
 ///|
 test "中屏: a Farview tab on the tape's panel is its screen drawn here, not an agent's history" {
   let t = side_tab_at("chat-jobs-side", side_tab_windows[1])
+  // (实验性功能's Farview 原生标签页渲染 on: experimental_wbtest.mbt has it off, its pictures)
+  @sfbase.farview_native.set(true)
   let tab = "screen:" + Json::array([Json::string("ws1/st1"), Json::string("browser:fv_t1")]).stringify()
   side_change(side_tab_chat, "open", Some(tab))
   t.run_for(@ui.move_most_ms)

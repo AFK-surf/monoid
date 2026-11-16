@@ -20,8 +20,7 @@
 // file (`takeUp`), and from the runners a crashed station left (no snapshot), then `recover` resumes the turns marked
 // running that nothing took up.
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
@@ -53,7 +52,7 @@ import { FEW_MOST, USED_WITHIN_MS, candidates as modelsRun, few } from "./model-
 import { CHAT_KEY, INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./internal.ts";
 import { LiveHub } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
-import { agentHomePaths, workspaceAgentHome } from "./agent-home.ts";
+import { agentHomePaths, workspaceAgentHome, workspaceAgentHomePath } from "./agent-home.ts";
 import { Presets, RepoIndex } from "./presets.ts";
 import { Clones } from "./clones.ts";
 import { type Roots, roots as machineRoots } from "../read/machine.ts";
@@ -283,7 +282,7 @@ export class Hub {
   /// The station's background jobs (made after the hub, which tells their agents).
   jobs: Jobs | null = null;
   /// Each workspace's presets, in its agent home (presets.ts).
-  readonly presets = new Presets((ws) => workspaceAgentHome(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now(), {
+  readonly presets = new Presets((ws) => workspaceAgentHomePath(this.config().agentHome, ws, this.workspaces()[0] ?? null), () => this.now(), {
     station: () => this.station(),
     workspace: (ws) => ws ?? this.workspaces()[0] ?? null,
     stationName: (id) => this.options.stationName?.(id) ?? null,
@@ -649,8 +648,8 @@ export class Hub {
     this.stopTimers();
     const handed: Handover = { sessions };
     const file = handoverFile(this.config().dataDir);
-    mkdirSync(join(file, ".."), { recursive: true });
-    writeFileSync(file, JSON.stringify(handed));
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, JSON.stringify(handed));
     log.info("hub", "handed over", { sessions: sessions.length });
     return handed;
   }
@@ -672,13 +671,15 @@ export class Hub {
   async takeUp() {
     const file = handoverFile(this.config().dataDir);
     let handed: Handover = { sessions: [] };
-    if (existsSync(file)) {
+    const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : error));
+    if (text !== null) {
       try {
-        handed = JSON.parse(readFileSync(file, "utf8"));
+        if (text instanceof Error) throw text;
+        handed = JSON.parse(text);
       } catch (error) {
         log.warn("hub", "the handover file does not read; sessions resume the usual way", { error: (error as Error).message });
       }
-      rmSync(file, { force: true });
+      await rm(file, { force: true });
     }
     // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
     const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
@@ -884,6 +885,18 @@ export class Hub {
     }
   }
 
+  /// A single-session connect's session being made, by the connect: one at a time.
+  private readonly singles = new Map<string, Promise<unknown>>();
+  private oneSingle<T>(connect: string, f: () => Promise<T>): Promise<T> {
+    const run = (this.singles.get(connect) ?? Promise.resolve()).then(f, f);
+    const done = run.then(() => {}, () => {});
+    this.singles.set(connect, done);
+    void done.then(() => {
+      if (this.singles.get(connect) === done) this.singles.delete(connect);
+    });
+    return run;
+  }
+
   private async acceptInTurn(connectId: string, message: InboundMessage) {
     const config = this.config();
     // What a bot of this station posted is its agent's, recorded and handed to the thread as it was posted: Slack's
@@ -906,7 +919,7 @@ export class Hub {
     const own = single ? null : sessionKey(connect.id, message.channel, message.threadTs);
     const sameBot = single ? [] : members.filter((m) => m.connect === connect.id);
     const taken = sameBot.find((m) => m.leftAt === null) ?? sameBot.find((m) => m.session === own) ?? sameBot[0];
-    const key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
+    let key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
     const exists = this.store.getSession(key) !== null;
     // Left (chat_leave): it hears the thread again only once someone mentions it.
     const left = members.some((m) => m.session === key && m.leftAt !== null);
@@ -924,8 +937,19 @@ export class Hub {
     const createdBy = `slack:${connect.id}:${message.user}`;
     if (wanted && !exists) {
       try {
-        this.createSession(config, key, connect, single ? "all" : "thread", message, null, createdBy);
-        if (single) this.store.setBinding(connect.id, key);
+        if (!single) await this.createSession(config, key, connect, "thread", message, null, createdBy);
+        else {
+          // A single-session connect's one session, made once: messages of two channels at once (each its own
+          // thread's turn) find the one the first made and bound.
+          const making = key;
+          key = await this.oneSingle(connect.id, async () => {
+            const now = this.store.binding(connect.id);
+            if (now !== null && this.store.getSession(now) !== null) return now;
+            await this.createSession(config, making, connect, "all", message, null, createdBy);
+            this.store.setBinding(connect.id, making);
+            return making;
+          });
+        }
       } catch (error) {
         log.error("hub", "cannot create session", { session: key, error: (error as Error).message });
         await chat.post(here, markNotice(`⚠️ ${tr(stationLang(), "station.slack.sessionFailed", { error: (error as Error).message })}`), []);
@@ -1612,7 +1636,7 @@ export class Hub {
   /// A session for a connect: the connect's own profile when it keeps to one (and it still can run it); else any of its
   /// runtime, the model's first (pool.ts). A message sent to a model (`model`) starts one on that model instead, on any
   /// profile of the connect's workspace that runs it.
-  createSession(config: HubConfig, key: string, connect: Connect, scope: "thread" | "all", message: InboundMessage | null, title: string | null, createdBy: string | null) {
+  async createSession(config: HubConfig, key: string, connect: Connect, scope: "thread" | "all", message: InboundMessage | null, title: string | null, createdBy: string | null): Promise<void> {
     const home = this.workspaces()[0] ?? null;
     const chosen = message?.model ?? null;
     const runtime = chosen === null ? connect.bind.runtime : runtimeNamed(chosen.runtime);
@@ -1631,8 +1655,9 @@ export class Hub {
     const profile = boundFits.length === 1 ? boundFits[0]! : this.accounts.pick(boundFits.length > 0 ? boundFits : fits, model, false);
     const dir = scope === "thread" && message ? `${message.channel}-${message.threadTs.replace(".", "-")}` : key.slice(connect.id.length + 1);
     const workspace = join(config.dataDir, "sessions", connect.id, dir, "workspace");
-    mkdirSync(workspace, { recursive: true });
-    mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+    await Promise.all([mkdir(workspace, { recursive: true }), mkdir(join(config.dataDir, "repos"), { recursive: true })]);
+    // (made meanwhile by what was waiting on the same key: as it is)
+    if (this.store.getSession(key) !== null) return;
     const now = this.now();
     this.store.insertSession({
       key,
@@ -1699,7 +1724,11 @@ export class Hub {
   private sessionDeps(): SessionDeps {
     return {
       store: this.store,
-      linkSkills: (row) => this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps),
+      // (its workspace's agent home made first where it is a joined one's not made yet: its memory and skills)
+      linkSkills: async (row) => {
+        await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);
+        return this.skillsLinker ? this.skillsLinker(row) : linkSkills(row, this.deps);
+      },
       pendingDeliveries: async (key, signal) => this.pendingDeliveries
         ? this.pendingDeliveries(key, signal) : this.store.pendingMessages(key),
       deliveryCardState: async (thread, n, signal) => {
@@ -1732,7 +1761,7 @@ export class Hub {
         const me = this.options.station?.() ?? null;
         return me === null ? "" : (this.options.stationName?.(me) ?? "");
       },
-      memoryPath: (key) => agentHomePaths(workspaceAgentHome(this.config().agentHome, this.wsOf(key), this.workspaces()[0] ?? null))[0],
+      memoryPath: (key) => agentHomePaths(workspaceAgentHomePath(this.config().agentHome, this.wsOf(key), this.workspaces()[0] ?? null))[0],
       maxNudges: () => this.config().maxNudges,
       untitled: (key) => (this.config().askToName ? untitledChat(this, key) : null),
       backgroundOnMessage: (key) => {

@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { Cloud } from "../src/cloud/state.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, PeerGone, PeerStopped, STOPPING, peerCall, servePeer } from "../src/mesh/peer.ts";
 import type { Connection, Endpoint } from "../src/mesh/native.ts";
+import { type Bytes, withBytes } from "../src/mesh/bus.ts";
 import { given, settle } from "./hub-fakes.ts";
 import { memoryMesh, vanish } from "./memory-mesh.ts";
 
@@ -46,8 +47,8 @@ function serving(endpoint: Endpoint, peers: string[], handle: (request: any) => 
 const settled = <T>(p: Promise<T>) => p.then((v) => ({ v }), (e: Error) => ({ e }));
 
 /// Two stations; `again` binds the target's key anew (its station started again).
-async function pair() {
-  const mesh = memoryMesh();
+async function pair(options: Parameters<typeof memoryMesh>[0] = {}) {
+  const mesh = memoryMesh(options);
   const secret = randomBytes(32);
   const bind = (key = randomBytes(32)) => mesh.bind({ secretKey: key, alpns: [PEER_BYTES_ALPN, PEER_ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
   const [source, target] = await Promise.all([bind(), bind(secret)]);
@@ -74,6 +75,29 @@ test("a request on a connection whose other end is gone fails as that, by the ch
     assert.ok(!(failed.e instanceof PeerStopped), "killed, it said nothing: not a process stopping");
     assert.match(failed.e.message, /connection was gone/);
     assert.deepEqual(await given(call(target.id(), "ws", { method: "again" }), "answered on a new connection"), { ok: "again" });
+  } finally { await Promise.all([source.close(), target.close()]); }
+});
+
+test("a request whose bytes a station killed stops taking fails as gone at once: not after its stream's reset, which waits behind the write flow control holds, nor its connection's close; the next dials anew", async () => {
+  // (each stream's window 64 KiB, its reset held behind a write waiting for room, as the shell's: drill 3a, 2026-11-16,
+  // where a move's pack of a chat's room held the turn till the station killed came back)
+  const { source, target, again } = await pair({ window: 64 * 1024, held: true });
+  const dead = { now: false };
+  serving(target, [source.id()], killedAfter(dead));
+  const call = peerCall(source, cloudOf(source.id(), [target.id()]), (id) => ({ id }), undefined, 60_000, { checkMs: 60_000, heardMs: 50, idleMs: 0 });
+  // (a megabyte, more than the window: what a station that takes none of it leaves waiting)
+  async function* megabyte(): Bytes {
+    for (let i = 0; i < 16; i++) yield Buffer.alloc(64 * 1024, i);
+  }
+  try {
+    assert.deepEqual(await call(target.id(), "ws", { method: "first" }), { ok: "first" });
+    dead.now = true;
+    vanish(target);
+    const back = await again();
+    serving(back, [source.id()], async (r) => ({ ok: r.method }));
+    const failed = await given(settled(call(target.id(), "ws", withBytes({ method: "lost" }, megabyte()))), "the request failed as its bytes were not taken");
+    assert.ok("e" in failed && failed.e instanceof PeerGone, `failed as gone: ${"e" in failed ? failed.e.message : "answered"}`);
+    assert.deepEqual(await given(call(target.id(), "ws", withBytes({ method: "again" }, megabyte())), "answered on a new connection"), { ok: "again" });
   } finally { await Promise.all([source.close(), target.close()]); }
 });
 

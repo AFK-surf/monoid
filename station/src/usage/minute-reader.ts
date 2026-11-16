@@ -3,15 +3,15 @@ import { log } from "../ops/log.ts";
 import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
-export type MinuteRequest = { id: number; viewer: InWorkspace | null } | { id: number; detail: InWorkspace | null }
-  | { id: number; remote: true } | { id: number; chats: InWorkspace | null };
+export type MinuteRequest = { id: number; remote: true } | { id: number; chats: InWorkspace | null };
 export type MinuteResponse = { id?: number; error?: string; complete?: boolean; foreground?: boolean };
 
 /// How long a checker with nothing asked of it is kept.
 const IDLE_MS = 60_000;
 
-/// Check whether previously maintained summaries are complete without writing or filling old history, by the MoonBit
-/// checker (station/mb, src/usage: `--builder usage-check`; `binary`: the program, a test's own where it gives one). One with
+/// Check whether the statistics kept apart from the usage itself (the remote tasks' index, the chats' and cards' counts)
+/// are complete for a reader, without writing or filling old history, by the MoonBit checker (station/mb, src/usage:
+/// `--builder usage-check`; what was spent is counted as it is written, store/usage-15m.ts, and needs none; `binary`: the program, a test's own where it gives one). One with
 /// nothing asked of it goes after IDLE_MS (or at once: `trimIdle`) and is started again by the next ask: it keeps
 /// nothing between asks (each is answered from the database as it is then), and what this keeps (`complete`) stays.
 export class MinuteReader {
@@ -107,40 +107,6 @@ export class MinuteReader {
       this.#worker.postMessage(waiting.request);
       waiting.sent = true;
     }
-  }
-
-  ready(viewer: InWorkspace | null): Promise<void> {
-    if (this.#closed) return Promise.reject(new Error("station stopping"));
-    if (this.#complete) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      const id = ++this.#next;
-      try {
-        this.#waiting.set(id, { resolve, reject, request: { id, viewer }, sent: false });
-        this.start();
-        this.#sendWaiting();
-      } catch (error) {
-        this.#waiting.delete(id);
-        reject(error);
-      }
-    });
-  }
-
-  /// A moved session can make only its workspace's detail statistics incomplete.
-  readyDetail(viewer: InWorkspace | null): Promise<void> {
-    if (this.#closed) return Promise.reject(new Error("station stopping"));
-    // A session can move after the original fill finished; the requesting reader has seen pending work.
-    this.#complete = false;
-    return new Promise((resolve, reject) => {
-      const id = ++this.#next;
-      try {
-        this.#waiting.set(id, { resolve, reject, request: { id, detail: viewer }, sent: false });
-        this.start();
-        this.#sendWaiting();
-      } catch (error) {
-        this.#waiting.delete(id);
-        reject(error);
-      }
-    });
   }
 
   /// Remote-task statistics may already be complete even when another statistic is incomplete.

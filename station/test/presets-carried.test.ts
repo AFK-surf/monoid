@@ -122,7 +122,7 @@ test("a device carries its person's presets between two stations that never talk
   assert.deepEqual(await live(b, ME), await live(a, ME), "the same record on both");
   assert.ok(b.told() > 0, "B's devices told");
   // B's agents open with it; an app from before on B is not listed it (it is A's)
-  assert.equal(b.presets.list("ws").length, 1);
+  assert.equal((await b.presets.list("ws")).length, 1);
   assert.deepEqual((await b.ask("GET", "/presets", ME)).body.presets, []);
   assert.equal((await a.ask("GET", "/presets", ME)).body.presets.length, 1);
 
@@ -135,7 +135,7 @@ test("a device carries its person's presets between two stations that never talk
   assert.deepEqual(await live(a, ME), []);
   assert.deepEqual(await live(b, ME), []);
   assert.deepEqual((await b.ask("GET", "/presets/kept", ME)).body.records.map((r: KeptRecord) => [r.id, r.rev, "gone" in r]), [[id, 2, true]]);
-  assert.equal(b.presets.list("ws").length, 0, "nor do B's agents open with it");
+  assert.equal((await b.presets.list("ws")).length, 0, "nor do B's agents open with it");
 });
 
 test("an edit made on A while B was away wins or loses by rev alone", async () => {
@@ -214,7 +214,7 @@ test("a file from before reads as made here, changed once, of nobody yet, and is
   const a = station("sa", clock);
   const before = `${JSON.stringify({ presets: [{ id: "p-old", name: "Old", dirs: [{ path: "/Users/me/app", repo: "github.com/acme/app" }, { path: "/x", repo: null, station: "ws/sb", stationName: "Willow" }], instructions: "", createdBy: ME.email, createdAt: 5, updatedAt: 6 }] }, null, 2)}\n`;
   writeFileSync(join(a.home, "presets.json"), before);
-  const p = a.presets.get("ws", "p-old")!;
+  const p = (await a.presets.get("ws", "p-old"))!;
   assert.deepEqual([p.rev, p.home, p.owner], [1, "sa", ""]);
   assert.equal((await a.ask("GET", "/presets", ME)).body.presets.length, 1, "listed to an app from before");
   const kept = (await a.ask("GET", "/presets/kept", ME)).body.records;
@@ -227,7 +227,7 @@ test("a file from before reads as made here, changed once, of nobody yet, and is
   assert.match((await a.ask("PUT", "/presets/kept", YOU, { records: [{ ...kept[0], owner: YOU.sub, rev: 2 }] })).body.refused[0].error, /someone else/);
   const claimed = await a.ask("PUT", "/presets/kept", ME, { records: [{ ...kept[0], owner: ME.sub, rev: 2 }] });
   assert.deepEqual([claimed.body.refused, claimed.body.records[0].owner], [[], ME.sub]);
-  assert.equal(a.presets.get("ws", "p-old")!.owner, ME.sub);
+  assert.equal((await a.presets.get("ws", "p-old"))!.owner, ME.sub);
 });
 
 test("two stations given the same record keep the same bytes of it", async () => {
@@ -281,9 +281,9 @@ test("a folder naming this station is this machine's for a chat opened with it; 
   mkdirSync(join(here, ".claude", "skills", "ship"), { recursive: true });
   writeFileSync(join(here, ".claude", "skills", "ship", "SKILL.md"), "---\nname: ship\n---\n");
   const record = recordOf({ ...base, rev: 1, updatedAt: 1, home: "sw", dirs: [{ path: here, repo: null, station: "ws/st" }, { path: "/far", repo: null, station: "ws/sw" }, { path: "/farther", repo: null, station: "ws/sx" }] });
-  assert.deepEqual(r.hub.presets.carry(null, ME, [record]).refused, []);
+  assert.deepEqual((await r.hub.presets.carry(null, ME, [record])).refused, []);
   // opened here (this station is `st`): its folder here read as this machine's
-  const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local", preset: base.id });
+  const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: base.id });
   sayIn(r.hub, thread.id, "local", "go");
   await settle();
   const copy = (await presetCopyOf(r.session(key).workspace))!;
@@ -296,6 +296,6 @@ test("a folder naming this station is this machine's for a chat opened with it; 
   // another station's folder by the name this station knows it by, its id where it knows none
   const named = new Presets(r.hub.presets.home, () => 1, { station: () => "st", workspace: () => "ws", stationName: (id) => (id === "sw" ? "Willow" : null) });
   const elsewhere = mkdtempSync(join(tmpdir(), "carried-chat-"));
-  assert.deepEqual(named.keepFor(elsewhere, null, base.id).dirs.map((d) => [d.path, d.elsewhere ?? null]), [[here, null], ["/far", "Willow"], ["/farther", "sx"]]);
+  assert.deepEqual((await named.keepFor(elsewhere, null, base.id)).dirs.map((d) => [d.path, d.elsewhere ?? null]), [[here, null], ["/far", "Willow"], ["/farther", "sx"]]);
   await r.close();
 });

@@ -167,6 +167,7 @@ fn board_of_ws(ws : String, v : Json) -> Json {
 ///|
 /// Whether workspace `ws` shows its chats as the board on this device (else its list).
 pub fn board_on_of(src : Source, ws : String) -> Bool {
+  guard board_feature.get() else { return false }
   board_rev.get() |> ignore
   match board_views_here.get(ws) {
     Some(on) => on

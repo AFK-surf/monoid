@@ -7,7 +7,7 @@
 // set_reduce_transparency, set_dark, set_window_inset), so a run is drawn again by the settings it was drawn by.
 //
 //   ENV {"motion":0|1,"glass":0|1,"dark":0|1,"inset":0|1,"h264":0|1,"feed":0|1,"layer":0|1|2,"ime":H,"copy":0|1,"font":S}
-//       motion reduced, transparency reduced (glass solid), dark, the window's inset, H.264 decoded (a tape without it:
+//       motion reduced, glass solid (transparency reduced, or the device slowed for its heat: h_glass_solid), dark, the window's inset, H.264 decoded (a tape without it:
 //       not), its decoder driven from here (stream_feed.mbt; a tape without it: not), a stream shown by the host's video
 //       layer (stream.mbt; 2 one that shows it as sRGB; a tape without it: not), H.265 decoded ("h265":1, said only then), AV1 decoded ("av1":1, said only then), more contrast asked
 //       ("contrast":1, said only then), the soft
@@ -26,7 +26,7 @@ fn env_at_frame() -> Unit {
   }
   let m : Map[String, Json] = {
     "motion": Json::number(if reduced_motion() { 1.0 } else { 0.0 }),
-    "glass": Json::number(if h_reduce_transparency() { 1.0 } else { 0.0 }),
+    "glass": Json::number(if h_glass_solid() { 1.0 } else { 0.0 }),
     "dark": Json::number(if system_dark() { 1.0 } else { 0.0 }),
     "inset": Json::number(if window_inset() { 1.0 } else { 0.0 }),
     "audio": Json::number(if stream_audio_here() { 1.0 } else { 0.0 }),
@@ -123,7 +123,7 @@ fn settings_at_frame(w : Double, h : Double, scale : Double) -> Unit {
     "pointing": Json::number(if native_pointing() is Finger { 1.0 } else { 0.0 }),
     "utc": Json::number(h_utc_offset_now().to_double()),
     "motion": Json::number(if reduced_motion() { 1.0 } else { 0.0 }),
-    "glass": Json::number(if h_reduce_transparency() { 1.0 } else { 0.0 }),
+    "glass": Json::number(if h_glass_solid() { 1.0 } else { 0.0 }),
     "dark": Json::number(if system_dark() { 1.0 } else { 0.0 }),
     "inset": Json::number(if window_inset() { 1.0 } else { 0.0 }),
     "ime": Json::number(g().dev.ime_inset),

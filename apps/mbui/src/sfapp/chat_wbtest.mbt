@@ -821,5 +821,41 @@ test "a chat's run changed: what changed on a line, else what it runs on now; pr
 }
 
 ///|
+test "failures said alike one after another, folded: ×11 and 重试 after their words; opened, the last one's failure; 重试 pressed, gone, and failing again alike ×12" {
+  // (the user, 2026-11-16: eleven 与模型服务的连接中断 filled the screen, 「能不能折叠成一条然后 xn」)
+  for scale in [1.0, 1.3] {
+    let t = chat_tester("chat-turn-failed-repeated")
+    t.set_font_scale(scale)
+    t.run_for(@ui.move_most_ms)
+    let at = "at \{scale}"
+    // (words drawn whole, exactly these: not the notice's own words that hold 重试)
+    let word = fn(s : String) { t.words().iter().find_first(fn(w) { w.0 == s && w.3 > 0.0 }) }
+    let fits = fn(when : String) raise {
+      let faults = t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown()
+      assert_true(faults.is_empty(), msg=at + ", " + when + ": " + faults.join(" | "))
+    }
+    assert_true(word("×11") is Some(_) && word("重试") is Some(_), msg=at)
+    fits("closed")
+    let (x, y) = t.find("与模型服务的连接中断").unwrap()
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("API Error: Connection error (request req_011CVa11: read ECONNRESET)") is Some(_), msg=at + ": the last one's failure, opened")
+    fits("open")
+    let (x, y) = t.find("与模型服务的连接中断").unwrap()
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    match word("重试") {
+      Some(w) => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+      None => fail(at + ": no 重试")
+    }
+    t.run_for(@ui.move_most_ms)
+    assert_true(word("重试") is None && word("×11") is Some(_), msg=at + ": 重试 pressed, its agent at it")
+    t.run_for(@sffixture.fix_failed_again_ms + @ui.move_most_ms)
+    assert_true(word("×12") is Some(_) && word("×11") is None && word("重试") is Some(_), msg=at + ": failing again alike, one more folded")
+    fits("×12")
+  }
+}
+
+///|
 /// How long the bell rises over the way to the end as that comes, and goes back down.
 let ask_lift_ms : Double = 200.0

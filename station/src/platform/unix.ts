@@ -1,10 +1,10 @@
 // macOS and Linux (and another Unix as Linux): process groups and signals, /bin/sh, `/` paths, links. What the two
 // differ in (how the machine reads: sysctl and vm_stat, or /proc; the keychain and QuickLook) is said here too.
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { access, chmod, copyFile, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, copyFile, lstat, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
@@ -521,15 +521,15 @@ export const unix: Platform = {
   mounts,
   linkRefused: () => false,
   syncsDirectories: true,
-  shareFile(target, link) {
+  async shareFile(target, link) {
     try {
-      const meta = lstatSync(link);
-      if (meta.isSymbolicLink() && readlinkSync(link) === target) return;
-      unlinkSync(link);
+      const meta = await lstat(link);
+      if (meta.isSymbolicLink() && (await readlink(link)) === target) return;
+      await unlink(link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    symlinkSync(target, link);
+    await symlink(target, link);
   },
 
   runnerSocketVisible: true,
@@ -587,19 +587,12 @@ export const unix: Platform = {
       child.unref();
     });
   },
-  shimUpdate: () => null,
-  linkCommand(command, dir) {
+  shimUpdate: async () => null,
+  async linkCommand(command, dir) {
     const link = join(dir, basename(command));
-    try {
-      lstatSync(link);
-      return false;
-    } catch {}
-    try {
-      symlinkSync(command, link);
-      return true;
-    } catch {
-      return false;
-    }
+    if ((await lstat(link).catch(() => null)) !== null) return false;
+    // (symlink() fails where something of that name was made meanwhile: nothing is replaced)
+    return symlink(command, link).then(() => true, () => false);
   },
   codexStandalone: true,
   nodeBuild(version) {

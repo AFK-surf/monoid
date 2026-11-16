@@ -126,13 +126,11 @@ fn steps_centred_node(
           stack.clips(Is(true)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           stack.each(
             leave=1.0,
-            fn() { pages().map(fn(pg) { pg.0 }) },
-            fn(k) { k },
+            fn() { pages().map(fn(pg) { StepItem::{ n: pg.0, x: pg.1 } }) },
+            fn(it) { it.n },
             fn(page, item) {
-              let k = item.untracked()
-              guard @signals.untracked(fn() { pages().iter().find_first(fn(pg) { pg.0 == k }) }) is Some((_, px)) else {
-                return
-              }
+              // (its own page, given it by the list as it is made: no walk of the pages for it)
+              let { n: k, x: px } = item.untracked()
               let shows = fn() { top() == k }
               let slide = (d.cause_at(), @ui.move_ms(@signals.untracked(w)))
               let way = @signals.signal(
@@ -319,3 +317,17 @@ fn step_page_node(
 /// that changes what it shows: its height's way from as it is laid out then (steps_centred_node's).
 // kept across runs: what each dialog in steps says, let go with it
 let steps_reshaping : Map[Int, () -> Unit] = Map([])
+
+///|
+/// A step's page as its panel's list of steps (panel_steps_node's View::each) has it: its number and its panel. A page
+/// is made with the panel it is given as it is made and keeps it (its number is its key), so it is told as the same item
+/// by its number alone: a panel is no value to compare.
+priv struct StepItem {
+  n : Int
+  x : PanelOf
+}
+
+///|
+impl Eq for StepItem with equal(a, b) {
+  a.n == b.n
+}

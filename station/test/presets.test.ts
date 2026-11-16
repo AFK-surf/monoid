@@ -36,10 +36,10 @@ test("a chat opened with a preset is told its directories and instructions, and 
   mkdirSync(join(docs, ".agents", "skills", "deploy"), { recursive: true });
   writeFileSync(join(docs, ".agents", "skills", "deploy", "SKILL.md"), "---\nname: deploy\n---\n");
   writeFileSync(join(docs, "CLAUDE.md"), "x".repeat(20 * 1024));
-  const preset = r.hub.presets.add(null, { name: "App work", dirs: [app, docs], instructions: "Screenshots before merging." }, "local");
+  const preset = await r.hub.presets.add(null, { name: "App work", dirs: [app, docs], instructions: "Screenshots before merging." }, "local");
   assert.deepEqual(preset.dirs, [{ path: app, repo: "github.com/acme/app" }, { path: docs, repo: null }]);
 
-  const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local", preset: preset.id });
+  const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: preset.id });
   sayIn(r.hub, thread.id, "local", "fix the login page");
   await settle();
   const opened = r.claude.last().options;
@@ -60,28 +60,28 @@ test("a chat opened with a preset is told its directories and instructions, and 
   assert.ok(opened.instructions.includes("linked into your workspace (.claude/skills, .agents/skills): deploy, docs-deploy"), opened.instructions);
 
   // Changed later: the chat opened before keeps what it was opened with; a new one has it as it is now.
-  r.hub.presets.put(null, preset.id, { name: "App work", dirs: [docs], instructions: "" });
+  await r.hub.presets.put(null, preset.id, { name: "App work", dirs: [docs], instructions: "" });
   r.claude.last().complete();
   await settle();
-  const [, second] = newSession(r.hub, { runtime: "claude", createdBy: "local", preset: preset.id });
+  const [, second] = await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: preset.id });
   sayIn(r.hub, second.id, "local", "and the docs");
   await settle();
   const now = r.claude.last().options;
   assert.ok(now.instructions.includes(`  - ${docs}\n`) && !now.instructions.includes(app), now.instructions);
   assert.ok(!now.instructions.includes("<preset-instructions>"), now.instructions);
-  assert.equal(r.hub.presets.list(null).length, 1);
+  assert.equal((await r.hub.presets.list(null)).length, 1);
   assert.deepEqual((await presetCopyOf(r.session(key).workspace))?.dirs.map((d) => d.path), [app, docs], "the first chat keeps what it was opened with");
   await r.close();
 });
 
 test("a chat with no preset is told of none, and one naming no preset of its workspace is not made", async () => {
   const r = new Rig();
-  const [, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local" });
+  const [, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "local" });
   sayIn(r.hub, thread.id, "local", "hi");
   await settle();
   assert.ok(!r.claude.last().options.instructions.includes("preset"));
   const before = r.store.listSessions().length;
-  assert.throws(() => newSession(r.hub, { runtime: "claude", createdBy: "local", preset: "p-none" }), /no preset p-none/);
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: "p-none" }), /no preset p-none/);
   assert.equal(r.store.listSessions().length, before);
   await r.close();
 });
@@ -91,35 +91,35 @@ test("a chat opened with a preset that names its model or its stations is opened
   r.edit((raw) => {
     raw.profiles[0].models = ["opus", "sonnet"];
   });
-  const bound = r.hub.presets.add(null, { name: "Review", dirs: [], instructions: "", model: { model: "opus", runtime: "claude" } }, "local");
+  const bound = await r.hub.presets.add(null, { name: "Review", dirs: [], instructions: "", model: { model: "opus", runtime: "claude" } }, "local");
   const before = r.store.listSessions().length;
-  assert.throws(() => newSession(r.hub, { runtime: "claude", model: "sonnet", createdBy: "local", preset: bound.id }), /Review/);
-  assert.throws(() => newSession(r.hub, { runtime: "claude", createdBy: "local", preset: bound.id }), /Review/, "none named is not the one it names");
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", model: "sonnet", createdBy: "local", preset: bound.id }), /Review/);
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: bound.id }), /Review/, "none named is not the one it names");
   assert.equal(r.store.listSessions().length, before, "nothing made");
-  newSession(r.hub, { runtime: "claude", model: "opus", createdBy: "local", preset: bound.id });
+  await newSession(r.hub, { runtime: "claude", model: "opus", createdBy: "local", preset: bound.id });
 
   // its stations, by id or by address: this one (`st`) among them, or not
-  const here = r.hub.presets.add(null, { name: "Here", dirs: [], instructions: "", stations: ["ws/st", "other"] }, "local");
-  newSession(r.hub, { runtime: "claude", createdBy: "local", preset: here.id });
-  const far = r.hub.presets.add(null, { name: "Far", dirs: [], instructions: "", station: "other" }, "local");
-  assert.throws(() => newSession(r.hub, { runtime: "claude", createdBy: "local", preset: far.id }), /Far/);
+  const here = await r.hub.presets.add(null, { name: "Here", dirs: [], instructions: "", stations: ["ws/st", "other"] }, "local");
+  await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: here.id });
+  const far = await r.hub.presets.add(null, { name: "Far", dirs: [], instructions: "", station: "other" }, "local");
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: far.id }), /Far/);
 
   // another station's preset, as the app gives it: what it binds held the same
   const copy = (o: object) => presetCopyInput({ id: "p9", name: "Theirs", dirs: [], instructions: "", ...o });
-  assert.throws(() => newSession(r.hub, { runtime: "claude", model: "sonnet", createdBy: "local", presetCopy: copy({ model: { model: "opus" } }) }), /Theirs/);
-  assert.throws(() => newSession(r.hub, { runtime: "claude", createdBy: "local", presetCopy: copy({ stations: ["other"] }) }), /Theirs/);
-  newSession(r.hub, { runtime: "claude", model: "opus", createdBy: "local", presetCopy: copy({ model: { model: "opus" }, stations: ["st"] }) });
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", model: "sonnet", createdBy: "local", presetCopy: copy({ model: { model: "opus" } }) }), /Theirs/);
+  await assert.rejects(async () => await newSession(r.hub, { runtime: "claude", createdBy: "local", presetCopy: copy({ stations: ["other"] }) }), /Theirs/);
+  await newSession(r.hub, { runtime: "claude", model: "opus", createdBy: "local", presetCopy: copy({ model: { model: "opus" }, stations: ["st"] }) });
   await r.close();
 });
 
-test("a preset is a name and optional directories, station policy and model", () => {
+test("a preset is a name and optional directories, station policy and model", async () => {
   const dir = mkdtempSync(join(tmpdir(), "presets-"));
-  assert.throws(() => presetInput({ name: " ", dirs: [dir] }), /needs a name/);
-  assert.throws(() => presetInput({ name: "x", dirs: [join(dir, "gone")] }), /no directory on this station/);
-  assert.deepEqual(presetInput({ name: " x ", dirs: [dir, { path: dir }] }), { name: "x", dirs: [{ path: dir, repo: null }], instructions: "" });
-  assert.deepEqual(presetInput({ name: "Code Review", dirs: [], instructions: "Check edge cases." }), { name: "Code Review", dirs: [], instructions: "Check edge cases." });
+  await assert.rejects(async () => await presetInput({ name: " ", dirs: [dir] }), /needs a name/);
+  await assert.rejects(async () => await presetInput({ name: "x", dirs: [join(dir, "gone")] }), /no directory on this station/);
+  assert.deepEqual(await presetInput({ name: " x ", dirs: [dir, { path: dir }] }), { name: "x", dirs: [{ path: dir, repo: null }], instructions: "" });
+  assert.deepEqual(await presetInput({ name: "Code Review", dirs: [], instructions: "Check edge cases." }), { name: "Code Review", dirs: [], instructions: "Check edge cases." });
   assert.deepEqual(
-    presetInput({
+    await presetInput({
       name: "Full",
       dirs: [],
       autoStation: true,
@@ -134,19 +134,19 @@ test("a preset is a name and optional directories, station policy and model", ()
     },
   );
   assert.deepEqual(
-    presetInput({ name: "Subset", dirs: [], stations: ["st1", "st2", "st1"] }),
+    await presetInput({ name: "Subset", dirs: [], stations: ["st1", "st2", "st1"] }),
     { name: "Subset", dirs: [], instructions: "", stations: ["st1", "st2"] },
   );
   assert.deepEqual(
-    presetInput({ name: "Single", dirs: [], stations: ["st1"] }),
+    await presetInput({ name: "Single", dirs: [], stations: ["st1"] }),
     { name: "Single", dirs: [], instructions: "", station: "st1" },
   );
   const home = mkdtempSync(join(tmpdir(), "presets-store-"));
   const store = new Presets(() => home, () => 100);
-  const p = store.add(null, { name: "Preset", dirs: [], autoStation: true, model: { model: "fable-5-2", runtime: "claude", effort: "high" } }, "local");
+  const p = await store.add(null, { name: "Preset", dirs: [], autoStation: true, model: { model: "fable-5-2", runtime: "claude", effort: "high" } }, "local");
   assert.equal(p.autoStation, true);
   assert.deepEqual(p.model, { model: "fable-5-2", runtime: "claude", effort: "high" });
-  const cleared = store.put(null, p.id, { name: "Preset", dirs: [] });
+  const cleared = await store.put(null, p.id, { name: "Preset", dirs: [] });
   assert.equal(cleared.autoStation, undefined);
   assert.equal(cleared.station, undefined);
   assert.equal(cleared.stations, undefined);
@@ -275,7 +275,7 @@ test("a repository is offered once, the person's checkout of it where there is o
 
 test("a chat opened with another station's preset is told where its folders are, its repositories as this station's clones", async () => {
   const r = new Rig();
-  const [, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local", presetCopy: presetCopyInput({ id: "p1", name: "Docs", dirs: [{ path: "/Users/a/code/app", repo: "github.com/acme/app", elsewhere: "Willow" }, { path: "/Users/a/Design", elsewhere: "Willow" }], instructions: "Be brief." }) });
+  const [, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "local", presetCopy: presetCopyInput({ id: "p1", name: "Docs", dirs: [{ path: "/Users/a/code/app", repo: "github.com/acme/app", elsewhere: "Willow" }, { path: "/Users/a/Design", elsewhere: "Willow" }], instructions: "Be brief." }) });
   sayIn(r.hub, thread.id, "local", "go");
   await settle();
   const opened = r.claude.last().options;
@@ -288,10 +288,10 @@ test("a chat opened with another station's preset is told where its folders are,
 test("a preset names folders of several stations: those here checked and given, the others' taken as said and told of", async () => {
   const r = new Rig();
   const here = mkdtempSync(join(tmpdir(), "presets-"));
-  const p = r.hub.presets.add(null, { name: "Both", dirs: [here, { path: "/Users/b/Design", station: "ws/mba", stationName: "MBA" }, { path: "/Users/b/code/app", repo: "github.com/acme/app", station: "ws/mba", stationName: "MBA" }] }, "local");
+  const p = await r.hub.presets.add(null, { name: "Both", dirs: [here, { path: "/Users/b/Design", station: "ws/mba", stationName: "MBA" }, { path: "/Users/b/code/app", repo: "github.com/acme/app", station: "ws/mba", stationName: "MBA" }] }, "local");
   assert.deepEqual(p.dirs.map((d) => [d.path, d.station ?? null]), [[here, null], ["/Users/b/Design", "ws/mba"], ["/Users/b/code/app", "ws/mba"]]);
-  assert.throws(() => presetInput({ name: "x", dirs: [join(here, "gone")] }), /no directory on this station/, "this station's are still looked for");
-  const [, thread] = newSession(r.hub, { runtime: "claude", createdBy: "local", preset: p.id });
+  await assert.rejects(async () => await presetInput({ name: "x", dirs: [join(here, "gone")] }), /no directory on this station/, "this station's are still looked for");
+  const [, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "local", preset: p.id });
   sayIn(r.hub, thread.id, "local", "go");
   await settle();
   const opened = r.claude.last().options;

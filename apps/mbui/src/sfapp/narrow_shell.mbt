@@ -523,7 +523,7 @@ fn narrow_made_as(
     page if @sfbase.chat_page_is(page) && !place =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             @sfbase.chat_page_made(
               v,
@@ -588,7 +588,7 @@ fn narrow_made_as(
           }
         })
       })
-    Settings =>
+    Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
           @sf.layout(p.window().0) is Small
@@ -597,6 +597,9 @@ fn narrow_made_as(
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
     Setting(Changelog) =>
       made("changelog", fn(p, core, _here, frame, _stint, _acts) { @sfpages.changelog_node(p, core, on_back=core.pop, frame~) })
+    // (已归档 laid out Small: its page, the settings' 已归档)
+    Archived | Setting(Archive) =>
+      made("archive", fn(p, core, here, frame, _stint, _acts) { @sfpages.archive_node(p, core, here, on_back=core.pop, frame~) })
     Setting(Archiving) =>
       made("archiving", fn(p, core, here, frame, stint, _acts) {
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame~, stint~)
@@ -640,6 +643,8 @@ fn narrow_made_as(
       made("auto-policy/" + st, fn(p, core, here, frame, _stint, _acts) { @sfpages.policy_node(p, core, here, st, on_back=core.pop, frame~) })
     Setting(Appearance) =>
       made("appearance", fn(p, core, _here, frame, _stint, _acts) { @sfpages.appearance_node(p, core, on_back=core.pop, frame~) })
+    Setting(Experimental) =>
+      made("experimental", fn(p, core, _here, frame, _stint, _acts) { @sfpages.experimental_node(p, core, on_back=core.pop, frame~) })
     Setting(LocalStation) =>
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>
@@ -723,8 +728,10 @@ fn narrow_made_as(
       made_at("history/" + r.station + "/" + key, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
         history_node(p, src, r, key, entry, frame, serial)
       })
-    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab
-    Screen(at) if @sfpages.farview_screen(at.screen) =>
+    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab; while
+    // 实验性功能's Farview 原生标签页渲染 is on (read as the stack asks what kind each page is: turned off, the page is
+    // made again in its place as any screen's, its old view)
+    Screen(at) if @sfpages.farview_native_screen(at.screen) =>
       made("farview/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(By(fn() { (0.0, 0.0, 0.0, frame().foot) })) |> ignore
         @sf.nav_bar_node(
@@ -747,6 +754,20 @@ fn narrow_made_as(
           on_show_accounts=fn() { @settings.profiles_narrow_overview.set(false) },
           bar_actions?=if place { Some(acts) } else { None },
         )
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch
+    Setting(Stations) =>
+      made_at("stations", place, fn(p, core, here, frame, _stint, _acts, serial) {
+        @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame~, shown=fn() { app.nav.shows(serial) })
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profiles_list_node(p, core, here, only, on_back=core.pop, frame~)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profile_account_node(p, core, here, key, on_back=core.pop, frame~)
       })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {

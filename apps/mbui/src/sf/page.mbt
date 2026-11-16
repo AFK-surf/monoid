@@ -109,6 +109,9 @@ pub(all) struct PageFrame {
 pub(all) struct PageSaid {
   title : String
   about : String
+  /// what back over it says where it is back to a page that names it otherwise ("": as the frame says it; page_node's
+  /// `back_as`)
+  back : String
 }
 
 ///|

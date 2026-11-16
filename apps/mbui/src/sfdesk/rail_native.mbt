@@ -33,16 +33,6 @@ let native_floating : Ref[Array[@hostapi.NavFloating]] = { val: [] }
 let floating_installed : Ref[Bool] = { val: false }
 
 ///|
-/// Reserve a place in the list; UIKit draws the actual button there after this frame's layout and motion.
-fn native_workspace(c : @ui.Ctx, src : Source, w : Workspace, node : Int, id : Int) -> Unit {
-  ignore(c)
-  ignore(node)
-  native_workspace_anchor.val = Of(id)
-  native_workspace_hooked()
-  native_sidebar_items[id] = native_workspace_item(src, w)
-}
-
-///|
 /// The workspace's button in the system's glass (native_workspace's) as it is now: its name, its badge, a dot where
 /// another workspace has something or an invitation waits.
 fn native_workspace_item(src : Source, w : Workspace) -> @hostapi.NavItem {

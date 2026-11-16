@@ -4,10 +4,11 @@
 // station's page, a Slack workspace (known and not), the cloud (named and not), of models priced by the catalog, the
 // station's table, an effort tier or none, fast and not, at whole minutes and within them; every provider and access an
 // account of the config can be on; tasks other stations ran here; the page's year with its chats and cards. Read for
-// every viewer, in either language, over spans with partial minutes, with and without the year's range, while the
-// details are prepared and as the page waits for the summary.
+// every viewer, in either language, over spans with partial quarters and time zones that split one at midnight, with
+// and without the year's range and the tasks' own start; accounts known only as they moved away, and people of a
+// connect named with the station it came from.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,8 +17,7 @@ import { SOURCES } from "../src/agents/providers.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
-import { installCompactUsage, installUsageSummaryChanges } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksStep } from "./reference/backfill/usage-summary-blocks.ts";
+import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
@@ -25,12 +25,12 @@ const I64_MAX = "9223372036854775807";
 const DAY = 86_400_000;
 
 const skip = binary === null ? "the MoonBit program is not built here" : false;
-test("the MoonBit reader reads the usage page as the worker does, of the compact statistics", { skip }, () => compare(true));
-test("the MoonBit reader reads the usage page as the worker does, of a store from before them", { skip }, () => compare(false));
+test("the MoonBit reader reads the usage page as the worker does, its contexts kept", { skip }, () => compare(true));
+test("the MoonBit reader reads the usage page as the worker does, of a store whose calls before the quarters are taken in", { skip }, () => compare(false));
 
-/// `compact`: the statistics a station keeps now (store/usage-compact.ts, with their summary blocks), else the details
-/// of a store from before them (store/usage-detail.ts).
-async function compare(compact: boolean) {
+/// `contexts`: the contexts kept as a station keeps them once the one before has gone (store/usage-compact.ts); else
+/// as a station from before the quarters opens it, its calls before them still to be taken in (store/usage-15m.ts).
+async function compare(contexts: boolean) {
   const data = mkdtempSync(join(tmpdir(), "mb-reader-usage-page-"));
   const profiles: unknown[] = [
     { id: "cc", name: "  Claude  ", runtime: "claude", access: { kind: "subscription" } },
@@ -69,14 +69,15 @@ async function compare(compact: boolean) {
     "c:T1:C1": { channel: "general" }, "u:T1:U1": { person: { name: "Una", email: "una@x", picture: "https://p/u1" } },
   }));
   writeFileSync(join(data, "feishu-names.json"), JSON.stringify({ "u:fs:ou1": { person: { name: "飞书人" } } }));
+  mkdirSync(join(data, "move"));
+  writeFileSync(join(data, "move", "accounts-known.json"), JSON.stringify({
+    gone: { own: "gone@st", name: "  Moved Away  " }, cc: { share: "x", name: "Not this one" }, "7": { key: "k", name: "Seven", runtime: "codex" },
+    blank: { own: "b@st", name: "" }, odd: null, list: [1],
+  }));
   learn({ "claude-opus-5-5": { cost: { input: 3, output: 15, cacheRead: 0.3 } }, "told-model": { cost: { input: 1, output: 2 } }, "gemini-4-hydrogen": { cost: { input: 0.5, output: 1, cacheRead: 0.05 } } });
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const db = store.db;
-  if (compact) {
-    installCompactUsage(db, () => 0);
-    installUsageSummaryChanges(db);
-    installUsageSummaryBlocks(db);
-  }
+  if (contexts) installCompactUsage(db);
   const session = (key: string, ws: string | null, connect = "ember") =>
     store.insertSession({ key, connect, runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 1, ws } as Parameters<Store["insertSession"]>[0]);
   session("a", "w");
@@ -123,8 +124,17 @@ async function compare(compact: boolean) {
   // within a minute the span begins in
   call("b", 47_000, "claude-sonnet-4-6-high", { thread: unnamed, person: "local" });
   call("c", 3 * DAY + 7, "claude-opus-4-8x", { thread: far, person: "p@x" });
-  for (const [job, at, key] of [["j1", 1000, "a"], ["j2", 2 * DAY, "b"], ["j3", 70_000, "c"], ["j4", -5, "a"], ["j5", 30_500, "a"], ["j6", 30_500, "b"]] as const)
+  // a person of a connect moved here, named with the station it came from; accounts gone from the config
+  call("s", 62_000, "claude-sonnet-5-5", { thread: quiet, person: "slack:team@st-old:U1", profile: "gone" });
+  call("a", 2 * DAY + 600_000, "claude-opus-5-5", { thread: named, person: "p@x", profile: "7" });
+  call("a", DAY - 60_000, "claude-opus-5-5", { thread: named, person: "p@x", profile: "blank" });
+  for (const [job, at, key] of [["j1", 1000, "remote:w:s:a"], ["j2", 2 * DAY, "remote:w:s:b"], ["j3", 70_000, "remote:x:s:c"], ["j4", -5, "remote:w:s:a"],
+    ["j5", 30_500, "remote:w:s:a"], ["j6", 30_500, "remote:w:s:b"], ["j7", 40_000, "remote:w:s:a"], ["j8", DAY + 5, "remote:w:s:a"], ["j9", DAY - 1, "remote:w:s:a"]] as const)
     db.prepare("INSERT INTO remote_runs (job, at, session) VALUES (?, ?, ?)").run(job, at, key);
+  if (!contexts) {
+    // as a station from before the quarters opens it: the calls before `since` not counted yet
+    db.exec("UPDATE usage SET rollup_counted = 0 WHERE at < 70000; UPDATE usage_15m_meta SET since = 70000");
+  }
   const card = db.prepare("INSERT INTO card_outcomes (thread, n, author, labels, answered, said) VALUES (?, ?, 'agent', '[]', 1, ?)");
   card.run(named, 1, 1); card.run(named, 2, 0); card.run(slack, 3, 1); card.run(far, 4, 0);
   const worker = new Readers(data, 1, REFERENCE);
@@ -138,15 +148,15 @@ async function compare(compact: boolean) {
     for (const lang of ["zh", "en"] as const)
       for (const viewer of viewers)
         for (const [from, to] of spans)
-          for (const tz of [0, 480, -300])
+          for (const tz of [0, 480, -300, 45, 345, -210, 7])
             out.push(await read(r, "usage", { lang, from, to, tz, viewer, ...(tz === 480 ? { reading: false } : {}) }, lang));
     for (const viewer of viewers) {
       for (const historyRange of [undefined, { from: 0, to: 365 * DAY }, { from: -480 * 60_000, to: 2 * DAY - 480 * 60_000 }, { from: 1, to: DAY }, { from: 0, to: 400 * DAY }])
-        for (const tz of [0, 480])
+        for (const tz of [0, 480, 7])
           out.push(await read(r, "usage", { lang: "en", from: 0, to: I64_MAX, tz, viewer, history: true, ...(historyRange ? { historyRange } : {}) }, "en"));
-      out.push(await read(r, "usage", { lang: "zh", from: 0, to: I64_MAX, tz: 0, viewer, detailsPreparing: true, history: true }, "zh"));
-      for (const prepared of [true, false])
-        out.push(await read(r, "usage", { lang: "en", from: 30_500, to: 95_000, tz: 0, viewer, summaryStrict: true, summaryPrepared: prepared }, "en"));
+      for (const remoteFrom of [undefined, null, -10, 35_000, "86400000", 3 * DAY])
+        for (const tz of [0, 345, -210, 45])
+          out.push(await read(r, "usage", { lang: "en", from: 30_500, to: 2 * DAY + 1, tz, viewer, ...(remoteFrom === undefined ? {} : { remoteFrom }) }, "en"));
     }
     out.push(await read(r, "usage", { from: 1.5, to: 2, tz: 0 }, "en"));
     out.push(await read(r, "usage", { from: "x", to: 2, tz: 0 }, "en"));
@@ -156,38 +166,27 @@ async function compare(compact: boolean) {
     return out;
   };
   try {
-    if (compact) {
-      // before the summary blocks are prepared: those that wait for them are refused
-      const waiting = async (r: Readers) => {
-        const out: unknown[] = [];
-        for (const viewer of viewers)
-          for (const prepared of [undefined, true, false])
-            out.push(await read(r, "usage", { lang: "en", from: 30_500, to: 95_000, tz: 0, viewer, ...(prepared === undefined ? {} : { summaryStrict: true, summaryPrepared: prepared }) }, "en"));
-        return out;
-      };
-      assert.deepEqual(await waiting(program), await waiting(worker));
-      while (!usageSummaryBlocksStep(db).done) { /* each step a transaction of its own */ }
-    }
     const first = await all(program);
     const second = await all(worker);
     for (let i = 0; i < first.length; i++) assert.deepEqual(first[i], second[i], `read ${i}`);
-    // from when every call was counted, as the compact statistics say it (begun after the first call, or not known
-    // when that was); and the cards' outcomes not all known yet
+    // from when every call is counted, as the quarters say it (the calls before still being taken in, or all of them)
+    // and the first call; and the cards' outcomes not all known yet
     const some = async (r: Readers) => {
       const out: unknown[] = [];
       for (const viewer of viewers) out.push(await read(r, "usage", { lang: "en", from: 30_500, to: I64_MAX, tz: 0, viewer, history: true }, "en"));
       return out;
     };
-    for (const change of [...(compact ? ["UPDATE usage_compact_since SET since = 75000, first_unknown = 0", "UPDATE usage_compact_since SET since = 1, first_unknown = 0",
-      "UPDATE usage_compact_since SET first_unknown = 1"] : ["UPDATE usage_span SET first_at = 75000", "UPDATE usage_span SET first_at = NULL"]),
-    "CREATE TABLE card_outcomes_incomplete (id INTEGER PRIMARY KEY)"]) {
+    for (const change of ["UPDATE usage_15m_meta SET since = 75000", "UPDATE usage_15m_meta SET since = 1", "UPDATE usage_span SET first_at = 75000",
+      "UPDATE usage_span SET first_at = NULL", "UPDATE usage_15m_meta SET since = NULL", "CREATE TABLE card_outcomes_incomplete (id INTEGER PRIMARY KEY)"]) {
       db.exec(change);
       assert.deepEqual(await some(program), await some(worker), change);
     }
-    // calls counted after the summary blocks were made, and one of them grown: what the blocks hold and what changed since
+    // calls counted after the first reads, one of them grown, one moved to another workspace, one's session gone
     call("a", 120_000, "claude-opus-5-5", { thread: named, person: "p@x" });
     call("b", 2 * DAY + 30, "claude-opus-5-5", { thread: unnamed, person: "local" });
     db.prepare("UPDATE usage SET input = input + 7, calls = calls + 1 WHERE at = 60000").run();
+    store.setSessionsWs("x", "w");
+    store.deleteSession("f");
     const spanned = async (r: Readers) => {
       const out: unknown[] = [];
       for (const viewer of viewers) for (const [from, to] of spans) out.push(await read(r, "usage", { lang: "en", from, to, tz: 0, viewer }, "en"));
@@ -195,7 +194,9 @@ async function compare(compact: boolean) {
     };
     assert.deepEqual(await spanned(program), await spanned(worker));
     const said = JSON.stringify(first);
-    for (const sign of ["\"title\":\"Named chat\"", "\"title\":\"please look\"", "general", "\"name\":\"Una\"", "\"name\":\"Pat\"", "\"remoteRuns\":[{", "\"places\":{", "\"cards\":", "\"beforeDay\":", "\"detailsPreparing\":true", "\"runtime\":\"grok\"", "\"runtime\":\"dsh\"", "\"runtime\":\"codex\"", "\"model\":\"told-model\"", "\"account\":"])
+    // (of a store whose calls before the quarters are still to be taken in, the early ones are not there yet)
+    if (contexts) for (const sign of ["\"title\":\"Named chat\"", "\"title\":\"please look\"", "general", "\"name\":\"Una\"", "\"name\":\"Pat\"", "\"remoteRuns\":[{", "\"count\":2", "\"places\":{", "\"cards\":", "\"beforeDay\":", "\"runtime\":\"grok\"", "\"runtime\":\"dsh\"", "\"runtime\":\"codex\"", "\"model\":\"told-model\"", "\"account\":",
+      "\"gone\":{\"name\":\"Moved Away\",\"runtime\":\"claude\"}", "\"7\":{\"name\":\"Seven\",\"runtime\":\"codex\"}", "\"slack:team@st-old:U1\":{\"id\":\"slack:team@st-old:U1\",\"name\":\"Una\",\"email\":\"una@x\""])
       assert.ok(said.includes(sign), sign);
   } finally {
     worker.close(); program.close();

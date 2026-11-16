@@ -333,6 +333,8 @@ export const SHAPES: Record<string, Shape> = {
     ["lines", opt(vec("String")), { said: true, doc: "A chat's run changed: how it ran and how it runs, whole (之前：…, 现在：…), shown in place of `words` once\nthe notice is opened. Absent otherwise." }],
     ["md", opt("Value"), { doc: "`words` read as Markdown (markdown.ts), its runs of words in `words`: what the clients draw (a chat it opened is\na link to it). Absent where a view reads none of its messages' words (a decision's)." }],
     ["sides", opt("RunSides"), { doc: "A chat's run changed to another runtime or model: the two sides of `words` apart, each drawn after its\nmark. Absent otherwise." }],
+    ["count", opt("u32"), { doc: "Failures said in the same words one after another, folded into this one (views.ts foldNotices): how many\n(2 or more), drawn after `words` as ×n. Absent for one." }],
+    ["lastSeq", opt("i64"), { client: opt("I54"), doc: "With `count`: the last folded notice's `seq`, what is acted on (`session.retry`, `session.cancelRetry`,\n`session.reassign`, `chat.report`) and read up to." }],
   ], { doc: "still.fail's notice as a chat shows it (core views.ts noticeOf)." }),
   RunSides: struct([
     ["was", "String", { said: true, doc: "What changed as it was (Claude Code · Opus 5.5)." }],
@@ -2677,7 +2679,7 @@ export const SHAPES: Record<string, Shape> = {
     ["dropAs", opt("String"), { doc: "How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path." }],
     ["sendKey", opt("String"), { doc: "How the composer sends on this device (快捷键): `mod`, ⌘Enter (Ctrl+Enter elsewhere), Enter and ⇧Enter a new\nline; or (none) Enter, ⇧Enter a new line. A screen's keyboard's Enter is a new line whatever this says." }],
     ["reports", opt("String"), { doc: "Whether what people use is counted and sent from this device where its host keeps no switch of its own\n(设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts): `off`, or none for on." }],
-    ["chatPage", opt("String"), { doc: "Which chat page this device makes (设置 → 外观 → 试用新对话页): `nodes`, the one made as nodes, tried while it\nis being completed; or (none) the one of before." }],
+    ["chatPage", opt("String"), { doc: "Legacy setting for the node-based chat page (migrated to `experimental.chatPage` in 设置 → 实验性功能): `nodes`,\nor (none) the one of before." }],
     ["archiveHint", opt("String"), { doc: "When a done chat is offered to archive (drawn faded): `off`, never;\n`reviewed`, only once its station's archive review recommended it; (none) `done`, whenever nothing is left in it\n(where its station's review is on, once it recommended it). Archiving with one tap is there whatever this says." }],
     ["screenTouch", opt("String"), { doc: "How a finger drives a station's screen on a phone: `direct` (a tap clicks where it is), or (none) as a\ntrackpad (the finger moves the pointer, a tap clicks where it points)." }],
     ["screenQuality", opt("String"), { doc: "How large a picture of a station's screen this device asks for: `smooth` (at most 1280×720), `hd` (at\nmost 1920×1080), `original` (the screen's own size), or (none) as the window is (at most 1920×1080, 2560×1440 on\na screen that has more)." }],
@@ -2709,7 +2711,15 @@ export const SHAPES: Record<string, Shape> = {
     ["faces", opt("FontsView"), { default: true, doc: "The faces each place is set in and those there are to choose (the core's, from `fonts`; none from a core before them)." }],
     ["keymap", opt("KeymapView"), { default: true, doc: "The keyboard shortcuts here (the core's, from `keys` and `device`; none from a core before it)." }],
     ["railView", opt("RailView"), { default: true, doc: "The wide screen's rail as clients draw it (the core's, from `rail` and `rails`; none from a core before it)." }],
+    ["testChannel", opt("bool"), { doc: "Whether this app runs on the test channel (`beta`)." }],
+    ["experimental", map("bool"), { default: true, doc: "Experimental features turned on on this device (设置 → 实验性功能), by feature id; unknown or graduated ids are ignored." }],
+    ["features", map("bool"), { default: true, doc: "Effective boolean state of every registered feature on this device (from `FEATURES`, `testChannel` and `experimental`)." }],
+    ["experimentalItems", vec("ExperimentalItem"), { default: true, doc: "Experimental features visible in 设置 › 实验性功能 on this channel, in registry order." }],
   ], { doc: "What this device keeps of how its person likes it (the `prefs` topic, `prefs.set`), and what it is." }),
+  ExperimentalItem: struct([
+    ["id", "String", { doc: "The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …)." }],
+    ["enabled", "bool", { doc: "Whether this feature is currently turned on on this device." }],
+  ], { doc: "One experimental feature shown in 设置 › 实验性功能." }),
   KeymapView: struct([
     ["changeable", "bool", { doc: "Keys can be changed here (`keys.set`): the desktop app; elsewhere `keys` is not gone by." }],
     ["mac", "bool", { doc: "Keys are said as on a Mac: Mod is ⌘ and Ctrl a key of its own (else Mod is Ctrl)." }],
@@ -3883,13 +3893,15 @@ export const SHAPES: Record<string, Shape> = {
     ["label", "String"],
     ["value", "String"],
     ["change", opt("String"), { doc: "Against the days before as many (`versus`): ↑18%, 持平; none where they spent nothing or are not all read." }],
-  ], { doc: "折合费用 $1,911 (按 API 价算). (What it is said under it and which way `change` goes, `sub` and `trend`, are the core's.)", keepNone: true }),
+    ["sub", opt("String"), { doc: "What is said under it: 缓存命中 92%, 日均 1,204 次 (none where nothing is)." }],
+  ], { doc: "折合费用 $1,911 (按 API 价算). (Which way `change` goes, `trend`, is the core's.)", keepNone: true }),
   UsageOnly: struct([
     ["title", "String", { said: true }],
   ], { doc: "The one the usage page shows alone: 只看 林 (which list and item it is, `list` and `key`, the page asked by).", keepNone: true }),
   UsageSeries: struct([
     ["key", "String"],
     ["name", "String", { said: true }],
+    ["costText", opt("String"), { doc: "What it cost over the days, in words beside its name: $1,204." }],
   ], { doc: "A part of each day's bar: an item of the list it is split by (`key` its key there), or the rest (`key` empty).", keepNone: true }),
   UsageDay: struct([
     ["day", "String"],
@@ -3919,6 +3931,7 @@ export const SHAPES: Record<string, Shape> = {
     ["tokensText", "String"],
     ["chat", opt("UsageChat")],
     ["topModel", opt("String"), { said: true }],
+    ["deleted", opt("bool"), { doc: "The chats no station names any more, all of them one row (`key` deleted/all): nothing to open." }],
   ], { doc: "A person, chat, account or model, and what it spent: `share` of the total cost (of the calls, when nothing was\npriced), `detail` its calls and tokens in a line (`callsText`, `tokensText` each alone: 1,204 · 3.2 万). A person's `person` (with `shown`); a chat's page (`chat`), when\nit is still there; an account's `topModel`, the model it used the most tokens of, in words (最多 Opus 5.5)." }),
   UsageChat: struct([
     ["station", "String"],

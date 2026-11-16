@@ -4,13 +4,15 @@
 // (src/api/events.ts `handOver`, `takeUp`), and finds, starts and ends the station's Chrome and keeps whose its tabs are
 // (src/browser/chrome.ts, src/browser/owners.ts), posts through another station's connect and learns of it
 // (src/connects/remote.ts), runs a login of the machine's or a profile's sign-in (src/logins/, src/accounts/login.ts)
-// and follows a Feishu app made by a scan (src/feishu/register.ts): none of node:fs's or node:zlib's synchronous calls
-// (station/AGENTS.md, the main thread waits on nothing). Each ran on every secret_run, drive preview, overview, update,
-// tab opened or closed, file posted to a chat of another station's connect, login and scan.
+// and follows a Feishu app made by a scan (src/feishu/register.ts), opens a session of every runtime (src/agents/), finds
+// the runners alive (src/agents/runner.ts) and makes or drops a profile (src/accounts/index.ts): none of node:fs's or
+// node:zlib's synchronous calls (station/AGENTS.md, the main thread waits on nothing). Each ran on every secret_run,
+// drive preview, overview, update, tab opened or closed, file posted to a chat of another station's connect, login,
+// scan, session opened and profile added.
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -25,10 +27,19 @@ import { CONSOLE_FILE, readConsole } from "../src/accounts/console.ts";
 import { Accounts } from "../src/accounts/index.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE, readKimi } from "../src/accounts/kimi.ts";
 import { type LoginJob, LoginManager } from "../src/accounts/login.ts";
+import { MachineLogins } from "../src/accounts/machine.ts";
 import { checkProfile, devinEmail, URLS } from "../src/accounts/profiles.ts";
 import { codexUsage, lentCodexUsage } from "../src/accounts/quota.ts";
+import { AgyDriver } from "../src/agents/agy.ts";
 import { ClaudeDriver } from "../src/agents/claude.ts";
+import { CodexDriver } from "../src/agents/codex.ts";
+import { CursorDriver, cursorHome, findSdk } from "../src/agents/cursor.ts";
+import { DevinDriver, devinData } from "../src/agents/devin.ts";
+import { DshDriver } from "../src/agents/dsh.ts";
+import { GrokDriver } from "../src/agents/grok.ts";
 import { HermesDriver } from "../src/agents/hermes.ts";
+import { linkCodexAuthSoon, readClaudeCredentials } from "../src/agents/machine-logins.ts";
+import { liveRunners, startRunner } from "../src/agents/runner.ts";
 import type { OpenOptions } from "../src/agents/runtime.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { fingerprint } from "../src/sessions/decision.ts";
@@ -537,12 +548,163 @@ test("a new profile made from a Cursor sign-in reads its home with no synchronou
       made = await upon((wake) => accounts.onChange(wake), () => accounts.loginsView().find((l) => l.id === id)?.created, "profile");
     });
     assert.equal(made, "cu-example-com");
-    // What is left is config.json read and written (ops/config.ts) and the profiles' directory (homes/ listed for the
-    // ids taken, the new home moved to its name: a later wave's): nothing read of the home itself on the thread.
+    // What is left is config.json read and written (ops/config.ts): the homes listed for the ids taken and the new home
+    // moved to its name off the thread too.
     assert.deepEqual(
-      calls.filter((c) => !/ ConfigFile\.(stamp|update) |^fs\.renameSync Accounts\.pendingSettled |^fs\.readdirSync Accounts\.takenIds /.test(c)),
+      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
       [],
     );
+  } finally {
+    await accounts.close();
+    await p.close();
+  }
+});
+
+/// What drives the stand-in runtimes of test/fake: a driver's own work is what is held, not the runner's start
+/// (agents/runner.ts: finding its binary and the command) or the agents' program (agents/mb-program.ts).
+const ownCalls = (calls: string[]) => calls.filter((c) => !/< (startRunner|SessionsProgram\.of)\b/.test(c));
+
+test("Cursor, DeepSeek Harness, Devin, Grok Build, Antigravity CLI and Codex sessions opened, and one not kept refused, wait on no file", { skip: WINDOWS && "the stand-in runtimes are shell scripts" }, async () => {
+  const data = mkdtempSync("/tmp/io-");
+  dirs.push(data);
+  const PATH = `${fakes}${delimiter}${process.env.PATH}`;
+  const cursor = new CursorDriver({ data, sdk: join(fakes, "cursor-sdk") });
+  const dsh = new DshDriver({ data });
+  const devin = new DevinDriver({ data });
+  const grok = new GrokDriver({ data });
+  const agy = new AgyDriver({ data });
+  const codex = new CodexDriver({ data, caBundle: join(data, "cert.pem"), env: { ...process.env, PATH } });
+  writeFileSync(join(data, "cert.pem"), "");
+  const skills = join(data, "skills");
+  mkdirSync(join(skills, "s1"), { recursive: true });
+  let n = 0;
+  const options = (runtime: string, access: Record<string, unknown>, extra: Partial<OpenOptions> = {}): OpenOptions => {
+    const i = ++n;
+    return {
+      key: `slack:T1:C${i}:1700000000.000${i}`,
+      profile: { id: `${runtime}${i}`, runtime, home: join(data, `h${i}`), access, env: { PATH, FAKE_DUMP: join(data, `dump${i}`) } } as OpenOptions["profile"],
+      cwd: data,
+      instructions: "be brief",
+      skills,
+      mcpToken: "tok",
+      mcpUrl: "http://127.0.0.1:4750/mcp",
+      route: `r${i}`,
+      ...extra,
+    };
+  };
+  const cursorOptions = options("cursor", { kind: "subscription" });
+  mkdirSync(cursorHome(cursorOptions.profile.home), { recursive: true });
+  writeFileSync(join(cursorHome(cursorOptions.profile.home), "auth.json"), JSON.stringify({ apiKey: "crsr_k1", email: "a@b.c", keyName: "still.fail", createdAt: 1 }));
+  const devinOptions = options("devin", { kind: "subscription" }, { model: "swe-2" });
+  mkdirSync(join(devinData(devinOptions.profile.home), "devin"), { recursive: true });
+  writeFileSync(join(devinData(devinOptions.profile.home), "devin", "credentials.toml"), `windsurf_api_key = "devin-k1"\n`);
+  const opened: [{ open: (o: OpenOptions, e: () => void) => Promise<{ dispose: () => Promise<void> }> }, OpenOptions, RegExp][] = [
+    [cursor, cursorOptions, /no Cursor session/],
+    [dsh, options("dsh", { kind: "opencode-go", key: "k1" }, { model: "m1" }), /no dsh session/],
+    [devin, devinOptions, /no Devin session/],
+    [grok, options("grok", { kind: "subscription" }, { model: "grok-4.7" }), /no Grok Build session/],
+    [agy, options("agy", { kind: "api-provider", provider: "google", key: "gemini-key" }), /no Antigravity conversation/],
+    [codex, options("codex", { kind: "opencode-go", key: "k2" }), /./],
+  ];
+  try {
+    // (the program reading the agents started once before, as a running station has it)
+    await dsh.open(options("dsh", { kind: "opencode-go", key: "k1" }, { model: "m1" }), () => {}).then((s) => s.dispose());
+    const calls = await syncCalls(async () => {
+      for (const [driver, o, refused] of opened) {
+        const session = await driver.open(o, () => {});
+        await session.dispose();
+        // Codex opens a thread it was not given anew, as its app-server keeps them: no refusal of its own to look at.
+        if (driver !== codex) await assert.rejects(driver.open({ ...o, key: `${o.key}-again`, resume: "0198c0de-0000-7000-8000-00000000dead" }, () => {}), refused);
+      }
+      assert.equal(await findSdk(data), null, "not installed under the station's data");
+    });
+    assert.deepEqual(ownCalls(calls), []);
+    // Each one's instructions in the folder of the session's own (Cursor's, Devin's), its skills linked in.
+    assert.ok((await readdir(join(cursorHome(cursorOptions.profile.home), "station"))).length === 1);
+  } finally {
+    await Promise.all([cursor, dsh, devin, grok, agy, codex].map((d) => d.shutdown()));
+  }
+});
+
+test("the runners alive found, a machine profile's Codex home linked and the machine's Claude login read wait on no file", { skip: WINDOWS && "the runner's stand-in is a shell script" }, async () => {
+  const data = mkdtempSync("/tmp/io-");
+  dirs.push(data);
+  const info = await startRunner(data, "io-runner", "/bin/sh", ["-c", "sleep 30"], { PATH: process.env.PATH ?? "" }, data);
+  const m = machine();
+  mkdirSync(join(m.home, ".codex"), { recursive: true });
+  writeFileSync(join(m.home, ".codex", "auth.json"), "{}");
+  mkdirSync(join(m.home, ".claude"), { recursive: true });
+  writeFileSync(join(m.home, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "tok", expiresAt: Date.now() + 3_600_000 } }));
+  try {
+    let found: string[] = [];
+    let token: string | undefined;
+    const home = join(data, "machine-codex");
+    const calls = await syncCalls(async () => {
+      found = (await liveRunners(data)).map((r) => r.id);
+      await linkCodexAuthSoon(home, m.env);
+      // Made again once something replaced it.
+      await rm(join(home, "auth.json"));
+      await writeFile(join(home, "auth.json"), "{}");
+      await linkCodexAuthSoon(home, m.env);
+      token = (await readClaudeCredentials({ ...m.env, STILLFAIL_NO_KEYCHAIN: "1" }))?.token;
+    });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(found, ["io-runner"]);
+    assert.equal(await readlink(join(home, "auth.json")), join(m.home, ".codex", "auth.json"));
+    assert.equal(token, "tok");
+  } finally {
+    process.kill(-info.pgid, "SIGKILL");
+  }
+});
+
+test("a profile made of a key, one on the machine's login, and a sign-in for a new one dropped wait on no file of their own", { skip: WINDOWS && "the stand-in commands are shell scripts" }, async () => {
+  const data = scratch("profiles-main-thread");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [] }));
+  const s = { confirmed: false };
+  const p = await provider((a) => {
+    if (a.url === "/backend/auth/poll") return s.confirmed ? { status: 200, body: { accessToken: "session-token", refreshToken: "refresh" } } : { status: 404, body: "Not found" };
+    return { status: 404, body: {} };
+  });
+  const m = machine({ codex: "echo 'Logged in using ChatGPT'" });
+  mkdirSync(join(m.home, ".codex"), { recursive: true });
+  writeFileSync(join(m.home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "at", account_id: "acc" } }));
+  const config = new ConfigFile(data);
+  config.check = checkConfig;
+  const accounts = new Accounts({
+    data,
+    store: Store.open(":memory:", null),
+    config,
+    urls: { ...URLS, cursor: { website: `${p.base}/site`, backend: `${p.base}/backend`, api: `${p.base}/api` } },
+    machine: new MachineLogins(m.env, undefined, () => "en"),
+    checkOnStart: false,
+    quota: null,
+    resetQuota: null,
+    check: async () => ({ state: "ok", detail: "", models: null, checkedAt: 0 }),
+    discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+  });
+  accounts.start();
+  const owner = { sub: "s", email: "o@example.com", name: "", role: "owner", workspace: "ws", device: "d" };
+  try {
+    const made: string[] = [];
+    let dropped = "";
+    const calls = await syncCalls(async () => {
+      made.push(await accounts.newKeyedProfile({ access: { kind: "opencode-go", key: "k1" } }, owner, "en"));
+      // Two at once: each its own id.
+      // (which of the two takes which id is the disk's: put in order)
+      made.push(...(await Promise.all([1, 2].map(() => accounts.newKeyedProfile({ access: { kind: "anthropic-api", key: "k2" } }, owner, "en")))).sort());
+      made.push(await accounts.newMachineProfile({ runtime: "codex" }, owner, "en"));
+      ({ id: dropped } = await accounts.newLogin({ runtime: "cursor" }, owner, "en"));
+      await accounts.dropLogin(dropped);
+    });
+    // What is left is config.json read and written (ops/config.ts).
+    assert.deepEqual(
+      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
+      [],
+    );
+    assert.deepEqual(made, ["opencode-go", "anthropic-api", "anthropic-api-2", "machine-codex"]);
+    assert.deepEqual((await readdir(join(data, "homes"))).sort(), [...made].sort(), "the dropped sign-in's home taken away");
+    assert.equal(await readlink(join(data, "homes", "machine-codex", "auth.json")), join(m.home, ".codex", "auth.json"));
+    assert.equal(accounts.hasPending(dropped), false);
   } finally {
     await accounts.close();
     await p.close();

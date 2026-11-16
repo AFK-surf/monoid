@@ -276,7 +276,7 @@ test("the compact counter grows known calls and counts new ones without filling 
   const previous = callsOf("claude", old, false, fresh())[0]!;
   r.store.recordUsage(path, { session: "active", offset: 0, model: null }, "claude",
     [[previous, { turn: null, person: null, thread: null, profile: "cc" }]]);
-  installCompactUsage(r.store.db, () => now);
+  installCompactUsage(r.store.db);
   retireUsageIndexes(r.store.db);
   r.store.startTurn("compact-turn", "active", "input");
   append(path, [claudeLine("old-known", now - 60_000, "claude-opus-5-5", usage(4, 0, 0, 0, 5)),
@@ -285,8 +285,8 @@ test("the compact counter grows known calls and counts new ones without filling 
   assert.equal(await r.usage.read(), 1);
   assert.deepEqual(r.store.db.prepare("SELECT id, output FROM usage ORDER BY id").all().map((row) => [row.id, row.output]),
     [["new", 1], ["old-known", 5]]);
-  const compact = r.store.db.prepare("SELECT SUM(calls) AS calls, SUM(input) AS input FROM usage_compact").get() as { calls: number; input: number };
-  assert.deepEqual([compact.calls, compact.input], [1, 2]);
+  const quarters = r.store.db.prepare("SELECT SUM(calls) AS calls, SUM(input) AS input FROM usage_15m").get() as { calls: number; input: number };
+  assert.deepEqual([quarters.calls, quarters.input], [2, 6], "every call recorded is counted in its quarter, once");
 });
 
 test("new usage is counted when its transcript was put away before the counter read it", async () => {

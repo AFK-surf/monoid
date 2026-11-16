@@ -438,6 +438,7 @@ pub fn Tester::new(
     keyboard: keyboard.unwrap_or(platform_keyboard(platform)),
     reduce_transparency: false,
     increase_contrast: false,
+    thermal_throttled: false,
     reduce_motion: false,
     logs: [],
     image_sizes: {},
@@ -2548,6 +2549,14 @@ pub fn Tester::perf_said(self : Tester) -> (Array[Bool], Array[String]) {
 pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_reduce_transparency")
   self.fake.reduce_transparency = on
+}
+
+///|
+/// The system slows the device down for its heat from now on, or no longer: the host asks a frame as it changes.
+pub fn Tester::set_thermal_throttled(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_thermal_throttled")
+  self.fake.thermal_throttled = on
+  self.fake.wants = true
 }
 
 ///|

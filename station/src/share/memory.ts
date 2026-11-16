@@ -178,8 +178,8 @@ export class MemorySync {
     return join(this.#deps.data, "share", "memory");
   }
 
-  /// Where workspace `ws`'s memory is.
-  #home(ws: string): string {
+  /// Where workspace `ws`'s memory is, made where it is a joined one's not made yet.
+  #home(ws: string): Promise<string> {
     return workspaceAgentHome(this.#deps.agentHome(), ws, this.#deps.cloud.home());
   }
 
@@ -288,7 +288,7 @@ export class MemorySync {
     const kept = this.#kept.get(ws)!;
     const me = this.#me;
     if (me === "") return false;
-    const { files, held } = await this.#read(this.#home(ws), kept.files);
+    const { files, held } = await this.#read(await this.#home(ws), kept.files);
     const isHeld = (path: string) => held.has(path) || [...held].some((h) => h.endsWith("/") && path.startsWith(h));
     let changed = false;
     for (const [path, f] of files) {
@@ -346,8 +346,8 @@ export class MemorySync {
     }
     for (const a of aside) {
       if (gone.has(a.skill)) continue;
-      const from = join(this.#home(ws), "skills", a.skill);
-      const to = join(this.#home(ws), "skills", a.base);
+      const from = join(await this.#home(ws), "skills", a.skill);
+      const to = join(await this.#home(ws), "skills", a.base);
       try {
         if (!(await lstat(to)).isDirectory()) continue;
       } catch {
@@ -375,7 +375,7 @@ export class MemorySync {
   /// (an edit not yet looked at: it is looked at first, and merged). Whether it was.
   async #write(ws: string, path: string, rec: Rec, content: Buffer | null): Promise<boolean> {
     const kept = this.#kept.get(ws)!;
-    const dir = this.#home(ws);
+    const dir = await this.#home(ws);
     const full = join(dir, ...path.split("/"));
     const parts = path.split("/");
     // A skill this station has as a link (a deployment's, one borrowed from a share) stays as it is: the record is kept.
@@ -522,8 +522,8 @@ export class MemorySync {
   /// leaves this machine): copied beside them, where the skill says it is, and left where it was too, since what is
   /// outside the station may read it there (Mini1's release job reads `skills/stillfail/station-update-host`).
   async #copyRest(ws: string, name: string, aside: string): Promise<void> {
-    const from = join(this.#home(ws), "skills", name);
-    const to = join(this.#home(ws), "skills", aside);
+    const from = join(await this.#home(ws), "skills", name);
+    const to = join(await this.#home(ws), "skills", aside);
     const walk = async (rel: string): Promise<void> => {
       let entries: Dirent[] = [];
       try {

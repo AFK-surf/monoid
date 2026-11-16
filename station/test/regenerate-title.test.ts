@@ -10,7 +10,7 @@ import { Rig, settle } from "./hub-fakes.ts";
 test("a generated title replaces a manual name without changing the agent's state", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
+    const [key, thread] = await newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
     r.store.insertMessage(newMessage(thread.id, "1.1", "person", "a@x", "帮我修登录页"));
     r.store.setThreadTitle(thread.id, "旧名称");
     r.store.startTurn("task", key, "input");
@@ -35,7 +35,7 @@ test("a generated title replaces a manual name without changing the agent's stat
 test("a later rename or generation wins over an earlier pending result", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "a@x" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "a@x" });
     r.store.insertMessage(newMessage(thread.id, "1.1", "person", "a@x", "hello"));
     const row = r.session(key);
     r.store.setThreadTitle(thread.id, "manual");
@@ -64,7 +64,7 @@ test("a later rename or generation wins over an earlier pending result", async (
 test("a failed generation leaves the old title alone", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
+    const [key, thread] = await newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
     r.store.insertMessage(newMessage(thread.id, "1.1", "person", "a@x", "hello"));
     r.store.setThreadTitle(thread.id, "manual");
     const result = regenerateTitle(r.hub, thread.id, [r.session(key)]);
@@ -80,7 +80,7 @@ test("a failed generation leaves the old title alone", async () => {
 test("a title can be generated while the chat's agent is working", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
+    const [key, thread] = await newSession(r.hub, { runtime: "codex", createdBy: "a@x" });
     say(r.hub, thread.id, "a@x", "fix the login");
     await settle();
     const task = r.codex.last();
@@ -124,7 +124,7 @@ test("a keyed chat-completions provider receives a text-only title request", asy
     try {
       r.edit((raw) => raw.profiles.push({ id: "local", runtime: "dsh", home: "homes/local", model: "sample",
         access: { kind: "api-provider", provider: "ollama", endpoint: `http://127.0.0.1:${port}/v1` } }));
-      const [key, thread] = newSession(r.hub, { runtime: "dsh", profile: "local", createdBy: "a@x" });
+      const [key, thread] = await newSession(r.hub, { runtime: "dsh", profile: "local", createdBy: "a@x" });
       r.store.insertMessage(newMessage(thread.id, "1.1", "person", "a@x", "修复登录"));
       assert.equal(await regenerateTitle(r.hub, thread.id, [r.session(key)]), "登录修复");
       assert.equal(r.store.getThread(thread.id)?.autoTitle, "登录修复");

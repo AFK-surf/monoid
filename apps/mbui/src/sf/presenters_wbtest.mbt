@@ -1118,3 +1118,25 @@ test "a short pick with a mouse at Large: a menu of choices beside what opened i
   assert_eq(chosen.val, "c2")
   assert_true(!presenting())
 }
+
+///|
+/// The thin lines drawn (rects 2 high at most and 60 wide at least) with the menu of `items` open by 打开 in window `at`.
+fn menu_rules_drawn(at : (Int, Double, Double), items : Array[MenuItem?]) -> Int {
+  let t = presenting_tester(at, fn(from) { menu(items, from=beside_of(from)) })
+  open_it(t)
+  t.drawn_rects().filter(fn(d) { d.3 <= 2.0 && d.2 >= 60.0 }).length()
+}
+
+///|
+test "a menu's lines: none at either end, never two together, whatever was given as None, as a sheet at Small and beside what opened it at Large" {
+  let a = fn() { Some(menu_item_of("一", fn() {  })) }
+  let b = fn() { Some(menu_item_of("二", fn() {  })) }
+  assert_eq(menu_clean_items([None, a(), None, None, b(), None]).map(fn(x) { x is Some(_) }), [true, false, true])
+  assert_eq(menu_clean_items([None, None]).length(), 0)
+  for at in [phone, desk] {
+    let none = menu_rules_drawn(at, [a(), b()])
+    let one = menu_rules_drawn(at, [a(), None, b()])
+    assert_eq(one, none + 1, msg="\{at.0}: a line between")
+    assert_eq(menu_rules_drawn(at, [None, a(), None, None, b(), None]), one, msg="\{at.0}: still one, none at the ends")
+  }
+}

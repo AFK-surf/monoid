@@ -16,7 +16,8 @@ import { CodexDriver, hostSkillsOff, type CodexDriverOptions } from "../src/agen
 import { LiveFromCodex, codexEvents } from "./codex-reference.ts";
 import { REPO_RULES_COMMAND } from "../src/agents/repo-rules.ts";
 import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
-import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
+import { allLeft, type RunnerInfo } from "../src/agents/runner.ts";
+import { existingRunners } from "./runners-kept.ts";
 import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
 import { transcriptPaths } from "./reference/transcript-paths.ts";

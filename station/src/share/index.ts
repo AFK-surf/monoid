@@ -62,7 +62,7 @@ import { log } from "../ops/log.ts";
 import { linkSync } from "../ops/links.ts";
 import { joinPath, portableName } from "../ops/paths.ts";
 import { profileFetch } from "../ops/agent-env.ts";
-import { workspaceAgentHome } from "../sessions/agent-home.ts";
+import { workspaceAgentHomePath } from "../sessions/agent-home.ts";
 import { SKIPPED } from "./memory.ts";
 import { MemoryProgram, MemoryProgramStopped } from "./memory-mb.ts";
 import { allowedIn } from "../sessions/config.ts";
@@ -454,9 +454,10 @@ export class Sharing {
     return joinPath(this.deps.data, home);
   }
 
-  /// The agents' skills of workspace `ws` (null: the home one's, where this station's own shared skills are).
+  /// The agents' skills of workspace `ws` (null: the home one's, where this station's own shared skills are): a joined
+  /// one's made with its agent home (sessions/agent-home.ts `workspaceAgentHome`), or where a skill is linked into it.
   private skillsDir(ws: string | null = null): string {
-    return join(workspaceAgentHome(this.deps.agentHome(), ws, this.deps.cloud.home()), "skills");
+    return join(workspaceAgentHomePath(this.deps.agentHome(), ws, this.deps.cloud.home()), "skills");
   }
 
   /// The skills this station shares: name → id and who may use it (an id alone: every station).

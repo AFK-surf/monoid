@@ -19,7 +19,8 @@ import { SLACK_SPOKEN, SPEAKS } from "../src/tools/mcp.ts";
 import { claudeProject } from "../src/read/transcript.ts";
 import { AgentsHost } from "../src/agents/mb-agents.ts";
 import { platform } from "../src/platform/index.ts";
-import { allLeft, existingRunners } from "../src/agents/runner.ts";
+import { allLeft } from "../src/agents/runner.ts";
+import { existingRunners } from "./runners-kept.ts";
 import { modelLimitOf } from "../src/agents/runtime.ts";
 import type { AgentSession, OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 

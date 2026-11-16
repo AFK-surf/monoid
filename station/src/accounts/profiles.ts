@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Env } from "../agents/machine-logins.ts";
-import { linkCodexAuth, parseClaudeCredentials } from "../agents/machine-logins.ts";
+import { linkCodexAuthSoon, parseClaudeCredentials } from "../agents/machine-logins.ts";
 import { fileCredentialsSoon, takeBack } from "../agents/no-keychain.ts";
 import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, type Via } from "../agents/profiles.ts";
 import { type Endpoints, endpoints, find, type Source } from "../agents/providers.ts";
@@ -289,7 +289,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     return result;
   }
   if (o.kind === "subscription" && o.runtime === "codex") {
-    if (o.machine) linkCodexAuth(o.home, o.env);
+    if (o.machine) await linkCodexAuthSoon(o.home, o.env);
     const output = await statusOf("codex", ["login", "status"], { ...o.env, CODEX_HOME: o.home });
     const text = `${output.stdout}${output.stderr}`.trim();
     if (text.toLowerCase().includes("not logged in")) return check("login", t("station.profile.signedOut"), null);

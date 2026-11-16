@@ -81,6 +81,7 @@ export type MovesDeps = {
   git?: HandoverDeps["git"];
   lackMost?: number;
   hashMost?: number;
+  packMost?: HandoverDeps["packMost"];
   work?: HandoverDeps["work"];
   /// A test's: what takes a directory away here (a clone a move back removes); none: rm.
   remove?: (dir: string) => Promise<void>;
@@ -265,7 +266,7 @@ export class Moves {
         here: (a) => this.accountHere(a),
         present: (id) => d.profiles().some((p) => p?.id === id),
       },
-      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, flush: d.flush, boot: d.boot, git: d.git, lackMost: d.lackMost, hashMost: d.hashMost, work: d.work, told: this.told, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
+      reposDir: d.reposDir, room: d.room, hasGit: d.hasGit, flush: d.flush, boot: d.boot, git: d.git, lackMost: d.lackMost, hashMost: d.hashMost, packMost: d.packMost, work: d.work, told: this.told, fail: d.fail, previous: d.previous, previousPid: d.previousPid,
       changed: () => d.changed?.(),
       arrivedStopped: (keys, need, ws) => this.scheduler.noteStopped({ module: "chats", id: keys[0]! }, need, ws),
       // (a chat here again by any route: what was lent for it alone is taken back)

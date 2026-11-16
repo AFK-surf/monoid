@@ -412,6 +412,44 @@ test("a station updating itself installs only the release its signed words name,
   }
 });
 
+test("a download broken on the way (curl's exit 35, a gateway's 503) is tried again; a refusal, or one broken every time, fails the install", () => {
+  /// curl answering, in turn, `said`: "35" a TLS connection broken (SSL_ERROR_SYSCALL), an HTTP status as curl -f
+  /// fails on it (exit 22, the status written by -w), "ok" the release written to -o; "ok" once they run out.
+  const answering = (m: ReturnType<typeof machine>, said: string[]) => {
+    writeFileSync(join(m.root, "answers"), said.join("\n") + "\n");
+    writeFileSync(join(m.root, "stub", "curl"), `#!/bin/sh
+echo "curl $*" >> "$HOME/said"
+now=$(head -n 1 "${join(m.root, "answers")}"); sed -i.x 1d "${join(m.root, "answers")}"
+case "\${now:-ok}" in
+  35) echo "curl: (35) LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to app.still.fail:443" >&2; exit 35 ;;
+  [0-9][0-9][0-9]) printf %s "$now"; exit 22 ;;
+esac
+while [ $# -gt 0 ]; do [ "$1" = -o ] && cp "${join(m.root, "release.tar.gz")}" "$2"; shift; done
+printf 200
+`, { mode: 0o755 });
+  };
+  const pauses = { STILLFAIL_DOWNLOAD_PAUSES: "0 0 0" };
+  for (const [name, said, ok, tries] of [
+    ["broken twice", ["35", "35"], true, 3],
+    ["a gateway's 503, then broken", ["503", "35"], true, 3],
+    ["broken every time", ["35", "35", "35", "35"], false, 4],
+    ["not found", ["404"], false, 1],
+    ["a server's error", ["500"], false, 1],
+  ] as const) {
+    const m = machine();
+    try {
+      answering(m, [...said]);
+      const done = m.run(["tok"], pauses);
+      assert.equal(done.status === 0, ok, `${name}: ${done.out}`);
+      assert.equal(done.said.match(/^curl /gm)?.length, tries, `${name}: ${done.said}`);
+      assert.equal(done.out.match(/下载中断，0 秒后重试/g)?.length ?? 0, tries - 1, `${name}: ${done.out}`);
+      assert.equal(existsSync(join(m.home, ".stillfail", "app", "VERSION")), ok, name);
+    } finally {
+      m.done();
+    }
+  }
+});
+
 test("a station hands its installer the release's raw tar a delta made: checked by its hash, unpacked and handed on, nothing downloaded", () => {
   const m = machine();
   const data = join(m.home, ".stillfail");

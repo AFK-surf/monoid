@@ -1,6 +1,7 @@
-// 外观's 试用新对话页 (the prefs' `chatPage`, sfbase's chat_page_from_prefs): off unless a person turns it on, kept on the
-// device by the core; a chat page made after it is pressed is the one chosen, and the app started with it kept on opens
-// its first chat on the page made as nodes.
+// 实验性功能's 试用新对话页 (the experimental feature `chatPage`, the prefs' `experimental`; sfbase's chat_page_from_prefs):
+// off unless a person turns it on, kept on the device by the core; a chat page open as it is pressed becomes the one
+// chosen at once, and the app started with it kept on (or an older app's `chatPage` kept) opens its first chat on the
+// page made as nodes.
 
 ///|
 /// The fixture's chat s-c1, as tests open it.
@@ -40,10 +41,10 @@ fn setting_chat_opened(t : @ui.Tester, at : String) -> Bool raise {
 }
 
 ///|
-/// 外观 opened from Home, its 试用新对话页 pressed, and back to Home.
+/// 实验性功能 opened over what is shown, its 试用新对话页 pressed, and back to what was shown.
 fn setting_pressed(t : @ui.Tester) -> Unit raise {
   app.nav.push(Settings)
-  app.nav.push(Setting(@settings.Route::Appearance))
+  app.nav.push(Setting(@settings.Route::Experimental))
   t.draw()
   t.run_for(@ui.move_most_ms)
   t.click(Switch, label="试用新对话页")
@@ -61,22 +62,39 @@ test "试用新对话页 off by default: a chat opened is the old page; pressed,
   let src = fixture("chat")
   let t = setting_tester(src)
   t.run_for(@ui.move_most_ms)
-  let kept = fn() { text(src.topic("prefs", {}).get().value, "chatPage") }
-  assert_eq(kept(), "")
+  let kept = fn() { field(field(src.topic("prefs", {}).get().value, "experimental"), "chatPage") is Some(True) }
+  assert_false(kept())
   assert_false(setting_chat_opened(t, "by default"), msg="by default: the old page")
   setting_pressed(t)
-  assert_eq(kept(), "nodes", msg="turned on: kept on the device")
+  assert_true(kept(), msg="turned on: kept on the device")
   assert_true(setting_chat_opened(t, "turned on"), msg="turned on: the page made as nodes")
   setting_pressed(t)
-  assert_eq(kept(), "", msg="turned off: none kept")
+  assert_false(kept(), msg="turned off: none kept")
   assert_false(setting_chat_opened(t, "turned off"), msg="turned off: the old page")
+}
+
+///|
+test "试用新对话页 pressed while a chat is open: the page under the settings becomes the one chosen, at once, both ways" {
+  new_run()
+  let src = fixture("chat")
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  open_chat(setting_chat)
+  t.run_for(@ui.move_most_ms)
+  assert_false(setting_page_nodes(t, "open"), msg="open: the old page")
+  setting_pressed(t)
+  assert_true(app.nav.top() is Chat(_), msg="back on the chat")
+  assert_true(setting_page_nodes(t, "turned on while open"), msg="turned on while open: the page made as nodes")
+  setting_pressed(t)
+  assert_true(app.nav.top() is Chat(_), msg="back on the chat again")
+  assert_false(setting_page_nodes(t, "turned off while open"), msg="turned off while open: the old page again")
 }
 
 ///|
 test "试用新对话页 kept on: the app started again opens its first chat on the page made as nodes; the run after, none kept, the old" {
   new_run()
   let src = fixture("chat")
-  (src.call)("prefs.set", { "chatPage": "nodes" }, fn(_) {  })
+  (src.call)("prefs.set", { "experimental": { "chatPage": true } }, fn(_) {  })
   open_chat(setting_chat)
   let t = setting_tester(src)
   t.run_for(@ui.move_most_ms)
@@ -89,4 +107,15 @@ test "试用新对话页 kept on: the app started again opens its first chat on 
   let t = setting_tester(src)
   t.run_for(@ui.move_most_ms)
   assert_false(setting_page_nodes(t, "the run after"), msg="the run after: the old page")
+}
+
+///|
+test "试用新对话页 kept by an older app (the prefs' `chatPage`): read as the switch on" {
+  new_run()
+  let src = fixture("chat")
+  (src.call)("prefs.set", { "chatPage": "nodes" }, fn(_) {  })
+  open_chat(setting_chat)
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(setting_page_nodes(t, "an older app's choice"), msg="an older app's choice: the page made as nodes")
 }

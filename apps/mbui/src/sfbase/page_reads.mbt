@@ -240,6 +240,7 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     // (what this device keeps and its own settings, the build's own words, the lock every shell reads: nothing of the
     // core's waited for)
     Appearance
+    | Experimental
     | Security
     | BarSettings
     | KeptFiles

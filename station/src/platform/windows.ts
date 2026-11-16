@@ -2,11 +2,11 @@
 // under), Git for Windows' sh for what agents write, `\` and drives in paths, links that take a privilege, PATHEXT and
 // .cmd shims, a scheduled task where Unix starts things in the background.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
@@ -75,8 +75,8 @@ const WINGET_UPDATE_NOT_APPLICABLE = 0x8a15002b;
 
 /// winget as PATH finds it, else where Windows puts it (an app execution alias in WindowsApps, which a stat of it may
 /// not take for a file, though it runs).
-function wingetCommand(env: Env): string {
-  const found = findCommand("winget", env);
+async function wingetCommandSoon(env: Env): Promise<string> {
+  const found = await findCommandSoon("winget", env);
   if (found !== null) return found.onPath;
   const key = Object.keys(env).find((k) => k.toUpperCase() === "LOCALAPPDATA");
   return key && env[key] ? join(env[key], "Microsoft", "WindowsApps", "winget.exe") : "winget.exe";
@@ -265,9 +265,9 @@ async function groupMemory(pgids: number[]): Promise<Map<number, number>> {
 
 const key = (path: string) => path.toLowerCase();
 
-const sameFile = (a: string, b: string) => {
+const sameFile = async (a: string, b: string) => {
   try {
-    const [x, y] = [statSync(a, { bigint: true }), statSync(b, { bigint: true })];
+    const [x, y] = await Promise.all([stat(a, { bigint: true }), stat(b, { bigint: true })]);
     return x.ino === y.ino && x.dev === y.dev;
   } catch {
     return false;
@@ -549,20 +549,20 @@ export const windows: Platform = {
   /// long as it is written in place (seen of Codex 0.162.1 on Windows, 2026-10-10: `codex login --with-api-key` into a
   /// home whose auth.json was a hard link kept the link, both names the new file; its refresh is taken to save the same
   /// way).
-  shareFile(target, link) {
+  async shareFile(target, link) {
     try {
-      const meta = lstatSync(link);
-      if (meta.isSymbolicLink() && readlinkSync(link) === target) return;
-      if (sameFile(link, target)) return;
-      unlinkSync(link);
+      const meta = await lstat(link);
+      if (meta.isSymbolicLink() && (await readlink(link)) === target) return;
+      if (await sameFile(link, target)) return;
+      await unlink(link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     try {
-      symlinkSync(target, link);
+      await symlink(target, link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-      linkSync(target, link);
+      await hardLink(target, link);
     }
   },
 
@@ -615,22 +615,23 @@ export const windows: Platform = {
   startInstaller,
   /// Vite+'s command is a shim of its own (codex.cmd, codex.exe) beside vp.exe; npm's a .cmd in its global prefix,
   /// the package in node_modules beside it.
-  shimUpdate(found, pkg, env) {
+  async shimUpdate(found, pkg, env) {
     const winget = wingetPackage(found.real);
     if (winget !== null) {
       const args = ["upgrade", "--id", winget, "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements"];
-      return { program: wingetCommand(env), args, noUpdate: WINGET_UPDATE_NOT_APPLICABLE };
+      return { program: await wingetCommandSoon(env), args, noUpdate: WINGET_UPDATE_NOT_APPLICABLE };
     }
     const dir = dirname(found.onPath);
-    if (existsSync(join(dir, "vp.exe"))) return { program: join(dir, "vp.exe"), args: ["install", "-g", `${pkg}@latest`] };
-    if (/\.cmd$/i.test(found.onPath) && existsSync(join(dir, "node_modules", ...pkg.split("/")))) {
+    const there = (p: string) => stat(p).then(() => true, () => false);
+    if (await there(join(dir, "vp.exe"))) return { program: join(dir, "vp.exe"), args: ["install", "-g", `${pkg}@latest`] };
+    if (/\.cmd$/i.test(found.onPath) && (await there(join(dir, "node_modules", ...pkg.split("/"))))) {
       const own = join(dir, "npm.cmd");
-      const npm = existsSync(own) ? own : findCommand("npm", env)?.onPath;
+      const npm = (await there(own)) ? own : (await findCommandSoon("npm", env))?.onPath;
       return npm === undefined ? "no-npm" : { program: npm, args: ["install", "-g", `${pkg}@latest`, "--prefix", dir] };
     }
     return null;
   },
-  linkCommand: () => false,
+  linkCommand: async () => false,
   // Its installer is a shell script (install.sh).
   codexStandalone: false,
   /// nodejs.org's zip (node.exe and npm.cmd at its top, where npm's shims go with --prefix it), unpacked by Windows' own

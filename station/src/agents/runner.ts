@@ -6,7 +6,6 @@
 // On Windows the runner's socket is a named pipe (`\\.\pipe\…`, its `socket`), which is not a file: opening it, even
 // to see it is there, is a connection, and the runner keeps one at a time. So it is never looked at but to attach.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { access, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
@@ -45,9 +44,8 @@ export const TERMINAL_RUNNER = "term-";
 export const isTerminalRunner = (id: string) => id.startsWith(TERMINAL_RUNNER);
 
 /// Whether a runner of before (its info file there, itself alive) still keeps its process: its socket there (one on its
-/// way out has removed it). A pipe cannot be looked at (see above): the info file, which goes with it, says so then.
-export const listening = (info: RunnerInfo) => !platform.runnerSocketVisible || existsSync(info.socket);
-/// `listening`, looked at off the station's thread.
+/// way out has removed it), looked at off the station's thread. A pipe cannot be looked at (see above): the info file,
+/// which goes with it, says so then.
 export const listeningSoon = async (info: RunnerInfo) => !platform.runnerSocketVisible || (await access(info.socket).then(() => true, () => false));
 
 /// A program named by its command (not a path) that `env`'s PATH does not have: the runtime is not installed there.
@@ -91,17 +89,8 @@ export async function startRunner(data: string, id: string, program: string, arg
   });
 }
 
-/// Runners of before this station: their info files, those whose runner is alive.
-export function existingRunners(data: string): RunnerInfo[] {
-  const dir = runnersDir(data);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .flatMap((f) => alive(() => readFileSync(join(dir, f), "utf8")));
-}
-
-/// The runners alive now, as `existingRunners` finds them, read without holding the station's thread: what is looked at
-/// every few seconds (jobs/memory.ts, resources/watch.ts). Their files are some 10 kB each (a command's arguments), and
+/// Runners of before this station, alive now: their info files, those whose runner is alive, read without holding the
+/// station's thread: what is looked at every few seconds (jobs/memory.ts, resources/watch.ts). Their files are some 10 kB each (a command's arguments), and
 /// on a machine short of memory twenty runners took up to 5 s to read on the thread (2026-10-25).
 export async function liveRunners(data: string, options: { strict?: boolean } = {}): Promise<RunnerInfo[]> {
   const dir = runnersDir(data);

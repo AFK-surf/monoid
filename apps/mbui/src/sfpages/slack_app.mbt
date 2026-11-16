@@ -764,12 +764,14 @@ fn sa_avatar_picker_node(
     p.box(fn(r) {
       @sf.style_node(r, fn() { sa_picker_row })
       r.wraps(Is(Some(sa_tile_gap))) |> ignore
-      r.each(fn() { all().map(fn(a) { a.id }) }, fn(id) { id }, fn(t, id) {
-        let id = id.untracked()
-        guard @signals.untracked(all).iter().find_first(fn(a) { a.id == id }) is Some(a) else { return }
+      // (the one picked, by member: a change of it tells the two tiles it concerns)
+      let picked_is = r.selected(fn() { Some(d.picked.get()) })
+      // (each tile its own avatar, given it by the list as it is made)
+      r.each(all, fn(a) { a.id }, fn(t, item) {
+        let a = item.untracked()
         let label = if a.label.has_prefix("android-") { @sf.t(a.label) } else { a.label }
         let tile = t.box(fn(b) {
-          let on = fn() { d.picked.get() == a.id }
+          let on = fn() { picked_is(a.id) }
           // (its edge: picked, sa_tile_on's; under the pointer, sa_tile_lit's, its hovered{border_color=FieldHover})
           @sf.style_node(b, fn() { if on() { sa_tile_on } else if b.pointed() { sa_tile_lit } else { sa_tile } })
           b

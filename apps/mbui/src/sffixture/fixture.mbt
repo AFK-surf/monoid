@@ -27,6 +27,11 @@ pub(all) struct Fixture {
   mut send_key : String
   /// the chat page tried (the prefs' `chatPage`: nodes; "" the old)
   mut chat_page : String
+  /// whether the app is on the test channel (the prefs' `testChannel`): a mode ending in -stable (before -dark) is on
+  /// the stable one
+  test_channel : Bool
+  /// the experimental switches turned on here (the prefs' `experimental`, 实验性功能): the board's modes the board's on
+  experimental : Map[String, Bool]
   archived : Map[String, Bool]
   hidden : Map[String, Bool]
   muted : Map[String, Bool]
@@ -1388,9 +1393,16 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "keys": fixture_keys(f.keys),
         "sendKey": if f.send_key == "" { Json::null() } else { Json::string(f.send_key) },
         "chatPage": if f.chat_page == "" { Json::null() } else { Json::string(f.chat_page) },
+        // (实验性功能 and the channel, as the core's prefs.ts shows them: features.ts)
+        "testChannel": Json::boolean(f.test_channel),
+        "experimental": @settings.experimental_json(f.experimental),
+        "features": @settings.features_json(f.test_channel, f.experimental),
+        "experimentalItems": @settings.experimental_items_json(f.test_channel, f.experimental),
         "keymap": fixture_keymap(f.keys, send_key=f.send_key),
         // the rail as the core says it (rail.ts railView), none kept: its default
         "railView": match fixture_kept("railView", {}, None) {
+          // (home-foot: no bell in the rail, what it would list in the sidebar's foot)
+          Some(Ok((v, _))) if f.mode.has_prefix("home-foot") => rail_unbelled(v)
           Some(Ok((v, _))) => v
           _ => Json::null()
         },
@@ -1409,7 +1421,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "shareIn" => fixture_share_topic(params)
     "imageNear" => fixture_image_near(params)
     // (待处理 open, Maple offline: decide_fixture.mbt)
-    "chats" if f.mode == "home-attention" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
+    "chats" if f.mode == "home-attention" || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
@@ -1902,6 +1914,23 @@ fn of_wholes(names : Array[String]) -> Array[String] {
 }
 
 ///|
+/// Whether `mode` is of the stable channel (its name ends in -stable, before -dark).
+pub fn fixture_stable_mode(mode : String) -> Bool {
+  mode.has_suffix("-stable") || mode.has_suffix("-stable-dark")
+}
+
+///|
+/// The experimental switches a fixture of `mode` begins with on: the board's in the board's modes (a test's of the
+/// board sees it).
+fn fixture_experimental(mode : String) -> Map[String, Bool] {
+  if board_mode(mode) {
+    { "board": true }
+  } else {
+    Map([])
+  }
+}
+
+///|
 /// A made-up core of `mode` as it begins (fixture: what it serves).
 fn made_fixture(mode : String) -> Fixture {
   {
@@ -1918,6 +1947,8 @@ fn made_fixture(mode : String) -> Fixture {
     app_update: "",
     send_key: "",
     chat_page: "",
+    test_channel: !fixture_stable_mode(mode),
+    experimental: fixture_experimental(mode),
     archived: {},
     hidden: {},
     muted: {},
@@ -2208,6 +2239,14 @@ pub fn fixture(mode : String) -> Source {
           if f.mode == "chat-turn-failed" || f.mode == "chat-turn-unanswered" {
             f.step += 1
             f.changed()
+          } else if f.mode == "chat-turn-failed-repeated" {
+            // (its agent at it, then failing again alike a moment later: one more folded into the notice)
+            f.step = 1
+            f.changed()
+            fix_later(fix_failed_again_ms, fn() {
+              f.step = 2
+              f.changed()
+            })
           }
           done(Ok(Json::object({})))
         }
@@ -2349,8 +2388,31 @@ pub fn fixture(mode : String) -> Source {
             _ => ()
           }
           match field(Some(params), "chatPage") {
-            Some(String(p)) => f.chat_page = p
-            Some(Null) => f.chat_page = ""
+            Some(String(p)) => {
+              f.chat_page = p
+              if p == "nodes" {
+                f.experimental["chatPage"] = true
+              }
+            }
+            Some(Null) => {
+              f.chat_page = ""
+              f.experimental.remove("chatPage")
+            }
+            _ => ()
+          }
+          // (a switch of 实验性功能: true on, null off; turning 试用新对话页 either way lets its older `chatPage` go, as
+          // prefs.ts does)
+          match field(Some(params), "experimental") {
+            Some(Object(m)) =>
+              for k, v in m {
+                if k == "chatPage" {
+                  f.chat_page = ""
+                }
+                match v {
+                  True => f.experimental[k] = true
+                  _ => f.experimental.remove(k)
+                }
+              }
             _ => ()
           }
           match field(Some(params), "listFilter") {
@@ -2842,5 +2904,46 @@ fn fixture_station_updates(f : Fixture, wholes : Json?) -> Json {
     "offered": Json::number(n.to_double()),
     "labelText": Json::string(if n > 0 { "\{n} 台 station 有新版本" } else { "" }),
     "titleText": "Station 更新",
+  }
+}
+
+///|
+/// How long after 重试 is pressed on chat-turn-failed-repeated its agent fails again alike, one more folded.
+pub let fix_failed_again_ms : Double = 1500.0
+
+///|
+/// The rail as the core says it (`railView`) with no bell in it (home-foot): 待处理 left out of every workspace's.
+fn rail_unbelled(v : Json) -> Json {
+  let out = fn(rail : Json?) -> Json {
+    match rail {
+      Some(Object(r)) => {
+        let o = r.copy()
+        match r.get("items") {
+          Some(Array(xs)) => o["items"] = Json::array(xs.filter(fn(x) { x != Json::string("attention") }))
+          _ => ()
+        }
+        Json::object(o)
+      }
+      Some(x) => x
+      None => Json::null()
+    }
+  }
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      o["all"] = out(m.get("all"))
+      match m.get("by") {
+        Some(Object(by)) => {
+          let b : Map[String, Json] = Map([])
+          for k, r in by {
+            b[k] = out(Some(r))
+          }
+          o["by"] = Json::object(b)
+        }
+        _ => ()
+      }
+      Json::object(o)
+    }
+    _ => v
   }
 }

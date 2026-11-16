@@ -13,6 +13,13 @@ pub fn farview_screen(screen : String) -> Bool {
 }
 
 ///|
+/// Whether screen `screen` is a Farview tab drawn by this app now (实验性功能 › Farview 原生标签页渲染 on), else shown
+/// as the station's pictures of it as any other screen.
+pub fn farview_native_screen(screen : String) -> Bool {
+  @sfbase.farview_native.get() && farview_screen(screen)
+}
+
+///|
 /// One showing of a tab: its stage and the core's call that carries it (0 none open).
 priv struct FarviewTab {
   stage : @stage.Stage

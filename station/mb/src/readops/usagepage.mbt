@@ -4,24 +4,12 @@
 // its own: an unnamed chat's title is "" and the local page has no name, for the client to say.
 
 ///|
-/// store.ts `usageSince` and usage-detail.ts `usageDetailSince`: from when every call was counted, and from when the
-/// details hold every call.
+/// usage-15m.ts `usage15mSince`: from when every call is counted (ms); null, from the first (and where the quarters are
+/// not installed).
 fn detail_since(db : @sql.Db) -> Json raise {
-  if has_compact(db) {
-    return match
-      one(db, "SELECT since FROM usage_compact_since WHERE id = 1", []) {
-      Some(r) => field(r, "since")
-      None =>
-        raise Failure("Cannot read properties of undefined (reading 'since')")
-    }
-  }
-  if usage_retired(db) || !table_installed(db, "usage_detail_live_since") {
-    return Json::null()
-  }
-  match one(db, "SELECT since FROM usage_detail_live_since WHERE id = 1", []) {
+  match one(db, "SELECT since FROM usage_15m_meta WHERE id = 1", []) {
     Some(r) => field(r, "since")
-    None =>
-      raise Failure("Cannot read properties of undefined (reading 'since')")
+    None => Json::null()
   }
 }
 
@@ -34,45 +22,19 @@ fn usage_number(v : Json) -> Double {
 }
 
 ///|
-/// store.ts `usageSince`.
+/// store/usage.ts `usageSince`: the earliest call's time, or, where the calls from before the quarters are still being
+/// taken in, from when they hold every call.
 fn usage_since(db : @sql.Db) -> Json raise {
-  if has_compact(db) {
-    guard one(
-        db,
-        "SELECT since, first_at, first_unknown FROM usage_compact_since WHERE id = 1",
-        [],
-      )
-      is Some(r) else {
-      raise Failure(
-        "Cannot read properties of undefined (reading 'first_unknown')",
-      )
-    }
-    let since = field(r, "since")
-    let first_at = field(r, "first_at")
-    let unknown = match field(r, "first_unknown") {
-      Null | Number(0.0, ..) => false
-      String(s) => s != ""
-      _ => true
-    }
-    return if unknown || first_at is Null {
-      since
-    } else if usage_number(first_at) > usage_number(since) {
-      first_at
-    } else {
-      since
-    }
+  let first = match one(db, "SELECT first_at FROM usage_span WHERE id = 1", []) {
+    Some(span) => field(span, "first_at")
+    None => Json::null()
   }
-  guard one(db, "SELECT first_at FROM usage_span WHERE id = 1", [])
-    is Some(span) else {
-    raise Failure("Cannot read properties of undefined (reading 'first_at')")
-  }
-  let first = field(span, "first_at")
-  let cutover = detail_since(db)
-  if cutover is Null {
+  let since = detail_since(db)
+  if since is Null {
     return first
   }
-  if first is Null || usage_number(cutover) >= usage_number(first) {
-    cutover
+  if first is Null || usage_number(since) >= usage_number(first) {
+    since
   } else {
     first
   }
@@ -543,6 +505,39 @@ fn config_profiles(
       }
     }
   }
+  // An account no longer in config.json (shared away, moved to another station): by the name it was known by as it
+  // went (move/accounts-known.json, move/station.ts), with its runtime where that says one.
+  let known = match
+    read_text(host, join_path(sep, join_path(sep, data, "move"), "accounts-known.json"), strict=false) {
+    Some(t) => @jsjson.parse(t) catch { _ => @jsjson.JValue::Null }
+    None => @jsjson.JValue::Null
+  }
+  if known is Obj(entries) {
+    for entry in entries {
+      let (id, k) = entry
+      if out.search_by(e => e.0 == id) is Some(_) {
+        continue
+      }
+      guard k is Obj(_) else { continue }
+      guard jget(Some(k), "name") is Some(Str(n)) &&
+        @jscase.trim(@jsjson.raw_text(n)) != "" else {
+        continue
+      }
+      let runtime = match jget(Some(k), "runtime") {
+        Some(Str(r)) if @jsjson.raw_text(r) != "" => @jsjson.raw_text(r)
+        _ => "claude"
+      }
+      out.push(
+        (
+          id,
+          Obj([
+            (@jsjson.units("name"), Str(@jsjson.units(@jscase.trim(@jsjson.raw_text(n))))),
+            (@jsjson.units("runtime"), Str(@jsjson.units(runtime))),
+          ]),
+        ),
+      )
+    }
+  }
   // As JSON.stringify orders an object's keys (an index first).
   @json.parse(@jsjson.stringify(Obj(out))) catch {
     _ => Json::object(Map([]))
@@ -646,7 +641,7 @@ fn chat_totals(
 }
 
 ///|
-/// The quarter hour `at` (ms) is in (usage-history.ts `quarter`).
+/// The quarter hour `at` (ms) is in (usage-15m.ts `quarter`).
 fn quarter_of(at : Int64) -> Int64 {
   floor_div(at, 900_000L)
 }
@@ -675,7 +670,7 @@ fn usage_history(
   viewer : Viewer?,
   requested : (Int64, Int64)?,
 ) -> Json raise {
-  if !table_installed(db, "usage_history_since") {
+  if !table_installed(db, "usage_15m_meta") {
     return Json::null()
   }
   let range = if valid_history_range(requested, offset) {
@@ -686,7 +681,7 @@ fn usage_history(
   let scopes : Array[String] = match viewer {
     None =>
       db
-      .all("SELECT scope, tokens FROM usage_history_total", [])
+      .all("SELECT scope, tokens FROM usage_scope_totals ORDER BY scope", [])
       .map(r => js_text(field(r, "scope")))
     Some(v) => if v.home { [v.workspace, ""] } else { [v.workspace] }
   }
@@ -699,7 +694,7 @@ fn usage_history(
   for scope in scopes {
     for
       r in db.all(
-        "SELECT strftime('%Y-%m-%d', quarter * 900 + ?4 * 60, 'unixepoch') AS day, SUM(calls) AS calls, SUM(tokens) AS tokens\n  FROM usage_history WHERE scope = ?1 AND quarter >= ?2 AND quarter < ?3 GROUP BY day",
+        "SELECT strftime('%Y-%m-%d', quarter * 900 + ?4 * 60, 'unixepoch') AS day, SUM(calls) AS calls, SUM(tokens) AS tokens\n  FROM usage_quarter_totals WHERE scope = ?1 AND quarter >= ?2 AND quarter < ?3 GROUP BY day",
         [Json::string(scope), i64_json(from), i64_json(to), i64_json(offset)],
       ) {
       let day = field(r, "day")
@@ -722,7 +717,7 @@ fn usage_history(
     }
     if range is Some(_) {
       let total = match
-        one(db, "SELECT tokens FROM usage_history_total WHERE scope = ?1", [
+        one(db, "SELECT tokens FROM usage_scope_totals WHERE scope = ?1", [
           Json::string(scope),
         ]) {
         Some(r) => usage_number(field(r, "tokens"))
@@ -731,7 +726,7 @@ fn usage_history(
       let after = match
         one(
           db,
-          "SELECT SUM(tokens) AS tokens FROM usage_history WHERE scope = ?1 AND quarter >= ?2",
+          "SELECT SUM(tokens) AS tokens FROM usage_quarter_totals WHERE scope = ?1 AND quarter >= ?2",
           [Json::string(scope), i64_json(to)],
         ) {
         Some(r) => usage_number(field(r, "tokens"))
@@ -740,12 +735,7 @@ fn usage_history(
       tokens += total - after
     }
   }
-  let since = match
-    one(db, "SELECT since FROM usage_history_since WHERE id = 1", []) {
-    Some(r) => field(r, "since")
-    None =>
-      raise Failure("Cannot read properties of undefined (reading 'since')")
-  }
+  let since = detail_since(db)
   let chats = Some(chat_totals(db, viewer)) catch {
     e => if is_pending(e, history_pending_chats) { None } else { raise e }
   }
@@ -844,68 +834,61 @@ priv struct Asked {
   viewer : Json?
   history : Bool
   history_range : (Int64, Int64)?
-  details_preparing : Bool
+  remote_from : Int64
   remote_runs : Bool
   metadata : Bool
 }
 
 ///|
-/// store.ts `remoteRunsSince`.
+/// store.ts `remoteRunsSince` (remote-runs.ts REMOTE_RUNS_OF, REMOTE_RUNS_ALL): the tasks from `from` until `to` a day
+/// `offset` minutes east of UTC and chat a row, `{at, session}` where it was the only one, else when the last ran and
+/// how many (`count`).
 fn remote_runs_since(
   db : @sql.Db,
   from : Int64,
+  to : Int64,
+  offset : Int64,
   viewer : Viewer?,
 ) -> Json raise {
   remote_runs_ready(db)
   let rows = match viewer {
     None =>
       db.all(
-        "SELECT at, session FROM remote_run_by_time WHERE at >= ? ORDER BY at, seq",
-        [i64_json(from)],
+        "SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_by_time WHERE at >= ?1 AND at < ?2\n  GROUP BY strftime('%Y-%m-%d', (at + ?3 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session",
+        [i64_json(from), i64_json(to), i64_json(offset)],
       )
     Some(v) =>
       db.all(
-        "SELECT at, session FROM remote_run_lookup WHERE ws = ?1 AND at >= ?2 ORDER BY at, seq",
-        [Json::string(v.workspace), i64_json(from)],
+        "SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_lookup WHERE ws = ?1 AND at >= ?2 AND at < ?3\n  GROUP BY strftime('%Y-%m-%d', (at + ?4 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session",
+        [Json::string(v.workspace), i64_json(from), i64_json(to), i64_json(offset)],
       )
   }
   Json::array(
     rows.map(r => {
-      (
-        {
-          "at": Json::number(usage_number(field(r, "at"))),
-          "session": Json::string(js_text(field(r, "session"))),
-        } : Json)
+      let n = usage_number(field(r, "n"))
+      let run : Map[String, Json] = {
+        "at": Json::number(usage_number(field(r, "at"))),
+        "session": Json::string(js_text(field(r, "session"))),
+      }
+      if n > 1.0 {
+        run["count"] = Json::number(n)
+      }
+      Json::object(run)
     }),
   )
 }
 
 ///|
 /// usage.ts `usage`: what the agents spent from `from` until `to`, by day in the asker's time zone, with what the rows
-/// name. `batched`: the groups the summary blocks gave (read/store.ts `usageGroupsBatched`), where they did.
+/// name: of the viewer's workspaces alone (their quarters', usagegroups.mbt).
 fn usage_answer(
   db : @sql.Db,
   known : Known,
   a : Asked,
-  batched : Array[Group]?,
   words : Json,
 ) -> Json raise {
   let viewer = viewer_of(a.viewer)
-  let groups = if a.details_preparing {
-    []
-  } else {
-    match batched {
-      Some(g) => g
-      None => usage_groups(db, a.from, a.to, a.offset, viewer)
-    }
-  }
-  let visible = match a.viewer {
-    Some(Object(_) as v) if !has_compact(db) => {
-      let seen = seen_by(db, v, groups.map(g => js_text(g.session)))
-      groups.filter(g => seen(js_text(g.session)))
-    }
-    _ => groups
-  }
+  let visible = usage_groups(db, a.from, a.to, a.offset, viewer)
   let rows = visible.map(g => {
     (
       {
@@ -1012,7 +995,7 @@ fn usage_answer(
     None
   }
   let remote = if a.remote_runs {
-    Some(remote_runs_since(db, a.from, viewer)) catch {
+    Some(remote_runs_since(db, a.remote_from, a.to, a.offset, viewer)) catch {
       e => if is_pending(e, remote_runs_pending) { None } else { raise e }
     }
   } else {
@@ -1032,9 +1015,6 @@ fn usage_answer(
     out["detailSince"] = detail
   }
   out["reading"] = Json::boolean(a.reading)
-  if a.details_preparing {
-    out["detailsPreparing"] = Json::boolean(true)
-  }
   if prices is Some(p) {
     out["prices"] = p
   }
@@ -1072,8 +1052,8 @@ fn big_given(v : Json?) -> Int64 raise {
 }
 
 ///|
-/// ops-usage.ts `usage` (GET /usage), with what the reader of before read first (test/reference-worker.ts): the summary
-/// blocks' groups where the page does not wait for its details (`usageGroupsBatched`).
+/// ops-usage.ts `usage` (GET /usage). `remoteFrom`: from when the tasks other stations' chats ran here are told
+/// (absent: `from`).
 pub fn usage_page(
   db : @sql.Db,
   host : @host.Host,
@@ -1082,27 +1062,9 @@ pub fn usage_page(
   ask : Json,
 ) -> Json raise {
   let args = ask.value("args").unwrap_or(Json::null())
-  let details_preparing = args.value("detailsPreparing") is Some(True)
   let viewer = match args.value("viewer") {
     None | Some(Null) => None
     v => v
-  }
-  let batched = if details_preparing {
-    None
-  } else {
-    let prepared = if args.value("summaryStrict") is Some(True) {
-      Some(args.value("summaryPrepared") is Some(True))
-    } else {
-      None
-    }
-    usage_groups_batched(
-      db,
-      big_given(args.value("from")),
-      big_given(args.value("to")),
-      big_given(args.value("tz")),
-      viewer_of(viewer),
-      prepared,
-    )
   }
   let from = big_given(args.value("from"))
   let to = big_given(args.value("to"))
@@ -1110,6 +1072,10 @@ pub fn usage_page(
   let history_range = match args.value("historyRange") {
     None | Some(Null | False) | Some(Number(0.0, ..)) | Some(String("")) => None
     Some(r) => Some((big_given(r.value("from")), big_given(r.value("to"))))
+  }
+  let remote_from = match args.value("remoteFrom") {
+    None | Some(Null) => from
+    v => big_given(v)
   }
   let asked : Asked = {
     from,
@@ -1123,7 +1089,7 @@ pub fn usage_page(
     viewer,
     history: args.value("history") is Some(True),
     history_range,
-    details_preparing,
+    remote_from,
     remote_runs: true,
     metadata: true,
   }
@@ -1131,7 +1097,6 @@ pub fn usage_page(
     db,
     Known::of(host, data, sep, ask),
     asked,
-    batched,
     args.value("words").unwrap_or(Json::null()),
   )
 }
@@ -1175,7 +1140,7 @@ pub fn outflow_usage(
     viewer: Some({ "workspace": of.0, "home": Json::boolean(of.1) }),
     history: false,
     history_range: None,
-    details_preparing: false,
+    remote_from: from.to_int64(),
     remote_runs: false,
     metadata: false,
   }
@@ -1183,7 +1148,6 @@ pub fn outflow_usage(
     db,
     Known::of(host, data, sep, ask),
     asked,
-    None,
     Json::null(),
   )
   let teams_cache : Ref[Map[String, Team]?] = Ref(None)

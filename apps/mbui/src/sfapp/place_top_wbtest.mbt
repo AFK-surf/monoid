@@ -28,8 +28,9 @@ test "a place's page: from under its frosted top bar, scrolled on under it, not 
     None => fail("no Willow")
   }
   assert_true(y0 > 24.0 + 50.0)
-  // scrolled 60: the cards go on under the bar; pressed there (beside the title, on none of the bar's buttons), it is
-  // the first card's (Willow's), which opens its station, as it shows through the glass
+  // scrolled 60: the cards go on under the bar; pressed on its glass (beside the title, on none of the bar's buttons)
+  // it is the bar's, what is under it out of sight there (mbui's Node::covers: the page made once as nodes); pressed
+  // under the bar, the first card's (Willow's), which opens its station
   t.move_to(195.0, 300.0)
   t.wheel(195.0, 300.0, 60.0)
   let y1 = match t.rect_of("Willow") {
@@ -41,6 +42,9 @@ test "a place's page: from under its frosted top bar, scrolled on under it, not 
   }
   assert_eq(app.nav.depth(), 1)
   t.tap(300.0, 60.0)
+  t.frame()
+  assert_eq(app.nav.depth(), 1)
+  t.tap(300.0, 24.0 + 50.0 + 30.0)
   t.frame()
   assert_eq(@sf.presenting(), false)
   assert_eq(app.nav.depth(), 2)

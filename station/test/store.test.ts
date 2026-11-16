@@ -32,9 +32,7 @@ import { WIDGET_SOURCE, WIDGET_SOURCE_MISSING, WIDGET_SOURCE_POSITIONS_FIRST, WI
   WIDGET_SOURCE_UNUSUAL, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 import { SESSION_UP_JOB, SESSION_UP_JOBS, SESSION_UP_JOBS_CONFLICT, SESSION_UP_JOBS_DISPLACED, SESSION_UP_JOBS_END, SESSION_UP_JOBS_FIRST, SESSION_UP_JOBS_NEXT } from "./reference/backfill/session-up-jobs.ts";
 import { ACTIVE_SESSIONS, TAKEN_SINCE, TURNS_BETWEEN, TURNS_FROM } from "../src/store/usage.ts";
-import { detailQuery } from "../src/store/usage-detail.ts";
-import { installCompactUsage } from "../src/store/usage-compact.ts";
-import { installUsageSummaryBlocks, usageSummaryBlocksRangeScan, usageSummaryBlocksScan } from "./reference/backfill/usage-summary-blocks.ts";
+import { HISTORY_AFTER, HISTORY_DAYS, HISTORY_SCOPES, HISTORY_TOTAL, usage15mQuery } from "../src/store/usage-15m.ts";
 import { REMOTE_RUNS_ALL, REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { AWAKE_JOBS, REMOTE_QUEUE_JOBS, RUNNING_JOB_SESSIONS, RUNNING_WAIT_JOBS } from "../src/store/active-jobs.ts";
 import { activeJobUpgradeStep, ACTIVE_JOB_CONFLICT, ACTIVE_JOB_END, ACTIVE_JOB_FIRST, ACTIVE_JOB_NEXT, ACTIVE_JOB_NULL_ID,
@@ -43,10 +41,7 @@ import { HAS_SESSION_ACTIVE_WATCH } from "../src/store/watch-jobs.ts";
 import { RECOVER_AWAKE_WAITS, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "./reference/backfill/recover-waits.ts";
 import { AWAKE_BACKFILL_FIRST, AWAKE_BACKFILL_NEXT, AWAKE_WAIT_STATUS, reconcileAwakeWaits, syncAwakeWait } from "./reference/backfill/awake-waits.ts";
 import * as read from "./reference/store.ts";
-import { usageSummaryEdgeQuery } from "./reference/usage-batched.ts";
-import { usageSummaryBlockOverlayQuery, usageSummaryBlockPendingQuery, usageSummaryBlockQueries } from "./reference/usage-summary-blocks.ts";
 import { recentChatDisplacedEntry } from "./reference/chat-list/chat-list-entry-rowid.ts";
-import { HISTORY_AFTER, HISTORY_DAYS, HISTORY_SCOPES, HISTORY_SEED_CALLS, HISTORY_TOTAL } from "../src/store/usage-history.ts";
 import { installRecentChatIndex, RECENT_GLOBAL_PAGE } from "./reference/chat-list/chat-list-index.ts";
 import { RECENT_DEFAULT_HOME_PAGE } from "./reference/chat-list/chat-list-home-index.ts";
 import { installRecentHomeOverlap, RECENT_HOME_ORDER_PAGE, RECENT_HOME_WORKSPACE_ORDER_PAGE } from "./reference/chat-list/chat-list-home-overlap.ts";
@@ -1755,57 +1750,21 @@ test("what the station asks again and again is planned by an index, never a scan
     assert.ok(plan.some((line) => line.startsWith("SEARCH s ") && line.includes("key=?")), plan.join(" | "));
     assert.ok(!plan.some((line) => /^SCAN (i|s)\b/.test(line)), plan.join(" | "));
   }
-  const detail = detailQuery(1n, 1_000_001n, 1n, { workspace: "ws", home: false })!;
-  const compact = memory();
-  installCompactUsage(compact.db, () => 0);
-  const usageBatch = read.batchedUsageQueries({ workspace: "ws", home: false });
-  const usagePlans = [
-    [usageBatch.selected, [0n, 100n, "Wws"]], [usageBatch.owner, ["a"]],
-    [usageBatch.buckets, [0n, "a", 0n, 100n, "Wws"]], [usageBatch.anyPending, ["Wws"]], [usageBatch.pending, ["Wws"]],
-    [usageBatch.pendingRange, [0n, 100n, "Wws"]],
-  ] as [string, unknown[]][];
-  for (const [sql, args] of usagePlans) {
-    const plan = (compact.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(args as never[])) as { detail: string }[]).map((r) => r.detail);
-    assert.ok(plan.every((d) => !d.startsWith("SCAN ")), `${sql}\n  ${plan.join(" | ")}`);
-  }
-  installUsageSummaryBlocks(compact.db);
-  const groups: [string, unknown[], string][] = [];
-  for (const scoped of [false, true]) {
-    for (const size of [1, 15, 60] as const) {
-      const q = usageSummaryBlockQueries(scoped, size);
-      const index = size === 1 ? (scoped ? "usage_summary_blocks_shadow_scope_time" : "usage_summary_blocks_shadow_time")
-        : scoped ? "PRIMARY KEY" : "usage_summary_blocks_time";
-      groups.push([q.selected, scoped ? [0, 100, "Wws"] : [0, 100], index]);
+  // What was spent, by its quarters (store/usage-15m.ts): a viewer's by the primary key from their workspace on, all by
+  // the time index; the calls themselves only by a session's (a partial quarter at either edge, a quarter a local
+  // midnight falls in), never a walk of the quarters or the calls.
+  const quarters: [string, (string | bigint)[]][] = [];
+  for (const viewer of [null, { workspace: "ws", home: false }, { workspace: "ws", home: true }]) {
+    for (const [from, to, tz] of [[1n, 86_400_001n, 1n], [0n, 9_223_372_036_854_775_807n, 0n], [900_000n, 1_800_000n, 480n], [5n, 7n, 0n]] as const) {
+      const q = usage15mQuery(from, to, tz, viewer)!;
+      quarters.push([q.sql, q.args]);
     }
-    const q = usageSummaryBlockQueries(scoped, 60);
-    const index = scoped ? "PRIMARY KEY" : "usage_summary_blocks_time";
-    groups.push([q.next, scoped ? [0, 100, "Wws"] : [0, 100], index], [q.last, scoped ? ["Wws"] : [], index]);
   }
-  for (const side of ["time", "old", "new"] as const) {
-    groups.push([usageSummaryBlockPendingQuery(side), side === "time" ? [0, 100] : [0, 100, "Wws"], `usage_summary_blocks_dirty_${side}`]);
-  }
-  const rowKey = ["a", 0, 0, "p", "cc", "claude", "m", 0];
-  for (const current of [false, true]) groups.push([usageSummaryBlockOverlayQuery(current), rowKey, "PRIMARY KEY"]);
-  groups.push([usageSummaryBlocksScan(true, false), ["Wws", 32], "usage_compact_scope_time"]);
-  groups.push([usageSummaryBlocksScan(true, true), ["Wws", 0, "a", 0, "p", "cc", "claude", "m", 0, 32], "usage_compact_scope_time"]);
-  groups.push([usageSummaryBlocksScan(false, true), [...rowKey, 32], "PRIMARY KEY"]);
-  groups.push([usageSummaryBlocksRangeScan(true, false), ["Wws", 0, 100, 32], "usage_compact_scope_time"]);
-  groups.push([usageSummaryBlocksRangeScan(true, true), ["Wws", 0, 100, 0, "a", 0, "p", "cc", "claude", "m", 0, 32], "usage_compact_scope_time"]);
-  groups.push([usageSummaryBlocksRangeScan(false, false), [0, 100, 32], "usage_compact_time"]);
-  groups.push([usageSummaryBlocksRangeScan(false, true), [0, 100, 0, "a", 0, "p", "cc", "claude", "m", 0, 32], "usage_compact_time"]);
-  for (const [sql, args, index] of groups) {
-    const plan = (compact.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(args as never[])) as { detail: string }[]).map((r) => r.detail);
-    assert.ok(plan.some((d) => d.startsWith("SEARCH ") && d.includes(index)), `${sql}\n  ${plan.join(" | ")}`);
-    assert.ok(plan.every((d) => !d.includes("TEMP B-TREE")), `${sql}\n  ${plan.join(" | ")}`);
-  }
-  for (const scope of ["all", "workspace", "home"] as const) {
-    const sql = usageSummaryEdgeQuery(scope);
-    const args = scope === "workspace" ? [0, 0, "Wws", 1, 2, "ws"] : [0, 0, scope === "home" ? "H" : null, 1, 2];
-    const plan = (compact.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map((r) => r.detail);
-    const index = scope === "all" ? "usage_compact_time" : "usage_compact_scope_time";
-    assert.ok(plan.some((d) => d.startsWith("SEARCH ") && d.includes(index)), `${sql}\n  ${plan.join(" | ")}`);
-    assert.ok(plan.some((d) => d.startsWith("SEARCH ") && d.includes("usage_session")), `${sql}\n  ${plan.join(" | ")}`);
-    assert.ok(plan.every((d) => !d.includes("TEMP B-TREE")), `${sql}\n  ${plan.join(" | ")}`);
+  for (const [sql, args] of quarters) {
+    const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(args as never[])) as { detail: string }[]).map((r) => r.detail);
+    assert.ok(!plan.some((d) => /^SCAN (c|u)\b/.test(d)), `${sql}\n  ${plan.join(" | ")}`);
+    assert.ok(plan.every((d) => !d.startsWith("SEARCH u ") || d.includes("usage_session (session=? AND at>? AND at<?)")), `${sql}\n  ${plan.join(" | ")}`);
+    assert.ok(plan.some((d) => d.startsWith("SEARCH c ")), `${sql}\n  ${plan.join(" | ")}`);
   }
   // As the station's SQLite (node's) plans each: a scan only of an index that holds the sessions shown or running, the
   // login cards, or of the small one that counts sessions (or of what a subquery found); a table, or an index of every
@@ -1828,9 +1787,9 @@ test("what the station asks again and again is planned by an index, never a scan
     [WIDGET_SOURCE_POSITIONS_FIRST, [1, "100", 64]], [WIDGET_SOURCE_POSITIONS_NEXT, [1, "1", "100", 64]],
     [LATEST_DECISIONS, [0]], [ARCHIVE_POLICY, ["ws"]], [CLOSED_THREAD_SINCE, [1, 0]], [LOGIN_CARDS, ["%l1%"]], [CARD_BEFORE, [1, 9]], [OPTIONS_BEFORE, [1, 9]],
     [TURNS_FROM, ["a", 0]], [TURNS_BETWEEN, ["a", 0, 9]], [TAKEN_SINCE, ["a", "ember", 0]], [SESSION_OF_RUNTIME, ["claude", "r1"]], [SAID_SINCE, [1, 0]],
-    [HEARD_IN, ["a", 1]], [MODELS_USED_BY, ["a@x", 0]], [REMOTE_RUNS_OF, ["ws", 0]], [REMOTE_RUNS_ALL, [0]],
-    [detail.sql, detail.args], [HISTORY_DAYS, ["ws", 0n, 100n, 480n]], [HISTORY_AFTER, ["ws", 100n]], [HISTORY_TOTAL, ["ws"]],
-    [HISTORY_SCOPES, []], [HISTORY_SEED_CALLS, [0]], [read.SAID_LATEST, [1]], [read.SAID_SCAN, [1, 100, 64]], [read.SAID_STATE, [1]],
+    [HEARD_IN, ["a", 1]], [MODELS_USED_BY, ["a@x", 0]], [REMOTE_RUNS_OF, ["ws", 0, 100, 480]], [REMOTE_RUNS_ALL, [0, 100, 480]],
+    [HISTORY_DAYS, ["ws", 0n, 100n, 480n]], [HISTORY_AFTER, ["ws", 100n]], [HISTORY_TOTAL, ["ws"]],
+    [HISTORY_SCOPES, []], [read.SAID_LATEST, [1]], [read.SAID_SCAN, [1, 100, 64]], [read.SAID_STATE, [1]],
     [CARD_POST_BEFORE, [1, 9]], [CARD_POST_NEXT, [1, 0]], [CARD_POST_AFTER, [1, 0]], [CARD_POST_LATEST, [1]], [CARD_POST_SAMPLE, [1]],
     [CLOSED_CARD_AFTER_POSTS, [1, 0]],
     [read.HAS_ANSWER_PEOPLE_SINCE, [1, 0]],
@@ -1842,16 +1801,13 @@ test("what the station asks again and again is planned by an index, never a scan
   const plans = new Map<string, string[]>();
   for (const [sql, args] of planned) {
     const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(args as never[])) as { detail: string }[]).map((r) => r.detail);
-    // The detail query materializes only keys sought inside the requested range, then scans those keys in session
-    // order. It must still seek the underlying lookup below (asserted separately), not scan the historical table.
     assert.ok(!plan.some((d) => scans.test(d)
-      && !(sql === detail.sql && d === "SCAN target" && plan.includes("MATERIALIZE targets"))
       && !(sql === RUNNING_WAIT_JOBS && d === "SCAN active" && plan.includes("CO-ROUTINE active"))
       // `small` contains at most two memberships; `choice` is its one-row sentinel.
       && !(sql === LATEST_THREAD_ATTEMPT && (d === "SCAN small" || d === "SCAN p"))
       && !(sql === POST_AFTER_INDEXED && (d === "SCAN first" || d === "SCAN second"))
       // One row a workspace.
-      && !(sql === HISTORY_SCOPES && d === "SCAN usage_history_total")), `${sql}\n  ${plan.join(" | ")}`);
+      && !(sql === HISTORY_SCOPES && d === "SCAN usage_scope_totals")), `${sql}\n  ${plan.join(" | ")}`);
     plans.set(sql, plan);
   }
   assert.equal(plans.get(JOB_AT_PORT)!.filter((d) => d.includes("jobs_up (state=? AND port=?)")).length, 2,
@@ -1902,13 +1858,11 @@ test("what the station asks again and again is planned by an index, never a scan
   assert.ok(plans.get(POST_AFTER_INDEXED)!.some((d) => d.includes("PRIMARY KEY (thread=? AND author=? AND bucket>?)")), plans.get(POST_AFTER_INDEXED)!.join(" | "));
   assert.ok(plans.get(POST_AFTER_INDEXED)!.some((d) => d.includes("(thread=? AND n>? AND n<?)")), plans.get(POST_AFTER_INDEXED)!.join(" | "));
   assert.ok(plans.get(MODELS_USED_BY)!.some((d) => d.includes("COVERING INDEX sessions_models (created_by=? AND created_at>?)")), plans.get(MODELS_USED_BY)!.join(" | "));
-  assert.ok(plans.get(REMOTE_RUNS_OF)!.some((d) => d.includes("PRIMARY KEY (ws=? AND at>?)")), plans.get(REMOTE_RUNS_OF)!.join(" | "));
-  assert.ok(plans.get(REMOTE_RUNS_ALL)!.some((d) => d.includes("PRIMARY KEY (at>?)")), plans.get(REMOTE_RUNS_ALL)!.join(" | "));
-  assert.ok(plans.get(detail.sql)!.some((d) => d.includes("usage_detail_lookup_scope (scope=? AND level=? AND bucket>? AND bucket<?)")), plans.get(detail.sql)!.join(" | "));
-  // The usage page's year: its own workspace's quarters of those days alone; installing it, the calls from a time on.
+  assert.ok(plans.get(REMOTE_RUNS_OF)!.some((d) => d.includes("PRIMARY KEY (ws=? AND at>? AND at<?)")), plans.get(REMOTE_RUNS_OF)!.join(" | "));
+  assert.ok(plans.get(REMOTE_RUNS_ALL)!.some((d) => d.includes("PRIMARY KEY (at>? AND at<?)")), plans.get(REMOTE_RUNS_ALL)!.join(" | "));
+  // The usage page's year: its own workspace's quarters of those days alone.
   assert.ok(plans.get(HISTORY_DAYS)!.some((d) => d.includes("PRIMARY KEY (scope=? AND quarter>? AND quarter<?)")), plans.get(HISTORY_DAYS)!.join(" | "));
   assert.ok(plans.get(HISTORY_AFTER)!.some((d) => d.includes("PRIMARY KEY (scope=? AND quarter>?)")), plans.get(HISTORY_AFTER)!.join(" | "));
-  assert.ok(plans.get(HISTORY_SEED_CALLS)!.some((d) => d.includes("INDEX usage_at (at>?)")), plans.get(HISTORY_SEED_CALLS)!.join(" | "));
   // The latest card before a message: by the index of cards, not by going back over the thread to it.
   assert.ok(plans.get(CARD_BEFORE)!.some((d) => d.includes("entries_cards")), plans.get(CARD_BEFORE)!.join(" | "));
   assert.ok(plans.get(OPTIONS_BEFORE)!.some((d) => d.includes("entries_options")), plans.get(OPTIONS_BEFORE)!.join(" | "));
@@ -2266,10 +2220,6 @@ test("usage: the page's days are the calls added up from statistics, whatever th
   };
   record(calls.slice(0, 400));
   store.close();
-  // The current detail index remains usable if the obsolete quarter table is absent on an older database.
-  const before = new DatabaseSync(path);
-  before.exec("DROP TRIGGER usage_quarters_add; DROP TRIGGER usage_quarters_drop; DROP TRIGGER usage_quarters_grow; DROP TABLE usage_quarters;");
-  before.close();
   store = open(path);
   record(calls.slice(400));
   // Outputs grown, and calls taken away.
@@ -2280,7 +2230,7 @@ test("usage: the page's days are the calls added up from statistics, whatever th
     FROM usage WHERE at >= ?1 AND at < ?2 GROUP BY day, session, thread, person, profile, runtime, model, fast`;
   const sorted = (rows: unknown[]) => rows.map((r) => JSON.stringify(r)).sort();
   const fromStats = (from: number, to: number, tz: number) => {
-    const query = detailQuery(BigInt(from), BigInt(to), BigInt(tz), null);
+    const query = usage15mQuery(BigInt(from), BigInt(to), BigInt(tz), null);
     return query === null ? [] : store.db.prepare(query.sql).all(...query.args);
   };
   const some = fromStats(day + 5 * 900_000 + 7, day * 3 - 11, 480).length;
@@ -2308,17 +2258,13 @@ test("usage: a row is the calls it says, and a database from before says each wa
   store.close();
   // As a station from before the columns kept it: its triggers too.
   const before = new DatabaseSync(path);
-  const detailObjects = before.prepare("SELECT type, name FROM sqlite_master WHERE (name LIKE 'usage_detail_%' OR name = 'usage_detail') AND type IN ('trigger', 'table') ORDER BY type DESC").all() as { type: string; name: string }[];
-  for (const object of detailObjects) before.exec(`DROP ${object.type.toUpperCase()} "${object.name}"`);
+  const quarters = before.prepare("SELECT type, name FROM sqlite_master WHERE name LIKE 'usage_15m%' AND type = 'trigger'").all() as { type: string; name: string }[];
+  for (const object of quarters) before.exec(`DROP TRIGGER "${object.name}"`);
   before.exec(`DROP TRIGGER usage_totals_add; DROP TRIGGER usage_totals_drop; DROP TRIGGER usage_compactions_add;
     DROP TRIGGER usage_main_calls_usage_drop; DROP TRIGGER usage_main_calls_usage_change; DROP TRIGGER usage_main_calls_add; DROP TRIGGER usage_main_calls_drop;
     DROP TABLE usage_main_calls; DROP TABLE usage_compaction_events; DROP TABLE usage_compaction_backfill;
-    DROP TRIGGER usage_quarters_add; DROP TRIGGER usage_quarters_drop; DROP TRIGGER usage_quarters_grow; DROP TABLE usage_quarters;
-    DROP TRIGGER usage_minute_add; DROP TRIGGER usage_minute_drop; DROP TRIGGER usage_minute_grow;
-    DROP TRIGGER usage_minute_session_add; DROP TRIGGER usage_minute_session_move; DROP TRIGGER usage_minute_session_drop;
-    DROP TABLE usage_minute; DROP TABLE usage_day_quarters; DROP TABLE usage_minute_scope; DROP TABLE usage_minute_sessions; DROP TABLE usage_minute_seen; DROP TABLE usage_minute_all;
-    DROP TRIGGER usage_history_add; DROP TRIGGER usage_history_grow; DROP TRIGGER usage_history_move; DROP TRIGGER usage_history_drop;
-    DROP TABLE usage_history; DROP TABLE usage_history_total; DROP TABLE usage_history_since;
+    DROP TABLE usage_15m; DROP TABLE usage_quarter_totals; DROP TABLE usage_scope_totals; DROP TABLE usage_15m_meta; DROP TABLE usage_15m_replace;
+    ALTER TABLE usage DROP COLUMN rollup_counted;
     ALTER TABLE usage DROP COLUMN calls; ALTER TABLE usage DROP COLUMN context; ALTER TABLE usage DROP COLUMN context_window;
     CREATE TRIGGER usage_totals_add AFTER INSERT ON usage BEGIN
       INSERT INTO usage_totals VALUES (NEW.session, NEW.runtime, COALESCE(NEW.model, ''), NEW.fast, 1, NEW.input, NEW.cache_read, NEW.cache_write, NEW.cache_write_long, NEW.output)
@@ -2336,7 +2282,7 @@ test("usage: a row is the calls it says, and a database from before says each wa
   store.recordUsage("/a.jsonl", { session: "a", offset: 2, model: "m" }, "claude", [call("c2", 2000, 300_000, { calls: 3, context: 20_000, window: 200_000 })] as never);
   assert.deepEqual(store.usageOfSession("a").map((g) => [g.calls, g.input]), [[5, 420_007]]);
   assert.deepEqual(store.usageGroups(0, 3000, 0).map((g) => [g.calls, g.input]), [[3, 300_000]],
-    "the new detail starts with the call recorded after the upgrade");
+    "the quarters count from the call recorded after the upgrade");
   assert.deepEqual(store.lastContexts("a", 1), []);
   assert.deepEqual([...store.compactionPoints(0)], []);
   store.close();

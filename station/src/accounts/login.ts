@@ -78,6 +78,12 @@ export type LoginJob = {
 const pageKey = (profile: string) => `profile:${profile}`;
 
 const TIMEOUT_MS = 15 * 60_000;
+/// How long Claude's and Devin's commands are given to take a pasted code and end: past it the sign-in fails, saying to
+/// start again, rather than showing 正在完成登录 till the sign-in's own 15 minutes run out.
+export const VERIFY_WAIT_MS = 90_000;
+/// What `claude auth login` says of a pasted code it would not take (2.1.321: no `#`, or nothing on one side of it); it
+/// then waits for Enter and another code, never ending by itself.
+const CLAUDE_CODE_REFUSED = "make sure the full code was copied";
 /// Variables that would make the login command talk to something other than the subscription.
 const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_HOME", "OPENAI_API_KEY", "GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY", "WINDSURF_API_KEY", "XDG_DATA_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH", "AGY_ACCOUNT", "ANTIGRAVITY_GEMINI_DIR"];
 /// The terminal Devin's login runs in: wide, so that its link is printed on one line.
@@ -112,7 +118,8 @@ export type LoginProfile = { id: string; runtime: Runtime; home: string; email?:
 
 /// A sign-in under way: its command (none for OpenCode's, which `stop` ends), and the file its stand-in browser writes
 /// the pages it opens to.
-type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; back?: string; home?: string; chose?: boolean; agy?: AgySteps };
+/// `said`: what Claude's command said since its code went in (absent before), read for its refusal.
+type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; back?: string; home?: string; chose?: boolean; agy?: AgySteps; said?: string };
 
 /// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
 /// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
@@ -573,13 +580,21 @@ export class LoginManager {
   async submitCode(profile: string, code: string, lang: Lang = stationLang()): Promise<LoginJob> {
     const running = this.jobs.get(profile);
     if (!running || (running.job.state !== "needs_code" && running.job.state !== "needs_project")) throw new Error(tr(lang, "station.login.notWaitingForCode"));
-    const clean = code.trim();
-    if (clean === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    const trimmed = code.trim();
+    if (trimmed === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    // Claude's is checked before it goes in: one it would not take is refused here, the sign-in still waiting for a code.
+    const clean = running.job.runtime === "claude" ? claudeCodeOf(trimmed, running.job.url, lang) : trimmed;
     // What it says from here on is read for what comes next (its question for the project, which was said, not again).
     if (running.agy) running.agy.after = "";
     running.stop?.();
     running.stop = undefined;
     running.job.state = "verifying";
+    if (running.job.runtime === "claude") running.said = "";
+    if (running.job.runtime === "claude" || running.job.runtime === "devin") {
+      running.stop = this.background.after(VERIFY_WAIT_MS, () => { // timer: a deadline for the command to take the code
+        if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", tr(running.lang, "station.login.verifyTimedOut"));
+      });
+    }
     const job = { ...running.job };
     await new Promise<void>((resolve, reject) => {
       const stdin = running.child?.stdin;
@@ -711,6 +726,12 @@ export class LoginManager {
       this.agyAnswer(profile, running, chunk);
       if (this.jobs.get(profile) !== running) return;
     }
+    if (running.said !== undefined && running.job.state === "verifying") {
+      const said = [...(running.said + chunk)];
+      running.said = said.slice(Math.max(0, said.length - 4000)).join("");
+      // It waits on for Enter and another code: ended here, saying what to paste.
+      if (stripAnsi(running.said).toLowerCase().includes(CLAUDE_CODE_REFUSED)) return this.finish(profile, "failed", tr(running.lang, "station.login.claudeIncompleteCode"));
+    }
     if (parse(running.job, running.output)) this.emit(profile);
   }
 
@@ -811,6 +832,39 @@ export function parse(job: LoginJob, output: string): boolean {
     }
   }
   return false;
+}
+
+/// The code to type into `claude auth login` of what was pasted (trimmed): `code#state` as its page shows it, or the
+/// address that page was at (`…/callback?code=…&state=…`), made `code#state`. Refused, saying what to paste instead,
+/// where the command would not take it (no `#`, nothing on a side of it: it says so and waits on, 2.1.321) or where its
+/// state is another sign-in's than `authUrl`'s.
+export function claudeCodeOf(clean: string, authUrl: string | null, lang: Lang): string {
+  let expected = "";
+  try {
+    expected = authUrl !== null ? (new URL(authUrl).searchParams.get("state")?.trim() ?? "") : "";
+  } catch {}
+  let pasted: URL | null = null;
+  if (/^https?:\/\//i.test(clean)) {
+    try {
+      pasted = new URL(clean);
+    } catch {}
+  }
+  let code: string;
+  let state: string;
+  if (pasted !== null) {
+    // (the authorize link itself, pasted back, says `code=true` and the state: no code of the person's)
+    const authorize = /\/authorize\/?$/.test(pasted.pathname);
+    code = authorize ? "" : (pasted.searchParams.get("code")?.trim() ?? "");
+    state = pasted.searchParams.get("state")?.trim() ?? "";
+  } else {
+    const parts = clean.split("#");
+    if (parts.length !== 2) throw new Error(tr(lang, "station.login.claudeIncompleteCode"));
+    code = parts[0]!.trim();
+    state = parts[1]!.trim();
+  }
+  if (code === "" || state === "") throw new Error(tr(lang, "station.login.claudeIncompleteCode"));
+  if (expected !== "" && state !== expected) throw new Error(tr(lang, "station.login.claudeWrongState"));
+  return `${code}#${state}`;
 }
 
 /// The code Google gave an Antigravity CLI sign-in, read off the page its browser came back to

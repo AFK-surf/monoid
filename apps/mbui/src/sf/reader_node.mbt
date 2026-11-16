@@ -1519,6 +1519,7 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
         sheet_heads: true,
         heads: false,
         top: 0.0,
+        most: None,
       }),
     }
   }

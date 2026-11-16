@@ -564,7 +564,9 @@ fn preset_dirs_node(
   e : PresetEditing,
   close : () -> Unit,
 ) -> Unit {
-  let keys = fn() {
+  // (its rows, each with what it is made of as it is made: by station, a station's head where it is said, its folders,
+  // its clones under way; 添加目录 last)
+  let rows = fn() {
     let dirs = e.dirs.get()
     let clones = e.clones.get()
     let order : Array[String] = []
@@ -580,86 +582,105 @@ fn preset_dirs_node(
       }
     }
     let headed = order.length() > 1 || order.iter().any(fn(s) { s != address })
-    let out : Array[String] = []
+    let out : Array[PresetDirsRow] = []
     for s in order {
       if headed {
-        out.push("h\n" + s)
+        // (the station's name as its first folder kept it, for a station the app no longer lists)
+        let mut saved = ""
+        for d in dirs {
+          if dir_station(Some(d), address) == s {
+            saved = text(Some(d), "stationName")
+            break
+          }
+        }
+        out.push(DirsHead(s, saved))
       }
       for d in dirs {
         if dir_station(Some(d), address) == s {
-          out.push("d\n" + dir_key(Some(d)))
+          out.push(DirsDir(dir_key(Some(d)), d))
         }
       }
       for k in clones {
         if k.station == s {
-          out.push("c\n" + k.id)
+          out.push(DirsClone(k))
         }
       }
     }
-    out.push("a")
+    out.push(DirsAdd)
     out
   }
   v.box(fn(list) {
-    list.each(keys, fn(k) { k }, fn(row, item) {
-      let k = item.untracked()
-      if k == "a" {
-        // (what the dialog opens on in the window's middle: its folders are what a preset is made of first, its name
-        // the first folder's until typed; Enter there adds one, and no input method is raised over the form by touch)
-        preset_action_row(
-          row,
-          "plus",
-          fn() { @sf.t("web-main.preset.add") },
-          fn() {
-            close()
-            preset_add_open(src, address, stations, e)
-          },
-          opens=true,
-        )
-      } else if k.has_prefix("h\n") {
-        let s = k.exact_view(start=2).to_owned()
-        let saved = @signals.untracked(fn() {
-          match e.dirs.get().iter().find_first(fn(d) { dir_station(Some(d), address) == s }) {
-            Some(d) => text(Some(d), "stationName")
-            None => ""
+    // (what the stations offer by folder once, while it has any: each folder's row reads its own, told only as that one
+    // changes)
+    let offered_by = list.keyed_by(
+      fn() { if e.dirs.get().is_empty() { [] } else { offered_dirs(src, address, stations) } },
+      fn(o) { dir_key(Some(o)) },
+    )
+    list.each(rows, PresetDirsRow::key, fn(row, item) {
+      match item.untracked() {
+        DirsAdd =>
+          // (what the dialog opens on in the window's middle: its folders are what a preset is made of first, its name
+          // the first folder's until typed; Enter there adds one, and no input method is raised over the form by touch)
+          preset_action_row(
+            row,
+            "plus",
+            fn() { @sf.t("web-main.preset.add") },
+            fn() {
+              close()
+              preset_add_open(src, address, stations, e)
+            },
+            opens=true,
+          )
+        DirsHead(s, saved) => @sf.panel_heading_node(row, fn() { preset_station_name(s, saved, stations) })
+        DirsDir(at, was) => {
+          // (what it shows as: as its station offers it, where it does)
+          let one = fn() {
+            match offered_by.get(at) {
+              Some(x) => Some(x)
+              None => Some(was)
+            }
           }
-        })
-        @sf.panel_heading_node(row, fn() { preset_station_name(s, saved, stations) })
-      } else if k.has_prefix("d\n") {
-        let at = k.exact_view(start=2).to_owned()
-        guard @signals.untracked(fn() { e.dirs.get().iter().find_first(fn(d) { dir_key(Some(d)) == at }) }) is Some(was) else {
-          return
+          let path = text(Some(was), "path")
+          preset_dir_row(
+            row,
+            fn() { if text(one(), "name") != "" { text(one(), "name") } else { dir_label(path) } },
+            fn() { text(one(), "repo") },
+            fn() { text(one(), "icon") },
+            fn() { dir_note(one(), false) },
+            end=fn(x) {
+              preset_drop_node(x, fn() {
+                e.dirs.set(e.dirs.untracked().filter(fn(d) { dir_key(Some(d)) != at }))
+              })
+            },
+          )
         }
-        // (what it shows as: as its station offers it, where it does)
-        let one = fn() {
-          let offered = offered_dirs(src, address, stations)
-          match offered.iter().find_first(fn(o) { dir_key(Some(o)) == at }) {
-            Some(x) => Some(x)
-            None => Some(was)
-          }
-        }
-        let path = text(Some(was), "path")
-        preset_dir_row(
-          row,
-          fn() { if text(one(), "name") != "" { text(one(), "name") } else { dir_label(path) } },
-          fn() { text(one(), "repo") },
-          fn() { text(one(), "icon") },
-          fn() { dir_note(one(), false) },
-          end=fn(x) {
-            preset_drop_node(x, fn() {
-              e.dirs.set(e.dirs.untracked().filter(fn(d) { dir_key(Some(d)) != at }))
-            })
-          },
-        )
-      } else {
-        let cid = k.exact_view(start=2).to_owned()
-        guard @signals.untracked(fn() { e.clones.get().iter().find_first(fn(x) { x.id == cid }) }) is Some(c) else {
-          return
-        }
-        preset_clone_row(row, src, c, e)
+        DirsClone(c) => preset_clone_row(row, src, c, e)
       }
     })
   })
   |> ignore
+}
+
+///|
+/// A row of a preset's folders (preset_dirs_node's), with what it is made of as it is made: a station's head (its
+/// address, its name as its first folder kept it), a folder (its key, as it was given), a clone under way, 添加目录.
+#derive(Eq)
+priv enum PresetDirsRow {
+  DirsHead(String, String)
+  DirsDir(String, Json)
+  DirsClone(PresetClone)
+  DirsAdd
+}
+
+///|
+/// A row's key, as the list's were: a head by its station, a folder by its key, a clone by its id.
+fn PresetDirsRow::key(self : PresetDirsRow) -> String {
+  match self {
+    DirsHead(s, _) => "h\n" + s
+    DirsDir(at, _) => "d\n" + at
+    DirsClone(k) => "c\n" + k.id
+    DirsAdd => "a"
+  }
 }
 
 ///|

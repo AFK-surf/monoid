@@ -13,7 +13,7 @@ import { mbReaderBinary } from "../read/mb-reader.ts";
 import { SessionsProgram, type ProgramUser } from "./mb-program.ts";
 import { platform } from "../platform/index.ts";
 import { describeExit, endRunner, groupAlive } from "./process.ts";
-import { leave, listening, startRunner, type RunnerInfo } from "./runner.ts";
+import { leave, startRunner, type RunnerInfo } from "./runner.ts";
 
 type Json = any;
 
@@ -385,9 +385,9 @@ export class HostedProcess {
     return p;
   }
 
-  /// Takes up the process a runner keeps, its turn and live steps as `turn` and `live` say.
+  /// Takes up the process a runner keeps, its turn and live steps as `turn` and `live` say: one its caller found
+  /// listening, off the station's thread (process.ts `findRunner`, codex.ts `leftRunners`).
   static adopt(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json) {
-    if (!listening(info)) throw new Error(`runner ${info.id} has no socket`);
     const p = new HostedProcess(host, info, options, turn, live);
     host.attach(p);
     return p;

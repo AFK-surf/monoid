@@ -787,7 +787,7 @@ fn screen_row_icon(sv : Json?) -> String {
 #warnings("-unused_value")
 fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
   let address = text(@signals.untracked(s), "station")
-  st_section_node(b, fn() { all_screens_title }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
+  st_section_node(b, fn() { all_screens_title(core) }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
     @sf.group_node(sec, fn(g) {
       g.each(fn() { all_screens_rows(core, address, s()) }, fn(k) { k }, fn(row, k) {
         all_screens_row_node(row, core, here, s, k.untracked())
@@ -797,7 +797,14 @@ fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : 
 }
 
 ///|
-let all_screens_title : String = "屏幕、浏览器与终端"
+/// Its heading: 屏幕、浏览器与终端 where its terminals are offered (a `beta` feature: core's terminals_on), else 屏幕与浏览器.
+fn all_screens_title(core : Core) -> String {
+  if (core.terminals_on)() {
+    @sf.t("web-pages.stations.screensAndTerminals")
+  } else {
+    @sf.t("web-pages.stations.screensTitle")
+  }
+}
 
 ///|
 /// Its screens' topic (`screens`).
@@ -928,7 +935,7 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
 fn all_screens_block(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
   let address = text(@signals.untracked(s), "station")
   if key == "allScreens" {
-    @sf.section_heading_node(b, fn() { all_screens_title }, title_after=fn(l) {
+    @sf.section_heading_node(b, fn() { all_screens_title(core) }, title_after=fn(l) {
       l.show(fn() { all_screens_count(core, address, s) > 0 }, fn(n) {
         @sf.words_node(n, fn() { all_screens_count(core, address, s).to_string() }, fn() { st_count }) |> ignore
       })

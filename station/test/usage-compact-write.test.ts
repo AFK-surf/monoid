@@ -15,7 +15,7 @@ test("keeping a main call's recent context does not add a page write to each tra
     const store = Store.open(path);
     try {
       store.insertSession({ key: "s", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "s", ws: "A", createdAt: 0, lastActiveAt: 0 });
-      installCompactUsage(store.db, () => 0);
+      installCompactUsage(store.db);
       retireUsageIndexes(store.db);
       const owner = { turn: null, thread: null, person: "p", profile: "cc" };
       const record = (n: number) => store.recordUsage("/s", { session: "s", offset: n + 1, model: "m" }, "claude", [[{
@@ -53,7 +53,7 @@ test("recent context follows model changes and is not kept after its calls are e
         ON CONFLICT (session, runtime, model, fast) DO UPDATE SET calls = calls + excluded.calls,
           input = input + excluded.input, output = output + excluded.output;
       END;`);
-    installCompactUsage(store.db, () => 0);
+    installCompactUsage(store.db);
     retireUsageIndexes(store.db);
     record(1, call("one", 1, "a"));
     record(2, call("two", 2, "b", true));
@@ -90,7 +90,7 @@ test("an incremental old total retains its context when its last source row is r
     const positional = previous.replace(/INSERT INTO usage_totals\s*\([^)]*\)/, "INSERT INTO usage_totals");
     assert.notEqual(positional, previous);
     store.db.exec(`DROP TRIGGER usage_totals_source_aggregate_add; ${positional}`);
-    installCompactUsage(store.db, () => 0);
+    installCompactUsage(store.db);
     retireUsageIndexes(store.db);
     store.recordUsage("/s", { session: "s", offset: 2, model: "m" }, "claude", [[call("new", 2), owner]]);
     assert.deepEqual(store.lastContexts("s", 5).map((c) => c.at), [2]);
@@ -114,7 +114,7 @@ test("an edited context is not replaced by a delayed call", () => {
   const record = (id: string, at: number) => store.recordUsage("/s", { session: "s", offset: at, model: "m" }, "claude", [[call(id, at), owner]]);
   try {
     store.insertSession({ key: "s", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "s", ws: "A", createdAt: 0, lastActiveAt: 0 });
-    installCompactUsage(store.db, () => 0);
+    installCompactUsage(store.db);
     retireUsageIndexes(store.db);
     record("first", 100);
     record("last", 200);
@@ -138,7 +138,7 @@ test("a saved newer context is not treated as compacted by older late calls", ()
     store.ranIn("s", "r", "cc");
     store.recordUsage("/s", { session: "s", offset: 1, model: "m" }, "claude", [[{ ...call("saved", now + 1_000, 150_000), cacheWrite: 5 }, owner("saved")]]);
     keepUsage(store, "s", true);
-    installCompactUsage(store.db, () => now + 2_000);
+    installCompactUsage(store.db);
     retireUsageIndexes(store.db);
     store.recordUsage("/s", { session: "s", offset: 2, model: "m" }, "claude", [
       [call("late-before", now + 100, 180_000), owner("late")], [call("late-after", now + 200, 20_000), owner("late")],
@@ -166,7 +166,7 @@ test("a call tied with a saved context is not ordered without its old id", () =>
     store.ranIn("s", "r", "cc");
     store.recordUsage("/s", { session: "s", offset: 1, model: "m" }, "claude", [[call("saved", now + 1_000), owner]]);
     keepUsage(store, "s", true);
-    installCompactUsage(store.db, () => now + 2_000);
+    installCompactUsage(store.db);
     retireUsageIndexes(store.db);
     store.recordUsage("/s", { session: "s", offset: 2, model: "m" }, "claude", [[call("tied", now + 1_000), owner]]);
     assert.equal(store.savedCompactContext("s"), null);

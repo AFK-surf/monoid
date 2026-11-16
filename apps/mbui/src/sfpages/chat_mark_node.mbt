@@ -224,9 +224,9 @@ pub fn row_aside_node(
       @sf.style_node(g, fn() { aside_agents })
       g.says(By(fn() { Some(@view.said(Image, label=said())) })) |> ignore
       let key = fn(x : @sfbase.RowAgent) { x.maker + "\u{1}" + x.runtime }
-      g.each(fn() { groups().iter().take(aside_most).map(key).collect() }, fn(k) { k }, fn(slot, k) {
-        let k = k.untracked()
-        guard groups().search_by(fn(x) { key(x) == k }).map(fn(i) { groups()[i] }) is Some(x) else { return }
+      // (each mark its own group, given it by the list: its maker and runtime are its key)
+      g.each(fn() { groups().iter().take(aside_most).collect() }, key, fn(slot, x) {
+        let x = x.untracked()
         @sf.style_node(slot, fn() { aside_agent }, in_row=true)
         @sf.maker_mark_node(slot, x.maker, x.runtime, @sf.theme().chat_list.agent_mark) |> ignore
       })
@@ -248,11 +248,13 @@ pub fn row_aside_node(
           people
         }
       }
-      g.each(fn() { shown().map(fn(p) { p.id }) }, fn(id) { id }, fn(slot, id) {
-        let id = id.untracked()
-        let blank : @sfbase.Person = { id, email: "", name: "", display: "", picture: "", mine: false }
-        let p = fn() { shown().iter().find_first(fn(q) { q.id == id }).unwrap_or(blank) }
-        let first = fn() { shown().search_by(fn(q) { q.id == id }) == Some(0) }
+      // (the first shown, by member: a change of it tells the two faces it concerns)
+      let first_is = g.selected(fn() { shown().get(0).map(fn(q) { q.id }) })
+      // (each face its own person, given it by the list: told only as that one changes)
+      g.each(shown, fn(q) { q.id }, fn(slot, person) {
+        let id = person.untracked().id
+        let p = fn() { person.get() }
+        let first = fn() { first_is(id) }
         let starter = fn() { item().people.length() > 1 && p().id == item().creator }
         let f = slot
         f.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore

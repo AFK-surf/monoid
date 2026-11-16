@@ -23,8 +23,9 @@
 // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { appendFile, link, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+import { appendFile, link, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
+import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
@@ -33,17 +34,18 @@ import { log } from "../ops/log.ts";
 import { PREVIOUS_LIMIT_MS } from "../ops/previous.ts";
 import { knownOf } from "../connects/remote.ts";
 import type { Described, Known } from "../connects/remote.ts";
-import { CHAT_TABLES, BY_N, MARKS, type ChatTable, type Counts, type ImportCtx, afterOf, newCtx } from "../store/handover.ts";
+import { CHAT_TABLES, BY_N, MARKS, USAGE_TABLES, type ChatTable, type Counts, type HandedUsage, type ImportCtx, afterOf, handedStations, handedWithUsage, hasUsage, importHandedUsage, newCtx, threadOfRef, threadRefs, type ThreadRef } from "../store/handover.ts";
+import { usageNow } from "../read/usage.ts";
 import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { STILLFAIL_SURFACE, comingWs, handedWs } from "../store/rows.ts";
-import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, listFile } from "./carry.ts";
+import { type CarriedJob, type CarryIndex, type Gathered, carriedPlace, cliKept, listFile } from "./carry.ts";
 import { HASH, STATION, WORKSPACE } from "./format.ts";
 import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
-import { flushOnce, flushesOnce, lackingIn, receiveFile, sendGathered } from "./sending.ts";
+import { PACK_ENCODING, flushOnce, flushesOnce, lackingIn, receiveFile, receivePack, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
 import type { Told } from "../move/told.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
@@ -53,8 +55,9 @@ type Json = any;
 /// How long a hand-over waits for a busy chat's turn to end, where it was asked to wait.
 export const TURN_WAIT_MS = 10 * 60_000;
 
-/// What a chat's station sends after it was shown where it went: what was said there meanwhile.
-const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries"];
+/// What a chat's station sends after it was shown where it went: what was said there meanwhile, and what its agents
+/// were counted to have spent as it went (the usage counter reads a transcript a while after its turn ended).
+const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries", ...USAGE_TABLES];
 
 /// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
 /// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
@@ -123,6 +126,9 @@ export type Out = {
   held?: boolean;
   /// The move it is part of was asked to stop: given up at its next step, until it is gone (`abandon`).
   abandoned?: boolean;
+  /// The station it goes to takes its calls (`handover.begin`'s `usage`): they go with its rows; and each session's last
+  /// call sent (its `at` and id), what is sent after it.
+  usage?: boolean; usageSent?: Record<string, [number, string] | null>;
 };
 /// A step of one on the station it goes to: being put in (`coming`), shown (`shown`), taken out (`dropped`).
 /// `stoppedFor`: it arrives stopped, waiting for that; `bindings`: the single-session connects (as known here) bound to
@@ -202,6 +208,8 @@ export type HandoverDeps = {
   lackMost?: number;
   /// The most bytes one `handover.lacking` hashes here (HASH_MOST; a test's smaller).
   hashMost?: number;
+  /// The most files and bytes of one pack sent from here (sending.ts PACK_MAX_FILES, PACK_MAX_BYTES; a test's smaller).
+  packMost?: { files?: number; bytes?: number };
   /// The work done here of a hand-over's files: gathered, placed; `drop`, a test's: waited for before a drop takes its
   /// files out.
   work?: { gather: typeof gatherSoon; place: typeof placeSoon; drop?: (id: string) => Promise<void> };
@@ -271,6 +279,9 @@ const inAside = (data: string, id: string) => join(dir(data), "in", id, "aside")
 /// The linked worktrees git made for a hand-over coming here, a line each (retire.ts `MadeGit`).
 const inGits = (data: string, id: string) => join(dir(data), "in", id, "gits.jsonl");
 const scratch = (data: string, id: string) => join(dir(data), "out", id);
+/// How far the calls of the chats handed from here before their calls went with them were sent, by the station they
+/// went to: the last session sent (`#syncHandedUsage`).
+const usageSyncedFile = (data: string) => join(dir(data), "usage-synced.json");
 
 async function writeJson(path: string, v: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -520,6 +531,7 @@ export class Handover {
       } else if (o.step === "gone" || (o.step === "failed" && o.dropOwed)) this.#go(o);
     }
     void this.#mend();
+    this.#syncHandedUsage();
   }
 
   /// Once the process before is gone and the records read again (`previous`), for what a person or another station
@@ -627,15 +639,15 @@ export class Handover {
     this.#settledIn.clear();
     for (const stop of this.#again.values()) stop();
     this.#again.clear();
-    await Promise.all([...this.#runs.values()].map((p) => p.catch(() => {})));
+    await Promise.all([...this.#runs.values(), ...this.#usageRuns.values()].map((p) => p.catch(() => {})));
   }
 
   /// What is under way brought to rest (a test's).
   async settle(): Promise<void> {
     for (;;) {
       await this.#d.told.settle();
-      if (this.#runs.size === 0 && this.#drops.size === 0) return;
-      await Promise.all([...this.#runs.values(), ...[...this.#drops.values()].map((d) => d.files)].map((p) => p.catch(() => {})));
+      if (this.#runs.size === 0 && this.#drops.size === 0 && this.#usageRuns.size === 0) return;
+      await Promise.all([...this.#runs.values(), ...this.#usageRuns.values(), ...[...this.#drops.values()].map((d) => d.files)].map((p) => p.catch(() => {})));
     }
   }
 
@@ -875,6 +887,9 @@ export class Handover {
       this.#given(o);
       this.#mark(o, "begin");
       begun = await this.#beginThere(o, opts.stoppedFor ?? null);
+      // (one from before calls went with a chat takes none: they stay here, and go as it is heard from once it does,
+      // `#syncHandedUsage`)
+      o.usage = begun?.usage === true;
       this.#mark(o, "first");
       await this.#files(o, begun, opts.progress, false);
       this.#mark(o, "turn");
@@ -989,13 +1004,21 @@ export class Handover {
           if (next.length >= rest.length) break;
           rest = next;
         }
-        return { lacking: [...lacking] };
+        // (whether it takes packs: a station from before says nothing, and is sent a file a request)
+        return { lacking: [...lacking], ...(answer?.pack === PACK_ENCODING ? { pack: PACK_ENCODING } : {}) };
       },
       put: async (hash, bytes, path, size) => {
         const answer = await d.ask(o.to, withBytes({ method: "handover.put", workspace: o.ws, origin: here, id: o.id, name: hash }, bytes));
         if (carriedPlace(d.data, path)) o.sentBytes = (o.sentBytes ?? 0) + size;
         return answer;
       },
+      // (a pack of one names its file, as a file's request does)
+      putPack: (entries, bytes, strict) => d.ask(o.to, withBytes({
+        method: "handover.put", workspace: o.ws, origin: here, id: o.id, pack: PACK_ENCODING, strict, count: entries.length,
+        ...(entries.length === 1 ? { name: entries[0]!.hash } : {}),
+      }, bytes)),
+      took: (f) => void (carriedPlace(d.data, f.path) && (o.sentBytes = (o.sentBytes ?? 0) + f.size)),
+      ...(d.packMost !== undefined ? { packMost: d.packMost } : {}),
       most: d.lackMost ?? LACK_MOST,
       // (what it lacks there asked first only where all of it might not fit: else no more is asked than it sends)
       ...(held || typeof begun?.free !== "number" || begun.free - (g.bytes + Math.ceil(g.bytes / 20)) >= floor ? {} : { adds: fits }),
@@ -1064,6 +1087,8 @@ export class Handover {
     // (where it went, for what its platforms say; still in sight here, held, until it is shown there: a device is
     // pointed there only once it is there to be read, `#afterGone`)
     d.store.goneTo(o.keys, o.to, o.there);
+    // (gone without its calls, to a station from before they went: they go once it takes them, as it is heard from)
+    if (o.usage !== true) await this.#usageAgainFor(o.to).catch((e) => log.warn("handover", "the calls of chats handed before not looked at again", { to: o.to.slice(0, 12), error: (e as Error).message }));
     await d.went?.(o.keys);
     await rm(scratch(d.data, o.id), { recursive: true, force: true });
     // (what each step took, `gone` its own work here to now: the show's is the other's, said in its line)
@@ -1084,11 +1109,14 @@ export class Handover {
       else if (table === "entries" || table === "letters") for (const r of rows) sent[table][String(r.thread)] = (sent[table][String(r.thread)] ?? 0) + 1;
       else if (table !== "threads") sent.rows[table] = (sent.rows[table] ?? 0) + rows.length;
     };
+    // (the last row sent: of the page before where the last is empty)
     const pages = async (table: ChatTable, of: number | string, after: Json = null) => {
+      let last: Json;
       for (;;) {
         const rows = store.chatPage(table, of, after, 500, o.keys);
         await page(table, rows);
-        if (rows.length < 500 || table === "threads" || table === "sessions" || table === "thread_sessions" || table === "opened_chats") return rows.at(-1);
+        last = rows.at(-1) ?? last;
+        if (rows.length < 500 || table === "threads" || table === "sessions" || table === "thread_sessions" || table === "opened_chats" || table === "session_usage") return last;
         after = afterOf(table, rows.at(-1)!);
       }
     };
@@ -1109,6 +1137,19 @@ export class Handover {
     }
     for (const k of o.keys) {
       for (const table of (from === null ? ["turns", "runtime_sessions", "pins", "opened_chats", "deliveries"] : ["deliveries"]) as ChatTable[]) await pages(table, k);
+    }
+    // (its calls, after its threads: those they name are known there by then. After it went, those counted since)
+    if (o.usage === true) {
+      const was = o.usageSent ?? {};
+      const last: Record<string, [number, string] | null> = {};
+      for (const k of o.keys) {
+        const after = from === null ? null : (was[k] ?? null);
+        const end = await pages("usage", k, after);
+        last[k] = end === undefined ? after : [Number(end.at), String(end.id)];
+        await pages("usage_files", k);
+        await pages("session_usage", k);
+      }
+      o.usageSent = last;
     }
     void CHAT_TABLES;
     return sent;
@@ -1146,7 +1187,8 @@ export class Handover {
     if (!o.caught) {
       // (only where something was taken: one page a thread and session at most to know it)
       const since = Object.entries(o.sent).some(([t, was]) => d.store.chatPage("entries", Number(t), was.entries, 1, o.keys).length > 0 || d.store.chatPage("letters", Number(t), was.letters, 1, o.keys).length > 0)
-        || o.keys.some((k) => d.store.chatPage("deliveries", k, null, 1, o.keys).length > 0);
+        || o.keys.some((k) => d.store.chatPage("deliveries", k, null, 1, o.keys).length > 0)
+        || (o.usage === true && o.keys.some((k) => d.store.chatPage("usage", k, o.usageSent?.[k] ?? null, 1).length > 0));
       if (since) {
         await this.#sendRows(o, ask, o.sent);
         await ask({ method: "handover.show", sends: [] });
@@ -1245,6 +1287,7 @@ export class Handover {
     // (the process before not gone yet: `start` tells what is owed, once it is)
     if (!this.#ready) return;
     void this.#mend(station);
+    this.#syncHandedUsage(station);
     for (const id of this.#unsure) {
       const i = this.#ins.get(id);
       if (i === undefined || i.step !== "coming") this.#unsure.delete(id);
@@ -1308,6 +1351,8 @@ export class Handover {
           const i = this.#ins.get(id);
           return { held: i !== undefined && i.origin === peer && i.step !== "dropped" && i.dropping !== true && !this.#dropping.has(id) };
         }
+        // (the calls of a chat handed here before they went with it: no hand-over of its own)
+        if (request.method === "handover.usage") return this.#takeUsage(peer, ws, request);
         const i = this.#ins.get(id);
         // (answered as it is marked, its rows out: its files are taken out after what it was doing to them, by this
         // station itself, as its next process starts where this one stops first; the asker needs nothing more of it)
@@ -1359,14 +1404,26 @@ export class Handover {
                 else missing.add(f.hash);
               }
               // (one unchecked is said lacking too: an asker from before sends it rather than take it as in place)
+              // (`pack`: what it lacks it takes a pack at a time, sending.ts `receivePack`)
               return {
                 lacking: hashes.filter((h: string) => lacking.has(h) && (olderOut || missing.has(h) || unchecked.has(h) || !placed.has(h))),
                 ...(unchecked.size > 0 ? { unchecked: [...unchecked].filter((h) => !missing.has(h)) } : {}),
+                pack: PACK_ENCODING,
               };
             }
             case "handover.prune":
               return await this.#step(peer, i, request, () => this.#serialIn(i, () => this.#prune(i)));
             case "handover.put": {
+              // (a pack: its files taken as they come, each checked as one is; `fail`, a test's, as each begins)
+              if (request.pack === PACK_ENCODING) {
+                const named = request.name === undefined ? undefined : String(request.name);
+                if (bytes === null || (named !== undefined && !HASH.test(named))) throw new Refused(why("badRequest", { detail: "not a pack" }));
+                await receivePack(inFiles(this.#d.data, id), bytes as Bytes, {
+                  strict: request.strict !== false, flush: this.#flush === null, ...(named !== undefined ? { name: named } : {}),
+                  ...(typeof request.count === "number" ? { count: request.count } : {}), onFile: () => this.#d.fail?.("put"),
+                });
+                return { ok: true };
+              }
               const name = String(request.name ?? "");
               if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
               this.#d.fail?.("put");
@@ -1389,6 +1446,8 @@ export class Handover {
               if (page !== null && i.page === page) return { ok: true };
               this.#d.fail?.("import");
               this.#d.store.importRows(i.ctx, table, request.rows, i.step === "coming" ? i.id : undefined);
+              // (calls counted there after it was shown here: its usage as all its calls here say it)
+              if (i.step === "shown" && USAGE_TABLES.includes(table)) this.#usageOf(i.keys, false);
               this.#d.fail?.("imported");
               if (page !== null) i.page = page;
               await this.#saveIn(i);
@@ -1523,7 +1582,8 @@ export class Handover {
     this.#holdIn(i);
     await this.#saveIn(i);
     const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null, total: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
-    return { ok: true, free: room.free, total: room.total ?? null, git };
+    // (`usage`: its calls are taken with its rows, and a chat's handed before as `handover.usage` brings them)
+    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true };
   }
 
   async #place(i: In, carry: string): Promise<Json> {
@@ -1544,9 +1604,13 @@ export class Handover {
     return { ok: true, placed: placed.placed, missing: placed.missing };
   }
 
-  /// What the chat's room and transcripts here hold that the lists sent no longer name, removed: this station's own
-  /// gathering of its sessions (as the rows put in say them) against the lists sent, so nothing is touched that a
-  /// gathering leaves out (what a build makes again, what git ignores) nor anything outside its room.
+  /// What the chat's room here holds that the lists sent no longer name, removed: this station's own gathering of its
+  /// sessions (as the rows put in say them) against the lists sent, so nothing is touched that a gathering leaves out
+  /// (what a build makes again, what git ignores) nor anything outside its room; and so what an Antigravity CLI keeps of
+  /// its conversations (carry.ts `cliKept`), by that gathering (under the profile it runs on here) and by what this
+  /// hand-over placed (`placed.txt`: under the profile it ran on there, which a login lent here names otherwise). A
+  /// first pass sends a conversation's `.db-wal` as it is written; its CLI ended, the second finds it checkpointed into
+  /// the `.db` and gone: left beside the newer `.db`, the CLI replayed it into a malformed database (2026-11-16).
   async #prune(i: In): Promise<Json> {
     if (i.carry === null) return { ok: true, removed: 0 };
     const files = inFiles(this.#d.data, i.id);
@@ -1574,6 +1638,17 @@ export class Handover {
     const g = await this.#work.gather(this.#d.data, join(this.#d.data, "stillfail.db"), i.ws, false, mine, undefined, null, i.keys);
     const own = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
     let removed = 0;
+    const cli = (path: string) => {
+      const rel = relative(this.#d.data, path);
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) && cliKept(rel.split(sep));
+    };
+    const prune = async (path: string) => {
+      // (put aside, not removed: one that is dropped puts it back)
+      if (!(await this.#putAside(i, path))) return;
+      removed++;
+      // (a conversation's `brain/<id>/` left empty goes too; a room's directories stay as they are)
+      if (cli(path)) await this.#emptied(dirname(path));
+    };
     for (const s of own.sessions) {
       for (const line of (await readFile(s.at, "utf8").catch(() => "")).split("\n")) {
         if (line === "") continue;
@@ -1583,13 +1658,23 @@ export class Handover {
         } catch {
           continue;
         }
-        if (named.has(path) || !path.startsWith(s.room + sep)) continue;
+        if (named.has(path) || !(path.startsWith(s.room + sep) || cli(path))) continue;
         // (a linked worktree's `.git`, which this station's git made as the chat's worktree was added here, names a
         // repository of this station's: the lists sent never name it, and it stays)
         if (basename(path) === ".git") continue;
-        // (put aside, not removed: one that is dropped puts it back)
-        await this.#putAside(i, path);
-        removed++;
+        named.add(path);
+        await prune(path);
+      }
+    }
+    // (what this hand-over placed of a CLI's conversation that the lists sent now no longer name: a line a file placed,
+    // `<path>\t<hash, size, time>`, read a line at a time, as a room's are as many)
+    const placed = join(dir(this.#d.data), "in", i.id, "placed.txt");
+    if (await stat(placed).then(() => true, () => false)) {
+      for await (const line of createInterface({ input: createReadStream(placed), crlfDelay: Infinity })) {
+        const path = line.slice(0, line.indexOf("\t"));
+        if (path === "" || named.has(path) || !cli(path)) continue;
+        named.add(path);
+        await prune(path);
       }
     }
     await rm(mine, { recursive: true, force: true });
@@ -1613,7 +1698,10 @@ export class Handover {
     // (what it waits for is where it came from)
     if (i.stoppedFor) await this.#d.arrivedStopped?.(i.keys, { ...i.stoppedFor, at: i.origin }, i.ws);
     for (const [connect, key] of Object.entries(i.bindings ?? {})) if (this.#d.store.binding(connect) === null) this.#d.store.setBinding(connect, key);
+    // (its usage as all its calls here say it, those it came with and any it had here before: told as it is shown)
+    this.#usageOf(i.keys, true);
     this.#d.store.showChat(i.keys, i.ws === home ? null : i.ws);
+    if ((i.ctx.counts.rows.usage ?? 0) > 0) this.#d.store.usageChanged(i.keys);
     await this.#endOuts(i.keys);
     await this.#trimIns(i);
     const from = this.#d.roster(i.ws)?.find((s) => s.id === i.origin)?.name || i.origin.slice(0, 12);
@@ -1637,6 +1725,190 @@ export class Handover {
     const ms = { ...(i.spent ?? {}) };
     log.info("handover", "a chat handed here goes on here", { id: i.id, origin: i.origin, keys: i.keys.length, ms, total: Math.round(this.#d.fibers.now() - i.at) });
     return { ok: true };
+  }
+
+  /// Sessions `keys`' usage as all their calls here say it (usage/module.ts `keepUsage`): the calls a chat came with and
+  /// any it had here before, added up, its context the latest call's. One with no call here keeps what it came with.
+  /// `quiet`: not told as a change of the session.
+  #usageOf(keys: readonly string[], quiet: boolean): void {
+    for (const k of keys) {
+      if (!hasUsage(this.#d.store.db, k)) continue;
+      const usage = usageNow(this.#d.store, k);
+      if (usage !== null) this.#d.store.setSessionUsage(k, usage, quiet);
+    }
+  }
+
+  // ── the calls of chats handed away before their calls went with them ──
+
+  /// The stations caught up with (none left to send them), and those being sent to now (one run a station).
+  readonly #usageCaughtUp = new Set<string>();
+  readonly #usageRuns = new Map<string, Promise<void>>();
+  /// The last session sent to each station (`usageSyncedFile`), read once; its writes one after another.
+  #usageSynced: Promise<Record<string, string>> | null = null;
+  #usageSaving: Promise<void> = Promise.resolve();
+
+  /// The calls kept here of the chats handed from here to `station` (every station chats went to, where none is
+  /// named) before they went with them (a station from before, the real run of 2026-11-16: 2,489 chats' calls left on
+  /// Office-VM-1, none on Office-Host-2), sent there: as this station starts and as that one is heard from, a chat at a
+  /// time from where the last run left off, each a page of calls at a time, put in there only where it is the chat's
+  /// (`handover.usage`). Nothing asked where none of them has a call; one that does not take them yet (a station from
+  /// before) ends the run, to be taken up as it is heard from again.
+  #syncHandedUsage(station?: string): void {
+    if (this.#closed || !this.#ready) return;
+    if (station !== undefined && (this.#usageCaughtUp.has(station) || this.#usageRuns.has(station))) return;
+    for (const to of station !== undefined ? [station] : handedStations(this.#d.store.db)) {
+      if (to === this.#d.here() || this.#usageCaughtUp.has(to) || this.#usageRuns.has(to)) continue;
+      const run = this.#usageWith(to)
+        .catch((e) => log.warn("handover", "the calls of chats handed before not sent", { to: to.slice(0, 12), error: (e as Error).message }))
+        .finally(() => void this.#usageRuns.delete(to));
+      this.#usageRuns.set(to, run);
+    }
+  }
+
+  /// The stations whose chats are looked at again from the first (`#usageAgainFor`): taken up by the run to them.
+  readonly #usageAgain = new Set<string>();
+
+  #usageCursor(): Promise<Record<string, string>> {
+    return (this.#usageSynced ??= readFile(usageSyncedFile(this.#d.data), "utf8").then((t): Record<string, string> => {
+      const v = JSON.parse(t);
+      return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, string>) : {};
+    }).catch(() => ({} as Record<string, string>)));
+  }
+
+  /// How far the calls were sent to each station, written (one write after another).
+  async #saveUsageCursor(synced: Record<string, string>): Promise<void> {
+    const save = this.#usageSaving.then(() => writeJson(usageSyncedFile(this.#d.data), synced));
+    this.#usageSaving = save.catch(() => {});
+    await save;
+  }
+
+  /// A chat went to `to` without its calls (a station from before): its chats looked at again from the first, as the
+  /// sessions' keys are in no order of when they went (one before where the last run stopped would be passed for
+  /// good). What is there already is not put in again (`putUsage`): only what lacks there is sent and taken.
+  async #usageAgainFor(to: string): Promise<void> {
+    this.#usageCaughtUp.delete(to);
+    this.#usageAgain.add(to);
+    const synced = await this.#usageCursor();
+    if (synced[to] === undefined) return;
+    delete synced[to];
+    await this.#saveUsageCursor(synced);
+  }
+
+  async #usageWith(to: string): Promise<void> {
+    const synced = await this.#usageCursor();
+    let sent = 0;
+    for (;;) {
+      if (this.#closed) return;
+      if (this.#usageAgain.delete(to) && synced[to] !== undefined) {
+        delete synced[to];
+        await this.#saveUsageCursor(synced);
+      }
+      const batch = handedWithUsage(this.#d.store.db, to, typeof synced[to] === "string" ? synced[to] : "", 10);
+      if (batch.length === 0) break;
+      for (const h of batch) {
+        if (this.#closed) return;
+        if (!(await this.#sendUsage(h, to, h.there, 0))) return;
+        // (looked at again from the first meanwhile: not past this one)
+        if (this.#usageAgain.has(to)) break;
+        synced[to] = h.session;
+        sent++;
+        await this.#saveUsageCursor(synced);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+    this.#usageCaughtUp.add(to);
+    if (sent > 0) log.info("handover", "the calls of chats handed before sent", { to: to.slice(0, 12), chats: sent });
+  }
+
+  /// The calls of chat `h` handed from here sent to `to` (`there`: its home thread there), a page at a time: whether
+  /// that station took them, or said they are not its (none of the chat's there: where it went on from there, followed
+  /// there, `hop` the stations followed); false where it did not answer them (not reached, from before).
+  async #sendUsage(h: HandedUsage, to: string, there: number | null, hop: number): Promise<boolean> {
+    const d = this.#d;
+    const here = d.here();
+    const ws = h.ws ?? d.home();
+    if (here === null || ws === null || !WORKSPACE.test(ws)) return true;
+    // (one that went with its calls: there already)
+    const latest = this.#outsOf.get(h.session)?.[0];
+    if (hop === 0 && latest !== undefined && latest.to === to && latest.usage === true && (latest.step === "gone" || latest.step === "done")) return true;
+    const id = `usage-${createHash("sha256").update(h.session).digest("hex").slice(0, 32)}`;
+    const db = d.store.db;
+    const connect = d.store.getSession(h.session)?.connect ?? "";
+    let usageAfter: Json = null;
+    let filesAfter: Json = null;
+    let usageDone = false;
+    let filesDone = false;
+    for (;;) {
+      const usage: Json[] = usageDone ? [] : d.store.chatPage("usage", h.session, usageAfter, 500);
+      const files: Json[] = filesDone ? [] : d.store.chatPage("usage_files", h.session, filesAfter, 500);
+      usageDone = usage.length < 500;
+      filesDone = files.length < 500;
+      if (usage.length > 0) usageAfter = afterOf("usage", usage.at(-1)!);
+      if (files.length > 0) filesAfter = afterOf("usage_files", files.at(-1)!);
+      const last = usageDone && filesDone;
+      const threads: ThreadRef[] = threadRefs(db, h.session, usage.flatMap((r: Json) => (typeof r.thread === "number" ? [r.thread as number] : [])));
+      const used = [...new Set([connect, ...threads.map((t) => t.connect ?? "")].filter((c) => c !== ""))];
+      const connects = connectsThere(used.filter((c) => !isInternal(c)), used, here, to);
+      const accounts = Object.fromEntries([...new Set<string>(usage.flatMap((r: Json) => (typeof r.profile === "string" ? [r.profile as string] : [])))].map((p) => [p, d.accounts.of(p)]));
+      const sessionUsage = last ? ((d.store.chatPage("session_usage", h.session, null)[0]?.usage as string | undefined) ?? null) : null;
+      let answer: Json;
+      try {
+        answer = await d.ask(to, { method: "handover.usage", workspace: ws, origin: here, id, session: h.session, thread: h.thread, there, threads, connects, accounts, dataDir: d.data, usage, files, sessionUsage, last });
+      } catch (e) {
+        log.info("handover", "the calls of a chat handed before not taken there yet", { to: to.slice(0, 12), error: (e as Error).message });
+        return false;
+      }
+      if (answer?.skipped === true) {
+        const next = typeof answer.forwardedTo === "string" && STATION.test(answer.forwardedTo) ? answer.forwardedTo : null;
+        // (gone on from there: followed, two stations at most; one that does not take them is left, not waited for)
+        if (next !== null && next !== here && hop < 2 && !(await this.#sendUsage(h, next, typeof answer.there === "number" ? answer.there : null, hop + 1))) {
+          log.info("handover", "the calls of a chat handed on from where it went not sent", { to: next.slice(0, 12) });
+        }
+        return true;
+      }
+      if (last) return true;
+    }
+  }
+
+  /// A page of the calls of a chat handed here before they went with it, put in where the chat is this station's now:
+  /// its threads found here (its home by `there`, the rest by their place), its accounts as they are here, its usage
+  /// as all its calls here say it (none here: as that station kept it, where none is kept here). Where it is not
+  /// (gone on from here, not here at all, on its way): said `skipped`, with where it went on to.
+  async #takeUsage(peer: string, ws: string, request: Json): Promise<Json> {
+    const store = this.#d.store;
+    const session = typeof request.session === "string" ? request.session : "";
+    const usage = Array.isArray(request.usage) ? request.usage : [];
+    const files = Array.isArray(request.files) ? request.files : [];
+    const refs = Array.isArray(request.threads) ? request.threads : [];
+    if (session === "" || usage.length > 500 || files.length > 500 || refs.length > 500) throw new Refused(why("badRequest", { detail: "not a page of a chat's calls" }));
+    const handed = store.handedTo(session);
+    if (store.liveOf([session]).length === 0 || handed !== null || this.#d.hub.wsOf(session) !== ws) {
+      return { ok: true, skipped: true, ...(handed !== null && handed.station !== peer ? { forwardedTo: handed.station, there: handed.there } : {}) };
+    }
+    const strings = (v: Json) => Object.fromEntries(Object.entries(v ?? {}).filter((e): e is [string, string] => typeof e[1] === "string"));
+    const connects = strings(request.connects);
+    const threads: Record<string, number | null> = {};
+    for (const r of refs) {
+      if (typeof r?.id !== "number" || typeof r.surface !== "string" || typeof r.channel !== "string" || typeof r.threadTs !== "string") continue;
+      threads[String(r.id)] = r.id === request.thread && typeof request.there === "number" ? request.there : threadOfRef(store.db, session, r as ThreadRef, connects);
+    }
+    const profiles: Record<string, string> = {};
+    for (const [pid, a] of Object.entries((request.accounts ?? {}) as Record<string, AccountOf | null>)) {
+      const there = a !== null && typeof a === "object" ? this.#d.accounts.here(a) : null;
+      if (there !== null) profiles[pid] = there;
+    }
+    const took = importHandedUsage(store.db, { session, threads, profiles, fromData: String(request.dataDir ?? ""), toData: this.#d.data, usage, files });
+    // (its last page, too, though nothing was new: one taken before as this station stopped is kept as its calls say)
+    if (took.added > 0 || (request.last === true && hasUsage(store.db, session))) {
+      this.#usageOf([session], false);
+      if (took.added > 0) store.usageChanged([session]);
+    } else if (typeof request.sessionUsage === "string" && !hasUsage(store.db, session) && store.sessionUsage(session) === null) {
+      // (none of its calls here, nor its usage: as that station kept it)
+      try {
+        store.setSessionUsage(session, JSON.parse(request.sessionUsage));
+      } catch {}
+    }
+    return { ok: true, added: took.added, files: took.files };
   }
 
   #holdIn(i: In): void {
@@ -1738,21 +2010,27 @@ export class Handover {
     }
   }
 
-  async #putAside(i: In, path: string): Promise<void> {
+  /// Whether there was one.
+  async #putAside(i: In, path: string): Promise<boolean> {
+    if (!(await lstat(path).then(() => true, () => false))) return false;
     const aside = inAside(this.#d.data, i.id);
     const list = join(aside, "list.txt");
     const had = await readFile(list, "utf8").catch(() => "");
     const made = await readFile(inMade(this.#d.data, i.id), "utf8").catch(() => "");
-    if (had.split("\n").some((l) => l.split("\t")[0] === path) || made.split("\n").includes(path)) return void (await rm(path, { force: true }));
+    if (had.split("\n").some((l) => l.split("\t")[0] === path) || made.split("\n").includes(path)) {
+      await rm(path, { force: true });
+      return true;
+    }
     await mkdir(aside, { recursive: true });
     const name = `${createHash("sha256").update(path).digest("hex").slice(0, 32)}-${randomBytes(4).toString("hex")}`;
     try {
       await rename(path, join(aside, name));
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw e;
     }
     await writeFile(list, `${path}\t${name}\n`, { flag: "a" });
+    return true;
   }
 
   /// What a hand-over that did not go put in here, taken out: its rows (store `dropImport`) and the files placed where

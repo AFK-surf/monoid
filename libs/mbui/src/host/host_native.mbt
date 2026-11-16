@@ -172,6 +172,8 @@ extern "C" fn ffi_reduce_transparency() -> Int = "mb_host_reduce_transparency"
 
 extern "C" fn ffi_increase_contrast() -> Int = "mb_host_increase_contrast"
 
+extern "C" fn ffi_thermal_throttled() -> Int = "mb_host_thermal_throttled"
+
 extern "C" fn ffi_gpu_ms() -> Double = "mb_host_gpu_ms"
 
 extern "C" fn ffi_cpu_ms() -> Double = "mb_host_cpu_ms"
@@ -869,6 +871,13 @@ fn reduce_transparency() -> Bool {
 /// Android and Linux have no such setting an app reads (never).
 fn increase_contrast() -> Bool {
   ffi_increase_contrast() != 0
+}
+
+///|
+/// Whether the system is slowing the device down for its heat: Android's thermal status moderate or worse, macOS's
+/// and iOS's thermal state serious or critical; Windows and Linux never.
+fn thermal_throttled() -> Bool {
+  ffi_thermal_throttled() != 0
 }
 
 ///|

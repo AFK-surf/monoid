@@ -1,4 +1,4 @@
-// A chat of real size on the chat's page made as nodes (外观's 试用新对话页), as a phone's core sends it (its messages
+// A chat of real size on the chat's page made as nodes (实验性功能's 试用新对话页), as a phone's core sends it (its messages
 // read as Markdown, `md`, each long one a block a piece; src/sfrealsize): what the heaviest frame does as it opens cold,
 // and as it is opened again from Home with the chat held (back, then the same chat: its messages there already, the
 // page made whole in one frame) — nodes made, let go, laid out, words measured, bindings run — held to its bar, which
@@ -21,11 +21,13 @@
 /// node, its icon turning with the mode, and the filter's and the stations' releases' keys no box of their own): before
 /// it (782, 38, 885, 150, 778). Again once a paragraph with no link holds no room for its links' cards either (sf
 /// words_links_node: nothing made for them till a link comes), the same at 60, 120, 24 and 7: before it 784, 343, 2569
-/// and 898 made, 683 and 998 made scrolling up.
+/// and 898 made, 683 and 998 made scrolling up. Wide cold made 2 more (2568 before) once the sidebar's band and foot are
+/// made as nodes (lists_band_node beside the system's bars too, lists_foot_node) and not hosted as old views: laid out
+/// 11 fewer (3693) and bindings 2 (2752).
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "phone cold": (783, 38, 894, 148, 784),
   "phone again": (342, 26, 245, 29, 299),
-  "wide cold": (2568, 483, 3693, 560, 2752),
+  "wide cold": (2570, 483, 3682, 560, 2750),
   "wide again": (897, 130, 882, 124, 1202),
   "phone up": (667, 762, 644, 92, 0),
   "wide up": (973, 795, 966, 129, 0),

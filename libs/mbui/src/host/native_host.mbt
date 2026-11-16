@@ -468,6 +468,11 @@ impl @hostapi.Host for Native with increase_contrast(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with thermal_throttled(_) {
+  thermal_throttled()
+}
+
+///|
 impl @hostapi.Host for Native with gpu_ms(_) {
   gpu_ms()
 }

@@ -10,10 +10,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { wall } from "../../src/ops/fibers.ts";
 import { Refused } from "../../src/api/request.ts";
-import { retiredUsage } from "../../src/store/usage-retire.ts";
 import { findRuntimeSource, type RuntimeSource } from "../../src/store/runtime-source.ts";
-import { detailQuery, usageDetailGeneration, usageDetailReady, usageDetailScopeBySession, usageDetailSince, USAGE_DETAIL_PENDING } from "../../src/store/usage-detail.ts";
-import { compactQuery, compactScopeReady, compactUsageSince, hasCompactUsage } from "../../src/store/usage-compact.ts";
+import { usage15mQuery } from "../../src/store/usage-15m.ts";
+import { usageSince as storeUsageSince } from "../../src/store/usage.ts";
 import { type UsageChatCoverage, usageCardOutcomesComplete, usageChatStatsReady } from "../../src/store/usage-chat-stats.ts";
 import { REMOTE_RUNS_ALL, REMOTE_RUNS_OF } from "../../src/store/remote-runs.ts";
 import { CC_INDEX_VERSION, CC_SESSIONS_PENDING, CcSessionsUnavailable, ccSessionReady, indexedCcThreads } from "../../src/store/cc-thread-index.ts";
@@ -39,7 +38,7 @@ import { type Json, type SessionRow, toSession, type Store, makeStore, one, all,
 
 export * from "../../src/read/store.ts";
 export { LAST_MESSAGE_RECENT_EDIT, LAST_MESSAGE_OLD_EDITS } from "../../src/store/legacy-edits-read.ts";
-export { USAGE_DETAIL_PENDING, type UsageGroup, type CardAnswer, type EntryRow, type Membership, type MessageRow, STILLFAIL_SURFACE, type ThreadRow, I64_MAX, MANUAL, ending, saidBefore, takeChars, type Json, type SessionRow, toSession, type Store, makeStore, one, all, getSession, getThread, threadSessions, LAST_MESSAGE_PENDING, boundedEditKey, mergedWithBoundedEdit, SAID_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, pendingCardNumber, threadsWithCards, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING };
+export { type UsageGroup, type CardAnswer, type EntryRow, type Membership, type MessageRow, STILLFAIL_SURFACE, type ThreadRow, I64_MAX, MANUAL, ending, saidBefore, takeChars, type Json, type SessionRow, toSession, type Store, makeStore, one, all, getSession, getThread, threadSessions, LAST_MESSAGE_PENDING, boundedEditKey, mergedWithBoundedEdit, SAID_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, pendingCardNumber, threadsWithCards, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING };
 
 /// Archived threads whose entries are kept decompressed, the most recently read last.
 
@@ -1784,31 +1783,12 @@ export function usageCallsPage(s: Store, session: string, from: bigint, to: bigi
   const last = page.at(-1);
   return { rows, next: last === undefined || page.length < size ? null : { at: String(last.at), seq: String(last.seq) } };
 }
-export function usageGroups(s: Store, from: bigint, to: bigint, utcOffsetMin: bigint, viewer: InWorkspace | null = null,
-  diagnostics?: { parts?: number; candidates?: number; selectedMs?: number }): UsageGroup[] {
-  if (hasCompactUsage(s.db)) {
-    if (!compactScopeReady(s.db, viewer)) throw new Refused(503, "usage statistics are moving between workspaces");
-    const query = compactQuery(from, to, utcOffsetMin, viewer, diagnostics !== undefined, diagnostics !== undefined);
-    if (diagnostics !== undefined && query.sql.includes("usage_summary_candidate()")) {
-      diagnostics.candidates = 0;
-      const started = performance.now();
-      s.db.function("usage_summary_candidate", () => { diagnostics.candidates!++; return 1; });
-      s.db.function("usage_summary_selected", () => { diagnostics.selectedMs = Math.round(performance.now() - started); return 1; });
-    }
-    const rows = all(s, query.sql, ...query.args);
-    // Count only rows already used by this read; asking the database for another count would repeat the slow work.
-    if (diagnostics !== undefined) diagnostics.parts = rows.reduce((n, row) => n + Number(row.source_parts), 0);
-    return rows.map(usageGroupOf);
-  }
-  if (retiredUsage(s.db)) throw new Refused(503, "usage detail statistics are unavailable");
-  const generation = usageDetailGeneration(s.db);
-  if (!usageDetailReady(s.db, viewer, generation)) throw new Error(USAGE_DETAIL_PENDING);
-  const query = detailQuery(from, to, utcOffsetMin, viewer, generation, usageDetailScopeBySession(s.db, viewer, generation));
+/// The calls from `from` until `to` (ms) by day `utcOffsetMin` minutes east of UTC, chat, person, account and model, as
+/// a viewer sees them (null: every workspace's), from their quarters (store/usage-15m.ts `usage15mQuery`).
+export function usageGroups(s: Store, from: bigint, to: bigint, utcOffsetMin: bigint, viewer: InWorkspace | null = null): UsageGroup[] {
+  const query = usage15mQuery(from, to, utcOffsetMin, viewer);
   return query === null ? [] : all(s, query.sql, ...query.args).map(usageGroupOf);
 }
-
-export { batchedUsageQueries, usageGroupsBatched, UsageSummaryCache } from "./usage-batched.ts";
-export type { BatchedUsage } from "./usage-batched.ts";
 
 /// usage_threads: the threads usage names, each with the first thing a person said in it (for its title; none where
 /// its archive cannot be read). Those gone are left out.
@@ -1891,23 +1871,23 @@ export function usageChatTotals(s: Store, viewer: InWorkspace | null, options: U
   return { places, archived, cards, picked };
 }
 
-/// usage_since: when the earliest call recorded was made.
+/// usage_since: from when every call recorded is counted (store/usage.ts `usageSince`).
 export function usageSince(s: Store): number | null {
-  if (hasCompactUsage(s.db)) return compactUsageSince(s.db);
-  const first = one(s, "SELECT first_at FROM usage_span WHERE id = 1").first_at as number | null;
-  const cutover = usageDetailSince(s.db);
-  return cutover === null ? first : Math.max(first ?? cutover, cutover);
+  return storeUsageSince(s.db);
 }
 
 export function remoteRunsReady(s: Store): void {
   if (one(s, "SELECT done FROM remote_run_progress WHERE id = 1")?.done !== 1) throw new Error(REMOTE_RUNS_PENDING);
 }
 
-export function remoteRunsSince(s: Store, from: bigint, viewer: InWorkspace | null = null): { at: number; session: string }[] {
+/// The tasks the viewer's chats on other stations ran here from `from` until `to` (ms), a day `utcOffsetMin` minutes
+/// east of UTC and chat a row: as each was told before (`{at, session}`) where it was the only one, else when the last
+/// ran and how many (`count`).
+export function remoteRunsSince(s: Store, from: bigint, to: bigint, utcOffsetMin: bigint, viewer: InWorkspace | null = null): { at: number; session: string; count?: number }[] {
   remoteRunsReady(s);
-  const rows = viewer === null ? all(s, REMOTE_RUNS_ALL, from)
-    : all(s, REMOTE_RUNS_OF, viewer.workspace, from);
-  return rows.map((r) => ({ at: Number(r.at), session: String(r.session) }));
+  const rows = viewer === null ? all(s, REMOTE_RUNS_ALL, from, to, utcOffsetMin)
+    : all(s, REMOTE_RUNS_OF, viewer.workspace, from, to, utcOffsetMin);
+  return rows.map((r) => Number(r.n) > 1 ? { at: Number(r.at), session: String(r.session), count: Number(r.n) } : { at: Number(r.at), session: String(r.session) });
 }
 
 /// The all-time card needs a count, not every task. Like remoteRunsSince(s, 0), it excludes negative timestamps.

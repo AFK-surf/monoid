@@ -69,7 +69,6 @@ const OVER_DELTA: Record<string, number> = {
   "usage/down": 88,
   "drive/file": 72,
   "chatLetters/letter": 40,
-  "usage/usage": 40,
   "devices/device": 24,
   "connects/down": 24,
   "connect/session": 24,

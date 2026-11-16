@@ -244,6 +244,25 @@ case "$channel" in
   *) channel=stable; release="stillfail-station-$platform.tar.gz"; [ -n "\${STILLFAIL_INSTALLER_HANDED:-}" ] || echo "${say("cloud.install.download")}" ;;
 esac
 step download
+# Downloads $1 to $2 (curl given the rest before them: how it shows its progress), tried again after each of
+# STILLFAIL_DOWNLOAD_PAUSES (seconds; a test's 0 0 0) where it failed on the way: no connection, one broken (macOS's
+# LibreSSL curl's exit 35, SSL_ERROR_SYSCALL, main 0a099ace's station-update 43880021498, 2026-11-16, which curl's own
+# --retry does not take), a deadline, a gateway's 502, 503 or 504. A refusal (404, 403, 500) is the same when asked again.
+download() {
+  dl_url=$1 dl_out=$2
+  shift 2
+  for dl_pause in \${STILLFAIL_DOWNLOAD_PAUSES-1 2 4} last; do
+    if dl_code=$(curl "$@" -w '%{http_code}' "$dl_url" -o "$dl_out"); then return 0; else dl_status=$?; fi
+    rm -f "$dl_out"
+    case "$dl_status:$dl_code" in
+      22:502|22:503|22:504|5:*|6:*|7:*|16:*|18:*|28:*|35:*|52:*|55:*|56:*|92:*) ;;
+      *) return "$dl_status" ;;
+    esac
+    [ "$dl_pause" != last ] || return "$dl_status"
+    echo "${say("cloud.install.downloadAgain", { seconds: "${dl_pause}" })}" >&2
+    sleep "$dl_pause"
+  done
+}
 sha256_of() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 # Handed a release already downloaded (by the installer of the release before, below, or by the station, which made it
 # from a delta: station/src/updates/release.ts): taken, its directory removed.
@@ -251,7 +270,7 @@ case "\${STILLFAIL_ARCHIVE:-}" in
   */stillfail-handed.*/stillfail.tar.gz)
     mv "$STILLFAIL_ARCHIVE" "$tmp/stillfail.tar.gz"
     rm -rf "$(dirname "$STILLFAIL_ARCHIVE")" ;;
-  *) curl -fL --progress-bar "$origin/releases/$release" -o "$tmp/stillfail.tar.gz" ;;
+  *) download "$origin/releases/$release" "$tmp/stillfail.tar.gz" -fL --progress-bar ;;
 esac
 # A station updating itself says what the release must hash to, as its signed words say (station/src/updates/signed.ts):
 # anything else is not installed.
@@ -297,7 +316,7 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
     elif [ -n "\${STILLFAIL_NODE_SHA256:-}" ]; then
       node_file="node-v$node_version-$platform.tar.gz"
       echo "${say("cloud.install.node.download", { version: "${node_version}" })}"
-      if ! curl -fL --progress-bar "$origin/releases/node/$node_file" -o "$tmp/$node_file"; then
+      if ! download "$origin/releases/node/$node_file" "$tmp/$node_file" -fL --progress-bar; then
         echo "${say("cloud.install.node.failed", { version: "${node_version}", origin: "${origin}" })}" >&2
         exit 1
       fi
@@ -310,7 +329,7 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
     else
       node_file="node-v$node_version-$platform.tar.gz"
       echo "${say("cloud.install.node.download", { version: "${node_version}" })}"
-      if ! curl -fL --progress-bar "$origin/releases/node/$node_file" -o "$tmp/$node_file" || ! curl -fsSL "$origin/releases/node/$node_file.sha256" -o "$tmp/$node_file.sha256"; then
+      if ! download "$origin/releases/node/$node_file" "$tmp/$node_file" -fL --progress-bar || ! download "$origin/releases/node/$node_file.sha256" "$tmp/$node_file.sha256" -fsSL; then
         echo "${say("cloud.install.node.failed", { version: "${node_version}", origin: "${origin}" })}" >&2
         exit 1
       fi

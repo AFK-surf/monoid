@@ -48,8 +48,10 @@ below, sends them along).
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
   other's data directory, only under `sessions/` and `transcripts*/`, and what an Antigravity CLI keeps of a
   conversation in its profile's home (`carry.ts` `cliKept`: `session/load` takes it up from there, not from the
-  station's transcript; the profile it runs on there brings it into its own home, agents/agy.ts `agyBringIn`; a chat
-  moved without it got "trajectory not found", 2026-11-16) (`carry.ts`: the MoonBit program's, `--builder
+  station's transcript; the profile it runs on there brings it into its own home from the home that wrote it last, whole, agents/agy.ts
+  `agyBringIn`; a chat moved without it got "trajectory not found", 2026-11-16; a hand-over's prune takes out what of
+  it the second pass no longer names, as its room's, handover.ts `#prune`: a `-wal` left beside a newer database was
+  replayed into it, malformed, 2026-11-16) (`carry.ts`: the MoonBit program's, `--builder
   replica-carry`, `station/mb/src/replica/carry.mbt`, a process each, a cancel killing it; built for every system a
   station runs on, so no worker thread to fall back to; the worker's from before is `station/test/carry-reference.ts`,
   which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git
@@ -128,7 +130,7 @@ below, sends them along).
   divergence of one station (the owner's 「避免脚本乱改改错」). A chat of a key live where it would go (in sight there:
   one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
-  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
+  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. What its agents spent (`usage`, `usage_files`, `session_usage`) goes with its rows to a station that takes them (`handover.begin` `usage`, `AFTER_SHOWN`), put in once by call id with its threads and accounts mapped there and its kept summary recomputed from all its calls there; chats handed before their calls went with them have theirs sent in pages as that station is heard from (`handover.usage`, `handover.ts` `usageSyncedFile`, following a chat moved on up to two hops). Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
   (`handover.drop`: answered once its rows are out and its record says it drops; then, by that station itself after
   the placing under way (its next process where this one stops first), what it placed and the directories made for

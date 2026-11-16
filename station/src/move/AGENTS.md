@@ -115,9 +115,9 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
 - People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
   the press in the app is the confirmation.
-- Moving is switched on per machine (config.json `move: true`, off unless set; not one of the settings that move), and
-  is offered only where it is on (the overview's `move.offered`) until the real run between our own stations has
-  passed; then the switch goes (the lead, 2026-11-14). Off, every turn is refused before anything is held (the
+- Moving is a `beta`-channel feature (`stationFeature("stationMove", ...)`, on by default on `beta` stations unless
+  config.json says `move: false`, and off on `stable` stations unless config.json says `move: true`; not one of the
+  settings that move), offered in the overview (`move.offered`) where it is on. Off, every turn is refused before anything is held (the
   scheduler asks `refusal` first: here, then `move.open` there, one that refuses it being from before and off, one not reached said to be out of reach), and a
   station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers. A turn waits in `refusal`
   until the station process before this one is gone (a launcher's hand-over between processes: one process at a time

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { Cloud } from "../src/cloud/state.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
@@ -75,7 +75,7 @@ async function twoWorkspaces() {
   await rig.accept(m);
   await settle();
   const one = sessionKey("cl", "C1", m.threadTs);
-  const [two] = newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2, title: "plan of two" });
+  const [two] = await newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2, title: "plan of two" });
   const close = async () => {
     await remote.close();
     await jobs.shutdown();
@@ -184,15 +184,15 @@ test("a session runs on the profiles allowed in its workspace (all but those wit
   assert.equal(rig.session(two).profile, "cc");
   assert.equal(rig.hub.accounts.runOn(two).id, "cc");
   // Pinned or changed to one not for W2: refused.
-  assert.throws(() => newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2, profile: "cc2" }, "en"), /isn't available to this workspace/);
+  await assert.rejects(async () => await newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2, profile: "cc2" }, "en"), /isn't available to this workspace/);
   assert.throws(() => rig.hub.accounts.change(two, { profile: "cc2" }, "en"), /isn't available to this workspace/);
   // The home workspace's sessions run on any.
-  const [ofOne] = newSession(rig.hub, { runtime: "claude", createdBy: "a@x", ws: W1, profile: "cc2" }, "en");
+  const [ofOne] = await newSession(rig.hub, { runtime: "claude", createdBy: "a@x", ws: W1, profile: "cc2" }, "en");
   assert.equal(rig.session(ofOne).profile, "cc2");
   assert.equal(rig.hub.accounts.change(ofOne, { profile: "cc" }, "en").profile, "cc");
   // None left for W2: said so, for new chats and for its sessions.
   rig.edit((raw) => (raw.profiles[0].withheld = [W2]));
-  assert.throws(() => newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2 }, "en"), /No Profile can run Claude Code for this workspace's chats/);
+  await assert.rejects(async () => await newSession(rig.hub, { runtime: "claude", createdBy: "b@x", ws: W2 }, "en"), /No Profile can run Claude Code for this workspace's chats/);
   assert.throws(() => rig.hub.accounts.runOn(two), (e: Error) => e.message === tr(stationLang(), "station.session.noProfileHere", { runtime: "Claude Code" }));
   assert.notEqual(rig.hub.accounts.runOn(one).id, undefined);
   // A connect of W2 runs on those allowed there.
@@ -208,10 +208,12 @@ test("each workspace has its own memory and skills: a session gets its workspace
   assert.equal(rig.hub.deps.memoryPath(one), join(home, "MEMORY.md"));
   const memoryTwo = rig.hub.deps.memoryPath(two);
   assert.equal(memoryTwo, join(home, "workspaces", W2, "MEMORY.md"));
-  assert.ok(existsSync(memoryTwo) && existsSync(join(home, "workspaces", W2, "skills")));
-  assert.equal(workspaceAgentHome(home, W1, W1), home);
-  assert.equal(workspaceAgentHome(home, null, W1), home);
-  assert.throws(() => workspaceAgentHome(home, "../x", W1), /not a workspace id/);
+  // (made as its session's process opens, off the station's thread)
+  await rig.hub.deps.linkSkills(rig.store.getSession(two)!);
+  assert.ok(existsSync(memoryTwo) && existsSync(join(home, "workspaces", W2, "skills", "stillfail-jobs", "SKILL.md")));
+  assert.equal(await workspaceAgentHome(home, W1, W1), home);
+  assert.equal(await workspaceAgentHome(home, null, W1), home);
+  await assert.rejects(async () => await workspaceAgentHome(home, "../x", W1), /not a workspace id/);
   // The pages: the home workspace's, or the joined one's, each with its own skills.
   mkdirSync(join(home, "skills", "one-project"), { recursive: true });
   writeFileSync(join(home, "skills", "one-project", "SKILL.md"), "---\ndescription: 项目记忆：one\n---\n");
@@ -231,6 +233,7 @@ test("a session's runtime is given its workspace's memory and skills, never anot
   mkdirSync(join(home, "skills", "one-project"), { recursive: true });
   writeFileSync(join(home, "MEMORY.md"), "# one's lessons\n");
   writeFileSync(join(home, "skills", "one-project", "SKILL.md"), "---\ndescription: 项目记忆：one\n---\n");
+  assert.equal(await workspaceAgentHome(home, W2, W1), dirname(rig.hub.deps.memoryPath(two)));
   writeFileSync(rig.hub.deps.memoryPath(two), "# two's lessons\n");
   mkdirSync(join(home, "workspaces", W2, "skills", "two-project"), { recursive: true });
   writeFileSync(join(home, "workspaces", W2, "skills", "two-project", "SKILL.md"), "---\ndescription: 项目记忆：two\n---\n");

@@ -454,6 +454,11 @@ pub(all) struct Message {
   notice_reassign_session : String
   /// a failure's own words, as what failed said them, shown under its words when the notice is opened
   notice_detail : String
+  /// failures said in the same words one after another that the core folded into this one: how many (1: itself alone),
+  /// drawn after its words as ×n, and the last of them's seq, what is acted on (重试, 上报…) and read up to (its own
+  /// seq where it folds none)
+  notice_count : Int
+  notice_last_seq : Double
   /// a chat's run changed: what it runs on now, said in place of its words where they have not the room on their line
   /// ("": none), and how it ran and runs, whole, shown in place of its words once it is opened
   notice_short : String
@@ -621,6 +626,14 @@ pub fn message_of(m : Json) -> Message {
     notice_again_session: text(field(s, "notice"), "againSession"),
     notice_reassign_session: text(field(s, "notice"), "reassignSession"),
     notice_detail: text(field(s, "notice"), "detail"),
+    notice_count: match opt_number(field(s, "notice"), "count") {
+      Some(n) if n >= 2.0 => n.to_int()
+      _ => 1
+    },
+    notice_last_seq: match opt_number(field(s, "notice"), "lastSeq") {
+      Some(n) => n
+      None => number(s, "seq")
+    },
     notice_short: text(field(s, "notice"), "short"),
     notice_lines: items(field(s, "notice"), "lines").filter_map(fn(l) {
       match l {

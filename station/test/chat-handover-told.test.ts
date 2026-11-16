@@ -28,7 +28,7 @@ test("what the move page reads of a chat says where it is and where what it wait
   const atC = await stillfailChat(a);
   const plain = await stillfailChat(a);
   a.rig.raw.profiles.push({ id: "solo", runtime: "claude", home: "homes/solo" });
-  const [stopped, t] = newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
+  const [stopped, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "solo", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "hi");
   await endTurn(a, stopped);
   assert.equal((await a.moves.scheduler.move(WS, C, { module: "chats", item: atC.key })).failed, null);
@@ -86,8 +86,8 @@ test("what the app's page reads of a move: the modules in order with their needs
   await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
   await w.quiet();
   // (a chat on this machine's own login, which cannot go, and one working outside the station's data: each cannot move)
-  newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
-  const [outside] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  await newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const [outside] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   a.rig.store.db.prepare("UPDATE sessions SET workspace = ? WHERE key = ?").run("/elsewhere/proj", outside);
   const one = moveView(await a.moves.scheduler.plan(WS, B), a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 1 });
   assert.deepEqual(one.modules.map((m: Json) => [m.id, m.cannot]).filter(([, n]: [string, number]) => n > 0), [["accounts", 1], ["chats", 1]], "counted of all, not of a page of one");
@@ -173,7 +173,7 @@ test("the copies' export on the station a chat went to carries it in its next pa
 test("a chat in a turn moved, its turn waited for: the move page's row and the moving one say it waits for the turn to end (`waits: \"turn\"`), not stuck; the turn ended, it goes, and nothing says so any more", async () => {
   const w = world();
   const a = w.get(A);
-  const [key, t] = newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  const [key, t] = await newSession(a.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   say(a.rig.hub, t.id, "p@x", "busy now");
   await a.rig.quiet();
   assert.equal(a.rig.hub.busy(key), true);

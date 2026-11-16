@@ -287,8 +287,8 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "settings-add-station",
     (
-      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: Anim \"ripple\" to 0.5, told at src/motion/ripple.mbt:180:5-180:56@mbui (at rest at 2400 ms)",
-      "untraced: a press's ripple still moving as the run's next step came (mbui/src/motion/ripple.mbt:180)",
+      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: ",
+      "untraced: a motion at rest 16.6 ms after the run's next step, nothing said since the last step that acted (the list's ＋ a node's press since the stations' list was made once: sfpages' stations_list.mbt, page_add_node)",
     ),
   ),
   (

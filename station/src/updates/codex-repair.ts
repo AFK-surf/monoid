@@ -1,12 +1,12 @@
 // A Codex copied without its code-mode host cannot use the station's tools. Recognise the native executable (including
 // npm's launcher), and only offer to replace a command in the person's home. The old entry is kept as a backup.
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, linkSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync } from "node:fs";
-import { createRequire } from "node:module";
+import { accessSync, constants, linkSync, lstatSync, readlinkSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { access, lstat, open, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { platform as machine } from "../platform/index.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
-import { type Env, type Found, findCommand, run } from "./runtimes.ts";
+import { type Env, type Found, findCommandSoon, run } from "./runtimes.ts";
 import { platform as npmPlatform } from "./versions.ts";
 
 const TRIPLES: Record<string, string> = {
@@ -17,45 +17,56 @@ const TRIPLES: Record<string, string> = {
 };
 
 /// A native executable, not a shell or another package manager's wrapper whose target we cannot know.
-function native(path: string): boolean {
-  let fd: number | undefined;
+async function nativeSoon(path: string): Promise<boolean> {
+  const fh = await open(path, "r").catch(() => null);
+  if (fh === null) return false;
   try {
-    fd = openSync(path, "r");
     const bytes = Buffer.alloc(4);
-    if (readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) return false;
-    return new Set(["7f454c46", "feedfacf", "cffaedfe", "feedface", "cefaedfe", "cafebabe", "bebafeca"]).has(bytes.toString("hex"));
+    if ((await fh.read(bytes, 0, bytes.length, 0)).bytesRead !== bytes.length) return false;
+    return MAGIC.has(bytes.toString("hex"));
   } catch {
     return false;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    await fh.close().catch(() => {});
   }
 }
 
-function executable(path: string): boolean {
+const MAGIC = new Set(["7f454c46", "feedfacf", "cffaedfe", "feedface", "cefaedfe", "cafebabe", "bebafeca"]);
+
+/// A file that runs.
+async function executableSoon(path: string): Promise<boolean> {
   try {
-    accessSync(path, constants.X_OK);
-    return statSync(path).isFile();
+    await access(path, constants.X_OK);
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }
 }
 
-export const hasCodexHost = (binary: string): boolean => executable(join(dirname(binary), machine.exe("codex-code-mode-host")));
+/// Whether the code-mode host is beside `binary`.
+export const hasCodexHostSoon = (binary: string): Promise<boolean> => executableSoon(join(dirname(binary), machine.exe("codex-code-mode-host")));
 
 /// The actual executable behind npm's official launcher, or the native command itself. Unknown wrappers stay unknown.
-export function codexBinary(found: Found): string | null {
-  if (native(found.real)) return found.real;
+/// Looked at off the station's thread: the software page's every reading of Codex does.
+export async function codexBinarySoon(found: Found): Promise<string | null> {
+  if (await nativeSoon(found.real)) return found.real;
   if (!found.real.replaceAll("\\", "/").endsWith("/node_modules/@openai/codex/bin/codex.js")) return null;
   const target = npmPlatform();
   const triple = target === null ? undefined : TRIPLES[target];
   if (!target || !triple) return null;
-  try {
-    const require = createRequire(found.real);
-    const packageFile = require.resolve(`@openai/codex-${target}/package.json`);
-    const binary = join(dirname(packageFile), "vendor", triple, "bin", machine.exe("codex"));
-    return native(binary) && executable(binary) ? realpathSync(binary) : null;
-  } catch {
-    return null;
+  const binary = await platformPackage(found.real, `@openai/codex-${target}`);
+  if (binary === null) return null;
+  const at = join(binary, "vendor", triple, "bin", machine.exe("codex"));
+  return (await nativeSoon(at)) && (await executableSoon(at)) ? realpath(at).catch(() => null) : null;
+}
+
+/// The directory of package `name` as Node's resolution finds it from `from` (node_modules up the tree), off the
+/// station's thread (createRequire's resolve looks synchronously).
+async function platformPackage(from: string, name: string): Promise<string | null> {
+  for (let dir = dirname(from); ; dir = dirname(dir)) {
+    const at = join(dir, "node_modules", ...name.split("/"));
+    if ((await stat(join(at, "package.json")).catch(() => null))?.isFile()) return realpath(at).catch(() => at);
+    if (dirname(dir) === dir) return null;
   }
 }
 
@@ -72,10 +83,10 @@ export async function missingCodexHost(
     }
   },
 ): Promise<{ binary: string; helper: string } | null> {
-  const binary = codexBinary(found);
+  const binary = await codexBinarySoon(found);
   if (binary === null) return null;
   const helper = join(dirname(binary), machine.exe("codex-code-mode-host"));
-  if (hasCodexHost(binary)) return null;
+  if (await hasCodexHostSoon(binary)) return null;
   const listed = await features(found.onPath, env);
   return listed !== null && /^code_mode_host[ \t]+(?!removed\b)[^\r\n]*?[ \t]+true[ \t]*$/m.test(listed) ? { binary, helper } : null;
 }
@@ -85,8 +96,9 @@ export async function findMissingCodexHost(command: string, env: Env): Promise<{
   const effective = await withShellCommand(command, env);
   let found: Found | null = null;
   if (isAbsolute(command)) {
-    try { found = { onPath: command, real: realpathSync(command) }; } catch {}
-  } else if (!/[\\/]/.test(command)) found = findCommand(command, effective);
+    const real = await realpath(command).catch(() => null);
+    if (real !== null) found = { onPath: command, real };
+  } else if (!/[\\/]/.test(command)) found = await findCommandSoon(command, effective);
   return found ? missingCodexHost(found, effective) : null;
 }
 
@@ -106,16 +118,32 @@ export function canSwitchCodex(found: Found, env: Env): boolean {
   }
 }
 
+/// `canSwitchCodex` off the station's thread (the software page's reading of Codex, and a repair's first look).
+export async function canSwitchCodexSoon(found: Found, env: Env): Promise<boolean> {
+  if (!machine.codexStandalone || !isAbsolute(found.onPath)) return false;
+  const home = machine.home(env);
+  if (!home) return false;
+  try {
+    const dir = await realpath(dirname(found.onPath));
+    if (!machine.paths.within(dir, await realpath(home))) return false;
+    await access(dir, constants.W_OK);
+    const entry = await lstat(found.onPath);
+    return (entry.isFile() || entry.isSymbolicLink()) && (await realpath(found.onPath)) === found.real;
+  } catch {
+    return false;
+  }
+}
+
 type Identity = { dev: number; ino: number; size: number; mtimeMs: number };
 export type CodexEntry = { found: Found; entry: Identity; target: Identity };
 const identity = (s: Identity): Identity => ({ dev: s.dev, ino: s.ino, size: s.size, mtimeMs: s.mtimeMs });
 const same = (a: Identity, b: Identity) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
 
 /// Remember the entry and its target before npm runs, so a change made meanwhile is never replaced.
-export function captureCodex(found: Found, env: Env): CodexEntry | null {
-  if (!canSwitchCodex(found, env)) return null;
+export async function captureCodexSoon(found: Found, env: Env): Promise<CodexEntry | null> {
+  if (!(await canSwitchCodexSoon(found, env))) return null;
   try {
-    return { found, entry: identity(lstatSync(found.onPath)), target: identity(statSync(found.onPath)) };
+    return { found, entry: identity(await lstat(found.onPath)), target: identity(await stat(found.onPath)) };
   } catch {
     return null;
   }

@@ -89,7 +89,7 @@ async function world(options: { compact?: boolean } = {}): Promise<World> {
   const ts = open("ts");
   const mb = open("mb");
   if (options.compact) for (const s of [ts, mb]) {
-    installCompactUsage(s.db, () => s.now());
+    installCompactUsage(s.db);
     retireUsageIndexes(s.db);
   }
   const tsCounter = new ReferenceUsageCounter({ store: ts, config: () => ({ dataDir: data, profiles }), clock: time.clock });
@@ -327,7 +327,7 @@ test("calls counted before the compact statistics seed their context from the se
   append(path, [claudeLine("o1", now + 1, "claude-opus-5-5", usage(10, 1_000, 300, 0, 1)), claudeLine("o2", now + 2, "claude-opus-5-5", usage(10, 2_000, 0, 0, 1))]);
   assert.equal(await w.read(undefined, "before the compact statistics"), 2);
   w.each((s) => keepUsage(s, key));
-  w.each((s) => { installCompactUsage(s.db, () => s.now()); retireUsageIndexes(s.db); });
+  w.each((s) => { installCompactUsage(s.db); retireUsageIndexes(s.db); });
   append(path, [claudeLine("o3", now + 3, "claude-opus-5-5", usage(10, 2_500, 0, 0, 1)), claudeLine("o2", now + 2, "claude-opus-5-5", usage(10, 2_000, 0, 0, 4))]);
   assert.equal(await w.read(["chat:c-seed"], "seeded from the saved summary"), 1);
   assert.match(contexts(w.mb), /"saved":\{"runtimeSession":"r1"/, "seeded from the saved summary");

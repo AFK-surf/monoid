@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigFile } from "../src/ops/config.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
-import { type Env, type Found, howToInstall, howToUpdate, findCommand, ownNode, pinNpmVersion, run, runLines, Unable, kindCommand, kindPackage } from "../src/updates/runtimes.ts";
+import { type Env, type Found, howToInstallSoon, howToUpdateSoon, findCommand, ownNode, pinNpmVersion, run, runLines, Unable, kindCommand, kindPackage } from "../src/updates/runtimes.ts";
 import { hold } from "../src/updates/holds.ts";
 import { Updates, type UpdatesOptions } from "../src/updates/updates.ts";
 import { WINDOWS, platform as machine } from "../src/platform/index.ts";
@@ -248,7 +248,7 @@ describe("updates", { concurrency: true }, () => {
     const updates = installed(dir, "1300", null);
     t.after(() => updates.close());
     updates.countRunning(() => 2);
-    updates.followStarted();
+    await updates.followStarted();
     assert.deepEqual([station(updates).state, station(updates).progress], ["updating", "正在交接给新版本（agent 不中断）"]);
     // Had it had to restart: what the drain waits on.
     writeFileSync(join(runDir, "update.step"), "drain\n");
@@ -265,6 +265,24 @@ describe("updates", { concurrency: true }, () => {
     assert.equal(updates.get("en")[0]!.done?.includes("0.1.1300"), true);
   });
 
+  test("an update started here while the one before this process is looked for is the one followed", async (t) => {
+    const dir = temp();
+    const runDir = join(dir, "run");
+    mkdirSync(runDir, { recursive: true });
+    // What an update started here wrote, read by the look for one started before (it may end and be removed meanwhile).
+    writeFileSync(join(runDir, "update.started"), JSON.stringify({ at: Date.now() - 1000, from: "0.1.1299" }));
+    writeFileSync(join(runDir, "update.step"), "handoff\n");
+    writeFileSync(join(runDir, "update.exit"), "0\n");
+    const updates = installed(dir, "1300", null);
+    t.after(() => updates.close());
+    const before = updates.followStarted();
+    // Started here as that is read, and ended: its files removed.
+    await updates.follow({ at: Date.now(), from: "0.1.1299" });
+    assert.deepEqual([station(updates).state, station(updates).done], ["idle", "已更新到 0.1.1300，agent 未中断"]);
+    await before;
+    assert.deepEqual([station(updates).state, station(updates).done], ["idle", "已更新到 0.1.1300，agent 未中断"], "not followed again from what was read");
+  });
+
   test("an update started too long ago is not followed", async (t) => {
     const dir = temp();
     const runDir = join(dir, "run");
@@ -273,21 +291,21 @@ describe("updates", { concurrency: true }, () => {
     writeFileSync(join(runDir, "update.step"), "drain\n");
     const updates = installed(dir, "1300", null);
     t.after(() => updates.close());
-    updates.followStarted();
+    await updates.followStarted();
     assert.equal(station(updates).state, "idle");
     assert.ok(!existsSync(join(runDir, "update.started")) && !existsSync(join(runDir, "update.step")));
   });
 
-  test("the installer's download percent reads complete curl bars", () => {
+  test("the installer's download percent reads complete curl bars", async () => {
     assert.equal(curlPercent("下载 still.fail station…\n\r                 0.0%"), 0);
     assert.equal(curlPercent("\r###   12.4%\r########   44.9%\r#########  45."), 44);
     assert.equal(curlPercent("\r######## 100.0%\n"), 100);
     for (const log of ["", "\r#=#=#", "error 44.0%", "### NaN%", "### 101.0%", "### -1.0%"]) assert.equal(curlPercent(log), null, log);
     const dir = temp();
     const log = join(dir, "update.log");
-    assert.equal(stationDownloadPercent(log), null);
+    assert.equal(await stationDownloadPercent(log), null);
     writeFileSync(log, `${"old output\n".repeat(1000)}\r### 37.2%`);
-    assert.equal(stationDownloadPercent(log), 37);
+    assert.equal(await stationDownloadPercent(log), 37);
   });
 
   test("the station's download percent changes are told and cleared", async (t) => {
@@ -300,7 +318,7 @@ describe("updates", { concurrency: true }, () => {
     updates.changes(() => told++);
     writeFileSync(join(runDir, "update.step"), "download\n");
     writeFileSync(join(runDir, "update.log"), "\r### 12.4%");
-    updates.follow({ at: Date.now(), from: "0.1.1300" });
+    await updates.follow({ at: Date.now(), from: "0.1.1300" });
     assert.equal(station(updates).percent, 12);
     writeFileSync(join(runDir, "update.log"), "\r### 12.4%\r######## 44.9%");
     await until("44%", () => station(updates).percent === 44, t.signal);
@@ -327,7 +345,7 @@ describe("updates", { concurrency: true }, () => {
     hearLines((l) => void (l.at === "updates" && lines.push(l)));
     t.after(() => hearLines(null));
     writeFileSync(join(runDir, "update.log"), "one\ntwo\nthree\nfour\nfive\n");
-    updates.follow({ at: Date.now(), from: "0.1.1300" });
+    await updates.follow({ at: Date.now(), from: "0.1.1300" });
     writeFileSync(join(runDir, "update.exit"), "1\n");
     await until("failed", () => station(updates).state === "failed", t.signal);
     assert.equal(station(updates).message, "two\nthree\nfour\nfive");
@@ -538,7 +556,8 @@ describe("updates", { concurrency: true }, () => {
 
   test("turned on, the station updates itself by the installer as soon as it reads a newer release, once", shInstaller, async (t) => {
     const dir = temp();
-    const [origin, server, asked, , installer] = await cloudWithRelease("0.1.1310", "1310");
+    // (its download held until it is seen updating: a quick installer could end before the first look at it)
+    const [origin, server, asked, finish, installer] = await cloudWithRelease("0.1.1310", "1310", true);
     t.after(() => server.close());
     const time = testClock();
     const updates = installed(dir, "1300", null, { origin: () => origin, env: { PATH: "/usr/bin:/bin" }, timing: { followLook: 200 }, clock: time.clock }, installer);
@@ -559,6 +578,7 @@ describe("updates", { concurrency: true }, () => {
     // It reads what is out at once, and updates itself by the installer.
     await until("read", () => station(updates).latest === "0.1.1310", t.signal);
     await steps(50, () => station(updates).state === "updating");
+    finish();
     await until("the installer ended", () => existsSync(join(dir, "run", "update.exit")), t.signal);
     await steps(200, () => station(updates).done === "已更新到 0.1.1310，agent 未中断");
     // Then reads what is out again: the feed still says 0.1.1310 and the release is 0.1.1310, so nothing more (its
@@ -572,6 +592,26 @@ describe("updates", { concurrency: true }, () => {
     }
     assert.equal(station(updates).state, "idle");
     assert.equal(readFileSync(join(dir, "installer-ran"), "utf8"), "ran\n");
+  });
+
+  test("an installer that puts the next release in place before its start is answered says it updated from the release before", async (t) => {
+    const dir = temp();
+    const [origin, server] = await cloudWithRelease("0.1.1310", "1310");
+    t.after(() => server.close());
+    // Started and ended at once: the next BUILD in place, its handover step and exit written as it starts.
+    const startInstaller = async (_script: string, runDir: string) => {
+      writeFileSync(join(dir, "app", "BUILD"), "1310\n");
+      writeFileSync(join(runDir, "update.step"), "handoff\n");
+      writeFileSync(join(runDir, "update.exit"), "0\n");
+      return true;
+    };
+    const updates = installed(dir, "1300", null, { origin: () => origin, startInstaller }, "#!/bin/sh\n");
+    t.after(() => updates.close());
+    await updates.check();
+    await updates.update("station", "zh");
+    await until("ended", () => station(updates).state === "idle", t.signal);
+    assert.equal(station(updates).done, "已更新到 0.1.1310，agent 未中断");
+    assert.ok(!existsSync(join(dir, "run", "update.started")), "what it followed is let go of");
   });
 
   test("a station not installed by the installer, or not in a workspace, is not updated here", async (t) => {
@@ -807,7 +847,7 @@ echo "added 1 package"
     t.after(() => later.close());
     assert.equal(machine.pathOf(again), machine.pathOf(env));
     if (!WINDOWS) {
-      assert.deepEqual(howToUpdate("grok", findCommand("grok", env)!, env), { program: join(own.bin, "npm"), args: ["install", "-g", "@xai-official/grok@latest", "--prefix", own.at] });
+      assert.deepEqual(await howToUpdateSoon("grok", findCommand("grok", env)!, env), { program: join(own.bin, "npm"), args: ["install", "-g", "@xai-official/grok@latest", "--prefix", own.at] });
     }
   });
 
@@ -865,18 +905,18 @@ END
     assert.deepEqual([devin().version, devin().newer, devin().state, devin().message], ["3000.12.0", false, "idle", undefined]);
   });
 
-  test("on Windows a command beside vp.exe is Vite+'s, updated with it; one in npm's prefix with that npm", { skip: !WINDOWS && "Windows'" }, () => {
+  test("on Windows a command beside vp.exe is Vite+'s, updated with it; one in npm's prefix with that npm", { skip: !WINDOWS && "Windows'" }, async () => {
     const dir = temp();
     writeFileSync(join(dir, "vp.exe"), "");
     writeFileSync(join(dir, "codex.cmd"), "@echo codex-cli 0.1.0\r\n");
     const env: Env = { PATH: dir };
-    assert.deepEqual(howToUpdate("codex", findCommand("codex", env)!, env), { program: join(dir, "vp.exe"), args: ["install", "-g", "@openai/codex@latest"] });
+    assert.deepEqual(await howToUpdateSoon("codex", findCommand("codex", env)!, env), { program: join(dir, "vp.exe"), args: ["install", "-g", "@openai/codex@latest"] });
     const prefix = temp();
     mkdirSync(join(prefix, "node_modules", "@anthropic-ai", "claude-code"), { recursive: true });
     writeFileSync(join(prefix, "claude.cmd"), "@echo 2.1.0\r\n");
     writeFileSync(join(prefix, "npm.cmd"), "");
     const there: Env = { PATH: prefix };
-    assert.deepEqual(howToUpdate("claude", findCommand("claude", there)!, there), {
+    assert.deepEqual(await howToUpdateSoon("claude", findCommand("claude", there)!, there), {
       program: join(prefix, "npm.cmd"), args: ["install", "-g", "@anthropic-ai/claude-code@latest", "--prefix", prefix],
     });
   });
@@ -889,14 +929,14 @@ END
     assert.equal(wingetPackage("C:\\Users\\a\\.local\\bin\\claude.exe"), null);
   });
 
-  test("on Windows a command winget installed is updated with winget", { skip: !WINDOWS && "Windows'" }, () => {
+  test("on Windows a command winget installed is updated with winget", { skip: !WINDOWS && "Windows'" }, async () => {
     const dir = join(temp(), "WinGet", "Packages", "Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "claude.exe"), "");
     const apps = temp();
     writeFileSync(join(apps, "winget.exe"), "");
     const env: Env = { PATH: [dir, apps].join(";") };
-    assert.deepEqual(howToUpdate("claude", findCommand("claude", env)!, env), {
+    assert.deepEqual(await howToUpdateSoon("claude", findCommand("claude", env)!, env), {
       program: join(apps, "winget.exe"),
       noUpdate: 0x8a15002b,
       args: ["upgrade", "--id", "Anthropic.ClaudeCode", "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements"],
@@ -931,7 +971,7 @@ END
       symlinkSync("vp", join(dir, kindCommand(kind)));
       const env: Env = { PATH: dir };
       const f = findCommand(kindCommand(kind), env)!;
-      const how = howToUpdate(kind, f, env);
+      const how = await howToUpdateSoon(kind, f, env);
       assert.ok(!(how instanceof Unable));
       const [ok, said] = await run(how.program, how.args, env, 10_000);
       assert.ok(ok);
@@ -957,26 +997,26 @@ INSTALLER
 `);
     const env: Env = { PATH: `${bin}:/usr/bin:/bin`, CODEX_HOME: "/wrong/home" };
     const f = findCommand("codex", env)!;
-    const how = howToUpdate("codex", f, env);
+    const how = await howToUpdateSoon("codex", f, env);
     assert.ok(!(how instanceof Unable));
     const [ok, said] = await run(how.program, how.args, env, 10_000);
     assert.ok(ok, said);
     assert.equal(said, `${realpathSync(home)}\n${bin}\n`);
-    assert.ok(howToUpdate("codex", { onPath: real, real }, env) instanceof Unable);
+    assert.ok(await howToUpdateSoon("codex", { onPath: real, real }, env) instanceof Unable);
   });
 
-  test("each runtime is updated the way it was installed", () => {
+  test("each runtime is updated the way it was installed", async () => {
     const dir = temp();
     for (const name of ["brew", "npm"]) script(join(dir, name), "#!/bin/sh\n");
     const env: Env = { PATH: dir };
     const [brew, npm] = [exe(join(dir, "brew")), exe(join(dir, "npm"))];
-    assert.deepEqual(howToUpdate("claude", found("/Users/a/.local/share/claude/versions/2.1.284"), env), { program: "/nowhere/bin/x", args: ["update"] });
-    assert.deepEqual(howToUpdate("claude", found("/opt/homebrew/Caskroom/claude-code/2.1.284/claude"), env), { program: brew, args: ["upgrade", "--cask", "claude-code"] });
-    assert.deepEqual(howToUpdate("codex", found("/opt/homebrew/Cellar/codex/0.46.0/bin/codex"), env), { program: brew, args: ["upgrade", "codex"] });
-    assert.deepEqual(howToUpdate("codex", found("/Users/a/.nvm/versions/node/v24/lib/node_modules/@openai/codex/bin/codex.js"), env), {
+    assert.deepEqual(await howToUpdateSoon("claude", found("/Users/a/.local/share/claude/versions/2.1.284"), env), { program: "/nowhere/bin/x", args: ["update"] });
+    assert.deepEqual(await howToUpdateSoon("claude", found("/opt/homebrew/Caskroom/claude-code/2.1.284/claude"), env), { program: brew, args: ["upgrade", "--cask", "claude-code"] });
+    assert.deepEqual(await howToUpdateSoon("codex", found("/opt/homebrew/Cellar/codex/0.46.0/bin/codex"), env), { program: brew, args: ["upgrade", "codex"] });
+    assert.deepEqual(await howToUpdateSoon("codex", found("/Users/a/.nvm/versions/node/v24/lib/node_modules/@openai/codex/bin/codex.js"), env), {
       program: npm, args: ["install", "-g", "@openai/codex@latest", "--prefix", "/Users/a/.nvm/versions/node/v24"],
     });
-    assert.deepEqual(howToUpdate("claude", found("/Users/a/node/lib/node_modules/@anthropic-ai/claude-code/cli.js"), env), {
+    assert.deepEqual(await howToUpdateSoon("claude", found("/Users/a/node/lib/node_modules/@anthropic-ai/claude-code/cli.js"), env), {
       program: npm, args: ["install", "-g", "@anthropic-ai/claude-code@latest", "--prefix", "/Users/a/node"],
     });
     // Linked from a directory beside another Node's npm: its own Node's npm, not that one.
@@ -984,47 +1024,47 @@ INSTALLER
     mkdirSync(join(node, "bin"), { recursive: true });
     writeFileSync(join(node, "bin/npm"), "");
     const linked: Found = { onPath: join(dir, "codex"), real: join(node, "lib/node_modules/@openai/codex/bin/codex.js") };
-    const how = howToUpdate("codex", linked, env);
+    const how = await howToUpdateSoon("codex", linked, env);
     assert.deepEqual(how, { program: join(node, "bin/npm"), args: ["install", "-g", "@openai/codex@latest", "--prefix", node] });
     assert.deepEqual(pinNpmVersion(how as any, "@openai/codex", "0.159.3").args, ["install", "-g", "@openai/codex@0.159.3", "--prefix", node, "--prefer-online"]);
     const say_ = (h: unknown) => (h as Unable).say("zh");
-    assert.ok(say_(howToUpdate("codex", found("/project/node_modules/@openai/codex/bin/codex.js"), env)).includes("全局安装目录"));
-    assert.ok(say_(howToUpdate("codex", found("/usr/local/bin/codex"), env)).includes("手动更新"));
+    assert.ok(say_(await howToUpdateSoon("codex", found("/project/node_modules/@openai/codex/bin/codex.js"), env)).includes("全局安装目录"));
+    assert.ok(say_(await howToUpdateSoon("codex", found("/usr/local/bin/codex"), env)).includes("手动更新"));
     // Codex's standalone installer is a shell script: on Windows not run.
-    if (WINDOWS) assert.ok(say_(howToUpdate("codex", found("C:/Users/a/.codex/packages/standalone/releases/0.1.0-x86_64-pc-windows-msvc/bin/codex.exe"), env)).includes("手动更新"));
-    assert.deepEqual(howToInstall("codex", env), { program: npm, args: ["install", "-g", "@openai/codex@latest"] });
+    if (WINDOWS) assert.ok(say_(await howToUpdateSoon("codex", found("C:/Users/a/.codex/packages/standalone/releases/0.1.0-x86_64-pc-windows-msvc/bin/codex.exe"), env)).includes("手动更新"));
+    assert.deepEqual(await howToInstallSoon("codex", env), { program: npm, args: ["install", "-g", "@openai/codex@latest"] });
     const bare: Env = { PATH: "/nowhere", HOME: "/Users/a" };
     // Without npm: Codex by its own installer (a shell script: on Windows, a Node of the station's npm).
     const own = ownNode(join("/", "data"), "24.22.1")!;
     const build = machine.nodeBuild("24.22.1")!;
     assert.deepEqual(own, { version: "24.22.1", build, at: join("/", "data", "node", build.dist), bin: join("/", "data", "node", build.dist, build.bin) });
     const ownNpm = (pkg: string) => ({ program: join(own.bin, build.npm), args: ["install", "-g", pkg, "--prefix", own.at], node: own });
-    if (WINDOWS) assert.deepEqual(howToInstall("codex", bare, own), ownNpm("@openai/codex@latest"));
-    else assert.equal((howToInstall("codex", bare, own) as any).args[2], "stillfail-codex-install");
+    if (WINDOWS) assert.deepEqual(await howToInstallSoon("codex", bare, own), ownNpm("@openai/codex@latest"));
+    else assert.equal((await howToInstallSoon("codex", bare, own) as any).args[2], "stillfail-codex-install");
     // DeepSeek Harness and Grok Build by npm: the machine's, else a Node of the station's put in place first, into it.
     for (const kind of ["dsh", "grok"] as const) {
       const pkg = `${kindPackage(kind)}@latest`;
-      assert.deepEqual(howToInstall(kind, env, own), { program: npm, args: ["install", "-g", pkg] });
-      assert.deepEqual(howToInstall(kind, bare, own), ownNpm(pkg));
-      assert.equal(say_(howToInstall(kind, bare)), `安装 ${kind === "dsh" ? "DeepSeek Harness" : "Grok Build"} 需要 npm：请先在本机安装 Node（含 npm）`);
+      assert.deepEqual(await howToInstallSoon(kind, env, own), { program: npm, args: ["install", "-g", pkg] });
+      assert.deepEqual(await howToInstallSoon(kind, bare, own), ownNpm(pkg));
+      assert.equal(say_(await howToInstallSoon(kind, bare)), `安装 ${kind === "dsh" ? "DeepSeek Harness" : "Grok Build"} 需要 npm：请先在本机安装 Node（含 npm）`);
     }
-    assert.equal((howToInstall("claude", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
+    assert.equal((await howToInstallSoon("claude", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
     // Devin by its own installer: run again where it put it (`devin update` wants a terminal), by hand anywhere else;
     // installed by its installer.
-    assert.deepEqual(howToUpdate("devin", found("/Users/a/.local/share/devin/cli/_versions/3000.11.92/devin"), env), machine.devinInstall);
-    if (WINDOWS) assert.deepEqual(howToUpdate("devin", found("C:\\Users\\a\\AppData\\Local\\devin\\cli\\_versions\\3000.11.92\\devin.exe"), env), machine.devinInstall);
-    const elsewhere = howToUpdate("devin", found("/opt/homebrew/bin/devin"), env);
+    assert.deepEqual(await howToUpdateSoon("devin", found("/Users/a/.local/share/devin/cli/_versions/3000.11.92/devin"), env), machine.devinInstall);
+    if (WINDOWS) assert.deepEqual(await howToUpdateSoon("devin", found("C:\\Users\\a\\AppData\\Local\\devin\\cli\\_versions\\3000.11.92\\devin.exe"), env), machine.devinInstall);
+    const elsewhere = await howToUpdateSoon("devin", found("/opt/homebrew/bin/devin"), env);
     assert.ok(elsewhere instanceof Unable);
     assert.deepEqual([elsewhere.key, elsewhere.args], ["station.updates.devinElsewhere", { path: "/opt/homebrew/bin/devin" }]);
     assert.ok(say_(elsewhere).includes("/opt/homebrew/bin/devin"));
-    assert.deepEqual(howToInstall("devin", bare), machine.devinInstall);
-    assert.equal((howToInstall("devin", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
+    assert.deepEqual(await howToInstallSoon("devin", bare), machine.devinInstall);
+    assert.equal((await howToInstallSoon("devin", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
     assert.equal(kindPackage("devin"), "", "no npm package");
     // The Antigravity CLI by its own installer; it updates itself.
-    assert.deepEqual(howToInstall("agy", bare), machine.agyInstall);
-    assert.equal((howToInstall("agy", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
+    assert.deepEqual(await howToInstallSoon("agy", bare), machine.agyInstall);
+    assert.equal((await howToInstallSoon("agy", bare) as any).program, WINDOWS ? "powershell" : "/bin/sh");
     const agy = found("/Users/a/.local/bin/agy");
-    assert.deepEqual(howToUpdate("agy", agy, env), { program: agy.onPath, args: ["update"] });
+    assert.deepEqual(await howToUpdateSoon("agy", agy, env), { program: agy.onPath, args: ["update"] });
   });
 
   test("a command's failure shown as its last lines, without a terminal's escapes and a progress bar's returns", () => {

@@ -9,7 +9,7 @@ import { parentPort, workerData } from "node:worker_threads";
 import { learn } from "../src/accounts/catalog.ts";
 import type { Answer, Ask, Ready } from "../src/read/mb-reader.ts";
 import { ops, type ReadOp } from "./reference/ops.ts";
-import { openStore, usageGroupsBatched, UsageSummaryCache } from "./reference/store.ts";
+import { openStore } from "./reference/store.ts";
 import { HttpError, spokenIn } from "./reference/views.ts";
 import { cardEditPage, cardMessagePage } from "../src/store/card-outbox.ts";
 
@@ -23,7 +23,6 @@ type InternalRead = (db: DatabaseSync, args: any) => unknown;
 function serveReads(ops: Record<string, ReadOp>, internal: Record<string, InternalRead> = {}) {
   const loaded = performance.now();
   const store = openStore(workerData.data as string);
-  const usageCache = new UsageSummaryCache();
   parentPort!.postMessage({ ready: { loadedMs: Math.round(loaded), openedMs: Math.round(performance.now() - loaded) } } satisfies Ready);
 
   /// The connection a checkpoint is made on: one that may write (a read-only one may not), made at the first, and used
@@ -79,13 +78,7 @@ parentPort!.on("message", async (ask: Ask) => {
     // database changed since it last read): each was read again, from the disk while memory was short.
     store.db.exec("BEGIN");
     try {
-      // Usage can span many minutes. Read its compact statistics in bounded steps on this same snapshot, resting
-      // between them so the cold database does not displace other work's pages all at once.
-      const a = ask.args;
-      const batched = ask.op === "usage" && a.detailsPreparing !== true
-        ? await usageGroupsBatched(store, BigInt(a.from), BigInt(a.to), BigInt(a.tz), a.viewer ?? null, undefined, usageCache,
-          a.summaryStrict === true ? a.summaryPrepared === true : undefined) : null;
-      answer = { id: ask.id, text: spokenIn(ask.lang, () => JSON.stringify(op(store, { ...a, ...(batched === null ? {} : { batchedSummary: batched }) }))) };
+      answer = { id: ask.id, text: spokenIn(ask.lang, () => JSON.stringify(op(store, ask.args))) };
       if (store.prepareUpJobs !== null) answer.prepareUpJobs = store.prepareUpJobs;
       if (store.prepareWorkspaceUpJobs) answer.prepareWorkspaceUpJobs = true;
     } finally {

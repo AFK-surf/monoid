@@ -1293,11 +1293,10 @@ void mb_host_wake_after(double ms) {
   if (wake_at < 0 || t < wake_at) wake_at = t;
 }
 
-#include "groups.h"
-
+// (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   gl_current();  // (the frame may have opened a web view)
-  mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
+  mb_render_present(buf, count, r, g, b);
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text, int32_t a,
@@ -1680,6 +1679,8 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 
 int32_t mb_host_reduce_transparency(void) { return 0; }
 int32_t mb_host_increase_contrast(void) { return 0; }
+// (no heat of the machine an app is told of here: never slowed)
+int32_t mb_host_thermal_throttled(void) { return 0; }
 
 double mb_host_gpu_ms(void) { return -1; }
 

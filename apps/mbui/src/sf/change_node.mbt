@@ -34,16 +34,19 @@ pub fn page_said_node(parent : @view.View, words : () -> String, bad? : Bool = f
 ///|
 /// A day's heading of a record made a block of its own, its changes each one after it (day_change_node), so a long day
 /// is made only as far as it shows: `label` as it is now; narrow, a heading over the card its changes are pieces of
-/// (heading_node); wide, its label (10 in, the meta's medium muted), 20 over it.
+/// (heading_node); wide, its label (10 in, the meta's medium muted), 20 over it. `wide_in`: wide, its label that far in
+/// instead (0: on the line the page's title and its search start on, where its rows are rows on the page's ground
+/// whose words stand there too).
 #callsite(autofill(loc))
-pub fn day_heading_node(parent : @view.View, label : () -> String, loc~ : SourceLoc) -> Unit {
+pub fn day_heading_node(parent : @view.View, label : () -> String, wide_in? : Double, loc~ : SourceLoc) -> Unit {
   match look_node(parent) {
     Narrow => heading_node(loc~, parent, label)
     Wide =>
       parent.box(made_for=loc, fn(d) {
         d.padding(Is((0.0, day_top, 0.0, 0.0))) |> ignore
         d.box(fn(h) {
-          h.padding(Is((change_in, 0.0, change_in, 0.0))) |> ignore
+          let i = wide_in.unwrap_or(change_in)
+          h.padding(Is((i, 0.0, i, 0.0))) |> ignore
           words_node(h, label, fn() { day_heading }) |> ignore
         })
         |> ignore

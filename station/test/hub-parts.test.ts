@@ -923,7 +923,7 @@ test("a call's step carries what says what it runs, whole, however long the comm
   hub.close();
 });
 
-test("what stations before linked into the profile homes (the home workspace's memory and skills) is taken away; anything else is left", () => {
+test("what stations before linked into the profile homes (the home workspace's memory and skills) is taken away; anything else is left", async () => {
   const root = temp();
   const agent = join(root, "agent");
   mkdirSync(join(agent, "skills", "team"), { recursive: true });
@@ -950,8 +950,8 @@ test("what stations before linked into the profile homes (the home workspace's m
     { id: "synced", runtimes: ["claude" as const], home: synced },
     { id: "own", runtimes: ["claude" as const], home: own },
   ];
-  unlinkAgentHome(agent, profiles);
-  unlinkAgentHome(agent, profiles); // idempotent
+  await unlinkAgentHome(agent, profiles);
+  await unlinkAgentHome(agent, profiles); // idempotent
   assert.deepEqual(readdirSync(cc), ["grok"]);
   assert.deepEqual(readdirSync(join(cc, "grok")), []);
   assert.deepEqual(readdirSync(both), []);
@@ -983,12 +983,12 @@ test("a session's workspace has its workspace's skills where it runs: one gone i
   rmSync(root, { recursive: true, force: true });
 });
 
-test("every profile's transcripts are a runtime's one shared place", () => {
+test("every profile's transcripts are a runtime's one shared place", async () => {
   const root = temp();
   const data = join(root, "data");
   const [both, own] = [join(data, "homes", "both"), join(root, "own")];
   mkdirSync(join(own, "sessions"), { recursive: true });
-  linkTranscripts(data, [
+  await linkTranscripts(data, [
     { id: "both", runtimes: ["claude", "codex"], home: both },
     { id: "own", runtimes: ["codex"], home: own },
   ]);
@@ -1017,7 +1017,7 @@ test("transcripts a home kept itself go to the shared place, a runtime still wri
   // Claude Code's own sessions/ in a home of its: not Codex's transcripts.
   mkdirSync(join(gone, "sessions"), { recursive: true });
   writeFileSync(join(gone, "sessions", "123.json"), "{}");
-  linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
+  await linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
   for (const home of [now, was, gone]) assert.equal(readlinkSync(join(home, "projects")), join(data, "transcripts", "claude"));
   assert.ok(lstatSync(join(gone, "sessions")).isDirectory());
   assert.equal(readFileSync(join(shared, "s1.jsonl"), "utf8"), line("one", "m1") + line("two", "m2"), "the copy from before it grew gives way");
@@ -1029,19 +1029,19 @@ test("transcripts a home kept itself go to the shared place, a runtime still wri
   appendFileSync(join(was, "projects", "w", "s1.jsonl"), line("three", "m4"));
   assert.deepEqual((await transcriptPaths("claude", data, [now], ["s0", "s1", "s2"])).paths.map((p) => readTimeline("claude", p).map((e) => e.text)), [["old"], ["one", "two", "three"], ["new"]]);
   // Linked again (the config changed): as it is.
-  linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
+  await linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
   assert.equal(readFileSync(join(shared, "s1.jsonl"), "utf8"), line("one", "m1") + line("two", "m2") + line("three", "m4"));
   rmSync(data, { recursive: true, force: true });
 });
 
-test("a transcript that went its own way in two homes keeps the shared place's and is left aside, not lost", () => {
+test("a transcript that went its own way in two homes keeps the shared place's and is left aside, not lost", async () => {
   const data = temp();
   const [a, b] = [join(data, "homes", "a"), join(data, "homes", "b")];
   for (const [home, text] of [[a, "mine"], [b, "theirs"]] as const) {
     mkdirSync(join(home, "projects", "w"), { recursive: true });
     writeFileSync(join(home, "projects", "w", "s.jsonl"), line(text, "m"));
   }
-  linkTranscripts(data, [
+  await linkTranscripts(data, [
     { id: "a", runtimes: ["claude"], home: a },
     { id: "b", runtimes: ["claude"], home: b },
   ]);
@@ -1053,33 +1053,33 @@ test("a transcript that went its own way in two homes keeps the shared place's a
   rmSync(data, { recursive: true, force: true });
 });
 
-test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only", () => {
+test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only", async () => {
   const root = temp();
   const home = join(root, "agent");
   mkdirSync(join(home, "skills", "team-skill"), { recursive: true });
   writeFileSync(join(home, "skills", "team-skill", "SKILL.md"), "ours");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   const path = join(home, "skills", "stillfail-jobs", "SKILL.md");
   assert.ok(readFileSync(path, "utf8").startsWith("---\nname: stillfail-jobs\n"));
   assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../src/skills/stillfail-jobs.md", import.meta.url), "utf8"), "the station's text");
   writeFileSync(path, "edited by hand");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(readFileSync(path, "utf8").includes("job_start"), "the station's own, as it has it");
   assert.equal(readFileSync(join(home, "skills", "team-skill", "SKILL.md"), "utf8"), "ours", "the team's stay");
   const script = join(home, "skills", "stillfail-github-ci", "ci-wait.sh");
   assert.equal(readFileSync(script, "utf8"), readFileSync(new URL("../src/skills/stillfail-github-ci/ci-wait.sh", import.meta.url), "utf8"), "the scripts a skill brings, beside it");
   assert.ok(statSync(script).mode & 0o100, "runnable");
   writeFileSync(script, "edited by hand");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(readFileSync(script, "utf8").includes("gh pr checks"), "the station's script, as it has it");
   const feedback = join(home, "skills", "stillfail-feedback", "SKILL.md");
-  writeBuiltinSkills(home, true);
+  await writeBuiltinSkills(home, true);
   assert.ok(readFileSync(feedback, "utf8").includes("feedback_send"));
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(!existsSync(join(home, "skills", "stillfail-feedback")));
-  writeBuiltinSkills(home, true);
+  await writeBuiltinSkills(home, true);
   writeFileSync(join(home, "skills", "stillfail-feedback", "notes.md"), "mine");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(existsSync(join(home, "skills", "stillfail-feedback", "notes.md")));
   rmSync(root, { recursive: true, force: true });
 });
@@ -1097,8 +1097,8 @@ test("the deployment's skills are linked into an agents' home beside the station
   mkdirSync(join(site, "team"));
   writeFileSync(join(site, "team", "SKILL.md"), "the deployment's");
   writeFileSync(join(site, "machine", "SKILL.md"), "---\nname: machine\n---\nfacts");
-  writeBuiltinSkills(home, false, site);
-  writeBuiltinSkills(home, false, site); // idempotent
+  await writeBuiltinSkills(home, false, site);
+  await writeBuiltinSkills(home, false, site); // idempotent
   const skills = join(home, "skills");
   assert.equal(readlinkSync(join(skills, "machine")), join(site, "machine"));
   assert.equal(readlinkSync(join(skills, "later")), join(site, "later"), "linked before its SKILL.md is written");
@@ -1111,9 +1111,9 @@ test("the deployment's skills are linked into an agents' home beside the station
   writeFileSync(join(site, "later", "SKILL.md"), "---\nname: later\n---\n");
   rmSync(join(site, "team"), { recursive: true });
   mkdirSync(join(site, "gone"));
-  linkSiteSkills(skills, site);
+  await linkSiteSkills(skills, site);
   rmSync(join(site, "gone"), { recursive: true });
-  linkSiteSkills(skills, site);
+  await linkSiteSkills(skills, site);
   assert.ok(!existsSync(join(skills, "gone")) && lstatSync(join(skills, "gone"), { throwIfNoEntry: false }) === undefined, "a link to one gone is taken away");
   assert.equal(readFileSync(join(skills, "team", "SKILL.md"), "utf8"), "ours", "the team's own is never taken");
   await sessionSkills(workspace, skills);
@@ -1121,7 +1121,7 @@ test("the deployment's skills are linked into an agents' home beside the station
   assert.ok(existsSync(join(workspace, ".claude", "skills", "later", "SKILL.md")));
   // Without a site, nothing of it.
   const plain = join(root, "plain");
-  writeBuiltinSkills(plain, false, null);
+  await writeBuiltinSkills(plain, false, null);
   assert.deepEqual(readdirSync(join(plain, "skills")).filter((n) => !n.startsWith("stillfail-")), []);
   rmSync(root, { recursive: true, force: true });
 });

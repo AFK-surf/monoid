@@ -47,7 +47,7 @@ test("a message in the station's chat: a turn starts, the agent posts through th
   url = served.url;
   try {
     assert.deepEqual(await (await fetch(url.replace(/\/mcp$/, "/health"))).json(), { ok: true });
-    const [key, thread] = newSession(hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(hub, thread.id, "ada@x.com", "post:hello from the agent");
     // Its turn: started, posted, ended.
     // Real processes: looked at every 25 ms (no deadline).
@@ -91,7 +91,7 @@ test("a message to a Codex session: its turns' events go to its actor in the pro
   const served = await openAgentsDoor({ port: 0 }, mcp, () => ({ status: 400, body: { error: "no jobs" } }));
   url = served.url;
   try {
-    const [key, thread] = newSession(hub, { runtime: "codex", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(hub, { runtime: "codex", createdBy: "ada@x.com" });
     say(hub, thread.id, "ada@x.com", "slow:3");
     // Real processes: looked at every 25 ms (no deadline). Its turn and the one that nudges it, both ended.
     while (store.listTurns(key).length < 2 || store.lastTurn(key)?.endedAt == null) await new Promise((r) => setTimeout(r, 25));
@@ -143,7 +143,8 @@ test("two Codex sessions on one app-server at once: each one's events go to its 
   const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hy-") : "/tmp/hy-");
   const { hub, store, served } = await codexStation(data);
   try {
-    const sessions = [0, 1, 2, 3].map(() => newSession(hub, { runtime: "codex", createdBy: "ada@x.com" }));
+    const sessions: Awaited<ReturnType<typeof newSession>>[] = [];
+    for (let i = 0; i < 4; i++) sessions.push(await newSession(hub, { runtime: "codex", createdBy: "ada@x.com" }));
     for (const [, thread] of sessions) say(hub, thread.id, "ada@x.com", "slow:8");
     // Each its turn and the one that nudges it, both ended.
     await until(() => sessions.every(([key]) => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null), "every session's turns ended");
@@ -173,7 +174,7 @@ test("a Codex turn handed over while it writes is taken up by the next station a
   try {
     const gate = `${dump}.held`;
     for (const part of ["a", "b"]) execFileSync("/usr/bin/mkfifo", [`${gate}.${part}`]);
-    const [key, thread] = newSession(first.hub, { runtime: "codex", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(first.hub, { runtime: "codex", createdBy: "ada@x.com" });
     say(first.hub, thread.id, "ada@x.com", "gate:6:3:held");
     await until(() => first.store.getSession(key)?.running === true && first.store.lastTurn(key) !== undefined, "its turn begun");
     // (three of its deltas written, the turn waiting for the rest)
@@ -230,7 +231,7 @@ for (const own of OWN) {
     const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "ho-") : "/tmp/ho-");
     const { hub, store, served } = await ownStation(data, own);
     try {
-      const [key, thread] = newSession(hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
       say(hub, thread.id, "ada@x.com", "say:hello");
       // Its turn and the one that nudges it (no state said), both ended.
       await until(() => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null, "its turns ended");
@@ -258,7 +259,7 @@ for (const own of OWN.filter((o) => o.runtime === "dsh" || o.runtime === "grok")
       const first = await ownStation(data, own);
       let next: Awaited<ReturnType<typeof ownStation>> | null = null;
       try {
-        const [key, thread] = newSession(first.hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
+        const [key, thread] = await newSession(first.hub, { runtime: own.runtime as never, createdBy: "ada@x.com" });
         // Its reply read by the first station's program and taken by Node, which told the runner so (mb agents.mbt
         // `take`, before the live view is given the batch): its runner having written it is not enough, the program
         // may not have read it yet, and a crash then reads none of its turn again (the next station is given it live).

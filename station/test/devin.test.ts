@@ -177,8 +177,8 @@ describe("the Devin driver", { concurrency: true }, () => {
     // session's own given beside the working directory; no approvals.
     const sent = stdin(o.dump);
     assert.deepEqual(sent.map((m) => m.method), ["initialize", "authenticate", "session/new", "session/set_config_option", "session/prompt"]);
-    assert.match(devinKey(home) ?? "", /^devin-k\d+$/);
-    assert.deepEqual(sent[1].params, { methodId: "devin-browser", _meta: { api_key: devinKey(home) } });
+    assert.match((await devinKey(home)) ?? "", /^devin-k\d+$/);
+    assert.deepEqual(sent[1].params, { methodId: "devin-browser", _meta: { api_key: await devinKey(home) } });
     assert.equal(sent[2].params.cwd, o.cwd);
     assert.deepEqual(sent[2].params.mcpServers, [{ type: "http", name: "stillfail", url: o.mcpUrl, headers: [{ name: "Authorization", value: "Bearer tok" }] }]);
     const [rules] = sent[2].params.additionalDirectories;
@@ -447,12 +447,12 @@ describe("the Devin driver", { concurrency: true }, () => {
     await assert.rejects(driver().open({ ...o, resume: "gone-away" }, () => {}), /no Devin session gone-away/);
   });
 
-  test("the instructions' folder is the session's own, written again with its instructions", () => {
+  test("the instructions' folder is the session's own, written again with its instructions", async () => {
     const home = join(data, "rules-home");
     mkdirSync(home, { recursive: true });
-    const a = rulesFolder(home, "k1", "first");
-    assert.equal(rulesFolder(home, "k1", "second"), a);
-    assert.notEqual(rulesFolder(home, "k2", "other"), a);
+    const a = await rulesFolder(home, "k1", "first");
+    assert.equal(await rulesFolder(home, "k1", "second"), a);
+    assert.notEqual(await rulesFolder(home, "k2", "other"), a);
     assert.match(readFileSync(join(a, ".devin", "rules", "stillfail.md"), "utf8"), /\n---\nsecond\n\nThe station's tools/);
     assert.ok(a.startsWith(join(home, "devin", "station")));
   });
@@ -617,7 +617,7 @@ describe("what a profile runs Devin on", () => {
       assert.equal(run.env.WINDSURF_API_KEY, undefined);
       await logins.submitCode("d", " abc123 ", "en");
       await wait("done");
-      assert.equal(devinKey(home), "devin-abc123");
+      assert.equal(await devinKey(home), "devin-abc123");
       const signedIn = await check();
       assert.equal(signedIn.state, "ok");
       assert.deepEqual(signedIn.models, MODELS);

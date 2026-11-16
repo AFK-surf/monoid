@@ -167,15 +167,25 @@ pub let wide : Wide = {
 ///|
 /// The archive's list as it is looked at: the words looked for, how many asked for, the last read (shown while
 /// another is asked for); whether the newest was opened beside it since the archive was opened.
+/// What 已归档's list of the sidebar keeps while the app runs (archive_side_node.mbt): the words looked for and how many
+/// are asked (its field's, its foot's), what the core last answered (read by ⌥↑ ⌥↓ as they are pressed: keys.mbt
+/// neighbour) and its note (archive_main_node's), whether its newest was opened beside it since it was last opened.
 pub(all) struct ArchiveSide {
-  mut q : String
-  mut limit : Int
+  q : @signals.Signal[String]
+  limit : @signals.Signal[Int]
   mut last : Json?
+  note : @signals.Signal[String]
   mut landed : Bool
 }
 
 ///|
-pub let archive_side : ArchiveSide = { q: "", limit: archive_side_page, last: None, landed: false }
+pub let archive_side : ArchiveSide = {
+  q: @signals.signal(""),
+  limit: @signals.signal(archive_side_page),
+  last: None,
+  note: @signals.signal(""),
+  landed: false,
+}
 
 ///|
 /// How many the archive's list shows at first, and how many more each time it is scrolled near its end (Archive.tsx
@@ -184,9 +194,10 @@ pub let archive_side_page : Int = 60
 
 ///|
 fn wide_reset() -> Unit {
-  archive_side.q = ""
-  archive_side.limit = archive_side_page
+  archive_side.q.set("")
+  archive_side.limit.set(archive_side_page)
   archive_side.last = None
+  archive_side.note.set("")
   archive_side.landed = false
   wide.side_w.set(side_own)
   wide.folded.set(false)
@@ -1177,8 +1188,8 @@ fn main_page(
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
     // the pane
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
-    // 已归档, none of its chats open beside the list: what it is
-    Archived => archive_main(c)
+    // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
+    Archived => ()
     // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
     Service(station, job) => service_beside(c, src, station, job)
   }

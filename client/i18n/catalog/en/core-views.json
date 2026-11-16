@@ -484,7 +484,11 @@
     "other": "{n} calls"
   },
   "core-views.usage.deleted_account": "{profile} (deleted)",
-  "core-views.usage.deleted_chat": "Deleted chat",
+  "core-views.usage.deleted_chat": "Deleted chats",
+  "core-views.usage.deleted_chats": {
+    "one": "1 chat deleted",
+    "other": "{n} chats deleted"
+  },
   "core-views.usage.top_model": "Mostly {model}",
   "core-views.usage.detail": {
     "one": "1 call · {tokens} tokens",
@@ -493,6 +497,7 @@
   "core-views.usage.no_price": "No price; not included in cost",
   "core-views.usage.note.offline": "{name} offline; its usage isn't included",
   "core-views.usage.note.outdated": "{name}'s station needs an update to record usage",
+  "core-views.usage.note.partial": "{name}'s records start on {month}/{day}",
   "core-views.usage.note.reading": "Loading earlier records; numbers may change",
   "core-views.usage.note.since": "Records start on {month}/{day}",
   "core-views.usage.note.unpriced": {

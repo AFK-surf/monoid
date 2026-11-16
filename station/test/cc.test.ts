@@ -35,7 +35,7 @@ test("a chat can be copied to every Slack thread its agents are in, the one said
   // (a clock of the test's: what is said one after another is said at times apart, never in the same millisecond)
   const time = testClock();
   const r = new Rig({ clock: time.clock });
-  const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
   assert.deepEqual(prepared(r.store, chat.id), [], "a chat whose agent is in no Slack thread has none");
   const thread = (channel: string, ts: string) => {
     const t = r.store.openThread("slack:T1", channel, ts, null, "ada");
@@ -58,7 +58,7 @@ test("a chat can be copied to every Slack thread its agents are in, the one said
 
 test("copying a message: each thread picked has the bot say who wrote it on still.fail and what, kept as the station's words, not the agent's to answer", async () => {
   const r = new Rig();
-  const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
   const a = r.store.openThread("slack:T1", "C1", "1700.000100", null, "ada");
   r.store.joinThread(a.id, key, "cl");
   const b = r.store.openThread("slack:T1", "C2", "1700.000200", null, "ada");
@@ -84,7 +84,7 @@ test("copying a message: each thread picked has the bot say who wrote it on stil
 
 test("copying a message: the one who wrote it is mentioned as their account there, found by their email; their name where none is", async () => {
   const r = new Rig();
-  const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
   const there = r.store.openThread("slack:T1", "C1", "1700.000100", null, "ada");
   r.store.joinThread(there.id, key, "cl");
   r.chat.people.set("ada@x.com", "UADA");
@@ -101,7 +101,7 @@ test("copying a message: the one who wrote it is mentioned as their account ther
 
 test("a copy that did not go is said in the chat", async () => {
   const r = new Rig();
-  const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+  const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
   const there = r.store.openThread("slack:T1", "C1", "1700.000100", null, "ada");
   r.store.joinThread(there.id, key, "cl");
   Object.assign(r.chat, { post: async () => { throw new Error("not_in_channel"); } });
@@ -115,7 +115,7 @@ test("a copy that did not go is said in the chat", async () => {
 test("a copy prepares newly joined sessions again before choosing its destinations", async () => {
   const r = new Rig();
   try {
-    const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     const first = r.store.openThread("slack:T1", "C1", "1700.000100", null, "ada");
     const second = r.store.openThread("slack:T1", "C2", "1700.000200", null, "ada");
     r.store.joinThread(first.id, key, "cl");
@@ -135,7 +135,7 @@ test("a copy prepares newly joined sessions again before choosing its destinatio
 test("a copy whose destinations could not be prepared is said in its chat", async () => {
   const r = new Rig();
   try {
-    const [key, chat] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, chat] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     const target = r.store.openThread("slack:T1", "C1", "1700.000100", null, "ada");
     r.store.joinThread(target.id, key, "cl");
     r.hub.prepareCcSessions = async () => { throw new Error("preparation failed"); };
@@ -183,8 +183,8 @@ test("the pages: a chat says where it can be copied, and a message sent with cc 
     assert.deepEqual(slack.posts, [[{ channel: "C1", threadTs: "1700.000100" }, ccText("Ada (a@x)", "and there")]]);
     assert.deepEqual(store.messagesBefore(id, null, 10).filter((m) => m.authorKind === "person").map((m) => m.text), ["just here", "and there"]);
     // A list of new chats asks for their copy destinations together, rather than rebuilding the whole list once per chat.
-    const [second] = newSession(hub, { runtime: "claude", createdBy: "a@x", ws: "w" });
-    const [third] = newSession(hub, { runtime: "claude", createdBy: "a@x", ws: "w" });
+    const [second] = await newSession(hub, { runtime: "claude", createdBy: "a@x", ws: "w" });
+    const [third] = await newSession(hub, { runtime: "claude", createdBy: "a@x", ws: "w" });
     const prepare = readers.prepareCcSessions.bind(readers), batches: string[][] = [];
     readers.prepareCcSessions = (sessions, signal) => { batches.push([...sessions]); return prepare(sessions, signal); };
     const [status] = await ask("GET", "/threads");

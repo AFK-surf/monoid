@@ -36,7 +36,7 @@ import { CLOSED_CARDS_PENDING } from "../store/legacy-closed-cards.ts";
 import { PEOPLE_TIME_PENDING } from "../store/legacy-people-since.ts";
 import { SESSION_BINDINGS_PENDING } from "../store/session-bindings-index.ts";
 import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
-import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, USAGE_DETAIL_PENDING } from "./store.ts";
+import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { type Answer, type Ask, MbReader, type ReaderLike, type Ready, readerBinary } from "./mb-reader.ts";
@@ -51,7 +51,7 @@ const IDLE_MS = 60_000;
 /// start of such a refusal's words. What answers a read elsewhere (mesh/served.ts) gives such a one back to be read here.
 export const READS_PENDING = [LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, LAST_MESSAGE_PENDING, SESSION_BINDINGS_PENDING,
   CC_SESSIONS_PENDING, JOB_NAME_FIRST_PENDING, CARD_POSTS_PENDING, CLOSED_CARDS_PENDING, PEOPLE_TIME_PENDING, TURN_COUNT_PENDING,
-  SAID_PENDING, USAGE_DETAIL_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING, OUTFLOW_CHATS_PENDING, RECENT_CHAT_PENDING,
+  SAID_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING, OUTFLOW_CHATS_PENDING, RECENT_CHAT_PENDING,
   SESSION_LIST_PENDING];
 
 /// A read that waited or took longer than this is logged, with what it was.
@@ -619,11 +619,6 @@ export class Readers {
       try {
         return await this.enqueue("usage", args, lang, told, false, false, signal);
       } catch (error) {
-        if (error instanceof HttpError && error.message === USAGE_DETAIL_PENDING) {
-          this.startUsageIndex();
-          await this.covered(this.minutes!.readyDetail(viewer), signal);
-          continue;
-        }
         if (error instanceof HttpError && error.message === USAGE_CHATS_PENDING && history) {
           this.startUsageIndex();
           await this.covered(this.minutes!.readyChats(viewer), signal);
@@ -637,19 +632,9 @@ export class Readers {
     throw new HttpError(502, "station stopping");
   }
 
+  /// What the program reads of usage is kept as it is written (store/usage-15m.ts): nothing to wait for.
   private async outflowUsageRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {
-    const ws = (args as { ws?: InWorkspace } | null)?.ws;
-    const viewer: InWorkspace = ws !== null && typeof ws === "object" && typeof ws.workspace === "string"
-      ? { workspace: ws.workspace, home: ws.home === true } : { workspace: "\u0000home", home: true };
-    while (!this.closed) {
-      try { return await this.enqueue("outflowUsage", args, lang, told, false, false, signal); }
-      catch (error) {
-        if (!(error instanceof HttpError) || error.message !== USAGE_DETAIL_PENDING) throw error;
-        this.startUsageIndex();
-        await this.covered(this.minutes!.readyDetail(viewer), signal);
-      }
-    }
-    throw new HttpError(502, "station stopping");
+    return await this.enqueue("outflowUsage", args, lang, told, false, false, signal);
   }
 
   private async outflowChatsRead(args: unknown, lang: Ask["lang"], told: boolean, signal?: AbortSignal): Promise<Text> {

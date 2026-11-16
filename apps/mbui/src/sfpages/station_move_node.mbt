@@ -27,6 +27,13 @@ pub fn station_move_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
 ) -> Unit {
+  // (moving is the test channel's (core's move_on): where it is not, as a link opened on a stable app, the page goes
+  // back to where it was opened from, never one of a turn that would be refused)
+  v.reacts(fn() { (core.move_on)() }, fn(on) {
+    if !on {
+      on_back()
+    }
+  })
   let s = fn() { station_of(core, here(), address) }
   let title = fn() {
     match text(s(), "name") {
@@ -550,7 +557,7 @@ fn station_move_section(b : @view.View, core : Core, address : String) -> Unit {
 ///|
 /// Its ⋯'s 迁移到另一台… (station_menu_items'), while it is online and offers moving; None otherwise.
 fn station_move_item(core : Core, s : Json?) -> @sf.MenuItem? {
-  guard @settings.move_offered(s) else { return None }
+  guard (core.move_on)() && @settings.move_offered(s) else { return None }
   let address = text(s, "station")
   Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", fn() { (core.push)(StationMove(address)) }))
 }

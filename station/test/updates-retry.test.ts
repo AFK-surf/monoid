@@ -36,7 +36,7 @@ test("a failed automatic update gets one delayed retry, still waiting for vault 
   updates.start();
   writeFileSync(join(run, "update.log"), "handover failed: database is locked\n");
   writeFileSync(join(run, "update.exit"), "1\n");
-  updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
+  await updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
   await settle();
   assert.equal(updates.get()[0]!.state, "failed");
   await time.adjust(59_999);
@@ -55,7 +55,7 @@ test("a failed automatic update gets one delayed retry, still waiting for vault 
   assert.deepEqual(attempts, ["0.1.1310"]);
 
   // A second failure of that release does not cause an endless series of handovers.
-  updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
+  await updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
   await settle();
   await time.adjust(120_000);
   await settle();
@@ -71,12 +71,12 @@ test("a failed automatic update gets one delayed retry, still waiting for vault 
   // report: even that already-due retry must not start while the installer may still be running.
   const heldDuringTimeout = hold();
   t.after(heldDuringTimeout);
-  updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
+  await updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
   await settle();
   await time.adjust(60_000);
   await settle();
   rmSync(join(run, "update.exit"));
-  updates.follow({ at: time.clock.currentTimeMillisUnsafe() - 20 * 60_000 - 1, from: "0.1.1300" });
+  await updates.follow({ at: time.clock.currentTimeMillisUnsafe() - 20 * 60_000 - 1, from: "0.1.1300" });
   await settle();
   assert.equal(updates.get()[0]!.state, "failed");
   heldDuringTimeout();
@@ -114,7 +114,7 @@ test("a retry survives an unavailable release feed before the installer starts",
   updates.stationWith("0.1.1310");
   updates.tried = "0.1.1310";
   writeFileSync(join(run, "update.exit"), "1\n");
-  updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
+  await updates.follow({ at: time.clock.currentTimeMillisUnsafe(), from: "0.1.1300" });
   await settle();
   assert.equal(reads, 1, "the check after failure could not read the feed");
   await time.adjust(60_000);

@@ -228,6 +228,29 @@ test("a_chat_is_read_while_its_end_shows_on_a_page_in_front", async () => {
   }
 });
 
+test("a_notice_folding_failures_said_alike_is_unread_and_read_to_its_last", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  // 2..12 folded into the one at 2 (views.ts foldNotices): read to 5, so its unread line is at the folded one, and
+  // looked at to its end, read to 12.
+  const folded = (read: number): J => {
+    const v = chat(read, false, [[1, 0, true], [2, 0, false]]);
+    v.messages[1] = { ...v.messages[1], system: true, notice: { failed: true, words: "与模型服务的连接中断，回复即可重试", count: 11, lastSeq: 12 } };
+    return v;
+  };
+  let v = folded(5);
+  v = attend.chat("ws/st", null, v).value;
+  assert.equal(v.unreadLine, 2);
+  attend.focus(1, focus({ visible: true, focused: true, chat: { station: "ws/st", thread: 7, end: true } }));
+  const r = attend.chat("ws/st", null, folded(5));
+  assert.deepEqual(r.due, [{ read: { thread: 7, seq: 12 } }]);
+  assert.equal(r.value.unreadLine, 2);
+  // Read to its last, it is not unread.
+  const again = await run(Attend.load(new FakeHost()));
+  assert.equal(again.chat("ws/st", null, folded(12)).value.unreadLine, null);
+  assert.equal(again.chat("ws/st", null, folded(11)).value.unreadLine, 2);
+});
+
 test("notices_show_unless_off_looked_at_or_left_to_a_push_and_each_once", async () => {
   const host = new FakeHost();
   const attend = await run(Attend.load(host));

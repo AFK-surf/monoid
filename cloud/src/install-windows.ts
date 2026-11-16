@@ -77,6 +77,26 @@ __PRODUCTS__
 if (-not $Token -and $env:STILLFAIL_TOKEN) { $Token = $env:STILLFAIL_TOKEN }
 function Say([string]$text) { Write-Host $text }
 function Fail([string]$text) { [Console]::Error.WriteLine($text); exit 1 }
+# Downloads $url to $file (none: its answer returned), tried again after each of STILLFAIL_DOWNLOAD_PAUSES (seconds; a
+# test's 0 0 0) where it failed on the way: no answer, a connection broken (main 0a099ace's station-update 43880021498,
+# 2026-11-16, on macOS's curl), a gateway's 502, 503 or 504. A refusal (404, 403, 500) is the same when asked again.
+function Download([string]$url, [string]$file) {
+  $pauses = if ($null -ne $env:STILLFAIL_DOWNLOAD_PAUSES) { @(-split $env:STILLFAIL_DOWNLOAD_PAUSES) } else { @(1, 2, 4) }
+  for ($i = 0; ; $i++) {
+    try {
+      if ($file) { Invoke-WebRequest -UseBasicParsing $url -OutFile $file; return }
+      return Invoke-WebRequest -UseBasicParsing $url
+    } catch {
+      $status = $null
+      try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+      if ($file) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue }
+      if ($i -ge $pauses.Count -or ($status -and $status -notin 502, 503, 504)) { throw }
+      $seconds = $pauses[$i]
+      [Console]::Error.WriteLine(__SAY(cloud.install.downloadAgain, seconds=$seconds))
+      Start-Sleep -Seconds ([int]$seconds)
+    }
+  }
+}
 
 $data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { Join-Path $env:USERPROFILE ('.' + $product) }
 $run = Join-Path $data 'run'
@@ -121,7 +141,7 @@ if ($env:STILLFAIL_ARCHIVE -and $env:STILLFAIL_ARCHIVE -match '[\\\\/]stillfail-
   Move-Item -LiteralPath $env:STILLFAIL_ARCHIVE $zip
   Remove-Item -Recurse -Force (Split-Path -Parent $env:STILLFAIL_ARCHIVE) -ErrorAction SilentlyContinue
 } else {
-  Invoke-WebRequest -UseBasicParsing "$origin/releases/$release" -OutFile $zip
+  Download "$origin/releases/$release" $zip
 }
 # A station updating itself says what the release must hash to, as its signed words say (station/src/updates/signed.ts):
 # anything else is not installed.
@@ -165,8 +185,8 @@ if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
     $nodeFile = "node-v$nodeVersion-win-x64.zip"
     Say (__SAY(cloud.install.node.download, version=$nodeVersion))
     try {
-      Invoke-WebRequest -UseBasicParsing "$origin/releases/node/$nodeFile" -OutFile (Join-Path $tmp $nodeFile)
-      if (-not $signedNode) { $want = ((Invoke-WebRequest -UseBasicParsing "$origin/releases/node/$nodeFile.sha256").Content -split '\\s+')[0] }
+      Download "$origin/releases/node/$nodeFile" (Join-Path $tmp $nodeFile)
+      if (-not $signedNode) { $want = ((Download "$origin/releases/node/$nodeFile.sha256").Content -split '\\s+')[0] }
     } catch { Fail (__SAY(cloud.install.node.failed, version=$nodeVersion; origin=$origin)) }
     if (-not $signedNode) {
       $got = (Get-FileHash -Algorithm SHA256 (Join-Path $tmp $nodeFile)).Hash

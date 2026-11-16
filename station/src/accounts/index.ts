@@ -23,12 +23,12 @@ import { expandDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { access as accessFile, readFile, stat } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
+import { access as accessFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
-import { linkCodexAuth } from "../agents/machine-logins.ts";
+import { linkCodexAuthSoon } from "../agents/machine-logins.ts";
 import { type AccessKind, accessKind, KIMI_CODE, kimiSignedIn, profileVia, type Runtime, takesFast, fastNeedsCredits, type Via } from "../agents/profiles.ts";
 import { cleanEndpoint, endpoints, find, groupOf, LEGACY, runtimesOf as runtimesOfEndpoints, SOURCES } from "../agents/providers.ts";
 import { type Viewer, managesStation } from "../mesh/credential.ts";
@@ -46,7 +46,7 @@ import { titleOf } from "../read/views.ts";
 import { LEGACY_OPTIONS, policyFrom, savePolicy } from "../sessions/archive-policy.ts";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { checkAutomaticDecisions } from "./check.ts";
-import { CONSOLE_FILE, consoleIn, readConsole, RenewRefused, renewToken, writeConsole } from "./console.ts";
+import { CONSOLE_FILE, type ConsoleLogin, consoleIn, readConsole, RenewRefused, renewToken, writeConsole } from "./console.ts";
 import { CURSOR, authFile as cursorAuthFile, cursorIn } from "./cursor.ts";
 import { KIMI_AUTH, kimiDue, readKimi, renewKimiToken, writeKimi } from "./kimi.ts";
 import { LOGIN_BROWSER_FILE, type LoginCommands, type LoginJob, LoginManager } from "./login.ts";
@@ -182,9 +182,9 @@ const named = (runtime: Runtime) => runtimeLabel(runtime);
 export const borrowed = (p: Json): boolean => isObject(p?.share) && p.share.borrowed === true;
 
 /// Which login a borrowed Codex process will read, without keeping its tokens in memory or logs.
-function lentLoginVersion(home: string): string | null {
+async function lentLoginVersion(home: string): Promise<string | null> {
   try {
-    const tokens = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"))?.tokens;
+    const tokens = JSON.parse(await readFile(join(home, "auth.json"), "utf8"))?.tokens;
     return createHash("sha256").update(JSON.stringify([tokens?.id_token, tokens?.access_token, tokens?.account_id])).digest("hex");
   } catch {
     return null;
@@ -199,13 +199,6 @@ type HomeSays = { exists: boolean; email: string | null };
 function homeAsked(p: Json): { home: string; runtime: Runtime; files: "account" | "console" | null } {
   const files = accessKind(p) === "subscription" ? (borrowed(p) ? null : "account") : isObject(p.access) && p.access.login === true ? "console" : null;
   return { home: String(p.home ?? ""), runtime: p.runtime, files };
-}
-
-/// `homeAsked`'s answer, read on the thread (a profile not read before).
-function homeSaysNow(p: Json): HomeSays {
-  const { home, runtime, files } = homeAsked(p);
-  const email = files === "account" ? accountEmail(runtime, home) : files === "console" ? emailIn([consoleFile(home)]) : null;
-  return { exists: existsSync(home), email };
 }
 
 /// `homeAsked`'s answer, read off the thread (fs/promises).
@@ -241,6 +234,12 @@ export class Accounts {
   /// The sign-ins for new profiles being settled (pendingChanged), by id: whether it was told again meanwhile.
   private settling = new Map<string, boolean>();
   private pending = new Map<string, Pending>();
+  /// Ids of profiles being made (their home moved or linked, not yet saved): taken, as a saved one's.
+  private readonly making = new Set<string>();
+  /// Which Codex account each Codex subscription profile is signed in to, as its auth.json last said (read off the
+  /// thread: `codexAccountRead`), and the reads under way.
+  private readonly codexAccounts = new Map<string, { home: string; account: string | null }>();
+  private readonly codexAccountReads = new Map<string, Promise<void>>();
   /// What each profile's home said when last read (`HomeSays`), by profile, with what it was read for: the overview is
   /// made again at each change for each viewer, and read every profile's files on the thread each time (a few dozen
   /// calls; seconds on a machine short of memory). Read again off the thread as it is made, at most every
@@ -248,6 +247,11 @@ export class Accounts {
   private homes = new Map<string, { asked: string; says: HomeSays }>();
   private homesRead = 0;
   private homesReading = false;
+  /// The reads of a home under way, by profile and what it is read for: begun at `since` (`homesChanged`), and whether
+  /// what it finds is to be told (one asked by a view that showed nothing yet).
+  private readonly homeReads = new Map<string, { since: number; tell: boolean; read: Promise<void> }>();
+  /// Closed: nothing read after is told.
+  private closed = false;
   /// Bumped as a sign-in changes what a home says: a reading begun before is not kept.
   private homesChanged = 0;
   private listeners = new Set<() => void>();
@@ -306,6 +310,8 @@ export class Accounts {
   /// followed, the checks after start, the allowance rounds, the machine's logins read.
   start() {
     this.deps.hub?.accounts.setHealth((id) => this.health(id));
+    // (which Codex account each is on, for the pool's first picks)
+    void this.codexAccountsRead().catch(() => {});
     this.deps.hub?.accounts.setRecheck?.(async (id) => {
       const profile = this.profile(id);
       if (profile?.runtime === "codex" && accessKind(profile) === "subscription") {
@@ -387,6 +393,7 @@ export class Accounts {
   }
 
   async close() {
+    this.closed = true;
     for (const stop of this.stops.splice(0)) stop();
     await this.logins.close();
     await this.background.close();
@@ -423,8 +430,37 @@ export class Accounts {
   /// How a profile is doing, for the pool: its last check and allowance, and which Codex account the allowance is of.
   health(id: string): ProfileHealth {
     const profile = this.profile(id);
-    const account = profile?.runtime === "codex" && accessKind(profile) === "subscription" ? codexAccountIdentity(profile.home) : null;
+    const account = profile?.runtime === "codex" && accessKind(profile) === "subscription" ? this.codexAccount(profile) : null;
     return { check: this.checks.get(id) ?? null, quota: this.quotas.get(id) ?? null, ...(account === null ? {} : { account: `codex:${account}` }) };
+  }
+
+  /// Which Codex account `profile` is signed in to, as last read; read again off the thread for the next ask (a login
+  /// changed under it), the pool's picks never waiting on its file. Not read yet: none said (`codexAccountsRead`).
+  private codexAccount(profile: Profile): string | null {
+    void this.codexAccountRead(profile);
+    const kept = this.codexAccounts.get(profile.id);
+    return kept?.home === profile.home ? kept.account : null;
+  }
+
+  /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
+  private codexAccountRead(profile: Profile, again = false): Promise<void> {
+    const under = this.codexAccountReads.get(profile.id);
+    if (under && !again) return under;
+    const read: Promise<void> = (under ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => codexAccountIdentity(profile.home))
+      .then((account) => void this.codexAccounts.set(profile.id, { home: profile.home, account }))
+      .finally(() => {
+        if (this.codexAccountReads.get(profile.id) === read) this.codexAccountReads.delete(profile.id);
+      });
+    this.codexAccountReads.set(profile.id, read);
+    return read;
+  }
+
+  /// Every Codex subscription profile's account read again (the station starting; a test after it changed one).
+  async codexAccountsRead(): Promise<void> {
+    const codex = this.profiles().filter((p) => p.runtime === "codex" && accessKind(p) === "subscription");
+    await Promise.all(codex.map((p) => this.codexAccountRead(p, true)));
   }
 
   /// How a profile is doing, told to a station borrowing it: its allowance asked again first when older than a round
@@ -680,12 +716,12 @@ export class Accounts {
     if (needsKey(kind, source?.id) && key === "") throw new Refusal(400, t("station.profile.keyRequired"));
     const homes = join(this.deps.data, "homes");
     const trial = join(homes, `new-${randomBytes(4).toString("hex")}`);
-    mkdirSync(trial, { recursive: true });
+    await mkdir(trial, { recursive: true });
     const check = await this.checkFn({ runtime, kind, key, via: { provider: source?.id, endpoint, protocol }, home: trial, machine: false }, lang);
     // A provider with no model list leaves its key unchecked (state unknown); a refused key is what stops it.
     const refused = source ? check.state === "failed" : check.state !== "ok" && keyed(kind);
     if (refused) {
-      rmSync(trial, { recursive: true, force: true });
+      await rm(trial, { recursive: true, force: true });
       throw new Refusal(400, t("station.profile.checkFailed", { detail: check.detail }));
     }
     const label = source
@@ -696,19 +732,31 @@ export class Accounts {
           ? "Anthropic API"
           : t("station.profile.envName", { runtime: named(runtime) });
     const base = source ? source.id : kind === "env" ? `${runtime}-env` : kind;
-    const id = unique(base, this.takenIds());
-    renameSync(trial, join(homes, id));
-    this.save(viewer, `profile ${id}`, (raw) => {
-      const made: Json = { id, name: label };
-      if (kind === "env") made.runtime = runtime;
-      made.access = { kind };
-      if (key !== "") made.access.key = key;
-      if (source) made.access.provider = source.id;
-      if (endpoint !== undefined) made.access.endpoint = endpoint;
-      if (protocol !== undefined) made.access.protocol = protocol;
-      Object.assign(made, { home: `homes/${id}`, env: {} });
-      raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
-    });
+    // (its id held from the homes' listing to its save: another made meanwhile takes another)
+    const id = unique(base, await this.takenIdsSoon());
+    this.making.add(id);
+    try {
+      await rename(trial, join(homes, id));
+    } catch (e) {
+      this.making.delete(id);
+      await rm(trial, { recursive: true, force: true });
+      throw e;
+    }
+    try {
+      this.save(viewer, `profile ${id}`, (raw) => {
+        const made: Json = { id, name: label };
+        if (kind === "env") made.runtime = runtime;
+        made.access = { kind };
+        if (key !== "") made.access.key = key;
+        if (source) made.access.provider = source.id;
+        if (endpoint !== undefined) made.access.endpoint = endpoint;
+        if (protocol !== undefined) made.access.protocol = protocol;
+        Object.assign(made, { home: `homes/${id}`, env: {} });
+        raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
+      });
+    } finally {
+      this.making.delete(id);
+    }
     this.keepCheck(id, check);
     // All a check finds out beyond its key is found once the profile is made, a request to add not waiting on that: what
     // the automatic decisions can use, and the levels Codex offers on it, without which it holds every other account of
@@ -726,23 +774,31 @@ export class Accounts {
     const runtime = runtimeOf(input.runtime);
     if (!runtime) throw new Refusal(400, `unknown runtime ${text(input.runtime)}`);
     const id = `machine-${runtime}`;
-    if (this.profiles().some((p) => p.id === id)) throw new Refusal(409, t("station.machine.alreadyUsed"));
+    // (one being made by another request meanwhile is as one made)
+    const used = () => this.making.has(id) || this.profiles().some((p) => p.id === id);
+    if (used()) throw new Refusal(409, t("station.machine.alreadyUsed"));
     const machine = this.machine;
     if (!machine) throw new Refusal(400, t("station.machine.unreadable"));
     await machine.refresh();
     const login = machine.get().find((l) => l.runtime === runtime);
     if (!login?.loggedIn) throw new Refusal(400, t("station.machine.notSignedIn", { runtime: named(runtime) }));
     if (!login.usable) throw new Refusal(400, t("station.machine.keychain"));
-    const home = join(this.deps.data, "homes", id);
-    mkdirSync(home, { recursive: true });
-    if (runtime === "codex") linkCodexAuth(home, machine.env);
-    // Its account, not "this machine": the profile is listed with the workspace's, read from other machines.
-    const name = login.email ?? named(runtime);
-    log.info("accounts", "profile on the machine's login made", { profile: id, runtime, by: viewer.email });
-    this.save(viewer, `profile ${id} on the machine's login`, (raw) => {
-      const made = { id, name, runtime, access: { kind: "subscription" }, home: `homes/${id}`, env: {}, machine: true };
-      raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
-    });
+    if (used()) throw new Refusal(409, t("station.machine.alreadyUsed"));
+    this.making.add(id);
+    try {
+      const home = join(this.deps.data, "homes", id);
+      await mkdir(home, { recursive: true });
+      if (runtime === "codex") await linkCodexAuthSoon(home, machine.env);
+      // Its account, not "this machine": the profile is listed with the workspace's, read from other machines.
+      const name = login.email ?? named(runtime);
+      log.info("accounts", "profile on the machine's login made", { profile: id, runtime, by: viewer.email });
+      this.save(viewer, `profile ${id} on the machine's login`, (raw) => {
+        const made = { id, name, runtime, access: { kind: "subscription" }, home: `homes/${id}`, env: {}, machine: true };
+        raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
+      });
+    } finally {
+      this.making.delete(id);
+    }
     this.afterSignIn(id);
     return id;
   }
@@ -831,13 +887,14 @@ export class Accounts {
   }
 
   /// A sign-in for a new profile, dropped (DELETE /logins/:id): its command stopped, its home removed unless it made one.
-  dropLogin(id: string) {
+  /// Gone from the list at once; a profile being made of it meanwhile takes its home away itself (`pendingSettled`).
+  async dropLogin(id: string): Promise<void> {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
     this.logins.cancel(id);
-    if (pending.created === null) rmSync(pending.home, { recursive: true, force: true });
     this.changed();
+    if (pending.created === null) await rm(pending.home, { recursive: true, force: true });
   }
 
   /// A sign-in for a new profile moved on: once it succeeds the profile is made, named by the account signed in.
@@ -863,7 +920,7 @@ export class Accounts {
     if (!p) return;
     const state = this.logins.get(id)?.state;
     if (state === "failed" || state === "cancelled") {
-      rmSync(p.home, { recursive: true, force: true });
+      await rm(p.home, { recursive: true, force: true });
       return;
     }
     if (state !== "done" || p.created !== null || p.error !== null) return;
@@ -880,13 +937,32 @@ export class Accounts {
     const email = signedIn ? signedIn.email : kimi ? null : await accountEmailSoon(p.runtime, p.home);
     if (gone()) return;
     const base = signedIn ? "opencode-go" : kimi ? KIMI_CODE : slug(email ?? `${p.runtime}-subscription`, 40) || p.runtime;
-    const profileId = unique(base, this.takenIds());
+    const taken = await this.takenIdsSoon();
+    if (gone()) return;
+    // (its id held from the homes' listing to its save: another made meanwhile takes another)
+    const profileId = unique(base, taken);
     const target = join(this.deps.data, "homes", profileId);
+    this.making.add(profileId);
     try {
-      renameSync(p.home, target);
+      await this.madeOfLogin(id, p, profileId, target, signedIn, kimi, email, lang, gone);
+    } finally {
+      this.making.delete(profileId);
+    }
+  }
+
+  /// `pendingSettled`'s profile `profileId` made of sign-in `id`: its home moved to `target`, the profile saved.
+  private async madeOfLogin(id: string, p: Pending, profileId: string, target: string, signedIn: ConsoleLogin | null, kimi: boolean, email: string | null, lang: Lang, gone: () => boolean) {
+    try {
+      await rename(p.home, target);
     } catch (e) {
+      if (gone()) return;
       log.warn("accounts", "could not move a new profile's home", { login: id, error: (e as Error).message });
       return this.pendingFailed(id, tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+    }
+    // Dropped while it moved (`dropLogin` found nothing at its old place): taken away here.
+    if (gone()) {
+      await rm(target, { recursive: true, force: true });
+      return;
     }
     const enterprise = p.access === "agy-enterprise";
     const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : enterprise ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription")) : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
@@ -903,16 +979,14 @@ export class Accounts {
       });
     } catch (e) {
       log.warn("accounts", "the signed-in profile was not saved", { login: id, error: (e as Error).message });
-      try {
-        renameSync(target, p.home);
-      } catch {}
+      await rename(target, p.home).catch(() => {});
       return this.pendingFailed(id, tr(lang, "station.login.saveFailed", { error: (e as Error).message }));
     }
     p.created = profileId;
     this.changed();
     this.afterSignIn(profileId);
     // Kept a while for the page that started it to follow it to the profile.
-    this.background.after(PENDING_KEPT_MS, () => this.dropLogin(id));
+    this.background.after(PENDING_KEPT_MS, () => void this.dropLogin(id));
   }
 
   private pendingFailed(id: string, error: string) {
@@ -1049,6 +1123,8 @@ export class Accounts {
     if (profile?.runtime === "codex" && accessKind(profile) === "subscription") {
       this.loginGeneration.set(id, (this.loginGeneration.get(id) ?? 0) + 1);
       this.codexLogin(id, false);
+      // Which account it is on now, for the pool's next pick.
+      void this.codexAccountRead(profile, true).catch(() => {});
     }
     // Its copies on other stations take the new sign-in (share/index.ts `loginUpdated`).
     if (profile && accessKind(profile) === "subscription" && !borrowed(profile)) this.deps.shared?.loginUpdated?.(id);
@@ -1497,12 +1573,13 @@ export class Accounts {
     // A host that signed out may have no login to lend; its status must still reach the copy.
     await this.checkBorrowed(profile, stationLang());
     if (profile.runtime === "codex" && this.deps.shared.lendCodex) {
-      const before = this.borrowedLogin.has(id) ? this.borrowedLogin.get(id) : lentLoginVersion(profile.home);
+      const before = this.borrowedLogin.has(id) ? this.borrowedLogin.get(id) : await lentLoginVersion(profile.home);
       if (!this.borrowedLogin.has(id)) this.borrowedLogin.set(id, before ?? null);
       await this.deps.shared.lendCodex(profile, true);
-      const after = lentLoginVersion(profile.home);
+      const after = await lentLoginVersion(profile.home);
       if (before !== after) {
         this.loginGeneration.set(id, (this.loginGeneration.get(id) ?? 0) + 1);
+        await this.codexAccountRead(profile, true).catch(() => {});
         await this.deps.codex?.()?.loginChanged?.(id);
       }
       this.borrowedLogin.set(id, after);
@@ -1811,14 +1888,49 @@ export class Accounts {
     return says.email;
   }
 
-  /// What profile `p`'s home says, as last read; read on the thread the first time (or once what it is read for changed).
+  /// What profile `p`'s home says, as last read. One not read yet (or since what it is read for changed) is read off the
+  /// thread, what it found told (`homesReadSoon`, which the overview waits for first, has it read by then); meanwhile
+  /// nothing said of its account, its home taken as there.
   private homeSays(p: Profile): HomeSays {
     const asked = JSON.stringify(homeAsked(p));
     const kept = this.homes.get(p.id);
     if (kept?.asked === asked) return kept.says;
-    const says = homeSaysNow(p);
-    this.homes.set(p.id, { asked, says });
-    return says;
+    void this.homeRead(p, true);
+    return { exists: true, email: null };
+  }
+
+  /// The homes of the profiles not read yet (or since what they are read for changed), read off the thread: what the
+  /// overview waits for before it is made.
+  async homesReadSoon(): Promise<void> {
+    const profiles = this.profiles().filter((p) => this.homes.get(p.id)?.asked !== JSON.stringify(homeAsked(p)));
+    await Promise.all(profiles.map((p) => this.homeRead(p, false)));
+  }
+
+  /// Profile `p`'s home read off the thread and kept, unless a sign-in changed it meanwhile (read again at the next
+  /// view); `tell`: what it found told, as the view that asked showed nothing yet.
+  private homeRead(p: Profile, tell: boolean): Promise<void> {
+    const asked = JSON.stringify(homeAsked(p));
+    const key = `${p.id}\n${asked}`;
+    const since = this.homesChanged;
+    const under = this.homeReads.get(key);
+    // One begun before a sign-in changed the home finds what is let go: a new one is begun, not waited for.
+    if (under && under.since === since) {
+      under.tell ||= tell;
+      return under.read;
+    }
+    const entry = { since, tell, read: Promise.resolve() };
+    entry.read = homeSaysSoon(p)
+      .then((says) => {
+        if (this.homesChanged !== since) return;
+        this.homes.set(p.id, { asked, says });
+        if (entry.tell && !this.closed) this.changed();
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (this.homeReads.get(key) === entry) this.homeReads.delete(key);
+      });
+    this.homeReads.set(key, entry);
+    return entry.read;
   }
 
   /// Every profile's home read again off the thread, once HOMES_EVERY_MS have passed since the last time; what changed
@@ -1835,7 +1947,7 @@ export class Accounts {
         const since = this.homesChanged;
         const says = await homeSaysSoon(p).catch(() => null);
         const kept = this.homes.get(p.id);
-        // Not shown yet (read on the thread when it is), or changed meanwhile: left as it is.
+        // Not shown yet (read as it is), or changed meanwhile: left as it is.
         if (says === null || kept === undefined || kept.asked !== asked || this.homesChanged !== since) continue;
         if (kept.says.exists === says.exists && kept.says.email === says.email) continue;
         this.homes.set(p.id, { asked, says });
@@ -1863,13 +1975,11 @@ export class Accounts {
     return SOURCES.filter((s) => !(s.id in LEGACY)).map((s) => ({ id: s.id, name: s.name, group: groupOf(s.id) }));
   }
 
-  /// Ids a new profile may not take: the profiles' own, and every home on disk (a deleted profile's home stays).
-  private takenIds(): Set<string> {
-    const taken = new Set(this.profiles().map((p) => p.id));
-    try {
-      for (const name of readdirSync(join(this.deps.data, "homes"))) taken.add(name);
-    } catch {}
-    return taken;
+  /// Ids a new profile may not take: the profiles' own, those being made, and every home on disk (a deleted profile's
+  /// home stays). The profiles looked at once the homes are listed.
+  private async takenIdsSoon(): Promise<Set<string>> {
+    const homes = await readdir(join(this.deps.data, "homes")).catch(() => [] as string[]);
+    return new Set([...this.profiles().map((p) => p.id), ...this.making, ...homes]);
   }
 }
 
@@ -1887,7 +1997,9 @@ function lastOfRuntime(raw: Json, runtime: Runtime, id: string, lang: Lang) {
   if (users.length > 0) throw new Error(tr(lang, "station.profile.lastForRuntime", { runtime, users: users.join(tr(lang, "station.list.separator")) }));
 }
 
-/// The account a subscription home is signed in as, when its files say: Codex's id token, Claude's account record.
+/// The account a subscription home is signed in as, when its files say: Codex's id token, Claude's account record. Read
+/// on the thread: only share/index.ts's naming of a Grok or Cursor account still asks it so (its move is the sessions'
+/// and shares' wave); the rest asks `accountEmailSoon`.
 export const accountEmail = (runtime: Runtime, home: string): string | null => emailIn(accountFiles(runtime, home));
 
 /// What the first of `files` that names an account says, as `emailKept` keeps it.

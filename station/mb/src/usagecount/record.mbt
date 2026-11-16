@@ -86,8 +86,8 @@ fn one(db : @sql.Db, sql : String, params : Array[Json]) -> Map[String, Json]? r
 }
 
 ///|
-/// What this connection learned of the database's schema once (it migrates forward only): whether the compact
-/// statistics are there (once there, kept), and whether the totals are incremental (decided as the store opened).
+/// What this connection learned of the database's schema once (it migrates forward only): whether the contexts are
+/// kept (once there, kept), and whether the totals are incremental (decided as the store opened).
 priv struct Schema {
   mut compact : Bool
   mut incremental : Bool?
@@ -99,7 +99,7 @@ fn Schema::has_compact(self : Schema, db : @sql.Db) -> Bool raise {
   if self.compact {
     return true
   }
-  let installed = one(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_compact_since'", []) is Some(_)
+  let installed = one(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('usage_contexts', 'usage_compact_since') LIMIT 1", []) is Some(_)
   if installed {
     self.compact = true
   }
@@ -107,7 +107,7 @@ fn Schema::has_compact(self : Schema, db : @sql.Db) -> Bool raise {
 }
 
 ///|
-/// store/usage-detail.ts `usageTotalsComplete`.
+/// store/usage-totals-source.ts `usageTotalsComplete`.
 fn Schema::totals_complete(self : Schema, db : @sql.Db, session : String) -> Bool raise {
   let incremental = match self.incremental {
     Some(known) => known
@@ -605,13 +605,13 @@ fn record(db : @sql.Db, schema : Schema, w : Write) -> Int raise {
     let mut snapshot : Snapshot? = None
     let insert = if compact {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, compact_counted)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted, compact_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1, 1)
       )
     } else {
       (
-        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window)
-        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+        #|INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted)
+        #|       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1)
         #|       ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output)
       )
     }

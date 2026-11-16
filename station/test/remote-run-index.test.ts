@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, remoteRunCount, remoteRunsSince } from "./reference/store.ts";
+import { I64_MAX, makeStore, remoteRunCount, remoteRunsSince, type Store as Reader } from "./reference/store.ts";
 import { backfillRemoteRuns, DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns, REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { Store } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
+import type { InWorkspace } from "../src/store/rows.ts";
+
+/// The tasks from `from` on, by UTC day and chat.
+const since = (reader: Reader, from: bigint, viewer: InWorkspace | null = null) => remoteRunsSince(reader, from, BigInt(I64_MAX), 0n, viewer);
 
 test("old remote tasks fill in bounded batches and survive concurrent old writes and a restart", () => {
   const dir = mkdtempSync(join(tmpdir(), "remote-runs-"));
@@ -29,7 +33,7 @@ test("old remote tasks fill in bounded batches and survive concurrent old writes
     store.db.prepare("DELETE FROM remote_runs WHERE job = ?").run("old-49");
     store.db.prepare("INSERT INTO remote_runs (rowid, job, at, session) VALUES (50, 'late', 2, 'remote:B:station:late')").run();
     store.db.prepare("UPDATE remote_runs SET session = 'remote:B:station:moved' WHERE job = 'old-10'").run();
-    assert.throws(() => remoteRunsSince(makeStore(store.db, dir), 0n, { workspace: "B", home: false }), /remote task statistics are still being filled/);
+    assert.throws(() => since(makeStore(store.db, dir), 0n, { workspace: "B", home: false }), /remote task statistics are still being filled/);
     store.close();
     store = Store.open(path);
 
@@ -39,7 +43,7 @@ test("old remote tasks fill in bounded batches and survive concurrent old writes
       assert.ok(step.processed <= 5);
     } while (!step.done);
     const reader = makeStore(store.db, dir);
-    assert.deepEqual(remoteRunsSince(reader, 0n), [
+    assert.deepEqual(since(reader, 0n), [
       { at: 2, session: "remote:B:station:late" },
       { at: later, session: "remote:A:station:later" },
     ]);
@@ -65,23 +69,23 @@ test("remote task indexes follow writes, edits, deletes and the existing ninety-
     db.prepare("UPDATE remote_runs SET session = 'remote:A:station:moved' WHERE job = 'b'").run();
     db.prepare("DELETE FROM remote_runs WHERE job = 'a'").run();
     const reader = makeStore(db, ".");
-    assert.deepEqual(remoteRunsSince(reader, 0n, { workspace: "A", home: true }), [{ at: 10, session: "remote:A:station:moved" }]);
+    assert.deepEqual(since(reader, 0n, { workspace: "A", home: true }), [{ at: 10, session: "remote:A:station:moved" }]);
     assert.equal(remoteRunCount(reader, { workspace: "A", home: true }), 1);
     assert.equal(remoteRunCount(reader, { workspace: "B", home: false }), 0);
     assert.equal(remoteRunCount(reader, null), 2);
-    assert.deepEqual(remoteRunsSince(reader, 0n, { workspace: "", home: false }), [{ at: 20, session: "without-colons" }]);
+    assert.deepEqual(since(reader, 0n, { workspace: "", home: false }), [{ at: 20, session: "without-colons" }]);
     db.prepare("INSERT OR REPLACE INTO remote_runs VALUES (?, ?, ?)").run("b", 30, "remote:B:station:replacement");
     assert.equal(remoteRunCount(reader, { workspace: "A", home: false }), 0);
     assert.equal(remoteRunCount(reader, { workspace: "B", home: false }), 1);
     assert.equal(remoteRunCount(reader, null), 2, "replacing a job does not leave its old indexed copy");
 
-    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${REMOTE_RUNS_OF}`).all("A", 0) as { detail: string }[]).map((r) => r.detail).join(" | ");
-    assert.match(plan, /PRIMARY KEY \(ws=\? AND at>\?\)/);
+    const plan = (db.prepare(`EXPLAIN QUERY PLAN ${REMOTE_RUNS_OF}`).all("A", 0, 100, 0) as { detail: string }[]).map((r) => r.detail).join(" | ");
+    assert.match(plan, /PRIMARY KEY \(ws=\? AND at>\? AND at<\?\)/);
     const expiry = (db.prepare(`EXPLAIN QUERY PLAN ${DELETE_EXPIRED_REMOTE_RUNS}`).all(1) as { detail: string }[]).map((r) => r.detail).join(" | ");
     assert.match(expiry, /remote_run_by_time USING PRIMARY KEY \(at<\?\)/);
     store.noteRemoteRun("later", "remote:A:station:later", 91 * 24 * 60 * 60 * 1_000);
     assert.equal(remoteRunCount(reader, null), 1);
-    assert.deepEqual(remoteRunsSince(reader, 0n).map((r) => r.session), ["remote:A:station:later"]);
+    assert.deepEqual(since(reader, 0n).map((r) => r.session), ["remote:A:station:later"]);
   } finally {
     store.close();
   }
@@ -103,15 +107,15 @@ test("a partial remote task index converges after old rows change and new rows a
     while (!backfillRemoteRuns(db, 2).done) {}
     const reader = makeStore(db, ".");
     for (const ws of ["A", "B"]) {
-      const expected = (db.prepare("SELECT at, session FROM remote_runs WHERE at >= 0 ORDER BY at, rowid").all() as { at: number; session: string }[])
+      const expected = (db.prepare("SELECT at, session FROM remote_runs WHERE at >= 0 ORDER BY at, session").all() as { at: number; session: string }[])
         .filter((r) => r.session.split(":")[1] === ws).map((r) => ({ at: r.at, session: r.session }));
-      assert.deepEqual(remoteRunsSince(reader, 0n, { workspace: ws, home: false }), expected);
+      assert.deepEqual(since(reader, 0n, { workspace: ws, home: false }), expected);
       assert.equal(remoteRunCount(reader, { workspace: ws, home: false }), expected.length);
     }
   } finally { db.close(); }
 });
 
-test("old remote tasks are not filled even when minute statistics are already ready", async () => {
+test("old remote tasks are not filled by the checker that says whether they are ready", async () => {
   const dir = mkdtempSync(join(tmpdir(), "remote-runs-worker-"));
   const path = join(dir, "stillfail.db");
   const old = new DatabaseSync(path);
@@ -123,7 +127,6 @@ test("old remote tasks are not filled even when minute statistics are already re
   Atomics.store(new Int32Array(priority), 0, 1);
   const worker = new MinuteReader(path, { priority });
   try {
-    await worker.ready({ workspace: "A", home: false });
     await assert.rejects(worker.readyRemote(), /remote.*unavailable/);
     assert.equal((store.db.prepare("SELECT done FROM remote_run_progress WHERE id = 1").get() as { done: number }).done, 0);
     assert.throws(() => remoteRunCount(makeStore(store.db, dir), { workspace: "A", home: false }), /remote task statistics are still being filled/);
