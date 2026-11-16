@@ -275,14 +275,14 @@ export class LiveHub {
     }
   }
 
-  close() {
+  /// Ended: what it started is gone once this resolves (its reader's directory too), so a hub's shutdown waits for it.
+  close(): Promise<void> {
     this.#closed = true;
     for (const w of this.#watchers.values()) w.watcher?.close();
     this.#watchers.clear();
     const own = this.#own;
     this.#own = null;
-    if (own !== null) void own.close();
-    void this.#reader.close();
+    return Promise.all([own?.close(), this.#reader.close()]).then(() => {});
   }
 
   // ── what the program asks ──────────────────────────────────────────────────────────────────────────────────────
@@ -476,6 +476,9 @@ class OwnReader {
   readonly #waiting = new Map<number, { reader: MbReader; resolve: (answer: Json) => void; reject: (error: Error) => void }>();
   #next = 0;
   #closed = false;
+  /// Readers being ended and not gone yet (one ended as its last answer came): `close` waits for them before it takes
+  /// their directory away, a database of theirs still open in it.
+  readonly #ending = new Set<Promise<unknown>>();
 
   tailRead(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind; entries?: false }): Promise<{ start: number; entries: Json[]; state: TailState }> {
     return this.#ask("tailRead", { runtime, state });
@@ -484,6 +487,7 @@ class OwnReader {
   async #ask(op: string, args: unknown): Promise<Json> {
     if (this.#closed) throw new Error("the live view is closed");
     const dir = await (this.#dir ??= this.#made());
+    if (this.#closed) throw new Error("the live view is closed");
     const id = ++this.#next;
     const reader = (this.#reader ??= this.#start(dir));
     const answered = new Promise<Json>((resolve, reject) => this.#waiting.set(id, { reader, resolve, reject }));
@@ -518,7 +522,7 @@ class OwnReader {
       // (nothing more asked of it: ended now, a new one started for what is asked next)
       if (this.#reader === reader && ![...this.#waiting.values()].some((w) => w.reader === reader)) {
         this.#reader = null;
-        void reader.terminate();
+        this.#end(reader);
       }
       if (said.error !== undefined) waiting.reject(new Error(said.error));
       else {
@@ -534,11 +538,18 @@ class OwnReader {
     return reader;
   }
 
+  #end(reader: MbReader): void {
+    const ending = reader.terminate().catch(() => {});
+    this.#ending.add(ending);
+    void ending.then(() => this.#ending.delete(ending));
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     const reader = this.#reader;
     this.#reader = null;
-    if (reader !== null) await reader.terminate();
+    if (reader !== null) this.#end(reader);
+    await Promise.all(this.#ending);
     const dir = await this.#dir?.catch(() => null);
     if (dir) await rm(dir, { recursive: true, force: true });
   }

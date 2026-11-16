@@ -1458,7 +1458,7 @@ export class Hub {
     this.incoming.abort();
     this.stopTimers();
     this.unlistenRunning();
-    this.live.close();
+    await this.live.close();
     await this.sandboxNames?.close();
     await this.sessionDirectories?.close();
     await this.processJobs?.close();
