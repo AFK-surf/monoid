@@ -68,13 +68,14 @@ test("a person's devices bring their lock to the station and read it there, boun
   assert.equal((lockPartRoute(cloud, "person", "GET", Buffer.alloc(0), viewer("carol"))[1] as any).chains[0].entries.length, 2);
 });
 
-test("the chains kept are read back after a restart, the workspaces they were heard in with them", () => {
+test("the chains kept are read back after a restart, the workspaces they were heard in with them", async () => {
   const dir = mkdtempSync(join(tmpdir(), "person-chains-"));
   const path = join(dir, "person-chains.json");
   const carol = personal("carol");
   const kept = new PersonChains(path);
   kept.keep(carol.genesis, carol.chain, "w1");
   kept.keep(carol.genesis, carol.chain, "w2");
+  await kept.written();
   const again = new PersonChains(path);
   assert.deepEqual(again.heardIn("w2").map(([g]) => g), [carol.genesis]);
   assert.deepEqual(again.of("carol").map(([g, c]) => [g, c.length]), [[carol.genesis, 1]]);

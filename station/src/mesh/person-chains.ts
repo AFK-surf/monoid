@@ -8,10 +8,11 @@
 // device brings the chain as it grows (POST /lock/person) and reads it (GET /lock/person), the person's streams are told
 // its head moved (`person`), and the stations of the workspaces it was heard in keep each other level (person-sync.ts). So it
 // keeps, by each chain, the workspaces it was heard in, and a few chains a person (each begun anew) at most.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { type Entry, LockRefusal, asEntry, personChain } from "../cloud/lock.ts";
 import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "../cloud/log-keep.ts";
+import { PrivateFile } from "../ops/files.ts";
+import { log } from "../ops/log.ts";
 
 /// At most this many chains of one person (a lock begun anew when all their devices were lost): the oldest go.
 export const CHAINS_A_PERSON = 4;
@@ -49,15 +50,15 @@ export class PersonChains {
   readonly #aside = new Map<string, Entry[]>();
   /// The workspaces each chain was heard in (`""`: none said).
   readonly #heard = new Map<string, Set<string>>();
-  readonly #path: string | null;
+  readonly #file: PrivateFile | null;
   readonly #told = new Set<(genesis: string) => void>();
   readonly #changed = new Set<(genesis: string) => void>();
 
   constructor(path: string | null = null) {
-    this.#path = path;
+    this.#file = path === null ? null : new PrivateFile(path);
     if (path === null) return;
     try {
-      const read = JSON.parse(readFileSync(path, "utf8"));
+      const read = JSON.parse(readFileSync(path, "utf8")); // sync: read once, before the station serves
       // Written before the workspaces were kept: the chains alone.
       const chains = read?.chains !== undefined && typeof read.chains === "object" ? read.chains : read;
       for (const [genesis, chain] of Object.entries(chains ?? {})) if (Array.isArray(chain)) this.#kept.set(genesis, chain);
@@ -221,16 +222,23 @@ export class PersonChains {
       }
     }
     if (newly) this.#heard.set(genesis, heard.add(ws));
-    if (this.#path !== null) {
-      mkdirSync(dirname(this.#path), { recursive: true });
-      const temp = `${this.#path}.tmp`;
+    // Kept in memory at once, so what is taken next is judged by it; written off the main thread, the latest only after
+    // a write on its way. What answers that it was kept waits for it first (`written`).
+    if (this.#file !== null) {
       const heardOut = Object.fromEntries([...this.#heard].filter(([g]) => this.#kept.has(g)).map(([g, s]) => [g, [...s]]));
       const asideOut = this.#aside.size === 0 ? {} : { aside: Object.fromEntries([...this.#aside].filter(([g]) => this.#kept.has(g))) };
-      writeFileSync(temp, JSON.stringify({ chains: Object.fromEntries(this.#kept), heard: heardOut, ...asideOut }), { mode: 0o600 }); // sync: one step with the answer that it was kept, as this file was always written
-      renameSync(temp, this.#path);
+      this.#file.write(JSON.stringify({ chains: Object.fromEntries(this.#kept), heard: heardOut, ...asideOut })).catch((error) => {
+        log.warn("mesh", "person chains not written", { error: (error as Error).message });
+      });
     }
     if (moved) for (const f of [...this.#told]) f(genesis);
     for (const f of [...this.#changed]) f(genesis);
+  }
+
+  /// Once what was kept so far is on disk (or its write failed): what answers a device or a station that it was kept
+  /// waits for it, so a restart does not forget what it was told was kept.
+  written(): Promise<void> {
+    return this.#file?.written() ?? Promise.resolve();
   }
 
   /// Told each time the chain gone by of a lock moves, on or to another branch (its genesis); returns what stops it.

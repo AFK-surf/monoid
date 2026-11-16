@@ -121,11 +121,12 @@ test("two stations come level in bodies in any order of arrival, each giving onl
   }
 });
 
-test("a restart keeps the bodies, and the state they make", () => {
+test("a restart keeps the bodies, and the state they make", async () => {
   const w = world();
   handover(w);
   const c = station(w);
   for (const l of [w.alice, w.bob, w.carol]) bring(c, l);
+  await personChainsOf(c).written();
   const again = new Cloud(c.data, false);
   assert.deepEqual([...again.bodies(null).all().keys()].sort(), [...c.bodies(null).all().keys()].sort());
   assert.deepEqual([...again.locked()!.state!.members.keys()].sort(), ["alice", "bob", "carol"]);

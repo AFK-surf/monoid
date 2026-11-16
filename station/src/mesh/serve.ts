@@ -1060,6 +1060,8 @@ async function handledOf(m: Members, method: string, path: string, head: any, bo
   // The workspace lock (cloud/lock.ts): the station's, here where the device that brings it is known.
   if (route === "/lock") {
     const [status, said] = lockRoute(m.cloud, method, at < 0 ? [] : queryPairs(rest.slice(at + 1)), body, viewer);
+    // (a person's chain it took answered once it is on disk: person-chains.ts `written`)
+    await personChainsOf(m.cloud).written();
     return { handled: json(status, said), headers, rest, plain: true };
   }
   // The workspace's ways (mesh/ways.ts): read by its members' devices, changed from the app's 连接方式.
@@ -1075,6 +1077,7 @@ async function handledOf(m: Members, method: string, path: string, head: any, bo
   const lockPart = /^\/lock\/(person|devices|bodies|logs|heads|given)$/.exec(route);
   if (lockPart) {
     const [status, said] = lockPartRoute(m.cloud, lockPart[1]!, method, body, viewer);
+    await personChainsOf(m.cloud).written();
     return { handled: json(status, said), headers, rest, plain: true };
   }
   const handled = await m.admin.handle({

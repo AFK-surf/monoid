@@ -111,6 +111,7 @@ export function makeFeishu(options: FeishuOptions) {
     close: async () => {
       await registrations.close();
       await connects.close();
+      await threads.written();
     },
   };
 }

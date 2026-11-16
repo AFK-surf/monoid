@@ -4,7 +4,8 @@
 // (`fetched`: task.put's `through`, what task.hello says) and through which Message the station's session answered it
 // already (`answered`: Comma says so with an invite made again; those Messages are not handed to the session again).
 import { createHash } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 
 /// Where Comma Tasks are, as threads here.
@@ -26,26 +27,30 @@ export const threadTsOf = (task: string): string => {
 
 export class CommaTasks {
   readonly path: string;
+  private readonly file: PrivateFile;
   private kept: Kept = {};
 
   constructor(path: string) {
     this.path = path;
+    this.file = new PrivateFile(path);
     try {
-      const v = JSON.parse(readFileSync(path, "utf8"));
+      const v = JSON.parse(readFileSync(path, "utf8")); // sync: read once, before the station serves
       if (v !== null && typeof v === "object" && !Array.isArray(v)) this.kept = v;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn("comma", "comma tasks file unreadable; starting empty", { error: (error as Error).message });
     }
   }
 
+  /// Kept in memory at once, written off the main thread (those asked while a write is on its way: the latest after it).
   private save() {
-    const tmp = `${this.path}.tmp`;
-    try {
-      writeFileSync(tmp, JSON.stringify(this.kept));
-      renameSync(tmp, this.path);
-    } catch (error) {
+    this.file.write(JSON.stringify(this.kept)).catch((error) => {
       log.warn("comma", "comma tasks not kept", { error: (error as Error).message });
-    }
+    });
+  }
+
+  /// Once what was changed is written.
+  written(): Promise<void> {
+    return this.file.written();
   }
 
   get(connect: string, task: string): Task | null {

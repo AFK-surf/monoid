@@ -194,7 +194,7 @@ export class Rig {
           return { add: this.grants.proof() };
         case "rig.log": {
           const limit = Number.isSafeInteger(request.limit) ? Math.min(Math.max(1, request.limit), LOG_MAX) : 50;
-          return { commands: this.commands.last(limit) as unknown as Json };
+          return this.commands.last(limit).then((commands) => ({ commands: commands as unknown as Json }));
         }
         default:
           throw new Refused(`unknown method ${method}`);
@@ -261,6 +261,7 @@ export class Rig {
     this.#wired.clear();
     this.#untold.clear();
     await this.grants.close();
+    await this.commands.written();
     if (this.#d.fibers === undefined) await this.#fibers.close();
   }
 }

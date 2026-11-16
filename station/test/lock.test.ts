@@ -899,7 +899,7 @@ test("over the stations' own transport: a station the control plane stuffs in is
   }
 });
 
-test("a hello bringing its person's own lock is let in on it where its member bound it, and goes by the longest chain heard", () => {
+test("a hello bringing its person's own lock is let in on it where its member bound it, and goes by the longest chain heard", async () => {
   const w = workspace();
   const cloud = stationData(w, w.stations[0]!.hex);
   const owner = ed().hex;
@@ -936,6 +936,8 @@ test("a hello bringing its person's own lock is let in on it where its member bo
   assert.equal(lockRoute(cloud, "POST", [], Buffer.from(JSON.stringify({ person: next })), viewer)[0], 200);
   entry(next, "device.remove", { key: phone.key.id }, first.key);
   assert.equal(lockRoute(cloud, "POST", [], Buffer.from(JSON.stringify({ person: next })), viewer)[0], 200);
+  // (written by the time the route answers: mesh/serve.ts `handledOf`)
+  await personChainsOf(cloud).written();
   const restarted = new Cloud(cloud.data);
   assert.throws(() => inLockBringing(restarted, admitted(phone.base), "member", endpoint, { lock: { person: next.slice(0, 4) } }), LockRefusal);
   // Another's lock is not told here, nor one that was not bound.
