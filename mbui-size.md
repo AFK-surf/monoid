@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c94b14180](https://github.com/AFK-surf/monoid/commit/c94b141807a6ca280fc02db5788b70bff2917113) mbui android: the app made on a thread of its own, | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.8 | 119.85 |
 | [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 117.47 |
 | [bbd04474c](https://github.com/AFK-surf/monoid/commit/bbd04474cb95ea1d4bc6cbfabcc89ab583fb65b8) mbui: bars brought down to what main's runs found; | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 117.47 |
 | [22a872852](https://github.com/AFK-surf/monoid/commit/22a872852b208d55becec3d70e86e69ac94797f9) move: a login a third station hosts is neither's t | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 119.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e4afc6097](https://github.com/AFK-surf/monoid/commit/e4afc60978149640dfc7b95e5ceb2f3bda4d1204) mbui, app: follow the system's Increase Contrast ( | 2.45 | 3.44 | 14.63 | 35.78 | 57.09 | 31.38 | 64.68 | 99.96 | 116.26 |
 | [672e1e1e5](https://github.com/AFK-surf/monoid/commit/672e1e1e5ccda068f5ecab534b59eacf3cc9885d) station: connects, logins, sign-ins and Feishu sca | 2.45 | 3.44 | 14.63 | 35.78 | 57.09 | 31.38 | 64.68 | 99.96 | 116.26 |
 | [c5dd442e8](https://github.com/AFK-surf/monoid/commit/c5dd442e86ce3b692d9b237af2156cc91f618ce6) station: a command an installer put on Windows' PA | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.96 | 117.62 |
-| [3088173c9](https://github.com/AFK-surf/monoid/commit/3088173c94e5b5061feb5616c6217283c503b380) mbui: a menu draws back into what opened it as it  | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c94b14180](https://github.com/AFK-surf/monoid/commit/c94b141807a6ca280fc02db5788b70bff2917113) mbui android: the app made on a thread of its own, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
 | [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [bbd04474c](https://github.com/AFK-surf/monoid/commit/bbd04474cb95ea1d4bc6cbfabcc89ab583fb65b8) mbui: bars brought down to what main's runs found; | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [22a872852](https://github.com/AFK-surf/monoid/commit/22a872852b208d55becec3d70e86e69ac94797f9) move: a login a third station hosts is neither's t | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e4afc6097](https://github.com/AFK-surf/monoid/commit/e4afc60978149640dfc7b95e5ceb2f3bda4d1204) mbui, app: follow the system's Increase Contrast ( | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
 | [672e1e1e5](https://github.com/AFK-surf/monoid/commit/672e1e1e5ccda068f5ecab534b59eacf3cc9885d) station: connects, logins, sign-ins and Feishu sca | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
 | [c5dd442e8](https://github.com/AFK-surf/monoid/commit/c5dd442e86ce3b692d9b237af2156cc91f618ce6) station: a command an installer put on Windows' PA | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
-| [3088173c9](https://github.com/AFK-surf/monoid/commit/3088173c94e5b5061feb5616c6217283c503b380) mbui: a menu draws back into what opened it as it  | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
