@@ -494,13 +494,8 @@ export class Logins {
     const pages = `#!/bin/sh\n# A browser for a login command run by still.fail (station/src/logins): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nfor a in "$@"; do printf '%s\\n' "$a" >> "$STILLFAIL_LOGIN_OPENED"; done\nexit 0\n`;
     // Python's opener before 3.14 says `open location "…"` on osascript's stdin.
     const osascript = `#!/bin/sh\n# osascript for a login command run by still.fail (station/src/logins): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nprintf '%s\\n' "$*" >> "$STILLFAIL_LOGIN_OPENED"\n[ -t 0 ] || cat >> "$STILLFAIL_LOGIN_OPENED"\nexit 0\n`;
-    await Promise.all(
-      ([["browser", pages], ["open", pages], ["xdg-open", pages], ["osascript", osascript]] as const).map(async ([name, text]) => {
-        const path = join(dir, name);
-        const same = await readFile(path, "utf8").then((had) => had === text, () => false);
-        if (!same) await platform.makeCommandSoon(path, text);
-      }),
-    );
+    // (each left alone where it is as it is to be: makeCommandSoon)
+    await Promise.all(([["browser", pages], ["open", pages], ["xdg-open", pages], ["osascript", osascript]] as const).map(([name, text]) => platform.makeCommandSoon(join(dir, name), text)));
     return dir;
   }
 

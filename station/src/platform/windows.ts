@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readlinkSy
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
@@ -479,6 +479,8 @@ export const windows: Platform = {
   async makeCommandSoon(path, script, noop) {
     const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
     const beside = async (to: string, text: string) => {
+      // (one there already as it is to be kept: renamed over while a command runs it, Windows refuses)
+      if ((await readFile(to, "utf8").catch(() => null)) === text) return;
       const tmp = `${to}.${randomUUID()}.tmp`;
       try {
         await writeFile(tmp, text);

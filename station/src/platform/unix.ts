@@ -389,6 +389,9 @@ export const unix: Platform = {
     return path;
   },
   async makeCommandSoon(path, script) {
+    // (one there already as it is to be kept: a command running it may hold it)
+    const [had, st] = await Promise.all([readFile(path, "utf8").catch(() => null), stat(path).catch(() => null)]);
+    if (had === script && st !== null && (st.mode & 0o111) !== 0) return path;
     const tmp = `${path}.${randomUUID()}.tmp`;
     try {
       await writeFile(tmp, script);

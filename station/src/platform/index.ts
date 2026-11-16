@@ -109,7 +109,7 @@ export type Platform = {
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;
   /// `makeCommand` off the station's thread, each file written beside and renamed into place: a command that runs it
-  /// meanwhile finds the one before or this one whole, never half of it.
+  /// meanwhile finds the one before or this one whole, never half of it. One already as it is to be is left alone.
   makeCommandSoon(path: string, script: string, noop?: boolean): Promise<string>;
 
   // Process groups (ops/group.ts).
