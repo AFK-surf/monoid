@@ -147,7 +147,9 @@ jobs:
       # key, installed as before.
       - uses: ./.github/actions/mbui-moonbit
       - name: Build sffix
-        run: MBUI_APP_MOD=sf/apps/mbui APP=sffix scripts/win.sh build
+        run: |
+          sh sf/apps/mbui/scripts/farview.sh
+          MBUI_APP_MOD=sf/apps/mbui APP=sffix scripts/win.sh build
       - name: Screenshots
         run: |
           mkdir -p out/shot-sf

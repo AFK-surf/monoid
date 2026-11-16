@@ -105,7 +105,7 @@ test "pointing: a pointed child inside a pressable row let go when pointed_in tu
             !row.pointed_in()
           },
           fn(badge) {
-            badge.width(Is(Some(40.0))).height(Is(Some(40.0))).points(Is(true)) |> ignore
+            badge.over(Is(true)).width(Is(Some(40.0))).height(Is(Some(40.0))).points(Is(true)) |> ignore
           },
         )
         |> ignore
