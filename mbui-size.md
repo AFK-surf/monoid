@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a0c2727c2](https://github.com/AFK-surf/monoid/commit/a0c2727c25f0ee9fb326d3ce6163519c931bfcee) shell, mesh: the front's lines in stillfail.log ca | 2.45 | 3.44 | 14.63 | 35.79 | 57.09 | 31.38 | 64.68 | 99.96 | 149.05 |
 | [e4afc6097](https://github.com/AFK-surf/monoid/commit/e4afc60978149640dfc7b95e5ceb2f3bda4d1204) mbui, app: follow the system's Increase Contrast ( | 2.45 | 3.44 | 14.63 | 35.78 | 57.09 | 31.38 | 64.68 | 99.96 | 116.26 |
 | [672e1e1e5](https://github.com/AFK-surf/monoid/commit/672e1e1e5ccda068f5ecab534b59eacf3cc9885d) station: connects, logins, sign-ins and Feishu sca | 2.45 | 3.44 | 14.63 | 35.78 | 57.09 | 31.38 | 64.68 | 99.96 | 116.26 |
 | [c5dd442e8](https://github.com/AFK-surf/monoid/commit/c5dd442e86ce3b692d9b237af2156cc91f618ce6) station: a command an installer put on Windows' PA | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.96 | 117.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cffbf7b74](https://github.com/AFK-surf/monoid/commit/cffbf7b74ba5939ea5581258d1b9ffd637eb0ebe) fix(mbui): stay in the profiles or stations place  | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.89 | 109.15 |
 | [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 2.42 | 3.36 | 14.23 | 35.35 | 55.51 | 31.03 | 63.42 | 99.68 | 112.2 |
 | [2f2358680](https://github.com/AFK-surf/monoid/commit/2f2358680b6d2853434930f002f40c64d29628f2) fix(mbui): restore NATURAL_SYMMETRIC vertical AA f | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.67 | 134.29 |
-| [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.63 | 113.3 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a0c2727c2](https://github.com/AFK-surf/monoid/commit/a0c2727c25f0ee9fb326d3ce6163519c931bfcee) shell, mesh: the front's lines in stillfail.log ca | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
 | [e4afc6097](https://github.com/AFK-surf/monoid/commit/e4afc60978149640dfc7b95e5ceb2f3bda4d1204) mbui, app: follow the system's Increase Contrast ( | 0.42 | 0.55 | 2.1 | 3.2 | 5.04 | 1.55 | 4.13 | 57.18 |
 | [672e1e1e5](https://github.com/AFK-surf/monoid/commit/672e1e1e5ccda068f5ecab534b59eacf3cc9885d) station: connects, logins, sign-ins and Feishu sca | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
 | [c5dd442e8](https://github.com/AFK-surf/monoid/commit/c5dd442e86ce3b692d9b237af2156cc91f618ce6) station: a command an installer put on Windows' PA | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cffbf7b74](https://github.com/AFK-surf/monoid/commit/cffbf7b74ba5939ea5581258d1b9ffd637eb0ebe) fix(mbui): stay in the profiles or stations place  | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
 | [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
 | [2f2358680](https://github.com/AFK-surf/monoid/commit/2f2358680b6d2853434930f002f40c64d29628f2) fix(mbui): restore NATURAL_SYMMETRIC vertical AA f | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
-| [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
