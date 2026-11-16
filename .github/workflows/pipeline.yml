@@ -1456,7 +1456,9 @@ jobs:
           target=$(cat "$HOME/stillfail-ci/station-update-host")
           test -n "$target"
           printf '::add-mask::%s\n' "$target"
-          ssh -o BatchMode=yes "$target" 'env -u STILLFAIL_DATA STILLFAIL_CHANNEL=beta ~/.local/bin/stillfail update --beta > /tmp/stillfail-station-update.log 2>&1 && tail -2 /tmp/stillfail-station-update.log'
+          # (its log said whole where it failed: `&& tail` alone said nothing of why, f094fa11's 43845073551 a bare exit 1,
+          # the log on the machine "Error: fetch failed")
+          ssh -o BatchMode=yes "$target" 'env -u STILLFAIL_DATA STILLFAIL_CHANNEL=beta ~/.local/bin/stillfail update --beta > /tmp/stillfail-station-update.log 2>&1 || { rc=$?; cat /tmp/stillfail-station-update.log >&2 || true; exit $rc; }; tail -2 /tmp/stillfail-station-update.log'
 
   # The changelog, when nothing was released (put, which puts it after the releases, did not run): a fix in still.fail
   # cloud counts as out as soon as it is listed, not before the API carrying it is deployed.

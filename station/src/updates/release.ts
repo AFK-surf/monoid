@@ -23,12 +23,38 @@ import { type Channel, feed, platform, stationVersion } from "./versions.ts";
 
 const UA = { "user-agent": "stillfail-station" };
 
-/// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served.
-export async function readFeed(channel: Channel, base: string, ms = 15_000, request: CloudFetch = fetch): Promise<any> {
+/// The pauses before each try again of a feed read that failed on the way (`readFeed`'s `wait`): three more at most.
+export const FEED_AGAIN_MS = [1_000, 2_000, 4_000];
+
+/// What failed on the way, not of the feed: the network (fetch's own TypeError, "fetch failed"; its deadline) or a
+/// gateway that could not reach the feed (502, 503, 504). A refusal (4xx), a feed that does not verify or an older
+/// release is the same when asked again.
+const onTheWay = (e: unknown) => e instanceof FeedOnTheWay || e instanceof TypeError || (e as Error)?.name === "TimeoutError";
+
+class FeedOnTheWay extends Error {}
+
+/// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served. Given
+/// `wait` (how a pause is waited), a read that failed on the way is tried again after each of `FEED_AGAIN_MS`:
+/// `stillfail update`'s one read failed on a connection broken once ("fetch failed", main f094fa11's station-update,
+/// 43845073551, 2026-11-16).
+export async function readFeed(channel: Channel, base: string, ms = 15_000, request: CloudFetch = fetch, wait?: (ms: number) => Promise<void>): Promise<any> {
   const url = feed(channel, base);
-  const response = await request(url, { headers: UA, signal: AbortSignal.timeout(ms) });
-  if (!response.ok) throw new Error(`${url}: ${response.status}`);
-  return response.json();
+  const once = async () => {
+    const response = await request(url, { headers: UA, signal: AbortSignal.timeout(ms) });
+    if ([502, 503, 504].includes(response.status)) throw new FeedOnTheWay(`${url}: ${response.status}`);
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    return response.json();
+  };
+  for (let i = 0; ; i++) {
+    try {
+      return await once();
+    } catch (e) {
+      if (wait === undefined || i >= FEED_AGAIN_MS.length || !onTheWay(e)) throw e;
+      log.warn("updates", "the feed not read, tried again", { url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+      // timer: a retry after a failure, with a backoff (the caller's clock).
+      await wait(FEED_AGAIN_MS[i]!);
+    }
+  }
 }
 
 /// The release `said` (a feed as served) names, verified; null when it does not verify (said in the log by the caller:
@@ -78,8 +104,9 @@ export function deltaFor(said: any, build: Build, platform: string | null, curre
 /// What updating the station of `app` (from `installed`'s channel) to `channel`'s latest at `base` runs. Refusals are
 /// thrown in `lang`: a feed that does not verify, an older release (but back to the stable one from the beta), none
 /// for this machine, no installer in this release.
-export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch }): Promise<Plan> {
-  const said = await readFeed(o.channel, o.base, 15_000, o.request);
+/// `wait`: the feed read again after a failure on the way (readFeed).
+export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Plan> {
+  const said = await readFeed(o.channel, o.base, 15_000, o.request, o.wait);
   const { release, why } = verifiedOrNull(said, o.trusted);
   if (release === null) throw new Error(tr(o.lang, "station.updates.unverified", { why }));
   const version = stationVersion(o.app) ?? null;

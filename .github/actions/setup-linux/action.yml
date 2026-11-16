@@ -27,6 +27,7 @@ runs:
         echo "STILLFAIL_DIRECT_DNS=223.5.5.5" >> "$GITHUB_ENV"
         echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+        sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
         archives="$HOME/stillfail-ci/action-archives"
         if [ -z "$(find "$archives/.filled" -mmin -60 2>/dev/null)" ]; then
           mkdir -p "$archives" && touch "$archives/.filled"

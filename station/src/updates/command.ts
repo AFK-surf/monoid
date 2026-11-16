@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { providerOf, specOf } from "../cloud/provider.ts";
 import { flag } from "../ops/files.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
+import { wall } from "../ops/fibers.ts";
 import { readJsonFile } from "../ops/json-file.ts";
 import { setChannel } from "./channel.ts";
 import { applyFile } from "./delta.ts";
@@ -65,7 +66,8 @@ export async function updateCommand(args: string[], data: string, trusted?: Map<
     const request = base === CLOUD_ORIGIN ? transport.fetch : fetch;
     const channel = channelOf(raw, app);
     const installed = releaseChannel(app) ?? channel;
-    const plan = await planUpdate({ base, channel, app, installed, lang, trusted, request });
+    // (the feed read again after a failure on the way: this process runs once, on the machine's own time)
+    const plan = await planUpdate({ base, channel, app, installed, lang, trusted, request, wait: wall.sleep });
     // timer: a deadline of an outside request (the delta's download), past which the installer downloads the release.
     const handed = await takeDelta(plan, { app, apply: applyHere, signal: AbortSignal.timeout(DELTA_MS), request });
     const lines = [`script=${plan.script}`, ...Object.entries({ ...plan.env, ...handed }).map(([k, v]) => `${k}=${v}`)];
