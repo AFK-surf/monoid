@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.07 | 63.6 | 99.78 | 118.68 |
 | [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
 | [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 2.43 | 3.37 | 14.31 | 35.41 | 55.81 | 31.06 | 63.58 | 99.58 | 114.64 |
 | [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 2.43 | 3.37 | 14.3 | 35.4 | 55.78 | 31.06 | 63.58 | 99.58 | 115.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 2.17 | 3.02 | 13.08 | 34.22 | 51.84 | 30 | 60.29 | 99.44 | 122.36 |
 | [2a3f5f3fd](https://github.com/AFK-surf/monoid/commit/2a3f5f3fd45b63eecfdbe034c4f54e220f555251) Farview Stage 3: the app draws a chat's Farview ta | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
-| [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 2.17 | 3.02 | 13.08 | 34.21 | 51.83 | 30 | 60.27 | 99.44 | 122.36 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [024e321b6](https://github.com/AFK-surf/monoid/commit/024e321b62aa54c9bf0559136e2e8ed6ae6c1e28) Ways: still.fail's relays told apart by the cloud; | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [9d06e9554](https://github.com/AFK-surf/monoid/commit/9d06e955444b1d0c9d3bd7a6b323136c7b46ef32) mbui: 阅读器与预览舞台改为节点（old-list reader.mbt 3 → 0、viewe | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [d84254d1d](https://github.com/AFK-surf/monoid/commit/d84254d1d16947b8bafef36178208ccd77837a09) mbui: a table's columns worked out once and its ce | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
 | [10665f3ab](https://github.com/AFK-surf/monoid/commit/10665f3ab13fa3929b11e3e0e14f5f73570565b1) vault: a timed grant on a station not reached says | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c3e7df997](https://github.com/AFK-surf/monoid/commit/c3e7df99777cefd41e36500d6ee01f91283a5242) app: what comes for a topic let go of is taken unr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [2a3f5f3fd](https://github.com/AFK-surf/monoid/commit/2a3f5f3fd45b63eecfdbe034c4f54e220f555251) Farview Stage 3: the app draws a chat's Farview ta | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.26 |
 | [445a97f61](https://github.com/AFK-surf/monoid/commit/445a97f619a4c583def539865499ab61bf62899c) mbui: a window of the run comes up with its first  | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.41 |
-| [f33536fe1](https://github.com/AFK-surf/monoid/commit/f33536fe1e4f7b37ea894d3938d8bb347558d2ad) station: a chat's hand-over takes an arriving entr | 0.42 | 0.54 | 2.08 | 3.17 | 4.97 | 1.53 | 4.1 | 57.28 |
