@@ -82,12 +82,14 @@ fn chat_vs_source(src : Source, card : Bool) -> Source {
 
 ///|
 /// The chat of real size opened, then Home (back), then the same chat again, in window `win`, on the page made as
-/// nodes (`nodes`) or the old one, its foot as `card` says: each frame of the opening again, the shell's old view
-/// counted at rest before it (nodes, laid) as the last frame at Home that built it had them.
+/// nodes (`nodes`) or the old one, its foot as `card` says, with motion as a device has it by default (`motion`: the
+/// pages going and coming over each other) or reduced: each frame of the opening again, the shell's old view counted at
+/// rest before it (nodes, laid) as the last frame at Home that built it had them.
 fn chat_vs_again(
   win : (String, Double, Double, Int),
   nodes : Bool,
   card : Bool,
+  motion? : Bool = false,
 ) -> (Array[VsFrame], (Int, Int)) raise {
   let (_, w, h, platform) = win
   let src : Ref[Source?] = Ref(None)
@@ -116,7 +118,7 @@ fn chat_vs_again(
     h~,
     platform~,
     window_corner=test_window_corner(platform),
-    env=[("MBUI_LOCALE", "zh"), ("MBUI_REDUCE_MOTION", "1")],
+    env=if motion { [("MBUI_LOCALE", "zh")] } else { [("MBUI_LOCALE", "zh"), ("MBUI_REDUCE_MOTION", "1")] },
   )
   t.run_for(squeeze_opening)
   t.frame()
@@ -180,18 +182,60 @@ fn chat_vs_work(f : VsFrame, idle : (Int, Int)) -> (Int, Int) {
 }
 
 ///|
-/// The heaviest frame (the most nodes, counted alike) of `frames`, and its count.
-fn chat_vs_heaviest(frames : Array[VsFrame], idle : (Int, Int)) -> (VsFrame?, (Int, Int)) {
-  let mut most : VsFrame? = None
+/// The most of each count of `frames`, each on its own (counted alike: nodes, laid out), and the frame each is of: the
+/// frame that made the most may not be the one that laid out the most (one after a page has come, making nothing and
+/// laying out all of it again).
+fn chat_vs_heaviest(frames : Array[VsFrame], idle : (Int, Int)) -> ((VsFrame?, VsFrame?), (Int, Int)) {
+  let mut most_nodes : VsFrame? = None
+  let mut most_laid : VsFrame? = None
   let mut work = (0, 0)
   for f in frames {
     let w = chat_vs_work(f, idle)
-    if most is None || w.0 > work.0 {
-      most = Some(f)
-      work = w
+    if most_nodes is None || w.0 > work.0 {
+      most_nodes = Some(f)
+      work = (w.0, work.1)
+    }
+    if most_laid is None || w.1 > work.1 {
+      most_laid = Some(f)
+      work = (work.0, w.1)
     }
   }
-  (most, work)
+  ((most_nodes, most_laid), work)
+}
+
+///|
+/// What frame `f` of the tree did, for a log.
+fn chat_vs_tree(f : VsFrame?) -> String {
+  match f {
+    Some(f) => "made \{f.made} let_go \{f.let_go} laid \{f.laid} measured \{f.measured} bindings \{f.bindings} passes \{f.passes} old \{f.old_nodes}/\{f.old_laid}"
+    None => "none"
+  }
+}
+
+///|
+/// Each window's and foot's opening again (chat_vs_again) on both pages, with motion as `motion` says, against `bars`:
+/// what is over its bar.
+fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] raise {
+  let wrong : Array[String] = []
+  let how = if motion { "moving" } else { "reduced" }
+  for win in chat_vs_windows {
+    for card in [true, false] {
+      let foot = if card { "card" } else { "md" }
+      let key = "\{win.0} \{foot}"
+      let (old_frames, old_idle) = chat_vs_again(win, false, card, motion~)
+      let (_, old) = chat_vs_heaviest(old_frames, old_idle)
+      let (new_frames, new_idle) = chat_vs_again(win, true, card, motion~)
+      let ((most_nodes, most_laid), new) = chat_vs_heaviest(new_frames, new_idle)
+      println(
+        "chat vs \{how} \{key}: old \{Repr(old)} new \{Repr(new)} (new's most nodes: \{chat_vs_tree(most_nodes)}; most laid: \{chat_vs_tree(most_laid)}) thousandths \{if old.0 > 0 { new.0 * 1000 / old.0 } else { 0 }}/\{if old.1 > 0 { new.1 * 1000 / old.1 } else { 0 }}",
+      )
+      let bar = bars.get(key).unwrap_or((0, 0))
+      if new.0 * 1000 > bar.0 * old.0 || new.1 * 1000 > bar.1 * old.1 {
+        wrong.push("\{how} \{key}: new \{Repr(new)} over \{Repr(bar)} thousandths of old \{Repr(old)}")
+      }
+    }
+  }
+  wrong
 }
 
 ///|
@@ -204,39 +248,45 @@ fn chat_vs_heaviest(frames : Array[VsFrame], idle : (Int, Int)) -> (VsFrame?, (I
 /// node, an agent's own picture holds no place's corner and a chooser's menu is held in its layer only once it opens;
 /// before that the new page did 15 to 34 nodes and 12 to 31 laid out more in each
 /// (on main f8bd4d0728: phone card 358/258, md 482/361; plp_narrow 366/273, 602/450; tape 799/617, 1035/794; wide
-/// 913/916, 1097/1057), over all of these.
+/// 913/916, 1097/1057), over all of these. Again once a table's cells are made with fewer nodes (its rules no
+/// structure, no pick where it is not shown smaller): before that md's 1828, 2272, 1420 and 1285 of the old one's
+/// nodes; the same at every rate of frames (60, 120, 24, 7), each bar the least that holds it, rounded up.
 let chat_vs_bars : Map[String, (Int, Int)] = {
   "phone card": (2744, 1230),
-  "phone md": (1828, 998),
+  "phone md": (1808, 998),
   "plp_narrow card": (2808, 1305),
-  "plp_narrow md": (2272, 1233),
+  "plp_narrow md": (2252, 1233),
   "tape card": (1352, 1194),
-  "tape md": (1420, 1180),
+  "tape md": (1413, 1180),
   "wide card": (1282, 1117),
-  "wide md": (1285, 1079),
+  "wide md": (1279, 1079),
 }
 
 ///|
 test "a real chat opened again from Home: the page made as nodes does no more against the old one, counted alike, than its bar" {
-  let wrong : Array[String] = []
-  for win in chat_vs_windows {
-    for card in [true, false] {
-      let foot = if card { "card" } else { "md" }
-      let key = "\{win.0} \{foot}"
-      let (old_frames, old_idle) = chat_vs_again(win, false, card)
-      let (_, old) = chat_vs_heaviest(old_frames, old_idle)
-      let (new_frames, new_idle) = chat_vs_again(win, true, card)
-      let (f, new) = chat_vs_heaviest(new_frames, new_idle)
-      let tree = match f {
-        Some(f) => "made \{f.made} let_go \{f.let_go} laid \{f.laid} measured \{f.measured} bindings \{f.bindings} passes \{f.passes}"
-        None => "none"
-      }
-      println("chat vs \{key}: old \{Repr(old)} new \{Repr(new)} (new's tree: \{tree})")
-      let bar = chat_vs_bars.get(key).unwrap_or((0, 0))
-      if new.0 * 1000 > bar.0 * old.0 || new.1 * 1000 > bar.1 * old.1 {
-        wrong.push("\{key}: new \{Repr(new)} over \{Repr(bar)} thousandths of old \{Repr(old)}")
-      }
-    }
-  }
+  let wrong = chat_vs_over(chat_vs_bars, false)
+  assert_true(wrong.is_empty(), msg=wrong.join(" | "))
+}
+
+///|
+/// chat_vs_bars' with motion as a device has it by default (`MBUI_REDUCE_MOTION` not said): the page going and the one
+/// coming drawn over each other as it comes, the old shell's islands with them. A bar that only falls. Counted
+/// 2026-11-16 at the default rate and at 60, 120, 24 and 7 frames a second, the most of those (only what is laid out
+/// differs: phone's 1128 and 1077, plp_narrow md's 1071 at the default rate, 967, 903 and 1006 at the others), once a
+/// table's cells are made with fewer nodes: before that md's 1419, 1750, 1419 and 1284 of the old one's nodes.
+let chat_vs_motion_bars : Map[String, (Int, Int)] = {
+  "phone card": (1721, 1128),
+  "phone md": (1405, 1077),
+  "plp_narrow card": (1759, 980),
+  "plp_narrow md": (1736, 1071),
+  "tape card": (1352, 1194),
+  "tape md": (1413, 1180),
+  "wide card": (1282, 1117),
+  "wide md": (1279, 1079),
+}
+
+///|
+test "a real chat opened again from Home with motion: the page made as nodes does no more against the old one, counted alike, than its bar" {
+  let wrong = chat_vs_over(chat_vs_motion_bars, true)
   assert_true(wrong.is_empty(), msg=wrong.join(" | "))
 }

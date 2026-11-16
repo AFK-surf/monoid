@@ -15,14 +15,16 @@
 /// piece of one block its box alone and a row's sides its padding: before them 804, 365, 2591, 920 made and 810, 1185
 /// made scrolling up. Again once a row's flash and its menu's band are its own ground, its line and middle one node, an
 /// agent's own picture holds no place's corner and a chooser's menu is held in its layer only once it opens: before
-/// that 797, 358, 2584, 913 and 750, 1094.
+/// that 797, 358, 2584, 913 and 750, 1094. Again once a table's cells are made with fewer nodes (its rules no structure,
+/// no pick where it is not shown smaller), the same at 60, 120, 24 and 7: before that 688 and 783, 1003 and 816 made and
+/// let go scrolling up.
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "phone cold": (782, 38, 885, 150, 778),
   "phone again": (343, 26, 246, 29, 299),
   "wide cold": (2569, 483, 3694, 560, 2752),
   "wide again": (898, 130, 883, 124, 1202),
-  "phone up": (688, 783, 660, 92, 0),
-  "wide up": (1003, 816, 991, 129, 0),
+  "phone up": (683, 778, 660, 92, 0),
+  "wide up": (998, 811, 991, 129, 0),
 }
 
 ///|
