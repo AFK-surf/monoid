@@ -155,6 +155,9 @@ class Incoming implements AsyncIterableIterator<Buffer> {
   }
 }
 
+/// What a request's bytes fail with when the other end took none of them for IDLE_MS.
+const STALLED = "the other station took nothing for 30 s";
+
 /// `bytes` written to `stream` as they come, each piece taken within IDLE_MS, and the stream finished; reset when they
 /// fail on the way (a file that changed while it was read, the other end gone). `failed`, told before the reset (at
 /// once: a read waiting on the stream is given its end as it is reset, front.ts `FrontStream.reset`) whether it was
@@ -165,14 +168,17 @@ async function sendBytes(stream: Stream, bytes: Bytes, failed?: (source: boolean
     for await (const piece of bytes) {
       bytes[CHECK_BYTES]?.();
       source = false;
-      await within(IDLE_MS, stream.write(piece), "the other station took nothing for 30 s");
+      await within(IDLE_MS, stream.write(piece), STALLED);
       source = true;
     }
     source = false;
     await stream.finish();
   } catch (error) {
     failed?.(source, error as Error);
-    await stream.reset(FAILED).catch(() => {});
+    // (not waited for: where the other end is gone, a write is held by its flow control and the reset waits behind it,
+    // in the shell, under its sending half's lock, until the connection itself ends: minutes. A move's pack of a chat's
+    // room, its station killed as it went, held the turn so till that station came back, drill 3a 2026-11-16)
+    void stream.reset(FAILED).catch(() => {});
     throw error;
   }
 }
@@ -504,6 +510,13 @@ export function peerCall(
       leave();
       // (its connection found gone, by this request or another: said so, whatever the stream failed with as it closed)
       if (failed !== null && found.has(failed)) throw error instanceof PeerGone ? error : new PeerGone();
+      // (its bytes not taken for IDLE_MS, its other end not there: gone, as `watch` finds a request's connection not
+      // answering, never waited on to close below: a station killed closes only as QUIC gives the connection up, and a
+      // move's pack, its station killed as it went, held the turn till that station came back, drill 3a 2026-11-16)
+      if (failed !== null && (error as Error)?.message === STALLED && !failed.isClosed() && !(await there(failed))) {
+        drop(target, failed);
+        throw new PeerGone();
+      }
       // (its connection closed by the other station's process stopping or handing over, with no answer: said so, and
       // let go at once, so the next request dials the process that answers now)
       if (failed !== null && !(error instanceof Refused) && !(error instanceof NoBytes) && (error as Error)?.message !== late && (await stoppedThere(failed))) {
