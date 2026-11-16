@@ -369,7 +369,7 @@ describe("what a profile runs Grok Build on", () => {
     assert.deepEqual(profileRuntimes(profile({ kind: "subscription" })), ["grok"]);
     assert.deepEqual(profileEnv(profile({ kind: "subscription" }), "grok"), {});
     const xai = profile({ kind: "api-provider", provider: "xai", key: "xai-k" });
-    assert.deepEqual(profileRuntimes(xai), ["codex", "dsh", "grok"]);
+    assert.deepEqual(profileRuntimes(xai), ["codex", "dsh", "pi", "grok"]);
     assert.deepEqual(profileEnv(xai, "grok"), { XAI_API_KEY: "xai-k" });
     assert.ok(!profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })).includes("grok"));
     assert.deepEqual(profileRuntimes(profile({ kind: "env" })), ["grok"]);
