@@ -2384,7 +2384,7 @@ pub fn dialog(
     open,
     title,
     description~,
-    w=dmin(w, c.window_size().0 - dialog_margin),
+    w=dmin(w, room_across(c) - dialog_margin),
     close_label="",
     on_escape?,
     scrim?,
@@ -2394,7 +2394,7 @@ pub fn dialog(
         style=dialog_box,
         id=c.id(key + "/frame"),
         w=Px(s.w),
-        max_h=c.height - dialog_room,
+        max_h=c.height - @ui.system_bars().top - @ui.system_bars().bottom - dialog_room,
         radius=dialog_r,
         bg=panel_ground(),
         shadow=dialog_shadow,
@@ -2507,6 +2507,13 @@ let dialog_veil_at : @ui.Style = @ui.css("w=Full h=Full").then(@ui.style(radius=
 ///|
 /// What the window keeps round a dialog up and down (parts.css.ts dialog: at most 100dvh - 48 tall).
 let dialog_room : Double = 48.0
+
+///|
+/// How wide the room the system's bars leave across the window is (over_room's, for the old frame's dialogs).
+fn room_across(c : @ui.Ctx) -> Double {
+  let bars = @ui.system_bars()
+  dmax(0.0, c.window_size().0 - bars.left - bars.right)
+}
 
 ///|
 /// A dialog's frame: 24 in at its sides and over its title, a line round it (its corner, ground and shadow: dialog_r,
@@ -3252,7 +3259,7 @@ pub fn confirm_dialog(
     open,
     title,
     description~,
-    w=dmin(confirm_w, c.window_size().0 - dialog_margin),
+    w=dmin(confirm_w, room_across(c) - dialog_margin),
     outside=false,
     close_label="",
     scrim?,
