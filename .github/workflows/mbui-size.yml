@@ -166,13 +166,12 @@ jobs:
             # (cut 25 s before the job is, so the Macs' lines measured above are still uploaded: with Mini1 busy the
             # emulator's cold start and five runs outlasted the job, and the job cancelled lost them too, mbui-size
             # 43920702701 and 43924473673, 2026-11-16; that measure alone is left out, record carrying the one before's)
+            # (wiped each run, the same state each time; a data partition of 2 GB: the mini's disk is small)
+            # (five runs: on the emulator one run's PSS is ±10% of another's, 136-162 MB on 2026-11-09)
             rc=0
-            bash scripts/with-timeout.sh "@$((JOB_END - 25))" bash -c '
-              set -eo pipefail
-              # (wiped each run, the same state each time; a data partition of 2 GB: the mini's disk is small)
-              EMU_FLAGS="-wipe-data -partition-size 2048" bash apps/mbui/scripts/android.sh emu
-              # (five runs: on the emulator one run's PSS is ±10% of another's, 136-162 MB on 2026-11-09)
-              COUNT=5 bash apps/mbui/scripts/idlemem.sh android "$1" > "$2"' _ "$(ls in/apk/*.apk | head -1)" android.jsonl || rc=$?
+            bash scripts/with-timeout.sh "@$((JOB_END - 25))" bash -eo pipefail -c \
+              'EMU_FLAGS="-wipe-data -partition-size 2048" bash apps/mbui/scripts/android.sh emu && COUNT=5 bash apps/mbui/scripts/idlemem.sh android "$1" > "$2"' \
+              _ "$(ls in/apk/*.apk | head -1)" android.jsonl || rc=$?
             "$adb" -s $ANDROID_SERIAL emu kill >/dev/null 2>&1 || true
             case $rc in
               0) tee -a idle.jsonl < android.jsonl ;;
