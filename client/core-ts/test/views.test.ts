@@ -3688,7 +3688,8 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
   t.subscribe(1, agentPage("ws/a", "k"));
   // Who wrote to it in Slack, with their Slack picture (the station's names book).
   const mia = { id: "slack:ember:U9", name: "Mia", email: null, via: "slack", picture: "https://avatars.slack-edge.com/mia_72.jpg" };
-  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", participants: [mia] })]);
+  // (another agent's session on the station, whose own uploads its posts name)
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", participants: [mia] }), fullSession("j", { connect: "gpt", workspace: "/ws/j" })]);
   t.set(rows("ws/a"), [{ id: "k", session: "k", thread: null, title: "看看项目", agents: [] }]);
   // Another agent's bot on the station, its picture as Slack shows it.
   const gpt = { ...connect("gpt", "GPT-Ember"), botImage: "https://avatars.slack-edge.com/gpt_72.jpg", connection: { state: "connected", botUserId: "UB2" } };
@@ -3698,7 +3699,7 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
     [0, { at: "1970-01-01T00:00:01Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="Mia (U9)" ts="1.5">看看项目\n\nAttached files:\n- /ws/k/uploads/shot.png (shot.png, 13 bytes)</message>' }],
     [1, call("mcp__stillfail__chat_post", { to: "C0OPS/1.5", text: "*看了*" }, "1970-01-01T00:00:03Z", "c1")],
     [2, { at: "1970-01-01T00:00:03Z", kind: "tool_result", text: "posted", ok: true, callId: "c1" }],
-    [3, { at: "1970-01-01T00:00:04Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="GPT-Ember (<@UB2>)" ts="4.0">也看了</message>' }],
+    [3, { at: "1970-01-01T00:00:04Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="GPT-Ember (<@UB2>)" ts="4.0">也看了\n\nAttached files:\n- /ws/j/uploads/pic.png (pic.png, 7 bytes)</message>' }],
     [4, { at: "1970-01-01T00:00:05Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="Mia (U9)" ts="5.0"><@UB2> 继续</message>' }],
   ]);
   await t.read(u, 1);
@@ -3716,8 +3717,14 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
   assert.equal(v.elsewhere[0].by.picture, mia.picture);
   assert.equal(v.elsewhere[1].by.picture, undefined);
   assert.equal(v.elsewhere[2].by.picture, gpt.botImage);
-  // The files the person sent with it are its files, kept by the session they were given to; not its words.
-  assert.deepEqual(v.elsewhere.map((s: J) => s.attachments ?? []), [[{ name: "shot.png", path: "/ws/k/uploads/shot.png", size: 13, owner: "k" }], [], [], []]);
+  // The files the person sent with it are its files, kept by the session they were given to; not its words. Those
+  // another agent of the station posted are kept by that agent's session, whose workspace their path is in.
+  assert.deepEqual(v.elsewhere.map((s: J) => s.attachments ?? []), [
+    [{ name: "shot.png", path: "/ws/k/uploads/shot.png", size: 13, owner: "k" }],
+    [],
+    [{ name: "pic.png", path: "/ws/j/uploads/pic.png", size: 7, owner: "j" }],
+    [],
+  ]);
 });
 
 // ── What is shared is never written on (「谁能改什么」) ──

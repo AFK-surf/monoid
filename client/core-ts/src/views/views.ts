@@ -4095,6 +4095,17 @@ export class Views implements Owner {
     const offsetMin = this.#core.host.utcOffsetMin(this.#core.host.nowMs());
     const out: J[] = [];
     const heard = new Set<string>();
+    // Whose workspace keeps a file heard with a message: the session given it (a person's file, put in its uploads), or
+    // the station's agent whose workspace its path is in (another agent's post in the same thread names its own
+    // uploads). Asked of the hearer's session, another agent's file answered 404, shown as 暂时无法预览 for good
+    // (pengxiao, 2026-11-16). The station's sessions read only once a file is not the hearer's.
+    let others: J[] | null = null;
+    const keeper = (path: string, hearer: J, key: string): string => {
+      const within = (ws: string | null) => ws !== null && ws !== "" && path.startsWith(`${ws}/`);
+      if (within(str(get(hearer, "workspace")))) return key;
+      others ??= arr(this.ok({ topic: "sessions", station }));
+      return str(get(others.find((s) => within(str(get(s, "workspace")))), "key")) ?? key;
+    };
     for (const a of agents) {
       const key = str(get(a.session, "key"));
       if (key === null) continue;
@@ -4126,11 +4137,11 @@ export class Views implements Owner {
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));
         const by = s.out ? structuredClone(agent) : { name: s.who || s.user || "Slack", ...(picture !== undefined ? { picture } : {}) };
         // A person's files are listed after their words, as the agent was given them: drawn as files, kept in the
-        // workspace of the agent's session that was given them.
+        // workspace that holds them (`keeper`).
         const words = s.out ? { text: s.text, files: [] } : heardFiles(s.text);
         const text = present.mentions(words.text, people.bots, people.members);
         const item: J = { key: `${key}/${s.i}/${s.k}`, after, createdAt: s.at, text, place, failed: s.failed, by };
-        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: key }));
+        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: keeper(f.path, a.session, key) }));
         if (!s.out) item.received = true;
         out.push(item);
       }
