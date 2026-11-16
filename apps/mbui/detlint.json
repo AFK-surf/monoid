@@ -600,7 +600,6 @@
       "src/sfpages/usage_node.mbt": 1
     },
     "each-lookup": {
-      "src/sf/markdown_node.mbt": 1,
       "src/sf/one_of_node.mbt": 1,
       "src/sf/panel_steps_node.mbt": 1,
       "src/sf/pick_node.mbt": 1,
@@ -614,7 +613,6 @@
       "src/sfpages/account.mbt": 1,
       "src/sfpages/chat_mark_node.mbt": 3,
       "src/sfpages/font_setting.mbt": 1,
-      "src/sfpages/message_files_node.mbt": 1,
       "src/sfpages/model_triple.mbt": 1,
       "src/sfpages/presets.mbt": 4,
       "src/sfpages/relay.mbt": 1,

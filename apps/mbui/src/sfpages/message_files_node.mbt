@@ -65,14 +65,15 @@ fn message_files_node(
           if o > 0.0 { wrap.then(@ui.style(pt=@sf.room_of(o))) } else { wrap }
         })
         files.wraps(Is(Some(files_gap))) |> ignore
-        let keys = fn() { list().map(fn(a) { @sfbase.file_key(a) }) }
-        files.each(keys, fn(k) { k }, fn(slot, k) {
-          // (its key read through what it is given, never kept: a block may be taken to show another key; found once
-          // as that or the files change, what reads it many times over reading that)
+        // (the files kept by key: a file's block told as that file changes, comes or goes, never as another does)
+        let by_key = files.keyed_by(list, @sfbase.file_key)
+        files.each(fn() { by_key.keys() }, fn(k) { k }, fn(slot, k) {
+          // (its key read through what it is given, never kept: a block may be taken to show another key; read once
+          // as that or its file changes, what reads it many times over reading that)
           let found = @signals.computed(
             fn(_) {
               let key = k.get()
-              match list().iter().find_first(fn(x) { @sfbase.file_key(x) == key }) {
+              match by_key.get(key) {
                 Some(x) => x
                 None => attachment_of({ "name": Json::string(""), "path": Json::string(key) })
               }

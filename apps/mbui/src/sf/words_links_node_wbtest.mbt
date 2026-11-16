@@ -1,5 +1,5 @@
 // Words' links pressed and carded once the words have one (words_links_node): words with none (most of a chat's) make
-// no binding for them and no node but the room held for their cards, the arrow over them as over words whose links
+// no binding and no node for them, not even a room for their cards, the arrow over them as over words whose links
 // are pressed; a link come into them later (a message streamed) pressed, its card shown and the hand over it, in the
 // same words' node.
 
@@ -66,14 +66,14 @@ fn wl_linked() -> Array[@ui.Run] {
 }
 
 ///|
-test "words with no link make no binding and no node for links but the room for their cards, the arrow over them; with one, its press and card made" {
+test "words with no link make no binding and no node for links, not even the room for their cards, the arrow over them; with one, its press and card made" {
   let bare = wl_rig(@signals.signal(wl_plain()), false, [], Ref(None))
   let (bare_nodes, bare_bindings) = wl_counts()
   ignore(bare)
   let t = wl_rig(@signals.signal(wl_plain()), true, [], Ref(None))
   let (nodes, bindings) = wl_counts()
-  // (the room held over them for their cards: words_links_node's `cards_in`)
-  assert_eq((nodes, bindings), (bare_nodes + 1, bare_bindings))
+  // (nothing beside the words: their cards' box made only as a link comes)
+  assert_eq((nodes, bindings), (bare_nodes, bare_bindings))
   match t.run_rects("先看这里") {
     [r, ..] => t.move_to(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
     [] => fail("no words drawn")
@@ -164,12 +164,12 @@ fn wl_markdown_counts(linked : Bool, cards : Bool) -> (Int, Int) {
 }
 
 ///|
-test "Markdown with no link: its links' cards make no binding, a room held for each words' node alone; with one, its own made in it" {
+test "Markdown with no link: its links' cards make no binding and no node; with one, its own made beside its words" {
   let bare = wl_markdown_counts(false, false)
   let carded = wl_markdown_counts(false, true)
   assert_true(bare.0 > 0, msg="audited: \{Repr(bare)}")
-  // (two paragraphs and two items' words: each the room over it held for its cards)
-  assert_eq(carded, (bare.0 + 4, bare.1))
+  // (two paragraphs and two items' words, none with a link: nothing made for their cards)
+  assert_eq(carded, bare)
   let linked_bare = wl_markdown_counts(true, false)
   let linked_carded = wl_markdown_counts(true, true)
   // (the linked paragraph's cards' box and its list of them, no other paragraph's)

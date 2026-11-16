@@ -19,14 +19,16 @@
 /// no pick where it is not shown smaller), the same at 60, 120, 24 and 7: before that 688 and 783, 1003 and 816 made and
 /// let go scrolling up. "phone cold" again once Home's bar, kept under the chat, held its 看板 key beside 筛选 (one
 /// node, its icon turning with the mode, and the filter's and the stations' releases' keys no box of their own): before
-/// it (782, 38, 885, 150, 778).
+/// it (782, 38, 885, 150, 778). Again once a paragraph with no link holds no room for its links' cards either (sf
+/// words_links_node: nothing made for them till a link comes), the same at 60, 120, 24 and 7: before it 784, 343, 2569
+/// and 898 made, 683 and 998 made scrolling up.
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
-  "phone cold": (784, 38, 895, 148, 784),
-  "phone again": (343, 26, 246, 29, 299),
-  "wide cold": (2569, 483, 3694, 560, 2752),
-  "wide again": (898, 130, 883, 124, 1202),
-  "phone up": (683, 778, 660, 92, 0),
-  "wide up": (998, 811, 991, 129, 0),
+  "phone cold": (783, 38, 894, 148, 784),
+  "phone again": (342, 26, 245, 29, 299),
+  "wide cold": (2568, 483, 3693, 560, 2752),
+  "wide again": (897, 130, 882, 124, 1202),
+  "phone up": (667, 762, 644, 92, 0),
+  "wide up": (973, 795, 966, 129, 0),
 }
 
 ///|

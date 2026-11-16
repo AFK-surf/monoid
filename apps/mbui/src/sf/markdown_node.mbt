@@ -868,7 +868,7 @@ fn md_words_node(
 /// The links of node `words` (its words in pieces, `runs` as they change) pressed where they lead (`tap`; held, `hold`),
 /// `shown` told each as they are, and their cards (`cards`: drawn in its layer while a mouse rests on one,
 /// link_cards_node, made in `parent`), as @ui.runs_links presses them: made as the words first have a link, words with
-/// none (most of a chat's) made nothing for it but the room their cards would be made in. Till then the words are a
+/// none (most of a chat's) made nothing for it, no node and no binding. Till then the words are a
 /// ground under the arrow, as runs_links has words with no link (no hand, nothing pressed, a finger and a right click
 /// going on to what is under them), and told they have no link once, as runs_links tells it as it is made; made in
 /// place as a link comes, nothing let go.
@@ -885,8 +885,6 @@ pub fn words_links_node(
 ) -> Unit {
   let has_links = @signals.computed(fn(_) { runs().iter().any(fn(r) { r.link != "" }) })
   let made = Ref(false)
-  // (where their cards are made: `parent`, or the room held for them over it where they are made later)
-  let cards_in = Ref(parent)
   let make = fn() {
     guard !made.val else { return }
     made.val = true
@@ -904,20 +902,17 @@ pub fn words_links_node(
       None
     })
     match cards {
-      Some((layer, card_of)) => link_cards_node(cards_in.val, layer, words, links, fn() { now.get() }, card_of, loc~) |> ignore
+      Some((layer, card_of)) => link_cards_node(parent, layer, words, links, fn() { now.get() }, card_of, loc~) |> ignore
       None => ()
     }
   }
   if @signals.untracked(fn() { has_links.get() }) {
     make()
   } else {
+    // (nothing made for their cards till a link comes: link_cards_node's box, over `parent` and taking no room, made in
+    // it then. A room held for them in every paragraph with none was once (#6597) what kept `parent` a ride kept with
+    // the words its one child (view_ride's ride_holder, #6613): no more)
     words.as_ground().cursor(Is(Some(@view.Cursor::Arrow))) |> ignore
-    // (the room over `parent` its cards are made in, held now where they may come: what holds the words is laid out
-    // and drawn as it is with them (over it, taking no room). Without it, words streamed into a paragraph with no link
-    // drew more each frame: 44K more instructions a frame of instrbench's chatreal, 2026-11-16, not yet known why)
-    if cards is Some(_) {
-      cards_in.val = parent.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore })
-    }
     match shown {
       Some(f) => f([])
       None => ()
@@ -1450,16 +1445,17 @@ fn md_image_rows_node(p : @view.View, md : MdNode, images : () -> Array[(String,
         let ratios = all.fold(init=0.0, fn(n, im) { n + im.2 })
         if ratios <= 0.0 { 0.0 } else { dmin(image_row_most, (room() - image_row_gap * (all.length() - 1).to_double()) / ratios) }
       }
-      line.each(fn() { row().map(fn(im) { im.0 }) }, fn(k) { k }, fn(cell, k) {
+      // (the row's images kept by key: an image's cell told as that image changes, comes or goes, never as another does)
+      let by_key = line.keyed_by(row, fn(im) { im.0 })
+      line.each(fn() { by_key.keys() }, fn(k) { k }, fn(cell, k) {
         let k = k.untracked()
-        let at = fn() { row().search_by(fn(im) { im.0 == k }) }
         let width = fn() {
-          match at() {
-            Some(j) => (row()[j].2 * h()).floor()
+          match by_key.get(k) {
+            Some(im) => (im.2 * h()).floor()
             None => 0.0
           }
         }
-        let n = @signals.untracked(fn() { at().map(fn(j) { row()[j].1 }).unwrap_or("") })
+        let n = @signals.untracked(fn() { by_key.get(k).map(fn(im) { im.1 }).unwrap_or("") })
         match (md.files)(n).bind(fn(f) { f.image }) {
           Some(im) => (im.1)(cell, width)
           None => ()
