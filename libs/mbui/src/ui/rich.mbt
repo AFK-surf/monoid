@@ -440,7 +440,9 @@ fn rich_kept_thin() -> Unit {
 
 ///|
 /// What of paragraph `r` any width shares (RichPrep).
-fn rich_prep(r : Rich) -> RichPrep {
+/// (`one`: a paragraph of one run of words made as rich_prep_one makes it; false only in a test, which holds the two the
+/// same)
+fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   let sc = g().scale
   let (_, _, own0) = font_metrics(r.size, r.weight)
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
@@ -451,6 +453,12 @@ fn rich_prep(r : Rich) -> RichPrep {
   let px = whole_pixel_lines(r.size, r.weight)
   let (pitch0, base_asc, extra) = set_line(lh, a0, d0, sc, px, trim=r.trim)
   let base_desc = pitch0 - base_asc
+  // one run of words (a paragraph, a heading, an item, most of what a chat's message is made of): its clusters, their
+  // breaks and its levels are its shape's, as they are (nothing laid out of a paragraph writes in them), not copied
+  // out and worked out again of the same words
+  if one && r.runs.length() == 1 && r.runs[0].drawing is None {
+    return rich_prep_one(r, r.runs[0], lh, sc, px, base_asc, base_desc, extra)
+  }
   let sb = StringBuilder()
   let run_start = []
   let run_c0 = []
@@ -548,7 +556,7 @@ fn rich_prep(r : Rich) -> RichPrep {
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
   // (right to left: each line's clusters put in their visual order, rich_lines)
-  let bd = @text.Bidi::new(text)
+  let bd = @text.bidi_mixed(text)
   {
     text,
     run_start,
@@ -572,7 +580,68 @@ fn rich_prep(r : Rich) -> RichPrep {
     base_asc,
     base_desc,
     extra,
-    bidi: if bd.is_mixed() { Some(bd) } else { None },
+    bidi: bd,
+  }
+}
+
+///|
+/// rich_prep of a paragraph of one run, `run`, of words: what it is the same as rich_prep's loop makes of it (its
+/// shape's clusters, the room round it on its first and last, its shape's breaks and levels), the shape's arrays taken
+/// as they are where nothing is added to them.
+fn rich_prep_one(
+  r : Rich,
+  run : Run,
+  lh : Double,
+  sc : Double,
+  px : Bool,
+  base_asc : Double,
+  base_desc : Double,
+  extra : Double,
+) -> RichPrep {
+  let size = r.run_size(run)
+  let weight = r.run_weight(run)
+  let style = r.run_style(run)
+  let s = shape(run.text, size, weight, style~, spacing=r.spacing)
+  let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~)
+  let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
+  let n = s.starts.length()
+  let (room, after) = r.run_room(run, size)
+  let (adv, pre) = if room == 0.0 && after == 0.0 {
+    (s.adv, Array::make(n, s.pad))
+  } else {
+    let adv = s.adv.copy()
+    let pre = Array::make(n, s.pad)
+    if n > 0 {
+      adv[0] = adv[0] + room
+      pre[0] = pre[0] + room
+      adv[n - 1] = adv[n - 1] + room + after
+    }
+    (adv, pre)
+  }
+  {
+    text: run.text,
+    run_start: [0],
+    run_c0: [0],
+    run_c1: [n],
+    run_size: [size],
+    run_a: [a],
+    run_d: [d],
+    run_lasc: [lasc],
+    run_ldesc: [l - lasc],
+    drawings: [None],
+    starts: s.starts,
+    lens: s.lens,
+    adv,
+    pre,
+    keys: s.keys,
+    cu: s.cu,
+    brk: s.brk,
+    run_of: Array::make(n, 0),
+    len: run.text.length(),
+    base_asc,
+    base_desc,
+    extra,
+    bidi: s.bidi,
   }
 }
 

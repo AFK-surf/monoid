@@ -763,11 +763,7 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           None => ()
         }
       }
-      let bd = if ascii { None } else { Some(@text.Bidi::new(text)) }
-      let bd = match bd {
-        Some(b) if b.is_mixed() => Some(b)
-        _ => None
-      }
+      let bd = if ascii { None } else { @text.bidi_mixed(text) }
       // L4: a bracket (or another mirrored character) reading right to left is drawn as its mirror image, ")" for
       // "(" (each cluster is drawn on its own, out of the line the shaper would have mirrored it in)
       match bd {
