@@ -482,7 +482,9 @@ for t in $targets; do
           # fourth, the second's pages on three programs: by the table 720, 355, 386 and 711 s of pages)
           # (dealt so, 43857300626: app 1/4 198 s, 2/4 116, 3/4 188, 4/4 234 with real_size's wide half there; that
           # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
-          *) specs="4,4,72,1 3,4,184,1 2,4,366,1 4,4,125,1" ;;
+          # (dealt so, 43859140752: app 1/4 145 s, 2/4 196 (real_size's wide half 163 beside its pages' 196), 3/4 128,
+          # 4/4 135: each reckoned again as it ran, by the table 689, 451, 344 and 688 s of pages)
+          *) specs="4,4,0,1 3,4,238,1 2,4,148,1 4,4,0,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
