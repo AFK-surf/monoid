@@ -91,7 +91,8 @@ export function frontIn(table: readonly ProcessInfo[] | null, launcher: number |
 /// Whether this process's parent is its launcher (stillfail-station), not a shell or launchd, whose all under it is not
 /// the station's.
 async function launcher(): Promise<boolean> {
-  if (process.ppid <= 1) return false;
+  // (Windows: no ps of its own, and no front to find)
+  if ((platform.os !== "macos" && platform.os !== "linux") || process.ppid <= 1) return false;
   try {
     return basename((await run("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8" })).stdout.trim()).startsWith("stillfail");
   } catch {
@@ -117,7 +118,12 @@ export const ResourcesLive = Layer.effectDiscard(
           startedAt: hub.clock.currentTimeMillisUnsafe() - Math.round(process.uptime() * 1000),
           memory: () => process.memoryUsage(),
           children: async () => programsIn(await (table = platform.processTable(false)), MbProcess.live().map((p) => p.pid)),
-          front: async () => frontIn(await (table ?? platform.processTable(false)), underLauncher ? process.ppid : null, process.pid),
+          front: async () => {
+            // (let go once read: the machine's table is not kept between samples)
+            const current = table;
+            table = null;
+            return frontIn(await (current ?? platform.processTable(false)), underLauncher ? process.ppid : null, process.pid);
+          },
           pressure: () => platform.memoryPressure(),
           trimIdle: () => readers.trimIdle(),
           evictWarm: () => hub.evictAllIdle(),
