@@ -6,6 +6,7 @@
 //! TypeScript's. And the image codecs of the thumbnails (thumbs.rs).
 
 mod keep;
+mod log;
 mod thumbs;
 mod local;
 mod usage;
@@ -136,7 +137,7 @@ impl<B: AddressLookupBuilder> AddressLookupBuilder for Optional<B> {
         Ok(Unmade(match self.1.into_address_lookup(endpoint) {
             Ok(lookup) => Some(lookup),
             Err(error) => {
-                eprintln!("mesh: stations not found through {}: {error:#}", self.0);
+                crate::log::info(&format!("mesh: stations not found through {}: {error:#}", self.0));
                 None
             }
         }))
@@ -333,7 +334,7 @@ impl Endpoint {
                             Ok(conn) => {
                                 let _ = tx.send(conn);
                             }
-                            Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
+                            Err(error) => crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis())),
                         }
                     });
                 }

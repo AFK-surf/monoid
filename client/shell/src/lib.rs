@@ -26,6 +26,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 mod adb;
 mod keep;
+mod log;
 
 const MDNS_SERVICE: &str = "stillfail";
 
@@ -2200,7 +2201,7 @@ impl<B: iroh::address_lookup::AddressLookupBuilder> iroh::address_lookup::Addres
         Ok(Unmade(match self.1.into_address_lookup(endpoint) {
             Ok(lookup) => Some(lookup),
             Err(error) => {
-                eprintln!("mesh: stations not found through {}: {error:#}", self.0);
+                crate::log::info(&format!("mesh: stations not found through {}: {error:#}", self.0));
                 None
             }
         }))
@@ -3019,7 +3020,7 @@ impl Inner {
                                     Ok(conn) => {
                                         let _ = tx.send(conn);
                                     }
-                                    Err(error) => eprintln!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis()),
+                                    Err(error) => crate::log::info(&format!("mesh: a connection's handshake failed from {from:?} after {} ms: {error:#}", started.elapsed().as_millis())),
                                 }
                             });
                         }
@@ -3504,19 +3505,19 @@ impl Inner {
                                             skip.push(3);
                                             skip.extend(index.to_be_bytes());
                                             if let Err(e) = tell_unix(&path, &skip).await {
-                                                eprintln!("mesh: a stream's index not told: {e}");
+                                                crate::log::info(&format!("mesh: a stream's index not told: {e}"));
                                             }
                                             inner.pipe(id, halves, read, write).await;
                                             return;
                                         }
-                                        Err(e) => eprintln!("mesh: a routed stream not taken at {front} ({e}); the next"),
+                                        Err(e) => crate::log::info(&format!("mesh: a routed stream not taken at {front} ({e}); the next")),
                                     }
                                 }
-                                eprintln!("mesh: no program took a routed stream; Node answers it");
+                                crate::log::info(&format!("mesh: no program took a routed stream; Node answers it"));
                             }
                         }
                         if let Err(e) = inner.hand(id, halves, &path, &head).await {
-                            eprintln!("mesh: a stream not given: {e}");
+                            crate::log::info(&format!("mesh: a stream not given: {e}"));
                         }
                     });
                 }
