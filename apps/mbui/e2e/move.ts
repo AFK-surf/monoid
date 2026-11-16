@@ -36,8 +36,8 @@
 //     and (9a) an agent's station_move calls: every chat in sight on one station, what A says went in sight on B,
 //     failed moves told in words and moved on a second ask, the window counted as met; the moves tallied;
 //   9m the real run's limbo (A says it went, its hand-over failed and never shown, B dropped it) made on a build of
-//     main held at its hand-over's test hook (E2E_MOVE_LIMBO_DIST), then A's own build started on it: in sight on A
-//     again, once, nothing on B, and it moves.
+//     main held at its hand-over's test hook (e2e/move-drill-hold.patch, E2E_MOVE_LIMBO_DIST, E2E_DRILL_HOLD; skipped
+//     without), then A's own build started on it: in sight on A again, once, nothing on B, and it moves.
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
@@ -3443,10 +3443,13 @@ try {
   }
 
   // ── 9m: the real run's limbo (A says its chat went, its hand-over failed and never shown, B dropped it), made on the
-  // build before the fix by its own steps, held at the hand-over's own test hook (E2E_MOVE_LIMBO_DIST, a build of main
-  // given STILLFAIL_DRILL_HOLD, the drill's hold at `counts`: the counts answered, before it writes gone); then A's own
-  // build started on that data: the chat in sight on A again, once, nothing of it on B, and it moves as any ──
-  if (part("9m") && (limit("9m", 1800), await clean("9m"))) {
+  // build before the fix by its own steps, held at the hand-over's own test hook; then A's own build started on that
+  // data: the chat in sight on A again, once, nothing of it on B, and it moves as any. It needs a build of main with
+  // the drill's hold (e2e/move-drill-hold.patch, applied to a copy of the tree, never the product; its header says
+  // how): E2E_MOVE_LIMBO_DIST, that copy's station/dist, and E2E_DRILL_HOLD=counts:<path>; without them it is skipped ──
+  const limboGiven = process.env.E2E_MOVE_LIMBO_DIST !== undefined && /^counts:/.test(process.env.E2E_DRILL_HOLD ?? "");
+  if (part("9m") && !limboGiven) log("SKIP 9m: the limbo needs a build of main with the drill's hold, not built: apply e2e/move-drill-hold.patch to a copy of main from before the fix, build its station, and give E2E_MOVE_LIMBO_DIST=<copy>/station/dist and E2E_DRILL_HOLD=counts:<path>");
+  if (part("9m") && limboGiven && (limit("9m", 1800), await clean("9m"))) {
     const link = `${ST}/app/station`;
     const own = execFileSync("readlink", [link], { encoding: "utf8" }).trim();
     const limboDist = process.env.E2E_MOVE_LIMBO_DIST ?? own;
@@ -3462,7 +3465,6 @@ try {
     };
     let key = "";
     await check(`9m: the limbo made on ${limboDist === own ? "A's own build" : limboDist}: a chat's hand-over held after its counts, A handed to its next process (which fails it and has B drop it), then let go (it writes gone)`, async () => {
-      if (!/^counts:/.test(holdAt)) throw new Error("no hold given (E2E_DRILL_HOLD=counts:<path>): the limbo cannot be made honestly");
       key = (await seedA(1))[0]!;
       // (A handed to a process of the limbo's build in any case: on main's tree a process the harness started itself
       // never took the hold, nine-5 and nine-7, one the launcher started for a handover did)
