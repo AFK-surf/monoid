@@ -278,6 +278,9 @@ pub(open) trait Host {
   ncall_state(Self, Int) -> Int = _
   ncall_result(Self, Int) -> String = _
   ncall_end(Self, Int) -> Unit = _
+  // (a method is added last: one put before others moves their places in the table every call goes through, and the C
+  // of each program calling them, all of it, is compiled again)
+  words_spaced(Self) -> Int = _
 }
 
 ///|
@@ -518,6 +521,28 @@ impl Host with shape(_, _, _, _, _, _) {
 ///|
 impl Host with text_key(_, _, _, _, _) {
   0
+}
+
+///|
+/// Found from the host's own shapes (MBUI_AUTOSPACE=off: none wanted; see words_spaced).
+impl Host with words_spaced(self) {
+  if self.env("MBUI_AUTOSPACE") == "off" {
+    return words_spaced_none
+  }
+  // a Han character and a Latin letter shaped together a sixteenth of an em wider than each on its own (Core Text's:
+  // an eighth, on whichever of the two it puts it)
+  let size = 16.0
+  let pair = FixedArray::make(8, 0.0)
+  let han = FixedArray::make(4, 0.0)
+  let latin = FixedArray::make(4, 0.0)
+  if self.shape("\u{56FD}a", size, 400, 0, pair) == 2 &&
+    self.shape("\u{56FD}", size, 400, 0, han) == 1 &&
+    self.shape("a", size, 400, 0, latin) == 1 &&
+    pair[2] + pair[6] - han[2] - latin[2] > size / 16.0 {
+    words_spaced_by_host
+  } else {
+    words_spaced_here
+  }
 }
 
 ///|
@@ -1936,6 +1961,29 @@ pub fn shape(
 /// join), for `glyph`.
 pub fn text_key(text : String, size : Double, weight : Int, style : Int) -> Int {
   current.val.text_key(text, size, weight, style)
+}
+
+///|
+/// words_spaced: the host's shaper spaces nothing, mbui does (ui's text.mbt `words_spaced_in`).
+pub let words_spaced_here : Int = 0
+
+///|
+/// words_spaced: the host's shaper spaces Chinese and Japanese words itself (Core Text since iOS 26 and macOS 27).
+pub let words_spaced_by_host : Int = 1
+
+///|
+/// words_spaced: nothing spaced, by the host or by mbui (MBUI_AUTOSPACE=off: a picture of words set as a shaper that
+/// spaces none sets them, Android's).
+pub let words_spaced_none : Int = 2
+
+///|
+/// Who spaces Chinese and Japanese words (an eighth of an em between a Han character or kana and a Latin letter or a
+/// digit; a full-width mark set a half em closer before another): one of words_spaced_here, words_spaced_by_host,
+/// words_spaced_none. Asked once a run: a host found to space them by its own shapes, where a Latin letter after a Han
+/// character comes out wider than on its own; MBUI_AUTOSPACE=off for none (and for the Apple hosts =off or =mbui
+/// their shaper's own left out: apple_text.m's make_line).
+pub fn words_spaced() -> Int {
+  current.val.words_spaced()
 }
 
 ///|

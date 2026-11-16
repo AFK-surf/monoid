@@ -607,6 +607,14 @@ pub fn windows_in_process() -> Bool
 
 pub fn word_at(String, Int32) -> (Int32, Int32)
 
+pub fn words_spaced() -> Int32
+
+pub let words_spaced_by_host : Int32
+
+pub let words_spaced_here : Int32
+
+pub let words_spaced_none : Int32
+
 pub fn work_began() -> Double
 
 pub fn work_noted_by((() -> Double, (String, Double) -> Unit)?) -> Unit
@@ -1121,4 +1129,5 @@ pub(open) trait Host {
   fn ncall_state(Self, Int32) -> Int32 = _
   fn ncall_result(Self, Int32) -> String = _
   fn ncall_end(Self, Int32) -> Unit = _
+  fn words_spaced(Self) -> Int32 = _
 }

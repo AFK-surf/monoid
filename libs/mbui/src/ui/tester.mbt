@@ -457,6 +457,7 @@ pub fn Tester::new(
     generation_on_face_add: Ref(false),
     tabular: 0.0,
     cjk_marks: false,
+    words_spaced: @hostapi.words_spaced_none,
     glyph_box: (6.0, 10.0),
     faces_wider: {},
     latin: None,
@@ -3168,6 +3169,30 @@ pub fn Tester::tabular_wider(self : Tester, em : Double) -> Unit {
 /// (@hostapi.style_proportional), from now on: as a Chinese face (思源黑体) draws it, its pwid asked or not.
 pub fn Tester::cjk_face_marks(self : Tester) -> Unit {
   self.fake.cjk_marks = true
+}
+
+///|
+/// Chinese and Japanese words spaced by mbui (@hostapi.words_spaced_here: an eighth of an em between Han or kana and a
+/// Latin letter or digit, a full-width mark set closer before another), from now on, as on a host whose shaper spaces
+/// none (Android's, Windows', Linux's, the web's); `by_host` for a host whose shaper spaces the words but sets no mark
+/// closer (Core Text's since iOS 26 and macOS 27: mbui sets only the marks); `none` for nobody's (MBUI_AUTOSPACE=off,
+/// and a Tester's own until it says: its fake's widths as they are).
+pub fn Tester::words_spaced_here(
+  self : Tester,
+  by_host? : Bool = false,
+  none? : Bool = false,
+) -> Unit {
+  self.fake.words_spaced = if none {
+    @hostapi.words_spaced_none
+  } else if by_host {
+    @hostapi.words_spaced_by_host
+  } else {
+    @hostapi.words_spaced_here
+  }
+  // (what was laid out in the shapes before laid out again, as when a face comes in: text.mbt's atlas generation)
+  clear_shapes()
+  words_shaped_in.set(words_shaped_in.untracked() + 1)
+  view_words_rescaled()
 }
 
 ///|

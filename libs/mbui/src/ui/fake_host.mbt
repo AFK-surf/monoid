@@ -338,6 +338,20 @@ impl @hostapi.Host for FakeHost with font_metrics(self, size, weight, style, out
 }
 
 ///|
+/// Who spaces Chinese and Japanese words: nobody where the run says MBUI_AUTOSPACE=off, else a live host's answer, else
+/// the fake's own (Tester::words_spaced_here).
+impl @hostapi.Host for FakeHost with words_spaced(self) {
+  // (none, as the run's own MBUI_AUTOSPACE says: a film's, its live host not asked)
+  if self.env.get("MBUI_AUTOSPACE") == Some("off") {
+    return @hostapi.words_spaced_none
+  }
+  match self.live {
+    Some(l) => l.host.words_spaced()
+    None => self.words_spaced
+  }
+}
+
+///|
 /// Fake shaping: one cluster per extended grapheme cluster, as real hosts
 /// make them; Latin half an em wide (0.6 in the code face; ASCII as a real face where the test says:
 /// Tester::latin_advances), everything else a full em.

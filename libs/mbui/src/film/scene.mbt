@@ -40,7 +40,10 @@ fn scene_tester(
       "0" => Some(false)
       _ => None
     },
-    env=[("MBUI_TEXT_RECORD", "1"), ("MBUI_LOCALE", arg("MBUI_LOCALE")), ("MBUI_DARK", arg("MBUI_DARK"))],
+    env=[("MBUI_TEXT_RECORD", "1"), ("MBUI_LOCALE", arg("MBUI_LOCALE")), ("MBUI_DARK", arg("MBUI_DARK")),
+      // (a picture of words as a shaper that spaces none sets them: hostapi's words_spaced)
+      ("MBUI_AUTOSPACE", arg("MBUI_AUTOSPACE")),
+    ],
     corners_held~,
     words_over_held~,
     live={ host, turn: fn() { spin(1.0) } },

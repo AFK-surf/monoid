@@ -3198,6 +3198,7 @@ pub fn Tester::words(Self) -> Array[(String, Double, Double, Double, Double, Dou
 pub fn Tester::words_over_frames(Self) -> Array[WordsOverAt]
 pub fn Tester::words_over_now(Self) -> Array[String]
 pub fn Tester::words_said(Self) -> Array[(String, Double, Double, Double, Double, Double)]
+pub fn Tester::words_spaced_here(Self, by_host? : Bool, none? : Bool) -> Unit
 
 pub struct TextLayout {
   text : String

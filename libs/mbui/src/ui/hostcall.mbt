@@ -111,6 +111,9 @@ struct FakeHost {
   // whether the marks of East Asian Ambiguous width (U+2010 to U+206F) are a whole em unless set proportional
   // (@hostapi.style_proportional), as a CJK face draws them (false by default: half an em either way)
   mut cjk_marks : Bool
+  // who spaces Chinese and Japanese words (@hostapi.words_spaced; nobody by default, what the fake measures left as it
+  // is): Tester::words_spaced_here for mbui's spacing or a shaper's own
+  mut words_spaced : Int
   // how big each glyph's picture is, in points (6 by 10 by default): what fills an atlas's plots, as large ones do
   mut glyph_box : (Double, Double)
   // what a face given by its number (face_add, a face's preview) adds to a cluster's advance in what is set in it, in

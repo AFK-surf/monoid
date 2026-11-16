@@ -439,6 +439,22 @@ fn rich_kept_thin() -> Unit {
 }
 
 ///|
+/// Whether run `run` of paragraph `r` (in `style`, its r.run_style) is words that an eighth of an em parts from the
+/// words of the run beside it where a Han character or kana meets a Latin letter or a digit, as words_spaced_in parts
+/// them within one run: not a drawing, not code or on a ground of its own (its room round it parts it already), not in
+/// the code face (a grid), and not where nobody spaces words (@hostapi.words_spaced_none). Where the host's shaper
+/// spaces them (@hostapi.words_spaced_by_host) it does so only within what it is given, one run.
+fn rich_spaced_run(r : Rich, run : Run, style : Int) -> Bool {
+  run.drawing is None &&
+  !run.code &&
+  run.ground is None &&
+  r.run_bg(run) == 0L &&
+  (style & @hostapi.style_mono) == 0 &&
+  @hostapi.face_of_style(style) != @hostapi.face_code &&
+  spaced_now() != @hostapi.words_spaced_none
+}
+
+///|
 /// What of paragraph `r` any width shares (RichPrep).
 /// (`one`: a paragraph of one run of words made as rich_prep_one makes it; false only in a test, which holds the two the
 /// same)
@@ -477,6 +493,10 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   let cu = []
   let run_of = []
   let mut off = 0
+  // the last cluster of the run of words before (its index, its first code unit, the run's size), where an eighth of
+  // an em may part it from this run's first (rich_spaced_run): each run is shaped on its own, so neither the host's
+  // shaper nor words_spaced_in sees where two runs meet
+  let mut spaced_before : (Int, Int, Double)? = None
   for k, run in r.runs {
     let size = r.run_size(run)
     match run.drawing {
@@ -505,6 +525,7 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
           paths: d.paths.map(fn(path) { path.map(fn(p) { (p.0.map(fn(v) { v * size }), p.1) }) }),
           words: d.words.map(fn(w) { (w.0, w.1 * size, w.2 * size, w.3 * size) }),
         } : InlineDrawing)))
+        spaced_before = None
         continue
       }
       None => drawings.push(None)
@@ -523,6 +544,14 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
     run_c0.push(starts.length())
     let n = s.starts.length()
     let (room, after) = r.run_room(run, size)
+    let spaced = rich_spaced_run(r, run, style)
+    if spaced && n > 0 {
+      match spaced_before {
+        Some((c, before, before_size)) if spaced_pair(before, s.cu[0]) =>
+          adv[c] = adv[c] + before_size * 0.125
+        _ => ()
+      }
+    }
     for i in 0..<n {
       starts.push(s.starts[i] + off)
       lens.push(s.lens[i])
@@ -540,6 +569,9 @@ fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
       keys.push(s.keys[i])
       cu.push(s.cu[i])
       run_of.push(k)
+    }
+    if n > 0 {
+      spaced_before = if spaced { Some((starts.length() - 1, s.cu[n - 1], size)) } else { None }
     }
     run_c1.push(starts.length())
     sb.write_string(run.text)

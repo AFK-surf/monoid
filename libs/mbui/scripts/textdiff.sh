@@ -18,6 +18,9 @@ if [ ! -d out/node/node_modules/pngjs ]; then
   (mkdir -p out/node && cd out/node && { [ -f package.json ] || npm init -y >/dev/null; } && npm i pngjs >/dev/null 2>&1)
 fi
 WIN=${WIN:-900x800}
+# (mbui's own spacing of Chinese and Japanese words, an eighth of an em by Latin letters and full-width marks set closer,
+# left out: what is compared is each string as the platform's shaper sets it, drawn: hostapi's words_spaced)
+export MBUI_AUTOSPACE=off
 fail=0
 for h in $HOSTS; do
   O=out/textdiff/$h
@@ -32,7 +35,7 @@ for h in $HOSTS; do
         (cd out/node && npm i playwright >/dev/null 2>&1 && npx playwright install chromium >/dev/null 2>&1)
       fi
       APP=textdiff bash scripts/web.sh build >/dev/null || { echo "textdiff: web build failed"; fail=1; continue; }
-      WIN=$WIN QUERY="MBUI_TEXTDIFF_ONLY=${ONLY:-}" NODE_PATH=$PWD/out/node/node_modules node scripts/textdiff-web.mjs $O ;;
+      WIN=$WIN QUERY="MBUI_AUTOSPACE=off&MBUI_TEXTDIFF_ONLY=${ONLY:-}" NODE_PATH=$PWD/out/node/node_modules node scripts/textdiff-web.mjs $O ;;
     android)
       SDK=${ANDROID_HOME:-$HOME/Library/Android/sdk}
       ADB="$SDK/platform-tools/adb -s emulator-${EMU_PORT:-5580}"
@@ -40,7 +43,7 @@ for h in $HOSTS; do
       $ADB logcat -c
       # the last run's pictures gone (the app not yet installed on a new emulator has none)
       $ADB shell run-as dev.mbui.demo rm -rf files/textdiff 2>/dev/null || true
-      APP=textdiff ENV="MBUI_BENCH=-1;MBUI_TEXTDIFF_ONLY=${ONLY:-}" bash scripts/android.sh run
+      APP=textdiff ENV="MBUI_BENCH=-1;MBUI_AUTOSPACE=off;MBUI_TEXTDIFF_ONLY=${ONLY:-}" bash scripts/android.sh run
       # the app's own named end, or its crash, as logcat has it (cleared above: this run's)
       $ADB logcat -v brief -m 1 -e "TXD done|FATAL EXCEPTION|Fatal signal" >/dev/null
       $ADB logcat -d -v raw -s mbui:I > $O/log.txt
