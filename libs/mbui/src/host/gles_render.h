@@ -868,7 +868,11 @@ static void show_blur(const Grab *m) {
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left, then shown (show_blur).
+// (how many: scripts/gles_render_test.c, a blur shown again as kept is none)
+static int blurs_made;
+
 static void blur(const Grab *m) {
+  blurs_made++;
   int w = m->w, h = m->h, k = m->k, contained = m->contained;
   ensure_levels(w, h);
   glDisable(GL_BLEND);

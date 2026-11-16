@@ -27,6 +27,7 @@ on:
       - "libs/mbui/goldens/render/controls.dl"
       - "libs/mbui/scripts/render_dl.sh"
       - "libs/mbui/scripts/render_linux.sh"
+      - "libs/mbui/scripts/gles_render_test.c"
       - ".github/workflows/mbui-render-linux.yml"
   push:
     branches: [main]

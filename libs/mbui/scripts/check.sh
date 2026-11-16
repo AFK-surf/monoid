@@ -1,7 +1,8 @@
 #!/bin/bash
 # Type-check every target; print errors only. First the determinism lint (tools/detlint): its
 # report, and a failure stops here; then the hosts' H.264 conversion (scripts/avc_test.c) and log files
-# (scripts/log_files_test.c).
+# (scripts/log_files_test.c), and the renderers' own tests (scripts/apple_render_test.m on a Mac,
+# scripts/gles_render_test.c on Linux).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
 # the H.264 conversion the hosts share (src/host/avc.h), as still.fail's Android AvcTest tests it
@@ -16,6 +17,12 @@ if [ "$(uname)" = Darwin ]; then
     -o "$D/../out/apple_render_test" && "$D/../out/apple_render_test" || exit 1
   cc -Wall -Werror -fobjc-arc -I "$D/../src/host" "$D/ios_ime_test.m" \
     -framework Foundation -framework CoreGraphics -o "$D/../out/ios_ime_test" && "$D/../out/ios_ime_test" || exit 1
+fi
+# the GLES renderer's window path (src/host/gles_render.h: Android's and Linux's), on EGL's surfaceless platform
+if [ "$(uname)" = Linux ] && pkg-config --exists epoxy zlib; then
+  cc -Wall -Wno-unused-function -I "$D/../src/host" -I "$MOON_HOME/include" "$D/gles_render_test.c" \
+    $(pkg-config --cflags --libs epoxy zlib) -lm -o "$D/../out/gles_render_test" &&
+    LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe "$D/../out/gles_render_test" || exit 1
 fi
 for t in ${TARGETS:-native}; do
   echo "=== $t"

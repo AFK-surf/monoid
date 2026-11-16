@@ -1,11 +1,17 @@
 // src/host/apple_render.m's tests: after mb_render_trim shrinks the layer's drawableSize to 1x1 (the window hidden,
 // covered, minimized or the Mac asleep) and mb_render_set_size restores the window's size, the next frame is drawn
-// whole into a new canvas and presented, never skipped by same_as_shown as equal to the frame before the trim:
+// whole into a new canvas and presented, never skipped by same_as_shown as equal to the frame before the trim; the
+// blur under glass kept while what is under it is the same, never while a picture under it had no texture yet; frames
+// handed to the presenting queue while it is busy drawn as the newest alone, what each said to differ joined, the
+// glyphs put meanwhile kept, the canvas then the same to the byte as the frame drawn whole; and many frames in a row
+// with sizes, trims and read-backs between them:
 //   cc -Wall -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/apple_render_test.m -framework Foundation -framework QuartzCore -framework Metal -framework CoreGraphics -framework ImageIO -o out/apple_render_test && out/apple_render_test
 #include <stdio.h>
 #import "apple_render.m"
 
-id<MTLTexture> mb_image_texture(int iid) { (void)iid; return nil; }
+// picture 1's texture: none (not decoded yet) till a test makes one
+static id<MTLTexture> picture_one;
+id<MTLTexture> mb_image_texture(int iid) { return iid == 1 ? picture_one : nil; }
 id<MTLTexture> mb_stream_texture(int sid) { (void)sid; return nil; }
 int mb_views_take_moved(void) { return 0; }
 int mb_views_frost(int n, const double *frosts) { (void)n, (void)frosts; return 0; }
@@ -22,6 +28,37 @@ static int failed;
       failed = 1;                                                     \
     }                                                                 \
   } while (0)
+
+// An instance: a rect at x, y, w × h of colour (r, g, b), kind `kind`, image `tid`, its clip the window's.
+static void rect_at(double *d, double x, double y, double w, double h, int kind, double r, double g, double b,
+                    double tid) {
+  memset(d, 0, MB_INST * sizeof(double));
+  d[0] = x;
+  d[1] = y;
+  d[2] = w;
+  d[3] = h;
+  d[5] = kind;
+  d[8] = r;
+  d[9] = g;
+  d[10] = b;
+  d[11] = 1;
+  d[16] = 0;
+  d[17] = 0;
+  d[18] = 400;
+  d[19] = 300;
+  d[20] = tid;
+}
+
+// The canvas the window's frames were drawn into the same to the byte as its last frame drawn whole again.
+static int canvas_as_whole(void) {
+  int cw, ch, ww, wh;
+  uint8_t *drawn = read_texture(canvas, &cw, &ch);
+  uint8_t *whole = read_last(&ww, &wh);
+  int same = cw == ww && ch == wh && memcmp(drawn, whole, (size_t)cw * ch * 4) == 0;
+  free(drawn);
+  free(whole);
+  return same;
+}
 
 int main(void) {
   @autoreleasepool {
@@ -80,6 +117,7 @@ int main(void) {
     mb_render_present(inst, 1, 0.1, 0.2, 0.3);
     CHECK(mlayer.opaque == YES);
     CHECK(shown_ok == 1);
+    present_drain();
     // A frame drawn whole with no glass goes straight into the drawable: the canvas holds no frame after it.
     CHECK(canvas_ok == 0);
     // One said to differ in a part is drawn into the canvas (whole, as it held none) and copied.
@@ -89,6 +127,7 @@ int main(void) {
     mb_host_render_dirty(0, 0, 200, 100);
     mb_render_present(moved, 1, 0.1, 0.2, 0.3);
     CHECK(shown_ok == 1);
+    present_drain();
     CHECK(canvas_ok == 1);
     // One with glass (slot 20 negative) goes through the canvas, whose copy its blur reads, though drawn whole.
     double glass[2 * MB_INST];
@@ -101,7 +140,138 @@ int main(void) {
     canvas_ok = 0;
     mb_render_present(glass, 2, 0.1, 0.2, 0.3);
     CHECK(shown_ok == 1);
+    present_drain();
     CHECK(canvas_ok == 1);
+
+    // The blur under glass is kept while what is drawn under it is the same: what is over it changing draws none
+    // again; what is under it changing does.
+    {
+      double g3[3 * MB_INST];
+      rect_at(g3, 20, 20, 200, 100, 0, 0.9, 0.1, 0.1, 0);
+      rect_at(g3 + MB_INST, 40, 40, 120, 60, 5, 1, 1, 1, -2);
+      g3[MB_INST + 7] = 10;
+      g3[MB_INST + 11] = 0.5;
+      rect_at(g3 + 2 * MB_INST, 300, 200, 20, 20, 0, 0.1, 0.1, 0.9, 0);
+      mb_render_present(g3, 3, 0.1, 0.2, 0.3);
+      present_drain();
+      int made = blurs_made;
+      CHECK(kept_ok == 1);
+      g3[2 * MB_INST + 0] = 320;  // over the glass: moved
+      mb_render_present(g3, 3, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made);
+      CHECK(kept_ok == 1);
+      g3[0] = 24;  // under it: moved
+      mb_render_present(g3, 3, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      CHECK(kept_ok == 1);
+
+      // A picture under it with no texture yet (drawn without it): that blur is not kept as what is under it, and
+      // once the picture has its texture, it is drawn and kept.
+      double p3[3 * MB_INST];
+      memcpy(p3, g3, sizeof p3);
+      rect_at(p3, 20, 20, 200, 100, 4, 1, 1, 1, 1);
+      p3[12] = 0;
+      p3[13] = 0;
+      p3[14] = 1;
+      p3[15] = 1;
+      picture_one = nil;
+      mb_render_present(p3, 3, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(kept_ok == 0);
+      MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                    width:2
+                                                                                   height:2
+                                                                                mipmapped:NO];
+      picture_one = [dev newTextureWithDescriptor:td];
+      uint8_t px[16] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255};
+      [picture_one replaceRegion:MTLRegionMake2D(0, 0, 2, 2) mipmapLevel:0 withBytes:px bytesPerRow:8];
+      p3[2 * MB_INST + 0] = 330;  // (a frame of its own: the same numbers would be the one shown)
+      made = blurs_made;
+      mb_render_present(p3, 3, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      CHECK(kept_ok == 1);
+      picture_one = nil;
+    }
+
+    // Frames handed over while the queue is busy (here held by a block of the test's): drawn once, the newest, in
+    // part, what both said to differ joined; the glyph put between them kept; the canvas then the same to the byte as
+    // that frame drawn whole.
+    {
+      double two[2 * MB_INST];
+      rect_at(two, 20, 20, 40, 40, 0, 0.9, 0.2, 0.1, 0);
+      rect_at(two + MB_INST, 200, 150, 40, 40, 0, 0.1, 0.8, 0.3, 0);
+      // (a frame drawn in part first: the canvas then holds it)
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      mb_host_render_dirty(18, 18, 46, 44);
+      two[0] = 22;
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(canvas_ok == 1);
+      CHECK(canvas_as_whole());
+      dispatch_semaphore_t gate = dispatch_semaphore_create(0);
+      dispatch_async(present_q, ^{
+        dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER);
+      });
+      int drawn = present_drawn;
+      two[0] = 60;  // the first moved, said
+      mb_host_render_dirty(18, 18, 84, 44);
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      uint8_t glyph[4] = {11, 22, 33, 44};
+      mb_atlas_upload(0, 8, 4, 2, 2, glyph);
+      two[MB_INST + 1] = 100;  // then the second, said: the first's part not said again
+      mb_host_render_dirty(198, 98, 44, 94);
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      CHECK(shown_ok == 1);
+      CHECK(present_drawn == drawn);
+      dispatch_semaphore_signal(gate);
+      present_drain();
+      CHECK(present_drawn == drawn + 1);
+      // (put in by the queue for the frame drawn, before anything here reads back)
+      uint8_t back[4] = {0};
+      [atlas getBytes:back bytesPerRow:2 fromRegion:MTLRegionMake2D(8, 4, 2, 2) mipmapLevel:0];
+      CHECK(memcmp(back, glyph, 4) == 0);
+      CHECK(canvas_ok == 1);
+      CHECK(canvas_as_whole());
+
+      // Many frames in a row, the queue never waited for but by what reads back, resizes or trims: each frame's
+      // canvas, when read, the frame drawn whole.
+      for (int i = 0; i < 400; i++) {
+        two[0] = 20 + (i * 7) % 300;
+        two[MB_INST + 1] = 10 + (i * 13) % 200;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(two, 2, 0.1, 0.2, 0.3);
+        if (i % 97 == 50) {
+          mb_render_trim();
+          CHECK(CGSizeEqualToSize(mlayer.drawableSize, CGSizeMake(1, 1)));
+        }
+        if (i % 41 == 20) mb_render_set_size(i % 2 ? 380 : 400, 300, 2);
+        if (i % 41 == 30) mb_render_set_size(400, 300, 2);
+        if (i % 53 == 0) {
+          int fw, fh;
+          free(read_last(&fw, &fh));
+          CHECK(fw == (int)round(vw * 2) && fh == 600);
+        }
+      }
+      mb_render_set_size(400, 300, 2);
+      two[0] = 33;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      two[0] = 35;
+      mb_host_render_dirty(30, 18, 50, 44);
+      mb_render_present(two, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(canvas_ok == 1);
+      CHECK(canvas_as_whole());
+      mb_render_trim();
+      CHECK(CGSizeEqualToSize(mlayer.drawableSize, CGSizeMake(1, 1)));
+      CHECK(canvas_ok == 0);
+      mb_render_set_size(400, 300, 2);
+    }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
