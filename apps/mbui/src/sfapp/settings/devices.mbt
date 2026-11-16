@@ -284,7 +284,7 @@ pub fn open_device(core : Core, here : Here, station : String, id : String, from
               if !flag(@signals.untracked(d), "mine") || flag(now, "whole") || via != "rig" {
                 return
               }
-              confirm(device_chat_title(now), "", @sf.t("web-pages.rigs.revoke"), fn() {
+              confirm(device_chat_title(now), "", @sf.t("web-pages.rigs.revoke"), danger=true, fn() {
                 act(core, @sf.t("web-pages.rigs.revoke"), "rig.revoke", obj([("workspace", str(here.workspace)), ("rig", str(station)), ("request", str(text(now, "request"))), ("station", str(text(now, "station")))]))
               })
             },
