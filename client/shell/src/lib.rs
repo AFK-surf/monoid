@@ -490,7 +490,10 @@ type Accepted = Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiv
 struct Kept {
     accepted: Accepted,
     keepers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
-    homes: Vec<RelayUrl>,
+    /// The relays it was bound with, and those of them it is home on now (one removed is home no more: a keeper is
+    /// wanted there once it is kept on it again, unless it is inserted again first, home again).
+    bound: Vec<RelayUrl>,
+    homes: Mutex<Vec<RelayUrl>>,
     held: Mutex<(u32, Vec<iroh::endpoint::Incoming>)>,
 }
 
@@ -2982,8 +2985,15 @@ impl Inner {
                     _ => return Err("not an endpoint".into()),
                 };
                 let additional: Vec<Vec<u8>> = a.get("additional").and_then(Value::as_array).into_iter().flatten().filter_map(|x| hex::decode(x.as_str()?).ok()).collect();
-                let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional);
-                let addr = endpoint_addr(a.get("addr").ok_or("missing addr")?)?;
+                let mut options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional);
+                let said = a.get("addr").ok_or("missing addr")?;
+                // Relays it is not to be reached through, though Address Lookup names them (a station's workspaces
+                // turned them off: station/src/mesh/relays.ts `stationAddr`).
+                if let Some(disabled) = said.get("disabledRelays").and_then(Value::as_array) {
+                    let disabled: Vec<RelayUrl> = disabled.iter().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
+                    options = options.with_disabled_relays(disabled);
+                }
+                let addr = endpoint_addr(said)?;
                 let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
                 let conn = connecting.await.map_err(err)?;
                 Ok(Answer::json(json!({ "id": self.keep_conn(conn) })))
@@ -3304,10 +3314,17 @@ impl Inner {
                     "iroh.online" => endpoint.online().await,
                     "iroh.insertRelay" => {
                         let url = relay_url(str_of(&a, "url")?)?;
-                        endpoint.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
+                        endpoint.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url.clone()))).await;
+                        let mut homes = kept.homes.lock().unwrap();
+                        if kept.bound.contains(&url) && !homes.contains(&url) {
+                            homes.push(url);
+                        }
                     }
+                    // Off every relay transport: its connection there ended, no longer home there nor in its address.
                     "iroh.removeRelay" => {
-                        endpoint.remove_relay(&relay_url(str_of(&a, "url")?)?).await;
+                        let url = relay_url(str_of(&a, "url")?)?;
+                        endpoint.remove_relay(&url).await;
+                        kept.homes.lock().unwrap().retain(|r| r != &url);
                     }
                     // iroh's own public relays: added while none of still.fail's answers, removed once one does.
                     "iroh.publicRelays" => {
@@ -3324,7 +3341,8 @@ impl Inner {
                     // longer named stopped.
                     "iroh.keep" => {
                         let mut relays: Vec<RelayUrl> = a.get("urls").and_then(Value::as_array).into_iter().flatten().map(|u| relay_url(u.as_str().unwrap_or_default())).collect::<Result<_, _>>()?;
-                        relays.retain(|r| !kept.homes.contains(r));
+                        let homes = kept.homes.lock().unwrap().clone();
+                        relays.retain(|r| !homes.contains(r));
                         let urls: Vec<String> = relays.iter().map(ToString::to_string).collect();
                         let mut keepers = kept.keepers.lock().unwrap();
                         keepers.retain(|url, task| {
@@ -3605,7 +3623,7 @@ impl Inner {
                 .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key_again)));
         }
         let endpoint = builder.bind().await.map_err(err)?;
-        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: relays.clone(), ..Kept::default() }))) })))
+        Ok(Answer::json(json!({ "id": self.keep(Handle::Endpoint(endpoint, Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), ..Kept::default() }))) })))
     }
 
     /// An account's database: opened, a statement run, its rows, closed, its file removed.

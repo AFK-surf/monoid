@@ -263,6 +263,10 @@
   nobody approves it (the user, 2026-11-11: 「要手动加太不 ai native 了」): a relay carries only end-to-end encrypted
   packets and one that is slow is not taken, so an approval would guard nothing; the tool adds one only once this
   station reached it as a relay, and who added it is kept and shown.
+- A relay a workspace turns off is off for its stations too, not only its devices (`src/mesh/relays.ts`): a station is
+  kept on the relays its workspaces keep on (`wantedRelays`, still.fail's where it is in none) and dials another
+  station through those of the workspaces both are in, the relays all of them turn off disabled (`stationAddr`,
+  `disabledRelays`: iroh takes no path through them, though Address Lookup names them).
 
 ## A station's name and icon
 

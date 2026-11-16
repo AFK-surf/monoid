@@ -5,37 +5,64 @@
 // where), and go once one does again (else iroh may home on a public relay, where browsers can't follow). The relay
 // iroh homes on is asked first, and once it answers asked again on the same connection, timed: the ping other stations
 // are told of (jobs/load.ts). The workspaces' own relays (mesh/ways.ts, kept by their stations) are kept the same way,
-// after still.fail's, as they are added or taken away.
+// after still.fail's, as they are added or taken away; and a relay every workspace of the station's turns off (`off`:
+// one's URL, `ours` for still.fail's) is not kept, nor dialed to another station (`stationAddr`).
 import { Effect, Schedule, Stream } from "effect";
 import type { Net } from "../jobs/load.ts";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { ControlPlane } from "../services.ts";
 import type { Cloud } from "../cloud/state.ts";
-import type { Endpoint } from "./native.ts";
-import { sameUrl, waysOf } from "./ways.ts";
+import type { Addr, Connection, Endpoint } from "./native.ts";
+import { offRelays, sameUrl, waysOf, workspaceRelays } from "./ways.ts";
 
 /// Asking our relays whether they answer is asking an outside system: the one timer here.
 const RELAY_CHECK = "30 seconds";
 
-/// The relays the station is kept on: still.fail's, then the workspaces' own not among them. What its endpoint is bound
-/// with (mesh.ts), so a front's endpoint taken over in a handover is reconciled with all of them (mesh.mbt `bind`).
+/// The relays the station is kept on: each of its workspaces' (`workspaceRelays`: still.fail's, then its own, but those
+/// its ways turn off), the home one's first; still.fail's where it is in none. What its endpoint is bound with (mesh.ts,
+/// rig/main.ts), so a front's endpoint taken over in a handover is reconciled with all of them (mesh.mbt `bind`).
 export function wantedRelays(state: Cloud): string[] {
-  const theirs = state.relays();
-  return [...theirs, ...waysOf(state).relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))];
+  const ways = waysOf(state);
+  const out: string[] = [];
+  for (const m of state.memberships()) for (const u of workspaceRelays(ways, m.workspace)) if (!out.some((o) => sameUrl(o) === sameUrl(u))) out.push(u);
+  return out.length > 0 ? out : state.relays();
 }
 
-/// Runs for good (until interrupted).
-export const keepRelays = (endpoint: Endpoint, net?: Net) =>
+/// Where station `id` is dialed (peer.ts, peer-http.ts): through the relays of the workspace it is asked in, or, where
+/// none is said (or it is another workspace's, sharing chats), of every workspace of this station's it is in too; and
+/// not through those all of them turn off (`disabledRelays`: iroh drops them where Address Lookup names them, the
+/// other station kept on them for a workspace of its own that keeps them on). One of none of them: as this station is
+/// kept (`wantedRelays`).
+export function stationAddr(cloud: Cloud, id: string, workspace: string | null = null): Addr & { disabledRelays: string[] } {
+  const ways = waysOf(cloud);
+  const shared = workspace !== null && cloud.membership(workspace) !== null
+    ? [workspace]
+    : cloud.memberships().filter((m) => m.peers.some((p) => p?.id === id) || cloud.rigs(m.workspace).some((r) => r.id === id)).map((m) => m.workspace);
+  if (shared.length === 0) return { id, relays: wantedRelays(cloud), disabledRelays: [] };
+  const relays: string[] = [];
+  for (const ws of shared) for (const u of workspaceRelays(ways, ws)) if (!relays.some((r) => sameUrl(r) === sameUrl(u))) relays.push(u);
+  const offs = shared.map((ws) => offRelays(ways, ws));
+  const disabledRelays = offs[0]!.filter((u) => offs.every((o) => o.some((x) => sameUrl(x) === sameUrl(u))) && !relays.some((r) => sameUrl(r) === sameUrl(u)));
+  return { id, relays, disabledRelays };
+}
+
+const among = (urls: string[], url: string) => urls.some((u) => sameUrl(u) === sameUrl(url));
+
+/// Runs for good (until interrupted). `bound`: the relays the endpoint was bound with (still.fail's where not said):
+/// those wanted that it lacks are put in before it is kept on them, and those not wanted taken out.
+export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
   Effect.gen(function* () {
     const cloud = yield* ControlPlane;
     const ways = waysOf(cloud.state);
     const wanted = () => wantedRelays(cloud.state);
     let ours = wanted();
-    // The workspaces' own put in before it is kept on them, where the endpoint was bound with still.fail's alone.
-    const theirs = cloud.state.relays();
-    for (const url of ours.filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)))) {
+    const was = bound ?? cloud.state.relays();
+    for (const url of ours.filter((u) => !among(was, u))) {
       yield* Effect.promise(() => endpoint.insertRelay(url).catch((e) => log.warn("mesh", "a workspace's relay was not added", { relay: url, error: (e as Error).message })));
+    }
+    for (const url of was.filter((u) => !among(ours, u))) {
+      yield* Effect.promise(() => endpoint.removeRelay(url).catch((e) => log.warn("mesh", "a relay turned off was not removed", { relay: url, error: (e as Error).message })));
     }
     endpoint.keep(ours);
     // Whether iroh's public relays are on: not known at first, since an endpoint kept across a handover (the front's)
@@ -46,12 +73,13 @@ export const keepRelays = (endpoint: Endpoint, net?: Net) =>
     let changing: Promise<void> = Promise.resolve();
     const changed = () => (changing = changing.then(async () => {
       const now = wanted();
-      if (cloud.state.relays().length === 0 || JSON.stringify(now) === JSON.stringify(ours)) return;
+      // (none: not in a workspace now, cloud.json gone; the relays stay as they are)
+      if (now.length === 0 || (now.length === ours.length && now.every((u, i) => sameUrl(u) === sameUrl(ours[i]!)))) return;
       log.info("mesh", "the relays kept changed", { relays: now });
       const was = ours;
       ours = now;
-      for (const url of now.filter((u) => !was.includes(u))) await endpoint.insertRelay(url);
-      for (const url of was.filter((u) => !now.includes(u))) await endpoint.removeRelay(url);
+      for (const url of now.filter((u) => !among(was, u))) await endpoint.insertRelay(url);
+      for (const url of was.filter((u) => !among(now, u))) await endpoint.removeRelay(url);
       endpoint.keep(now);
     }).catch((e) => log.warn("mesh", "the relays kept were not changed", { error: (e as Error).message })));
     const follow = cloud.changes.pipe(Stream.runForEach(() => Effect.promise(changed)));
@@ -98,3 +126,11 @@ export const keepRelays = (endpoint: Endpoint, net?: Net) =>
 
     yield* Effect.all([follow, Effect.repeat(check, Schedule.spaced(RELAY_CHECK))], { concurrency: "unbounded", discard: true }).pipe(Effect.ensuring(Effect.sync(stopWays))); // timer: a ping that measures the relays, which tell nothing by themselves
   });
+
+/// Whether `conn` goes through one of `relays` now (its path chosen): a connection kept from before they were turned off,
+/// let go so the next request dials anew, not through them (peer.ts, peer-http.ts).
+export function goesThrough(conn: Connection, relays: string[] | undefined): boolean {
+  if (relays === undefined || relays.length === 0) return false;
+  const via = conn.paths?.().find((p) => p.selected)?.relay;
+  return typeof via === "string" && relays.some((u) => sameUrl(u) === sameUrl(via));
+}

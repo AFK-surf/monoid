@@ -60,7 +60,8 @@ export const MeshLive = Layer.effectDiscard(
       }
       // The order is the one the endpoint prefers: a station asking for web requests offers the station transport's
       // protocol after it (to tell a station from before it), and is to be answered in the first (peer-http.ts).
-      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: wantedRelays(cloud.state), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
+      const bound = wantedRelays(cloud.state);
+      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
       const acquire = Effect.acquireRelease(
         bind,
         // iroh closes gracefully, waiting on every connection (the keepers' too): up to ~12 s. A station stopping or
@@ -84,7 +85,7 @@ export const MeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       // What other stations are told of this one's relay (jobs/load.ts), while it is on the mesh.
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net));
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound));
       // Online at the cloud only once a relay can reach the station: a device that saw "online" and connected before
       // the relay link was up had its first packets dropped (~3 s of retransmits). Its members' connections are taken
       // meanwhile (below): those that reach it already (on its LAN, or by a relay it is on) are not kept waiting. Taken

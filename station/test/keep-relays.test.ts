@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { Clock, Effect, Fiber, Stream } from "effect";
 import { keepRelays } from "../src/mesh/relays.ts";
+import { removeRelay, setWay, waysOf } from "../src/mesh/ways.ts";
 import { ControlPlane } from "../src/services.ts";
 import type { Endpoint } from "../src/mesh/native.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -16,7 +17,8 @@ const OURS = "https://relay.still.example/";
 const THEIRS = "https://relay.workspace.example";
 
 /// keepRelays run on an endpoint that says what it is asked; `answering` whether still.fail's relays answer a ping.
-function keeping(t: TestContext, answering: { now: boolean }) {
+/// `bound`: what the endpoint was bound with; `off`: the ways the workspace turned off as the cloud kept them.
+function keeping(t: TestContext, answering: { now: boolean }, o: { bound?: string[]; off?: string[] } = {}) {
   const asked: string[] = [];
   const endpoint = {
     home: () => null,
@@ -30,7 +32,7 @@ function keeping(t: TestContext, answering: { now: boolean }) {
     state: null,
     relays: () => [OURS],
     memberships: () => [{ workspace: "w" }],
-    waysSaid: () => ({ relays: [THEIRS], off: [] }),
+    waysSaid: () => ({ relays: [THEIRS], off: o.off ?? [] }),
   };
   const fetched = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
@@ -40,9 +42,9 @@ function keeping(t: TestContext, answering: { now: boolean }) {
   t.after(() => void (globalThis.fetch = fetched));
   const clock = testClock();
   const plane = { state: cloud, changes: Stream.never } as never;
-  const fiber = Effect.runFork(keepRelays(endpoint).pipe(Effect.provideService(ControlPlane, plane), Effect.provideService(Clock.Clock, clock.clock)));
+  const fiber = Effect.runFork(keepRelays(endpoint, undefined, o.bound).pipe(Effect.provideService(ControlPlane, plane), Effect.provideService(Clock.Clock, clock.clock)));
   t.after(() => Effect.runPromise(Fiber.interrupt(fiber)));
-  return { asked, clock };
+  return { asked, clock, cloud };
 }
 
 test("a workspace's own relays are put in before the endpoint is kept on them", async (t) => {
@@ -74,4 +76,29 @@ test("none of still.fail's relays answering: iroh's public relays come in once, 
   await clock.adjust(30_000);
   await settle(10);
   assert.deepEqual(asked.filter((a) => a.startsWith("public")), ["public true", "public false"]);
+});
+
+test("a workspace turning still.fail's relays off takes the station off them and keeps it on its own; on again, back on them", async (t) => {
+  const { asked, cloud } = keeping(t, { now: true });
+  await settle(10);
+  const ways = waysOf(cloud as never);
+  const from = () => asked.length;
+  let at = from();
+  setWay(ways, "w", "ours", false);
+  await settle(10);
+  assert.deepEqual(asked.slice(at), [`remove ${OURS}`, `keep ${THEIRS}`]);
+  at = from();
+  setWay(ways, "w", "ours", true);
+  await settle(10);
+  assert.deepEqual(asked.slice(at), [`insert ${OURS}`, `keep ${OURS} ${THEIRS}`]);
+  at = from();
+  removeRelay(ways, "w", THEIRS);
+  await settle(10);
+  assert.deepEqual(asked.slice(at), [`remove ${THEIRS}`, `keep ${OURS}`], "its own relay removed: taken off it");
+});
+
+test("an endpoint bound with a relay its workspace turned off is taken off it at once", async (t) => {
+  const { asked } = keeping(t, { now: true }, { bound: [OURS, THEIRS], off: ["ours"] });
+  await settle(10);
+  assert.deepEqual(asked.slice(0, 2), [`remove ${OURS}`, `keep ${THEIRS}`]);
 });

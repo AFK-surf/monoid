@@ -91,7 +91,10 @@ pub struct Endpoint {
     inner: IrohEndpoint,
     keepers: Arc<StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// The relays it was bound with: home on each, no keeper wanted there.
-    homes: Vec<RelayUrl>,
+    bound: Vec<RelayUrl>,
+    /// Those of them it is home on now: one removed is home no more (a keeper is wanted there once it is kept on it
+    /// again, unless it is inserted again first, home again).
+    homes: StdMutex<Vec<RelayUrl>>,
     /// Connections coming that are held unanswered, not even their handshake (`hold_incoming`), and those held.
     held: Arc<StdMutex<(u32, Vec<iroh::endpoint::Incoming>)>>,
     /// The connections whose handshakes are done, as each finishes (`accept`), once one was first asked for.
@@ -187,7 +190,7 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
             .address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)))
             .address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
     }
-    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: relays, held: Arc::default(), accepted: Arc::default() })
+    Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default() })
 }
 
 #[napi(object)]
@@ -197,6 +200,13 @@ pub struct Addr {
     pub relays: Option<Vec<String>>,
     /// `ip:port`, each.
     pub ips: Option<Vec<String>>,
+    /// Relays it is not to be reached through, though Address Lookup names them (its workspaces turned them off).
+    pub disabled_relays: Option<Vec<String>>,
+}
+
+/// The relays `addr` says the endpoint is not to be reached through, where it says them.
+fn disabled_relays(addr: &Addr) -> napi::Result<Option<Vec<RelayUrl>>> {
+    addr.disabled_relays.as_ref().map(|urls| urls.iter().map(|u| relay_url(u)).collect()).transpose()
 }
 
 fn endpoint_addr(addr: &Addr) -> napi::Result<EndpointAddr> {
@@ -241,13 +251,21 @@ impl Endpoint {
     #[napi]
     pub async fn insert_relay(&self, url: String) -> napi::Result<()> {
         let url = relay_url(&url)?;
-        self.inner.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url))).await;
+        self.inner.insert_relay(url.clone(), Arc::new(iroh::RelayConfig::from(url.clone()))).await;
+        // (one it was bound with is home again: iroh's relay transport bound for it takes it back)
+        let mut homes = self.homes.lock().unwrap();
+        if self.bound.contains(&url) && !homes.contains(&url) {
+            homes.push(url);
+        }
         Ok(())
     }
 
+    /// Off every relay transport: its connection there ended, no longer home there nor in its address.
     #[napi]
     pub async fn remove_relay(&self, url: String) -> napi::Result<()> {
-        self.inner.remove_relay(&relay_url(&url)?).await;
+        let url = relay_url(&url)?;
+        self.inner.remove_relay(&url).await;
+        self.homes.lock().unwrap().retain(|r| r != &url);
         Ok(())
     }
 
@@ -277,7 +295,8 @@ impl Endpoint {
     #[napi]
     pub fn keep(&self, urls: Vec<String>) -> napi::Result<()> {
         let mut relays: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
-        relays.retain(|r| !self.homes.contains(r));
+        let homes = self.homes.lock().unwrap().clone();
+        relays.retain(|r| !homes.contains(r));
         let urls: Vec<String> = relays.iter().map(ToString::to_string).collect();
         let mut keepers = self.keepers.lock().unwrap();
         keepers.retain(|url, task| {
@@ -349,7 +368,10 @@ impl Endpoint {
     /// own deadline passed), and the handshake is given up then (`dial`).
     #[napi]
     pub async fn connect(&self, addr: Addr, alpn: Buffer, additional: Option<Vec<Buffer>>, given_up: Option<Promise<()>>) -> napi::Result<Connection> {
-        let options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional.unwrap_or_default().iter().map(|a| a.to_vec()).collect());
+        let mut options = iroh::endpoint::ConnectOptions::new().with_additional_alpns(additional.unwrap_or_default().iter().map(|a| a.to_vec()).collect());
+        if let Some(disabled) = disabled_relays(&addr)? {
+            options = options.with_disabled_relays(disabled);
+        }
         let given_up = async move {
             match given_up {
                 Some(promise) => drop(promise.await),

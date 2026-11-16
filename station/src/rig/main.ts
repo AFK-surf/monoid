@@ -18,7 +18,7 @@ import { applyNetwork } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
-import { keepRelays } from "../mesh/relays.ts";
+import { keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
@@ -234,14 +234,16 @@ export const RigMeshLive = Layer.effectDiscard(
     const run = Effect.gen(function* () {
       if (!cloud.state) yield* plane.changes.pipe(Stream.filter(() => cloud.state !== null), Stream.runHead);
       if (Number(process.env.STILLFAIL_MESH_BIND_ADDR?.split(":").at(-1)) > 0) yield* Effect.promise(() => previous.gone);
+      // Kept on the relays its workspace's ways keep on, as a station is (mesh/relays.ts).
+      const bound = wantedRelays(cloud);
       const endpoint = yield* Effect.acquireRelease(
-        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: cloud.relays(), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
+        Effect.promise(() => bindStation(native, { secretKey: key.seed, alpns: [PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) })),
         (endpoint) => Effect.ignore(Effect.timeoutOption(Effect.promise(() => endpoint.close()), "1 second")),
       );
       log.info("mesh", "rig listening", { rig: endpoint.id(), workspace: cloud.state!.workspace_name, sockets: endpoint.sockets(), lan: lanAddrs(endpoint.sockets()) });
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net));
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound));
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const online = yield* Effect.timeoutOption(Effect.promise(() => endpoint.online()), "15 seconds");

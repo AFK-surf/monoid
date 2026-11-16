@@ -4,7 +4,9 @@
 // scripts/mesh-base.ts keeps it so.
 import { existsSync } from "node:fs";
 
-export type Addr = { id: string; relays?: string[]; ips?: string[] };
+/// `disabledRelays`: relays it is not to be reached through, though Address Lookup names them (an addon from before
+/// takes no notice). Said, they stay so for every connection to it until a dial says others.
+export type Addr = { id: string; relays?: string[]; ips?: string[]; disabledRelays?: string[] };
 export type Stream = {
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
