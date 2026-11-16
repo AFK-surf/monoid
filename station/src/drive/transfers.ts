@@ -305,7 +305,8 @@ export class Transfers {
         const names = t.from.names.filter((n) => t.conflicts[n] !== "skip");
         const { items } = await source.walk(names);
         if (stopped()) return;
-        await this.#place(t, drive, items);
+        await this.#place(t, drive, items, stopped);
+        if (stopped()) return;
         t.items = items;
         t.total = items.reduce((n, i) => n + i.size, 0);
         t.state = "copying";
@@ -330,10 +331,11 @@ export class Transfers {
   }
 
   /// Where each name goes: its own name, one kept beside (`keep`), or the one there let go first (`replace`).
-  async #place(t: Transfer, drive: Drive, items: Item[]): Promise<void> {
+  async #place(t: Transfer, drive: Drive, items: Item[], stopped: () => boolean): Promise<void> {
     const listed = await drive.list(t.to.root, t.to.path, t.anywhere);
     const there = new Set(listed.entries.map((e) => key(e.name)));
     for (const name of t.from.names) {
+      if (stopped()) return;
       const answer = t.conflicts[name];
       if (answer === "skip") continue;
       const dir = items.find((i) => i.path === name)?.dir ?? false;
