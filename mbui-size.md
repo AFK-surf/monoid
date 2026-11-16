@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 2.42 | 3.36 | 14.23 | 35.35 | 55.51 | 31.03 | 63.42 | 99.68 | 112.2 |
 | [2f2358680](https://github.com/AFK-surf/monoid/commit/2f2358680b6d2853434930f002f40c64d29628f2) fix(mbui): restore NATURAL_SYMMETRIC vertical AA f | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.67 | 134.29 |
 | [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.63 | 113.3 |
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 2.42 | 3.36 | 14.22 | 35.35 | 55.46 | 31.02 | 63.38 | 99.83 | 121.21 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 | [3f9e81d4e](https://github.com/AFK-surf/monoid/commit/3f9e81d4e486c5b5d4fa7b96dadde45c1c23de0b) mbui: a signal or computed tells only as its value | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.76 | 119.59 |
 | [e081fc466](https://github.com/AFK-surf/monoid/commit/e081fc466a18d81ee61a28fc89c8d422e644173a) mbui: Windows' H.265 and AV1 GPU decoders kept by  | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.76 | 119.59 |
-| [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 2.14 | 2.99 | 12.92 | 34.05 | 51.19 | 29.87 | 59.79 | 99.67 | 116.2 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f8bd4d072](https://github.com/AFK-surf/monoid/commit/f8bd4d0728de8bcfa1dfe12612e1328f6711576d) mbui: 节点版对话页的视频缩略图飞入飞出查看器，发出的消息飞行中不再叠字 (#6593) | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
 | [2f2358680](https://github.com/AFK-surf/monoid/commit/2f2358680b6d2853434930f002f40c64d29628f2) fix(mbui): restore NATURAL_SYMMETRIC vertical AA f | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.51 |
 | [d3ae5ba67](https://github.com/AFK-surf/monoid/commit/d3ae5ba67bdfd6503f830c8d6067637645dcb3bc) e2e: the Windows test station is given its MoonBit | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
 | [a6e5b618a](https://github.com/AFK-surf/monoid/commit/a6e5b618abe9c5b4efa2f39cdacffeda9d097209) mbui: liquid glass by Snell's law through a squirc | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.44 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [124be6dbd](https://github.com/AFK-surf/monoid/commit/124be6dbd1eb3b95c126640ceea7e9b4e0dbe77e) app: an old sheet opened whole holds what it asked | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.59 |
 | [3f9e81d4e](https://github.com/AFK-surf/monoid/commit/3f9e81d4e486c5b5d4fa7b96dadde45c1c23de0b) mbui: a signal or computed tells only as its value | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.59 |
 | [e081fc466](https://github.com/AFK-surf/monoid/commit/e081fc466a18d81ee61a28fc89c8d422e644173a) mbui: Windows' H.265 and AV1 GPU decoders kept by  | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.46 |
-| [5fd0e6803](https://github.com/AFK-surf/monoid/commit/5fd0e6803ee50d1754cc024539dab1edb900180c) feat(agy): sign in a company's Google account (Gem | 0.42 | 0.54 | 2.07 | 3.17 | 4.95 | 1.53 | 4.08 | 57.13 |
