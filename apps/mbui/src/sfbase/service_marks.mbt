@@ -14,6 +14,7 @@
 /// c.tell): one a build says is said once, whichever build of the frame says it.
 pub fn page_say(p : ServicePage, js : String) -> Unit {
   p.marks.out.push(js)
+  p.tell()
 }
 
 ///|
@@ -135,13 +136,17 @@ pub fn service_marked(p : ServicePage, said : Json) -> Unit {
           m.css_h = number(vp, "height")
           m.editing = Some(n)
           m.error = ""
+          p.tell()
         }
         _ => ()
       }
     }
     "focus" =>
       match field(s, "n") {
-        Some(Number(n, ..)) => m.editing = Some(n.to_int())
+        Some(Number(n, ..)) => {
+          m.editing = Some(n.to_int())
+          p.tell()
+        }
         _ => ()
       }
     "at" => {
@@ -162,6 +167,7 @@ pub fn service_marked(p : ServicePage, said : Json) -> Unit {
       for n, r in boxes {
         m.at[n] = r
       }
+      p.tell()
     }
     _ => ()
   }
@@ -177,6 +183,7 @@ pub fn page_marks_new_page(p : ServicePage, _site : @ui.NativeView) -> Unit {
   if m.marking {
     page_say(p, "window.__stillfailMarks&&__stillfailMarks.on(true)")
   }
+  p.tell()
 }
 
 ///|
@@ -255,6 +262,7 @@ pub fn page_marks_put(p : ServicePage, _site : @ui.NativeView, _src : Source) ->
 pub fn shot_failed(p : ServicePage, words : String) -> Unit {
   p.marks.shot = None
   p.marks.error = svc("android-chat.preview.put.failed", args=[("error", words)])
+  p.tell()
 }
 
 ///|
@@ -413,7 +421,10 @@ pub fn shot_draw(p : ServicePage, s : Shooting, png : Bytes) -> Unit {
     "marks": Json::array([mark]),
   }).stringify()
   match @ui.draw_marks(png, marks) {
-    Some(job) => s.wait = Draw(job)
+    Some(job) => {
+      s.wait = Draw(job)
+      p.tell()
+    }
     None => shot_failed(p, svc("android-chat.preview.shot.failed"))
   }
 }

@@ -67,6 +67,21 @@ pub(all) struct ServicePage {
   /// the two fields' words of a size being typed (the sizes' 自定义)
   custom_w : @ui.Field
   custom_h : @ui.Field
+  /// told as what is kept here in no signal changes (its marks, a script for its page, its restarting, its port,
+  /// name and chat): what nodes of the window's tree bind of those (ServicePage::said) is done again then
+  told : @signals.Signal[Int]
+}
+
+///|
+/// What a page's nodes read of what it keeps in no signal, followed (ServicePage's `told`).
+pub fn ServicePage::said(self : ServicePage) -> Unit {
+  self.told.get() |> ignore
+}
+
+///|
+/// What it keeps in no signal changed: told (ServicePage::said).
+pub fn ServicePage::tell(self : ServicePage) -> Unit {
+  self.told.set(self.told.untracked() + 1)
 }
 
 ///|
@@ -166,6 +181,7 @@ pub fn service_page_for(station : String, job : String, prefs? : Json? = None) -
         marks: page_marks_new(),
         custom_w: @ui.Field::new(),
         custom_h: @ui.Field::new(),
+        told: @signals.signal(0),
       }
       service_pages[key] = p
       p
@@ -174,9 +190,60 @@ pub fn service_page_for(station : String, job : String, prefs? : Json? = None) -
 }
 
 ///|
+/// The page of `station`'s `job` (service_page_for's) held by node `n` while it lives: not let go of while it is
+/// (service_left waits for the last node holding it to go, then lets go).
+pub fn service_page_held(n : @view.View, src : Source, station : String, job : String, prefs? : Json? = None) -> ServicePage {
+  let key = service_key(station, job)
+  let p = service_page_for(station, job, prefs~)
+  service_held[key] = service_held.get(key).unwrap_or(0) + 1
+  n.owns(fn() {
+    let left = service_held.get(key).unwrap_or(1) - 1
+    if left > 0 {
+      service_held[key] = left
+    } else {
+      service_held.remove(key)
+      if service_left_waiting.contains(key) {
+        service_left(src, station, job)
+      }
+    }
+  })
+  |> ignore
+  p
+}
+
+///|
+/// The page of `station`'s `job` asked for again before the last node holding it went: not let go of as it goes
+/// (service_left's wait called off).
+pub fn service_left_called_off(station : String, job : String) -> Unit {
+  service_left_waiting.remove(service_key(station, job))
+}
+
+///|
+/// Whether a node holds the page kept by `key` (service_page_held's).
+pub fn service_page_is_held(key : String) -> Bool {
+  service_held.get(key).unwrap_or(0) > 0
+}
+
+///|
+/// How many nodes hold each page (by its service_key), while they live.
+// kept across runs: put back by service_pages_reset
+let service_held : Map[String, Int] = Map([])
+
+///|
+/// The pages let go of while a node held them (service_left), let go of as the last goes.
+// kept across runs: put back by service_pages_reset
+let service_left_waiting : Map[String, Bool] = Map([])
+
+///|
 /// Its page gone: its view closed, what it asked of the station stopped.
 pub fn service_left(src : Source, station : String, job : String) -> Unit {
   let key = service_key(station, job)
+  // (still drawn by a node, a page on its way out or a tab's page the stack handed over: let go of as the last goes)
+  if service_held.get(key).unwrap_or(0) > 0 {
+    service_left_waiting[key] = true
+    return
+  }
+  service_left_waiting.remove(key)
   match service_pages.get(key) {
     Some(p) => {
       match p.site {
@@ -787,6 +854,8 @@ pub let service_files : Map[String, FilePage] = Map([])
 /// As at the start (tests): no service's page kept, no size or fold chosen, nothing marked waiting for a composer.
 pub fn service_pages_reset() -> Unit {
   service_pages.clear()
+  service_held.clear()
+  service_left_waiting.clear()
   svc_viewports.clear()
   service_files.clear()
   svc_keep.val = fn(_) {  }

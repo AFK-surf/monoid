@@ -28,42 +28,12 @@ fn top_bar_h() -> Double {
 }
 
 ///|
-/// `body` inside the bars: under the status bar and over the navigation bar (windowInsetsPadding(systemBars)), each
-/// where it is asked for, on `ground` (which goes on under the bars).
-fn within_bars(
-  c : @ui.Ctx,
-  body : () -> Unit,
-  top? : Bool = true,
-  foot? : Bool = true,
-  ground? : @ui.Style = bars_fill,
-) -> Unit {
-  let pt = if top { status_top() } else { 0.0 }
-  let pb = if foot { nav_foot() } else { 0.0 }
-  c.box(style=ground, fn() {
-    bar_room_box(c, pt)
-    c.box(style=bars_body, fn() { body() }) |> ignore
-    bar_room_box(c, pb)
-  })
-  |> ignore
-}
-
-///|
 /// A bar's room, `h` high (none when it is 0).
 fn bar_room_box(c : @ui.Ctx, h : Double) -> Unit {
   if h > 0.0 {
     c.box(style=@ui.style(w=Full, h=Fixed(h)), fn() {  }) |> ignore
   }
 }
-
-///|
-/// What is inside the bars: all of the window.
-// kept across runs: a value (no field of it changes)
-let bars_fill : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// What is between them: the room they leave.
-// kept across runs: a value (no field of it changes)
-let bars_body : @ui.Style = @ui.style(w=Full, h=@sf.grow)
 
 ///|
 /// The status bar's height: what a page's top bar is padded by.

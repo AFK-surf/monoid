@@ -12,10 +12,11 @@ priv struct Asked {
 ///|
 /// The service's page over the fixture, with its calls of the core's for the page seen by the test (station.preview
 /// answered by the fixture's station as ever).
-fn link_tester(mode? : String = "service") -> (@ui.Tester, Asked) {
+fn link_tester(mode? : String = "service", dark? : Bool = false) -> (@ui.Tester, Asked) {
   @sf.presenters_reset()
   new_run()
-  let base = fixture(mode)
+  // (`dark`: the fixture's prefs on the dark theme, as a mode ending in -dark has them)
+  let base = fixture(if dark { mode + "-dark" } else { mode })
   open_drive_fixture(mode)
   let asked : Asked = { calls: [], streams: [] }
   let src : Source = {
@@ -393,4 +394,44 @@ test "the system's back steps the page back in its own history first; at its fir
   t.back()
   t.run_for(@ui.nav_rest() - t.time())
   assert_eq(app.nav.depth(), depth - 1)
+}
+
+///|
+test "marking's bubbles, on either theme: a mark's note open and what is said of it beside its pin each on the theme's bubble (the dark one's on the dark theme), casting its shadow; the pin its own" {
+  for dark in [false, true] {
+    let at = if dark { "dark" } else { "light" }
+    let (t, _) = link_tester(dark~)
+    t.frame()
+    t.frame()
+    let site = site_id(t)
+    let p = service_pages.get(service_key("ws1/st1", "j-web")).unwrap()
+    page_marks_toggle(p, p.site.unwrap())
+    t.frame()
+    t.frame()
+    t.view_says(
+      site,
+      "{\"p\":\"marked\",\"json\":\"{\\\"event\\\":\\\"picked\\\",\\\"mark\\\":{\\\"n\\\":1,\\\"path\\\":\\\"/\\\",\\\"viewport\\\":{\\\"width\\\":390,\\\"height\\\":600},\\\"label\\\":\\\"button.go\\\",\\\"kind\\\":\\\"按钮\\\",\\\"selector\\\":\\\"main > button\\\",\\\"text\\\":\\\"构建\\\",\\\"rect\\\":{\\\"x\\\":20,\\\"y\\\":120,\\\"width\\\":100,\\\"height\\\":30},\\\"page\\\":{\\\"x\\\":20,\\\"y\\\":120,\\\"width\\\":100,\\\"height\\\":30}}}\"}",
+    )
+    t.run_for(@ui.move_most_ms)
+    let bubble = @ui.tree_theme().color(if dark { @sf.mark_bubble_dark } else { @sf.mark_bubble })
+    let other = @ui.tree_theme().color(if dark { @sf.mark_bubble } else { @sf.mark_bubble_dark })
+    let has_ground = fn(c : Int64) { t.drawn_rects().iter().any(fn(r) { r.4 == c }) }
+    let casts = fn(sigma : Double) { t.drawn_shadows().iter().any(fn(s) { (s.5 - sigma).abs() < 0.01 }) }
+    // its note open, as it is picked
+    assert_true(p.marks.editing == Some(1), msg="\{at}: the note open")
+    assert_true(has_ground(bubble), msg="\{at}: the note on the theme's bubble")
+    assert_false(has_ground(other), msg="\{at}: not the other theme's")
+    assert_true(casts(@sf.bubble_raised.sigma), msg="\{at}: the note's shadow")
+    assert_true(casts(@sf.pin_raised.sigma), msg="\{at}: the pin's shadow")
+    // said, its note closed: what is said beside the pin, on the same bubble
+    p.marks.marks[0].comment = "把按钮换成主色"
+    p.marks.editing = None
+    p.tell()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("把按钮换成主色") is Some(_), msg="\{at}: said beside its pin")
+    assert_true(has_ground(bubble), msg="\{at}: what is said on the theme's bubble")
+    assert_false(has_ground(other), msg="\{at}: not the other theme's")
+    assert_false(casts(@sf.bubble_raised.sigma), msg="\{at}: the note gone")
+    assert_true(casts(@sf.pin_raised.sigma), msg="\{at}: the pin's and what is said's shadow")
+  }
 }

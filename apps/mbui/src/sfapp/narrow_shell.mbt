@@ -727,6 +727,18 @@ fn narrow_made_as(
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         @sfpages.reader_page_node(p, src, at)
       })
+    // a web service an agent started, a visualization it posted: their page, its bar under the status bar
+    // (sfpages' service_page_node, preview_file_page_node)
+    Service(station, job) =>
+      made("service/" + station + "/" + job, fn(p, core, _here, frame, _stint, _acts) {
+        @sfpages.service_page_node(p, src, station, job, core.pop, fn() { frame().top }, fn() { frame().foot })
+      })
+    PreviewFile(station, key, path, name) =>
+      made("preview-file/" + station + "/" + key + "/" + path, fn(p, core, _here, frame, _stint, _acts) {
+        @sfpages.preview_file_page_node(p, src, station, key, path, name, core.pop, fn() { frame().top }, fn() {
+          frame().foot
+        })
+      })
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>
       made("terminal/" + at.station + "/" + at.terminal, fn(p, core, _here, frame, _stint, _acts) {

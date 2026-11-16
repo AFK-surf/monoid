@@ -147,7 +147,7 @@ let bar_field_room : @ui.Style = @ui.style(w=Full, min_w=Fixed(bar_field_least),
 ///|
 /// The least the place's room is wide before what beside it that may leave the bar does: its capsule 160 (as the find
 /// field's least, find.mbt), 4 either side of it.
-let bar_field_least : Double = 168.0
+pub let bar_field_least : Double = 168.0
 
 ///|
 // kept across runs: a value (no field of it changes)

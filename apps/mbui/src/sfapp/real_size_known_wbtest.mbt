@@ -211,10 +211,12 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone player-failed": (310, 361, 56),
   "phone player-opening": (310, 361, 56),
   "phone player-video": (310, 361, 56),
-  "phone service": (131, 118, 14),
-  "phone service-restart": (131, 118, 14),
-  "phone service-sized": (131, 118, 14),
-  "phone service-stopped": (131, 118, 14),
+  // (written again, 2026-11-17: a service's page on a phone made as nodes, sfpages service_node.mbt: its bar, stage and
+  // what marking shows, what its old view built as it opened now made, laid out and measured by the window's tree)
+  "phone service": (157, 152, 22),
+  "phone service-restart": (157, 152, 22),
+  "phone service-sized": (157, 152, 22),
+  "phone service-stopped": (157, 152, 22),
   "phone share-in": (543, 575, 110),
   "phone share-in-files": (546, 578, 110),
   "phone share-in-stations": (543, 575, 110),

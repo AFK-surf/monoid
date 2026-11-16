@@ -47,14 +47,15 @@ fn tab_job(tab : String) -> String? {
 
 ///|
 /// Its tab closed: what its page asked of the station stopped, its view gone (web: closePreview), once it is no longer
-/// drawn (the panel shows what it showed as it slides out: sv_sweep); opened again before, kept.
-fn tab_let_go(r : ChatRef, tab : String) -> Unit {
+/// drawn (the panel shows what it showed as it slides out: sfbase's service_page_held, service_left waiting for the
+/// last node drawing it); opened again before, kept (tab_kept).
+fn tab_let_go(src : Source, r : ChatRef, tab : String) -> Unit {
   panel_screen_pages.remove(tabs_key(r) + "/" + tab)
   // (a file in the viewer: what it read)
   @sfbase.tab_viewer_let_go(tabs_key(r), tab)
   match tab_job(tab) {
     Some(job) => {
-      sv_closing[service_key(r.station, job)] = (r.station, job)
+      service_left(src, r.station, job)
       jobs_handed.remove(service_key(r.station, job))
     }
     None => ()
@@ -65,42 +66,13 @@ fn tab_let_go(r : ChatRef, tab : String) -> Unit {
 fn tab_kept(r : ChatRef, tab : String) -> Unit {
   @sfbase.tab_viewer_kept(tabs_key(r), tab)
   match tab_job(tab) {
-    Some(job) => sv_closing.remove(service_key(r.station, job))
+    Some(job) => @sfbase.service_left_called_off(r.station, job)
     None => ()
   }
 }
 
 ///|
-/// After a build: the pages of tabs closed that it did not draw let go.
-pub fn sv_sweep(c : @ui.Ctx, src : Source) -> Unit {
-  for key, at in sv_closing {
-    if !sv_drawn.contains(key) {
-      let (station, job) = at
-      c.tell("sv-let-go/" + key, fn() {
-        if sv_closing.contains(key) {
-          sv_closing.remove(key)
-          service_left(src, station, job)
-        }
-      })
-    }
-  }
-  sv_drawn.clear()
-}
-
-///|
-/// The pages of tabs closed (by their service_key: station, job), not yet let go.
-// kept across runs: put back by sv_reset (reset)
-let sv_closing : Map[String, (String, String)] = Map([])
-
-///|
-/// The pages drawn in this build (by their service_key).
-// kept across runs: put back by sv_reset (reset)
-let sv_drawn : Map[String, Bool] = Map([])
-
-///|
 fn sv_reset() -> Unit {
-  sv_closing.clear()
-  sv_drawn.clear()
   jobs_handed.clear()
 }
 
@@ -133,101 +105,113 @@ fn job_now(src : Source, station : String, job : String) -> (Json?, Json?) {
 }
 
 ///|
-/// The service `job` of chat `r`'s station, beside the chat: the page while it is up (and as it starts again), what
-/// stopped it said otherwise.
-fn service_pane(c : @ui.Ctx, src : Source, r : ChatRef, job : String, close? : (() -> Unit)? = None) -> Unit {
-  let (j, error) = job_now(src, r.station, job)
-  let name = match text(j, "name") {
-    "" => svc("android-chat.preview.service")
-    n => n
-  }
-  let port = number(j, "port").to_int()
-  let state = text(j, "state")
-  match j {
-    None | Some(Null) =>
-      match error {
-        Some(e) => sv_said(c, svc("android-chat.preview.notFound", args=[("error", text(Some(e), "message"))]))
-        None => c.box(style=sv_wait, fn() { @sf.wait_line(c, @sf.t("common.connecting"), key="service-tab") }) |> ignore
-      }
-    _ if port > 0 && flag(j, "open") && (state == "running" || state == "exited") =>
-      sv_page(c, src, r, job, port, name, state == "exited", number(j, "restarts").to_int(), text(j, "session"), None, close~)
-    _ =>
-      sv_said(c, @sf.t(if state == "failed" { "web-pages.chat.serviceFailed" } else { "web-pages.chat.serviceStopped" }, args=[
-        ("name", name),
-      ]))
-  }
-}
-
-///|
-/// The visualization `path` named `name` of session `session` on chat `r`'s station, beside the chat (FileFrame): the
-/// file in the web's stylesheet with what its widget kept; nowhere else to go, its bar names it.
-fn file_pane(c : @ui.Ctx, src : Source, r : ChatRef, session : String, path : String, name : String) -> Unit {
-  match viz_load(c, src, r.station, session, path) {
-    Some(Err(_)) => sv_said(c, @sf.t("web-main.preview.unreadable", args=[("name", name)]))
-    None => c.box(style=sv_wait, fn() { @sf.wait_line(c, @sf.t("common.connecting"), key="file-tab") }) |> ignore
-    Some(Ok((html, state))) => {
-      let job = "file:" + session + "\n" + path
-      let key = service_key(r.station, job)
-      let f = match service_files.get(key) {
-        Some(f) => f
-        None => {
-          let f : FilePage = { html, state, station: r.station, key: session, path }
-          service_files[key] = f
-          f
-        }
-      }
-      sv_page(c, src, r, job, 0, name, false, 0, session, Some(f))
-    }
-  }
-}
-
-///|
-/// The page and its bar, in the pane (the pages' one service view, sfpages service.mbt), kept while it is drawn.
-fn sv_page(
-  c : @ui.Ctx,
+/// The service `job` of chat `r`'s station beside the chat, in node `q` (its tab, as large as the panel under its bar;
+/// service_pane's): the page while it is up (and as it starts again), what stopped it said otherwise, that it is not
+/// found, or that the station is asked. `close`: what closes the panel it is alone in (its bar the panel's, its
+/// corners `round`).
+fn service_tab_node(
+  q : @view.View,
   src : Source,
   r : ChatRef,
   job : String,
-  port : Int,
-  name : String,
-  restarting : Bool,
-  restarts : Int,
-  session : String,
-  file : FilePage?,
-  close? : (() -> Unit)? = None,
+  close : (() -> Unit)?,
+  round : FixedArray[@ui.CornerOf]?,
+  tips : @sf.TipLayer,
 ) -> Unit {
-  sv_drawn[service_key(r.station, job)] = true
-  c.box(style=sv_box, fn() { @sfpages.service_view(c, src, r.station, job, port, name, restarting, restarts, session, file~, close~) })
+  let now = fn() { job_now(src, r.station, job) }
+  let name = fn() {
+    match text(now().0, "name") {
+      "" => svc("android-chat.preview.service")
+      n => n
+    }
+  }
+  // what it shows: 0 asked, 1 not found, 2 up, 3 stopped or failed
+  let state = fn() {
+    let (j, error) = now()
+    let port = number(j, "port").to_int()
+    let st = text(j, "state")
+    match j {
+      None | Some(Null) => if error is Some(_) { 1 } else { 0 }
+      _ if port > 0 && flag(j, "open") && (st == "running" || st == "exited") => 2
+      _ => 3
+    }
+  }
+  q.pick(at_once=true, state, fn(b, what) {
+    b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    match what {
+      0 => sv_wait_node(b, fn() { @sf.t("common.connecting") })
+      1 => sv_said_node(b, fn() { svc("android-chat.preview.notFound", args=[("error", text(now().1, "message"))]) })
+      2 => {
+        @sfpages.service_view_node(
+          b,
+          src,
+          r.station,
+          job,
+          fn() {
+            let j = now().0
+            {
+              port: number(j, "port").to_int(),
+              name: name(),
+              restarting: text(j, "state") == "exited",
+              restarts: number(j, "restarts").to_int(),
+              session: text(j, "session"),
+            }
+          },
+          fn() { b.window().0 },
+          close~,
+          round~,
+          tips~,
+        )
+      }
+      _ =>
+        sv_said_node(b, fn() {
+          @sf.t(if text(now().0, "state") == "failed" { "web-pages.chat.serviceFailed" } else { "web-pages.chat.serviceStopped" }, args=[
+            ("name", name()),
+          ])
+        })
+    }
+  })
+}
+
+///|
+/// The visualization `path` named `name` of session `session` on chat `r`'s station beside the chat, in node `q` (its
+/// tab; file_pane's, FileFrame): the file in the web's stylesheet with what its widget kept; nowhere else to go, its bar
+/// names it.
+fn file_tab_node(q : @view.View, src : Source, r : ChatRef, session : String, path : String, name : String, tips : @sf.TipLayer) -> Unit {
+  @sfpages.file_view_node(q, src, r.station, session, path, name, None, tips~)
+}
+
+///|
+/// What is said in the page's place in `parent` (sv_said's, Empty, previewMissing): in the middle, muted.
+fn sv_said_node(parent : @view.View, words : () -> String) -> Unit {
+  @sf.empty_node(parent, fn(b) { @sf.words_node(b, words, fn() { sv_said_words }) |> ignore })
+}
+
+///|
+/// What it waits on in the page's place in `parent`: in the middle.
+fn sv_wait_node(parent : @view.View, words : () -> String) -> Unit {
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { sv_wait })
+    @sf.wait_line_node(b, words) |> ignore
+  })
   |> ignore
 }
 
 ///|
-/// What is said in the page's place (Empty, previewMissing): in the middle, muted.
-fn sv_said(c : @ui.Ctx, words : String) -> Unit {
-  @sf.empty(c, fn() { c.text(words, style=sv_said_words) |> ignore })
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let sv_box : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sv_wait : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sv_said_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
-
-///|
-/// A web service asked as a page whose job the station does not find, said so in the pane (one found is never on top
-/// here: beside_follow puts its chat in its place, with it beside it).
-fn service_beside(c : @ui.Ctx, src : Source, station : String, job : String) -> Unit {
-  let found = src.topic("job", { "station": Json::string(station), "id": Json::string(job) }).get().snapshot()
-  match (text(found.value, "session"), found.error) {
-    ("", Some(e)) => sv_said(c, svc("android-chat.preview.notFound", args=[("error", text(Some(e), "message"))]))
-    _ => ()
-  }
+/// A web service asked as a page whose job the station does not find, in node `v` (the pane's or the tape's page):
+/// said so, in its middle (one found is never on top here: beside_follow puts its chat in its place, with it beside it);
+/// till the station says, nothing.
+fn service_beside_node(v : @view.View, src : Source, station : String, job : String) -> Unit {
+  let src = src.owned_by(v)
+  let found = fn() { src.topic("job", { "station": Json::string(station), "id": Json::string(job) }).get().snapshot() }
+  v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  v.show(at_once=true, fn() {
+    let f = found()
+    text(f.value, "session") == "" && f.error is Some(_)
+  }, fn(b) {
+    b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    sv_said_node(b, fn() { svc("android-chat.preview.notFound", args=[("error", text(found().error, "message"))]) })
+  })
 }
 
 ///|
@@ -236,7 +220,7 @@ fn service_beside(c : @ui.Ctx, src : Source, station : String, job : String) -> 
 /// place with it beside it, in front, at the change that put it on top (opened, pushed, come back to, or on top as the
 /// frame is made), before any frame builds it. So such a page is never built as a chat's page here. A service waits for
 /// the station to say whose chat runs it (its job's session), the page as it is till then; one not found stays, said
-/// so (service_beside). Its chat's tabs as they are then are read with it (side_change_from): held while it is on top,
+/// so (service_beside_node). Its chat's tabs as they are then are read with it (side_change_from): held while it is on top,
 /// let go as it goes, never by the frame's node for as long as that lives.
 fn beside_follow(v : @view.View, src : Source) -> Unit {
   let src = src.owned_by(v)
@@ -308,3 +292,11 @@ fn tab_beside(src : Source, station : String, session : String, tab : String, no
   }
   side_change_from(src, r, "open", Some(tab), now)
 }
+
+///|
+// kept across runs: a value (no field of it changes)
+let sv_wait : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let sv_said_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)

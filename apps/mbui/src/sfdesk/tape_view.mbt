@@ -1297,6 +1297,13 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         |> ignore
       } else if @sfbase.view_tab_file(agent) is Some(_) {
         side_view_node(s, src, r, agent, behind)
+      } else if tab_service(agent) is Some(job) {
+        // (alone on the tape: its bar the panel's, its × closing the panel, in the panel's corners)
+        let round = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
+        let alone = @signals.untracked(fn() { shown().0.length() == 1 && !column_short.get() })
+        service_tab_node(s, src, r, job, if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None }, round, tips)
+      } else if tab_file(agent) is Some((session, path, name)) {
+        file_tab_node(s, src, r, session, path, name, tips)
       } else if side_farview_tab(agent) is Some((station, screen)) {
         side_farview_node(s, src, station, screen)
       } else if side_adb_tab(agent) is Some(station) {
@@ -1543,8 +1550,6 @@ pub fn tape_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
     title_row(c, "window-title-row", closed_bar_top)
   }
   // (back, the shell's one way: the tape's node's, tape_view, wide_takes_back)
-  // the pages of web services' and visualizations' tabs closed, no longer drawn, let go (service_tab.mbt)
-  sv_sweep(c, src)
 }
 
 ///|

@@ -954,7 +954,7 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
     title_row(c, "window-title-row", closed_bar_top)
   }
   // (back, the shell's one way: the frame's node's, pane_view, wide_takes_back)
-  sv_sweep(c, src)
+  // (the pages of closed tabs let go as each closes: service_tab.mbt's tab_let_go)
 }
 
 ///|

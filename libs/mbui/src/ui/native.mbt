@@ -63,6 +63,9 @@ pub struct NativeView {
   priv mut frame_times : Array[Double]?
   /// told as they come to be read (views_arrive): what a node of the window's tree binds of them is done again then
   priv frames_told : @signals.Signal[Bool]
+  /// a site's page told as its host says it moved, went back or on, loads or is framed (views_arrive), and as it is
+  /// loaded from here: what a node of the window's tree binds of it (NativeView::page_at, framed) is done again then
+  priv page_told : @signals.Signal[Int]
   /// a site's: who answers its requests, who hears of a link left by, the replies under way, where its page is
   priv serve : ((SiteRequest, SiteReply) -> Unit)?
   priv leave : (String) -> Unit
@@ -259,6 +262,7 @@ fn NativeView::make(
     frames_asked: false,
     frame_times: None,
     frames_told: @signals.signal(false, same=fn(a, b) { a == b }),
+    page_told: @signals.signal(0),
   }
   if v.id == 0 {
     v.state.set(-1)
@@ -366,6 +370,7 @@ fn script_hash(js : String) -> String {
 /// Whether this site's page is in a frame of its host's (`NativeView::site`): nothing of the app's runs in it (no
 /// `script`); its sockets are told with `tell_frame`.
 pub fn NativeView::framed(self : NativeView) -> Bool {
+  self.page_told.get() |> ignore
   self.framed
 }
 
@@ -413,6 +418,7 @@ pub fn NativeView::reload(self : NativeView) -> Unit {
 pub fn NativeView::load(self : NativeView, path : String) -> Unit {
   if self.id != 0 && !self.closed {
     self.path = path
+    self.page_told.set(self.page_told.untracked() + 1)
     h_view_site_load(self.id, path)
   }
 }
@@ -432,6 +438,7 @@ pub fn NativeView::set_scale(self : NativeView, k : Double) -> Unit {
 /// Where a site's page is: its path on its host (or the address it went to elsewhere), whether it can go back and
 /// forward, whether it is loading, its title.
 pub fn NativeView::page_at(self : NativeView) -> (String, Bool, Bool, Bool, String) {
+  self.page_told.get() |> ignore
   (self.path, self.can_back, self.can_forward, self.loading, self.title)
 }
 
@@ -1478,7 +1485,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
     match (try Some(@json.parse(st)) catch { _ => None }) {
       Some(Object(m)) => {
         let flag = fn(k : String) { m.get(k) is Some(True) }
-        let was = (v.path, v.can_back, v.can_forward, v.loading, v.title)
+        let was = (v.path, v.can_back, v.can_forward, v.loading, v.title, v.framed)
         match m.get("path") {
           Some(String(p)) if p != "" => v.path = p
           _ => ()
@@ -1492,8 +1499,9 @@ fn NativeView::take_site(self : NativeView) -> Unit {
           Some(String(t)) => v.title = t
           _ => ()
         }
-        if was != (v.path, v.can_back, v.can_forward, v.loading, v.title) {
+        if was != (v.path, v.can_back, v.can_forward, v.loading, v.title, v.framed) {
           g().read_changed("view \{v.id}'s page (where it is, its title, whether it loads)")
+          v.page_told.set(v.page_told.untracked() + 1)
         }
       }
       _ => ()

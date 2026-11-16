@@ -223,8 +223,9 @@ fn pane_made(
   page : Page,
   tips : @sf.TipLayer,
 ) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit)? {
-  // (the stations' and the profiles' places have no old view: made so whatever pane_makes says)
-  guard pane_makes.val || page is Place("stations" | "profiles") else { return None }
+  // (the stations' and the profiles' places, and a web service not found, have no old view: made so whatever pane_makes
+  // says)
+  guard pane_makes.val || page is (Place("stations" | "profiles") | Service(_, _)) else { return None }
   // (made in the workspace in view, its settings' core, under what it was opened from, as wide as the frame gives it)
   let made_k = fn(
     kind : String,
@@ -349,6 +350,11 @@ fn pane_made(
           last.val
         }
         @sfpages.drive_page_node(a, src, w.id, at, frame~, width~, on_back=fn() { @sfbase.go_back() |> ignore }, go=files_go, tips~, shown=pane_shows(k), arrives=fn() { app.nav.top() is Drive(_) })
+      })
+    // (a web service whose chat the station has not said, or that it does not find: service_beside_node)
+    Service(station, job) =>
+      made("service/" + station + "/" + job, fn(a, _core, _here, _stint, _frame, _width) {
+        service_beside_node(a, src, station, job)
       })
     // (已归档, none of its chats beside the sidebar's list of them: what it is)
     Archived => made("archived", fn(a, _core, _here, _stint, _frame, _width) { archive_main_node(a) })

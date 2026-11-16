@@ -1179,6 +1179,9 @@ fn main_page(
     // an agent's history, asked as a page (a link's `?history=…&entry=…`), and a visualization: never on top here,
     // their chat put in their place with them beside it as they come on top (service_tab.mbt beside_follow)
     History(_, _, _) | PreviewFile(_, _, _, _) => ()
+    // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
+    // (made once: pane_made's, tape_made's service_beside_node)
+    Service(_, _) => ()
     // the chats' list is the sidebar's: nothing open (yet), the page's ground
     Home => ()
     // the settings come to beside their list: its first row's page (settings_frame.mbt settings_landing)
@@ -1195,8 +1198,6 @@ fn main_page(
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
     // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
     Archived => ()
-    // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
-    Service(station, job) => service_beside(c, src, station, job)
   }
 }
 

@@ -267,7 +267,6 @@
       "src/sfapp/drive_parts.mbt": 14,
       "src/sfapp/home.mbt": 3,
       "src/sfapp/pages.mbt": 9,
-      "src/sfapp/service.mbt": 5,
       "src/sfapp/settings/parts.mbt": 4,
       "src/sfapp/settings/run_more.mbt": 1,
       "src/sfapp/settings/stations.mbt": 17,
@@ -278,7 +277,6 @@
       "src/sfbase/viewer_marks.mbt": 14,
       "src/sfkit/glass.mbt": 49,
       "src/sfkit/kit.mbt": 29,
-      "src/sfpages/service.mbt": 4,
       "src/stillfail/main.mbt": 3
     },
     "box-loose": {
@@ -295,7 +293,6 @@
       "src/sfapp/drive_parts.mbt": 5,
       "src/sfapp/home.mbt": 2,
       "src/sfapp/pages.mbt": 4,
-      "src/sfapp/service.mbt": 2,
       "src/sfapp/settings/parts.mbt": 6,
       "src/sfapp/settings/stations.mbt": 13,
       "src/sfbase/flight.mbt": 1,
@@ -304,8 +301,6 @@
       "src/sfdesk/switcher.mbt": 1,
       "src/sfkit/glass.mbt": 17,
       "src/sfkit/kit.mbt": 20,
-      "src/sfpages/service.mbt": 3,
-      "src/sfpages/service_marks.mbt": 1,
       "src/stillfail/main.mbt": 2
     },
     "style-exact": {
@@ -350,7 +345,6 @@
       "src/sfapp/chat.mbt": 3,
       "src/sfapp/drive_parts.mbt": 1,
       "src/sfapp/newchat.mbt": 2,
-      "src/sfapp/service.mbt": 2,
       "src/sfapp/settings/core.mbt": 3,
       "src/sfapp/viewer_host.mbt": 2,
       "src/sfbase/bars.mbt": 1,
@@ -393,8 +387,7 @@
       "src/sfpages/resources.mbt": 2,
       "src/sfpages/screen_stage.mbt": 3,
       "src/sfpages/screen_view.mbt": 1,
-      "src/sfpages/search.mbt": 2,
-      "src/sfpages/service.mbt": 3
+      "src/sfpages/search.mbt": 2
     },
     "motion-length": {},
     "tester-branch": {},

@@ -375,6 +375,12 @@ fn tape_made(
         context_node(p)
         @sfpages.about_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    // (a web service whose chat the station has not said, or that it does not find: service_beside_node)
+    // (no old view: made so whatever pane_makes says)
+    Service(station, job) =>
+      made("service/" + station + "/" + job, fn(p, _core, _here, _stint, _told, _acts) {
+        service_beside_node(p, src, station, job)
+      })
     // (已归档, none of its chats beside the side column's list of them: what it is)
     Archived if pane_makes.val => made("archived", fn(p, _core, _here, _stint, _told, _acts) { archive_main_node(p) })
     Setting(Archive) if pane_makes.val =>

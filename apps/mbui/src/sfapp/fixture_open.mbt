@@ -812,11 +812,26 @@ fn open_play_fixture(mode : String) -> Unit {
 /// MBUI_FIXTURE=service…: the first row's chat, its service's page over it.
 fn open_service_fixture(mode : String) -> Unit {
   match mode {
-    "service" | "service-sized" | "service-restart" | "service-stopped" => {
+    "service" | "service-sized" | "service-restart" | "service-stopped" | "service-marks" | "service-marks-dark" => {
       app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
       app.nav.push(Service("ws1/st1", "j-web"))
       if mode == "service-sized" {
         svc_viewports[service_key("ws1/st1", "j-web")] = Some({ width: 390, height: Some(844) })
+      }
+      // (`-marks`: two marks picked on the page, the first said beside its pin, the second's note open; on either
+      // theme)
+      if mode.has_prefix("service-marks") {
+        let m = @sfbase.service_page_for("ws1/st1", "j-web").marks
+        let mark = fn(n : Int, kind : String, label : String, words : String, rect : (Double, Double, Double, Double), comment : String) -> @sfbase.PageMark {
+          { n, path: "/", vw: 390, vh: 600, label, kind, selector: "main > " + label, text: words, rect, component: "", comment }
+        }
+        m.marks.push(mark(1, "按钮", "button.go", "构建", (20.0, 120.0, 100.0, 30.0), "把按钮换成主色"))
+        m.marks.push(mark(2, "标题", "h1", "本周发布", (40.0, 320.0, 200.0, 40.0), ""))
+        m.at[1] = (20.0, 120.0, 100.0, 30.0)
+        m.at[2] = (40.0, 320.0, 200.0, 40.0)
+        m.css_w = 390.0
+        m.css_h = 600.0
+        m.editing = Some(2)
       }
     }
     _ => ()

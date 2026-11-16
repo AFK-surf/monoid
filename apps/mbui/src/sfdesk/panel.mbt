@@ -111,8 +111,8 @@ fn side_change_from(src : Source, r : ChatRef, action : String, tab : String?, n
   side_changing(chat_key(r), tabs, front, any)
   // a web service's or a visualization's tab closed lets its page go
   match (action, tab) {
-    ("close", Some(t)) => tab_let_go(r, t)
-    ("clear", _) => for t in tabs { tab_let_go(r, t) }
+    ("close", Some(t)) => tab_let_go(src, r, t)
+    ("clear", _) => for t in tabs { tab_let_go(src, r, t) }
     ("open", Some(t)) => tab_kept(r, t)
     _ => ()
   }
@@ -618,23 +618,16 @@ pub fn tape_side(c : @ui.Ctx, src : Source, w : Workspace, side : SideOf) -> Uni
 /// it. Its edge is the tree's (side_panel_node's).
 fn side_panel(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tabs : Array[String], front : String) -> Unit {
   c.box(style=side_panel_style, fn() {
-    let (_, screen_alone, own_bar) = side_bars(c, tabs, front)
+    let (_, screen_alone, _) = side_bars(c, tabs, front)
     c.box(style=side_pane, fn() {
       if front == "files" {
         // the workspace's stations' files (drive_tab.mbt), what is added from them going into the chat's draft
         files_tab(c, src, w.id, tabs_key(r), r.station)
-      } else if tab_service(front) is Some(job) {
-        service_pane(c, src, r, job, close=if own_bar && !column_short.get() {
-          Some(fn() { c.tell("side/close", fn() { side_change(src, r, "clear", None) }) })
-        } else {
-          None
-        })
-      } else if tab_file(front) is Some((session, path, name)) {
-        file_pane(c, src, r, session, path, name)
       } else if station_tab_pane(c, src, w, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) {
         ()
       }
-      // (an agent's history, 任务, agent 往来, 图片、文件和链接: the tree's, panel_node.mbt)
+      // (an agent's history, a web service, a visualization, 任务, agent 往来, 图片、文件和链接: the tree's,
+      // panel_node.mbt)
     })
     |> ignore
   })

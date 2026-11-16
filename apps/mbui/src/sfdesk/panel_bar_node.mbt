@@ -64,10 +64,14 @@ fn side_mark_of(src : Source, r : ChatRef, v : ChatView?, tab : String) -> SideM
 /// front, that having one of its own (side_bars'): a web service alone on the tape, the station's screen alone on its
 /// side; never a tab the tree shows (side_node_tab), whose bar is the panel's.
 fn side_own_bar_node(n : @view.View, tabs : Array[String], front : String, on_tape : Bool) -> Bool {
+  let alone = on_tape && tabs.length() == 1
+  // (a web service alone on the tape: its bar the panel's, as it has been)
+  if alone && tab_service(front) is Some(_) {
+    return true
+  }
   if side_node_tab(front) {
     return false
   }
-  let alone = on_tape && tabs.length() == 1
   let (ww, wh) = n.window()
   let screen_alone = screen_tab_alone(tabs) && !column_short.get() && ww <= wh
   (alone && tab_service(front) is Some(_)) || screen_alone

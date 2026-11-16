@@ -26,6 +26,8 @@ fn side_history_tab(front : String) -> Bool {
 fn side_node_tab(front : String) -> Bool {
   side_history_tab(front) ||
   @sfbase.view_tab_file(front) is Some(_) ||
+  tab_service(front) is Some(_) ||
+  tab_file(front) is Some(_) ||
   side_farview_tab(front) is Some(_) ||
   side_adb_tab(front) is Some(_) ||
   side_own_tab(front)
@@ -247,6 +249,10 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           |> ignore
         } else if @sfbase.view_tab_file(agent) is Some(_) {
           side_view_node(q, src, r, agent, island)
+        } else if tab_service(agent) is Some(job) {
+          service_tab_node(q, src, r, job, None, None, tips)
+        } else if tab_file(agent) is Some((session, path, name)) {
+          file_tab_node(q, src, r, session, path, name, tips)
         } else if side_farview_tab(agent) is Some((station, screen)) {
           side_farview_node(q, src, station, screen)
         } else if side_adb_tab(agent) is Some(station) {
