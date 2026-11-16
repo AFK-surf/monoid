@@ -828,12 +828,14 @@ test("the logins done here are kept: command, who, when and how each ended, with
     const waits = await m.logins.start("fakewait", { ...m.by, chat: "chat:c-1", chatTitle: "部署" });
     await m.until(waits.id, (l) => l.step === "device", "device");
     m.logins.cancel(waits.id, { email: "b@x.com", name: "李四" });
+    await m.logins.written();
     // One kept before names were the program's (named env, its first word): named by its program now.
     const file = join(m.home, "data", "logins", "history.json");
     const old = { id: "old", name: "env", command: ["env", "XDG_DATA_HOME=/tmp/x", "/x/bin/devin", "auth", "login"], state: "done", waiting: false, by: m.by.by, startedAt: 1, expiresAt: 2, endedAt: 2 };
     writeFileSync(file, JSON.stringify([...JSON.parse(readFileSync(file, "utf8")), old]));
     // A station started again: what it kept.
     const again = new Logins({ data: join(m.home, "data"), env: () => m.env, clock: m.time.clock, lang: () => "zh" });
+    await again.ready();
     const kept = again.logins();
     assert.deepEqual(kept.map((l) => [l.name, l.command.join(" "), l.state, l.by.name]), [["fakewait", "fakewait", "cancelled", "张三"], ["fakeok", "fakeok", "done", "张三"], ["devin", old.command.join(" "), "done", "张三"]]);
     assert.ok(kept.every((l) => l.url === undefined && l.code === undefined && l.error === undefined && typeof l.endedAt === "number"));

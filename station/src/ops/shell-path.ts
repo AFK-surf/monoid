@@ -89,13 +89,13 @@ const shellPath = (shell: string, login: boolean, env: Env) => kept([shell, logi
 
 /// `lookup` can retain directory variables a login itself must not inherit. Existing PATH commands always win.
 export async function withShellCommand(name: string, env: Env, lookup: Env = env): Promise<Env> {
-  if (/[\\/]/.test(name) || platform.findCommand(name, env) !== null) return env;
+  if (/[\\/]/.test(name) || (await platform.findCommandSoon(name, env)) !== null) return env;
   // The saved PATH's new directories go after the given ones, so what the given PATH finds keeps its place.
   const saved = await kept(["saved"], lookup, (clean) => platform.savedPath(clean));
   if (saved !== null) {
     const candidate = { ...env };
     for (const dir of saved) platform.appendPath(candidate, dir);
-    if (platform.findCommand(name, candidate) !== null) return candidate;
+    if ((await platform.findCommandSoon(name, candidate)) !== null) return candidate;
   }
   const shell = platform.userShell(lookup);
   if (!shell) return env;
@@ -105,7 +105,7 @@ export async function withShellCommand(name: string, env: Env, lookup: Env = env
     const dirs = await shellPath(shell, login, lookup);
     if (dirs === null) continue;
     const candidate = dirs.reduceRight((e, dir) => platform.prependPath(e, dir), env);
-    if (platform.findCommand(name, candidate) !== null) return candidate;
+    if ((await platform.findCommandSoon(name, candidate)) !== null) return candidate;
   }
   return env;
 }

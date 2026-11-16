@@ -5,7 +5,8 @@
 // a terminal emulator with no display (@xterm/headless), which also answers what the program asks of its terminal (the
 // cursor's place, the background colour: gh waits for both). Nothing it shows is logged or kept on disk.
 import { type ChildProcess } from "node:child_process";
-import { type FSWatcher, readFileSync, watch } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import xterm from "@xterm/headless";
@@ -90,6 +91,10 @@ export class LoginRun {
   #said = "";
   #cr = "";
   #opened: string[] = [];
+  /// The reads of the pages it opened asked so far (`#reopen`): only the latest's is taken; and whether what it said
+  /// waits on it to be looked at.
+  #reads = 0;
+  #lookAgain = false;
   #rows: string[] = Array.from({ length: ROWS }, () => "");
   #cursor = { x: 0, y: 0 };
   #exited = false;
@@ -177,7 +182,7 @@ export class LoginRun {
     try {
       const file = basename(this.#o.opened);
       this.#watcher = watch(dirname(this.#o.opened), { persistent: false }, (_event, name) => {
-        if (name === null || name === file) this.#read();
+        if (name === null || name === file) this.#reopen();
       });
       this.#watcher.on("error", () => {});
     } catch {}
@@ -239,7 +244,8 @@ export class LoginRun {
         this.waiting = false;
         this.#o.changed();
       }
-      this.#read();
+      // Looked at with the pages it opened as they are now: a command opens its page, then prints another.
+      this.#reopen(true);
     });
     // Quiet again from now: whether it waits is asked once it has said its piece.
     this.#quiet?.();
@@ -257,13 +263,28 @@ export class LoginRun {
     if (!same) this.#o.drawn();
   }
 
-  /// What it asks of a person now, from the pages it opened and what it said.
+  /// The pages it opened read again, off the station's thread (as its stand-ins write them), then looked at again: once
+  /// they changed, or as it said more (`look`).
+  #reopen(look = false): void {
+    if (!this.active) return;
+    if (look) this.#lookAgain = true;
+    const read = ++this.#reads;
+    void readFile(this.#o.opened, "utf8").then(
+      (text) => urlsIn(text),
+      () => this.#opened,
+    ).then((opened) => {
+      if (read !== this.#reads || !this.active) return;
+      const changed = JSON.stringify(opened) !== JSON.stringify(this.#opened);
+      this.#opened = opened;
+      if (!changed && !this.#lookAgain) return;
+      this.#lookAgain = false;
+      this.#read();
+    });
+  }
+
+  /// What it asks of a person now, from the pages it opened (as last read) and what it said.
   #read(): void {
     if (!this.active) return;
-    try {
-      const text = readFileSync(this.#o.opened, "utf8");
-      this.#opened = urlsIn(text);
-    } catch {}
     const before = JSON.stringify([this.state, this.step, this.url, this.loopback, this.code, this.codeUrl, this.waiting]);
     // As it said them, a link broken at the terminal's width put together again.
     const said = unwrapped(this.#said, COLS);

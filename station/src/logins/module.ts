@@ -31,7 +31,15 @@ export const LoginsLive = Layer.effectDiscard(
     const browser = yield* Browser;
     const screens = yield* ScreenRegistry;
     const pages = new LoginPages(browser.station, (changed) => screens.watch(() => changed()));
-    const logins = yield* Effect.acquireRelease(Effect.sync(() => new Logins({ data, clock: hub.clock, pages })), (l) => Effect.promise(() => l.close()));
+    const logins = yield* Effect.acquireRelease(
+      // (its history read before the station serves)
+      Effect.promise(async () => {
+        const made = new Logins({ data, clock: hub.clock, pages });
+        await made.ready();
+        return made;
+      }),
+      (l) => Effect.promise(() => l.close()),
+    );
     accounts.logins.attach(pages);
     const loginLink = (session: string | null, id: string) => {
       const s = pageBase();

@@ -4,8 +4,9 @@
 // reach outside the desktop session). So profile processes get a `security` first on their PATH that finds and stores
 // nothing of Claude Code's (exit 44, "not found"); anything else goes to the real one. Machine profiles are not touched.
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateSoon } from "../ops/files.ts";
@@ -51,6 +52,30 @@ export function fileCredentials(env: Record<string, string>) {
   if (!platform.hasKeychain) return;
   const path = env.PATH ?? process.env.PATH ?? "";
   env.PATH = `${stubDir()}:${path}`;
+}
+
+/// `stubDir` off the station's thread.
+async function stubDirSoon(): Promise<string> {
+  const dir = join(tmpdir(), `stillfail-no-keychain-${process.getuid?.() ?? 0}`);
+  const path = join(dir, "security");
+  if ((await readFile(path, "utf8").catch(() => undefined)) !== STUB) {
+    try {
+      await mkdir(dir, { recursive: true });
+      // Written aside and moved in: a process may be running the old one.
+      const fresh = join(dir, `security.${process.pid}.${randomUUID()}`);
+      await writeFile(fresh, STUB);
+      await chmod(fresh, 0o755);
+      await rename(fresh, path);
+    } catch {}
+  }
+  return dir;
+}
+
+/// `fileCredentials` off the station's thread.
+export async function fileCredentialsSoon(env: Record<string, string>): Promise<void> {
+  if (!platform.hasKeychain) return;
+  const dir = await stubDirSoon();
+  env.PATH = `${dir}:${env.PATH ?? process.env.PATH ?? ""}`;
 }
 
 /// The keychain item Claude Code keeps the login of a config directory in.

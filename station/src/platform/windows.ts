@@ -6,7 +6,8 @@ import { copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readlinkSy
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { stat } from "node:fs/promises";
+import { realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
 import type { Env, Found, Host, Platform } from "./index.ts";
@@ -92,6 +93,21 @@ function findCommand(name: string, env: Env): Found | null {
     for (const ext of exts) {
       const onPath = join(dir === "" ? "." : dir, name + ext);
       if (isFile(onPath)) return { onPath, real: real(onPath) ?? onPath };
+    }
+  }
+  return null;
+}
+
+/// `findCommand` off the station's thread.
+async function findCommandSoon(name: string, env: Env): Promise<Found | null> {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  const path = key === undefined ? undefined : env[key];
+  if (path === undefined) return null;
+  const exts = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((e) => e !== "").map((e) => e.toLowerCase());
+  for (const dir of path.split(delimiter)) {
+    for (const ext of exts) {
+      const onPath = join(dir === "" ? "." : dir, name + ext);
+      if ((await stat(onPath).catch(() => null))?.isFile()) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
     }
   }
   return null;
@@ -429,6 +445,7 @@ export const windows: Platform = {
     env[key] = path === "" ? dir : `${path}${delimiter}${dir}`;
   },
   findCommand,
+  findCommandSoon,
   userShell: () => null,
   savedPath,
   /// A bare name is found with PATHEXT (libuv adds .exe and .com only), and a .cmd or .bat (npm's shims) runs through
@@ -457,6 +474,22 @@ export const windows: Platform = {
     const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
     // %~dp0 is cmd's to expand (any path); the shell's is named as a .cmd can (cmdPath).
     writeFileSync(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
+    return `${path}.cmd`;
+  },
+  async makeCommandSoon(path, script, noop) {
+    const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
+    const beside = async (to: string, text: string) => {
+      const tmp = `${to}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, text);
+        await rename(tmp, to);
+      } catch (error) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw error;
+      }
+    };
+    await beside(path, script);
+    await beside(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
     return `${path}.cmd`;
   },
 

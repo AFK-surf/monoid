@@ -683,6 +683,8 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
       stations: (ws) => cloud.membership(ws)?.peers ?? [],
       names: (kind) => agents.nameBooks.get(kind) ?? null,
     });
+    // (the connects of other stations its chats run on, known before the hub asks for them)
+    yield* Effect.promise(() => connects.remote.ready());
     agents.surfaces((id) => connects.remote.surface(id));
     agents.connects(() => connects.remote.connects());
     agents.route((id, event) => connects.receive(id, event));

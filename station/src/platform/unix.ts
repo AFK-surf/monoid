@@ -4,7 +4,8 @@ import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_pro
 import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { access, copyFile, readFile, readdir } from "node:fs/promises";
+import { access, chmod, copyFile, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
@@ -339,6 +340,16 @@ export const unix: Platform = {
     return null;
   },
   savedPath: async () => null,
+  async findCommandSoon(name: string, env: Env): Promise<Found | null> {
+    const path = env.PATH;
+    if (path === undefined) return null;
+    for (const dir of path.split(delimiter)) {
+      const onPath = join(dir === "" ? "." : dir, name);
+      const st = await stat(onPath).catch(() => null);
+      if (st !== null && st.isFile() && (st.mode & 0o111) !== 0) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
+    }
+    return null;
+  },
   userShell(env) {
     if (env.SHELL) return env.SHELL;
     try {
@@ -358,6 +369,18 @@ export const unix: Platform = {
   makeCommand(path, script) {
     writeFileSync(path, script);
     chmodSync(path, 0o755);
+    return path;
+  },
+  async makeCommandSoon(path, script) {
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, script);
+      await chmod(tmp, 0o755);
+      await rename(tmp, path);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw error;
+    }
     return path;
   },
 

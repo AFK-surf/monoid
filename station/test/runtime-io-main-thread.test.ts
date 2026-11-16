@@ -2,27 +2,40 @@
 // CA: src/vault/proxy.ts), makes a drive file's thumbnail (src/drive/thumbs.ts `thumbnail`, `kept`), answers the
 // overview (src/api/overview.ts, the disk's room), hands its streams' events over to the next process and takes them up
 // (src/api/events.ts `handOver`, `takeUp`), and finds, starts and ends the station's Chrome and keeps whose its tabs are
-// (src/browser/chrome.ts, src/browser/owners.ts): none of node:fs's synchronous calls (station/AGENTS.md, the main
-// thread waits on nothing). Each ran on every secret_run, drive preview, overview, update and tab opened or closed.
+// (src/browser/chrome.ts, src/browser/owners.ts), posts through another station's connect and learns of it
+// (src/connects/remote.ts), runs a login of the machine's or a profile's sign-in (src/logins/, src/accounts/login.ts)
+// and follows a Feishu app made by a scan (src/feishu/register.ts): none of node:fs's or node:zlib's synchronous calls
+// (station/AGENTS.md, the main thread waits on nothing). Each ran on every secret_run, drive preview, overview, update,
+// tab opened or closed, file posted to a chat of another station's connect, login and scan.
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { Events } from "../src/api/events.ts";
 import { overview } from "../src/api/overview.ts";
 import { BrowserState, type Running, chromeHost, readState } from "../src/browser/chrome.ts";
 import { Owners } from "../src/browser/owners.ts";
+import { type LoginJob, LoginManager } from "../src/accounts/login.ts";
+import { type Described, RemoteConnects, answerCall } from "../src/connects/remote.ts";
+import { Registrations } from "../src/feishu/register.ts";
+import { type Login, Logins } from "../src/logins/index.ts";
+import { WINDOWS } from "../src/platform/index.ts";
+import type { ChatSurface, ThreadRef } from "../src/sessions/chat.ts";
+import type { Attachment } from "../src/store/rows.ts";
 import { idOf, kept, thumbnail } from "../src/drive/thumbs.ts";
 import { Store } from "../src/store/store.ts";
 import type { Held } from "../src/vault/keeper.ts";
 import { Proxy } from "../src/vault/proxy.ts";
 import { runWith } from "../src/vault/run.ts";
+import { exe, fakeBrowser, fakeLogin, script, upon } from "./accounts-fakes.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 import { syncCalls } from "./main-thread-sync.ts";
+
+type Json = any;
 
 const dirs: string[] = [];
 after(() => {
@@ -195,4 +208,119 @@ test("the station's Chrome found, started and ended, and whose its tabs are, wai
   await owners.ready();
   assert.equal(owners.of("A"), "chat-1");
   assert.equal(owners.of("B"), undefined);
+});
+
+test("a chat's post through another station's connect, its file kept there and taken away, and what is learned of the connect, wait on no file", async () => {
+  const dir = scratch("connects-main-thread");
+  const uploads = join(dir, "run", "connect-uploads");
+  const file = join(dir, "a.txt");
+  writeFileSync(file, "hello");
+  const there: string[] = [];
+  const surface = {
+    post: async (_thread: ThreadRef, _message: string, files: Attachment[]) => {
+      for (const f of files) there.push(await readFile(f.path, "utf8"));
+      return "ts-1";
+    },
+  } as unknown as ChatSurface;
+  const answer = answerCall(() => surface, uploads);
+  const ask = (_station: string, request: Json) => answer("there", request, "w");
+  const described: Described = {
+    kind: "slack", workspace: "w", mode: "multi-session", requireMention: true, bind: { runtime: "claude" }, botUserId: "B1", botName: "bot", identity: null,
+    platform: "slack", team: "T1", cards: false, loginCards: false, mention: ["<@", ">"], link: null, has: [],
+  };
+  let posted: string | null = null;
+  let left: string[] = [];
+  const calls = await syncCalls(async () => {
+    const remote = new RemoteConnects(dir, () => "here", ask, () => null);
+    await remote.ready();
+    remote.learn("c1@there", "there", described);
+    posted = await remote.surface("c1@there")!.post({ channel: "C1", threadTs: "1.0" }, "hi", [{ name: "a.txt", path: file, size: 5 }]);
+    left = await readdir(uploads);
+    remote.moved("c1@there", "elsewhere");
+    await remote.written();
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(posted, "ts-1");
+  assert.deepEqual(there, ["hello"], "the file came whole");
+  assert.deepEqual(left, [], "and was taken away once posted");
+  // Started again: what it learned, read before it serves.
+  const again = new RemoteConnects(dir, () => "here", ask, () => null);
+  await again.ready();
+  assert.deepEqual(again.connects().map((c) => c.id), ["c1@there"]);
+  assert.equal(again.surface("c1@there")!.station, "elsewhere");
+});
+
+test("a login of the machine's started, its page read as it opens it, and its end recorded, wait on no file", { skip: WINDOWS && "logins run in a pseudo-terminal: script is Unix's" }, async () => {
+  const home = scratch("logins-main-thread");
+  const bin = join(home, "bin");
+  mkdirSync(bin, { recursive: true });
+  script(join(bin, "fakeopen"), `#!/bin/sh\nopen "https://example.com/device?user_code=WXYZ-1234"\necho "Open https://example.com/device and enter WXYZ-1234"\nread forever\n`);
+  const env = { HOME: home, PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, LANG: "en_US.UTF-8" };
+  const time = testClock();
+  const by = { by: { email: "a@x.com", name: "A" }, workspace: "w1" };
+  let listed: Login[] = [];
+  let shown: Login | null = null;
+  const calls = await syncCalls(async () => {
+    const logins = new Logins({ data: join(home, "data"), env: () => env, clock: time.clock, lang: () => "en" });
+    await logins.ready();
+    const started = await logins.start("fakeopen", by);
+    shown = await upon((wake) => logins.changes(wake), () => { const l = logins.get(started.id); return l?.step === "device" && l.url?.includes("user_code") ? l : undefined; }, "its page");
+    logins.cancel(started.id);
+    listed = logins.logins();
+    await logins.close();
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(shown!.code, "WXYZ-1234");
+  assert.deepEqual(listed.map((l) => [l.name, l.state]), [["fakeopen", "cancelled"]]);
+  const again = new Logins({ data: join(home, "data"), env: () => env, lang: () => "en" });
+  await again.ready();
+  assert.deepEqual(again.logins().map((l) => [l.name, l.state, l.by.name]), [["fakeopen", "cancelled", "A"]]);
+  await again.close();
+});
+
+test("a profile's sign-in started, and the page its command opened read for the station's browser, wait on no file", { skip: WINDOWS && "the stand-in browser writes nothing down on Windows" }, async () => {
+  const dir = scratch("sign-in-main-thread");
+  const fake = join(dir, "fake-login");
+  const loopback = "https://claude.com/cai/oauth/authorize?code=true&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A54545%2Fcallback&state=y";
+  script(fake, fakeLogin().replace('echo "Opening browser to sign in…"', `open '${loopback}'\necho "Opening browser to sign in…"`));
+  const visited: string[] = [];
+  const b = fakeBrowser((url) => visited.push(url));
+  const logins = new LoginManager(dir, { claude: exe(fake), codex: exe(fake) });
+  logins.attach(b.pages);
+  let job: LoginJob | null = null;
+  const calls = await syncCalls(async () => {
+    await logins.start({ id: "sub", runtime: "claude", home: join(dir, "homes", "sub") }, "en");
+    job = await upon((wake) => logins.changes(wake), () => { const j = logins.get("sub"); return j?.state === "needs_code" ? j : undefined; }, "needs_code");
+    await logins.openPage("sub", "en");
+    logins.cancel("sub");
+  });
+  await logins.close();
+  assert.deepEqual(calls, []);
+  assert.equal(job!.browser, true);
+  assert.deepEqual([...b.tabs.values()], [], "its tab closed as it ended");
+  assert.deepEqual(visited, [loopback], "the page it opened, which comes back to it here");
+});
+
+test("a Feishu app made by a scan, followed and kept until it is saved, waits on no file", async () => {
+  const dir = scratch("feishu-main-thread");
+  const t = testClock();
+  const post = async (_domain: string, form: Record<string, string>): Promise<Json> =>
+    form.action === "init" ? { supported_auth_methods: ["client_secret"] }
+      : form.action === "begin" ? { device_code: "dc", verification_uri_complete: "https://accounts.feishu.cn/x?user_code=AB", interval: 5, expires_in: 600 }
+      : { client_id: "cli_new", client_secret: "sec" };
+  let saved: string | null = null;
+  const calls = await syncCalls(async () => {
+    const reg = new Registrations({ clock: t.clock, post, file: join(dir, "feishu-registrations.json") });
+    await reg.ready();
+    reg.start(async () => "unused");
+    const r = await reg.begin("a@x.test", "feishu", "bot");
+    await t.adjust(5000);
+    await upon((wake) => reg.onChange(wake), () => reg.get(r.id)?.state === "done", "done");
+    saved = await reg.complete(r.id, "a@x.test", "", async () => "connect-1");
+    await reg.close();
+  });
+  assert.deepEqual(calls, []);
+  assert.equal(saved, "connect-1");
+  const kept = JSON.parse(await readFile(join(dir, "feishu-registrations.json"), "utf8"));
+  assert.deepEqual(kept.map((r: Json) => [r.state, r.connectId, r.app]), [["done", "connect-1", null]], "its secret not kept once saved");
 });

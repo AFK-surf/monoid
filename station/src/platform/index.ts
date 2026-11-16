@@ -77,6 +77,8 @@ export type Platform = {
   appendPath(env: Env, dir: string): void;
   /// A command on `env`'s PATH as a shell finds it (with PATHEXT's extensions on Windows).
   findCommand(name: string, env: Env): Found | null;
+  /// `findCommand` off the station's thread: each place on PATH looked at in turn, the first found.
+  findCommandSoon(name: string, env: Env): Promise<Found | null>;
   /// The user's interactive shell, when this machine has one to read a PATH from.
   userShell(env: Env): string | null;
   /// The PATH a process started now would be given, where the machine keeps it apart from a shell (Windows' registry:
@@ -106,6 +108,9 @@ export type Platform = {
   /// A shell script at `path` runnable by name from any shell: on Windows a `.cmd` beside it too, running it with the
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;
+  /// `makeCommand` off the station's thread, each file written beside and renamed into place: a command that runs it
+  /// meanwhile finds the one before or this one whole, never half of it.
+  makeCommandSoon(path: string, script: string, noop?: boolean): Promise<string>;
 
   // Process groups (ops/group.ts).
   /// Signals a whole group; one already gone is no error. On Windows any signal ends it.

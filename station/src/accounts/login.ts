@@ -34,10 +34,9 @@
 // not asked again.
 import type { Clock } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileCredentials } from "../agents/no-keychain.ts";
+import { fileCredentialsSoon } from "../agents/no-keychain.ts";
 import { CONSOLE, type ConsoleLogin, type Device, type DeviceAnswer, deviceToken, startDevice, type Token, whoIs, writeConsole } from "./console.ts";
 import { KIMI_AUTH, kimiDeviceToken, newDeviceId, readKimi, startKimiDevice, writeKimi } from "./kimi.ts";
 import { CURSOR, type CursorUrls, cursorHandshake, mintCursorKey, pollCursor, writeCursor } from "./cursor.ts";
@@ -113,7 +112,7 @@ export type LoginProfile = { id: string; runtime: Runtime; home: string; email?:
 
 /// A sign-in under way: its command (none for OpenCode's, which `stop` ends), and the file its stand-in browser writes
 /// the pages it opens to.
-type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; home?: string; chose?: boolean; agy?: AgySteps };
+type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; back?: string; home?: string; chose?: boolean; agy?: AgySteps };
 
 /// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
 /// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
@@ -202,7 +201,7 @@ export class LoginManager {
       if (this.pages !== null) {
         const screen = this.pages.screenOf(pageKey(profile));
         if (screen !== null) job.screen = screen;
-        if ((screen !== null || this.stationPage(running) !== null) && this.pages.can()) job.browser = true;
+        if ((screen !== null || this.hasPage(running)) && this.pages.can()) job.browser = true;
       }
       return job;
     }
@@ -212,18 +211,22 @@ export class LoginManager {
 
   /// The page a sign-in under way opens in the station's browser: the one its command opened where that comes back to
   /// it here (Claude's loopback one), else the one it gives to open; null when it has none (yet).
-  private stationPage(running: Running): string | null {
+  private async stationPage(running: Running): Promise<string | null> {
     const { job } = running;
     if (job.state !== "needs_code" && job.state !== "needs_approval") return null;
     if (running.opened) {
-      let opened: string[] = [];
-      try {
-        opened = urlsIn(readFileSync(running.opened, "utf8"));
-      } catch {}
+      const opened = urlsIn(await readFile(running.opened, "utf8").catch(() => ""));
       const back = opened.findLast((u) => loopbackOf(u) !== null);
-      if (back !== undefined) return back;
+      if (back !== undefined) return (running.back = back);
     }
     return webPage(job.url) ? job.url : null;
+  }
+
+  /// Whether it has a page to open (`stationPage`) as far as is known without reading what its command opened: the
+  /// page it gives (every command's is one), or the one it opened as it was last read.
+  private hasPage(running: Running): boolean {
+    const { job } = running;
+    return (job.state === "needs_code" || job.state === "needs_approval") && (running.back !== undefined || webPage(job.url));
   }
 
   /// Opens the page of `profile`'s sign-in in the station's browser (the tab open already, if there is one): its
@@ -232,7 +235,8 @@ export class LoginManager {
     const running = this.jobs.get(profile);
     if (!running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (this.pages === null || !this.pages.can()) throw new Error(tr(lang, "station.loginPage.noBrowser"));
-    const url = this.stationPage(running);
+    const url = await this.stationPage(running);
+    if (this.jobs.get(profile) !== running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (url === null && this.pages.screenOf(pageKey(profile)) === null) throw new Error(tr(lang, "station.loginPage.nothing"));
     let screen: string;
     try {
@@ -252,35 +256,34 @@ export class LoginManager {
   async start(profile: LoginProfile, lang: Lang = stationLang()): Promise<LoginJob> {
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
-    const [noBrowser, open] = this.noBrowser();
+    const noBrowser = this.noBrowserDir;
     const sourceEnv = this.env();
     const clean = Object.fromEntries(Object.entries(sourceEnv).filter(([k]) => !SCRUBBED.includes(k)));
     let env = platform.prependPath(clean, noBrowser) as Record<string, string>;
-    env.BROWSER = open;
-    // The pages it opens, written down for the station's browser (one file a sign-in).
-    const opened = join(noBrowser, `${profile.id}.opened`);
-    rmSync(opened, { force: true });
+    const run = ++this.runs;
+    // The pages it opens, written down for the station's browser (one file a sign-in: one ended before is taken away
+    // off this thread, never this one's).
+    const opened = join(noBrowser, `${profile.id}-${run}.opened`);
     env.STILLFAIL_LOGIN_OPENED = opened;
+    /// The directories it needs, made once it is recorded.
+    const dirs = [profile.home];
     let command: string;
     let args: string[];
     let pathCommand: string | undefined;
-    const run = ++this.runs;
     // The Antigravity CLI's HOME: an empty directory of this sign-in's (the top of this file says why).
     const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}`) : null;
     if (profile.runtime === "claude") {
       env.CLAUDE_CONFIG_DIR = profile.home;
-      fileCredentials(env);
       const email = typeof profile.email === "string" && profile.email.trim() !== "" ? profile.email.trim() : null;
       [command, args] = [this.commands.claude, ["auth", "login", "--claudeai", ...(email ? ["--email", email] : [])]];
     } else if (profile.runtime === "grok") {
       env.GROK_HOME = join(profile.home, "grok");
       env.GROK_DISABLE_AUTOUPDATER = "1";
-      mkdirSync(env.GROK_HOME, { recursive: true });
+      dirs.push(env.GROK_HOME);
       [command, args] = [this.commands.grok ?? "grok", ["login", "--device-auth"]];
     } else if (profile.runtime === "devin") {
       env.XDG_DATA_HOME = devinData(profile.home);
-      mkdirSync(env.XDG_DATA_HOME, { recursive: true });
+      dirs.push(env.XDG_DATA_HOME);
       pathCommand = this.commands.devin ?? "devin";
       const wrapped = platform.terminal(pathCommand, ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS);
       if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
@@ -311,6 +314,18 @@ export class LoginManager {
     };
     this.jobs.set(id, running);
     this.emit(id);
+    try {
+      // (Claude Code kept off the keychain: its sign-in in the profile's home)
+      const keychain = profile.runtime === "claude" ? fileCredentialsSoon(env) : null;
+      const [open] = await Promise.all([this.noBrowser(), rm(opened, { force: true }), keychain, ...dirs.map((d) => mkdir(d, { recursive: true }))]);
+      env.BROWSER = open;
+    } catch (e) {
+      if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+      const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+      this.finish(id, "failed", error);
+      return { ...job, state: "failed", error };
+    }
+    if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
     const dropStage = () => (stage !== null ? rm(stage, { recursive: true, force: true }).catch(() => {}) : Promise.resolve());
     if (stage !== null) {
       // Those an earlier sign-in of this profile left (the station ended under it) go first; never a later one's, made
@@ -419,7 +434,6 @@ export class LoginManager {
         : ["station.login.consoleFailed", "station.login.consoleExpired", "station.login.consoleDenied", "could not ask the OpenCode Console about a sign-in"];
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
     const id = profile.id;
     const now = this.background.now();
     const job: LoginJob = { profile: id, runtime: "claude", provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
@@ -430,6 +444,8 @@ export class LoginManager {
     const current = () => this.jobs.get(id)?.run === run;
     let device: Device;
     try {
+      await mkdir(profile.home, { recursive: true });
+      if (!current()) return this.get(id)!;
       device = await steps.start();
     } catch (e) {
       if (current()) this.finish(id, "failed", tr(lang, failed, { error: (e as Error).message }));
@@ -481,7 +497,6 @@ export class LoginManager {
   async startCursor(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
     const id = profile.id;
     const now = this.background.now();
     const handshake = cursorHandshake(this.cursor);
@@ -491,6 +506,13 @@ export class LoginManager {
     this.jobs.set(id, running);
     running.cancelTimer = this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut")));
     const current = () => this.jobs.get(id)?.run === run;
+    try {
+      await mkdir(profile.home, { recursive: true });
+    } catch (e) {
+      if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+      return this.get(id)!;
+    }
+    if (!current()) return this.get(id)!;
     // Asked often at first (the person is on the page), less as it goes on.
     let interval = 1_000;
     const ask = async () => {
@@ -716,7 +738,7 @@ export class LoginManager {
         } catch {}
       }
     }
-    if (running.opened) rmSync(running.opened, { force: true });
+    if (running.opened) void rm(running.opened, { force: true }).catch(() => {});
     this.pages?.close(pageKey(profile));
     this.finished.set(profile, { ...running.job, state, error });
     log.info("login", "login ended", { profile, state, error });
@@ -733,14 +755,14 @@ export class LoginManager {
     }
   }
 
-  /// A directory whose `open` and `xdg-open` open nothing, put first on the login command's PATH; and what `open` is to
-  /// be called by (BROWSER). Each writes the pages it is given to the file STILLFAIL_LOGIN_OPENED names (on Windows it
-  /// does nothing).
-  private noBrowser(): [dir: string, open: string] {
-    mkdirSync(this.noBrowserDir, { recursive: true });
+  /// Makes the directory whose `open` and `xdg-open` open nothing, put first on the login command's PATH
+  /// (`noBrowserDir`); gives what `open` is to be called by (BROWSER). Each writes the pages it is given to the file
+  /// STILLFAIL_LOGIN_OPENED names (on Windows it does nothing).
+  private async noBrowser(): Promise<string> {
+    await mkdir(this.noBrowserDir, { recursive: true });
     const script = `#!/bin/sh\n# A browser for a sign-in run by still.fail (station/src/accounts/login.ts): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nfor a in "$@"; do printf '%s\\n' "$a" >> "$STILLFAIL_LOGIN_OPENED"; done\nexit 0\n`;
-    const [open] = ["open", "xdg-open"].map((name) => platform.makeCommand(join(this.noBrowserDir, name), script, true));
-    return [this.noBrowserDir, open!];
+    const [open] = await Promise.all(["open", "xdg-open"].map((name) => platform.makeCommandSoon(join(this.noBrowserDir, name), script, true)));
+    return open!;
   }
 }
 
