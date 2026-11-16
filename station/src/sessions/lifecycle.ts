@@ -60,6 +60,10 @@ const trimmed = (v: string | null | undefined) => {
 /// Points a single-session connect at a session: an existing one (any session on the same runtime, whichever connect
 /// started it) or, with null, a new empty one. The bound session's key.
 export async function bindSingle(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): Promise<string> {
+  return hub.oneSingle(connectId, () => bindSingleInTurn(hub, connectId, target, title, createdBy));
+}
+
+async function bindSingleInTurn(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): Promise<string> {
   const config = hub.config();
   const connect = connectOf(config, connectId);
   if (connect.mode !== "single-session") throw new Error(`connect ${connectId} is not single-session`);
