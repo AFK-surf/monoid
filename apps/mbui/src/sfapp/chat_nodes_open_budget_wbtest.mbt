@@ -1,4 +1,4 @@
-// A chat of real size on the chat's page made as nodes (外观's 试用新对话页), as a phone's core sends it (its messages
+// A chat of real size on the chat's page made as nodes (实验性功能's 试用新对话页), as a phone's core sends it (its messages
 // read as Markdown, `md`, each long one a block a piece; src/sfrealsize): what the heaviest frame does as it opens cold,
 // and as it is opened again from Home with the chat held (back, then the same chat: its messages there already, the
 // page made whole in one frame) — nodes made, let go, laid out, words measured, bindings run — held to its bar, which

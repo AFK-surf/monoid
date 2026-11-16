@@ -437,6 +437,10 @@ fn tape_made(
       made("appearance", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.appearance_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Experimental) if pane_makes.val =>
+      made("experimental", fn(p, core, _here, _stint, told, _acts) {
+        @sfpages.experimental_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
       made("profiles-overview", fn(p, core, here, _stint, told, _acts) {
         context_node(p)
@@ -613,7 +617,7 @@ fn tape_made(
     page if pane_makes.val && @sfbase.chat_page_is(page) =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the panel's corners as a
             // page's bar on the tape does; the tape's head over it none, tape_bar_head)

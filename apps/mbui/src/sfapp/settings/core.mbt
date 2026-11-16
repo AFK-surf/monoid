@@ -122,6 +122,8 @@ pub(all) enum Route {
   Home
   Me
   Appearance
+  /// 设置 › 实验性功能
+  Experimental
   /// 外观 › 字体
   Fonts
   /// the workspace: its name, its people, its invitations
@@ -574,6 +576,7 @@ pub fn reset() -> Unit {
   notify_switched.set(None)
   connects_mine.val = false
   chosen.clear()
+  features_reset()
   builtin_open.clear()
   panels_core.set(None)
   frame_core.val = None
@@ -641,7 +644,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
@@ -653,6 +656,7 @@ pub fn route_of(name : String) -> Route? {
     "" | "home" => Some(Home)
     "me" => Some(Me)
     "appearance" => Some(Appearance)
+    "experimental" => Some(Experimental)
     "fonts" => Some(Fonts)
     "workspace" => Some(Workspace)
     "security" => Some(Security)

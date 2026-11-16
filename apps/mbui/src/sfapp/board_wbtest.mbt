@@ -407,6 +407,12 @@ fn board_bar_at(
         ("workspaces", Some(v)) if name != "" =>
           { ..got, value: Some(@json.parse(v.stringify().replace(old="星火工作室", new=name)) catch { _ => v }) }
         ("chats", Some(v)) if syncing => { ..got, value: Some(@sffixture.fix_with_syncing(v)) }
+        // (实验性功能's 对话列表看板视图 on, its key on Home's bar, in a mode not the board's: experimental_wbtest.mbt has it off)
+        ("prefs", Some(Object(m))) => {
+          let m = m.copy()
+          m["experimental"] = { "board": true }
+          { ..got, value: Some(Json::object(m)) }
+        }
         _ => got
       }
     },

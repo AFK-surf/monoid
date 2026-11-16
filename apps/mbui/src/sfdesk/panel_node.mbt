@@ -42,7 +42,7 @@ fn side_own_tab(front : String) -> Bool {
 /// farview_tab_node).
 fn side_farview_tab(front : String) -> (String, String)? {
   match station_tab(front) {
-    Some(("screen", station, screen)) if @sfpages.farview_screen(screen) => Some((station, screen))
+    Some(("screen", station, screen)) if @sfpages.farview_native_screen(screen) => Some((station, screen))
     _ => None
   }
 }

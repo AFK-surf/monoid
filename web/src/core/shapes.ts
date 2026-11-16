@@ -1657,6 +1657,14 @@ export interface RailView {
 	by: Record<string, RailOf>;
 }
 
+/** One experimental feature shown in 设置 › 实验性功能. */
+export interface ExperimentalItem {
+	/** The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …). */
+	id: string;
+	/** Whether this feature is currently turned on on this device. */
+	enabled: boolean;
+}
+
 /** What this device keeps of how its person likes it (the `prefs` topic, `prefs.set`), and what it is. */
 export interface PrefsView {
 	/** The lists show only the chats and connects the viewer takes part in. */
@@ -1769,8 +1777,8 @@ export interface PrefsView {
 	 */
 	reports?: string;
 	/**
-	 * Which chat page this device makes (设置 → 外观 → 试用新对话页): `nodes`, the one made as nodes, tried while it
-	 * is being completed; or (none) the one of before.
+	 * Legacy setting for the node-based chat page (migrated to `experimental.chatPage` in 设置 → 实验性功能): `nodes`,
+	 * or (none) the one of before.
 	 */
 	chatPage?: string;
 	/**
@@ -1892,6 +1900,14 @@ export interface PrefsView {
 	keymap?: KeymapView;
 	/** The wide screen's rail as clients draw it (the core's, from `rail` and `rails`; none from a core before it). */
 	railView?: RailView;
+	/** Whether this app runs on the test channel (`beta`). */
+	testChannel?: boolean;
+	/** Experimental features turned on on this device (设置 → 实验性功能), by feature id; unknown or graduated ids are ignored. */
+	experimental?: Record<string, boolean>;
+	/** Effective boolean state of every registered feature on this device (from `FEATURES`, `testChannel` and `experimental`). */
+	features?: Record<string, boolean>;
+	/** Experimental features visible in 设置 › 实验性功能 on this channel, in registry order. */
+	experimentalItems?: ExperimentalItem[];
 }
 
 /**

@@ -3,6 +3,7 @@
 import * as brand from "./brand.ts";
 import * as fonts from "./fonts.ts";
 import { conform } from "./conform.ts";
+import { experimentalItemsOf, experimentalOf, featuresOf, isExperimentalFeature } from "./features.ts";
 import { railView } from "./rail.ts";
 import type { Data } from "./data.ts";
 import { CoreError } from "./error.ts";
@@ -13,8 +14,8 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { setOwnBuild } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "reports"];
-const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "experimental", "reports"];
+const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
@@ -156,7 +157,8 @@ export function setCounted(on: boolean): void {
 export function shown(v: unknown): unknown {
   if (!isObject(v)) return v;
   const by = isObject(v.barsBy) ? Object.fromEntries(Object.entries(v.barsBy).map(([ws, b]) => [ws, barsOf(b)])) : {};
-  return { ...v, productName: brand.name(), product: brand.current().name, listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}) };
+  const test = brand.isTestChannel();
+  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}) };
 }
 
 /// What is kept, as kept (no defaults filled in).
@@ -170,8 +172,13 @@ function kept(data: Data): Map_ {
 export function set(data: Data, patch: unknown, fill: boolean, now: number): void {
   if (!isObject(patch)) throw CoreError.invalid(t("core-misc.params.not_object"));
   const prefs = kept(data);
-  // What an older build kept for 奏 is not kept on.
+  // What an older build kept for 奏, or for experimental features since graduated, is not kept on.
   if ("listFilter" in prefs) prefs.listFilter = listFiltersOf(prefs.listFilter);
+  if ("experimental" in prefs) {
+    const cleaned = experimentalOf({ experimental: prefs.experimental });
+    if (Object.keys(cleaned).length) prefs.experimental = cleaned;
+    else delete prefs.experimental;
+  }
   delete prefs.onlyDecisions;
   delete prefs.decisionsDeferred;
   // serde_json's Map iterates in key order.
@@ -204,7 +211,18 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         if (fill && key in map) continue;
         if (entry === null) {
           delete map[key];
+          if (field === "experimental" && key === "chatPage") delete prefs.chatPage;
           continue;
+        }
+        if (field === "experimental") {
+          if (!isExperimentalFeature(key) || typeof entry !== "boolean") {
+            throw CoreError.invalid(t("core-misc.params.invalid", { error: `experimental.${key}` }));
+          }
+          if (key === "chatPage") delete prefs.chatPage;
+          if (!entry) {
+            delete map[key];
+            continue;
+          }
         }
         // The jobs a bell has shown: the newest of them.
         if (field === "jobsSeen" && Array.isArray(entry)) entry = entry.slice(-JOBS_SEEN_KEPT);
@@ -241,14 +259,23 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         }
         map[key] = entry as never;
       }
+      if (field === "experimental" && Object.keys(map).length === 0) delete prefs.experimental;
     } else if (fill && field in prefs) {
       // kept
     } else if (value === null) {
       delete prefs[field];
+      if (field === "chatPage" && isObject(prefs.experimental)) {
+        delete prefs.experimental.chatPage;
+        if (Object.keys(prefs.experimental).length === 0) delete prefs.experimental;
+      }
     } else {
       const ONE_OF = ["onlyMine", "onlyWatching"];
       if (ONE_OF.includes(field) && value === true && !fill) for (const other of ONE_OF) if (other !== field) delete prefs[other];
       prefs[field] = value;
+      if (field === "chatPage" && value === "nodes") {
+        if (!isObject(prefs.experimental)) prefs.experimental = {};
+        (prefs.experimental as Map_).chatPage = true;
+      }
     }
   }
   const tabs = prefs.chatTabs;

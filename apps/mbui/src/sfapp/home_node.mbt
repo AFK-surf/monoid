@@ -197,8 +197,8 @@ fn home_top_bar_node(
       })
       // 列表 | 看板, its own key beside the filter: 看板 on the list, 列表 on the board; 看板 the second to leave where
       // the bar has not the room (catching up and transfers both beside it on a narrow phone, till they are done), 列表
-      // never (the way back to the list)
-      row.show(keyed, fn(m) {
+      // never (the way back to the list); only while 实验性功能's 对话列表看板视图 is on
+      row.show(fn() { @sfbase.board_feature.get() && keyed() }, fn(m) {
         m.drops(By(fn() { if @sfbase.board_on_now(src) { 0 } else { 2 } })) |> ignore
         // (one key, its icon and words following the mode: nothing made again as it turns)
         let on = fn() { @sfbase.board_on_now(src) }

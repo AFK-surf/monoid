@@ -339,6 +339,8 @@ fn pane_made(
       })
     Setting(Appearance) =>
       made("appearance", fn(a, core, _here, _stint, frame, width) { @sfpages.appearance_node(a, core, on_back=core.pop, frame~, width~) })
+    Setting(Experimental) =>
+      made("experimental", fn(a, core, _here, _stint, frame, width) { @sfpages.experimental_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Profiles("")) if @settings.profiles_narrow_overview.get() =>
       made("profiles-overview", fn(a, core, here, _stint, frame, width) {
         @sfpages.profiles_overview_node(
@@ -461,7 +463,7 @@ fn pane_made(
     page if @sfbase.chat_page_is(page) =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             // (beside it its side panel, the tree's, reading by the page's source, let go with it: side_panel_node)
             v.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

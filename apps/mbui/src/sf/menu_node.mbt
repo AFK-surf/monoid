@@ -45,6 +45,8 @@ pub fn menu_node(
   side? : @ui.Side = Bottom,
   modal? : Bool = true,
 ) -> Unit {
+  // (no line at either end, none twice: menu_clean_items)
+  let content = fn() { menu_clean_items(content()) }
   parent.show(
     open,
     fn(layer) {

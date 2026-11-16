@@ -278,6 +278,9 @@ if part ts; then
 
   # The agents' rules name only what is there (AGENTS.md: These files are kept true): any change may move what one names.
   step "AGENTS.md paths" node scripts/agents-paths.ts
+  # The features not yet everyone's are one registry, the core's and the app's alike, each read where it decides and
+  # none read once gone (client/core-ts/src/features.ts): any change may add or leave a branch on one.
+  step "features: one registry, no dead switch or branch left" node scripts/features-check.ts
 
   if touches '^design/(station-)?icons/|^apps/mbui/(tools/icons/|scripts/icons$)|^web/ui/src/icons\.tsx$'; then
     step icons bash apps/mbui/scripts/icons . --check
@@ -495,7 +498,7 @@ if [ $full = 1 ]; then
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n station/src/cloud/lock.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^vendor/|^client/i18n/|^client/shell/|^libs/mbui/src/effect/|^rules/js/|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mbui/src/effect/|^rules/js/|^scripts/native\.ts$|^scripts/station-slice\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and the Rust station's archive
   # command for darwin-arm64 and linux-x64).
   station_natives="mesh runner reader"

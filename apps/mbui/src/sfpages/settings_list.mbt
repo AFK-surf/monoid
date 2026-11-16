@@ -243,6 +243,23 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
     device.push(settings_row(AdbShare(""), "adb", "phone", @sf.t("android-misc.adb.title")))
   }
   device.push(settings_row(KeptFiles, "files", "disk", @sf.t("android-settings.files.title"), value=kept))
+  let exp = @settings.experimental_items_from(prefs)
+  if !exp.is_empty() {
+    let exp_on = exp.filter(fn(i) { i.1 }).length()
+    device.push(
+      settings_row(
+        Experimental,
+        "experimental",
+        "sparks",
+        @sf.t("web-pages.experimental.title"),
+        value=if exp_on > 0 {
+          @sf.t("web-pages.experimental.enabledCount", args=[("n", exp_on.to_string())])
+        } else {
+          ""
+        },
+      ),
+    )
+  }
   parts.push({ key: "device", heading: @sf.t("android-settings.home.device"), rows: device })
   // 关于: this build, or the newer one there is
   let v = (core.version_now)()
@@ -419,9 +436,12 @@ fn settings_search_children(row : SettingsRow, core : Core) -> Array[SettingsRow
       if @ui.takes_drops() {
         a.push(("drop", @sf.t("web-pages.appearance.drop.title"), Appearance))
       }
-      a.push(("chatPage", @sf.t("web-pages.appearance.chatPage.title"), Appearance))
       a
     }
+    "experimental" =>
+      @settings.experimental_items(core).map(fn(e) {
+        (e.0, @sf.t("web-pages.experimental." + e.0 + ".title"), Experimental)
+      })
     "notifications" => [
       ("ways", @sf.t("web-pages.notifications.ways.title"), Notifications),
       ("kinds", @sf.t("web-pages.notifications.kinds.title"), Notifications),

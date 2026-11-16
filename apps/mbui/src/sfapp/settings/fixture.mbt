@@ -575,6 +575,8 @@ pub fn fixture_page(mode : String) -> String {
   } else {
     mode
   }
+  // (the stable channel's: the same page, as a stable app shows it, sffixture's fixture_stable_mode)
+  let m = if m.has_suffix("-stable") { m.unsafe_substring(start=0, end=m.length() - 7) } else { m }
   // a sheet up over the page, or the page scrolled down (fixture_open; the library's pages too)
   @sf.page_list_opened.val = fn(c, key, rows) { fixture_scroll(c, key, rows~) }
   let up = fn(sheet : String, list : String, block : Int) {

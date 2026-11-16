@@ -8,6 +8,7 @@ import { Agents } from "../sessions/agents.ts";
 import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
 import { MoveAsks, moveTools } from "../tools/move.ts";
+import { stationMoveOn } from "../features.ts";
 import { Moves } from "./station.ts";
 import { moveRoutes } from "./routes.ts";
 import { plainStore } from "../vault/plain.ts";
@@ -17,7 +18,7 @@ type Json = any;
 
 export const MovesLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const { data } = yield* Paths;
+    const { app, data } = yield* Paths;
     const store = yield* Store;
     const bus = yield* Peers;
     const cloud = (yield* ControlPlane).state;
@@ -97,8 +98,8 @@ export const MovesLive = Layer.effectDiscard(
       hasGit: gitHere,
       changed: () => changed(),
       config: agents.config,
-      // (a machine's own setting, off unless set: moving is offered here only once it is on; move/AGENTS.md)
-      moveOn: () => agents.config.raw()?.move === true,
+      // (a beta-channel feature, config.json's `move` said over it either way: features.ts stationMoveOn)
+      moveOn: () => stationMoveOn(agents.config.raw(), app),
       keptSends: (threads) => admin.keptSends(threads),
       keepSends: (sends) => admin.keepSends(sends),
       vault: {

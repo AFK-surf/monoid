@@ -1,5 +1,5 @@
 // A chat of real size opened again from Home (or the sidebar) with the chat held, on the chat's page made as nodes
-// (外观's 试用新对话页) and on the old page it replaces, the same press in the same window: what the heaviest frame
+// (实验性功能's 试用新对话页) and on the old page it replaces, the same press in the same window: what the heaviest frame
 // does on each, counted alike. The old page builds its list as an old view (a Ctx, built whole as a frame builds it)
 // and the new one makes it as nodes (the window's tree), so each is counted as both: nodes made in the tree and the
 // old view's nodes built over what the shell's old islands build at rest (`Δctx`), and laid out the same way.
@@ -99,6 +99,9 @@ fn chat_vs_again(
       None => {
         reset()
         @sfbase.chat_page_nodes.set(nodes)
+        // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
+        // the key off Home under both pages alike)
+        @sfbase.board_feature.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
         let s = @sffixture.round_trip_again(
           chat_vs_source(c.source(@sffixture.fixture("chat")), card),

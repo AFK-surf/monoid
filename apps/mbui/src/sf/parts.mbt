@@ -1522,6 +1522,28 @@ fn menu_flip(key : String) -> Unit {
 }
 
 ///|
+/// A menu's items as they are drawn (None a line between): none at either end and none twice in a row, whatever was
+/// left out between them (a choice not offered here given as None), so no menu has a line hanging at its end or two
+/// lines together.
+pub fn menu_clean_items(items : Array[MenuItem?]) -> Array[MenuItem?] {
+  let out : Array[MenuItem?] = []
+  let mut rule = false
+  for x in items {
+    match x {
+      None => rule = out.length() > 0
+      Some(_) => {
+        if rule {
+          out.push(None)
+          rule = false
+        }
+        out.push(x)
+      }
+    }
+  }
+  out
+}
+
+///|
 /// `items` drawn as a menu (None: a line between), open while `key` is the one open; chosen, closed and what it does
 /// done once the frame is built. Whether it is open.
 fn menu_items(
@@ -1536,6 +1558,7 @@ fn menu_items(
   at? : (Double, Double, Double, Double),
 ) -> Bool {
   let open = menu_is(key)
+  let items = menu_clean_items(items)
   let entries : Array[@kit.Entry] = []
   let icons : Map[String, String] = Map([])
   let danger : Array[String] = []

@@ -107,7 +107,7 @@ let corners_tape_rail : Array[String] = [
   "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
   "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick",
   "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only", "screen-reconnecting", "screen-trackpad",
-  "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-me", "settings-me-reading",
+  "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental", "settings-me", "settings-me-reading",
   "settings-workspace", "settings-security", "settings-vault", "settings-vault-items", "settings-vault-item",
   "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-offline", "settings-station-env",
   "settings-station-processes", "settings-station-mark", "settings-station-lower", "settings-station-versions",

@@ -794,7 +794,9 @@ fn wide_link_row_node(
 /// `note` quieter under it (the theme's rows'), what `control` makes at its end across their middle, 16 apart; on a
 /// list's card (part_of) a row of it (wide_in_list: as far in as its rows' words, 10 over and under, as high as one at
 /// least, its corner concentric with the card's), its title as strong as the list's other rows' (setting_title); its
-/// words' looks `looks` where given. The control alone answers.
+/// words' looks `looks` where given; `first_line`: the control on its title's line (line_end_node's: a switch beside a
+/// title and the note under it on the first of their lines, never across their middle, the user, 2026-11-14). The
+/// control alone answers.
 #callsite(autofill(loc))
 fn wide_control_row_node(
   parent : @view.View,
@@ -803,6 +805,7 @@ fn wide_control_row_node(
   lead : ((@view.View) -> Unit)?,
   control : (@view.View) -> Unit,
   looks? : (() -> @ui.TextStyle, () -> @ui.TextStyle),
+  first_line? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -811,14 +814,18 @@ fn wide_control_row_node(
     None => (fn() { if at.list { setting_title() } else { theme().rows.title } }, fn() { theme().rows.note })
   }
   let row = fn(r : @view.View) {
-    r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Middle))) |> ignore
+    r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(if first_line { Start } else { Middle }))) |> ignore
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
       led_title_node(words, title, title_look, lead)
       words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, note_look) |> ignore })
     })
     |> ignore
-    control(r)
+    if first_line {
+      line_end_node(r, control)
+    } else {
+      control(r)
+    }
   }
   if at.list {
     parent.box(made_for=loc, fn(cell) {

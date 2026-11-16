@@ -1146,8 +1146,6 @@ web-pages.appearance.archive.offHint
 web-pages.appearance.archive.reviewed
 web-pages.appearance.archive.reviewedHint
 web-pages.appearance.archive.title
-web-pages.appearance.chatPage.description
-web-pages.appearance.chatPage.title
 web-pages.appearance.drop.description
 web-pages.appearance.drop.file
 web-pages.appearance.drop.path
@@ -1985,3 +1983,14 @@ web-pages.vault.oauth.card.title.slack
 web-pages.vault.oauth.card.read.slack
 web-pages.vault.oauth.card.write.slack
 web-pages.vault.oauth.card.kept.slack
+web-pages.stations.screensTitle
+web-pages.stations.screensAndTerminals
+web-pages.experimental.title
+web-pages.experimental.lead
+web-pages.experimental.enabledCount
+web-pages.experimental.chatPage.title
+web-pages.experimental.chatPage.description
+web-pages.experimental.farviewNative.title
+web-pages.experimental.farviewNative.description
+web-pages.experimental.board.title
+web-pages.experimental.board.description

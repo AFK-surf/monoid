@@ -131,7 +131,7 @@ test "a chat's page's reads declared as it comes on top: asked at that moment, t
 fn gated_pages() -> Array[Page] {
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   let routes : Array[@settings.Route] = [
-    Home, Me, Appearance, Fonts, Workspace, Security, SecurityOpen, Vault, Stations, Station("ws1/st1"), Profiles(""),
+    Home, Me, Appearance, Experimental, Fonts, Workspace, Security, SecurityOpen, Vault, Stations, Station("ws1/st1"), Profiles(""),
     Profiles("ws1/st1"), Profile("ws1/st1", "p1"), Connects(""), Connects("ws1/st1"), Connect("ws1/st1", "c1"), Memories,
     Memory("ws1/st1"), MemoryDoc("ws1/st1", "", 0), Usage, Archive, AdbShare("ws1/st1"), NewProfile("ws1/st1"),
     ProfileAccount("k1"), VaultItems, VaultItem("v1", "i1"), AutoDecisions, AutoCompletion, AutoPolicy("ws1/st1"),

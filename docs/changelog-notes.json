@@ -630,5 +630,15 @@
     "text": ["修复：网页版打开 agent 起的网页服务不再是一片空白"],
     "fixes": [8, 9],
     "parts": ["web"]
-  }
+  },
+  "7f153d7b1c": { "channel": "beta" },
+  "7a9f9004dd": { "channel": "beta" },
+  "f8375af626": { "channel": "beta" },
+  "df6421a167": { "channel": "beta" },
+  "4e5083b162": { "channel": "beta" },
+  "f33536fe1e": { "channel": "beta" },
+  "bd352a22c4": { "channel": "beta" },
+  "5b2e2fb2c0": { "channel": "beta" },
+  "f98c860516": { "channel": "beta" },
+  "175701d202": { "channel": "beta" }
 }

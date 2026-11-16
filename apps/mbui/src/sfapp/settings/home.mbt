@@ -58,7 +58,7 @@ fn route_page(c : @ui.Ctx, core : Core, here : Here, route : Route) -> Unit {
     Archive => archive_page(c, core, here)
     // one page for every frame (src/sfpages about.mbt; the list, sfpages' settings_list.mbt), drawn by the frame's
     // setting_route
-    Home | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Appearance | Fonts | BarSettings | Changelog | About | Memories | Memory(_) | AutoDecisions | UsagePrices(_) | Usage | Me | Workspace | Security | SecurityOpen | Vault | VaultItems | VaultItem(_, _) | Connects(_) | Connect(_, _) | Station(_) | Profile(_, _) | NewProfile(_) => ()
+    Home | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Appearance | Experimental | Fonts | BarSettings | Changelog | About | Memories | Memory(_) | AutoDecisions | UsagePrices(_) | Usage | Me | Workspace | Security | SecurityOpen | Vault | VaultItems | VaultItem(_, _) | Connects(_) | Connect(_, _) | Station(_) | Profile(_, _) | NewProfile(_) => ()
     // (made once in every frame, the stations' and the profiles' lists and an account's page too: sfpages'
     // stations_list.mbt, profiles_list.mbt)
     Stations | Profiles(_) | ProfileAccount(_) => ()

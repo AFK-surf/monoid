@@ -543,9 +543,20 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.set_viewer_host(viewer_host_of(src))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
     root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
-    // (the chat page this device makes, as chosen in 外观's 试用新对话页, told before any page of nodes is made: the first
-    // chat opened is the page chosen)
-    root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.chat_page_from_prefs)
+    // (the experimental switches of 实验性功能 (试用新对话页, Farview 原生标签页渲染, 看板), told before any page of nodes
+    // is made and in the frame a switch is pressed: what is chosen here before the core answers is read with the prefs)
+    root.reacts(
+      fn() {
+        let p = src.topic("prefs", {}).get().value
+        (
+          p,
+          @settings.feature_from(p, "chatPage"),
+          @settings.feature_from(p, "farviewNative"),
+          @settings.feature_from(p, "board"),
+        )
+      },
+      fn(t) { @sfbase.chat_page_from_prefs(t.0) },
+    )
     // (the window's keys as the core's prefs keep them on this device, changed as they are: settings' keymap.mbt)
     // (and a Farview tab's page's caret's keys, where it has the keyboard: fvclient's stage)
     root.keymap(By(fn() {
@@ -740,26 +751,32 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     o.over(Is(true)) |> ignore
     o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
   })
-  match @sfbase.lone_page.val {
-    // a Farview tab: drawn here (sfpages' farview_tab_node), under the window's top band, as the panel and the
-    // phone's page draw it: its page laid out at this window's width as it changes, not a picture of the tab
-    Some(Screen(at)) if @sfpages.farview_screen(at.screen) =>
-      v.box(fn(p) {
-        // (padding's order: left, top, right, bottom)
-        p.over(Is(true)).padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
-        @sfpages.farview_tab_node(p, src, at.station, at.screen)
-      })
-      |> ignore
-    _ =>
-      @ui.old(v, fn(c) {
-        match @sfbase.lone_page.val {
-          Some(p) => lone_page_view(c, src, p)
-          None => ()
-        }
-      })
-      .over(Is(true))
-      |> ignore
+  // a Farview tab, while 实验性功能's Farview 原生标签页渲染 is on: drawn here (sfpages' farview_tab_node), under the
+  // window's top band, as the panel and the phone's page draw it: its page laid out at this window's width as it
+  // changes, not a picture of the tab; else (or turned off) the old view's page of it, the station's pictures
+  let farview = match @sfbase.lone_page.val {
+    Some(Screen(at)) if @sfpages.farview_screen(at.screen) => Some(at)
+    _ => None
   }
+  v.pick(at_once=true, fn() { farview is Some(_) && @sfbase.farview_native.get() }, fn(q, native) {
+    q.over(Is(true)) |> ignore
+    match farview {
+      Some(at) if native => {
+        // (padding's order: left, top, right, bottom)
+        q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
+        @sfpages.farview_tab_node(q, src, at.station, at.screen)
+      }
+      _ =>
+        @ui.old(q, fn(c) {
+          match @sfbase.lone_page.val {
+            Some(p) => lone_page_view(c, src, p)
+            None => ()
+          }
+        })
+        .grow(Is(1.0))
+        |> ignore
+    }
+  })
   @ui.old(v, fn(c) {
     @sf.presented(c)
   })
@@ -916,8 +933,8 @@ fn page_view(
         Setting(r) => setting_page(c, src, w, r)
         // (made once: narrow_shell.mbt's history_node)
         History(_, _, _) => ()
-        // (a Farview tab: made once, narrow_shell.mbt's)
-        Screen(at) if @sfpages.farview_screen(at.screen) => ()
+        // (a Farview tab drawn natively: made once, narrow_shell.mbt's)
+        Screen(at) if @sfpages.farview_native_screen(at.screen) => ()
         Screen(at) => @sfpages.screen_page(c, src, at, system_frame())
         // (made once: narrow_shell.mbt's terminal_node)
         Terminal(_) => ()

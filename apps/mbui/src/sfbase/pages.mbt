@@ -83,6 +83,34 @@ pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_node
 let chat_page_nodes_at_start : Bool = false
 
 ///|
+/// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
+/// place): its nodes' or its old view's as chat_page_nodes says now, so 实验性功能's 试用新对话页 turned either way makes
+/// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
+pub fn chat_page_kind() -> String {
+  if chat_page_nodes.get() {
+    "chat"
+  } else {
+    "chat-old"
+  }
+}
+
+///|
+/// Whether Farview browser tabs (`browser:fv_…`) are drawn natively on this device (实验性功能 › Farview 原生标签页渲染).
+// kept across runs: false as a run begins (reset)
+pub let farview_native : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether Home offers and shows the board view on this device (实验性功能 › 对话列表看板视图).
+// kept across runs: false as a run begins (reset)
+pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether feature `id` is effectively enabled on this device (`prefs` + channel + local experimental switches).
+pub fn feature_on(src : Source, id : String) -> Bool {
+  @settings.feature_from(src.topic("prefs", {}).get().value, id)
+}
+
+///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
 /// steps, all it holds is laid out anew at once, View::lays_anew). None at rest but the width.
@@ -769,6 +797,7 @@ fn setting_kind(r : @settings.Route) -> String {
     Home => "Home"
     Me => "Me"
     Appearance => "Appearance"
+    Experimental => "Experimental"
     Fonts => "Fonts"
     Workspace => "Workspace"
     Security => "Security"
@@ -1188,8 +1217,10 @@ pub fn reset() -> Unit {
   fresh_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
-  // whether a chat's page is made as nodes inside (chat_page_nodes)
+  // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
+  farview_native.set(false)
+  board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
   turns_by.clear()
   emits.clear()

@@ -115,6 +115,7 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     Notifications => notify_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     AutoPolicy(st) => policy_node(p, core, here, st, on_back=core.pop, frame~, width~)
     Appearance => appearance_node(p, core, on_back=core.pop, frame~, width~)
+    Experimental => experimental_node(p, core, on_back=core.pop, frame~, width~)
     LocalStation => local_station_node(p, core, on_back=core.pop, frame~, width~)
     Permissions => permissions_node(p, core, on_back=core.pop, frame~, width~)
     Security => security_node(p, core, here, on_back=core.pop, frame~, width~)

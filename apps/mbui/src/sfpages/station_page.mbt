@@ -324,44 +324,53 @@ fn station_menu(c : @ui.Ctx, core : Core, here : Here, s : Json?) -> Unit {
 fn station_menu_items(core : Core, here : Here, s : Json?) -> Array[@sf.MenuItem?] {
   let address = text(s, "station")
   let remove = fn() { station_remove_ask(core, here, s) }
-  [
-      Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.rename"), icon="edit", fn() { station_rename(core, here, s) })),
-      if flag(s, "online") {
-        Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.restart"), icon="power", fn() {
-          @settings.act(core, @sf.t("web-pages.settings.stations.restartWhat"), "station.restart",
-            obj([("station", str(address))]), done=@sf.t("web-pages.settings.stations.restarting"))
-        }))
-      } else {
-        None
-      },
-      // made one that only runs tasks by its owner, who added it (`mine`: the core says; asked first, with how many
-      // chats it holds go out of sight): its own station asked, so only while it is up; one of another workspace's
-      // stays whole
-      if flag(s, "mine") && flag(s, "online") && !flag(s, "joined") {
-        Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", fn() {
-          let chats = number(field(field(s, "overview"), "counts"), "sessions").to_int()
-          confirm(
-            @sf.t("web-pages.rigs.toTasksAsk", args=[("name", text(s, "name"))]),
-            if chats > 0 { @sf.t("web-pages.rigs.toTasksNote", args=[("n", chats.to_string())]) } else { @sf.t("web-pages.rigs.toTasksNoteNone") },
-            @sf.t("web-pages.rigs.toTasks"),
-            fn() {
-              @settings.act(
-                core,
-                @sf.t("web-pages.rigs.toTasks"),
-                "rig.setMode",
-                obj([("workspace", str(here.workspace)), ("station", str(text(s, "id"))), ("mode", str("tasks"))]),
-                done=@sf.t("web-pages.rigs.toTasksDone"),
-              )
-            },
-          )
-        }))
-      } else {
-        None
-      },
-      station_move_item(core, s),
-      station_retire_item(core, here, s),
-      Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.remove"), icon="trash", danger=true, remove)),
+  // (what is done with it, those it offers now; a line; then what takes it away)
+  let items : Array[@sf.MenuItem?] = [
+    Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.rename"), icon="edit", fn() { station_rename(core, here, s) })),
   ]
+  if flag(s, "online") {
+    items.push(
+      Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.restart"), icon="power", fn() {
+        @settings.act(core, @sf.t("web-pages.settings.stations.restartWhat"), "station.restart",
+          obj([("station", str(address))]), done=@sf.t("web-pages.settings.stations.restarting"))
+      })),
+    )
+  }
+  // made one that only runs tasks by its owner, who added it (`mine`: the core says; asked first, with how many
+  // chats it holds go out of sight): its own station asked, so only while it is up; one of another workspace's
+  // stays whole
+  if flag(s, "mine") && flag(s, "online") && !flag(s, "joined") {
+    items.push(
+      Some(@sf.menu_item_of(@sf.t("web-pages.rigs.toTasks"), icon="boxes", fn() {
+        let chats = number(field(field(s, "overview"), "counts"), "sessions").to_int()
+        confirm(
+          @sf.t("web-pages.rigs.toTasksAsk", args=[("name", text(s, "name"))]),
+          if chats > 0 { @sf.t("web-pages.rigs.toTasksNote", args=[("n", chats.to_string())]) } else { @sf.t("web-pages.rigs.toTasksNoteNone") },
+          @sf.t("web-pages.rigs.toTasks"),
+          fn() {
+            @settings.act(
+              core,
+              @sf.t("web-pages.rigs.toTasks"),
+              "rig.setMode",
+              obj([("workspace", str(here.workspace)), ("station", str(text(s, "id"))), ("mode", str("tasks"))]),
+              done=@sf.t("web-pages.rigs.toTasksDone"),
+            )
+          },
+        )
+      })),
+    )
+  }
+  match station_move_item(core, s) {
+    Some(item) => items.push(Some(item))
+    None => ()
+  }
+  items.push(None)
+  match station_retire_item(core, here, s) {
+    Some(item) => items.push(Some(item))
+    None => ()
+  }
+  items.push(Some(@sf.menu_item_of(@sf.t("web-pages.settings.stations.remove"), icon="trash", danger=true, remove)))
+  items
 }
 
 ///|

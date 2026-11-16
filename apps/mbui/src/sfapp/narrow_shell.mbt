@@ -523,7 +523,7 @@ fn narrow_made_as(
     page if @sfbase.chat_page_is(page) && !place =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             @sfbase.chat_page_made(
               v,
@@ -640,6 +640,8 @@ fn narrow_made_as(
       made("auto-policy/" + st, fn(p, core, here, frame, _stint, _acts) { @sfpages.policy_node(p, core, here, st, on_back=core.pop, frame~) })
     Setting(Appearance) =>
       made("appearance", fn(p, core, _here, frame, _stint, _acts) { @sfpages.appearance_node(p, core, on_back=core.pop, frame~) })
+    Setting(Experimental) =>
+      made("experimental", fn(p, core, _here, frame, _stint, _acts) { @sfpages.experimental_node(p, core, on_back=core.pop, frame~) })
     Setting(LocalStation) =>
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>
@@ -723,8 +725,10 @@ fn narrow_made_as(
       made_at("history/" + r.station + "/" + key, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
         history_node(p, src, r, key, entry, frame, serial)
       })
-    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab
-    Screen(at) if @sfpages.farview_screen(at.screen) =>
+    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab; while
+    // 实验性功能's Farview 原生标签页渲染 is on (read as the stack asks what kind each page is: turned off, the page is
+    // made again in its place as any screen's, its old view)
+    Screen(at) if @sfpages.farview_native_screen(at.screen) =>
       made("farview/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(By(fn() { (0.0, 0.0, 0.0, frame().foot) })) |> ignore
         @sf.nav_bar_node(

@@ -390,7 +390,7 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
 pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
   reset()
-  // (the chat's page made as nodes, as one who turned 外观's 试用新对话页 on has it: said before the mode opens a chat,
+  // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
   // which is made as the choice stands then)
   if chat_nodes {
     @sfbase.chat_page_nodes.set(true)

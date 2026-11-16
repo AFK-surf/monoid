@@ -347,7 +347,7 @@ fn presented_items_of(serial : Int, items : Array[MenuItem?]) -> Array[MenuItem?
     }
   }
   s.get() |> ignore
-  items
+  menu_clean_items(items)
 }
 
 ///|
@@ -3017,6 +3017,7 @@ fn step_key(p : Presented, n : Int) -> String {
 /// A menu's rows in a sheet (`items`: None a line between, a heading a title's): one pressed, the sheet `p` closes and
 /// what it does goes on (done_with).
 fn menu_rows(c : @ui.Ctx, key : String, p : Presented, items : Array[MenuItem?]) -> Unit {
+  let items = menu_clean_items(items)
   c.box(style=sheet_rows, fn() {
     for i, x in items {
       match x {
