@@ -1537,8 +1537,9 @@ export class Handover {
   async #emptied(at: string): Promise<void> {
     for (let d = at; ; d = dirname(d)) {
       const parts = relative(this.#d.data, d).split(sep);
-      // (never the data directory's own, `sessions/` nor a runtime's `transcripts*/<runtime>/`)
-      if (parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0]!) || parts.length <= (parts[0]!.startsWith("transcripts") ? 2 : 1)) return;
+      // (never the data directory's own, `sessions/` nor a runtime's `transcripts*/<runtime>/`, nor a profile's home up
+      // to where its Antigravity CLI keeps a conversation, carry.ts `cliKept`)
+      if (parts[0] === "" || parts[0] === ".." || isAbsolute(parts[0]!) || parts.length <= (parts[0]!.startsWith("transcripts") ? 2 : parts[0] === "homes" ? 6 : 1)) return;
       if (!(await rmdir(d).then(() => true, () => false))) return;
     }
   }

@@ -5,7 +5,9 @@
 // files are) and put at the same place under the other station's data directory. A checkout's own repository (`.git` a
 // directory) goes as its files; a linked worktree's is git's to make again there (retire.ts `rebuildGits`), from what
 // the index says of it. What a build or an install makes again (footprint.ts `rebuildable`), and what git ignores,
-// stays behind. Only what is under the data directory's `sessions/` and `transcripts*/` goes, or is put.
+// stays behind. Only what is under the data directory's `sessions/` and `transcripts*/` goes, or is put, and what of an
+// Antigravity CLI conversation the CLI keeps in a profile's home there (`cliKept`): the station's transcript alone does
+// not take it up.
 //
 // The gathering, the placing and the preview are the MoonBit program's (`--builder replica-carry`, station/mb's
 // src/replica/carry.mbt), a process of its own each, so none of their walking, hashing, git or linking is on the main
@@ -68,13 +70,35 @@ export const SIZED_TRANSCRIPTS = 64;
 /// What a retirement of a workspace would take of its sessions here (retire.ts `preview`).
 export type Counted = { chats: number; archived: number; outside: number };
 
-/// Whether `path` is one that goes along, or is put: under `dataDir`'s `sessions/` or a `transcripts*/` of it.
+/// Whether `path` is one that goes along, or is put: under `dataDir`'s `sessions/` or a `transcripts*/` of it, or what
+/// an Antigravity CLI keeps of its conversations in a profile's home there (`cliKept`).
 export function carriedPlace(dataDir: string, path: string): boolean {
   const rel = relative(dataDir, path);
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
   const parts = rel.split(sep);
-  return parts.length > 1 && (parts[0] === "sessions" || parts[0]!.startsWith("transcripts"));
+  return parts.length > 1 && (parts[0] === "sessions" || parts[0]!.startsWith("transcripts") || cliKept(parts));
 }
+
+/// The directories of a profile's home (`homes/<profile>/`, agents/agy.ts `geminiDir`) where an Antigravity CLI keeps
+/// a conversation by its id, which `session/load` takes it up from: its database (`conversations/<id>.db`, with its
+/// `-wal`), its `brain/<id>/` and `annotations/<id>.pbtxt`. The station's transcript of it
+/// (`transcripts/agy/`) is only what it read: a chat moved without these went on to "trajectory not found"
+/// (2026-11-16). What a placing puts there it puts at the same profile's id; the profile it runs on there brings it
+/// into its own home as it takes the conversation up (agy.ts `agyBringIn`).
+export const CLI_KEPT = ["conversations", "brain", "annotations"] as const;
+const CLI_HOME = ["agy", ".gemini", "antigravity-cli"] as const;
+/// Whether the parts of a path under the data directory are in one of `CLI_KEPT` of a profile's home.
+export const cliKept = (parts: readonly string[]): boolean =>
+  parts.length >= 7 && parts[0] === "homes" && CLI_HOME.every((p, i) => parts[i + 2] === p) && (CLI_KEPT as readonly string[]).includes(parts[5]!);
+/// What of conversation `id` of the Antigravity CLI of profile `profile` would go along (`cliKept`), under `dataDir`:
+/// the files, and the directory that goes whole. Empty for an id or a profile that is not one path segment.
+export function cliKeptOf(dataDir: string, profile: string, id: string): { files: string[]; dirs: string[] } {
+  if (!ONE_SEGMENT.test(profile) || !ONE_SEGMENT.test(id)) return { files: [], dirs: [] };
+  const cli = join(dataDir, "homes", profile, ...CLI_HOME);
+  return { files: [join(cli, "conversations", `${id}.db`), join(cli, "conversations", `${id}.db-wal`), join(cli, "annotations", `${id}.pbtxt`)], dirs: [join(cli, "brain", id)] };
+}
+/// (a path segment of its own: no separator, never `.` or `..`)
+const ONE_SEGMENT = /^[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*$/;
 
 /// Where a gathering keeps its index and its lists, in `scratch`.
 export const indexFile = (scratch: string) => join(scratch, "index.json");
