@@ -14,7 +14,7 @@ import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { answerLock } from "./lock-sync.ts";
 import { answerMarks, stationMarksOf } from "./station-marks.ts";
 import { answerWays, waysOf } from "./ways.ts";
-import { goesThrough, stationAddr } from "./relays.ts";
+import { goesThrough, onRelaysChanged, stationAddr } from "./relays.ts";
 import { Reader } from "./serve.ts";
 
 export const PEER_ALPN = Buffer.from("stillfail/station/1");
@@ -233,7 +233,7 @@ type Dial = { made: Promise<Connection>; waiters: number; settled: boolean; aban
 
 /// What the station transport's caller is given: its requests, and `arrived` for each connection another station
 /// opens to this one (what this one keeps to it is asked whether it is still there: a station started again dials anew).
-export type StationCall = PeerCall & { arrived(conn: Connection): void };
+export type StationCall = PeerCall & { arrived(conn: Connection): void; close?(): void };
 
 /// Whether `conn` was closed by its other end's process stopping (`STOPPING`), as its close says.
 const closedStopping = (conn: Connection): boolean => {
@@ -253,12 +253,26 @@ const received = (conn: Connection): number | null => {
 /// answer is waited for, `checkMs` before its connection is asked whether it is still there, `heardMs` how long that
 /// ask takes at most (tests shorten them).
 export function peerCall(
-  endpoint: Endpoint, cloud: Cloud, addr: (id: string, workspace?: string | null) => Addr = (id, workspace) => stationAddr(cloud, id, workspace ?? null), outside?: Outside, answerMs = ANSWER_MS,
+  endpoint: Endpoint, cloud: Cloud, given?: (id: string, workspace?: string | null) => Addr, outside?: Outside, answerMs = ANSWER_MS,
   timing: { checkMs?: number; heardMs?: number } = {},
 ): StationCall {
+  const addr = given ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
   const checkMs = timing.checkMs ?? CHECK_MS;
   const heardMs = timing.heardMs ?? HEARD_MS;
   const connections = new Map<string, Connection>();
+  /// The workspace each station was last asked in: what a connection kept to it is held to as the ways change.
+  const askedIn = new Map<string, string | null>();
+  // A relay turned off: the connections kept through it let go at once, not as the next request comes (idle, they kept
+  // it busy with their keep-alives meanwhile).
+  const sweep = () => {
+    for (const [target, conn] of [...connections]) {
+      if (conn.isClosed() || !goesThrough(conn, addr(target, askedIn.get(target) ?? null).disabledRelays)) continue;
+      connections.delete(target);
+      log.info("mesh", "a station's connection goes through a relay turned off: closed", { peer: target.slice(0, 12) });
+      conn.close(0, "its relay turned off");
+    }
+  };
+  const stopSweeping = given === undefined ? onRelaysChanged(cloud, sweep) : () => {};
   /// Whether a connection's other end is still there: one ask a connection at a time, however many wait on it. An addon
   /// from before (no `answers`) counts as there.
   const asking = new Map<Connection, Promise<boolean>>();
@@ -395,6 +409,7 @@ export function peerCall(
     const offered = workspace !== null && cloud.peersCurrent && cloud.movedOffered?.has(workspace) === true && typeof request?.method === "string" && request.method.startsWith("lock.")
       && (cloud.state?.joined ?? []).some((j) => j.workspace === workspace && j.peers.some((p) => p?.id === target));
     const ws = proof || offered ? workspace : workspaceFor(cloud, target, workspace, outside);
+    askedIn.set(target, ws);
     let conn: Connection | null = null;
     let dial: Dial | null = null;
     let leave = () => {};
@@ -495,7 +510,7 @@ export function peerCall(
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });
   };
-  return Object.assign(ask, { arrived });
+  return Object.assign(ask, { arrived, close: stopSweeping });
 }
 
 /// Another station's connection: each of its requests answered by the remote tasks, while it belongs.

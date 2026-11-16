@@ -214,3 +214,21 @@ test("one of still.fail's relays another workspace of the station's added as its
   await ways.written();
   assert.deepEqual(new Cloud(data, false).state?.stillfail_relays, ours);
 });
+
+test("a workspace's rigs are brought level as its stations are: they keep its relays on as a station does", async () => {
+  const a = station(A);
+  const R = "c".repeat(64);
+  const rig = station(R);
+  (a.cloud as any).rigs = (ws: string) => (ws === WS ? [{ id: R, name: "rig", owner: "u", owner_email: "u@x", owner_name: "U" }] : []);
+  const asked: string[] = [];
+  const call = async (peer: string, ws: string | null, request: any) => {
+    asked.push(`${peer.slice(0, 1)} ${request.method}`);
+    return answerWays(peer === R ? rig.ways : station(peer).ways, request, ws ?? WS) as any;
+  };
+  const stop = followWays(a.ways, call, () => () => {});
+  setWay(a.ways, WS, "ours", true);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.ok(asked.includes("c ways.put"), `the rig asked: ${asked.join(", ")}`);
+  assert.deepEqual(rig.ways.record(WS), a.ways.record(WS), "the rig has the station's");
+  stop();
+});

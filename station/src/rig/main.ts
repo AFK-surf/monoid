@@ -254,6 +254,8 @@ export const RigMeshLive = Layer.effectDiscard(
       // What it tells the stations (rig/module.ts), and nothing it asks of them.
       const call = peerCall(endpoint, cloud);
       peers.attach(call);
+      // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
+      yield* Effect.addFinalizer(() => Effect.sync(() => call.close?.()));
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)

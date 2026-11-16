@@ -102,6 +102,8 @@ export const MeshLive = Layer.effectDiscard(
       // And the stations of other workspaces chats are shared with or from (xshare/index.ts).
       const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true });
       peers.attach(call);
+      // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
+      yield* Effect.addFinalizer(() => Effect.sync(() => call.close?.()));
       // The agents' door's way to the other stations' web services (peer-http.ts).
       yield* Effect.acquireRelease(
         Effect.sync(() => {

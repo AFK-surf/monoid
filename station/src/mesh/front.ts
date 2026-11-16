@@ -619,8 +619,13 @@ class FrontEndpoint implements Endpoint {
     this.#asking = true;
     this.#ask("relayStatus").then((r) => { this.#relays = r; }, () => {}).finally(() => (this.#asking = false));
   }
-  insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => {}); }
-  removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => {}); }
+  // (what the endpoint is on now is what a link made again binds with: else a relay removed came back as it did)
+  insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url])); }
+  removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.filter((u) => bare(u) !== bare(url)))); }
+  #relayUrls(change: (urls: string[]) => string[]) {
+    const options = this.#bind.options as { relayUrls: string[] };
+    options.relayUrls = change(options.relayUrls);
+  }
   publicRelays(on: boolean) { return this.#ask("publicRelays", { args: { on } }).then(() => {}); }
   keep(urls: string[]) { void this.#ask("keep", { args: { urls } }).catch((e) => log.warn("mesh", "relays not kept", { error: (e as Error).message })); }
   setCongestion(congestion: "cubic" | "bbr") { void this.#ask("setCongestion", { args: { congestion } }).catch(() => {}); }
@@ -665,3 +670,5 @@ class FrontEndpoint implements Endpoint {
 }
 
 const hex = (b: Buffer) => Buffer.from(b).toString("hex");
+/// A relay's URL as compared: no trailing slash.
+const bare = (url: string) => url.replace(/\/+$/, "");

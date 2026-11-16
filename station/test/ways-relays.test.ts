@@ -202,3 +202,47 @@ test("web requests to another station dial it through its workspace's relays on,
   assert.deepEqual(dialed.map(shape), [{ relays: [OURS, OWN], disabledRelays: [] }, { relays: [OWN], disabledRelays: [OURS] }]);
   http.close();
 });
+
+test("a relay turned off lets go at once of the idle connections kept through it, not of those going direct", async () => {
+  const p = await pair({ relays: [OWN], off: [] });
+  const direct = await pair({ relays: [OWN], off: [] });
+  const call = peerCall(p.source, p.cloud);
+  const callDirect = peerCall(direct.source, direct.cloud);
+  try {
+    assert.deepEqual(await call(p.target.id(), "ws", { method: "first" }), { ok: "first" });
+    assert.deepEqual(await callDirect(direct.target.id(), "ws", { method: "first" }), { ok: "first" });
+    through(p.made[0]!, OURS);
+    direct.made[0]!.paths = () => [{ selected: true, ip: "192.168.1.2:4000", txPackets: 0, lostPackets: 0 }];
+    waysOf(p.cloud).change("ws", (now) => ({ ...now, off: ["ours"] }));
+    waysOf(direct.cloud).change("ws", (now) => ({ ...now, off: ["ours"] }));
+    assert.ok(p.made[0]!.isClosed(), "closed with no request made: its relay turned off");
+    assert.ok(!direct.made[0]!.isClosed(), "one going direct is kept");
+    assert.deepEqual(await callDirect(direct.target.id(), "ws", { method: "kept" }), { ok: "kept" });
+    assert.equal(direct.dialed.length, 1, "on the connection kept");
+  } finally {
+    call.close?.();
+    callDirect.close?.();
+    await Promise.all([p.source.close(), p.target.close(), direct.source.close(), direct.target.close()]);
+  }
+});
+
+test("so are web requests' connections to another station", async () => {
+  const target = "t".repeat(64);
+  const cloud = cloudOf("me", [target], { relays: [OWN], off: [] });
+  const made: any[] = [];
+  const endpoint = {
+    connect: async () => {
+      let closed = false;
+      const conn = { alpn: () => PEER_HTTP_ALPN, isClosed: () => closed, close: () => void (closed = true), openBi: async () => ({}), paths: () => [] as any[] };
+      made.push(conn);
+      return conn;
+    },
+  } as unknown as Endpoint;
+  const http = new PeerHttp(endpoint, cloud);
+  await (http as any).stream(target, "tttttt", "ws");
+  made[0].paths = () => [{ selected: true, relay: `${OURS}/`, txPackets: 0, lostPackets: 0 }];
+  waysOf(cloud).change("ws", (now) => ({ ...now, off: ["ours"] }));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(made[0].isClosed(), "closed with no request made: its relay turned off");
+  http.close();
+});

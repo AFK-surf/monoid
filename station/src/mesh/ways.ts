@@ -348,7 +348,12 @@ export function followWays(ways: Ways, call: PeerCall, after: (ms: number, f: ()
   const look = () => {
     const st = cloud.state;
     if (stopped || !st || !cloud.peersCurrent) return;
-    for (const m of cloud.memberships()) for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+    for (const m of cloud.memberships()) {
+      for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+      // Its rigs too (stations that only run tasks, rig/): kept on the relays the workspace keeps on, as a station is
+      // (relays.ts), they answer `ways.*` as a station does (peer.ts servePeer).
+      for (const r of cloud.rigs(m.workspace)) if (r.id !== st.station && !m.peers.some((p) => p?.id === r.id)) bring(r.id, m.workspace, m.home);
+    }
   };
   look();
   const unlistenCloud = cloud.listen(look);

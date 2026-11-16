@@ -22,7 +22,7 @@ import { type PeerRoute, type PeerTarget, refuseUpgrade } from "../tools/http.ts
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { PEER_ALPN, member } from "./peer.ts";
 import { pipeTcp, reachLocal } from "./peer-forward.ts";
-import { goesThrough, stationAddr } from "./relays.ts";
+import { goesThrough, onRelaysChanged, stationAddr } from "./relays.ts";
 import { Reader, writeLine } from "./serve.ts";
 
 export const PEER_HTTP_ALPN = Buffer.from("stillfail/http/1");
@@ -176,17 +176,34 @@ export class PeerHttp implements PeerRoute {
   /// The upgrades answered here (the local program's side of a WebSocket), each with the sub-protocol the service chose.
   private sockets: WebSocketServer;
   private chosen = new WeakMap<IncomingMessage, string | null>();
+  /// The workspace each station was last asked in, and what stops the sweep of connections through relays turned off.
+  private askedIn = new Map<string, string>();
+  private stopSweeping: () => void;
 
-  constructor(endpoint: Endpoint, cloud: Cloud, addr: (id: string, workspace?: string | null) => Addr = (id, workspace) => stationAddr(cloud, id, workspace ?? null), connectMs = CONNECT_MS) {
+  constructor(endpoint: Endpoint, cloud: Cloud, addr?: (id: string, workspace?: string | null) => Addr, connectMs = CONNECT_MS) {
     this.endpoint = endpoint;
     this.cloud = cloud;
-    this.addr = addr;
+    this.addr = addr ?? ((id, workspace) => stationAddr(cloud, id, workspace ?? null));
+    // A relay turned off: the connections kept through it let go at once, not as the next request comes.
+    this.stopSweeping = addr === undefined ? onRelaysChanged(cloud, () => this.sweep()) : () => {};
     this.connectMs = connectMs;
     this.sockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 16 * 1024 * 1024, handleProtocols: (_offered, req) => this.chosen.get(req) ?? false });
   }
 
+  private sweep() {
+    for (const [id, made] of [...this.connections]) {
+      made.then((conn) => {
+        if (conn.isClosed() || !goesThrough(conn, this.addr(id, this.askedIn.get(id) ?? null).disabledRelays)) return;
+        this.forget(id, made);
+        log.info("mesh", "a station's web connection goes through a relay turned off: closed", { peer: id.slice(0, 12) });
+        conn.close(0, "its relay turned off");
+      }, () => {});
+    }
+  }
+
   /// Its connections end (the mesh stops).
   close() {
+    this.stopSweeping();
     for (const made of this.connections.values()) made.then((c) => c.close(0, "station stopping"), () => {});
     this.connections.clear();
   }
@@ -221,6 +238,7 @@ export class PeerHttp implements PeerRoute {
   /// A new stream to station `id` (asked in `workspace`): on the connection kept, or a new one when that one is gone, or
   /// goes through a relay the workspace's ways turned off since.
   private async stream(id: string, given: string, workspace: string): Promise<Stream> {
+    this.askedIn.set(id, workspace);
     for (let attempt = 0; ; attempt++) {
       let made = this.connections.get(id);
       if (made === undefined) {

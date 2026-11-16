@@ -180,3 +180,42 @@ test("a relay holding an endpoint inactive for another of its key is said by the
   assert.equal(closed, 1);
   assert.equal(mesh.relayConflict!(), false, "closed: no longer counted");
 });
+
+// A relay put in or taken out as the station runs (relays.ts keepRelays: a workspace turning still.fail's off) stays so
+// across the front's link made again: bound again as the endpoint is now, not as it was first bound.
+test("the front's endpoint linked again is bound with the relays it is on now", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "front-rebind-"));
+  const sock = join(dir, "front.sock");
+  const links: Socket[] = [];
+  const bound: string[][] = [];
+  const server = createServer((s) => {
+    links.push(s);
+    let pending = "";
+    s.on("data", (chunk) => {
+      pending += chunk;
+      for (let at; (at = pending.indexOf("\n")) >= 0; pending = pending.slice(at + 1)) {
+        const asked = JSON.parse(pending.slice(0, at));
+        if (asked.op === "bind") bound.push(asked.options.relayUrls);
+        s.write(JSON.stringify({ id: asked.id, ok: asked.op === "bind" ? { id: "station", sockets: [] } : asked.op === "relayStatus" ? [] : null }) + "\n");
+      }
+    });
+    s.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(sock, resolve));
+  try {
+    const mesh = withFront({} as Mesh, sock);
+    const endpoint = await mesh.bind({ secretKey: Buffer.alloc(32), alpns: [], relayUrls: ["https://ours.example", "https://own.example"] });
+    await endpoint.removeRelay("https://ours.example/");
+    await endpoint.insertRelay("https://more.example");
+    await endpoint.insertRelay("https://own.example/");
+    links[0]!.destroy();
+    while (mesh.frontLink!() === "ok") await new Promise((r) => setImmediate(r));
+    while (links.length < 2 || mesh.frontLink!() !== "ok") await new Promise((r) => setImmediate(r));
+    assert.deepEqual(bound, [["https://ours.example", "https://own.example"], ["https://own.example", "https://more.example"]]);
+    await endpoint.close();
+  } finally {
+    for (const s of links) s.destroy();
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

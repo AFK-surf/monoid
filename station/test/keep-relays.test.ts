@@ -102,3 +102,12 @@ test("an endpoint bound with a relay its workspace turned off is taken off it at
   await settle(10);
   assert.deepEqual(asked.slice(0, 2), [`remove ${OURS}`, `keep ${THEIRS}`]);
 });
+
+test("every workspace turned still.fail's relays off: none of its own answering brings in no public relay either", async (t) => {
+  const answering = { now: false };
+  const { asked, clock } = keeping(t, answering, { off: ["ours"] });
+  await settle(10);
+  await clock.adjust(30_000);
+  await settle(10);
+  assert.deepEqual(asked.filter((a) => a.startsWith("public")), ["public false"], "iroh's public relays (n0's) kept off, as still.fail's are");
+});

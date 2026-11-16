@@ -15,6 +15,7 @@ import { ControlPlane } from "../services.ts";
 import type { Cloud } from "../cloud/state.ts";
 import type { Addr, Connection, Endpoint } from "./native.ts";
 import { offRelays, sameUrl, waysOf, workspaceRelays } from "./ways.ts";
+import type { Ways } from "./ways.ts";
 
 /// Asking our relays whether they answer is asking an outside system: the one timer here.
 const RELAY_CHECK = "30 seconds";
@@ -48,6 +49,14 @@ export function stationAddr(cloud: Cloud, id: string, workspace: string | null =
 }
 
 const among = (urls: string[], url: string) => urls.some((u) => sameUrl(u) === sameUrl(url));
+
+/// Whether every workspace of the station's turned still.fail's relays off for relays of its own: then iroh's public
+/// relays, a third party's too, are not added while none of those answers (a workspace that keeps its packets off
+/// still.fail's keeps them off n0's).
+export function oursOff(state: Cloud, ways: Ways = waysOf(state)): boolean {
+  const ms = state.memberships();
+  return ms.length > 0 && ms.every((m) => ways.view(m.workspace).off.includes("ours") && offRelays(ways, m.workspace).length > 0);
+}
 
 /// Runs for good (until interrupted). `bound`: the relays the endpoint was bound with (still.fail's where not said):
 /// those wanted that it lacks are put in before it is kept on them, and those not wanted taken out.
@@ -113,7 +122,14 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
           } catch {}
         }
       }
-      if (!up && added !== true) {
+      if (!up && oursOff(cloud.state, ways)) {
+        // (none answers, but iroh's public relays are off too: the workspaces turned still.fail's off)
+        if (added !== false) {
+          log.warn("mesh", "none of the workspaces' relays answers; iroh's public relays stay off, still.fail's being turned off", { relays: ours });
+          await endpoint.publicRelays(false);
+          added = false;
+        }
+      } else if (!up && added !== true) {
         log.warn("mesh", "none of still.fail's relays answers; adding iroh's public relays until one does", { relays: ours });
         await endpoint.publicRelays(true);
         added = true;
@@ -126,6 +142,16 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[]) =>
 
     yield* Effect.all([follow, Effect.repeat(check, Schedule.spaced(RELAY_CHECK))], { concurrency: "unbounded", discard: true }).pipe(Effect.ensuring(Effect.sync(stopWays))); // timer: a ping that measures the relays, which tell nothing by themselves
   });
+
+/// Calls `sweep` whenever a workspace's ways or the cloud's state change here; returns what stops it.
+export function onRelaysChanged(cloud: Cloud, sweep: () => void): () => void {
+  const stopWays = waysOf(cloud).listen(sweep);
+  const stopCloud = cloud.listen(sweep);
+  return () => {
+    stopWays();
+    stopCloud();
+  };
+}
 
 /// Whether `conn` goes through one of `relays` now (its path chosen): a connection kept from before they were turned off,
 /// let go so the next request dials anew, not through them (peer.ts, peer-http.ts).
