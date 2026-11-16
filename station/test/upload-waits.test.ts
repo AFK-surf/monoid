@@ -1,7 +1,8 @@
 // Files that come up to the station and go between stations make its main thread wait on no synchronous call of
 // node:fs (station/AGENTS.md, the main thread waits on nothing): an upload of 50 MB, an upload in parts of up to 1 GiB,
 // a message taking its pictures and films, and a file another station's session reads or sends along, each of which
-// held every device and agent behind it as long as the disk took. Counted as main-thread-waits.test.ts counts them.
+// held every device and agent behind it as long as the disk took; so do an agent's post with a picture and a film
+// (chat_post's files) and those a person shared in Slack or Feishu, fetched and measured as they come. Counted as main-thread-waits.test.ts counts them.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,8 +19,10 @@ import { loadMesh } from "../src/mesh/native.ts";
 import { Readers } from "../src/read/pool.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { Hub, sessionKey } from "../src/sessions/hub.ts";
-import { shownFacts, shownFactsSoon } from "../src/sessions/image-size.ts";
+import { shownFacts, shownFactsSoon } from "./reference/image-size.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
+import { attach } from "../src/sessions/conversations.ts";
+import type { ChatSurface } from "../src/sessions/chat.ts";
 import { claim, fetchAttachments, fileForPeer, putForPeer, sendable, sendAlong } from "../src/sessions/peer-files.ts";
 import { Store } from "../src/store/store.ts";
 import { exif, film, jpeg } from "../../client/core-ts/test/media-bytes.ts";
@@ -197,5 +200,37 @@ test("a file sent along to another station's session and one read from a chat th
   await assert.rejects(sendable(r.hub, keyB, ["missing.txt"]), /no such file/);
   await assert.rejects(sendable(r.hub, keyB, ["notes"]), /not a file/);
   await assert.rejects(claim(r.hub, "near", keyB, keyA, [{ id: "nope", name: "x.txt" }]), /did not all arrive/);
+  await r.close();
+});
+
+test("an agent's post with a picture and a film, and those shared in Slack, wait on no synchronous file call", async () => {
+  const r = new Rig();
+  const m = say("<@UBOT> draw it");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const workspace = r.session(key).workspace;
+  const clip = film(1920, 1080, { ms: 12_500, frames: 375, large: true });
+  const photo = jpeg(1140, 2616);
+  writeFileSync(join(workspace, "pose.jpg"), photo);
+  writeFileSync(join(workspace, "take.mp4"), clip);
+  const shared = new Map([["F1", photo], ["F2", clip]]);
+  const chat = { download: async (f: { id: string }) => shared.get(f.id)! } as unknown as ChatSurface;
+  const { value, by, calls } = await waited(async () => {
+    const posted = await attach(r.hub, key, ["pose.jpg", join(workspace, "take.mp4")]);
+    const fetched = await r.hub.fetched(chat, key, "look", [
+      { id: "F1", name: "photo.jpg", size: photo.length, url: null },
+      { id: "F2", name: "clip.mp4", size: clip.length, url: null },
+    ]);
+    return { posted, fetched };
+  });
+  assert.deepEqual(by, [], "no synchronous call of node:fs");
+  assert.equal(calls, 0);
+  const shown = (a: { name: string; size: number; width?: number; height?: number; duration?: number; frames?: number }) => [a.name, a.size, a.width, a.height, a.duration, a.frames];
+  const want = [["pose.jpg", photo.length, 1140, 2616, undefined, undefined], ["take.mp4", clip.length, 1920, 1080, 12_500, 375]];
+  assert.deepEqual(value.posted.map(shown), want);
+  assert.deepEqual(value.fetched.attachments.map(shown), [["photo.jpg", ...want[0]!.slice(1)], ["clip.mp4", ...want[1]!.slice(1)]]);
+  for (const a of [...value.posted, ...value.fetched.attachments]) assert.ok(Buffer.from(readFileSync(a.path)).equals(Buffer.from(a.name.endsWith(".mp4") ? clip : photo)));
+  assert.equal(value.fetched.text, "look");
   await r.close();
 });

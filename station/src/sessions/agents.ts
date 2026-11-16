@@ -81,7 +81,7 @@ import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
-import { roomOf } from "./footprint.ts";
+import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
 import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
@@ -374,7 +374,7 @@ export const AgentsLive = (control: Control) =>
           const workingSessions: { key: string; workspace: string }[] = JSON.parse(await readers.read("sessionsAtWork", { processes }, "zh"));
           return (await Promise.all(workingSessions.map(async (s) => {
             const found: WorkspaceReading[] = [];
-            if (roomOf(data, s.workspace) !== null) {
+            if ((await roomOfSoon(data, s.workspace)) !== null) {
               const size = remote.workspaceReader.size(s.workspace, workspaceWatch.limit(s.key, ""));
               if (size !== null) found.push({ session: s.key, station: "", name: "this station", path: s.workspace, ...size });
             }

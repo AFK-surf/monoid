@@ -70,7 +70,7 @@ test("a chat opened with a preset is told its directories and instructions, and 
   assert.ok(now.instructions.includes(`  - ${docs}\n`) && !now.instructions.includes(app), now.instructions);
   assert.ok(!now.instructions.includes("<preset-instructions>"), now.instructions);
   assert.equal(r.hub.presets.list(null).length, 1);
-  assert.deepEqual(presetCopyOf(r.session(key).workspace)?.dirs.map((d) => d.path), [app, docs], "the first chat keeps what it was opened with");
+  assert.deepEqual((await presetCopyOf(r.session(key).workspace))?.dirs.map((d) => d.path), [app, docs], "the first chat keeps what it was opened with");
   await r.close();
 });
 

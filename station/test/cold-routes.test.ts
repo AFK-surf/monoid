@@ -11,7 +11,7 @@ import { Jobs } from "../src/jobs/jobs.ts";
 import { Readers } from "../src/read/pool.ts";
 import { packWorkspace, withLock, workspaceArchive } from "../src/sessions/archive.ts";
 import { hubConfig } from "../src/sessions/config.ts";
-import { roomOf } from "../src/sessions/footprint.ts";
+import { roomOf } from "./footprint-reference.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { Store } from "../src/store/store.ts";

@@ -447,7 +447,7 @@ fn short_hash(text : String) -> String {
 }
 
 ///|
-/// footprint.ts `rebuildable`: a directory a build or an install makes again.
+/// footprint.ts `rebuildableSoon`: a directory a build or an install makes again.
 fn Files::rebuildable(self : Files, dir : String) -> Bool {
   guard self.file_name(dir) is Some(name) else { return false }
   let beside = (file : String) => self.exists(self.join([self.dir_of(dir), file]))
@@ -462,7 +462,7 @@ fn Files::rebuildable(self : Files, dir : String) -> Bool {
 }
 
 ///|
-/// footprint.ts `rebuiltByName`, the gathering's own decision from the listing it read anyway: `name` a directory's,
+/// test/footprint-reference.ts `rebuiltByName`, the gathering's own decision from the listing it read anyway: `name` a directory's,
 /// `beside` the names of the directory it is in. 0: not made again; 1: by its name (and a file beside it); 2: known by
 /// what is beside it (Elixir's, MoonBit's).
 fn rebuilt_by_name(name : String, beside : Set[String]) -> Int {
@@ -495,7 +495,7 @@ fn rebuilt_by_name(name : String, beside : Set[String]) -> Int {
 }
 
 ///|
-/// footprint.ts `ANY_NAME_DEPTH`: how deep under a room's top (its own entries 1) what is made again of any name is
+/// test/footprint-reference.ts `ANY_NAME_DEPTH`: how deep under a room's top (its own entries 1) what is made again of any name is
 /// asked.
 let any_name_depth = 3
 
@@ -506,7 +506,7 @@ let cargo_tag : Array[String] = [
 ]
 
 ///|
-/// footprint.ts `rebuiltOfAnyName`: whether `dir`, whose listing is `names`, is Xcode's derived data or a Cargo target:
+/// test/footprint-reference.ts `rebuiltOfAnyName`: whether `dir`, whose listing is `names`, is Xcode's derived data or a Cargo target:
 /// looked at on the disk only where its listing shows the sign (a `Build`, a `CACHEDIR.TAG`).
 fn Files::rebuilt_of_any_name(self : Files, dir : String, names : Array[(String, String)]) -> Bool raise {
   let has = (n : String) => names.iter().any(e => e.0 == n)
@@ -555,7 +555,7 @@ fn names_of(entries : Array[(String, String)]) -> Set[String] {
 }
 
 ///|
-/// footprint.ts `roomOf`: where a session's own directory is (sessions/<connect>/<session>), none where its workspace
+/// footprint.ts `roomOfSoon`: where a session's own directory is (sessions/<connect>/<session>), none where its workspace
 /// is not in the station's layout.
 fn Files::room_of(self : Files, data : String, workspace : String) -> String? {
   guard self.real(self.join([data, "sessions"])) is Some(sessions) else { return None }

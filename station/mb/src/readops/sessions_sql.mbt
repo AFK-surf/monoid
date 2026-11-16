@@ -18,7 +18,7 @@ let session_stats_sql : String =
   #|     LEFT JOIN turns l ON l.id = (SELECT id FROM turns t2 WHERE t2.session_key = s.key ORDER BY t2.started_at DESC LIMIT 1)
 
 ///|
-/// store/session-list-index.ts SESSION_LIST_CONNECT.
+/// station/test/reference/backfill/session-list-index.ts SESSION_LIST_CONNECT.
 let session_list_connect_sql : String =
   #|SELECT s.* FROM session_list_rows i INDEXED BY session_list_connect
   #|  CROSS JOIN sessions s ON s.key = i.session WHERE i.archived = ?1 AND i.connect = ?2
@@ -43,7 +43,7 @@ let session_list_scope_connect_sql : String =
   #|  ORDER BY s.last_active_at DESC, s.rowid ASC
 
 ///|
-/// store/session-bindings-index.ts SESSION_BINDINGS_SELECTED.
+/// station/test/reference/backfill/session-bindings-index.ts SESSION_BINDINGS_SELECTED.
 let session_bindings_selected_sql : String =
   #|SELECT i.session, i.connect FROM json_each(?) k
   #|  CROSS JOIN session_binding_rows i WHERE i.session = k.value ORDER BY i.binding_rowid

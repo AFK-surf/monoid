@@ -7,7 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ANY_NAME_DEPTH, rebuildableByName, rebuiltByName, rebuiltOfAnyName, roomOf } from "../src/sessions/footprint.ts";
+import { ANY_NAME_DEPTH, rebuildableByName, rebuiltByName, rebuiltOfAnyName, roomOf } from "./footprint-reference.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../src/sessions/agent-home.ts";
 import { runtimeKind } from "../src/agents/runtime.ts";
 import { sessionPlaces, storage, transcriptSources } from "../src/read/transcript.ts";
@@ -112,7 +112,7 @@ const sessionsIn = (home: boolean, keys: readonly string[] | null = null) => key
   ? "SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE key IN (SELECT value FROM json_each(?)) ORDER BY key"
   : `SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE ${home ? "(ws = ? OR ws IS NULL)" : "ws = ?"} ORDER BY key`;
 
-/// A session's room under `dataDir` as its files go along (footprint.ts `roomOf`, said under `dataDir` as given,
+/// A session's room under `dataDir` as its files go along (footprint-reference.ts `roomOf`, said under `dataDir` as given,
 /// `realData` its real path), null where its directory is not the station's own (it stays, `skipped`).
 function roomFor(dataDir: string, realData: string, workspace: string): string | null {
   const real = roomOf(dataDir, workspace);
@@ -254,7 +254,7 @@ function walked(dataDir: string, db: string, ws: string, home: boolean, scratch:
   };
   /// Every file under `dir`, but what a build makes again; a git checkout in it as `checkout` takes it. `depth`: under
   /// the room's top (its own entries 1); what is made again of any name is asked only down to ANY_NAME_DEPTH, by its
-  /// listing (footprint.ts `rebuiltOfAnyName`), and by name from the listing of where it is (`rebuiltByName`).
+  /// listing (footprint-reference.ts `rebuiltOfAnyName`), and by name from the listing of where it is (`rebuiltByName`).
   const tree = (dir: string, depth: number) => {
     step();
     let names: string[];

@@ -21,6 +21,7 @@
 // running that nothing took up.
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
@@ -59,7 +60,7 @@ import { carrySubagents, goesAfresh, startsAfresh, toldCleared, toldLongChat, to
 import { serves } from "./pool.ts";
 import { settled } from "./opened.ts";
 import { untitledChat } from "./titles.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { sandboxIndexEnabled } from "../store/sandbox-index.ts";
 import { SandboxNameBuilder } from "./sandbox-name-builder.ts";
 import { SessionDirectoryBuilder } from "./session-directory-builder.ts";
@@ -790,7 +791,7 @@ export class Hub {
         const driver = this.sessionDriver(snap.runtime);
         const generation = actor.nextGeneration();
         const memory = await this.deps.linkSkills(row);
-        agent = await driver.adopt(openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
+        agent = await driver.adopt(await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
       } catch (error) {
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
@@ -1002,13 +1003,14 @@ export class Hub {
         if (!chat.download) throw new Error("this platform does not give files");
         if (file.size > MAX_INBOUND_FILE) throw new Error("over 50 MB");
         const bytes = await chat.download(file);
-        mkdirSync(dir, { recursive: true });
+        await mkdir(dir, { recursive: true });
         const safe = Array.from(file.name)
           .map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c))
           .join("");
         const path = join(dir, `${iso(this.now()).slice(0, 19).replace(/[:.]/g, "-")}-${file.id}-${safe}`);
-        writeFileSync(path, bytes);
-        const attachment: Attachment = { name: file.name, path, size: bytes.length, ...shownFacts(path) };
+        // written and measured off the main thread: a file of up to 50 MB, a film's moov read from its end
+        await writeFile(path, bytes);
+        const attachment: Attachment = { name: file.name, path, size: bytes.length, ...(await shownFactsSoon(path)) };
         attachments.push(attachment);
       } catch (error) {
         log.warn("hub", "shared file not fetched", { session: key, file: file.id, error: (error as Error).message });

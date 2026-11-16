@@ -4,7 +4,7 @@
 // the one they go to. Nothing in it is changed on the way: each file is taken by its bytes (by their hash, as a copy's
 // files are) and put at the same place under the other station's data directory. A checkout's own repository (`.git` a
 // directory) goes as its files; a linked worktree's is git's to make again there (retire.ts `rebuildGits`), from what
-// the index says of it. What a build or an install makes again (footprint.ts `rebuildable`), and what git ignores,
+// the index says of it. What a build or an install makes again (footprint.ts `rebuildableSoon`), and what git ignores,
 // stays behind. Only what is under the data directory's `sessions/` and `transcripts*/` goes, or is put, and what of an
 // Antigravity CLI conversation the CLI keeps in a profile's home there (`cliKept`): the station's transcript alone does
 // not take it up.

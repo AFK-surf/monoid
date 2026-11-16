@@ -238,7 +238,7 @@ test("a session's runtime is given its workspace's memory and skills, never anot
   const opened = async (key: string) => {
     const row = rig.store.getSession(key)!;
     const memory = await linkSkills(row, rig.hub.deps);
-    return { row, options: openOptions(row, rig.hub.accounts.runOn(key), rig.hub.deps, memory) };
+    return { row, options: await openOptions(row, rig.hub.accounts.runOn(key), rig.hub.deps, memory) };
   };
   const ofTwo = await opened(two);
   assert.ok(ofTwo.options.instructions.includes("# two's lessons") && !ofTwo.options.instructions.includes("# one's lessons"));

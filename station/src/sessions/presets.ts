@@ -630,10 +630,11 @@ export function presetCopyInput(v: unknown): PresetCopy {
   };
 }
 
-/// What a chat whose session workspace is `workspace` was opened with, if anything.
-export function presetCopyOf(workspace: string): PresetCopy | null {
+/// What a chat whose session workspace is `workspace` was opened with, if anything: read off the main thread, as each of
+/// its turns and each opening of its process asks it.
+export async function presetCopyOf(workspace: string): Promise<PresetCopy | null> {
   try {
-    const v = JSON.parse(readFileSync(join(workspace, COPY), "utf8"));
+    const v = JSON.parse(await readFile(join(workspace, COPY), "utf8"));
     if (typeof v?.id !== "string" || typeof v?.name !== "string") return null;
     return { id: v.id, name: v.name, dirs: dirsOf(v.dirs), instructions: str(v.instructions) ?? "" };
   } catch {

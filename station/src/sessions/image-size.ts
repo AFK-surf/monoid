@@ -1,35 +1,11 @@
 // A picture's or a film's size as it is shown, from the few bytes of it that say: the core's reading
 // (client/core-ts/src/mediaFacts.ts), of a file here or bytes at hand. A film's length and how many frames its picture
-// has are read from the same header (shownFacts), so a message carries them and a page shows them before it reads the
+// has are read from the same header (shownFactsSoon), so a message carries them and a page shows them before it reads the
 // film's head and its end.
-import { closeSync, openSync, readSync as readFile } from "node:fs";
 import { open } from "node:fs/promises";
 import { type Facts, facts, readAsync, readSync } from "../../../client/core-ts/src/mediaFacts.ts";
 
 export type { Facts };
-
-/// The size the picture or film at `path` is shown at.
-export function shownSize(path: string): [number, number] | null {
-  const f = shownFacts(path);
-  return f && [f.width, f.height];
-}
-
-/// What the picture or film at `path` says of itself.
-export function shownFacts(path: string): Facts | null {
-  try {
-    const file = openSync(path, "r");
-    try {
-      return readSync(facts(), (at, n) => {
-        const b = Buffer.alloc(n);
-        return b.subarray(0, readFile(file, b, 0, n, at));
-      });
-    } finally {
-      closeSync(file);
-    }
-  } catch {
-    return null;
-  }
-}
 
 /// What the picture or film at `path` says of itself, read off the main thread (fs/promises): a film's head and its
 /// moov box may be read from anywhere in a file of 50 MB or more.

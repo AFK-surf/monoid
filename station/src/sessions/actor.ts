@@ -292,7 +292,7 @@ export async function retuneAgent(deps: SessionDeps, key: string, session: Agent
     profile = row ? deps.runOn(key, holding) : null;
   } catch {}
   const ready = row && profile && !restart && profile.id === profileNow && session.retune ? await deps.linkSkills(row) : "";
-  if (!restart && row && profile && profile.id === profileNow && session.retune?.(openOptions(row, profile, deps, ready))) {
+  if (!restart && row && profile && profile.id === profileNow && session.retune?.(await openOptions(row, profile, deps, ready))) {
     return { runtime, model: (row.model ?? null) as string | null, effort: (row.effort ?? null) as string | null };
   }
   return null;
@@ -335,7 +335,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   const driver = deps.driver(runtime);
   const profile = deps.runOn(key);
   const memory = await deps.linkSkills(row);
-  const base = openOptions(row, profile, deps, memory);
+  const base = await openOptions(row, profile, deps, memory);
   // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
   // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
   const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
@@ -408,7 +408,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
     const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
     if (row) {
       try {
-        const preset = row.cwd ? null : presetCopyOf(row.workspace);
+        const preset = row.cwd ? null : await presetCopyOf(row.workspace);
         const memory = await deps.linkSkills(row);
         await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.()) + (preset ? presetInstructions(preset) : ""));
       } catch {}
@@ -549,13 +549,13 @@ export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath">
 }
 
 /// `memory`: its workspace's memory as `linkSkills` gave it.
-export function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName">, memory: string): OpenOptions {
+export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName">, memory: string): Promise<OpenOptions> {
   const skills = row.cwd ? undefined : join(dirname(deps.memoryPath(row.key)), "skills");
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
   // What its chat was opened with (presets.ts): told after the station's own instructions (its folders' skills are in
   // its workspace already).
-  const preset = row.cwd ? null : presetCopyOf(row.workspace);
+  const preset = row.cwd ? null : await presetCopyOf(row.workspace);
   return {
     key: row.key,
     profile,

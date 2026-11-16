@@ -23,7 +23,7 @@ import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
-import { roomOf } from "./footprint.ts";
+import { roomOfSoon } from "./footprint.ts";
 import { type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
@@ -634,7 +634,7 @@ export async function deleteSession(hub: Hub, key: string) {
   const sessions = join(dataDir, "sessions");
   const own = basename(row.workspace) === "workspace" && (row.workspace + sep).startsWith(sessions + sep);
   const home = own ? dirname(row.workspace) : row.workspace;
-  const room = roomOf(dataDir, row.workspace);
+  const room = await roomOfSoon(dataDir, row.workspace);
   if (room !== null) {
     // Git worktrees it archived are let go first, so `git worktree prune` can clean them up.
     await withLock(room, async () => {

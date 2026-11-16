@@ -15,7 +15,7 @@ import { realOutside } from "../ops/places.ts";
 import { homesFirst, sessionPlaces, transcriptPaths } from "../read/transcript.ts";
 import * as archive from "./archive.ts";
 import { runtimeNamed } from "./config.ts";
-import { measureRoom, roomOf, roomOfSoon, safeToRemove, within } from "./footprint.ts";
+import { measureRoom, roomOfSoon, safeToRemove, within } from "./footprint.ts";
 import type { ColdStorage, Hub } from "./hub.ts";
 
 /// Links followed, never into a folder macOS protects (a session continued there, a job's directory: ops/places.ts).
@@ -32,16 +32,16 @@ const canonical = (path: string): string | null => {
   return real;
 };
 
-/// Each session's own directory as last found (`roomOfSoon`, off the thread), for FOLLOWED_MS: `archiveRoom` is asked
-/// again before each step of packing one, and followed its paths on the station's thread at every ask.
-const rooms = new Map<string, { at: number; room: string | null }>();
-const keptRoom = (dataDir: string, workspace: string): string | null => {
-  const kept = rooms.get(workspace);
-  if (kept !== undefined && wall.now() - kept.at < FOLLOWED_MS) return kept.room;
-  return roomOf(dataDir, workspace);
-};
+/// Each session's own directory as last found (`roomOfSoon`, off the thread): `archiveRoom` is asked again before each
+/// step of packing one, and followed its paths on the station's thread at every ask. Every work that asks it finds it
+/// first (`findRoom`), so it is never followed here: a workspace not found (moved meanwhile) has no room, and the work
+/// stops.
+const rooms = new Map<string, string | null>();
+const keptRoom = (workspace: string): string | null => rooms.get(workspace) ?? null;
 async function findRoom(dataDir: string, workspace: string): Promise<void> {
-  rooms.set(workspace, { at: wall.now(), room: await roomOfSoon(dataDir, workspace) });
+  const room = await roomOfSoon(dataDir, workspace);
+  rooms.delete(workspace);
+  rooms.set(workspace, room);
   if (rooms.size > 1024) rooms.delete(rooms.keys().next().value!);
 }
 
@@ -72,7 +72,7 @@ export class ColdRooms implements ColdStorage {
     const hub = this.hub();
     const row = hub.store.getSession(key);
     if (!row) return null;
-    const dir = keptRoom(this.dataDir(), row.workspace);
+    const dir = keptRoom(row.workspace);
     if (dir === null || row.archivedAt === null || row.running || hub.processState(key) === "running") return null;
     // The sessions in use alone (by their indexes): this is asked again and again as a session is packed.
     const shared = hub.store
@@ -103,7 +103,7 @@ export class ColdRooms implements ColdStorage {
     });
   }
 
-  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildable`) from
+  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
   /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
   /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
   async cleanRebuildable(key: string): Promise<number> {

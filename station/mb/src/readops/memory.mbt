@@ -1,4 +1,4 @@
-// The agents' memory for the pages (station/src/read/memory.ts `memory`, GET /memory): the global MEMORY.md and the
+// The agents' memory for the pages (station/test/reference/memory.ts `memory`, GET /memory): the global MEMORY.md and the
 // shared skills of the home workspace's agents' home, or of a joined workspace's (<agent home>/workspaces/<ws>).
 
 ///|

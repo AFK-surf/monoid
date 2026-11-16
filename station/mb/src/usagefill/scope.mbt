@@ -1,7 +1,7 @@
 // The usage statistics' workspace upkeep (station/src/usage/module.ts `watchCompactMoves`; the thread of before,
-// station/test/workers/usage-scope-worker.ts), here for the MoonBit builder: a session's buckets moved to its new workspace (store/usage-compact.ts `moveCompactStep`), new buckets accounted into
+// station/test/workers/usage-scope-worker.ts), here for the MoonBit builder: a session's buckets moved to its new workspace (station/test/reference/backfill/usage-compact.ts `moveCompactStep`), new buckets accounted into
 // the totals and their time tree (`compactTotalsStep`), and the grouped summary blocks converted and kept
-// (store/usage-summary-blocks.ts `usageSummaryBlocksStep`), one bounded batch at a time. Values stay in SQLite: each
+// (station/test/reference/backfill/usage-summary-blocks.ts `usageSummaryBlocksStep`), one bounded batch at a time. Values stay in SQLite: each
 // bucket's change is applied there, and only the keys a batch touched are cleaned of empty rows after it.
 
 ///|

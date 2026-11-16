@@ -28,7 +28,7 @@ let legacy_said_page_head_sql : String =
   #|  WHERE e.thread=?1 AND e.n>?2 ORDER BY e.n LIMIT ?3
 
 ///|
-/// store/page-letter-index.ts PAGE_LETTER_KEYS_AFTER.
+/// station/test/reference/backfill/page-letter-index.ts PAGE_LETTER_KEYS_AFTER.
 let page_letter_keys_after_sql : String =
   #|SELECT CAST(p.n AS TEXT) AS n FROM (
   #|    SELECT b.n FROM page_letter_rows b WHERE b.thread=?1 AND b.token=?2 AND b.n>CAST(?3 AS INTEGER)

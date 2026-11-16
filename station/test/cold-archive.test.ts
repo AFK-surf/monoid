@@ -38,7 +38,8 @@ import {
   workspaceArchive,
   workspaceFile,
 } from "../src/sessions/archive.ts";
-import { measureRoom, measured, rebuildable, rebuildableKind, rebuildableSoon, roomOf, safeToRemove } from "../src/sessions/footprint.ts";
+import { measureRoom, measured, rebuildableSoon, safeToRemove } from "../src/sessions/footprint.ts";
+import { rebuildableKind, roomOf } from "./footprint-reference.ts";
 import { settle } from "./hub-fakes.ts";
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "cold-")));
@@ -342,8 +343,8 @@ test("what can be made again", async () => {
   write(join(p, "android/build.gradle.kts"), "x");
   write(join(p, "android/settings.gradle.kts"), "x");
   write(join(p, "rs/Cargo.toml"), "x");
-  for (const dir of ["x/node_modules", "android/build", "android/.gradle", "rs/target"]) assert.equal(await rebuildable(join(p, dir)), true, dir);
-  for (const dir of ["site/build", "site/target", "dist"]) assert.equal(await rebuildable(join(p, dir)), false, dir);
+  for (const dir of ["x/node_modules", "android/build", "android/.gradle", "rs/target"]) assert.equal((await rebuildableSoon(join(p, dir))) !== null, true, dir);
+  for (const dir of ["site/build", "site/target", "dist"]) assert.equal((await rebuildableSoon(join(p, dir))) !== null, false, dir);
   rmSync(p, { recursive: true });
 });
 

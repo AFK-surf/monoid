@@ -1,4 +1,4 @@
-// What a search looks through of the station's own data (station/src/search/sources.ts `stationDocSteps`): the chats
+// What a search looks through of the station's own data (station/test/reference/search-sources.ts `stationDocSteps`): the chats
 // and their messages (through the candidate scopes where they are ready: scope-read.ts), the sessions' jobs (through
 // the session list for a small workspace: job-scope.ts), the workspaces' memory and skills (read/memory.ts) and the
 // profiles, read as they are asked for, each given to `each` as it comes and `pause` called where the worker let other

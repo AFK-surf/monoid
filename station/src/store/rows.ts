@@ -105,7 +105,7 @@ export type EntryKind = "message" | "edit";
 
 export type Quote = { author: string; text: string; comment: string; ts?: string; role?: string; file?: string };
 /// `width`, `height`: a picture's or a film's size as shown; `duration` (ms) and `frames`: a film's length and how many
-/// frames its picture has (sessions/image-size.ts shownFacts), so a page says them before it reads the film.
+/// frames its picture has (sessions/image-size.ts shownFactsSoon), so a page says them before it reads the film.
 export type Attachment = { name: string; path: string; size: number; width?: number; height?: number; thumbhash?: string; duration?: number; frames?: number };
 
 /// One entry of a thread's log (as the archive files hold them, one per line).

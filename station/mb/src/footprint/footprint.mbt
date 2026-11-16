@@ -235,7 +235,7 @@ fn cargo_said(text : String) -> Bool {
 }
 
 ///|
-/// footprint.ts `rebuildableKind` (its `decide`, look for look): a directory a build or an install makes again, by its
+/// test/footprint-reference.ts `rebuildableKind` (footprint.ts `decide`, look for look): a directory a build or an install makes again, by its
 /// name and what is beside it, by what is near it (Elixir's, MoonBit's), or of any name by what is in it (Xcode's
 /// derived data, a Cargo target). `parent` is where it is (its entries joined onto it), `path` it.
 fn Measure::rebuildable(

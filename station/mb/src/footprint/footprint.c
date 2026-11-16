@@ -1,7 +1,7 @@
 // What the measure of a directory's size (footprint.mbt) asks of the system: an entry's lstat as Node's bigint lstat
 // gives it (what it is, dev, ino, nlink, blocks), a directory's names as Node's readdir lists them, and whether a path
 // is there as existsSync says (its links followed), whether it is a directory as stat says, and a file's first bytes
-// (footprint.ts `answerNow`'s three looks, for what is made again). Each path is UTF-8, ended by a NUL. Called on the program's one
+// (test/footprint-reference.ts `answerNow`'s three looks, for what is made again). Each path is UTF-8, ended by a NUL. Called on the program's one
 // thread, a call each entry: none of it goes through the shell's JSON.
 #include <stdint.h>
 #include <stdio.h>

@@ -1,7 +1,7 @@
 // What a chat's gathering (the MoonBit program's, carry.ts / station/mb src/replica/carry.mbt) asks of the disk: what
 // main's walk asked (a directory's listing, a file's lstat and hash), and for what is made again of any name only where
 // a directory's own listing shows the sign of it (a `Build`, a `CACHEDIR.TAG`) and near the room's top
-// (footprint.ts ANY_NAME_DEPTH): an ordinary directory costs no look more than main's (drill 35's first pass of a 500 MB
+// (footprint-reference.ts ANY_NAME_DEPTH): an ordinary directory costs no look more than main's (drill 35's first pass of a 500 MB
 // room was 9% slower). Counted by what the program itself asked of the shell (`count`, its answer's `looked`), under the
 // chat's workspace; and the program's decision held to the reference's (test/carry-reference.ts) on the same tree.
 import assert from "node:assert/strict";

@@ -1,5 +1,5 @@
 // What the station does once the previous station has left its usage statistics (station/src/usage/module.ts
-// `retireAfterPrevious`): the retired per-call indexes freed in bounded deletes (store/usage-retire.ts
+// `retireAfterPrevious`): the retired per-call indexes freed in bounded deletes (station/test/reference/backfill/usage-retire.ts
 // `dropUsageIndexStep`), then the calls from before the compact statistics began taken in, newest first, whole quarters
 // at a time (station/test/reference/usage-fill.ts `fillUsageStep`), here for the MoonBit builder.
 

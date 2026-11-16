@@ -1,8 +1,8 @@
 // What agents do in their own conversations (the Rust station's hub.rs: chat_post, chat_state, chat_history, slack_api and
 // what they rest on): post (with files and a card, ending the turn or not), record how the turn ends, read a thread,
 // and call Slack as their bot. What a tool says of the turn reaches its session's actor, in turn with the rest.
-import { mkdirSync, rmSync } from "node:fs";
-import { copyFile, stat } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { copyFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PlaceRefused } from "../ops/places.ts";
 import { wall } from "../ops/fibers.ts";
@@ -35,7 +35,7 @@ import {
 import { type ChatSurface, callApi } from "./chat.ts";
 import { threadsToldOf } from "./afresh.ts";
 import type { Hub } from "./hub.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { dir as thumbsDir, keep } from "../drive/thumbs.ts";
 import { INTERNAL_CONNECT } from "./internal.ts";
 import { namedLocalPaths, prepare } from "./local-links.ts";
@@ -298,7 +298,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
   if (!row || !target) throw new Error("unknown session");
   if (paths.length > 10) throw new Error("at most 10 files per message");
   const dir = join(target.workspace, "uploads");
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   // Copied off the station's thread: a large file, or one read back from disk on a machine short of memory, held it
   // for up to 10 seconds a post (a station, 2026-10-28).
   const out: Attachment[] = [];
@@ -320,7 +320,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
     const copy = join(dir, `${stamp}-${safe}`);
     await copyFile(path, copy);
     // a picture or a film as it is shown, so pages hold its place (a film's length and frames with it)
-    out.push({ name, path: copy, size: meta.size, ...shownFacts(copy) } satisfies Attachment);
+    out.push({ name, path: copy, size: meta.size, ...(await shownFactsSoon(copy)) } satisfies Attachment);
   }
   return out;
 }

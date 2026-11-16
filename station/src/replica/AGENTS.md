@@ -44,7 +44,7 @@ below, sends them along).
   「要允许用户选择目标迁移 station」) hands all its chats there to the station a person picked, which may have chats of
   its own: what is hard to move is left to what already makes it, never rewritten by hand (「避免脚本乱改改错」). The app
   shows first what it would move (`GET /retire/preview`, found by the same functions the retirement uses). Each
-  session's room whole (an archived one's packed workspace with it; `footprint.ts roomOf`, a session whose directory is
+  session's room whole (an archived one's packed workspace with it; `footprint.ts roomOfSoon`, a session whose directory is
   not the station's own counted and left) and its agents' transcripts go by their bytes to the same places under the
   other's data directory, only under `sessions/` and `transcripts*/`, and what an Antigravity CLI keeps of a
   conversation in its profile's home (`carry.ts` `cliKept`: `session/load` takes it up from there, not from the
@@ -55,7 +55,7 @@ below, sends them along).
   which `station/test/mb-replica-carry.test.ts` holds it to): a checkout's files as git
   lists them (`rebuildable` stays behind, decided from the listings the walk reads: by its name anywhere, one known by
   what is in it only outside a checkout and within 3 levels of the room's top, as git ignores it inside one; carry.mbt
-  `rebuilt_by_name`, `rebuilt_of_any_name`, held to footprint.ts's by `station/test/mb-replica-carry.test.ts` on the same
+  `rebuilt_by_name`, `rebuilt_of_any_name`, held to the reference's (`station/test/footprint-reference.ts`) by `station/test/mb-replica-carry.test.ts` on the same
   trees), its own `.git` as files, a repository in it gone into; a linked worktree is
   made again there by git (its remote fetched and pruned first, a bundle of the commits no remote has, `git worktree add`
   and `repair`; one that cannot be keeps its bundle beside it; not begun where that station has no git). A station has

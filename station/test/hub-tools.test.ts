@@ -23,7 +23,7 @@ import { makeStore } from "./reference/store.ts";
 import { chats, untitled } from "./reference/views.ts";
 import { FETCHED, fileForPeer, putForPeer } from "../src/sessions/peer-files.ts";
 import { packWorkspaceIf } from "../src/sessions/archive.ts";
-import { roomOf } from "../src/sessions/footprint.ts";
+import { roomOf } from "./footprint-reference.ts";
 import { claudeProject } from "../src/read/transcript.ts";
 import { Refused } from "../src/jobs/remote.ts";
 import { archive, newSession, say as sayIn } from "../src/sessions/lifecycle.ts";
@@ -1572,7 +1572,7 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
   const child = near.store.openedBy(keyA)[0]!.child;
   assert.ok(said.includes("this station"), said);
   assert.deepEqual([near.session(child).runtime, near.session(child).model], ["claude", "opus"]);
-  assert.equal(presetCopyOf(near.session(child).workspace)?.id, review.id);
+  assert.equal((await presetCopyOf(near.session(child).workspace))?.id, review.id);
   for (const beside of [{ model: "sonnet" }, { runtime: "claude" }, { effort: "high" }, { fast: true }, { context: 200_000 }]) {
     const why = await near.refused(keyA, "chat_create", { for: "me", key: "beside", text: "x", preset: review.id, ...beside });
     assert.ok(why.includes("leave runtime, model, effort, fast and context out"), why);
@@ -1580,11 +1580,11 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
   // One that names no model is chosen as without one, and kept with the chat.
   await near.call(keyA, "chat_create", { for: "me", key: "loose", text: "x", preset: "Loose", model: "sonnet" });
   const loose = near.store.openedBy(keyA).find((o) => o.key === "loose")!.child;
-  assert.deepEqual([near.session(loose).model, presetCopyOf(near.session(loose).workspace)?.name], ["sonnet", "Loose"]);
+  assert.deepEqual([near.session(loose).model, (await presetCopyOf(near.session(loose).workspace))?.name], ["sonnet", "Loose"]);
   // None named: no preset, whatever the opener's chat has.
   await near.call(keyA, "chat_create", { for: "me", key: "none", text: "x", model: "sonnet" });
   const none = near.store.openedBy(keyA).find((o) => o.key === "none")!.child;
-  assert.equal(presetCopyOf(near.session(none).workspace), null);
+  assert.equal(await presetCopyOf(near.session(none).workspace), null);
   // An unknown one: told those there are.
   const unknown = await near.refused(keyA, "chat_create", { for: "me", key: "u", text: "x", preset: "Nope" });
   assert.ok(unknown.includes("Review, Loose, Far"), unknown);
@@ -1595,7 +1595,7 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
   assert.equal(asked[0], CREATE_PRESET);
   const there = far.store.listSessions().map((s) => s.key);
   assert.equal(there.length, 1);
-  const copy = presetCopyOf(far.session(there[0]!).workspace);
+  const copy = await presetCopyOf(far.session(there[0]!).workspace);
   assert.deepEqual([copy?.name, copy?.instructions], ["Far", "On orchard."]);
   const elsewhere = await near.refused(keyA, "chat_create", { for: "me", key: "far2", text: "x", preset: "Far", station: "cedar" });
   assert.ok(elsewhere.includes("only on station far"), elsewhere);

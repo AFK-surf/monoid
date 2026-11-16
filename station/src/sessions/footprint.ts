@@ -1,6 +1,5 @@
 // Workspace file helpers for automatic cleanup of archived sessions.
 import { execFile } from "node:child_process";
-import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { access, lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, normalize, sep } from "node:path";
 import { log } from "../ops/log.ts";
@@ -10,23 +9,9 @@ import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
 
-const canonical = (path: string): string | null => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return null;
-  }
-};
-
 /// Where a session's own directory is: the one its workspace is in when the station made it (sessions/…/workspace),
-/// else none (a workspace that is a person's project is not the station's to measure or clean).
-export function roomOf(dataDir: string, workspace: string): string | null {
-  const sessions = canonical(join(dataDir, "sessions"));
-  if (sessions === null) return null;
-  return roomIn(sessions, canonical(workspace) ?? (fileName(workspace) === "workspace" ? beside(canonical(dirname(workspace))) : null));
-}
-
-/// `roomOf`, its paths followed off this thread.
+/// else none (a workspace that is a person's project is not the station's to measure or clean). Its paths followed off
+/// the main thread (the synchronous one of before is the tests', test/footprint-reference.ts `roomOf`).
 export async function roomOfSoon(dataDir: string, workspace: string): Promise<string | null> {
   const real = (path: string) => realpath(path).catch(() => null);
   const sessions = await real(join(dataDir, "sessions"));
@@ -35,10 +20,10 @@ export async function roomOfSoon(dataDir: string, workspace: string): Promise<st
 }
 
 /// A workspace not there (yet, or any more) as it would be in its directory `parent` (followed), if that is there.
-const beside = (parent: string | null) => (parent === null ? null : join(parent, "workspace"));
+export const beside = (parent: string | null) => (parent === null ? null : join(parent, "workspace"));
 
 /// The room of the workspace at `path` (followed) under the station's sessions directory (followed).
-function roomIn(sessions: string, path: string | null): string | null {
+export function roomIn(sessions: string, path: string | null): string | null {
   if (path === null || !within(path, sessions) || samePath(path, sessions)) return null;
   // Only the station layout sessions/<connect>/<session>/workspace, never an arbitrary nested project.
   const relative = segments(path.slice(sessions.length)).filter((p) => p !== "");
@@ -47,19 +32,19 @@ function roomIn(sessions: string, path: string | null): string | null {
 }
 
 /// What deciding whether a directory is rebuildable asks of the disk: whether a file (or anything) is there, whether a
-/// directory is, a file's first bytes (null: none). Asked by the caller's thread as it can (`rebuildableKind` at once,
-/// in the gathering's own thread; `rebuildableSoon` off the main thread's loop).
-type Probe = { there: string } | { dir: string } | { head: string };
-type Answer = boolean | string | null;
+/// directory is, a file's first bytes (null: none). Asked off the main thread's loop (`rebuildableSoon`), or at once by
+/// the tests' references (test/footprint-reference.ts `rebuildableKind`).
+export type Probe = { there: string } | { dir: string } | { head: string };
+export type Answer = boolean | string | null;
 /// How a directory is known to be made again: by its name (and a file beside it), as since the start, or by what is in
 /// it or near it (`found`), which inside a checkout counts only where git ignores it (`safeToRemove`; the gathering, carry.mbt, as git lists a checkout).
 export type Rebuilt = "named" | "found";
 /// How far up a MoonBit manifest is looked for above a `_build` (to the checkout's top, never past it).
 const MANIFEST_UP = 8;
 /// What Cargo writes in its target directory's CACHEDIR.TAG (the standard's signature, then its own line).
-const CARGO_TAG = ["Signature: 8a477f597d28d172789f06886806bc55", "# This file is a cache directory tag created by cargo."];
+export const CARGO_TAG = ["Signature: 8a477f597d28d172789f06886806bc55", "# This file is a cache directory tag created by cargo."];
 
-function* decide(dir: string): Generator<Probe, Rebuilt | null, Answer> {
+export function* decide(dir: string): Generator<Probe, Rebuilt | null, Answer> {
   const name = fileName(dir);
   if (name === null) return null;
   const parent = dirname(dir);
@@ -124,25 +109,7 @@ function* moonAbove(from: string): Generator<Probe, boolean, Answer> {
 }
 
 /// The first bytes of a file a probe reads (a CACHEDIR.TAG is a few lines).
-const HEAD_BYTES = 512;
-
-const answerNow = (p: Probe): Answer => {
-  try {
-    if ("there" in p) return existsSync(p.there); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    // (most directories have neither: no exception thrown for each)
-    if ("dir" in p) return statSync(p.dir, { throwIfNoEntry: false })?.isDirectory() === true; // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    if (!existsSync(p.head)) return null; // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    const fd = openSync(p.head, "r"); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    try {
-      const buf = Buffer.alloc(HEAD_BYTES);
-      return buf.subarray(0, readSync(fd, buf, 0, HEAD_BYTES, 0)).toString("utf8"); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    } finally {
-      closeSync(fd); // sync: rebuildableKind's, for what calls it at once (the gathering's reference, test/carry-reference.ts)
-    }
-  } catch {
-    return "head" in p ? null : false;
-  }
-};
+export const HEAD_BYTES = 512;
 
 const answerSoon = async (p: Probe): Promise<Answer> => {
   try {
@@ -160,78 +127,11 @@ const answerSoon = async (p: Probe): Promise<Answer> => {
   }
 };
 
-/// The gathering's own decision (carry.mbt `rebuilt_by_name`, this its reference's), from the listings it reads anyway, so that a directory that is none
-/// costs it no look at the disk more than main's walk took: `name` a directory's, `beside` the names of the directory it
-/// is in. By its name and a file beside it (outside a checkout, MoonBit's manifest beside only).
-export function rebuiltByName(name: string, beside: ReadonlySet<string>): Rebuilt | null {
-  switch (name) {
-    case "node_modules":
-    case ".next":
-    case ".turbo":
-    case "__pycache__":
-      return "named";
-    case "target":
-      return beside.has("Cargo.toml") ? "named" : null;
-    case ".gradle":
-      return beside.has("settings.gradle") || beside.has("settings.gradle.kts") || beside.has("build.gradle") || beside.has("build.gradle.kts") ? "named" : null;
-    case "build":
-      return beside.has("build.gradle") || beside.has("build.gradle.kts") ? "named" : null;
-    case "_build":
-      return beside.has("mix.exs") || beside.has("moon.mod.json") || beside.has("moon.work") || beside.has("moon.pkg.json") ? "found" : null;
-    case "deps":
-      return beside.has("mix.exs") ? "found" : null;
-    case ".mooncakes":
-      return beside.has("moon.mod.json") || beside.has("moon.work") ? "found" : null;
-  }
-  return null;
-}
-
-/// Whether directory `dir`, whose listing is `names`, is made again of any name (Xcode's derived data, a Cargo target):
-/// looked at on the disk only where its listing shows the sign (a `Build`, a `CACHEDIR.TAG`), so one without costs
-/// nothing. The gathering asks it of what is near its room's top alone (`ANY_NAME_DEPTH`).
-export function rebuiltOfAnyName(dir: string, names: readonly string[]): boolean {
-  if (names.includes("Build") && answerNow({ dir: join(dir, "Build", "Products") }) === true && answerNow({ dir: join(dir, "Build", "Intermediates.noindex") }) === true) return true;
-  if (!names.includes("CACHEDIR.TAG")) return false;
-  const tag = answerNow({ head: join(dir, "CACHEDIR.TAG") });
-  if (typeof tag !== "string" || !CARGO_TAG.every((line) => tag.split(/\r?\n/).includes(line))) return false;
-  if (names.includes(".rustc_info.json")) return true;
-  for (const profile of ["debug", "release"]) if (names.includes(profile)) for (const own of ["deps", ".fingerprint"]) if (answerNow({ dir: join(dir, profile, own) }) === true) return true;
-  return false;
-}
-
-/// How deep under a room's top (its own entries 1) the gathering asks what is made again of any name: those met in
-/// real rooms lay at 1 and 2 (`ios-dd`, `exp/t2`); deeper, a walk would pay for the look at every directory.
-export const ANY_NAME_DEPTH = 3;
-
-/// Made again by its name alone, as main's walk took it (a file beside looked for only for a `target`, `.gradle` or
-/// `build`): what a checkout's listed paths are asked, git saying already what it ignores.
-export function rebuildableByName(dir: string): boolean {
-  const name = fileName(dir);
-  if (name === null) return false;
-  if (name !== "target" && name !== ".gradle" && name !== "build") return rebuiltByName(name, new Set()) === "named";
-  const at = dirname(dir);
-  const files = name === "target" ? ["Cargo.toml"] : name === "build" ? ["build.gradle", "build.gradle.kts"] : ["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"];
-  return rebuiltByName(name, new Set(files.filter((f) => answerNow({ there: join(at, f) }) === true))) === "named";
-}
-
 /// How a directory is one a build or an install makes again (null: it is not): node_modules, a Cargo target, a Gradle
 /// build and its cache, Next's and Turbo's caches, Python's bytecode by name; Elixir's and MoonBit's builds and
 /// dependencies, Xcode's derived data and a Cargo target of any name by what is in or beside them (`found`). Never by a
-/// bare name alone: what it is, is seen. At once, for the gathering's own thread; the main thread's `rebuildableSoon`.
-export function rebuildableKind(dir: string): Rebuilt | null {
-  const g = decide(dir);
-  for (let r = g.next(); ; ) {
-    if (r.done) return r.value;
-    r = g.next(answerNow(r.value));
-  }
-}
-
-/// Whether a directory is one a build or an install makes again (`rebuildableSoon`'s kinds), off the thread.
-export async function rebuildable(dir: string): Promise<boolean> {
-  return (await rebuildableSoon(dir)) !== null;
-}
-
-/// `rebuildableKind`, its looks at the disk off the thread.
+/// bare name alone: what it is, is seen. Its looks at the disk off the thread (the synchronous one of before, and the
+/// gathering's by the listings, are the tests' references: test/footprint-reference.ts).
 export async function rebuildableSoon(dir: string): Promise<Rebuilt | null> {
   const g = decide(dir);
   for (let r = g.next(); ; ) {
