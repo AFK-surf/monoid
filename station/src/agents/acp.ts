@@ -45,7 +45,7 @@ export const rpc = (id: string, method: string, params: Json) => JSON.stringify(
 export const mcpServers = (url: string, token: string) => [{ type: "http", name: "stillfail", url, headers: [{ name: "Authorization", value: `Bearer ${token}` }] }];
 
 /// What an error answer says: its message, and its data's.
-function errorText(error: Json): string {
+export function errorText(error: Json): string {
   const text = typeof error?.message === "string" ? error.message.replace(/^Internal error: /, "") : JSON.stringify(error);
   const data = typeof error?.data === "string" ? `: ${error.data}` : typeof error?.data?.message === "string" ? `: ${error.data.message}` : typeof error?.data?.details === "string" ? `: ${error.data.details}` : "";
   return `${text}${data}`;

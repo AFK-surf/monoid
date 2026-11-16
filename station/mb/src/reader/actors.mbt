@@ -73,6 +73,7 @@ priv struct Actor {
   mut tools_restarts : Int
   mut saying : (String, String)?
   mut last_said : String
+  mut turn_text : String
   mut posted : Bool
   mut stop_requested : Bool
   mut resume_lost : Bool
@@ -257,6 +258,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         tools_restarts: 0,
         saying: None,
         last_said: "",
+        turn_text: "",
         posted: false,
         stop_requested: false,
         resume_lost: false,

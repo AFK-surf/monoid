@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
@@ -45,9 +45,9 @@ function setup(env: Record<string, string> = {}) {
   drivers.push(driver);
   return { options, events, driver, dump };
 }
-async function until(f: () => boolean) {
+async function until(f: () => boolean | Promise<boolean>) {
   const end = Date.now() + 10_000;
-  while (!f()) {
+  while (!(await f())) {
     if (Date.now() > end) throw new Error("timed out");
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -344,7 +344,129 @@ for (const crashed of [false, true]) {
     assert.equal(adopted.retune!({ ...options, model: "gemini-3.5-flash" }), true);
     await adopted.dispose();
   });
+
+  test(`taking up an idle process ${crashed ? "after a crash" : "from a handover"} refuses one whose CLI database is gone, and brings one another home keeps`, async () => {
+    const { options, events, driver } = setup();
+    const s = await driver.open(options, (e) => events.push(e));
+    await s.prompt("hello");
+    await until(() => ended(events).length === 1);
+    const id = s.id();
+    const runner = s.runner()!;
+    const own = join(agyConversations(options.profile.home), `${id}.db`);
+    const db = readFileSync(own, "utf8");
+    rmSync(own);
+    if (!crashed) await driver.freeze();
+    const snapshot = crashed ? null : s.snapshot();
+    s.detach();
+    await allLeft();
+    const next = new AgyDriver({ data });
+    drivers.push(next);
+    if (!crashed) {
+      // Handover: refused before attaching, leaving the runner unowned for hub `endOrphans`, or brought in when another home has it.
+      await assert.rejects(next.adopt({ ...options, resume: id }, snapshot, () => {}), /no Antigravity conversation .* in its CLI's store/);
+      assert.equal(next.ownedRunners().size, 0);
+      const other = join(dirname(options.profile.home), `other-home-${id}`);
+      mkdirSync(agyConversations(other), { recursive: true });
+      writeFileSync(join(agyConversations(other), `${id}.db`), db);
+      const later: RuntimeEvent[] = [];
+      const adopted = await next.adopt({ ...options, resume: id }, snapshot, (e) => later.push(e));
+      assert.equal(readFileSync(own, "utf8"), db);
+      await adopted.prompt("again");
+      await until(() => ended(later).length === 1);
+      assert.deepEqual(ended(later)[0], { type: "turnEnded", outcome: { kind: "completed" } });
+      await adopted.dispose();
+    } else {
+      // Crash with no resume id: replay learns the conversation id, then disposes the broken runner when its `.db` is gone.
+      const { findRunner } = await import("../src/agents/process.ts");
+      await assert.rejects(next.adopt(options, null, () => {}), /no Antigravity conversation .* in its CLI's store/);
+      assert.equal(next.ownedRunners().size, 0);
+      assert.equal(await findRunner(data, runner), undefined, "broken runner disposed on crash replay");
+    }
+  });
 }
+
+test("a warm Antigravity session whose CLI lacks its trajectory recovers across handover and on a live prompt without an error notice", async () => {
+  const { Hub } = await import("../src/sessions/hub.ts");
+  const { InternalChat } = await import("../src/sessions/internal.ts");
+  const { FakeChat, message, reply, settle } = await import("./hub-fakes.ts");
+  const { findRunner } = await import("../src/agents/process.ts");
+  const hubDir = mkdtempSync(join(data, "hub-agy-"));
+  const dump = join(hubDir, "dump");
+  const home = join(hubDir, "homes", "ag");
+  const raw = {
+    askToName: false,
+    profiles: [{ id: "ag", runtime: "agy", home, access: { kind: "api-provider", provider: "google", key: "gemini-key" }, env: { PATH: fake, FAKE_DUMP: dump } }],
+    connects: [{ id: "cl", bind: { runtime: "agy" } }],
+  };
+  const cfg = hubConfig(raw, hubDir);
+  const store = Store.open(join(hubDir, "stillfail.db"));
+  const chat = new FakeChat("UBOT");
+  const makeHub = (drv: AgyDriver) => {
+    const h = new Hub({ config: () => cfg, store, chats: (id) => (id === "cl" ? chat : undefined), drivers: [drv], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat() });
+    h.skillsLinker = async () => "";
+    return h;
+  };
+  const d1 = new AgyDriver({ data: hubDir });
+  let hub = makeHub(d1);
+  let d2: AgyDriver | null = null;
+  try {
+    // 1. Turn 1 opens a warm agy process and ends; fake/agy does not call chat_state, so maxNudges=0 lets it settle idle.
+    cfg.maxNudges = 0;
+    const m1 = message({ text: "first ask" });
+    await hub.accept("cl", m1);
+    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    await settle();
+    const key = store.listSessions()[0]!.key;
+    const id1 = store.getSession(key)!.runtimeSessionId!;
+    const runner1 = [...d1.ownedRunners()][0]!;
+    assert.ok(await findRunner(hubDir, runner1));
+
+    // 2. Its CLI `.db` is absent (as for a chat moved before #6608 whose warm process answered `session/load` on 0.1.9512).
+    //    Across a station handover, `takeUp` refuses the warm process, `endOrphans` ends its runner, and the next turn
+    //    starts a new conversation that reads back instead of failing with `trajectory not found`.
+    rmSync(join(agyConversations(home), `${id1}.db`));
+    await hub.handOver();
+    await d1.shutdown();
+    d2 = new AgyDriver({ data: hubDir });
+    hub = makeHub(d2);
+    await hub.takeUp();
+    await until(async () => (await findRunner(hubDir, runner1)) === undefined);
+    assert.equal(d2.ownedRunners().size, 0);
+
+    await hub.accept("cl", reply(m1, "2000.2", "<@UBOT> make it simpler", { addressed: true }));
+    await until(() => {
+      const s = store.getSession(key)!;
+      return !s.running && s.runtimeSessionId !== id1;
+    });
+    await settle();
+    const id2 = store.getSession(key)!.runtimeSessionId!;
+    assert.notEqual(id2, id1);
+    assert.equal(chat.texts().some((t) => t.includes("trajectory not found")), false, `unexpected error notice: ${chat.texts().join("\n")}`);
+    const promptsAfterHandover = rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.match(promptsAfterHandover.at(-1)!, /Your earlier conversation could not be restored: this is a new one\..*make it simpler/s);
+
+    // 3. Even without a station restart, if a warm `agy` process loses its trajectory (including a corrupt `.db` file still
+    //    on disk that fails `session/prompt` with `trajectory not found`), the actor ends the broken process, marks that id
+    //    lost in the driver, and reopens once in a new conversation with the person's message and zero error notice.
+    writeFileSync(join(agyConversations(home), `${id2}.db`), "corrupt");
+    await hub.accept("cl", reply(m1, "2000.3", "<@UBOT> and shorter", { addressed: true }));
+    await until(() => {
+      const s = store.getSession(key)!;
+      return !s.running && s.runtimeSessionId !== id2;
+    });
+    await settle();
+    const id3 = store.getSession(key)!.runtimeSessionId!;
+    assert.notEqual(id3, id2);
+    assert.equal(chat.texts().some((t) => t.includes("trajectory not found")), false, `unexpected error notice: ${chat.texts().join("\n")}`);
+    const promptsAfterLiveLoss = rpc(dump).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text as string);
+    assert.match(promptsAfterLiveLoss.at(-1)!, /Your earlier conversation could not be restored: this is a new one\..*and shorter/s);
+  } finally {
+    await hub.shutdown();
+    await d1.shutdown();
+    if (d2) await d2.shutdown();
+    store.close();
+  }
+});
 
 test("which profiles run it, and none of the machine's Google accounts", (t) => {
   const { options } = setup();

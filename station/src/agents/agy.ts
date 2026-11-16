@@ -16,7 +16,7 @@ import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { peerHttpBase } from "../tools/http.ts";
-import { AcpDriver, AcpSession, KeptTranscript, type AcpStart } from "./acp.ts";
+import { AcpDriver, AcpSession, KeptTranscript, errorText, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
 import { accessKind, expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
@@ -442,11 +442,28 @@ export class AgyDriver extends AcpDriver<AgySession> {
   protected readonly keepsTranscript = true;
   private readonly command: string;
   private readonly lent: AgyDriverOptions["lent"];
+  private readonly lost = new Set<string>();
 
   constructor(options: AgyDriverOptions) {
     super(options.data);
     this.command = options.command ?? "agy";
     this.lent = options.lent;
+  }
+
+  /// Marks conversation `id` as missing its trajectory in the CLI (`trajectory not found` on `session/prompt`), so the
+  /// next open starts afresh even if a broken `.db` file is still on disk.
+  noteLost(id: string) {
+    if (SESSION_ID.test(id)) this.lost.add(id);
+  }
+
+  /// A conversation resumed or taken up is one its CLI keeps in `--gemini-dir`, brought in from another home of this
+  /// station where needed (`agyBringIn`): `session/load` answers without checking the CLI's store, and every prompt
+  /// then fails with "trajectory not found" (2026-11-16).
+  private async ensureConversation(home: string, id: string): Promise<void> {
+    if (!SESSION_ID.test(id)) return;
+    if (this.lost.has(id)) throw new Error(`Antigravity conversation ${id} lost its trajectory in its CLI's store`);
+    await agyBringIn(home, id);
+    if (!(await there(join(agyConversations(home), `${id}.db`)))) throw new Error(`no Antigravity conversation ${id} in its CLI's store`);
   }
 
   /// A borrowed sign-in with little left (AGY_LENT_RENEW_MS) lent again before a process opens on it. Where none is lent,
@@ -489,14 +506,27 @@ export class AgyDriver extends AcpDriver<AgySession> {
   protected async begin(options: OpenOptions, events: Events, probe: boolean): Promise<AgySession> {
     if (this.lent?.borrowed(options.profile)) await this.renewLent(options.profile);
     else if (accessKind(options.profile) === "subscription") await agyTakeBack(options.profile.home);
-    // A conversation taken up is one its CLI keeps, not only one the station kept (`starting`): a chat moved here with
-    // the station's transcript alone had `session/load` answer and each prompt fail, "trajectory not found"
-    // (2026-11-16). Failed here, before anything starts, the session goes on in a new one and reads back.
-    if (options.resume !== undefined && SESSION_ID.test(options.resume)) {
-      await agyBringIn(options.profile.home, options.resume);
-      if (!(await there(join(agyConversations(options.profile.home), `${options.resume}.db`)))) throw new Error(`no Antigravity conversation ${options.resume} in its CLI's store`);
-    }
+    // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
+    if (options.resume !== undefined) await this.ensureConversation(options.profile.home, options.resume);
     return super.begin(options, events, probe);
+  }
+
+  override async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<AgySession> {
+    // A warm process opened before #6608 (or whose CLI database went away) answered `session/load` and would otherwise
+    // be taken up across a station update, failing every prompt there too (Office-Host-2 0.1.9517, 2026-11-16): refused
+    // here, `endOrphans` ends its runner and the session goes on in a new conversation.
+    const id = typeof (snapshot as { id?: unknown } | null)?.id === "string" ? (snapshot as { id: string }).id : options.resume;
+    if (id !== undefined) await this.ensureConversation(options.profile.home, id);
+    const session = await super.adopt(options, snapshot, events);
+    if (session.id() !== id) {
+      try {
+        await this.ensureConversation(options.profile.home, session.id());
+      } catch (error) {
+        await session.dispose();
+        throw error;
+      }
+    }
+    return session;
   }
 
   protected starting(options: OpenOptions): AcpStart {
@@ -530,9 +560,11 @@ export class AgySession extends AcpSession {
   tier: string | null = null;
   /// The context its last call had and the model's window, as usage_update says them.
   private context = { used: 0, size: 0 };
+  private readonly agyDriver: AgyDriver;
 
   constructor(driver: AgyDriver, events: Events, options: OpenOptions) {
     super(driver, events, new KeptTranscript("agy", join(agyHome(options.profile.home), SESSIONS)));
+    this.agyDriver = driver;
   }
 
   named(id: string) {
@@ -573,6 +605,7 @@ export class AgySession extends AcpSession {
 
   /// The turn's usage, into the transcript before its end.
   protected ending(id: string, answer: Json) {
+    if (answer?.error !== undefined && /\btrajectory not found\b/i.test(errorText(answer.error))) this.agyDriver.noteLost(this.sessionId);
     const usage = turnUsage(answer);
     if (usage !== null) this.transcript?.keep(this.sessionId, { type: "usage", run: id.slice(id.indexOf(":") + 1), model: this.model, usage, calls: 1, context: this.context.used, window: this.context.size });
   }
