@@ -238,7 +238,7 @@ const short = (s: string) => (s.length > LABEL_MOST ? `${s.slice(0, LABEL_MOST -
 
 /// An item as the tool answers it: a line's worth.
 function brief(x: Plan["items"][number]): Json {
-  return { module: x.module, item: x.id, label: x.label, state: x.state, ...(x.needs.length > 0 ? { needs: x.needs.map(named) } : {}), ...(x.cannot !== undefined ? { cannot: x.cannot } : {}), ...(x.error ? { error: x.error } : {}), ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}), ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}), ...(x.progress ? { progress: x.progress } : {}) };
+  return { module: x.module, item: x.id, label: x.label, state: x.state, ...(x.needs.length > 0 ? { needs: x.needs.map(named) } : {}), ...(x.cannot !== undefined ? { cannot: x.cannot } : {}), ...(x.leaves !== undefined ? { leaves: x.leaves } : {}), ...(x.error ? { error: x.error } : {}), ...(x.waitsFor ? { waitsFor: named(x.waitsFor) } : {}), ...(x.wouldStop.length > 0 ? { wouldStop: x.wouldStop.map(named) } : {}), ...(x.progress ? { progress: x.progress } : {}) };
 }
 
 /// A module's items a page at a time, in the plan's order: those after `after` (an item's id), `limit` of them.

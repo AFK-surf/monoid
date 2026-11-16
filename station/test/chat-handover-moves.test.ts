@@ -1000,3 +1000,41 @@ test("a chat said gone whose show was never answered, left so by two processes o
     }
   }
 });
+
+test("a chat that only ran before on a login of this machine's own (which cannot go) is no need of it: planned here with no `cannot`, saying what it leaves; moved with its needs, it goes on the login it runs on, its turns there taking up its runtime session; moved back, the past login's runtime session is here as it was; one running on such a login now still cannot go", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  // (it ran on `mine`, this machine's own, before; it runs on `cc`, shared, now)
+  a.rig.store.ranIn(key, "run-mine", "mine");
+  const [onMine] = newSession(a.rig.hub, { runtime: "claude", profile: "mine", createdBy: "p@x" });
+  const plan = await a.moves.scheduler.plan(WS, B);
+  const item = plan.items.find((x) => x.module === "chats" && x.id === key)!;
+  assert.equal(item.cannot, undefined, `no cannot: ${item.cannot}`);
+  assert.ok(!item.needs.some((n) => n.id === "machine:mine"), `no need of the past login: ${JSON.stringify(item.needs)}`);
+  assert.match(item.leaves ?? "", /mine/, "says what it leaves");
+  const now = plan.items.find((x) => x.module === "chats" && x.id === onMine)!;
+  assert.ok(now.needs.some((n) => n.id === "machine:mine"), "one running on it now still needs it");
+  // Moved with its needs: it goes, nothing of the past login moved.
+  const asked: string[] = [];
+  w.tamper((to, r) => (to === B && asked.push(JSON.stringify(r)), r));
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key, withNeeds: true });
+  await w.quiet();
+  w.tamper(null);
+  assert.equal(out.failed, null, JSON.stringify(out.failed));
+  assert.ok(!out.done.some((d) => d.id === "machine:mine"), "the past login not moved");
+  assert.ok(!asked.some((r) => r.includes("move.accounts") && r.includes("mine")), "the past login asked of B as no account");
+  assert.equal(b.rig.session(key).ws, null, "it went");
+  // A turn there: on its current login, its runtime session taken up.
+  say(b.rig.hub, homeThread(b, key), "p@x", "and there?");
+  await w.quiet();
+  assert.equal(b.rig.claude.last().options.resume, "claude-1", "its runtime session on its current login taken up");
+  await endTurn(b, key);
+  // Back: the past login's runtime session here as it was.
+  const back = await a.moves.scheduler.back(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(back.failed, null, JSON.stringify(back.failed));
+  const rows = a.rig.store.db.prepare("SELECT id, profile FROM runtime_sessions WHERE session_key = ? ORDER BY id").all(key) as { id: string; profile: string }[];
+  assert.ok(rows.some((r) => r.id === "run-mine" && r.profile === "mine"), `the past login's runtime session kept here: ${JSON.stringify(rows)}`);
+});

@@ -92,7 +92,11 @@ export function chatsModule(d: ChatsDeps): Module {
         const thereName = typeof there?.name === "string" && there.name !== "" ? there.name : to.slice(0, 12);
         for (const { key, row, keys } of kept) {
           const needs: Need[] = [];
-          for (const [pid, a] of d.handover.accountsOf(keys, reads)) {
+          const accounts = d.handover.accountsOf(keys, reads);
+          // (this machine's own logins it only ran on before or lists: no need, left here, said so: `pastLeft`)
+          const left = d.handover.pastLeft(accounts, keys, reads);
+          for (const [pid, a] of accounts) {
+            if (left.includes(pid)) continue;
             const id = accountItemId(pid, a);
             if (!needs.some((n) => n.id === id)) needs.push({ module: "accounts", id });
           }
@@ -119,7 +123,8 @@ export function chatsModule(d: ChatsDeps): Module {
           const live = handed !== null ? [] : keys.filter((k) => liveThere.has(k));
           const unknown = handed === null && failed !== null;
           const why = handed !== null ? null : unknown ? unanswered(failed) : live.length > 0 ? liveHereWords(live, thereName) : d.handover.check(key, to, { planning: true, reads });
-          items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}), ...(unknown ? { again: true as const } : {}) });
+          const leaves = left.length > 0 ? tr(stationLang(), "station.move.leavesLogins", { names: left.join(", ") }) : null;
+          items.push({ module: "chats", id: keys[0]!, label: row.title ?? key, needs, ...(why !== null ? { cannot: why } : {}), ...(unknown ? { again: true as const } : {}), ...(leaves !== null ? { leaves } : {}) });
         }
       }
       // (what it found stale measured from here, the plan read: never while it reads)

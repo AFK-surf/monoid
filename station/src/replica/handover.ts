@@ -752,6 +752,16 @@ export class Handover {
     return out;
   }
 
+  /// Of `accounts` (`accountsOf(keys)`), the logins sessions `keys` only ran on before or list, none of them runs on now,
+  /// that cannot go: this machine's own (null). No need of the chat's: it goes on the login it runs on, what was that
+  /// login's staying here, and there it is as one whose account is missing for it (the owner, 2026-11-16: 「只是以前用过、
+  /// 又迁不走的登录不再卡住聊天，聊天带着现在的登录过去，那个旧登录下的旧会话记录留在 VM-1」). The login one runs on now
+  /// stays its need, refused as before where it cannot go; one that can go (shared, lent, moved whole) stays one too.
+  pastLeft(accounts: Map<string, AccountOf | null>, keys: string[], reads: SessionReads = this.#reads): string[] {
+    const now = new Set(keys.map((k) => reads.session(k)?.profile).filter((p): p is string => typeof p === "string"));
+    return [...accounts].filter(([pid, a]) => a === null && !now.has(pid)).map(([pid]) => pid);
+  }
+
   /// Hands chat `key` (and those sharing its home chat) to `to`: checked, held, sent, switched; what happened said back.
   /// `wait`: a busy chat's turn is waited for (TURN_WAIT_MS at most), else refused. `progress`: how far its files went.
   /// `stoppedFor`: what it needs is not usable there yet (the scheduler says so): it arrives there stopped, waiting for
@@ -845,8 +855,10 @@ export class Handover {
       const it = d.connects?.describedFor(id);
       if (it) described.push({ known: knownOf(id, here), station: it.station, described: it.described });
     }
-    // (those no profile here, told so: where the other has none of them either, no need of the chat's)
-    const nowhere = Object.keys(accounts).filter((pid) => d.accounts.present?.(pid) === false);
+    // (those no profile here, told so: where the other has none of them either, no need of the chat's; so too this
+    // machine's own logins it only ran on before or lists, which cannot go (`pastLeft`): it goes on the one it runs on)
+    const left = new Set(this.pastLeft(this.accountsOf(o.keys), o.keys));
+    const nowhere = Object.keys(accounts).filter((pid) => d.accounts.present?.(pid) === false || left.has(pid));
     return await ask({ method: "handover.begin", keys: o.keys, ws: o.ws, dataDir: d.data, accounts, nowhere, connects, described, stoppedFor, bindings: this.#bindingsOf(o.keys) });
   }
 

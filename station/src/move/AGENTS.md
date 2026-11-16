@@ -28,7 +28,11 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
   first, arriving stopped, then the item. Modules may need each other (chats and connects do); items may not: a chain
   of items needing each other round is refused, named.
 - The modules: `accounts` (needs none: a login, by the share, key or own profile it is known by across the workspace
-  now; this machine's own never. One that can be shared (`shareRefusal`), taken only because what moves needs it, is
+  now; this machine's own never. A chat needs the login it runs on now; this machine's own logins it only ran on before
+  or lists are no need of it (handover.ts `pastLeft`; the owner, 2026-11-16: 「只是以前用过、又迁不走的登录不再卡住聊天」):
+  it goes on the login it runs on, its plan item saying what it leaves (`leaves`), and there it is as one whose account
+  is missing for those (told `nowhere` at `handover.begin`: not offered them, their runtime sessions not taken up);
+  what was theirs stays here, found again as it comes back. A past login that can go stays a need. One that can be shared (`shareRefusal`), taken only because what moves needs it, is
   lent, not moved (the owner, 2026-11-15: its host never leaves, so nothing of it is stranded on a station that dies or
   leaves the workspace): shared with the station it goes to (with the two alone where it was not shared; that one added
   where it is shared with others), told to it directly and answered once its copy is there (share/index.ts `lendTo`,

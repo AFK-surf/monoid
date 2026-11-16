@@ -18,7 +18,8 @@ export type Waits = Need & { label?: string; at?: string };
 /// declares), why it cannot move (in words that say what to do; none: it can), how big it is (bytes, where known).
 /// `again`: its `cannot` is of this turn only (the other station did not answer what it has): asked again it may go,
 /// and nothing goes ahead of it to wait for it.
-export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number };
+/// `leaves`: what of it stays here as it goes, in people's words (a chat's: this machine's own logins it only ran on before).
+export type Item = { module: string; id: string; label: string; needs: Need[]; cannot?: string; again?: true; size?: number; leaves?: string };
 /// Why an item cannot go where the other station did not answer what it has of it, as a plan asked (a station enrolled a
 /// moment ago, not reached): a plan is never made on a guess of what is there, so it is not tried; asked again it is.
 /// What a move says to people, in the station's language, already: passed on as it is, never worded again.
