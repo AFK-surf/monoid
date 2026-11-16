@@ -99,10 +99,15 @@ test("watched, an edit, a read and an edit made elsewhere wait on no file, and t
       await writePrivateSoon(file, JSON.stringify({ kept: true, a: 1, b: 2 }));
       await there;
       assert.deepEqual(config.raw(), { kept: true, a: 1, b: 2 });
+      // Written back elsewhere to the very text this process wrote: someone's edit too, taken and told.
+      const back = heard(config, (raw) => raw.b === undefined);
+      await writePrivateSoon(file, `${JSON.stringify({ kept: true, a: 1 }, null, 2)}\n`);
+      await back;
+      assert.deepEqual(config.raw(), { kept: true, a: 1 });
     });
     assert.deepEqual(calls, []);
     // Its own write read back is not told again.
-    assert.deepEqual(told, [{ kept: true, a: 1 }, { kept: true, a: 1, b: 2 }]);
+    assert.deepEqual(told, [{ kept: true, a: 1 }, { kept: true, a: 1, b: 2 }, { kept: true, a: 1 }]);
     if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
   } finally {
     config.unwatch();

@@ -39,6 +39,8 @@ export class ConfigFile {
   #writing = 0;
   /// Edits are numbered as they are taken; the file holds `#written`'s once its write is done.
   #asked = 0;
+  /// Edits taken here, either way (`update`, `updateSoon`): one taken while the file was read makes what was read old.
+  #edits = 0;
   #written = 0;
   #latest = "";
   /// One write at a time, each of the latest text: what was asked while one was on its way is written by the next.
@@ -110,6 +112,7 @@ export class ConfigFile {
     renameSync(tmp, this.path);
     this.value = next;
     this.#lastWrittenText = text;
+    this.#edits++;
     this.seen = this.stamp();
     setStationLang(next?.language);
     this.tell();
@@ -129,6 +132,7 @@ export class ConfigFile {
     const text = `${JSON.stringify(next, null, 2)}\n`;
     this.value = next;
     this.#lastWrittenText = text;
+    this.#edits++;
     setStationLang(next?.language);
     this.tell();
     const asked = ++this.#asked;
@@ -184,11 +188,13 @@ export class ConfigFile {
   async #settled(): Promise<void> {
     for (;;) {
       await this.written();
+      const edits = this.#edits;
       const now = await this.#stampSoon();
       if (now === this.seen) return;
       const text = now === "none" ? null : await this.#readSoon();
       if (this.watcher === null) return;
-      if (this.#writing > 0) continue;
+      // (an edit taken meanwhile, written or not: what was read may be from before it)
+      if (this.#writing > 0 || this.#edits !== edits) continue;
       this.take(now, text);
       return;
     }
@@ -204,6 +210,8 @@ export class ConfigFile {
       this.invalid = null;
       return;
     }
+    // Someone else's now: the same text written back later is theirs too, never taken for this process's own.
+    this.#lastWrittenText = null;
     try {
       this.value = text === null ? {} : parseJsonText(this.path, text);
       this.seen = now;
