@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 99.39 | 125.68 |
 | [5c45cf07b](https://github.com/AFK-surf/monoid/commit/5c45cf07b36fc33f48d030ce6fb7e5a5fb7700ec) fix(mbui): avoid Windows message starvation, 512x5 | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
 | [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
 | [7a366f66b](https://github.com/AFK-surf/monoid/commit/7a366f66b6a7e7e938fbf480bdfd1ad8cf98b83d) mbui(win): 对齐 macOS CoreText 无 Hinting 纯几何文字光栅化与光学 | 2.42 | 3.36 | 14.24 | 35.35 | 55.51 | 31.03 | 63.42 | 100.09 | 116.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 2.16 | 3.02 | 13.06 | 34.19 | 51.76 | 29.98 | 60.22 | 99.5 | 118.56 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.58 | 121.01 |
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 2.15 | 3 | 12.97 | 34.09 | 51.38 | 29.89 | 59.92 | 99.62 | 115.86 |
-| [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 2.14 | 2.99 | 12.92 | 34.05 | 51.2 | 29.87 | 59.81 | 99.71 | 118.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c3558ead9](https://github.com/AFK-surf/monoid/commit/c3558ead94fa3ccce16b391a16f65de984fdcbc1) mbui: a paragraph's words kept as drawn as what ho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [5c45cf07b](https://github.com/AFK-surf/monoid/commit/5c45cf07b36fc33f48d030ce6fb7e5a5fb7700ec) fix(mbui): avoid Windows message starvation, 512x5 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 56.97 |
 | [89fd511d3](https://github.com/AFK-surf/monoid/commit/89fd511d36fa0afdd12100602e104e2f01729702) fix(agy): keep Pro accounts' separate Argon weekly | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.71 |
 | [7a366f66b](https://github.com/AFK-surf/monoid/commit/7a366f66b6a7e7e938fbf480bdfd1ad8cf98b83d) mbui(win): 对齐 macOS CoreText 无 Hinting 纯几何文字光栅化与光学 | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2cdec0a17](https://github.com/AFK-surf/monoid/commit/2cdec0a17435d68d7dd66c174e73e5fff4b110e5) app: Home's chats as a board, kept per workspace o | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [085454ff8](https://github.com/AFK-surf/monoid/commit/085454ff8055f241959ed48b238558cfb28ca643) fix(mbui): keep Windows subpixel glyph keys aligne | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.36 |
 | [cc63be808](https://github.com/AFK-surf/monoid/commit/cc63be8087319a8ac7f94065180c63fbbc0c0454) mbui ios: ios-core.sh adds the terminal's include  | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
-| [6ca8d986c](https://github.com/AFK-surf/monoid/commit/6ca8d986cde4fb0a1c303f0fa46b80eabb571573) station: move the TypeScript the MoonBit program r | 0.42 | 0.54 | 2.07 | 3.17 | 4.97 | 1.53 | 4.08 | 57.33 |
