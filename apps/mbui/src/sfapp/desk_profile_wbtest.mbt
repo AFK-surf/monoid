@@ -14,6 +14,125 @@ test "wide: the profile list's rows say an account's name and allowance, its tie
 }
 
 ///|
+test "deleting a profile or removing a station in its place stays in the place instead of going back to the previous page; pushed on the stack, its page closes" {
+  // 1. 大屏 Place("profiles") come to from a chat: history holds the chat behind it, deleting a profile stays in Place("profiles")
+  new_run()
+  let deleted : @signals.Signal[Array[String]] = @signals.signal([])
+  let calls : Array[(String, Json)] = []
+  let base = fixture("settings")
+  let drop_profiles = fn(v : Json, gone : Array[String]) -> Json {
+    if gone.is_empty() {
+      return v
+    }
+    match v {
+      Object(o) => {
+        let copy = o.copy()
+        if copy.get("items") is Some(Array(items_arr)) {
+          copy["items"] = Json::array(
+            items_arr.filter(fn(e) { !gone.contains(text(field(Some(e), "profile"), "id")) }),
+          )
+        }
+        if copy.get("profiles") is Some(Array(ps)) {
+          copy["profiles"] = Json::array(ps.filter(fn(p) { !gone.contains(text(Some(p), "id")) }))
+        }
+        if copy.get("overview") is Some(ov) {
+          match ov {
+            Object(oo) => {
+              let ocopy = oo.copy()
+              if ocopy.get("profiles") is Some(Array(ps)) {
+                ocopy["profiles"] = Json::array(ps.filter(fn(p) { !gone.contains(text(Some(p), "id")) }))
+              }
+              copy["overview"] = Json::object(ocopy)
+            }
+            _ => ()
+          }
+        }
+        Json::object(copy)
+      }
+      _ => v
+    }
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let r = base.topic(name, params).get().snapshot()
+      let gone = deleted.get()
+      if name == "profiles" || name == "station" {
+        { ..r, value: r.value.map(fn(v) { drop_profiles(v, gone) }) }
+      } else {
+        r
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      if name == "profile.delete" {
+        let id = text(Some(params), "id")
+        deleted.set([..deleted.untracked(), id])
+        done(Ok(Json::object({})))
+      } else if name == "workspace.removeStation" {
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_))
+  @sfbase.go_place("profiles") |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.pages() == [Place("profiles")])
+  // Pick ChatGPT 团队 in the sidebar, then delete it: stays on Place("profiles"), moves to the remaining profile
+  t.tap_text("ChatGPT 团队")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("profiles")],
+    msg="stayed in Place(profiles), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "profile.delete" && text(Some(c.1), "id") == "cx" }).length(), 1)
+  assert_true(t.find("备用 key") is Some(_), msg="switched to the first remaining profile")
+
+  // 2. Pushed Setting(Profile(...)) on the stack: deleting it closes that page back to what was under it
+  @sfbase.open_page(Setting(@settings.Route::Profile("ws1/st1", "cc")))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "cc")))
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("profiles")],
+    msg="pushed Profile page closed back to Place(profiles), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "profile.delete" && text(Some(c.1), "id") == "cc" }).length(), 1)
+
+  // 3. 大屏 Place("stations") come to from Place("profiles"): removing a station stays in Place("stations")
+  @sfbase.go_place("stations") |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.pages() == [Place("stations")])
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("从 workspace 移除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="移除 station")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("stations")],
+    msg="stayed in Place(stations), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "workspace.removeStation" }).length(), 1)
+}
+
+///|
 /// The desk's page wheeled down until `words` shows on it (above the window's foot).
 fn desk_shown(t : @ui.Tester, words : String) -> Unit {
   t.move_to(800.0, 400.0)

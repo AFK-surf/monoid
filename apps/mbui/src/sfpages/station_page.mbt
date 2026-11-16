@@ -1525,20 +1525,30 @@ let st_problem_bad : @ui.TextStyle = st_problem.then(@ui.text_style(color=Danger
 /// Taking a station out of the workspace, asked first (its ⋯'s 移出, and 移出 workspace once its chats were moved
 /// away, station_retire_node.mbt): back to the list at once (the page of a station going has nothing to show), its answer said there.
 fn station_remove_ask(core : Core, here : Here, s : Json?) -> Unit {
+  let address = text(s, "station")
   confirm(
     @sf.t("web-pages.settings.stations.removeConfirm", args=[("name", text(s, "name"))]),
     @sf.t("web-pages.settings.stations.removeConfirmBody", args=[("name", "still.fail")]),
     @sf.t("web-pages.settings.stations.removeAction"),
     danger=true,
-    // back to the list at once (the page of a station going has nothing to show), its answer said there
+    // closed where its page (or its move page) was pushed on the stack; in the stations' place it stays on the place,
+    // which moves on to the first left once the list drops it (places.mbt place_route)
     fn() {
-      (core.pop)()
+      if !@sfbase.close_page(Setting(@settings.Route::Station(address))) {
+        @sfbase.close_page(Setting(@settings.Route::StationMove(address))) |> ignore
+      }
       @settings.act(
         core,
         @sf.t("web-pages.settings.stations.remove"),
         "workspace.removeStation",
         obj([("workspace", str(here.workspace)), ("station", str(text(s, "id"))), ("account", str(here.sub))]),
         done=@sf.t("android-settings.station.removed"),
+        then=fn(_) {
+          let key = place_key(here.workspace, "stations")
+          if place_pick.get(key) == Some(@settings.Route::Station(address)) {
+            place_pick.remove(key)
+          }
+        },
       )
     },
   )

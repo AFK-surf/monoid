@@ -532,6 +532,7 @@ fn profile_more_node(a : @view.View, core : Core, here : () -> Here, address : S
 /// the copy is refreshed).
 fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @sf.Beside) -> Unit {
   let id = text(p, "id")
+  let on = [("station", address), ("id", id)]
   let machine = flag(p, "machine")
   let copy = profile_copy(p)
   let access = field(p, "access")
@@ -548,15 +549,21 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
       (@sf.t("web-pages.archive.deleteConfirm", args=[("title", text(p, "name"))]), @sf.t("web-pages.profiles.deleteBody", args=[("name", "still.fail")]))
     }
     confirm(title, words, item, danger=true, fn() {
-      // gone from here at once: the list shows it until the station has dropped it
-      place_pick.remove(place_key(here.workspace, "profiles"))
-      (core.pop)()
+      // closed where its page was pushed on the stack; in the profiles' place it stays on the place, which moves on to
+      // the first left once the station has dropped it (places.mbt place_route)
+      @sfbase.close_page(Setting(@settings.Route::Profile(address, id))) |> ignore
       @settings.act(
         core,
         item,
         "profile.delete",
         obj([("station", str(address)), ("id", str(id))]),
         done=if machine { @sf.t("web-pages.profiles.disabled") } else { @sf.t("web-pages.profiles.deleted") },
+        then=fn(_) {
+          let key = place_key(here.workspace, "profiles")
+          if place_pick.get(key) == Some(@settings.Route::Profile(address, id)) {
+            place_pick.remove(key)
+          }
+        },
       )
     })
   }
@@ -569,7 +576,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
           @sf.menu_item_of(
             @sf.t("web-pages.signIn.again"),
             icon="log-in",
-            disabled=is_doing(core, ["profile.login"], [("station", address), ("id", id)]),
+            disabled=is_doing(core, ["profile.login"], on),
             fn() { @settings.act(core, @sf.t("web-pages.profiles.signIn"), "profile.login", obj([("station", str(address)), ("id", str(id))])) },
           ),
         ),
@@ -602,7 +609,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
         done=if enabled { @sf.t("web-pages.profiles.disabled") } else { @sf.t("web-pages.connect.enabled") },
       )
     }
-    items.push(Some(@sf.menu_item_of(label, icon="power", disabled=is_doing(core, ["profile.put"], [("station", address), ("id", id)]), fn() {
+    items.push(Some(@sf.menu_item_of(label, icon="power", disabled=is_doing(core, ["profile.put"], on), fn() {
       if enabled {
         let words = @sf.t(if copy { "web-pages.profiles.disableCopyBody" } else { "web-pages.profiles.disableKeyBody" })
         confirm(@sf.t("web-pages.profiles.disableConfirm", args=[("name", text(p, "name"))]), words, label, danger=true, change)
@@ -612,7 +619,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
     })))
   }
   if !copy {
-    items.push(Some(@sf.menu_item_of(item, icon="trash", danger=true, remove)))
+    items.push(Some(@sf.menu_item_of(item, icon="trash", danger=true, disabled=is_doing(core, ["profile.delete"], on), remove)))
   }
   @sf.menu(items, from~, along=End)
 }
