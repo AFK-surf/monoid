@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 2.42 | 3.35 | 14.22 | 35.34 | 55.45 | 30 | 60.29 | 99.44 | 118.85 |
 | [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 2.41 | 3.33 | 14.05 | 35.15 | 54.49 | 30 | 60.29 | 99.44 | 121.58 |
 | [76a9c3ea2](https://github.com/AFK-surf/monoid/commit/76a9c3ea2f771189e1bf461d3b4a0dbe94a0d5fd) mbui: 账号, 字体 and 下方栏 made once as nodes, the setti | 2.41 | 3.33 | 14.05 | 35.15 | 54.49 | 30 | 60.29 | 99.44 | 121.58 |
 | [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 2.41 | 3.32 | 14.02 | 35.04 | 54.34 | 30 | 60.29 | 99.44 | 110.61 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.53 | 116.18 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 2.13 | 2.96 | 12.83 | 33.9 | 50.79 | 29.75 | 59.42 | 99.57 | 116.81 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 2.13 | 2.96 | 12.82 | 33.9 | 50.75 | 29.74 | 59.39 | 99.75 | 113.57 |
-| [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 2.13 | 2.96 | 12.81 | 33.9 | 50.74 | 29.19 | 57.93 | 99.35 | 113.26 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [76a9c3ea2](https://github.com/AFK-surf/monoid/commit/76a9c3ea2f771189e1bf461d3b4a0dbe94a0d5fd) mbui: 账号, 字体 and 下方栏 made once as nodes, the setti | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1ac1fad7b](https://github.com/AFK-surf/monoid/commit/1ac1fad7b65317ffc19d5427ca03c15b13333889) perf(station): move UsageCounter transcript reads  | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [2a37660b4](https://github.com/AFK-surf/monoid/commit/2a37660b44741e87085af215f3a6b89fb37a8649) station: refresh a Mac mesh front when its launche | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
 | [9d5937c45](https://github.com/AFK-surf/monoid/commit/9d5937c45c7f9e0cdd65073c1a0f78286dc79cac) mbui, app: optical stroke width for small icons an | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
-| [3e3b93720](https://github.com/AFK-surf/monoid/commit/3e3b9372078fc8c24ba3cebbf185ecbc510c950c) mbui: what an answer marks settled as one change o | 0.42 | 0.54 | 2.07 | 3.17 | 4.94 | 1.53 | 4.06 | 57.26 |
