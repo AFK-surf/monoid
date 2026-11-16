@@ -1000,7 +1000,7 @@ fn share_row_node(
     .alpha(By(fn() { if enabled() || busy() { 1.0 } else { share_row_faint } }))
     |> ignore
     if look.wide {
-      r.ground(By(fn() { if enabled() && @sf.lit_node(r) { @sf.theme().p.hover } else { 0L } })) |> ignore
+      @sf.hover_ground_node(r, on=enabled)
       @sf.presses_node(r, press, on=enabled)
       r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     } else {

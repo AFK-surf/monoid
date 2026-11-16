@@ -1793,6 +1793,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       turn == 0.0 &&
       !ground_drawn.reshaped() &&
       (c.shadow.2 & 0xFFL) == 0L &&
+      c.ring.0 == 0.0 &&
       c.halo.0 <= 0.0 {
       // (wholly outside the clip it is drawn in, where it is drawn (moved, grown, what holds it scrolled): nothing of its own
       // drawn or made, no glyph of its words asked of the host, as the old frame paints nothing of what lies outside its
@@ -1809,6 +1810,8 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // deferred, a deferred block being a closure made for each node drawn)
     // (what it holds cut to it, as an old view's clipping box cuts what it holds (push_round_clip's, after its own): at
     // its own edge, its edge drawn over what it holds there, taking no room; pushed before it drew where it is on its way)
+    // (an outer concentric ring round it, captured under what holds it before its own clip is pushed, drawn after what it holds)
+    let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     if c.clips && !c.clips_self {
       let r = c.radius * s
       match c.corners {
@@ -1876,6 +1879,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
         }
         stretch_painted[c.id] = ov
       }
+    }
+    if outer_ring_at >= 0 && outer_ring_at < self.ninst {
+      let (held, by) = self.view_ring_take(outer_ring_at)
+      rings.push((c.id, held, by))
     }
     if ring_at >= 0 && ring_at < self.ninst {
       let (held, by) = self.view_ring_take(ring_at)
@@ -2205,6 +2212,35 @@ fn Ctx::tree_over_scrim_clear(self : Ctx) -> Unit {
 ///|
 /// Instance `k` of the frame taken out (those after it one back), with who drew it (inst_owners'): a node's edge composed
 /// as the rest of it, held till what it holds is drawn (view_paint's rings).
+fn Ctx::emit_outer_ring(self : Ctx, c : @view.Content, x : Double, y : Double, a : Double, s : Double) -> Int {
+  guard c.bones == 0L else { return -1 }
+  let (rw, rgap, rc) = if c.ring.0 < 0.0 {
+    let t = tree_theme()
+    (t.focus_w, if c.ring.1 != 0.0 { c.ring.1 } else { t.focus_gap }, t.focus)
+  } else {
+    c.ring
+  }
+  guard rw > 0.0 && (rc & 0xFFL) != 0L else { return -1 }
+  let out = (rgap + rw) * s
+  let half = dmin(c.w, c.h) / 2.0
+  let cr = fn(r : Double) { if r <= 0.0 { 0.0 } else { dmax(0.0, dmin(r, half) * s + out) } }
+  let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
+  inst_owners.painting = -1
+  inst_owners.tree_painting = Some(c.id)
+  self.emit_rect(x - out, y - out, c.w * s + 2.0 * out, c.h * s + 2.0 * out, 0.0, 0L, rw * s, rc, a)
+  let at = self.ninst - 1
+  match c.corners {
+    Some((tl, tr, br, bl)) => self.corners_each(at, cr(tl), cr(tr), cr(br), cr(bl))
+    None => {
+      let r = cr(c.radius)
+      self.corners_each(at, r, r, r, r)
+    }
+  }
+  inst_owners.painting = was
+  inst_owners.tree_painting = was_tree
+  at
+}
+
 fn Ctx::view_ring_take(self : Ctx, k : Int) -> (FixedArray[Double], (Int, (Double, Double), @view.NodeId?, Int)) {
   let held = FixedArray::make(inst_size, 0.0)
   self.inst.blit_to(held, len=inst_size, src_offset=k * inst_size)
@@ -2535,35 +2571,37 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     // (what of it is marked, under all of it and under what is picked of it: View::runs_marks, each part its ground and
     // where it says so a line at its foot, each line of it where that line is drawn)
     for m in c.runs_marks {
-      if m.from < m.to && m.round > 0.0 {
-        // (one ground a line, round at the mark's two ends: as an old view's passage picked, Ctx::paint_selection)
-        let lines : Array[(Double, Double, Double, Double)] = []
-        for r in lay.rects(m.from, m.to) {
-          let (x, y, w, h) = r
-          match lines.last() {
-            Some((lx, ly, lw, lh)) if y < ly + lh && y + h > ly => {
-              let x0 = dmin(lx, x)
-              let y0 = dmin(ly, y)
-              lines[lines.length() - 1] = (x0, y0, dmax(lx + lw, x + w) - x0, dmax(ly + lh, y + h) - y0)
+      if m.from < m.to {
+        // (one unified inline-span painter: merges adjacent rects on the same line when rounded, rounds start/end caps as
+        // `starts`/`ends` say, and draws any foot underline across each line rect)
+        let raw = lay.rects(m.from, m.to)
+        let lines : Array[(Double, Double, Double, Double)] = if m.round > 0.0 {
+          let merged : Array[(Double, Double, Double, Double)] = []
+          for r in raw {
+            let (x, y, w, h) = r
+            match merged.last() {
+              Some((lx, ly, lw, lh)) if y < ly + lh && y + h > ly => {
+                let x0 = dmin(lx, x)
+                let y0 = dmin(ly, y)
+                merged[merged.length() - 1] = (x0, y0, dmax(lx + lw, x + w) - x0, dmax(ly + lh, y + h) - y0)
+              }
+              _ => merged.push(r)
             }
-            _ => lines.push(r)
           }
+          merged
+        } else {
+          raw
         }
-        for k, rect in lines {
+        for li, rect in lines {
           let dx = rich_shift_at(lay, rect.1 + rect.3 / 2.0, center_in)
           if (m.ground & 0xFFL) != 0L {
             self.emit_rect(rect.0 + dx, rect.1, rect.2, rect.3, 0.0, m.ground, 0.0, 0L, 1.0)
-            let r = dmin(m.round, dmin(rect.2, rect.3) / 2.0)
-            let first = if k == 0 { r } else { 0.0 }
-            let last = if k == lines.length() - 1 { r } else { 0.0 }
-            self.corners_each(self.ninst - 1, first, last, last, first)
-          }
-        }
-      } else if m.from < m.to {
-        for rect in lay.rects(m.from, m.to) {
-          let dx = rich_shift_at(lay, rect.1 + rect.3 / 2.0, center_in)
-          if (m.ground & 0xFFL) != 0L {
-            self.emit_rect(rect.0 + dx, rect.1, rect.2, rect.3, 0.0, m.ground, 0.0, 0L, 1.0)
+            if m.round > 0.0 {
+              let r = dmin(m.round, dmin(rect.2, rect.3) / 2.0)
+              let first = if li == 0 && m.starts { r } else { 0.0 }
+              let last = if li == lines.length() - 1 && m.ends { r } else { 0.0 }
+              self.corners_each(self.ninst - 1, first, last, last, first)
+            }
           }
           if (m.line & 0xFFL) != 0L && m.line_w > 0.0 {
             self.emit_rect(rect.0 + dx, rect.1 + rect.3 - m.line_w, rect.2, m.line_w, 0.0, m.line, 0.0, 0L, 1.0)

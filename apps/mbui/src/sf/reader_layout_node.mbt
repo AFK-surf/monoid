@@ -324,8 +324,10 @@ fn layout_size_key(
     k
     .alpha(By(fn() { if on() { desk_whole } else { desk_size_key_off } }))
     .radius(By(desk_size_key_corner))
-    .ground(By(fn() { if on() && lit_node(k) { @ui.tree_theme().color(Tint) } else { no_ground } }))
+    .ground(Is(no_ground))
+    .focus_ring_theme()
     |> ignore
+    hover_ground_node(k, on~, color=fn() { @ui.tree_theme().color(Tint) })
     words_node(k, fn() { words }, fn() { desk_size_key_words.then(@ui.text_style(color=Data(p().ink))) }) |> ignore
   })
   |> ignore
@@ -511,22 +513,19 @@ fn slider_node(
           .radius(By(fn() { side() / 2.0 }))
           .ground(By(fn() { p().accent }))
           .edge(By(fn() { (slider_ring, p().ground) }))
+          .ring(
+            By(fn() {
+              if s.focus_shown() {
+                let t = @ui.tree_theme()
+                (t.focus_w, t.focus_gap, t.focus)
+              } else {
+                (0.0, 0.0, 0L)
+              }
+            }),
+          )
           |> ignore
         })
         |> ignore
-        // (the keyboard's focus on it: a ring round the knob, its gap and width the theme's: focus_ring's)
-        k.show(fn() { s.focus_shown() }, fn(ring) {
-          let out = fn() {
-            let t = @ui.tree_theme()
-            t.focus_gap + t.focus_w
-          }
-          ring
-          .over(Is(true))
-          .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-          .radius(By(fn() { slider_thumb_d / 2.0 + out() }))
-          .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-          |> ignore
-        })
       })
       |> ignore
       o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore

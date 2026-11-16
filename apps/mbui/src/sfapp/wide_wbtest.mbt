@@ -427,7 +427,7 @@ test "wide: where this machine is a station, files from the Finder let go on the
 /// Where the chat's find colours its matches in, in the window (x, y, w, h): the highlighter's bands (a shape, the old
 /// page's) or a mark's ground under the words (View::runs_marks: a rect), in its colour on the light theme.
 fn find_coloured_in(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
-  let ink = 0xFFCC00D9L
+  let ink = @sf.theme().find_bg()
   let out = t.drawn_shapes().filter(fn(r) { r.5 == ink }).map(fn(r) { (r.0, r.1, r.2, r.3) })
   out.append(t.drawn_rects().filter(fn(r) { r.4 == ink }).map(fn(r) { (r.0, r.1, r.2, r.3) }))
   out
@@ -2918,11 +2918,11 @@ fn with_row(v : Json, id : String, more : Map[String, Json]) -> Json {
 /// Whether the message with `words` flashes as a message gone to does: the accent's ground drawn under all of its words'
 /// first line, as either page lights a row gone to (what is drawn, not which row a list says it lit).
 fn gone_lit(t : @ui.Tester, words : String) -> Bool {
-  let accent = @ui.tree_theme().color(AccentBg)
+  let flash = @sf.theme().flash_bg()
   match t.run_rects(words) {
     [(wx, wy, ww, wh), ..] =>
       t.drawn_rects().iter().any(fn(r) {
-        (r.4 >> 8) == (accent >> 8) && (r.4 & 0xFFL) > 0L && r.0 <= wx && r.0 + r.2 >= wx + ww && r.1 <= wy && r.1 + r.3 >= wy + wh
+        (r.4 >> 8) == (flash >> 8) && (r.4 & 0xFFL) > 0L && r.0 <= wx && r.0 + r.2 >= wx + ww && r.1 <= wy && r.1 + r.3 >= wy + wh
       })
     _ => false
   }

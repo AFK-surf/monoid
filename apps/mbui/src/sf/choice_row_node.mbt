@@ -115,7 +115,8 @@ pub fn choice_row_node(
         .lines_up(By(fn() { Some(if under() { Start } else { Middle }) }))
         |> ignore
         let g = if reach { o } else { r }
-        g.ground(By(fn() { if goes() && (lit_node(r) || held()) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+        r.focus_ring_theme() |> ignore
+        hover_ground_node(g, by=r, on=goes, extra=held)
         grounded(g)
         if narrow {
           // (a finger's press rippling over it, its corner the row's: row_ripple's)

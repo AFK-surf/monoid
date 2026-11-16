@@ -160,7 +160,7 @@ fn nt_old(w : Double, src : Source, m : Message, view? : ChatView = nt_view(), p
 
 ///|
 /// The same notice as the nodes draw it in its row (notice_said_node), `m` as it changes, kept open in `opened`; what
-/// is presented over it drawn; `pill`, the pill's node and key as they are told.
+/// is presented over it drawn; `row`, the row's middle node and key as they are told.
 fn nt_new(
   w : Double,
   src : Source,
@@ -169,7 +169,7 @@ fn nt_new(
   copied? : @sf.LiveMap[String, Double] = @sf.LiveMap::new(),
   view? : ChatView = nt_view(),
   platform? : Int = 0,
-  pill? : Ref[(@view.View, String)?] = Ref(None),
+  row? : Ref[(@view.View, String)?] = Ref(None),
 ) -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
   absolute_times.set(false)
@@ -192,11 +192,8 @@ fn nt_new(
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        notice_said_node(f, src, here, "m:ts9", fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied, pill_over=fn(
-          p,
-          k,
-        ) {
-          pill.val = Some((p, k))
+        notice_said_node(f, src, here, "m:ts9", fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied, over=fn(r, k) {
+          row.val = Some((r, k))
         })
         |> ignore
       })
@@ -551,18 +548,18 @@ test "a notice about a profile: what went wrong leads to the profile's page" {
 }
 
 ///|
-test "the pill told with the row's key as it is made, for what lights it as the notice is gone to" {
-  let pill : Ref[(@view.View, String)?] = Ref(None)
-  let t = nt_new(760.0, nt_src(None, []), fn() { nt_msg() }, pill~)
+test "the row's middle told with the row's key as it is made, across the list, for what lights the row as the notice is gone to" {
+  let row : Ref[(@view.View, String)?] = Ref(None)
+  let t = nt_new(760.0, nt_src(None, []), fn() { nt_msg() }, row~)
   t.run_for(@ui.move_most_ms)
-  match pill.val {
-    Some((p, k)) => {
+  match row.val {
+    Some((r, k)) => {
       assert_eq(k, "m:ts9")
-      let (_, _, w, h) = p.rect()
+      let (_, _, w, h) = r.rect()
       let (_, ty, _, th) = t.rect_of("Willow 的 codex 这一轮超时了，已经停下").unwrap_or((0.0, 0.0, 0.0, 0.0))
-      assert_true(w > 0.0 && h >= th && ty > 0.0, msg="the pill round its words")
+      assert_true((w - 760.0).abs() < 0.5 && h >= th && ty > 0.0, msg="the row across the list round its pill")
     }
-    None => fail("no pill told")
+    None => fail("no row told")
   }
   let faults = nt_audit(t, 0, 0, 0, 0)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
@@ -626,4 +623,12 @@ test "a notice's action at the end of its first line, closed and opened: it neve
   assert_true(bx > ox + ow && (by - oy).abs() < 2.0, msg="opened, still after its words on their line: \{Repr((ox, oy, ow, bx, by))}")
   let faults = nt_audit(t, 0, 0, 0, 1)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
+  // Even when a long notice wraps onto multiple lines once opened, its trailing action stays aligned with the first line.
+  let long_words = "与模型服务的连接中断，回复即可重试；同一报错连续出现时请检查中转节点"
+  let t_long = nt_new(390.0, nt_src(None, []), fn() { nt_msg(words=long_words, detail=said, failed=true, again=true) })
+  t_long.run_for(@ui.move_most_ms)
+  nt_open(t_long)
+  let first_y = t_long.words().iter().fold(init=1.0e9, fn(m, w) { if w.2 < m { w.2 } else { m } })
+  let (_, ry, _, _) = t_long.rect_of("重试").unwrap()
+  assert_true((ry - first_y).abs() < 2.0, msg="wrapped open notice keeps action on first line: \{ry} vs \{first_y}")
 }

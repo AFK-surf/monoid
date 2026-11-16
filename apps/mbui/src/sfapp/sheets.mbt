@@ -458,9 +458,9 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
     @sf.style_node(b, fn() { info_row_middle })
     b
     .radius(Is(info_row_radius))
-    .ground(By(fn() { if @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
     .says(By(fn() { Some(@view.said(Link, label=title())) }))
     |> ignore
+    @sf.hover_ground_node(b)
     @sf.menu_presses_node(
       b,
       fn() {

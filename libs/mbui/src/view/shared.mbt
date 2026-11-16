@@ -559,7 +559,7 @@ fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
       let to = self.nodes[l.follow].look
       let c = corners_mix(l.from.corners, corners_of(to), p)
       {
-        ground: colour_mix(l.from.ground, to.ground, p),
+        ground: colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p),
         edge: (l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p, colour_mix(l.from.edge.1, to.edge.1, p)),
         corners: c,
         ink: colour_mix(l.from.ink, to.ink, p),
@@ -626,7 +626,7 @@ fn Tree::lifted_content(self : Tree, n : Node, l : Lift, c : Content) -> Content
     ..c,
     w: if s > 0.0 { w / s } else { c.w },
     h: if s > 0.0 { h / s } else { c.h },
-    ground: colour_mix(l.from.ground, to.ground, p),
+    ground: colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p),
     edge: ((l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p) / s, colour_mix(l.from.edge.1, to.edge.1, p)),
     corners: Some((a / s, b / s, cc / s, d / s)),
     radius: a / s,

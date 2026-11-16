@@ -575,7 +575,8 @@ fn rs_row_node(
   }
   if group {
     // (round, a list's row's: never a square patch standing in from the pane's sides, the corner rule's lit square)
-    row.radius(Is(@sf.row_corner)).ground(By(fn() { if @sf.lit_node(row) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    row.radius(Is(@sf.row_corner)) |> ignore
+    @sf.hover_ground_node(row)
   }
   row.pick(fn() { lay().stacked }, fn(r, stacked) {
     r.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore

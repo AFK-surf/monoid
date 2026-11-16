@@ -566,8 +566,8 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
       b
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
-      .ground(By(fn() { if @sf.lit_node(b) || opened.get() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
+      @sf.hover_ground_node(b, extra=fn() { opened.get() })
       let can = fn() { items(v(), "options").length() > 0 && !doing(dkey) }
       @sf.presses_node(b, fn() {
         guard @signals.untracked(can) && triple.open != me else { return }

@@ -314,17 +314,8 @@ fn relay_place(
 ) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { relay_place_box })
-    b.ground(By(fn() {
-      let t = @ui.tree_theme()
-      if on {
-        t.color(AccentBg)
-      } else if @sf.hovered_node(b) {
-        t.color(Hover)
-      } else {
-        0L
-      }
-    }))
-    |> ignore
+    b.ground(By(fn() { if on { @ui.tree_theme().color(AccentBg) } else { 0L } })) |> ignore
+    @sf.hover_ground_node(b, on=fn() { !on && on_press is Some(_) })
     match on_press {
       Some(f) => @sf.presses_node(b, f)
       None => ()
@@ -474,17 +465,8 @@ fn relay_bot_choice(parent : @view.View, src : Source, shown : () -> RelayShown)
       let can = fn() { state() == "in" || state() == "join" }
       cell.box(fn(r) {
         @sf.style_node(r, fn() { relay_place_box })
-        r.ground(By(fn() {
-          let t = @ui.tree_theme()
-          if on() {
-            t.color(AccentBg)
-          } else if can() && @sf.hovered_node(r) {
-            t.color(Hover)
-          } else {
-            0L
-          }
-        }))
-        |> ignore
+        r.ground(By(fn() { if on() { @ui.tree_theme().color(AccentBg) } else { 0L } })) |> ignore
+        @sf.hover_ground_node(r, on=fn() { !on() && can() })
         @sf.presses_node(r, fn() {
           if can() {
             relaying.bot.set(id)

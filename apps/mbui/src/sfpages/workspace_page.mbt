@@ -74,9 +74,9 @@ pub fn workspace_node(
           .radius(Is(1.0e6))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
-          .ground(By(fn() { if @sf.lit_node(k) { @ui.tree_theme().color(Hover) } else { 0L } }))
           .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.settings.members.add"))) }))
           |> ignore
+          @sf.hover_ground_node(k)
           @sf.presses_node(k, fn() {
             let (x, y, w, h) = k.placed_window_now()
             open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=At(x, y, w, h))

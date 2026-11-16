@@ -4,7 +4,7 @@
 // that changes; whether it is open, and when its 复制 was pressed, kept by the message (`opened`, `copied`: the
 // caller's, by its ts), not on the nodes.
 // Its 取消 makes its way along the row as a retry begins or ends (the framework's, along_row), the pill moved aside by
-// as much. What lights the pill as the notice is gone to is hung on it by its page (`pill_over`).
+// as much. What lights the row across the list as the notice is gone to is hung on it by its page (`over`).
 
 ///|
 /// What still.fail said (system_notice's) in its row's room (message_row_frame_node: `key`, its list's Entry::id; `side`,
@@ -12,8 +12,7 @@
 /// pressed, open (`opened`, by its ts: all its words, what failed said of it with 复制, its time under it) or closed again.
 /// One about a profile, what went wrong leads to the profile's page; one saying the station lacks the chat's runtime
 /// ends in · 安装; a failure the station takes reports of in · 上报 (asked first); one whose agent waits to retry, 取消
-/// after the pill. `pill_over`, told the pill's node and `key` once as it is made, before what it holds: what lights it
-/// as it is gone to.
+/// after the pill.
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn notice_said_node(
@@ -27,10 +26,9 @@ fn notice_said_node(
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
   over? : (@view.View, String) -> Unit = fn(_, _) {  },
-  pill_over? : (@view.View, String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   message_row_frame_node(v, key, side, top, over~, fn(r) {
-    notice_body_node(r, src, here, m, opened, copied, fn(p) { pill_over(p, key) })
+    notice_body_node(r, src, here, m, opened, copied)
   })
 }
 
@@ -43,14 +41,13 @@ fn notice_body_node(
   m : () -> Message,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
-  pill_made : (@view.View) -> Unit,
 ) -> Unit {
   let open = fn() { opened.get(m().ts).unwrap_or(false) }
   v.box(fn(across) {
     @sf.style_node(across, fn() { notice_across })
     across.box(fn(beside) {
       @sf.style_node(beside, fn() { notice_with_action })
-      notice_pill_node(beside, src, here, m, open, opened, copied, pill_made)
+      notice_pill_node(beside, src, here, m, open, opened, copied)
     })
     |> ignore
     // (its time under it while it is open: one against nothing said to leave, as a show said so would not (it holds
@@ -115,21 +112,18 @@ fn notice_pill_node(
   open : () -> Bool,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
-  pill_made : (@view.View) -> Unit,
 ) -> Unit {
   let failed = fn() { m().notice_failed }
   let ink = fn() -> @ui.Color { if failed() { Danger } else { Fg } }
   v.box(fn(p) {
     @sf.style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
-    // (what lights it as it is gone to, under its words)
-    pill_made(p)
     @sf.presses_node(p, fn() {
       let ts = @signals.untracked(m).ts
       opened[ts] = !opened.get(ts).unwrap_or(false)
     })
     p.says(By(fn() { Some(@view.said(Button, label=m().notice_words)) })) |> ignore
     p.box(fn(line) {
-      @sf.style_node(line, fn() { notice_line })
+      @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
       line.box(fn(room) {
         @sf.style_node(room, fn() { notice_words_room }, in_row=true)
         // (giving way along the line to what it ends in, its words cut short in it: an old view's box's)

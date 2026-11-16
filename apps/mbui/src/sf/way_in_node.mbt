@@ -138,6 +138,7 @@ pub fn way_in_button_node(
 ) -> @view.View {
   let bare = native_input() is Mouse
   @headless.button(made_for=loc, body, label, fn(_) { press() }, disabled=busy, fn(v, b) {
+    v.focus_ring_theme() |> ignore
     let theme = fn() { @ui.tree_theme() }
     let lit = fn() { b.hovered() || b.pressed() }
     let ground = fn() {

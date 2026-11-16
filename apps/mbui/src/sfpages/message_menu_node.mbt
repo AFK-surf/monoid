@@ -63,15 +63,38 @@ fn message_agent_card_node(
 /// as its menu opens and out as it goes (nav_fade, from the moment of each), while its right click's menu shows
 /// (@sfbase.message_menu_on, by its key `key`) or its ⋯'s (`more`, the row's own: what it says once the row is made; a
 /// menu presented is told to what reads it).
-fn message_menu_band_way(row : @view.View, key : String, more : Ref[() -> Bool]) -> @motion.Way {
-  let way = @motion.Way::new(0.0)
+fn message_menu_band_way(
+  row : @view.View,
+  key : String,
+  more : Ref[() -> Bool],
+  on_active? : (Bool) -> Unit = fn(_) {  },
+) -> @motion.Way {
+  let read = fn() {
+    // (a menu presented or let go tells this again: the row's ⋯ read as it is then)
+    @sf.presenting() |> ignore
+    @sfbase.message_menu_on(key) || (more.val)()
+  }
+  let init = @signals.untracked(read)
+  let way = @motion.Way::new(if init { 1.0 } else { 0.0 })
+  let off : Ref[() -> Unit] = Ref(fn() {  })
+  if init {
+    on_active(true)
+  }
   row.reacts(
-    fn() {
-      // (a menu presented or let go tells this again: the row's ⋯ read as it is then)
-      @sf.presenting() |> ignore
-      @sfbase.message_menu_on(key) || (more.val)()
+    read,
+    fn(on) {
+      (off.val)()
+      let at = row.cause_at()
+      if on {
+        on_active(true)
+        way.go(1.0, @sf.nav_fade, at~)
+      } else {
+        way.go(0.0, @sf.nav_fade, at~)
+        off.val = row.at_moment(at + @sf.dur_ms, fn() { on_active(false) }, later=true)
+      }
     },
-    fn(on) { way.go(if on { 1.0 } else { 0.0 }, @sf.nav_fade, at=row.cause_at()) },
+    at_start=false,
   )
+  row.owns(fn() { (off.val)() }) |> ignore
   way
 }

@@ -20,7 +20,7 @@ pub fn check_row_node(
   parent.box(made_for=loc, fn(r) {
     style_node(r, fn() { check_row_box.then(@ui.style(min_h=Fixed(theme().items.least))) })
     // (check_row_box's hovered{bg=Hover} pressed{bg=Hover}: a mouse over any of it, or it pressed)
-    r.ground(By(fn() { if hovered_in_node(r) || r.pressed() { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    hover_ground_node(r, on=fn() { !disabled() }, lit=Some(fn() { hovered_in_node(r) || r.pressed() || r.focus_shown() }))
     // (the row pressed, past its box: ticked or not as its box would be)
     presses_node(r, on=fn() { !disabled() }, fn() {
       if !@signals.untracked(disabled) {
@@ -91,19 +91,8 @@ fn check_row_box_node(
       .ink(By(fn() { @ui.tree_theme().on_primary }))
       |> ignore
     })
-    // (the keyboard's focus on it: a ring round it, its gap and width the theme's: focus_ring's)
-    b.show(fn() { b.focus_shown() }, fn(ring) {
-      let out = fn() {
-        let t = @ui.tree_theme()
-        t.focus_gap + t.focus_w
-      }
-      ring
-      .over(Is(true))
-      .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-      .radius(By(fn() { corner() + out() }))
-      .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-      |> ignore
-    })
+    // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
+    focus_ring_node(b)
   })
   |> ignore
 }

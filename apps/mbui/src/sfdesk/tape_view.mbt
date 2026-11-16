@@ -997,6 +997,7 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
         // bringing the page over as a press does; the keyboard's one way to it, all of the page behind taking none:
         // tape_in_use)
         .focusable(By(fn() { p == Page && wide.tape_at.get() == Side }))
+        .focus_ring(Is(Some((-1.0, -4.0, 0L))))
         // (pressed by a screen reader: brought over at that moment, as a tap brings it; a finger and the pointer its
         // gesture's, as ever: what drags a node is what a press on it finds)
         .on_press(fn() {

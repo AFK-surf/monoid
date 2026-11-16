@@ -106,10 +106,8 @@ fn which_station(
       l.box(fn(r) {
         @sf.style_node(r, fn() { pick_row.then(row) })
         // (the list's ground under the hand: pick_row's hovered)
-        r
-        .ground(By(fn() { if @sf.lit_node(r) { @sf.theme().p.hover } else { 0L } }))
-        .says(Is(Some(@view.said(Button, label=s.name))))
-        |> ignore
+        @sf.hover_ground_node(r)
+        r.says(Is(Some(@view.said(Button, label=s.name)))) |> ignore
         @sf.presses_node(r, fn() {
           close()
           picker_open(src, ws, s, picked)
@@ -402,10 +400,8 @@ fn picker_list_node(v : @view.View, src : Source) -> Unit {
 fn picker_row_node(v : @view.View, e : PickerEntry, name : () -> String, note : () -> String, press : () -> Unit) -> Unit {
   v.box(fn(r) {
     @sf.style_node(r, fn() { picker_row_at.then(@sf.panel_row_in_node(r)) })
-    r
-    .ground(By(fn() { if @sf.lit_node(r) { @sf.theme().p.hover } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=name())) }))
-    |> ignore
+    @sf.hover_ground_node(r)
+    r.says(By(fn() { Some(@view.said(Button, label=name())) })) |> ignore
     @sf.presses_node(r, press)
     r.box(fn(l) {
       l.shrink(Is(0.0)) |> ignore

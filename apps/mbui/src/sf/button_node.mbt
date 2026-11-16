@@ -78,6 +78,7 @@ fn button_by(
   // its label, pressed and focused only while not disabled, Enter and Space pressing it. At work is disabled to all of
   // those, and told apart by the eye alone: said to the component as disabled, its spinner this look's. Here, its look)
   @headless.button(made_for=loc, parent, label, press, disabled=fn() { !live() }, default_on?, fn(v, b) {
+    v.focus_ring_theme() |> ignore
     // (the hand on it, or pressing it (the keyboard's focus shown on it, a pointer over it, a finger or the pointer
     // held on it: which of the button's states light it is this look's): how far its ground has gone towards its lit
     // one; at work, how far its spinner is in and how far its room is open; how faded it is)

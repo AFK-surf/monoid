@@ -837,10 +837,8 @@ fn cn_waiting_app_node(
 fn cn_more_node(parent : @view.View, drop : () -> Unit) -> Unit {
   parent.box(fn(m) {
     @sf.style_node(m, fn() { cn_more })
-    m
-    .ground(By(fn() { if m.pointed() { @ui.tree_theme().color(Hover) } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.connects.removeHere"))) }))
-    |> ignore
+    @sf.hover_ground_node(m)
+    m.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.connects.removeHere"))) })) |> ignore
     @sf.presses_node(m, fn() {
       let (x, y, w, h) = m.placed_window_now()
       @sf.menu([Some(@sf.menu_item_of(@sf.t("web-pages.connects.removeHere"), drop, danger=true))], from=At(x, y, w, h), along=End)

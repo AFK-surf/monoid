@@ -975,15 +975,14 @@ fn speed_node(
         .padding(Is((@ui.Space::S2.px(), 0.0, @ui.Space::S2.px(), 0.0)))
         .margin(Is((0.0, 0.0, @ui.capsule_in(card_corner, media_rate_h) - media_bar_pad, 0.0)))
         .radius(Is(media_rate_h / 2.0))
-        .ground(By(fn() {
-          let k = ink()
-          if d.hovered() || d.pressed() {
-            alpha(k.text, media_hot_share + media_rate_share)
-          } else {
-            alpha(k.text, media_rate_share)
-          }
-        }))
+        .focus_ring_theme()
+        .ground(By(fn() { alpha(ink().text, media_rate_share) }))
         |> ignore
+        hover_ground_node(
+          v,
+          lit=Some(fn() { d.hovered() || d.pressed() || d.focus_shown() }),
+          color=fn() { alpha(ink().text, media_hot_share) },
+        )
       }
       v.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       v.box(fn(w) {

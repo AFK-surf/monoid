@@ -249,7 +249,7 @@ test "put away where the app goes on (a desktop's tray, minimized), its notices 
 /// How lit the message whose words `words` are is as one gone to: the accent's ground drawn under all of them (a row's
 /// band, a notice's pill), as a share of that ground's opacity; 0 where none is.
 fn lit_over(t : @ui.Tester, words : String) -> Double {
-  let ground = @sf.theme().p.accent_bg
+  let ground = @sf.theme().flash_bg()
   guard t.rect_of(words) is Some((wx, wy, ww, wh)) else { return 0.0 }
   let mut most = 0.0
   for r in t.drawn_rect_corners() {
@@ -303,7 +303,7 @@ test "a message gone to is lit whole as a band: across the list from edge to edg
   if held > t.time() {
     t.run_for(held - t.time())
   }
-  let ground = @sf.theme().p.accent_bg
+  let ground = @sf.theme().flash_bg()
   let bands = t.drawn_rect_corners().filter(fn(r) { r.4 >> 8 == ground >> 8 && (r.4 & 0xFFL) != 0L })
   assert_eq(bands.length(), 1)
   let (x, _, w, h, _, corners) = bands[0]
@@ -312,17 +312,24 @@ test "a message gone to is lit whole as a band: across the list from edge to edg
 }
 
 ///|
-test "a notice gone to lights its own pill, round, never a band across the list behind it" {
+test "a notice gone to lights a full-width band across the list behind its pill" {
   // (opened at still.fail's notice, its flash held at its peak)
   let t = screen("chat-flash-notice", @ui.move_most_ms)
   assert_eq(@sfpages.flashing_now.val, ("ts1", 1.0))
-  let ground = @sf.theme().p.accent_bg
-  let lit = t.drawn_rect_corners().filter(fn(r) { r.4 >> 8 == ground >> 8 && (r.4 & 0xFFL) != 0L })
-  assert_eq(lit.length(), 1)
-  let (x, _, w, h, _, corners) = lit[0]
-  // the pill's, in from the list's sides, as round as it (its ends whole half circles)
-  assert_true(x > 1.0 && w < 388.0 && h > 0.0)
-  assert_true(corners.0 >= h / 2.0 - 0.5, msg="\{Repr(corners)} for \{h}")
+  let ground = @sf.theme().flash_bg()
+  let rects = t.drawn_rect_corners()
+  let band_at = rects.search_by(fn(r) { r.4 >> 8 == ground >> 8 && (r.4 & 0xFFL) != 0L })
+  assert_true(band_at is Some(_))
+  let bi = band_at.unwrap()
+  let (bx, by, bw, bh, _, bcorners) = rects[bi]
+  assert_true(bx.abs() < 0.5 && (bw - 390.0).abs() < 0.5 && bh > 0.0)
+  assert_eq(bcorners, (0.0, 0.0, 0.0, 0.0))
+  // the notice's own pill sits after (on top of) the band, stepping apart over it
+  let pill_at = rects.search_by(fn(r) {
+    let (px, py, pw, ph, pc, pcorners) = r
+    (pc & 0xFFL) != 0L && px > 1.0 && pw < 388.0 && py >= by - 0.5 && py + ph <= by + bh + 0.5 && pcorners.0 >= ph / 2.0 - 0.5
+  })
+  assert_true(pill_at is Some(pi) && pi > bi)
 }
 
 ///|

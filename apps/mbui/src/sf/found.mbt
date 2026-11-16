@@ -145,14 +145,15 @@ pub fn found_marks(runs : Array[@ui.Run], words : Array[String], at : Int) -> Ar
     return []
   }
   let t = theme()
-  let ground = if t.dark { 0xFF700047L } else { 0xFFCC00D9L }
+  let ground = t.find_bg()
+  let round = 3.0
   find_words(runs_text(runs), words).mapi(fn(i, r) {
     if at == found_all {
-      { from: r.0, to: r.1, ground: 0L, line: t.p.accent, line_w: message_stroke.width, round: 0.0 }
+      { from: r.0, to: r.1, ground: 0L, line: t.p.accent, line_w: message_stroke.width, round: 0.0, starts: true, ends: true }
     } else if i == at {
-      { from: r.0, to: r.1, ground, line: t.p.accent, line_w: message_stroke.width, round: 0.0 }
+      { from: r.0, to: r.1, ground, line: t.p.accent, line_w: message_stroke.width, round, starts: true, ends: true }
     } else {
-      { from: r.0, to: r.1, ground, line: 0L, line_w: 0.0, round: 0.0 }
+      { from: r.0, to: r.1, ground, line: 0L, line_w: 0.0, round, starts: true, ends: true }
     }
   })
 }
@@ -194,11 +195,16 @@ pub fn sought_part(runs : Array[@ui.Run], found : Array[@view.RunsMark], passage
 /// "" or a clear ground none) where words in pieces `runs` have it (find_passage: its spaces and line breaks aside), a
 /// ground a line round at its two ends (the theme's Md corner), as a passage picked in a message is drawn; none where
 /// they do not have it.
-pub fn passage_marks(runs : Array[@ui.Run], lit : (String, Int64)) -> Array[@view.RunsMark] {
+pub fn passage_marks(
+  runs : Array[@ui.Run],
+  lit : (String, Int64),
+  starts? : Bool = true,
+  ends? : Bool = true,
+) -> Array[@view.RunsMark] {
   let (passage, ground) = lit
   guard passage != "" && (ground & 0xFFL) != 0L else { return [] }
   match find_passage(runs_text(runs), passage) {
-    Some((a, b)) => [{ from: a, to: b, ground, line: 0L, line_w: 0.0, round: ui_theme().corner(Md) }]
+    Some((a, b)) => [{ from: a, to: b, ground, line: 0L, line_w: 0.0, round: ui_theme().corner(Md), starts, ends }]
     None => []
   }
 }

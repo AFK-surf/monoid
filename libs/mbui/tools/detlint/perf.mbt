@@ -444,6 +444,9 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
       }
     }
     lint_layout_drawn_while(f, out)
+    if under(f.rel, cfg.pages) || under(f.rel, cfg.library) {
+      lint_raw_hover_ground(f, out)
+    }
     let made = made_by(f)
     if made.is_empty() {
       continue
@@ -542,6 +545,45 @@ fn lint_layout_drawn_while(f : MbtFile, out : Array[Finding]) -> Unit {
         out.push(finding("layout-drawn-while", f.rel, toks[c.at].line, f.line_text(c.at)))
         break
       }
+    }
+  }
+}
+
+///|
+/// Instantaneous hover/pointer predicates that must not switch `View::ground(By(…))` directly without easing.
+let hover_hand_reads : Array[String] = [
+  "lit_node", "hovered_node", "lit_in_node", "hovered_in_node", "pointed", "hovered",
+]
+
+///|
+/// Easing reads whose presence in a `ground(By(…))` binding means the hover state is eased rather than snapped.
+let hover_eased_reads : Array[String] = ["shown", "shown_on"]
+
+///|
+/// raw-hover-ground: `View::ground(By(…))` branching directly on `lit_node` / `hovered_node` / `pointed` / `hovered`
+/// with no easing way (`shown`, `shown_on`), which snaps at 0 ms and overwrites any base `Card` or semantic ground.
+fn lint_raw_hover_ground(f : MbtFile, out : Array[Finding]) -> Unit {
+  let toks = f.toks
+  for c in f.calls {
+    if c.kind != "method" || c.is_def || c.name != "ground" || f.in_test(c.at) {
+      continue
+    }
+    guard c.at + 1 < toks.length() && toks[c.at + 1].text == "(" && toks[c.at + 1].end >= 0 else { continue }
+    let close = toks[c.at + 1].end
+    let mut reads_hand = false
+    let mut reads_eased = false
+    for d in f.calls {
+      if d.at > c.at + 1 && d.at < close && !d.is_def {
+        if hover_hand_reads.contains(d.name) {
+          reads_hand = true
+        }
+        if hover_eased_reads.contains(d.name) {
+          reads_eased = true
+        }
+      }
+    }
+    if reads_hand && !reads_eased {
+      out.push(finding("raw-hover-ground", f.rel, toks[c.at].line, f.line_text(c.at)))
     }
   }
 }

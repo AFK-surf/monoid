@@ -410,6 +410,7 @@ fn panel_row_by(
       // (the hand's ground, and the one the keys are at only where the hand rests (a pointer and keys): a finger moves no
       // keys' row, and on it that ground stood under the reader's row at rest, a second beside the one pressed. Where the
       // pointer moving onto a row takes the keys there (`point`), the pointer's own is that one: one ground, never two)
+      // det-ok(raw-hover-ground): roving panel filter row bar moves at once with arrow keys and pointer
       .ground(By(fn() {
         let hand = if point is Some(_) { lit_node(r) && !hovered_node(r) } else { lit_node(r) }
         if hand || (lit() && pointer_rests()) { t().p.hover } else { 0L }

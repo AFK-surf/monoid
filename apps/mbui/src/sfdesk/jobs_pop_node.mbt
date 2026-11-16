@@ -83,8 +83,8 @@ fn jobs_pop_node(
       let words = fn() { text(view(), "allText") + " · " + @sf.t("web-main.jobs.inPanel") }
       foot.box(fn(b) {
         @sf.style_node(b, fn() { jobs_all.then(jobs_pop_round) }, in_row=true)
-        b.ground(By(fn() { if @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } })).says(By(fn() { Some(@view.said(Button, label=words())) }))
-        |> ignore
+        @sf.hover_ground_node(b)
+        b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
         @sf.presses_node(b, fn() { tab("") })
         @sf.words_node(b, words, fn() { if @sf.lit_node(b) { jobs_all_hot } else { jobs_all_words } }) |> ignore
       })
@@ -112,10 +112,8 @@ fn jobs_pop_head(g : @view.View, name : String, note : () -> String) -> Unit {
 fn jobs_pop_row(row : @view.View, job : () -> Json?, end : () -> String, open : () -> Bool, press : () -> Unit) -> Unit {
   row.box(fn(b) {
     @sf.style_node(b, fn() { (if open() { job_row_static_inset } else { job_row_inset }).then(jobs_pop_round) })
-    b
-    .ground(By(fn() { if !open() && @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=text(job(), "name"))) }))
-    |> ignore
+    @sf.hover_ground_node(b, on=fn() { !open() })
+    b.says(By(fn() { Some(@view.said(Button, label=text(job(), "name"))) })) |> ignore
     @sf.presses_node(b, press)
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
@@ -360,7 +358,8 @@ fn jobs_pop_last(body : @view.View, src : Source, station : String, job : () -> 
 fn jobs_pop_action(parent : @view.View, words : String, on : () -> Bool, mark : (@view.View) -> Unit, press : () -> Unit) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { job_action_style }, in_row=true)
-    b.ground(By(fn() { if @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } })).says(Is(Some(@view.said(Button, label=words)))) |> ignore
+    @sf.hover_ground_node(b, on~)
+    b.says(Is(Some(@view.said(Button, label=words)))) |> ignore
     @sf.presses_node(b, press, on~)
     mark(b)
     @sf.words_node(b, fn() { words }, fn() { if on() && @sf.lit_node(b) { job_action_hot } else { job_action_words } }) |> ignore

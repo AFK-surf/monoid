@@ -640,7 +640,7 @@ fn wide_link_row_node(
       r.clips(Is(true)) |> ignore
     }
     if goes {
-      (if reach { o } else { r }).ground(By(fn() { if lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+      hover_ground_node(if reach { o } else { r }, by=r)
       presses_node(r, press(r))
       r.says(By(fn() { Some(@view.said(Link, label=title(), expanded?=folds.map(fn(f) { f() }))) })) |> ignore
     }

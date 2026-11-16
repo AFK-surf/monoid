@@ -1467,13 +1467,13 @@ test "小屏, a chat's page made with its inside nodes: a finger's pick in a mes
 /// drawn all gone over a row: its flash at rest, its menu's band shut, as they were; not a control's ground under the
 /// pointer, a bar's button's 32 by 32, which is another matter).
 fn flash_grounds() -> (Int, Int) {
-  let accent = @ui.tree_theme().color(AccentBg) & 0xFFFFFF00L
+  let flash = @sf.theme().flash_bg() & 0xFFFFFF00L
   let mut seen = 0
   let mut clear = 0
   for d in @ui.view_tree().unwrap().drawn() {
     if d.ground != 0L && (d.ground & 0xFFL) == 0L && d.w >= 200.0 {
       clear += 1
-    } else if (d.ground & 0xFFFFFF00L) == accent && d.ground != 0L {
+    } else if (d.ground & 0xFFFFFF00L) == flash && d.ground != 0L {
       seen += 1
     }
   }

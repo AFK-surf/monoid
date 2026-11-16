@@ -817,13 +817,13 @@ fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t 
   row.box(fn(b) {
     @sf.style_node(b, fn() { things_row })
     b
-    .ground(By(fn() { if @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
     .says(By(fn() { Some(@view.said(Button, label=words().0)) }))
     .on_menu(fn(m) {
       let tn = @signals.untracked(t)
       thing_menu_at(m.wx, m.wy, number(tn, "seq"), text(tn, "url"), away, beside=thing_beside(r, kind, tn))
     })
     |> ignore
+    @sf.hover_ground_node(b)
     // pointed at, a link's card over it, a pull request's as a message's link to it shows it (web_peek_node: at
     // its left, under it it would cover the rows after it)
     if kind != "files" {

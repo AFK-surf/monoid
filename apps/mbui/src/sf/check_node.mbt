@@ -48,19 +48,8 @@ pub fn check_node(
       .ink(By(fn() { @ui.tree_theme().on_primary }))
       |> ignore
     })
-    // (the keyboard's focus on it: a ring round it, its gap and width the theme's: focus_ring's)
-    b.show(fn() { b.focus_shown() }, fn(ring) {
-      let out = fn() {
-        let t = @ui.tree_theme()
-        t.focus_gap + t.focus_w
-      }
-      ring
-      .over(Is(true))
-      .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-      .radius(By(fn() { check_corner + out() }))
-      .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-      |> ignore
-    })
+    // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
+    focus_ring_node(b)
   })
   |> ignore
 }

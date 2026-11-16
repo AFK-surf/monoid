@@ -166,8 +166,9 @@ pub fn danger_row_node(
     .padding(Is((text_in, text_in, text_in, text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .lines_up(Is(Some(Middle)))
-    .ground(By(fn() { if !b.disabled() && lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } }))
+    .focus_ring_theme()
     |> ignore
+    hover_ground_node(r, on=fn() { !b.disabled() })
     // (a pointer's press lights its ground: press_ripple's)
     let rippled = press_look(r, Is(row_corner), fn() { false }, pointer=false)
     let on_it = fn(d : @view.Drag) { r.finger_target(d.wx, d.wy) }

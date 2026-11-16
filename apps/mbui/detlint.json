@@ -623,7 +623,11 @@
     "layout-drawn-while": {
       "src/sfpages/board_node.mbt": 2
     },
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {
+      "src/sf/reader_node.mbt": 6,
+      "src/sfpages/profiles_overview.mbt": 2
+    }
   },
   "excused": {
     "frame-request": {},
@@ -718,6 +722,11 @@
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {
+      "src/sf/menu_node.mbt": 1,
+      "src/sf/panel_parts_node.mbt": 1,
+      "src/sf/pick_node.mbt": 1
+    }
   }
 }

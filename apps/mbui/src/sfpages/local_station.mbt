@@ -244,10 +244,8 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
   more.val = Some(
     head.box(fn(m) {
       @sf.style_node(m, fn() { ls_more_at })
-      m
-      .ground(By(fn() { if m.pointed() { @ui.tree_theme().color(Hover) } else { 0L } }))
-      .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.menu.more"), expanded=open.get())) }))
-      |> ignore
+      @sf.hover_ground_node(m)
+      m.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.menu.more"), expanded=open.get())) })) |> ignore
       @sf.presses_node(m, press)
       @sf.icon_node(m, "more", ws_more_icon, By(fn() { t().p.muted })) |> ignore
     }),

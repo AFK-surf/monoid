@@ -113,6 +113,7 @@ pub fn stops_node(
     track
     .presses(Is(true))
     .focusable(Is(true))
+    .focus_ring_theme()
     .says(By(fn() {
       let k = n()
       let a = at()

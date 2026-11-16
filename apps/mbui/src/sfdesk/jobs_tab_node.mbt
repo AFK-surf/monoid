@@ -155,17 +155,10 @@ fn jobs_tab_row(
   row.box(fn(b) {
     @sf.style_node(b, fn() { if press() { job_row_style } else { job_row_static } })
     b
-    .ground(By(fn() {
-      if selected() {
-        @ui.tree_theme().color(Selected)
-      } else if press() && @sf.lit_node(b) {
-        @ui.tree_theme().color(Hover)
-      } else {
-        0L
-      }
-    }))
+    .ground(By(fn() { if selected() { @ui.tree_theme().color(Selected) } else { 0L } }))
     .says(By(fn() { Some(@view.said(Button, label=text(job(), "name"), selected=selected())) }))
     |> ignore
+    @sf.hover_ground_node(b, on=press)
     @sf.presses_node(b, on_press, on=press)
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
@@ -240,10 +233,8 @@ fn job_detail_node(
         let doing = fn() { job_stopping(src, station, job()) }
         s.box(fn(b) {
           @sf.style_node(b, fn() { job_detail_stop }, in_row=true)
-          b
-          .ground(By(fn() { if @sf.lit_node(b) { @sf.theme().p.hover } else { 0L } }))
-          .says(Is(Some(@view.said(Button, label=@sf.t("web-main.jobs.stop")))))
-          |> ignore
+          @sf.hover_ground_node(b)
+          b.says(Is(Some(@view.said(Button, label=@sf.t("web-main.jobs.stop"))))) |> ignore
           @sf.presses_node(b, fn() {
             if !@signals.untracked(doing).0 {
               job_stop(src, station, @signals.untracked(job))

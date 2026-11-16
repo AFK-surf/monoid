@@ -212,16 +212,16 @@ pub fn chat_list(
             // its menu open (right clicked, its ⋯), the same band in the pointer's ground, easing in and out as a
             // row's under the pointer does
             let under = if i + 1 < n { top_at(i + 1) / 2.0 } else { 0.0 }
+            let band_under = if under > 0.0 { under } else { top / 2.0 }
             let (band, band_by) = match e {
-              // (a notice lights its own pill: system_notice)
-              Said(m) if whole && m.ts == lit.0 && lit.1 > 0.0 && !m.system => (Some((lit.1, top / 2.0, under)), None)
+              Said(m) if whole && m.ts == lit.0 && lit.1 > 0.0 => (Some((lit.1, top / 2.0, band_under)), None)
               Said(m) => {
                 let on = @sfbase.message_menu_on("m:" + m.ts)
                 let a = @motion.told(c, "msg-menu/" + m.ts, if on { 1.0 } else { 0.0 }, spec=@sf.nav_fade)
                 if on || !a.over(c) {
                   let hover = @sf.theme().p.hover
                   // (the last message's as far under it as over it: the list's foot under it, no row to meet)
-                  (Some((1.0, top / 2.0, if under > 0.0 { under } else { top / 2.0 })), Some(fn() { @sf.alpha(hover, a.get(c)) }))
+                  (Some((1.0, top / 2.0, band_under)), Some(fn() { @sf.alpha(hover, a.get(c)) }))
                 } else {
                   (None, None)
                 }
@@ -955,8 +955,8 @@ fn row_box(
               c.bg_by(g, f)
             }
             None => {
-              let g = c.layer(fn() { c.box(style=flash_ground, fn() {  }) |> ignore })
-              c.look(g, @ui.look(alpha~))
+              let g = c.layer(fn() { c.box(style=band_ground, fn() {  }) |> ignore })
+              c.bg_by(g, fn() { @sf.alpha(@sf.theme().flash_bg(), alpha) })
             }
           }
         None => ()
@@ -998,14 +998,9 @@ fn float_box(c : @ui.Ctx, right : Double, foot : Double, body : () -> Int) -> Un
 }
 
 ///|
-/// A message's band in a ground drawn as it is painted (its menu open: Ctx::bg_by), the band's room alone.
+/// A message's band in a ground drawn as it is painted (its flash, or its menu open: Ctx::bg_by), the band's room alone.
 // kept across runs: a value (no field of it changes)
 let band_ground : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// A message gone to lit whole, its ground (msgFlash): the accent's, as its row's band (row_box).
-// kept across runs: a value (no field of it changes)
-let flash_ground : @ui.Style = @ui.css("w=Full h=Full bg=AccentBg")
 
 ///|
 /// The message gone to flashing in the list drawn now and how far its flash is (its ts, 0 to 1): its row's band

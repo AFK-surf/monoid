@@ -87,6 +87,7 @@ fn icon_button_by(
       v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       let pad = (size - icon_size) / 2.0
       v
+      .focus_ring_theme()
       .width(Is(Some(size)))
       .height(Is(Some(size)))
       .padding(Is((pad, pad, pad, pad)))

@@ -181,6 +181,7 @@ fn pick_row_node(
     .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
     .gap(Is(gap))
     .radius(Is(small_panel_inner(r_menu)))
+    // det-ok(raw-hover-ground): roving radio picker bar moves at once across items without trailing fade
     .ground(By(fn() { if r.pointed() || (r.focused() && r.focus_shown()) { library_theme().p.hover } else { 0L } }))
     .presses(Is(true))
     .focusable(Is(true))

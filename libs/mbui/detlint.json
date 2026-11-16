@@ -309,7 +309,8 @@
       "src/ui/nav_view.mbt": 1
     },
     "layout-drawn-while": {},
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {}
   },
   "excused": {
     "frame-request": {},
@@ -395,7 +396,8 @@
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {}
   },
   "tester": {
     "names": [

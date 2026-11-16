@@ -262,6 +262,15 @@ fn Tree::focus_set(self : Tree, id : NodeId?, visible : Bool) -> Unit {
   if was != id || shown_was != visible {
     self.hand_told(was, fn(n) { n.focus_shown_cell }, false)
     self.hand_told(id, fn(n) { n.focus_shown_cell }, visible)
+    match was {
+      Some(w) if self.alive_id(w) && self.nodes[w.at].look.focus_ring is Some(_) => self.look_marked_at(w.at)
+      _ => ()
+    }
+    match id {
+      Some(to) if visible && self.alive_id(to) && self.nodes[to.at].look.focus_ring is Some(_) =>
+        self.look_marked_at(to.at)
+      _ => ()
+    }
   }
   // (come to one: brought into sight by what holds it, once laid out: Tree::show_in_sight)
   match id {
@@ -667,4 +676,38 @@ pub fn View::tab_stop(self : View, on : Live[Bool]) -> View {
 /// the focus come to something of what hosts the tree (an old view's field or button) meanwhile, that keeps it.
 pub fn Tree::focus_parked_drop(self : Tree) -> Unit {
   self.focus_parked = None
+}
+
+///|
+/// The live Tab stops of the window's tree (Tree::focus_order) that show nothing of the keyboard's focus: neither an
+/// outer/concentric focus ring (View::focus_ring, View::focus_ring_theme) nor a look reading View::focus_shown or
+/// View::focused in its ground/overlay. Text fields (caret + field border), menu panel grounds (View::as_ground) and
+/// hosted old views are exempt.
+pub fn Tree::focus_blind(self : Tree) -> Array[NodeId] {
+  let out : Array[NodeId] = []
+  for fa in self.focus_order() {
+    if fa.hosted || !self.alive_id(fa.id) {
+      continue
+    }
+    let n = self.nodes[fa.id.at]
+    if n.as_ground {
+      continue
+    }
+    match n.said {
+      Some(s) if s.role is TextField || s.role is Menu => continue
+      _ => ()
+    }
+    match self.drawn_of(fa.id) {
+      Some(d) if d.w > 0.0 && d.h > 0.0 && d.alpha > 0.01 => ()
+      _ => continue
+    }
+    let shows = n.look.focus_ring is Some(_) ||
+      n.focus_shown_cell is Some(_) ||
+      (n.ground_read & ground_read_focus) != 0 ||
+      (n.ground_over_read & ground_read_focus) != 0
+    if !shows {
+      out.push(fa.id)
+    }
+  }
+  out
 }

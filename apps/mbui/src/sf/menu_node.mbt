@@ -413,6 +413,7 @@ fn menu_row_node(
     .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
     .gap(By(gap))
     .radius(Is(small_panel_inner(r_menu)))
+    // det-ok(raw-hover-ground): roving menu active bar moves at once across items without trailing fade
     .ground(By(fn() { if r.focused() && (r.focus_shown() || r.pointed()) { library_theme().p.hover } else { 0L } }))
     .presses(By(fn() { !off() }))
     // (one of the roving group: the menu's keys move along it, no key of its own; Tab stopping on the group's current

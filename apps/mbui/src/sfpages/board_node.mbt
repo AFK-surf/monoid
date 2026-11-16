@@ -1441,13 +1441,12 @@ fn board_chip(
       let p = @sf.theme().p
       if on() {
         p.accent_bg
-      } else if @sf.lit_node(c) {
-        @sf.alpha(p.text, 0.09)
       } else {
         @sf.alpha(p.text, 0.05)
       }
     }))
     |> ignore
+    @sf.hover_ground_node(c, on=fn() { !on() }, color=fn() { @sf.alpha(@sf.theme().p.text, 0.04) })
     // (across: as wide as its words at least, sharing what the row leaves; never narrower than they are)
     c.shrink(Is(0.0)) |> ignore
     if across {
@@ -1493,8 +1492,6 @@ fn card_ground(card : @view.View, picked : () -> Bool, faded : () -> Bool) -> Un
     let p = @sf.theme().p
     if picked() {
       @sf.over(p.card, @sf.alpha(p.accent_bg, 0.55))
-    } else if @sf.lit_node(card) {
-      @sf.over(p.card, @sf.alpha(p.hover, 0.6))
     } else {
       p.card
     }
@@ -1504,6 +1501,7 @@ fn card_ground(card : @view.View, picked : () -> Bool, faded : () -> Bool) -> Un
   .gap(Is(6.0))
   .alpha(By(fn() { if faded() { 0.35 } else { 1.0 } }))
   |> ignore
+  @sf.hover_ground_node(card, on=fn() { !picked() }, color=fn() { @sf.alpha(@sf.theme().p.hover, 0.6) })
 }
 
 ///|
@@ -1851,7 +1849,7 @@ fn board_chat_card(
     // flown across it)
     @motion.shared(card, board_shared(own, lane, name) + (if wide { "" } else { "@" + lane })) |> ignore
     card_ground(card, picked, fn() { (own.dragged)(ChatKey(name)) })
-    card.presses(Is(true)).focusable(Is(true)).on_press(open).says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
+    card.presses(Is(true)).focusable(Is(true)).focus_ring_theme().on_press(open).says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     // (narrow, a column at a time with nowhere to drag it to: not dragged, so a finger on it scrolls the column)
     if wide {
       card_drags(card, own, ChatKey(name), title, fn() {

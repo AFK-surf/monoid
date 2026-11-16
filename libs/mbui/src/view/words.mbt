@@ -149,6 +149,8 @@ pub(all) struct RunsMark {
   line : Int64
   line_w : Double
   round : Double
+  starts : Bool
+  ends : Bool
 }
 
 ///|

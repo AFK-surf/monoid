@@ -1036,12 +1036,59 @@ fn chat_body_row(
   }
   slot.pick(fn() { chat_body_kind(entry()) }, fn(p, kind) {
     made(k, p)
-    // (gone to: how lit it is as its flash goes, one way for the row; its row lit across the list, a notice's pill
-    // alone, or the passage a quote that led here quoted lit in its words alone: chat_passage_lit)
-    // (a piece of a long message gone to as the message is: all its pieces lit as one)
-    let flash = chat_flash_way(p, chat_piece_of(k), jump)
-    let pill_over = fn(pill : @view.View, key : String) { chat_flash_node(pill, key, jump, flash, round=true) }
-    let lit = chat_passage_lit(p, chat_piece_of(k), jump, flash)
+    let whole_key = chat_piece_of(k)
+    let band_room = fn() -> (Double, Double) {
+      let r = row()
+      let w = (here.width)()
+      let apart = chat_body_gap_room(Apart, w)
+      let over_pad = match r.piece {
+        Some(pc) if pc.from > 0 => 0.0
+        _ =>
+          match r.gap {
+            NoGap => apart / 2.0
+            _ => chat_body_gap_room(r.gap, w) / 2.0
+          }
+      }
+      let followed = match r.entry {
+        Said(m) => m.followed
+        Out(o) => o.followed
+        _ => false
+      }
+      let under_pad = match r.piece {
+        Some(pc) if !pc.last => 0.0
+        _ => if followed { joined_gap / 2.0 } else { apart / 2.0 }
+      }
+      (over_pad, under_pad)
+    }
+    let flash_on = Ref(false)
+    let menu_on_band = Ref(false)
+    let row_mid : Ref[@view.View?] = Ref(None)
+    let shaped = Ref(false)
+    let sync_band_shape = fn() {
+      guard row_mid.val is Some(r) && r.alive() else { return }
+      let want = flash_on.val || menu_on_band.val
+      if want && !shaped.val {
+        shaped.val = true
+        r.ground_drawn(
+          By(fn() {
+            let (o, u) = band_room()
+            { dx: 0.0, dy: -o, dw: 0.0, dh: o + u, corners: None }
+          }),
+        )
+        |> ignore
+      } else if !want && shaped.val {
+        shaped.val = false
+        r.ground_drawn(Is(@view.ground_as_laid)) |> ignore
+      }
+    }
+    // (gone to: how lit it is as its flash goes, one way for the row; every message kind, notices included, lights its
+    // full-width row band across the list, or the passage a quote that led here quoted in its words alone:
+    // chat_passage_lit; a piece of a long message gone to as the message is, all its pieces lit as one)
+    let flash = chat_flash_way(p, whole_key, jump, on_active=fn(on) {
+      flash_on.val = on
+      sync_band_shape()
+    })
+    let lit = chat_passage_lit(p, whole_key, jump, flash)
     let m0 = match @signals.untracked(entry) {
       Said(m) => m
       _ => chat_body_none
@@ -1054,10 +1101,17 @@ fn chat_body_row(
     }
     let frame = fn(body : (@view.View) -> Unit) { message_row_frame_node(p, k, side, top, body) |> ignore }
     // (a message's: its flash, and over it its band while its menu shows, right clicked or its ⋯'s, as the row says
-    // that: both its outermost node's ground, chat_row_lit_node's)
+    // that: both its content line node's ground, chat_row_lit_node's, expanded symmetrically into half the gaps above
+    // and below while lit)
     let more : Ref[() -> Bool] = Ref(fn() { false })
     let over = fn(row : @view.View, key : String) {
-      chat_row_lit_node(row, key, jump, flash, message_menu_band_way(row, key, more))
+      row_mid.val = Some(row)
+      let band = message_menu_band_way(row, key, more, on_active=fn(on) {
+        menu_on_band.val = on
+        sync_band_shape()
+      })
+      sync_band_shape()
+      chat_row_lit_node(row, key, jump, flash, band)
     }
     match kind {
       KTop => p.box(fn(b) { b.height(By(fn() { Some(list_top()) })) |> ignore }) |> ignore
@@ -1105,7 +1159,7 @@ fn chat_body_row(
         // (its words, picked with the pointer, are of its key, as a message's are from where they are read: quoted by
         // it, all of them taken by 全选, chat_quote_node)
         @ui.picked_of(p, k, whole=true) |> ignore
-        notice_said_node(p, src, here, k, side, top, m, keeps.opened, keeps.copied, pill_over~) |> ignore
+        notice_said_node(p, src, here, k, side, top, m, keeps.opened, keeps.copied, over~) |> ignore
       }
       KPerson =>
         more.val = person_said_node(p, src, here, k, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on

@@ -12,7 +12,7 @@ let rule_names : Array[String] = [
   "build-clock", "build-motion", "old-list", "list-comes-off", "old-island", "old-panel",
   "click-read", "key-read", "part-place", "button-by-hand", "layout-told", "abort-unsaid", "empty-on-done", "panic-test", "read-before-run", "reset-by-hand",
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
-  "each-lookup", "layout-drawn-while", "shader-int",
+  "each-lookup", "layout-drawn-while", "shader-int", "raw-hover-ground",
 ]
 
 ///|
@@ -23,6 +23,7 @@ let rule_words : Map[String, String] = {
   "each-min-height": "a row of View::each that says how tall it is at the least (min_height, a style given it with min_h=, by its name too) and no height: the list lays it out by what it holds, its words measured whenever it is laid out: a list's row is as tall as it is said (height, h=), worked out once of the theme and the size of words where it follows them; a row that truly grows with what it holds says why on its line (det-ok)",
   "each-lookup": "a row of View::each (each_of) looks its item up in a list by walking it (find_first, search_by) as it is made or as its bindings read: every row walks the whole list, and what changes one item of it wakes them all, n rows n times n. Keep the list by key once, upstream (View::keyed_by: each row reads its own item by its key, told only as that one changes) or give the row what it shows; a press's or a handler's lookup, run once as it is pressed, is not counted. A walk over a fixed few (two or three of an enum) says why on its line (det-ok)",
   "layout-drawn-while": "a size or a room of the layout (width, height, min_/max_, padding, margin, basis, gap) worked out of a way as it is drawn (View::drawn_while, Way::shown_on): what holds it is laid out again every frame the way goes, its words measured and broken again; a motion moves what is drawn (offset, alpha, scale, a clip: Content::clips_self) over a layout laid out once at its end, or keeps what is inside it at the width it comes to. One that truly reshapes as it goes says why on its line (det-ok)",
+  "raw-hover-ground": "a node's own View::ground(By(…)) switches instantaneously on hover or pointer state (lit_node, hovered_node, lit_in_node, hovered_in_node, pointed, hovered) with no easing way (Eased::shown, Way::shown_on): it snaps at 0 ms and replaces any semantic or card ground underneath. Composite hover over the base surface with hover_ground_node / View::ground_over and @motion.Eased; a roving menu bar that moves at once across items says why on its line (det-ok)",
   "frame-walk": "a test walks a span of the clock frame by frame with Tester::frame, which draws each frame whether or not anything asks for it: walk it by Tester::frame_as_host (what nothing asks for not drawn, as an idle host draws none) or run_for the span; time nothing happens in is skipped, never walked",
   "app-word": "the code names an app built on it (detlint.json `app_words`: a word, a path of its): a framework knows no app; what an app needs of it is asked of the app, its own native calls (@hostapi.app_said, app_tell), a name it says (@hostapi.set_site_name), its config",
   "frame-request": "the app asks for a frame itself: the framework knows when one is due (an input, an event, an animation's deadline, a layout read)",

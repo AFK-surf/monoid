@@ -26,6 +26,7 @@ pub fn wide_button_node(
     fn(_) { press() },
     disabled=fn() { !enabled() || busy() },
     fn(v, b) {
+      v.focus_ring_theme() |> ignore
       let ground = fn() {
         let t = theme()
         if !primary {

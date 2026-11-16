@@ -321,6 +321,7 @@ fn recent_tile_press(t : @view.View, label : () -> String, press : () -> Unit) -
   t
   .presses(Is(true))
   .focusable(Is(true))
+  .focus_ring_theme()
   .says(By(fn() { Some(@view.said(Button, label=label())) }))
   .on_press(press)
   |> ignore

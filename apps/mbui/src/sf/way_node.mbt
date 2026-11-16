@@ -76,6 +76,7 @@ pub fn way_line_node(
                 present(Menu(gone, "", Start), Node(s))
               },
               fn(s, _) {
+                s.focus_ring_theme() |> ignore
                 style_node(s, fn() { look().step }, in_row=true)
                 words_node(s, fn() { way_more }, fn() { look().words }) |> ignore
               },

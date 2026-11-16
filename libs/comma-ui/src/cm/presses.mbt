@@ -31,12 +31,6 @@ pub fn lit(v : @view.View, on : () -> Bool) -> Bool {
 /// Comma's focus ring round `v` while the keyboard's focus is on it (focus-visible): `ink`'s 4 px round its edge,
 /// `corner` its corner, over what is beside it.
 pub fn ring_node(v : @view.View, corner : () -> Double, ink? : Int64 = focus_brand.1) -> Unit {
-  v.show(fn() { v.focus_shown() }, fn(r) {
-    r
-    .over(Is(true))
-    .margin(Is((-ring_w, -ring_w, -ring_w, -ring_w)))
-    .radius(By(fn() { corner() + ring_w }))
-    .edge(Is((ring_w, ink)))
-    |> ignore
-  })
+  ignore(corner)
+  v.focus_ring(Is(Some((ring_w, 0.0, ink)))) |> ignore
 }

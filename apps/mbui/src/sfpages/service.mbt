@@ -996,7 +996,7 @@ fn size_option_node(
     @sf.style_node(o, fn() {
       size_option.then(@sf.panel_row_in_node(o)).then(@ui.style(min_h=Fixed(@sf.theme().items.least)))
     })
-    o.ground(By(fn() { if @sf.lit_node(o) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    @sf.hover_ground_node(o)
     // (read out by its name and its size, as the old row was)
     @sf.rippled_node(o, press, @sf.row_corner, fn() { name() + " " + note() })
     // (its check's column, the check in its middle while chosen: along the row, at once)

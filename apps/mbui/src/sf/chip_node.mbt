@@ -38,6 +38,7 @@ pub fn chip_node(
       let hand = EdgeWay::new(0.0)
       v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       v
+      .focus_ring_theme()
       .row(Is(true))
       .height(Is(Some(30.0)))
       .min_width(Is(Some(30.0)))

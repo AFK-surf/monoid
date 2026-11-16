@@ -72,6 +72,10 @@ pub(all) struct Palette {
   online : Int64
   /// a quiet ground under what is in it (a pill's, a bubble's): the ink at an opacity, a step off whatever it lies on
   neutral_bg : Int64
+  /// secondary emphasis ground (a jumped-to row's flash band, a quiet emphasis step above `hover` and `neutral_bg`,
+  /// tuned separately in light and dark): neutral ink at an opacity so neutral bubbles/cards stack one step over it
+  /// while chromatic grounds (`Over(Bg, DangerBg)`) stay untinted
+  secondary_bg : Int64
   overlay : Int64
   shadow : Int64
   primary : Int64
@@ -969,6 +973,8 @@ let light_palette : Palette = {
   green_bg: alpha(0x045B33FFL, tone_light),
   // its placeholders in its bubbles' grey, a step darker than the page
   neutral_bg: 0x322D2413L,
+  // warm stone secondary emphasis (10.2% of #2B2822 -> #E0DEDA on #F5F3EF, matching selected luminance)
+  secondary_bg: 0x2B28221AL,
   card: 0xFFFFFFFFL,
   // Android's C.chip, what the app on a phone matches, not the narrow web's EFECE6
   chip: 0xE8E4DCFFL,
@@ -1003,6 +1009,8 @@ let dark_palette : Palette = {
   blue_bg: alpha(0x8EB8FEFFL, tone_dark),
   amber_bg: alpha(0xEEAA44FFL, tone_dark),
   neutral_bg: 0xECECED1BL,
+  // neutral secondary emphasis (10.6% of #F2F3F5 -> #323336 on #1B1C1F, matching selected luminance)
+  secondary_bg: 0xF2F3F51BL,
   // an outline a step lighter than the web's (3D3F44), as the grounds it lies on are (its canvas 1F2023 → 26272B): a
   // quote's bar on a card's chip still seen
   line_strong: 0x44464BFFL,
@@ -3140,4 +3148,45 @@ pub let home_workspace_title_look : @view.WordsLook = {
   tracking: ScaledPoints(-0.4),
   balance: false,
   max_lines: 0,
+}
+
+///|
+/// Secondary emphasis ground (`Palette.secondary_bg`) for `dark` or light themes: tuned separately in light (`#2B2822`
+/// at `10.2%`, warm stone `#E0DEDA` on `#F5F3EF`) and dark (`#F2F3F5` at `10.6%`, neutral charcoal `#323336` on
+/// `#1B1C1F`) so neutral bubbles/cards stack one step over it and chromatic error pills (`Over(Bg, DangerBg)`) stay
+/// untinted.
+pub fn flash_band_bg(dark : Bool) -> Int64 {
+  if dark {
+    dark_palette.secondary_bg
+  } else {
+    light_palette.secondary_bg
+  }
+}
+
+///|
+/// Secondary emphasis ground in `Theme` (`self.p.secondary_bg`).
+pub fn Theme::secondary_bg(self : Theme) -> Int64 {
+  self.p.secondary_bg
+}
+
+///|
+/// In-page find (`⌘F`) match highlight ground for `dark` or light themes.
+pub fn find_marker_bg(dark : Bool) -> Int64 {
+  if dark {
+    0xFF700047L
+  } else {
+    0xFFCC00D9L
+  }
+}
+
+///|
+/// In-page find (`⌘F`) match highlight ground in `Theme`.
+pub fn Theme::find_bg(self : Theme) -> Int64 {
+  find_marker_bg(self.dark)
+}
+
+///|
+/// Full-row jump flash band ground in `Theme` (`self.p.secondary_bg`).
+pub fn Theme::flash_bg(self : Theme) -> Int64 {
+  self.p.secondary_bg
 }

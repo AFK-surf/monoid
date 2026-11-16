@@ -160,7 +160,8 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
     holds.box(fn(b) {
       @sf.style_node(b, fn() { chat_quote_pill })
       @ui.keeps_picked(b)
-      .ground(By(fn() { @ui.tree_theme().color(if @sf.lit_node(b) { chat_quote_lit } else { Primary }) }))
+      .focus_ring_theme()
+      .ground(By(fn() { @ui.tree_theme().color(Primary) }))
       .shadow(
         By(fn() {
           let (blur, fall) = @ui.Shadow::Md.blur_y()
@@ -171,6 +172,7 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
       .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
       .on_press(fn() { chat_quote_take(src, draft, rows) })
       |> ignore
+      @sf.hover_ground_node(b, color=fn() { @ui.tree_theme().color(A(Bg, O15)) })
       @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
       @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
@@ -190,10 +192,6 @@ let chat_quote_pill : @ui.Style = @ui.style(
   radius=Full,
   align=ACenter,
 )
-
-///|
-// kept across runs: a value (no field of it changes)
-let chat_quote_lit : @ui.Color = Over(Primary, A(Bg, O15))
 
 ///|
 let chat_quote_icon : Double = 12.0

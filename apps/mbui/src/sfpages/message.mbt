@@ -811,12 +811,6 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
   }
   let linked = m.profile != "" && m.notice_link >= 0 && m.notice_link <= said.length()
   let after = if here.list is Some(_) { notice_after(m) } else { None }
-  // gone to (a notification's, the outline's), its pill alone lit in the accent's ground: a row's band across the
-  // list (chat_list's row_box) would stand square behind the round pill
-  let lit = match here.list {
-    Some(l) => flash_of(c, reading_of(l.rk), m.ts)
-    None => 0.0
-  }
   let pill = fn() {
     // (as wide as it was closed as it sets out, as the chat lets it once open, what it holds cut to it on the way)
     let pill_style = match widened {
@@ -825,11 +819,7 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
       _ => notice_pill_of(failed, shown_open)
     }
     let p = c.box(style=pill_style, id~, fn() {
-      if lit > 0.0 {
-        let g = c.layer(fn() { c.box(style=if shown_open { notice_lit_open } else { notice_lit }, fn() {  }) |> ignore })
-        c.look(g, @ui.look(alpha=lit))
-      }
-      c.box(style=notice_line, fn() {
+      c.box(style=if shown_open { notice_line_open } else { notice_line }, fn() {
         // (its runs' lines laid as wide as they are once open all the way, cut by the pill as it widens: never laid
         // anew at each width, where a line let go of its wrap mid-way and what is under it jumped up a line)
         let words_room = match widened {
@@ -1515,26 +1505,21 @@ let notice_pill_open : @ui.Style = notice_pill.then(@ui.css("radius=Xl1_5"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_failed : @ui.Style = notice_pill.then(@ui.css("bg=DangerBg"))
+let notice_pill_failed : @ui.Style = notice_pill.then(@ui.css("bg=Over(Bg, DangerBg)"))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let notice_pill_failed_open : @ui.Style = notice_pill_open.then(@ui.css("bg=DangerBg"))
-
-///|
-/// A notice gone to, lit: the accent's ground over its pill's, as round (system_notice).
-// kept across runs: a value (no field of it changes)
-let notice_lit : @ui.Style = @ui.css("w=Full h=Full radius=Full bg=AccentBg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let notice_lit_open : @ui.Style = notice_lit.then(@ui.css("radius=Xl1_5"))
+let notice_pill_failed_open : @ui.Style = notice_pill_open.then(@ui.css("bg=Over(Bg, DangerBg)"))
 
 ///|
 /// Its words and what is done at their end (msgSystemLine, msgSystemEnd): the words cut short before it, which keeps
-/// its room whole (notice_action: kept, as a row's end).
+/// its room whole (notice_action: kept, as a row's end); once opened, aligned with the first line of wrapped words.
 // kept across runs: a value (no field of it changes)
 let notice_line : @ui.Style = @ui.css("row align=AEnd")
+
+///|
+// kept across runs: a value (no field of it changes)
+let notice_line_open : @ui.Style = @ui.css("row align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)

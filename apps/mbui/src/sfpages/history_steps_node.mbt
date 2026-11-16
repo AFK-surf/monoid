@@ -1887,8 +1887,7 @@ fn group_node(
       gv.box(fn(h) {
         @sf.style_node(h, fn() { h_group_head })
         let hot = fn() { @sf.lit_node(h) }
-        h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
-        |> ignore
+        @sf.hover_ground_node(h, lit=Some(fn() { @sf.lit_in_node(h) }))
         steps_pressed(h, fn() { steps_flip(gk) }, label=fn() { text(g, "summary") }, folds=true, open~)
         let g_icon = group_icon(g)
         h.box(fn(i) {
@@ -2383,8 +2382,7 @@ fn steps_reused_row_node(
                     gv.box(fn(h) {
                       @sf.style_node(h, fn() { h_group_head })
                       let hot = fn() { @sf.lit_node(h) }
-                      h.ground(By(fn() { if @sf.lit_in_node(h) { @ui.tree_theme().color(Hover) } else { 0L } }))
-                      |> ignore
+                      @sf.hover_ground_node(h, lit=Some(fn() { @sf.lit_in_node(h) }))
                       steps_pressed(h, fn() { steps_flip(@signals.untracked(gk)) }, label=summary, folds=true, open~)
                       let icon_sig = @signals.computed(fn(_) { group_icon(content()) }, same=fn(a, b) { a == b })
                       let icon_fn = fn() { icon_sig.get() }
@@ -2839,8 +2837,7 @@ fn opened_node(
   steps_box_node(v, h_step, fn(s) {
     s.box(fn(line) {
       @sf.style_node(line, fn() { h_step_summary })
-      line.ground(By(fn() { if @sf.lit_in_node(line) && !open() { @ui.tree_theme().color(Hover) } else { 0L } }))
-      |> ignore
+      @sf.hover_ground_node(line, on=fn() { !open() }, lit=Some(fn() { @sf.lit_in_node(line) }))
       steps_pressed(line, fn() { steps_flip(rk) }, folds=true, open~)
       summary(line)
       steps_chevron_node(

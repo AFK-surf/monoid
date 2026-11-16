@@ -49,6 +49,8 @@ pub(all) struct NodeId {
 #derive(Eq, Debug)
 pub(all) struct Look {
   mut ground : Int64
+  /// what is composited directly over `ground` on the same surface (hover, press, flash wash): View::ground_over
+  mut ground_over : Int64
   mut ink : Int64
   mut words : String
   /// what is drawn of its words where they have not the room on their line and it says shorter ones (View::shorter;
@@ -78,6 +80,10 @@ pub(all) struct Look {
   mut lines : Array[@paint.Line]
   /// the edge drawn round its ground, inside it (how wide, its colour; 0 wide: none): View::edge
   mut edge : (Double, Int64)
+  /// an outer concentric ring round the node, drawn after what it holds and outside its clip (width, gap, colour): View::ring
+  mut ring : (Double, Double, Int64)
+  /// the concentric ring shown while the keyboard's focus is on the node (width < 0: theme default): View::focus_ring
+  mut focus_ring : (Double, Double, Int64)?
   /// the picture it shows over its ground, all of it filled (its source as what hosts the tree keeps pictures by, what
   /// stands in for it till it is decoded at the size it is drawn ("" none), the most pixels it is asked at), drawn as
   /// what hosts the tree draws one (None: none): View::image
@@ -179,6 +185,8 @@ pub(all) struct Content {
   corners : (Double, Double, Double, Double)?
   /// the edge round its ground (View::edge)
   edge : (Double, Int64)
+  /// the outer concentric ring round it (width, gap, colour; width < 0: theme focus default): View::ring, View::focus_ring
+  ring : (Double, Double, Int64)
   /// the picture it shows, all of it filled (View::image)
   image : (String, String, Int)?
   /// the room its picture is judged ready for (View::image_for)
@@ -228,6 +236,8 @@ pub fn Content::draws(self : Content) -> Bool {
   // (a ground of no opacity draws nothing: ui's paint of it, an old view's box's grounded)
   (self.ground & 0xFFL) != 0L ||
   (self.edge.0 > 0.0 && (self.edge.1 & 0xFFL) != 0L) ||
+  self.ring.0 < 0.0 ||
+  (self.ring.0 > 0.0 && (self.ring.2 & 0xFFL) != 0L) ||
   self.image is Some(_) ||
   self.words != "" ||
   !self.shapes.is_empty() ||
@@ -241,9 +251,12 @@ pub fn Content::draws(self : Content) -> Bool {
 ///|
 /// Whether what a node looks as draws anything of its own, as its content says it (Content::draws), or words of its own (its
 /// runs, what is drawn of its words): Content's `draws_any`.
-fn look_draws_any(l : Look, hosted : Bool) -> Bool {
+fn look_draws_any(l : Look, hosted : Bool, ring : (Double, Double, Int64)) -> Bool {
   (l.ground & 0xFFL) != 0L ||
+  (l.ground_over & 0xFFL) != 0L ||
   (l.edge.0 > 0.0 && (l.edge.1 & 0xFFL) != 0L) ||
+  ring.0 < 0.0 ||
+  (ring.0 > 0.0 && (ring.2 & 0xFFL) != 0L) ||
   l.image is Some(_) ||
   l.words != "" ||
   !l.shapes.is_empty() ||
@@ -287,6 +300,8 @@ pub(all) struct Drawn {
   corners : (Double, Double, Double, Double)?
   /// the edge round its ground (View::edge)
   edge : (Double, Int64)
+  /// the outer concentric ring round it (width, gap, colour; width < 0: theme focus default): View::ring, View::focus_ring
+  ring : (Double, Double, Int64)
   /// the picture it shows, all of it filled (View::image)
   image : (String, String, Int)?
   /// the room its picture is judged ready for (View::image_for)
@@ -447,6 +462,7 @@ struct Node {
   /// a state it is not in now, which the corner rule holds at rest as shown (ui's corners.mbt, Node::lit_ground). None
   /// kept elsewhere
   mut ground_read : Int
+  mut ground_over_read : Int
   /// what it does as the pointer moves onto it or over it (View::on_pointer_moved): the pointer's own moving, not a
   /// layout putting it under a still pointer
   mut on_pointer_moved : (() -> Unit)?
@@ -1681,6 +1697,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.live = true
       n.flex = @flex.Node::new()
       n.look.ground = 0L
+      n.look.ground_over = 0L
       n.look.ink = 0L
       n.look.words = ""
       n.look.words_drawn = None
@@ -1709,6 +1726,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.radius = 0.0
       n.look.corners = None
       n.look.edge = (0.0, 0L)
+      n.look.ring = (0.0, 0.0, 0L)
+      n.look.focus_ring = None
       n.look.image = None
       n.look.image_for = (0.0, 0.0)
       n.look.image_cover = false
@@ -1791,6 +1810,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.pressed_cell = None
       n.pointed_cell = None
       n.ground_read = 0
+      n.ground_over_read = 0
       n.on_pointer_moved = None
       n.pointed_in_cell = None
       n.within_cell = None
@@ -1891,7 +1911,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -1920,6 +1940,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         pressed_cell: None,
         pointed_cell: None,
         ground_read: 0,
+        ground_over_read: 0,
         on_pointer_moved: None,
         pointed_in_cell: None,
         within_cell: None,
@@ -3606,6 +3627,9 @@ priv enum Prop {
   InUse
   LaysAnew
   DefaultPress
+  GroundOver
+  Ring
+  FocusRing
 }
 
 ///|
@@ -3706,6 +3730,9 @@ impl Show for Prop with output(self, logger) {
       InUse => "InUse"
       LaysAnew => "LaysAnew"
       DefaultPress => "DefaultPress"
+      GroundOver => "GroundOver"
+      Ring => "Ring"
+      FocusRing => "FocusRing"
     },
   )
 }
@@ -3830,6 +3857,9 @@ fn Prop::ord(self : Prop) -> Int {
     FillsAcross => 83
     OneOf => 84
     RunsMarks => 89
+    GroundOver => 91
+    Ring => 92
+    FocusRing => 93
   }
 }
 
@@ -4658,6 +4688,63 @@ pub fn View::ground(self : View, ink : Live[Int64], loc~ : SourceLoc) -> View {
 }
 
 ///|
+/// A surface overlay composited directly over `ground` on the same box and corners (hover, press, flash wash): neither
+/// replaces `ground` nor makes a child box; paint's.
+#callsite(autofill(loc))
+pub fn View::ground_over(self : View, ink : Live[Int64], loc~ : SourceLoc) -> View {
+  let ink = if self.tree.sources {
+    match ink {
+      By(f) => {
+        let (at, gen) = (self.at, self.gen)
+        By(fn() {
+          let was = ground_reading.val
+          ground_reading.val = 0
+          let k = f()
+          let n = self.tree.nodes[at]
+          if n.live && n.gen == gen {
+            n.ground_over_read = ground_reading.val
+          }
+          ground_reading.val = was
+          k
+        })
+      }
+      Is(_) => {
+        match self.live() {
+          Some(n) => n.ground_over_read = 0
+          None => ()
+        }
+        ink
+      }
+    }
+  } else {
+    ink
+  }
+  self.bind(loc~, GroundOver, ink, Paint, fn(k) { self.tree.nodes[self.at].look.ground_over = k })
+  self
+}
+
+///|
+/// Colour `top` composited over `under` (each 0xRRGGBBAA).
+fn blend_ground(under : Int64, top : Int64) -> Int64 {
+  let ta = (top & 0xFFL).to_double() / 255.0
+  if ta <= 0.0 {
+    return under
+  }
+  let ua = (under & 0xFFL).to_double() / 255.0
+  if ua <= 0.0 || ta >= 1.0 {
+    return top
+  }
+  let a = ta + ua * (1.0 - ta)
+  let mix = fn(shift : Int) -> Int64 {
+    let t = ((top >> shift) & 0xFFL).to_double()
+    let u = ((under >> shift) & 0xFFL).to_double()
+    let c = (t * ta + u * ua * (1.0 - ta)) / a
+    (c + 0.5).to_int64() & 0xFFL
+  }
+  (mix(24) << 24) | (mix(16) << 16) | (mix(8) << 8) | ((a * 255.0 + 0.5).to_int64() & 0xFFL)
+}
+
+///|
 /// What a ground being worked out read of what shows it (View::ground, where the tree keeps sources): set by what it
 /// reads (Tree::ground_reads), asked and put back by View::ground.
 // kept across runs: set only while a ground is worked out where the tree keeps sources, put back as it ends
@@ -4684,7 +4771,8 @@ fn Tree::ground_reads(self : Tree, what : Int) -> Unit {
 /// tree keeps sources (a Tester's); 0 elsewhere.
 pub fn Tree::ground_read(self : Tree, id : NodeId) -> Int {
   if self.alive_id(id) {
-    self.nodes[id.at].ground_read
+    let n = self.nodes[id.at]
+    n.ground_read | n.ground_over_read
   } else {
     0
   }
@@ -4699,9 +4787,9 @@ pub fn Tree::lit_row_state(self : Tree, id : NodeId) -> (Bool, Bool, Bool) {
     return (false, false, false)
   }
   let n = self.nodes[id.at]
-  let has_ground_bind = n.prop_has(Ground.ord())
+  let has_ground_bind = n.prop_has(Ground.ord()) || n.prop_has(GroundOver.ord())
   let watches_hand = n.pointed_cell is Some(_) || n.pressed_cell is Some(_) || n.pointed_in_cell is Some(_)
-  let lights = (n.ground_read & (ground_read_hand | ground_read_focus)) != 0 ||
+  let lights = ((n.ground_read | n.ground_over_read) & (ground_read_hand | ground_read_focus)) != 0 ||
     (has_ground_bind && watches_hand)
   let chooses = n.on_pointer_moved is Some(_)
   let hand_on = self.pointed == Some(id) || self.pressing == Some(id) || self.pointed_within_at(id.at)
@@ -4777,6 +4865,31 @@ pub fn View::corners_drawn(self : View) -> (Double, Double, Double, Double) {
 pub fn View::edge(self : View, e : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
   self.bind(loc~, Edge, e, Paint, fn(e) { self.tree.nodes[self.at].look.edge = e })
   self
+}
+
+///|
+/// An outer concentric ring round the node (`(width, gap, colour)`; `0` wide: none), drawn after what it holds and
+/// outside its clip, concentric with its own corners: paint's.
+#callsite(autofill(loc))
+pub fn View::ring(self : View, r : Live[(Double, Double, Int64)], loc~ : SourceLoc) -> View {
+  self.bind(loc~, Ring, r, Paint, fn(r) { self.tree.nodes[self.at].look.ring = r })
+  self
+}
+
+///|
+/// The concentric ring shown while the keyboard's focus is on the node (`View::focus_shown`), with no child box or
+/// signal cell needed when said `Is(...)`; `width < 0` uses the host theme's `focus_w`, `focus_gap` and `focus`: paint's.
+#callsite(autofill(loc))
+pub fn View::focus_ring(self : View, r : Live[(Double, Double, Int64)?], loc~ : SourceLoc) -> View {
+  self.bind(loc~, FocusRing, r, Paint, fn(r) { self.tree.nodes[self.at].look.focus_ring = r })
+  self
+}
+
+///|
+/// Marks this node to draw the theme's concentric focus ring whenever keyboard focus is shown on it (`Is`, zero bindings).
+#callsite(autofill(loc))
+pub fn View::focus_ring_theme(self : View, loc~ : SourceLoc) -> View {
+  self.focus_ring(loc~, Is(Some((-1.0, 0.0, 0L))))
 }
 
 ///|
@@ -5102,7 +5215,9 @@ fn draws_of(n : Node) -> Bool {
   let l = n.look
   // (a ground of no opacity draws nothing: ui's paint of it, an old view's box's grounded)
   (l.ground & 0xFFL) != 0L ||
+  (l.ground_over & 0xFFL) != 0L ||
   (l.edge.0 > 0.0 && (l.edge.1 & 0xFFL) != 0L) ||
+  (l.ring.0 > 0.0 && (l.ring.2 & 0xFFL) != 0L) ||
   l.image is Some(_) ||
   l.words != "" ||
   !l.runs.is_empty() ||
@@ -7976,6 +8091,7 @@ fn View::let_go(self : View) -> Unit {
   n.pressed_cell = None
   n.pointed_cell = None
   n.ground_read = 0
+  n.ground_over_read = 0
   n.on_pointer_moved = None
   n.pointed_in_cell = None
   // (the focus on it: let go of with it, what has it told so)
@@ -11373,11 +11489,16 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     Some(c) => Some(c.draws_any)
     None => None
   }
+  let ring = if self.focused == Some(id) && self.focus_visible {
+    n.look.focus_ring.unwrap_or(n.look.ring)
+  } else {
+    n.look.ring
+  }
   n.content = Some({
     id,
     w: n.lw,
     h: n.lh,
-    ground: n.look.ground,
+    ground: blend_ground(n.look.ground, n.look.ground_over),
     ink: n.look.ink,
     words: n.look.words,
     words_drawn: n.look.words_drawn,
@@ -11387,6 +11508,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     radius: n.look.radius,
     corners: n.look.corners,
     edge: n.look.edge,
+    ring,
     image: n.look.image,
     image_for: n.look.image_for,
     image_cover: n.look.image_cover,
@@ -11413,7 +11535,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     picture: n.look.picture,
     bones: self.bones_of_at(at),
     bone_as: self.bone_as_at(at),
-    draws_any: look_draws_any(n.look, n.hosted),
+    draws_any: look_draws_any(n.look, n.hosted, ring),
   })
   // (on a flight's way: as big as it is drawn there, as it looks there, shared.mbt)
   match (n.lift, n.content) {
@@ -12184,6 +12306,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     radius: c.radius,
     corners: c.corners,
     edge: c.edge,
+    ring: c.ring,
     image: c.image,
     image_for: c.image_for,
     image_cover: c.image_cover,

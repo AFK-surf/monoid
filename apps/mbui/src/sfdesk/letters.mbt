@@ -293,10 +293,8 @@ fn letters_list_node(
 fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit, panel? : Bool = false) -> Unit {
   row.box(fn(b) {
     @sf.style_node(b, fn() { if panel { letters_row_panel.then(@sf.panel_row_in_node(b)) } else { letters_row } })
-    b
-    .ground(By(fn() { if @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
-    .says(By(fn() { Some(@view.said(Button, label=text(chat(), "title"))) }))
-    |> ignore
+    @sf.hover_ground_node(b)
+    b.says(By(fn() { Some(@view.said(Button, label=text(chat(), "title"))) })) |> ignore
     @sf.presses_node(b, press)
     b.box(fn(h) {
       @sf.style_node(h, fn() { letters_row_head })

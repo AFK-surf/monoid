@@ -2936,3 +2936,38 @@ test "shader-int" {
     #|void main() { o = vec4(1.0); }`;
   found([("src/host/gles_render.h", good_h), ("web/host.js", good_js)], "shader-int", 0) |> ignore
 }
+
+///|
+test "raw-hover-ground" {
+  let conf = conf_value().set(
+    "pages",
+    @rjson.Value::Obj([("roots", Arr([Str("src/sfpages")]))]),
+  )
+  let cfg = Config::new(conf)
+  let hits =
+    #|fn row_node(v : @view.View) -> Unit {
+    #|  v.ground(By(fn() { if @sf.lit_node(v) { 0x11223344L } else { 0L } })) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.ground(By(fn() { if b.pointed() { 0x11223344L } else { 0xFFFFFFFFL } })) |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/sfpages/row_node.mbt", hits)], "raw-hover-ground", 2, cfg~)
+  assert_eq(lines(fs), [2, 4])
+  let misses =
+    #|fn row_node(v : @view.View, way : @motion.Eased) -> Unit {
+    #|  @sf.hover_ground_node(v)
+    #|  v.ground(By(fn() { if @sf.lit_node(v) { 0L } else { alpha(0x11223344L, way.shown(v)) } })) |> ignore
+    #|  // det-ok(raw-hover-ground): roving menu active bar moves at once across items
+    #|  v.ground(By(fn() { if v.pointed() { 0x11223344L } else { 0L } })) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/row_node_wbtest.mbt", hits),
+    ],
+    "raw-hover-ground",
+    0,
+    cfg~,
+  )
+  |> ignore
+}

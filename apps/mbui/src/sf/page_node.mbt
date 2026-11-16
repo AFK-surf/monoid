@@ -35,8 +35,8 @@ pub fn lit_in_node(v : @view.View) -> Bool {
 /// keyboard's focus on it, a screen reader's Activate), `press` done then; while `on` says so (a box given no id: none
 /// of these). Nothing drawn of it: what it draws as the hand is on it is its own (lit_node).
 pub fn presses_node(v : @view.View, press : () -> Unit, on? : () -> Bool = fn() { true }) -> Unit {
-  // (taken by the keyboard's focus as it is pressed: an old view's box with an id)
-  v.presses(By(on)).focusable(By(on)).on_press(press) |> ignore
+  // (taken by the keyboard's focus as it is pressed, with a concentric focus ring when navigated by keyboard)
+  v.presses(By(on)).focusable(By(on)).focus_ring_theme().on_press(press) |> ignore
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
     @ui.touch_slop(),
@@ -44,6 +44,29 @@ pub fn presses_node(v : @view.View, press : () -> Unit, on? : () -> Bool = fn() 
     drag=fn(d) { if d.kind == Up && @ui.pointing() is Mouse && on_it(d) { press() } },
   )
   |> ignore
+}
+
+///|
+/// Marks `v` to draw the theme's outer concentric focus ring while keyboard focus is shown on it (`Is`, zero bindings).
+pub fn focus_ring_node(v : @view.View) -> Unit {
+  v.focus_ring_theme() |> ignore
+}
+
+///|
+/// Layers `color` (`Hover` by default) over `target`'s own `ground` (`View::ground_over`, never replacing a `Surface`,
+/// `Card` or semantic ground underneath) while `on()` holds and the hand or keyboard is on `by` (`target` by default).
+pub fn hover_ground_node(
+  target : @view.View,
+  by? : @view.View,
+  on? : () -> Bool = fn() { true },
+  extra? : () -> Bool = fn() { false },
+  lit? : (() -> Bool)? = None,
+  color? : () -> Int64 = fn() { @ui.tree_theme().color(Hover) },
+) -> Unit {
+  let src = by.unwrap_or(target)
+  let lit_fn = lit.unwrap_or(fn() { lit_node(src) })
+  let active = fn() { on() && (lit_fn() || extra()) }
+  target.ground_over(By(fn() { if active() { color() } else { 0L } })) |> ignore
 }
 
 ///|
@@ -58,7 +81,7 @@ pub fn presses_held_node(
   down? : (@view.Drag) -> Unit = fn(_) {  },
   up? : () -> Unit = fn() {  },
 ) -> Unit {
-  v.presses(Is(true)).focusable(Is(true)).on_press(press) |> ignore
+  v.presses(Is(true)).focusable(Is(true)).focus_ring_theme().on_press(press) |> ignore
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
     @ui.touch_slop(),
@@ -132,6 +155,7 @@ fn pressed_node(
   v
   .presses(Is(true))
   .focusable(Is(true))
+  .focus_ring_theme()
   .says(By(fn() { Some(@view.said(role, label=label())) }))
   .on_press(press)
   |> ignore
@@ -1038,7 +1062,7 @@ fn link_row_made(
     .lines_up(By(fn() { Some(if under() && !(lead is LeadTile(_)) && !face { Start } else { Middle }) }))
     |> ignore
     if goes {
-      r.ground(By(fn() { if lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+      hover_ground_node(r)
       pressed_node(r, pressed_by(r), Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
       row_folds_said(r, title, folds)
     }

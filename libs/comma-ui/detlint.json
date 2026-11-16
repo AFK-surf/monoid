@@ -110,7 +110,8 @@
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {}
   },
   "excused": {
     "frame-request": {},
@@ -186,6 +187,7 @@
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
-    "shader-int": {}
+    "shader-int": {},
+    "raw-hover-ground": {}
   }
 }

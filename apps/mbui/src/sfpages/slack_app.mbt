@@ -882,7 +882,7 @@ fn sa_permission_node(r : @view.View, d : SaDraft, g : Json?, tips : @sf.TipLaye
   let id = text(g, "id")
   let item = r.box(fn(b) {
     @sf.style_node(b, fn() { sa_perm_item }, in_row=true)
-    b.ground(By(fn() { if b.pointed() { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    @sf.hover_ground_node(b)
     if flag(g, "fixed") {
       @sf.icon_node(b, "check", cd_kind_icon, By(fn() { @sf.theme().p.accent })) |> ignore
     } else {

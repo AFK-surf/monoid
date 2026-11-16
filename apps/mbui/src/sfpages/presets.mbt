@@ -784,10 +784,8 @@ fn preset_row(
     @sf.style_node(r, fn() { preset_row_at.then(@sf.panel_row_in_node(r)) })
     match press {
       Some(p) => {
-        r
-        .ground(By(fn() { if @sf.lit_node(r) { @sf.theme().p.hover } else { 0L } }))
-        .says(By(fn() { Some(@view.said(Button, label=title())) }))
-        |> ignore
+        @sf.hover_ground_node(r)
+        r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
         @sf.presses_node(r, p)
         if opens {
           @sf.panel_opens_on_node(r)
@@ -1577,9 +1575,9 @@ fn preset_capsule_pill(
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       .radius(Is(999.0))
-      .ground(By(fn() { if @sf.lit_node(btn) { @sf.theme().p.hover } else { 0L } }))
       .says(By(fn() { Some(@view.said(Button, label=words())) }))
       |> ignore
+      @sf.hover_ground_node(btn)
       @sf.presses_node(btn, fn() { on_open(btn) })
       lead(btn)
       @sf.words_node(btn, words, fn() { if has_value() { new_capsule_words } else { preset_capsule_quiet } })
@@ -1597,9 +1595,9 @@ fn preset_capsule_pill(
         x
         .shrink(Is(0.0))
         .radius(Is(999.0))
-        .ground(By(fn() { if @sf.lit_node(x) { @sf.theme().p.hover } else { 0L } }))
         .says(Is(Some(@view.said(Button, label=clear_label))))
         |> ignore
+        @sf.hover_ground_node(x)
         @sf.presses_node(x, on_clear)
         @sf.icon_node(x, "close", 13.0, By(fn() { @sf.theme().p.muted })) |> ignore
       })
