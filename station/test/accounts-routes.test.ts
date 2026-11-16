@@ -770,6 +770,43 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("a home read under way as a sign-in changes it is not the one the overview waits for; one asked by a view meanwhile is told", async () => {
+    const data = temp("homes-merged");
+    writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "sx", runtime: "codex", home: "homes/sx", access: { kind: "subscription" } }], connects: [] }));
+    const t = await rig({ data, clock: testClock().clock });
+    const home = join(data, "homes", "sx");
+    const signIn = (email: string) => {
+      mkdirSync(home, { recursive: true });
+      const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+    };
+    // What a sign-in's end does (Accounts.start, logins.changes): what the home says read anew.
+    const told = () => {
+      const a = t.accounts as any;
+      a.homes.delete("sx");
+      a.homesChanged++;
+    };
+    told();
+    signIn("a@x.com");
+    // A view reads it (its reading under way), then a sign-in ends: the overview waits for a reading of after it.
+    assert.equal(t.accounts.profilesView().find((p) => p.id === "sx")!.email, null, "not read yet");
+    told();
+    await t.accounts.homesReadSoon();
+    assert.equal(t.view("sx")!.email, "a@x.com");
+    // The overview's reading under way, then a view asks: what it finds is told.
+    told();
+    signIn("b@x.com");
+    let changes = 0;
+    const stop = t.accounts.onChange(() => changes++);
+    const overview = t.accounts.homesReadSoon();
+    t.accounts.profilesView();
+    await overview;
+    stop();
+    assert.equal(changes, 1, "the view's ask told once read");
+    assert.equal(t.view("sx")!.email, "b@x.com");
+    await t.close();
+  });
+
   test("a profile just made has its allowance read at once, without waiting for a round", async () => {
     const quota = { n: 0 };
     // Its time never moves: no round comes.

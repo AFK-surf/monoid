@@ -247,8 +247,11 @@ export class Accounts {
   private homes = new Map<string, { asked: string; says: HomeSays }>();
   private homesRead = 0;
   private homesReading = false;
-  /// The reads of a home under way, by profile and what it is read for.
-  private readonly homeReads = new Map<string, Promise<void>>();
+  /// The reads of a home under way, by profile and what it is read for: begun at `since` (`homesChanged`), and whether
+  /// what it finds is to be told (one asked by a view that showed nothing yet).
+  private readonly homeReads = new Map<string, { since: number; tell: boolean; read: Promise<void> }>();
+  /// Closed: nothing read after is told.
+  private closed = false;
   /// Bumped as a sign-in changes what a home says: a reading begun before is not kept.
   private homesChanged = 0;
   private listeners = new Set<() => void>();
@@ -390,6 +393,7 @@ export class Accounts {
   }
 
   async close() {
+    this.closed = true;
     for (const stop of this.stops.splice(0)) stop();
     await this.logins.close();
     await this.background.close();
@@ -438,12 +442,17 @@ export class Accounts {
     return kept?.home === profile.home ? kept.account : null;
   }
 
-  private codexAccountRead(profile: Profile): Promise<void> {
+  /// `again`: its login just changed, so one read under way may have read the file before: a read after it, kept last.
+  private codexAccountRead(profile: Profile, again = false): Promise<void> {
     const under = this.codexAccountReads.get(profile.id);
-    if (under) return under;
-    const read = codexAccountIdentity(profile.home)
+    if (under && !again) return under;
+    const read: Promise<void> = (under ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => codexAccountIdentity(profile.home))
       .then((account) => void this.codexAccounts.set(profile.id, { home: profile.home, account }))
-      .finally(() => this.codexAccountReads.delete(profile.id));
+      .finally(() => {
+        if (this.codexAccountReads.get(profile.id) === read) this.codexAccountReads.delete(profile.id);
+      });
     this.codexAccountReads.set(profile.id, read);
     return read;
   }
@@ -451,9 +460,7 @@ export class Accounts {
   /// Every Codex subscription profile's account read again (the station starting; a test after it changed one).
   async codexAccountsRead(): Promise<void> {
     const codex = this.profiles().filter((p) => p.runtime === "codex" && accessKind(p) === "subscription");
-    // (one under way may have read the file before it changed: waited for, then read again)
-    await Promise.all(codex.map((p) => this.codexAccountReads.get(p.id)));
-    await Promise.all(codex.map((p) => this.codexAccountRead(p)));
+    await Promise.all(codex.map((p) => this.codexAccountRead(p, true)));
   }
 
   /// How a profile is doing, told to a station borrowing it: its allowance asked again first when older than a round
@@ -1116,6 +1123,8 @@ export class Accounts {
     if (profile?.runtime === "codex" && accessKind(profile) === "subscription") {
       this.loginGeneration.set(id, (this.loginGeneration.get(id) ?? 0) + 1);
       this.codexLogin(id, false);
+      // Which account it is on now, for the pool's next pick.
+      void this.codexAccountRead(profile, true).catch(() => {});
     }
     // Its copies on other stations take the new sign-in (share/index.ts `loginUpdated`).
     if (profile && accessKind(profile) === "subscription" && !borrowed(profile)) this.deps.shared?.loginUpdated?.(id);
@@ -1570,6 +1579,7 @@ export class Accounts {
       const after = await lentLoginVersion(profile.home);
       if (before !== after) {
         this.loginGeneration.set(id, (this.loginGeneration.get(id) ?? 0) + 1);
+        await this.codexAccountRead(profile, true).catch(() => {});
         await this.deps.codex?.()?.loginChanged?.(id);
       }
       this.borrowedLogin.set(id, after);
@@ -1901,19 +1911,26 @@ export class Accounts {
   private homeRead(p: Profile, tell: boolean): Promise<void> {
     const asked = JSON.stringify(homeAsked(p));
     const key = `${p.id}\n${asked}`;
-    const under = this.homeReads.get(key);
-    if (under) return under;
     const since = this.homesChanged;
-    const read = homeSaysSoon(p)
+    const under = this.homeReads.get(key);
+    // One begun before a sign-in changed the home finds what is let go: a new one is begun, not waited for.
+    if (under && under.since === since) {
+      under.tell ||= tell;
+      return under.read;
+    }
+    const entry = { since, tell, read: Promise.resolve() };
+    entry.read = homeSaysSoon(p)
       .then((says) => {
         if (this.homesChanged !== since) return;
         this.homes.set(p.id, { asked, says });
-        if (tell) this.changed();
+        if (entry.tell && !this.closed) this.changed();
       })
       .catch(() => {})
-      .finally(() => this.homeReads.delete(key));
-    this.homeReads.set(key, read);
-    return read;
+      .finally(() => {
+        if (this.homeReads.get(key) === entry) this.homeReads.delete(key);
+      });
+    this.homeReads.set(key, entry);
+    return entry.read;
   }
 
   /// Every profile's home read again off the thread, once HOMES_EVERY_MS have passed since the last time; what changed
