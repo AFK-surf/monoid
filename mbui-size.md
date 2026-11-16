@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
 | [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 100.11 | 116.99 |
 | [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 99.98 | 121.57 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 2.42 | 3.35 | 14.22 | 35.34 | 55.45 | 30 | 60.29 | 99.44 | 118.85 |
 | [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 2.41 | 3.33 | 14.05 | 35.15 | 54.49 | 30 | 60.29 | 99.44 | 121.58 |
 | [76a9c3ea2](https://github.com/AFK-surf/monoid/commit/76a9c3ea2f771189e1bf461d3b4a0dbe94a0d5fd) mbui: 账号, 字体 and 下方栏 made once as nodes, the setti | 2.41 | 3.33 | 14.05 | 35.15 | 54.49 | 30 | 60.29 | 99.44 | 121.58 |
-| [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 2.41 | 3.32 | 14.02 | 35.04 | 54.34 | 30 | 60.29 | 99.44 | 110.61 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
 | [a86d48111](https://github.com/AFK-surf/monoid/commit/a86d48111beccbe9cbeadc10447402df549e5b38) station: a chat handed over is flushed to the driv | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0cf6b5867](https://github.com/AFK-surf/monoid/commit/0cf6b58671d02743964bc776ef48af7cb59c9c1c) mbui: 对话信息、Agent 卡、服务与后台任务、往来信件和分享/邀请/登录面板改为节点（old | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [d1795c584](https://github.com/AFK-surf/monoid/commit/d1795c58456d7df65ce7d587980100af0df8c5c1) station tests: the helper's watch waits for what t | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
 | [76a9c3ea2](https://github.com/AFK-surf/monoid/commit/76a9c3ea2f771189e1bf461d3b4a0dbe94a0d5fd) mbui: 账号, 字体 and 下方栏 made once as nodes, the setti | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
-| [f545904b8](https://github.com/AFK-surf/monoid/commit/f545904b8e57e51fccad97aa4349dc46adf52a3d) station: sign an Antigravity CLI account in again, | 0.42 | 0.55 | 2.1 | 3.19 | 5.02 | 1.54 | 4.11 | 57.39 |
