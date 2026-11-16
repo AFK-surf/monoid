@@ -105,26 +105,30 @@ pub fn filter_menu_open() -> Bool {
 ///|
 /// The filter's menu, opened by `from`: 全部会话,
 /// 我参与的, 监控中, then 已归档, a menu of choices, the list `shown` (all, mine, watching, archive) checked. Chosen, `go` is
-/// given which: where it goes is the frame's (a filter its list, 已归档 its page or list). `board`: 看板 under them, the
-/// chats shown as the board (a narrow Home's, whose bar has no room for a key of its own beside the filter).
-pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, board? : () -> Unit) -> Unit {
+/// given which: where it goes is the frame's (a filter its list, 已归档 its page or list). `in_board`: the board's, which
+/// narrows to 全部会话 or 我参与的 alone (its 监控中 is a column of its own), 已隐藏 and 已归档 lists off it
+/// (board_filter_go).
+pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, in_board? : Bool = false) -> Unit {
   let item = fn(key : String, words : String) -> @sf.MenuItem? {
     Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { go(key) }))
   }
-  let items = [
-    item("all", "web-main.filter.chats.all"),
-    item("mine", "web-main.filter.chats.mine"),
-    item("watching", "web-main.filter.watching"),
-    item("hidden", "web-main.filter.hidden"),
-    None,
-    item("archive", "web-main.filter.archived"),
-  ]
-  match board {
-    Some(b) => {
-      items.push(None)
-      items.push(Some(@sf.menu_item_of(@sf.t("web-main.board.board"), b, icon="view-columns")))
-    }
-    None => ()
+  let items = if in_board {
+    [
+      item("all", "web-main.filter.chats.all"),
+      item("mine", "web-main.filter.chats.mine"),
+      None,
+      item("hidden", "web-main.filter.hidden"),
+      item("archive", "web-main.filter.archived"),
+    ]
+  } else {
+    [
+      item("all", "web-main.filter.chats.all"),
+      item("mine", "web-main.filter.chats.mine"),
+      item("watching", "web-main.filter.watching"),
+      item("hidden", "web-main.filter.hidden"),
+      None,
+      item("archive", "web-main.filter.archived"),
+    ]
   }
   @sf.menu(
     items,
@@ -142,12 +146,22 @@ pub fn filter_menu(from : @sf.Beside, shown : String, go : (String) -> Unit, boa
 let filter_menu_opened : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
-/// The list's filter in workspace `w` chosen (`all`, `mine`, `watching`): kept here at once, and in the prefs (the
-/// core's `listFilter`, by workspace).
+/// The list's filter in workspace `w` chosen (`all`, `mine`, `watching`): sfbase's set_filter_of.
 pub fn set_filter(src : Source, w : Workspace, f : String) -> Unit {
-  if @sfbase.filter_of(src, w.id) == f {
-    return
+  @sfbase.set_filter_of(src, w.id, f)
+}
+
+///|
+/// The board's filter's menu chosen (filter_menu's `in_board`) in workspace `w`: 全部会话 and 我参与的 narrow the board
+/// (sfbase's board_filter_of), 已隐藏 its list in the board's place, 已归档 `archive` (the frame's: its page or list).
+pub fn board_filter_go(src : Source, w : Workspace, f : String, archive : () -> Unit) -> Unit {
+  match f {
+    "all" | "mine" => set_filter(src, w, f)
+    "hidden" => {
+      set_filter(src, w, f)
+      @sfbase.board_set(src, false)
+    }
+    "archive" => archive()
+    _ => ()
   }
-  app.filters[w.id] = f
-  (src.call)("prefs.set", Json::object({ "listFilter": Json::object(Map::from_array([(w.id, Json::string(f))])) }), @sfbase.answer_unread)
 }

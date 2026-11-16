@@ -2626,6 +2626,7 @@ export const SHAPES: Record<string, Shape> = {
     ["onlyWatching", "bool", { default: true, doc: "The chat list shows only the watching chats (监控中); never with `only_mine`." }],
     ["boardViews", map("String"), { default: true, doc: "How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list)." }],
     ["boardGroups", map("BoardGroup"), { default: true, doc: "How a workspace's board columns are grouped on this device, by workspace; none: `state`." }],
+    ["boardShowEmpty", map("bool"), { default: true, doc: "A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown." }],
     ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200)." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["appearance", "Appearance", { default: true }],

@@ -1950,6 +1950,7 @@ pub fn round_key_node(
   icon_size? : Double = 22.0,
   ink? : () -> Int64 = fn() { theme().p.text },
   opener? : Opener,
+  icon_now? : () -> String,
   loc~ : SourceLoc,
 ) -> Unit {
   let look = fn(k : @view.View, go : () -> Unit) {
@@ -1961,7 +1962,7 @@ pub fn round_key_node(
     .lies_along(Is(Middle))
     |> ignore
     rippled_look(loc~, k, Is(side / 2.0), go)
-    icon_node(k, icon, icon_size, By(ink)) |> ignore
+    icon_node(k, icon, icon_size, By(ink), name_now?=icon_now) |> ignore
   }
   match opener {
     Some(o) =>

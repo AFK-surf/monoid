@@ -42,6 +42,15 @@ test("a_workspaces_board_view_and_grouping_are_kept_each_its_own_and_none_goes_b
   }
   apply(host, values);
   assert.deepEqual([v(values, 1).boardViews, v(values, 1).boardGroups], [{}, { w1: "station" }]);
+  // (its empty columns left out, and shown again: none)
+  assert.deepEqual(v(values, 1).boardShowEmpty, {});
+  await ask(host, core, ui, 7, "prefs.set", { boardShowEmpty: { w1: false } });
+  apply(host, values);
+  assert.deepEqual(v(values, 1).boardShowEmpty, { w1: false });
+  assert.equal((await ask(host, core, ui, 8, "prefs.set", { boardShowEmpty: { w1: true } })).error.code, "invalid_params");
+  await ask(host, core, ui, 9, "prefs.set", { boardShowEmpty: { w1: null } });
+  apply(host, values);
+  assert.deepEqual(v(values, 1).boardShowEmpty, {});
   core.close();
 });
 

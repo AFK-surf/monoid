@@ -313,6 +313,17 @@ fn chat_row_key(r : Json) -> String {
 }
 
 ///|
+/// The list's filter in workspace `ws` chosen (`all`, `mine`, `watching`, `hidden`): kept here at once, and in the prefs
+/// (the core's `listFilter`, by workspace).
+pub fn set_filter_of(src : Source, ws : String, f : String) -> Unit {
+  if filter_of(src, ws) == f {
+    return
+  }
+  app.filters[ws] = f
+  (src.call)("prefs.set", Json::object({ "listFilter": Json::object(Map::from_array([(ws, Json::string(f))])) }), answer_unread)
+}
+
+///|
 /// The list's filter in workspace `ws` (AppState.chatFilter): as chosen here, else as the prefs keep it.
 pub fn filter_of(src : Source, ws : String) -> String {
   let f = match app.filters.get(ws) {

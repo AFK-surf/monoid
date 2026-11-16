@@ -35,7 +35,9 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
     fn(v, _page, _under, _stint, k) {
       pane_made_host(v, src, k)
       board_listed_back()
-      v.show(fn() { @sfbase.board_on_now(src) }, fn(b) {
+      // (once made, put by as it was while the list is chosen (View::each's `keeps`), taken in again at once as the
+      // board is: not made anew at each switch)
+      v.each(fn() { if @sfbase.board_on_now(src) { [0] } else { [] } }, fn(k) { k }, keeps=fn() { [0] }, at_once=true, fn(b, _) {
         b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         // (laid out as wide as the pane is where the block's move goes, as every page made in the pane is (pane_made's
         // `width`): moved with the pane as the sidebar closes beside it, its columns' words never wrapped anew on the
@@ -49,8 +51,8 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
         }
         @sfpages.board_node(b, src, tips, fn() { @sfbase.workspace_in_view(src).0 }, width, beside=fn(s, r) {
           board_beside(s, src, r, tips, k)
-        })
-      }, at_once=true)
+        }, bar_frame=fn(parent, make) { board_pane_bar(parent, src, make) }, archive=fn() { board_archive_go(src) })
+      })
     },
   )
 }
@@ -66,14 +68,71 @@ fn board_tape_made(src : Source, tips : @sf.TipLayer, width : () -> Double) -> (
       v.lends(@sf.pane_lent, true).grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { tape_page_ground(v) })) |> ignore
       context_node(v)
       board_listed_back()
-      v.show(fn() { @sfbase.board_on_now(src) }, fn(b) {
+      // (once made, put by while the list is chosen and taken in again, as board_home_made's)
+      v.each(fn() { if @sfbase.board_on_now(src) { [0] } else { [] } }, fn(k) { k }, keeps=fn() { [0] }, at_once=true, fn(b, _) {
         b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         @sfpages.board_node(b, src, tips, fn() { @sfbase.workspace_in_view(src).0 }, width, ground=fn() {
           tape_page_ground(b)
-        }, columns=true, bar_frame=fn(parent, make) { board_tape_bar(parent, make) })
-      }, at_once=true)
+        }, columns=true, bar_frame=fn(parent, make) { board_tape_bar(parent, make) }, archive=fn() { board_archive_go(src) })
+      })
     },
   )
+}
+
+///|
+/// The board's bar in the pane off the tape, laid out as a chat's bar there is (chat_bar_wide_node's, its ends
+/// pane_chat_bar_ends'): as tall, its start past the rail and the window's buttons as the block is closed, its margins
+/// while the folded sidebar is shown a while, its end at the window's corner, or the bar's own room before the chat open
+/// beside the board; its empty part dragging the window, in one with its buttons in the app's top row.
+fn board_pane_bar(parent : @view.View, src : Source, make : (@view.View) -> Unit) -> Unit {
+  let ends = pane_chat_bar_ends(src, parent)
+  let high = fn() { @sf.wide_bar_h + (ends.over)() }
+  parent.box(fn(held) {
+    held
+    .row(Is(true))
+    .shrink(Is(0.0))
+    .height(By(fn() { Some(high()) }))
+    // (its margins as spaces at its ends, one less than none taken back by drawing the row moved back as far)
+    .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
+    |> ignore
+    bar_room_node(held, fn() { dmax(0.0, (ends.margins)().0) })
+    held.box(fn(bar) {
+      bar
+      .row(Is(true))
+      .grow(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .lines_up(Is(Some(Middle)))
+      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 0.0) }))
+      // (its empty part drags the window: what is in it taking presses all the same, so it is said to take them)
+      .presses(Is(true))
+      .moves_window(By(fn() { @ui.window_inset() }))
+      |> ignore
+      bar_room_node(bar, ends.start)
+      bar.box(fn(inner) {
+        // (as wide as the bar gives it, not as all it holds: what has not the room leaves, board_bar_items')
+        inner.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+        make(inner)
+      })
+      |> ignore
+      // (the chat open beside the board: the bar's own room before it; else clear of the window's corner, as a
+      // capsule at a bar's end is: 新待办's)
+      bar_room_node(bar, fn() { (ends.end)(@sfbase.board_pick.get() is Some(_), true) })
+    })
+    |> ignore
+    bar_room_node(held, fn() {
+      let (ml, mr) = (ends.margins)()
+      mr + dmin(0.0, ml)
+    })
+  })
+  |> ignore
+}
+
+///|
+/// 已归档 chosen in the board's filter's menu: the list again, its place the archive's (as the sidebar's filter has it).
+fn board_archive_go(src : Source) -> Unit {
+  guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+  @sfbase.board_set(src, false)
+  rail_go_told(src, w, "archive", fn(_, g) { g() })
 }
 
 ///|
@@ -97,6 +156,8 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
     line.width(Is(Some(1.0))).shrink(Is(0.0)).ground(By(fn() { @sf.theme().p.line })) |> ignore
   })
   |> ignore
+  // (its bar's end at the window's corner, as a chat's bar in the pane: pane_chat_bar_ends')
+  let ends = pane_chat_bar_ends(src, s)
   s.box(fn(col) {
     col.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     col.box(fn(page) {
@@ -119,8 +180,11 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       .row(Is(true))
       .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
-      .padding(Is((16.0, 0.0, 10.0, 0.0)))
+      .padding(By(fn() { (16.0, 0.0, (ends.end)(false, false), 0.0) }))
       .ground(By(fn() { @sf.theme().p.bg }))
+      // (its empty part drags the window, as a chat's bar does)
+      .presses(Is(true))
+      .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
       bar.box(fn(t) {
         t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -193,7 +257,8 @@ fn board_tape_bar(parent : @view.View, make : (@view.View) -> Unit) -> Unit {
     |> ignore
     bar_room_node(bar, fn() { tape_bar_start_room(corners(), true) })
     bar.box(fn(inner) {
-      inner.row(Is(true)).grow(Is(1.0)).min_width(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+      // (as wide as the bar gives it, not as all it holds: what has not the room leaves, board_bar_items')
+      inner.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
       make(inner)
     })
     |> ignore

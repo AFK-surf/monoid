@@ -1647,6 +1647,8 @@ export interface PrefsView {
 	boardViews?: Record<string, string>;
 	/** How a workspace's board columns are grouped on this device, by workspace; none: `state`. */
 	boardGroups?: Record<string, BoardGroup>;
+	/** A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown. */
+	boardShowEmpty?: Record<string, boolean>;
 	/** Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200). */
 	boardDrafts?: Record<string, BoardDraft[]>;
 	/**

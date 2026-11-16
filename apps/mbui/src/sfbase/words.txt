@@ -2799,6 +2799,9 @@ web-main.board.board
 web-main.board.by_state
 web-main.board.by_station
 web-main.board.by_person
+web-main.board.display
+web-main.board.group_by
+web-main.board.show_empty
 web-main.board.new
 web-main.board.new_here
 web-main.board.add

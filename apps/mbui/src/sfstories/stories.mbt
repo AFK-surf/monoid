@@ -363,6 +363,27 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
+      key: "choice-cards",
+      group: "选择",
+      name: "卡片单选 Choice cards",
+      file: "choice_cards_node.mbt",
+      api: [("choice_cards_node.mbt", "choice_cards_node")],
+      play: None,
+      about: "几种呈现方式并排成卡片，图标在上、文字在下，同时只选中一个（看板「显示」弹层里的 列表 | 看板）。",
+      cases: [
+        (
+          "列表 | 看板",
+          fn(card) {
+            let chosen = kept(1)
+            @sf.choice_cards_node(card, fn() { [("list", "列表"), ("view-columns", "看板")] }, fn() { chosen.get() }, fn(i) {
+              chosen.set(i)
+            }, said="视图")
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
       key: "select",
       group: "选择",
       name: "下拉选择 Select",

@@ -13,8 +13,8 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { setOwnBuild } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "reports"];
-const MAPS = ["listFilter", "boardViews", "boardGroups", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "chatPage", "reports"];
+const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
@@ -216,6 +216,8 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         // A workspace's board: shown as one, grouped otherwise than by state, its drafts (none: as without).
         if (field === "boardViews" && entry !== "board") throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardViews.${key}` }));
         if (field === "boardGroups" && !BOARD_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardGroups.${key}` }));
+        // (its empty columns left out: `false`; shown is none)
+        if (field === "boardShowEmpty" && entry !== false) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardShowEmpty.${key}` }));
         if (field === "boardDrafts") {
           const drafts = boardDraftsOf(entry);
           if (drafts === null) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardDrafts.${key}` }));

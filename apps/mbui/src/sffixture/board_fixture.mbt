@@ -19,7 +19,7 @@ pub fn board_mode(mode : String) -> Bool {
 pub let board_started_rows : Array[Json] = []
 
 ///|
-/// The board's prefs as the core keeps them (`boardViews`, `boardGroups`, `boardDrafts`), each by workspace.
+/// The board's prefs as the core keeps them (`boardViews`, `boardGroups`, `boardShowEmpty`, `boardDrafts`), each by workspace.
 // kept across runs: put back as a fixture is made (board_prefs_seed)
 pub let board_prefs : Map[String, Map[String, Json]] = Map([])
 
@@ -34,7 +34,7 @@ pub let board_create_refused : Ref[String] = Ref("")
 pub fn board_prefs_seed(mode : String) -> Unit {
   board_create_refused.val = ""
   board_prefs.clear()
-  for k in ["boardViews", "boardGroups", "boardDrafts"] {
+  for k in ["boardViews", "boardGroups", "boardShowEmpty", "boardDrafts"] {
     board_prefs[k] = Map([])
   }
   guard board_mode(mode) && mode != "board-list" else { return }
@@ -64,7 +64,7 @@ pub fn board_prefs_into(o : Map[String, Json]) -> Unit {
 /// The board's prefs as `prefs.set` puts them (`params`): each workspace's entry replaced, null (or no drafts) letting
 /// it go.
 pub fn board_prefs_set(params : Json) -> Unit {
-  for k in ["boardViews", "boardGroups", "boardDrafts"] {
+  for k in ["boardViews", "boardGroups", "boardShowEmpty", "boardDrafts"] {
     match field(Some(params), k) {
       Some(Object(given)) => {
         let m = match board_prefs.get(k) {

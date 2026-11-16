@@ -40,6 +40,30 @@ fn board_tap_words(t : @ui.Tester, w : String) -> Unit raise {
 }
 
 ///|
+/// 显示 in the wide board's bar (its words what the board is grouped by, where that is not by state) pressed: its panel
+/// open, settled.
+fn board_display_open(t : @ui.Tester) -> Unit raise {
+  for w in ["显示", "按机器", "按成员"] {
+    if t.query(Button, label=w) is Some(_) {
+      t.click(Button, label=w)
+      t.run_for(@ui.move_most_ms)
+      return
+    }
+  }
+  fail("no 显示 in the board's bar")
+}
+
+///|
+/// The wide board grouped as `w` says (按状态, 按机器, 按成员) in 显示's panel, the panel closed again after.
+fn board_group_by(t : @ui.Tester, w : String) -> Unit raise {
+  board_display_open(t)
+  t.click(Radio, label=w)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
 /// The column the chat titled `title` stands in now (the board's by state).
 fn board_lane_now(src : Source, title : String) -> String {
   for i in @sfbase.board_items(src, "ws1") {
@@ -58,8 +82,9 @@ test "大屏: the board in place of the list, its five columns, back to the list
     assert_true(board_words_at(t, w) is Some(_), msg="\{w} on the board")
   }
   assert_eq(board_faults(t), [])
-  // 列表: the sidebar's list again, the board gone
-  board_tap_words(t, "列表")
+  // 列表 (a key of the bar's): the sidebar's list again, the board gone
+  t.click(Button, label="列表")
+  t.run_for(@ui.move_most_ms)
   assert_false(@sfbase.board_on_of(src, "ws1"))
   assert_true(board_words_at(t, "待派发") is None)
   // (kept as the core keeps it: the list again)
@@ -131,10 +156,10 @@ test "大屏: a done chat's 归档 takes it off the board, 撤销 said; grouped 
   t.run_for(@ui.move_most_ms)
   assert_eq(t.all(Button, label="归档").length(), 2)
   assert_true(@sfbase.toast_words().has_prefix("已归档"))
-  board_tap_words(t, "按机器")
+  board_group_by(t, "按机器")
   assert_true(board_words_at(t, "Willow") is Some(_))
   assert_eq(board_faults(t), [])
-  board_tap_words(t, "按成员")
+  board_group_by(t, "按成员")
   assert_true(board_words_at(t, "林（我）") is Some(_))
   assert_eq(board_faults(t), [])
   ignore(src)
@@ -188,8 +213,11 @@ test "中屏 760: the board in the tape's page panel, its bar that panel's bar's
   // (the tape holds, the board the page's panel's: brought over as the app starts on a workspace that shows it)
   assert_true(@sfdesk.wide.tape.get())
   assert_true(@sfdesk.wide.tape_at.get() is Page)
-  for w in ["列表", "看板", "按状态", "新待办", "待派发"] {
+  for w in ["显示", "新待办", "待派发"] {
     assert_true(board_words_at(t, w) is Some(_), msg="\{w} on the board")
+  }
+  for w in ["列表", "筛选会话：全部"] {
+    assert_true(t.query(Button, label=w) is Some(_), msg="\{w} in the board's bar")
   }
   assert_eq(board_faults(t), [])
 }
@@ -198,11 +226,12 @@ test "中屏 760: the board in the tape's page panel, its bar that panel's bar's
 test "中屏 600: the board's bar whole in the tape's page panel, 列表 back to the list" {
   let (t, src) = board_at("board", 600.0, 800.0)
   assert_true(@sfdesk.wide.tape_at.get() is Page)
-  for w in ["列表", "看板", "按状态", "新待办"] {
+  for w in ["显示", "新待办"] {
     assert_true(board_words_at(t, w) is Some(_), msg="\{w} on the board")
   }
   assert_eq(board_faults(t), [])
-  board_tap_words(t, "列表")
+  t.click(Button, label="列表")
+  t.run_for(@ui.move_most_ms)
   assert_false(@sfbase.board_on_of(src, "ws1"))
   assert_true(@sfdesk.wide.tape_at.get() is Side)
 }
@@ -219,9 +248,9 @@ fn board_kept_drafts() -> Array[String] {
 ///|
 test "大屏: what the board is kept as, the core's prefs: its grouping and a draft written kept there, shown so as the app starts again" {
   let (t, src) = board_at("board", 1440.0, 900.0)
-  board_tap_words(t, "按机器")
+  board_group_by(t, "按机器")
   assert_true(@sffixture.board_prefs["boardGroups"].get("ws1") is Some(String("station")))
-  board_tap_words(t, "按状态")
+  board_group_by(t, "按状态")
   assert_true(@sffixture.board_prefs["boardGroups"].get("ws1") is None)
   t.click(Button, label="新待办")
   t.run_for(@ui.move_most_ms)
@@ -229,7 +258,7 @@ test "大屏: what the board is kept as, the core's prefs: its grouping and a dr
   t.enter()
   t.run_for(@ui.move_most_ms)
   assert_eq(board_kept_drafts(), ["周五前把发布说明定稿", "给导出加上按月份筛选", "看一下 Android 冷启动为什么慢了 300ms"])
-  board_tap_words(t, "按成员")
+  board_group_by(t, "按成员")
   // (the app started again: nothing of what was chosen here, all of it read of the core's prefs)
   @sfbase.board_reset()
   t.run_for(@ui.move_most_ms)
@@ -318,7 +347,8 @@ test "the board kept as shown: 小屏, 中屏 and 大屏 start on it, all it rea
 ///|
 test "中屏 600: the list chosen, the sidebar's 看板 key brings the board back in the page's panel" {
   let (t, src) = board_at("board", 600.0, 800.0)
-  board_tap_words(t, "列表")
+  t.click(Button, label="列表")
+  t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.tape_at.get() is Side)
   t.click(Button, label="看板")
   t.run_for(@ui.move_most_ms)
@@ -357,19 +387,160 @@ test "大屏: a draft's chat archived is gone from the board, its draft's card n
 }
 
 ///|
-test "小屏: the list's filter menu offers 看板; on the board its key in the filter's place goes back to the list" {
-  let (t, src) = board_at("board-list", 390.0, 844.0, platform=2)
-  assert_false(@sfbase.board_on_of(src, "ws1"))
+/// The board's app on a phone over `mode` in a window `w` × `h`, the system's words at `scale`, at rest: the workspace
+/// shown named `name` where one is said, Home's list catching up where `syncing` (fix_with_syncing).
+fn board_bar_at(
+  mode : String,
+  w : Double,
+  h : Double,
+  scale? : Double = 1.0,
+  name? : String = "",
+  syncing? : Bool = false,
+) -> (@ui.Tester, Source) {
+  new_run()
+  let base = fixture(mode)
+  let src : Source = {
+    ..base,
+    topic_read: fn(topic, params) {
+      let got = base.topic(topic, params).get().snapshot()
+      match (topic, got.value) {
+        ("workspaces", Some(v)) if name != "" =>
+          { ..got, value: Some(@json.parse(v.stringify().replace(old="星火工作室", new=name)) catch { _ => v }) }
+        ("chats", Some(v)) if syncing => { ..got, value: Some(@sffixture.fix_with_syncing(v)) }
+        _ => got
+      }
+    },
+  }
+  open_fixture_over(mode, src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2)
+  if scale != 1.0 {
+    t.set_font_scale(scale)
+  }
+  t.run_for(@ui.move_most_ms)
+  (t, src)
+}
+
+///|
+/// The audit's faults made in Home's bar (home_node.mbt's home_top_bar_node) or the board's own files.
+fn board_bar_faults(t : @ui.Tester) -> Array[String] {
+  board_faults(t) + t.audit().filter(fn(f) { f.contains("sfapp/home_node.mbt") })
+}
+
+///|
+test "小屏: 筛选 and 看板 their own keys on Home's bar, at 390 and at 360 with words at 1.3 and a long workspace's name; on the board 筛选 and 列表, 列表 back" {
+  for at in [(390.0, 844.0, 1.0, ""), (360.0, 740.0, 1.3, ""), (360.0, 740.0, 1.3, "星火工作室北京研发中心团队")] {
+    let (w, h, scale, name) = at
+    let (t, src) = board_bar_at("board-list", w, h, scale~, name~)
+    assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
+    assert_true(t.query(Button, label="看板") is Some(_))
+    assert_eq(t.squeeze_faults(), [])
+    assert_eq(t.words_over_now(), [])
+    assert_eq(board_bar_faults(t), [])
+    t.click(Button, label="看板")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfbase.board_on_of(src, "ws1"))
+    assert_true(board_words_at(t, "整理发布清单") is Some(_))
+    assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
+    assert_true(t.query(Button, label="列表") is Some(_))
+    assert_true(t.query(Button, label="看板") is None)
+    assert_eq(t.squeeze_faults(), [])
+    assert_eq(t.words_over_now(), [])
+    assert_eq(board_bar_faults(t), [])
+    t.click(Button, label="列表")
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sfbase.board_on_of(src, "ws1"))
+    assert_true(t.query(Button, label="看板") is Some(_))
+    assert_eq(board_bar_faults(t), [])
+  }
+}
+
+///|
+test "小屏 360: Home's bar crowded: the stations' releases leave first, then 看板 beside catching up; 筛选 and catching up stay, nothing over anything" {
+  for scale in [1.0, 1.3] {
+    // (the stations' releases alone beside them: they leave, 看板 stays)
+    let (t, _) = board_bar_at("home-station-updates", 360.0, 740.0, scale~)
+    assert_true(t.query(Button, label="看板") is Some(_))
+    assert_true(t.query(Button, label="2 台 station 有新版本") is None)
+    assert_eq(t.squeeze_faults(), [])
+    assert_eq(t.words_over_now(), [])
+    assert_eq(board_bar_faults(t), [])
+    // (catching up as well: 看板 leaves too, catching up stays)
+    let (t, _) = board_bar_at("home-station-updates", 360.0, 740.0, scale~, syncing=true)
+    assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
+    assert_true(t.query(Button, label="看板") is None)
+    assert_true(t.query(Button, label="2 台 station 有新版本") is None)
+    assert_true(t.semantics().iter().any(fn(n) { n.label == "正在同步 · 还剩 12 个对话" }))
+    assert_eq(t.squeeze_faults(), [])
+    assert_eq(t.words_over_now(), [])
+    assert_eq(board_bar_faults(t), [])
+  }
+  // (at 390 the room for the stations' releases beside 看板)
+  let (t, _) = board_bar_at("home-station-updates", 390.0, 844.0)
+  assert_true(t.query(Button, label="2 台 station 有新版本") is Some(_))
+  assert_true(t.query(Button, label="看板") is Some(_))
+}
+
+///|
+/// The words of the menu open (its items, as a screen reader reads them: a sheet's on 小屏, a menu's beside what opened
+/// it on 大屏).
+fn board_menu_said(t : @ui.Tester) -> Array[String] {
+  let out = []
+  for n in t.semantics() {
+    if n.role is (MenuItem | MenuItemCheckbox | MenuItemRadio) {
+      out.push(n.label)
+    } else if n.role is Dialog {
+      for w in n.label.split(" ") {
+        out.push(w.to_owned())
+      }
+    }
+  }
+  out
+}
+
+///|
+test "小屏: the board's filter narrows it to 我参与的 and back to 全部会话, its menu no 监控中 and no 看板; 已隐藏 the list's" {
+  let (t, src) = board_bar_at("board-list", 390.0, 844.0)
+  t.click(Button, label="看板")
+  t.run_for(@ui.move_most_ms)
+  let all = @sfbase.board_items(src, "ws1").length()
   t.click(Button, label="筛选会话：全部")
   t.run_for(@ui.move_most_ms)
-  board_tap_words(t, "看板")
+  let said = board_menu_said(t)
+  assert_true(said.contains("全部会话"))
+  assert_true(said.contains("我参与的"))
+  assert_true(said.contains("已隐藏"))
+  assert_true(said.contains("已归档"))
+  assert_false(said.contains("监控中"))
+  assert_false(said.contains("看板"))
+  board_tap_words(t, "我参与的")
+  assert_eq(filter_of(src, "ws1"), "mine")
   assert_true(@sfbase.board_on_of(src, "ws1"))
-  assert_true(board_words_at(t, "整理发布清单") is Some(_))
-  assert_true(t.query(Button, label="筛选会话：全部") is None)
-  assert_eq(board_faults(t), [])
-  t.click(Button, label="列表")
+  let mine = @sfbase.board_items(src, "ws1").length()
+  assert_true(mine > 0 && mine < all)
+  assert_true(t.query(Button, label="筛选会话：我参与的") is Some(_))
+  assert_eq(board_bar_faults(t), [])
+  t.click(Button, label="筛选会话：我参与的")
   t.run_for(@ui.move_most_ms)
+  board_tap_words(t, "全部会话")
+  assert_eq(@sfbase.board_items(src, "ws1").length(), all)
+  t.click(Button, label="筛选会话：全部")
+  t.run_for(@ui.move_most_ms)
+  board_tap_words(t, "已隐藏")
+  assert_eq(filter_of(src, "ws1"), "hidden")
   assert_false(@sfbase.board_on_of(src, "ws1"))
+}
+
+///|
+test "小屏: the list's 监控中 taken onto the board as its 监控中 column, the board narrowed to all of them" {
+  let (t, src) = board_bar_at("board-list", 390.0, 844.0)
+  t.click(Button, label="筛选会话：全部")
+  t.run_for(@ui.move_most_ms)
+  board_tap_words(t, "监控中")
+  assert_eq(filter_of(src, "ws1"), "watching")
+  t.click(Button, label="看板")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.board_lane.get(), "watch")
+  assert_eq(filter_of(src, "ws1"), "all")
   assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
 }
 
@@ -404,6 +575,197 @@ test "大屏: a card dragged across the board runs a few bindings a move, whatev
   assert_true(ran.iter().take(10).all(fn(n) { n <= 2 }), msg="bindings each move within its column: \{Repr(ran)}")
   assert_true(ran.iter().all(fn(n) { n <= 7 }), msg="bindings each move: \{Repr(ran)}")
   t.release(rx + 40.0, ry + 200.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+/// A finger across the narrow board's track at `y` from `x0` by `dx`, in `steps` moves input_step_ms apart, let go
+/// (`up`) or held there.
+fn board_swipe(t : @ui.Tester, x0 : Double, y : Double, dx : Double, steps : Int, up? : Bool = true) -> Unit {
+  t.touch(0, x0, y)
+  for i in 1..=steps {
+    t.advance(@ui.input_step_ms)
+    t.touch(1, x0 + dx * i.to_double() / steps.to_double(), y)
+  }
+  if up {
+    t.touch(2, x0 + dx, y)
+    t.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "小屏: the board's columns swiped across, in the hand and let go on the next, back, or back where they were short of it; a finger down them scrolls, no card lifted" {
+  let (t, _) = board_at("board", 390.0, 844.0, platform=2)
+  assert_eq(@sfbase.board_lane.get(), "wait")
+  let y = 500.0
+  // (in the hand: the column chosen and the next moved with it, as far as the finger has gone)
+  board_swipe(t, 300.0, y, -120.0, 6, up=false)
+  t.draw()
+  let run_x = board_words_at(t, "首页的列表改成按天分组").map(fn(r) { r.0 })
+  assert_true(run_x is Some(x) && x > 200.0 && x < 390.0)
+  t.touch(2, 180.0, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.board_lane.get(), "run")
+  assert_true(board_words_at(t, "首页的列表改成按天分组").map(fn(r) { r.0 < 60.0 }).unwrap_or(false))
+  assert_eq(board_faults(t), [])
+  // (back by a swipe the other way)
+  board_swipe(t, 100.0, y, 160.0, 6)
+  assert_eq(@sfbase.board_lane.get(), "wait")
+  // (short of the share and slow: back where it was)
+  board_swipe(t, 300.0, y, -50.0, 12)
+  assert_eq(@sfbase.board_lane.get(), "wait")
+  // (down the column: it scrolls, no card in the hand, no place to let one go)
+  t.touch(0, 200.0, 700.0)
+  for i in 1..=6 {
+    t.advance(@ui.input_step_ms)
+    t.touch(1, 200.0, 700.0 - 40.0 * i.to_double())
+    assert_false(@sfbase.board_drag_active.get())
+  }
+  t.touch(2, 200.0, 460.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.board_lane.get(), "wait")
+  assert_false(@sfbase.board_drag_active.get())
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "小屏: a draft's card held long offers 立即派发 and 删除; not dragged" {
+  let (t, _) = board_at("board", 390.0, 844.0, platform=2)
+  t.click(Button, label="待派发 2")
+  t.run_for(@ui.move_most_ms)
+  guard t.semantics().iter().find_first(fn(n) { n.role is Button && n.rect.1 > 200.0 && n.rect.2 > 300.0 }) is Some(card) else {
+    fail("no draft's card")
+  }
+  let (x, y) = (card.rect.0 + 40.0, card.rect.1 + 20.0)
+  t.touch(0, x, y)
+  t.advance(@ui.long_press_ms + @ui.input_step_ms)
+  t.draw()
+  t.touch(2, x, y)
+  t.run_for(@ui.move_most_ms)
+  let said = board_menu_said(t)
+  assert_true(said.contains("立即派发"))
+  assert_true(said.contains("删除"))
+  assert_false(@sfbase.board_drag_active.get())
+}
+
+///|
+test "大屏: the board's bar's filter narrows it to 我参与的, saying so on itself, and back" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  let all = @sfbase.board_items(src, "ws1").length()
+  t.click(Button, label="筛选会话：全部")
+  t.run_for(@ui.move_most_ms)
+  assert_false(board_menu_said(t).contains("监控中"))
+  board_tap_words(t, "我参与的")
+  assert_eq(filter_of(src, "ws1"), "mine")
+  assert_true(@sfbase.board_on_of(src, "ws1"))
+  assert_true(@sfbase.board_items(src, "ws1").length() < all)
+  // (narrowed: the key says so in words, and opens the same menu)
+  assert_true(t.query(Button, label="筛选会话：全部") is None)
+  // (the bar's, at its end: the list's own filter, folded into the sidebar, says so as well)
+  guard t.all(Button, label="我参与的").filter(fn(b) { b.rect.0 > 720.0 }) is [b] else { fail("no 我参与的 in the board's bar") }
+  let (bx, by, bw, bh) = b.rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_faults(t), [])
+  board_tap_words(t, "全部会话")
+  assert_eq(filter_of(src, "ws1"), "all")
+  assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: 显示's panel: 列表 | 看板 as cards, how it is grouped and its empty columns, the board behind it changing at once, audit clean" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  board_display_open(t)
+  for w in ["列表", "看板", "分组方式", "按状态", "按机器", "按成员", "显示空列"] {
+    assert_true(board_words_at(t, w) is Some(_), msg="\{w} in 显示's panel")
+  }
+  assert_true(t.query(Radio, label="看板") is Some(_))
+  assert_eq(board_faults(t), [])
+  // grouped by station from it: the board behind it so at once, the panel left open, 显示 saying 按机器
+  t.click(Radio, label="按机器")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@signals.untracked(fn() { @sfbase.board_group_of(src, "ws1") }), "station")
+  assert_true(board_words_at(t, "Willow") is Some(_))
+  assert_true(board_words_at(t, "分组方式") is Some(_), msg="the panel left open")
+  assert_eq(board_faults(t), [])
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "分组方式") is None)
+  assert_true(t.query(Button, label="按机器") is Some(_))
+  assert_true(t.query(Button, label="显示") is None)
+  // back by state: 显示 again; its 列表 card back to the list, the panel closed
+  board_group_by(t, "按状态")
+  assert_true(t.query(Button, label="显示") is Some(_))
+  board_display_open(t)
+  t.click(Radio, label="列表")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(board_words_at(t, "分组方式") is None)
+  assert_true(board_words_at(t, "待派发") is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: 显示空列 off leaves the empty columns out, kept in the core's prefs; 新待办 brings 待派发 in while a draft is written" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  // 待派发 emptied: both drafts started
+  for _ in 0..<2 {
+    let (sx, sy, sw, sh) = t.all(Button, label="开始")[0].rect
+    t.tap(sx + sw / 2.0, sy + sh / 2.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_eq(board_kept_drafts(), [])
+  assert_true(board_words_at(t, "待派发") is Some(_), msg="empty, shown")
+  board_display_open(t)
+  t.click(Switch, label="显示空列")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@signals.untracked(fn() { @sfbase.board_show_empty_of(src, "ws1") }))
+  assert_true(@sffixture.board_prefs["boardShowEmpty"].get("ws1") is Some(False))
+  assert_true(board_words_at(t, "待派发") is None, msg="empty, left out")
+  assert_true(board_words_at(t, "进行中") is Some(_))
+  assert_eq(board_faults(t), [])
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  // (显示 on a ground of its own: the board not as it starts)
+  assert_true(t.query(Button, label="显示") is Some(_))
+  // 新待办: 待派发 in while its line is open, out again as it is closed
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "待派发") is Some(_))
+  assert_eq(board_faults(t), [])
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "待派发") is None)
+  // (the app started again: read of the core's prefs)
+  @sfbase.board_reset()
+  t.run_for(@ui.move_most_ms)
+  assert_false(@signals.untracked(fn() { @sfbase.board_show_empty_of(src, "ws1") }))
+  // shown again
+  board_display_open(t)
+  t.click(Switch, label="显示空列")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sffixture.board_prefs["boardShowEmpty"].get("ws1") is None)
+  assert_true(board_words_at(t, "待派发") is Some(_))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏, a Mac's window (its buttons in the app's top row): the board's bar's start left empty, dragging the window, all it holds at its end" {
+  let t = wide_tester([], mode="board", w=1440.0, h=900.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_faults(t), [])
+  let (lx, ly, _, lh) = t.get(Button, label="列表").rect
+  let (gx, _, gw, _) = t.get(Button, label="新待办").rect
+  let y = ly + lh / 2.0
+  // (all of it at the bar's end: 列表 past the middle of the window, 新待办 last, clear of its corner)
+  assert_true(lx > 720.0, msg="列表 at \{lx}")
+  assert_true(gx > lx && gx + gw <= 1440.0 - 12.0, msg="新待办 ends at \{gx + gw}")
+  // (the bar before them: nothing there but the bar, dragging the window)
+  assert_true(t.drags_window_at(lx / 2.0, y), msg="the bar's empty part")
+  assert_false(t.drags_window_at(lx + 4.0, y), msg="列表")
+  t.click(Button, label="整理发布清单")
   t.run_for(@ui.move_most_ms)
   assert_eq(board_faults(t), [])
 }

@@ -2,7 +2,7 @@
 // by where each stands (待派发, 等你处理, 进行中, 待收口, 监控中), by the station it runs on, or by who is in it. What a
 // chat stands at is the core's (its row's state, tone, lead): the board only sorts by it, so a card goes to another
 // column only as its chat goes on. Whether a workspace shows its board, how it is grouped and the drafts of its 待派发
-// are this device's, kept in the core's prefs (`boardViews`, `boardGroups`, `boardDrafts`) by workspace, what was
+// are this device's, kept in the core's prefs (`boardViews`, `boardGroups`, `boardShowEmpty`, `boardDrafts`) by workspace, what was
 // chosen here shown at once while the core takes it. A draft started becomes a chat as a new chat's page makes one
 // (`newChat.create` under the draft's key, then `chat.send` of its words), its card that chat's from the press on.
 
@@ -58,6 +58,11 @@ let board_views_here : Map[String, Bool] = Map([])
 let board_groups_here : Map[String, String] = Map([])
 
 ///|
+/// Whether each workspace's board shows its empty columns as chosen here, by workspace (board_views_here's).
+// kept across runs: put back by board_reset as a run starts
+let board_empty_here : Map[String, Bool] = Map([])
+
+///|
 /// Each workspace's drafts as written here, by workspace (board_views_here's).
 // kept across runs: put back by board_reset as a run starts
 let board_drafts_here : Map[String, Array[BoardDraft]] = Map([])
@@ -88,6 +93,7 @@ let board_written : Ref[Int] = Ref(0)
 pub fn board_reset() -> Unit {
   board_views_here.clear()
   board_groups_here.clear()
+  board_empty_here.clear()
   board_drafts_here.clear()
   board_titles_here.clear()
   board_seen_here.clear()
@@ -217,6 +223,29 @@ pub fn set_board_group(src : Source, ws : String, g : String) -> Unit {
   (src.call)(
     "prefs.set",
     { "boardGroups": board_of_ws(ws, if g == "state" { Json::null() } else { Json::string(g) }) },
+    answer_unread,
+  )
+}
+
+///|
+/// Whether workspace `ws`'s board shows the columns with no card in them (else leaves them out: the prefs'
+/// `boardShowEmpty` false).
+pub fn board_show_empty_of(src : Source, ws : String) -> Bool {
+  board_rev.get() |> ignore
+  match board_empty_here.get(ws) {
+    Some(on) => on
+    None => !(board_kept(src, "boardShowEmpty", ws) is Some(False))
+  }
+}
+
+///|
+/// Workspace `ws`'s board showing its empty columns, or leaving them out (the prefs' `boardShowEmpty`, none for shown).
+pub fn set_board_show_empty(src : Source, ws : String, on : Bool) -> Unit {
+  board_empty_here[ws] = on
+  board_rev.set(board_rev.untracked() + 1)
+  (src.call)(
+    "prefs.set",
+    { "boardShowEmpty": board_of_ws(ws, if on { Json::null() } else { Json::boolean(false) }) },
     answer_unread,
   )
 }
@@ -365,6 +394,17 @@ pub fn board_set(src : Source, on : Bool) -> Unit {
   guard @signals.untracked(fn() { workspace_in_view(src).0 }) is Some(w) else { return }
   board_pick.set(None)
   board_adding.set(false)
+  // (the board narrows to all or mine alone: shown as watching, its 监控中 column; hidden, all of them)
+  if on {
+    match filter_of(src, w.id) {
+      "watching" => {
+        board_lane.set("watch")
+        set_filter_of(src, w.id, "all")
+      }
+      "hidden" => set_filter_of(src, w.id, "all")
+      _ => ()
+    }
+  }
   set_board_on(src, w.id, on)
   // (the list again: what the shell does besides, the tape's sidebar brought over)
   if !on {
@@ -384,12 +424,23 @@ pub fn board_set(src : Source, on : Bool) -> Unit {
 }
 
 ///|
-/// The chats of workspace `ws` the board shows: every one listed, the newest first, and a draft started whose chat the
-/// core does not list yet as that chat's card (under the key it is made under: the same card as its pending row and
-/// the station's row after it).
+/// What the board of workspace `ws` is narrowed to: `mine` where its list is, else `all` (its 监控中 a column of its own,
+/// what is hidden the list's).
+pub fn board_filter_of(src : Source, ws : String) -> String {
+  if filter_of(src, ws) == "mine" {
+    "mine"
+  } else {
+    "all"
+  }
+}
+
+///|
+/// The chats of workspace `ws` the board shows: every one listed (as board_filter_of narrows them), the newest first,
+/// and a draft started whose chat the core does not list yet as that chat's card (under the key it is made under: the
+/// same card as its pending row and the station's row after it).
 pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
   let all : Array[ChatItem] = []
-  match chats_of(src, ws, "all").0 {
+  match chats_of(src, ws, board_filter_of(src, ws)).0 {
     Some(v) =>
       for d in v.days {
         for i in d.items {
@@ -450,12 +501,12 @@ pub fn board_title_of(item : ChatItem) -> String {
 }
 
 ///|
-/// What the board of workspace `ws` reads as it is first shown, where it is shown (its chats, all of them, and its
-/// stations' rows): all of it answered. True at once where the workspace shows its list.
+/// What the board of workspace `ws` reads as it is first shown, where it is shown (its chats as board_filter_of narrows
+/// them, and its stations' rows): all of it answered. True at once where the workspace shows its list.
 pub fn board_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
   guard board_on_of(src, ws) else { return true }
   let (name, params) = station_rows_ask(ws)
-  let chats = chats_all_opens(src, ws, ask)
+  let chats = opens_answered(ask("chats", chats_params(ws, board_filter_of(src, ws))))
   let stations = opens_answered(ask(name, params))
   chats && stations
 }
