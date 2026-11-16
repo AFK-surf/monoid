@@ -71,7 +71,7 @@
     // The relays probed from China's carriers every half hour by Globalping's free probes (src/probes.ts).
     "RELAY_PROBES": "globalping",
     // What they are called on a station's card (经中继北京).
-    "RELAY_NAMES": { "https://app.still.fail": "Cloudflare", "https://39.105.157.122": "北京", "https://47.76.247.168": "香港", "https://120.24.233.158": "深圳", "https://47.79.40.84": "东京", "https://relay.pvg.office.afk.surf:8445": "上海", "https://34.146.162.106": "东京 GCP", "https://34.97.235.231": "大阪 GCP", "https://34.50.62.120": "首尔 GCP", "https://34.150.67.237": "香港 GCP", "https://39.105.157.122:8443": "北京转香港", "https://47.76.247.168:8443": "香港转北京" },
+    "RELAY_NAMES": { "https://app.still.fail": "Cloudflare", "https://39.105.157.122": "北京", "https://47.76.247.168": "香港", "https://120.24.233.158": "深圳", "https://47.79.40.84": "东京", "https://relay.pvg.office.afk.surf:8445": "上海", "https://34.146.162.106": "东京", "https://34.97.235.231": "大阪", "https://34.50.62.120": "首尔", "https://34.150.67.237": "香港", "https://39.105.157.122:8443": "北京转香港", "https://47.76.247.168:8443": "香港转北京" },
     // The pages still.fail/status checks (src/status.ts).
     "STATUS_PAGES": { "site": "https://still.fail/", "web": "https://app.still.fail/" },
     // Whose issues labelled `incident` it shows, and whose workflows say a release is out: the id of AFK-surf's
