@@ -334,7 +334,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
             all[:if all.length() < info_pulls_most { all.length() } else { info_pulls_most }].to_owned()
           },
           fn(pull) { text(Some(pull), "url") },
-          fn(row, pull) { info_pull_row_node(row, src, r, @signals.untracked(fn() { Some(pull.get()) }), close) },
+          fn(row, pull) { info_pull_row_node(row, src, r, fn() { Some(pull.get()) }, close) },
         )
         k.pick(fn() { if pulls().length() > info_pulls_most { pulls().length() } else { 0 } }, fn(m, n) {
           guard n > 0 else { return }
@@ -450,37 +450,39 @@ fn info_more_row_node(k : @view.View, icon : String, words : String, end : Strin
 /// A pull request linked in the chat, its row in the card in `k`: its mark, its title cut to the line, its number at
 /// the line's end; tapped, it opens in the browser (the panel closed for it); held or right clicked, its menu (在对话中查看,
 /// its link copied); pointed at, its card (sfpages things.mbt), at the info's left.
-fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : Json?, close : () -> Unit) -> Unit {
-  let title = @sfpages.pull_title(pull)
-  let url = text(pull, "url")
+fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Json?, close : () -> Unit) -> Unit {
+  // (what it says as the chat has it now: a pull request merged, its title told, while the panel shows)
+  let title = fn() { @sfpages.pull_title(pull()) }
+  let url = fn() { text(pull(), "url") }
   k.box(fn(b) {
     @sf.style_node(b, fn() { info_row_middle })
     b
     .radius(Is(info_row_radius))
     .ground(By(fn() { if @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
-    .says(Is(Some(@view.said(Link, label=title))))
+    .says(By(fn() { Some(@view.said(Link, label=title())) }))
     |> ignore
     @sf.menu_presses_node(
       b,
       fn() {
         close()
-        @sfbase.open_link_in(src, url)
+        @sfbase.open_link_in(src, @signals.untracked(url))
       },
       fn(x, y, _) {
-        @sfpages.thing_menu_node_at(x, y, number(pull, "seq"), url, fn(seq) {
+        let p = @signals.untracked(pull)
+        @sfpages.thing_menu_node_at(x, y, number(p, "seq"), text(p, "url"), fn(seq) {
           close()
           go_to(r, seq)
         })
       },
     )
-    @sfpages.pull_mark_node(b, fn() { pull }, info_icon)
+    @sfpages.pull_mark_node(b, pull, info_icon)
     b.box(fn(w) {
       @sf.style_node(w, fn() { info_fill }, in_row=true)
-      @sf.words_node(w, fn() { title }, fn() { info_pull_title }) |> ignore
+      @sf.words_node(w, title, fn() { info_pull_title }) |> ignore
     })
     |> ignore
-    @sf.words_node(b, fn() { "#" + count(pull, "number").to_string() }, fn() { info_meta }) |> ignore
-    @sfpages.web_peek_node(b, src, r.station, fn() { url }, fn() { title }, side=Left, peek=fn() { text(pull, "peek") })
+    @sf.words_node(b, fn() { "#" + count(pull(), "number").to_string() }, fn() { info_meta }) |> ignore
+    @sfpages.web_peek_node(b, src, r.station, url, title, side=Left, peek=fn() { text(pull(), "peek") })
   })
   |> ignore
 }
