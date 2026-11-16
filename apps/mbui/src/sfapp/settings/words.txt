@@ -1597,6 +1597,7 @@ web-pages.stations.device
 web-pages.stations.deviceOffline
 web-pages.stations.joinedElsewhere
 web-pages.stations.joinedFrom
+web-pages.stations.thisMachine
 web-pages.stations.page.part.machine
 web-pages.stations.page.part.overview
 web-pages.stations.page.part.settings

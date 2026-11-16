@@ -44,6 +44,43 @@ pub fn local_station_addable_in(workspace : String, known : Array[String]) -> Bo
 }
 
 ///|
+// kept across runs: put back as a run begins (reset)
+let local_said_kept : Ref[@signals.Signal[String]?] = Ref(None)
+
+///|
+/// What the host says of this machine's station, as a signal: read of the host as it is first asked, and again as a
+/// page that reads it on its own time hears it anew (local_station_heard), so what shows it is made again then.
+fn local_said() -> @signals.Signal[String] {
+  match local_said_kept.val {
+    Some(s) => s
+    None => {
+      let s = @signals.signal(@hostapi.app_said("local_station"), same=fn(a, b) { a == b })
+      local_said_kept.val = Some(s)
+      s
+    }
+  }
+}
+
+///|
+/// What the host said of this machine's station just now, heard by a page that reads it again on its own time
+/// (本机 Station's, this machine's station's page): Station's list tags and orders by it.
+pub fn local_station_heard(said : String) -> Unit {
+  local_said().set(said)
+}
+
+///|
+/// The id of the station this machine is (its host's, the same in every workspace it is in), "" where it is none.
+fn local_station_id() -> String {
+  if !local_station_managed() {
+    return ""
+  }
+  let s = Some(@json.parse(local_said().get()) catch { _ => Json::null() })
+  let ws = field(s, "workspace")
+  // (not one taken away from here, its data kept: 已卸载)
+  if flag(s, "uninstalled") || flag(ws, "removed") || flag(ws, "rig") { "" } else { text(ws, "station") }
+}
+
+///|
 fn add_here_note(pc : Bool) -> String {
   if text(local_station_json(), "data") != "" {
     tr(if pc { "android-settings.station.addHereExistingPc" } else { "android-settings.station.addHereExisting" })

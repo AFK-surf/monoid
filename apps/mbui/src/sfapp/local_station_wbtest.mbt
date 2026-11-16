@@ -562,3 +562,36 @@ test "大屏: 本机 Station taken away from its card's menu, asked first; 正�
   @sfbase.local_station_carry_on()
   assert_eq(t.app_told("local_station_act"), ["uninstall"])
 }
+
+///|
+test "Station's list: this machine's station first, tagged 本机 after its name (in a workspace it joined too); none else" {
+  let calls : Array[Made] = []
+  // (the list's ws1 has st1 then st2; this machine st2, its home ws9: the same station id is this machine's in each)
+  let t = wide_tester(calls)
+  t.set_app_said("local_station", local_with({ "id": "ws9", "name": "个人", "station": "st2", "removed": false }, runner="service"))
+  app.nav.replace(Setting(@settings.Route::Stations))
+  t.run_for(@ui.move_most_ms)
+  let tags = t.words().filter(fn(w) { w.0 == "本机" })
+  assert_eq(tags.length(), 1)
+  // (st2 is the fixture's Maple, st1 its Willow: Maple first now, its tag beside its name)
+  let y_of = fn(s : String) { t.words().iter().find_first(fn(w) { w.0 == s }).map(fn(w) { w.2 }).unwrap_or(-1.0) }
+  assert_true(y_of("Maple") >= 0.0 && y_of("Maple") < y_of("Willow"))
+  assert_true((tags[0].2 - y_of("Maple")).abs() < 6.0)
+  let t = wide_tester(calls)
+  t.set_app_said("local_station", local_with({ "id": "ws1", "name": "Acme", "station": "st9", "removed": false }, runner="service"))
+  app.nav.replace(Setting(@settings.Route::Stations))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.words().filter(fn(w) { w.0 == "本机" }).length(), 0)
+  // the host says it only once the list shows (a station 添加这台 Mac just added): its card is tagged, put first
+  let t = wide_tester(calls)
+  t.set_app_said("local_station", "")
+  app.nav.replace(Setting(@settings.Route::Stations))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.words().filter(fn(w) { w.0 == "本机" }).length(), 0)
+  // (heard as 本机 Station's page or this machine's station's page reads the host again on its own time)
+  let said = local_with({ "id": "ws1", "name": "Acme", "station": "st2", "removed": false }, runner="service")
+  t.set_app_said("local_station", said)
+  @settings.local_station_heard(said)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.words().filter(fn(w) { w.0 == "本机" }).length(), 1)
+}

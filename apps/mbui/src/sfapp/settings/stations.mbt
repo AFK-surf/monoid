@@ -19,8 +19,12 @@ fn joined_mark(s : Json?) -> String {
 /// The workspace's stations (StationsScreen), pushed from settings: their cards, each opening its page.
 fn stations_page(c : @ui.Ctx, core : Core, here : Here) -> Unit {
   let topic = stations_of(core, here)
+  // this machine's station first (the user, 2026-11-16), the rest as the workspace lists them (as they joined it)
   let list = match topic.value {
-    Some(Array(a)) => Some(a)
+    Some(Array(a)) => {
+      let here = a.filter(fn(st) { is_this_machine(Some(st)) })
+      Some(if here.length() == 0 { a } else { here + a.filter(fn(st) { !is_this_machine(Some(st)) }) })
+    }
     _ => None
   }
   // adding one: its owners' and admins' ＋ (the bar's notch at the stack's root)
@@ -95,14 +99,22 @@ fn stations_page(c : @ui.Ctx, core : Core, here : Here) -> Unit {
 ///|
 /// A card's head on this page (a station's, the agents at work's): its mark 28 across, its name and what is said of it
 /// under it (`said`: its line, even empty; none, no line), 12 from the mark; what stands at its end (a chevron).
-fn card_head(c : @ui.Ctx, mark : () -> Unit, name : String, said : String?, end : () -> Unit) -> Unit {
+/// `tag`: a pill after its name (本机: the station this app runs beside).
+fn card_head(c : @ui.Ctx, mark : () -> Unit, name : String, said : String?, end : () -> Unit, tag? : String = "") -> Unit {
   let t = @sf.theme()
   c.box(dir=Row, w=Fill(1.0), gap=12.0, align=ACenter, fn() {
     // In a box as large whatever it is: an emoji is drawn wider than an icon, and the names line up.
     c.box(w=Px(card_mark), h=Px(card_mark), align=ACenter, justify=JCenter, mark) |> ignore
-    c.box(w=Fill(1.0), fn() {
-      // A card is a summary; its page can show the station's name in full.
-      c.text(name, size=t.t.title, weight=700, color=t.p.text, wrap=false, line=22.0, allow_ellipsis=true) |> ignore
+    // (its lines 2 apart, as a card's lines are: the tag's ground does not meet the line under it)
+    c.box(style=card_head_text, fn() {
+      // A card is a summary; its page can show the station's name in full (the tag keeps its words, the name gives way).
+      c.box(style=card_name_row, fn() {
+        c.text(name, size=t.t.title, weight=700, color=t.p.text, wrap=false, line=22.0, w=Cut) |> ignore
+        if tag != "" {
+          @sf.pill(c, tag)
+        }
+      })
+      |> ignore
       // what is said of it goes on to a line more where it does not fit (words set larger: a rig's whose and how)
       match said {
         Some(line) => c.text(line, size=t.t.meta, color=t.p.muted, w=Fill(1.0), line=18.0) |> ignore
@@ -114,6 +126,16 @@ fn card_head(c : @ui.Ctx, mark : () -> Unit, name : String, said : String?, end 
   })
   |> ignore
 }
+
+///|
+/// A card head's name and what is said of it (card_head's), 2 apart as a card's lines are.
+// kept across runs: a value (no field of it changes)
+let card_head_text : @ui.Style = @ui.style(w=@sf.grow, gap=S0_5)
+
+///|
+/// A card's name and the tag after it (card_head's), on its one line.
+// kept across runs: a value (no field of it changes)
+let card_name_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 
 ///|
 /// Under its head, where its workspace's safe mode does not name it and the viewer could protect it from here
@@ -152,6 +174,7 @@ fn station_card(c : @ui.Ctx, core : Core, st : Json) -> Unit {
   let t = @sf.theme()
   let s = Some(st)
   let address = text(s, "station")
+  let here = is_this_machine(s)
   card(c, key="station/" + address, fn() {
     let emoji = text(s, "emoji")
     let icon = text(s, "icon")
@@ -172,12 +195,20 @@ fn station_card(c : @ui.Ctx, core : Core, st : Json) -> Unit {
         }
         chevron(c)
       },
+      tag=if here { tr("web-pages.stations.thisMachine") } else { "" },
     )
     station_protect(c, core, s)
     station_body(c, core, s)
   }, on_press=fn() {
     (core.push)(Station(address))
   })
+}
+
+///|
+/// Whether station `s` is this machine's (the host's station, one id in every workspace it is in).
+fn is_this_machine(s : Json?) -> Bool {
+  let id = text(s, "id")
+  id != "" && local_station_id() == id
 }
 
 ///|

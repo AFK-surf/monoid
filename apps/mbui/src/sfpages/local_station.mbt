@@ -21,7 +21,11 @@ pub fn local_station_node(
 ) -> Unit {
   // (what the host says of it, as it said it last: a signal of that input, read again at each moment it is asked)
   let host : @signals.Signal[String] = @signals.signal(@hostapi.app_said("local_station"), same=fn(a, b) { a == b })
-  let asked = fn() { host.set(@hostapi.app_said("local_station")) }
+  let asked = fn() {
+    let said = @hostapi.app_said("local_station")
+    host.set(said)
+    @settings.local_station_heard(said)
+  }
   fn again(at : Double) -> Unit {
     v.at_moment(at + @settings.local_read_ms, later=true, fn() {
       asked()

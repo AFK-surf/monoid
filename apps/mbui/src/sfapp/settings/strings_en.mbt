@@ -1640,6 +1640,7 @@ let en : Map[String, String] = {
   "web-pages.stations.deviceOffline": "Offline, no device info",
   "web-pages.stations.joinedElsewhere": "From another workspace",
   "web-pages.stations.joinedFrom": "From {name}",
+  "web-pages.stations.thisMachine": "This machine",
   "web-pages.stations.page.part.machine": "Software & device",
   "web-pages.stations.page.part.overview": "Overview",
   "web-pages.stations.page.part.settings": "Settings",

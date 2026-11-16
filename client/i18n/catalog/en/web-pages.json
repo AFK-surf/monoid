@@ -950,6 +950,7 @@
   "web-pages.slackApp.useThis": "Use this account",
   "web-pages.stations.joinedElsewhere": "From another workspace",
   "web-pages.stations.joinedFrom": "From {name}",
+  "web-pages.stations.thisMachine": "This machine",
   "web-pages.stations.device": "Device",
   "web-pages.stations.deviceLoading": "Loading device info",
   "web-pages.stations.deviceOffline": "Offline, no device info",

@@ -555,6 +555,7 @@ pub fn left(route : Route) -> Unit {
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
   archive_reset()
+  local_said_kept.val = None
   profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0

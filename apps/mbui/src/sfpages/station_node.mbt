@@ -125,7 +125,9 @@ fn station_view_node(
   if bones is None && address == this_machine() {
     fn again(at : Double) -> Unit {
       p.at_moment(at + @settings.local_read_ms, later=true, fn() {
-        host.set(@hostapi.app_said("local_station"))
+        let said = @hostapi.app_said("local_station")
+        host.set(said)
+        @settings.local_station_heard(said)
         again(at + @settings.local_read_ms)
       })
       |> ignore
