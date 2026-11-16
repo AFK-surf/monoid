@@ -522,6 +522,12 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
       },
     },
   });
+  let completed = 0;
+  const open = driver.open.bind(driver);
+  driver.open = (options, events) => open(options, (event) => {
+    if (event.type === "turnEnded") completed++;
+    events(event);
+  });
   mkdirSync(join(geminiDir(home), "antigravity-cli"), { recursive: true });
   writeFileSync(agyToken(home), signIn(20));
   const hub = new Hub({ config: () => cfg, store, chats: (id) => (id === "cl" ? chat : undefined), drivers: [driver], mcpUrl: "http://127.0.0.1:1/mcp", internal: new InternalChat() });
@@ -530,7 +536,7 @@ test("a warm process on a borrowed sign-in that runs out too soon for a turn is 
     cfg.maxNudges = 0;
     const m1 = message({ text: "first ask" });
     await hub.accept("cl", m1);
-    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    await until(() => completed >= 1 && store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
     await settle();
     const key = store.listSessions()[0]!.key;
     const id = store.getSession(key)!.runtimeSessionId!;
