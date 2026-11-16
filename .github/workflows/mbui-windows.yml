@@ -126,7 +126,7 @@ jobs:
   stillfail:
     if: github.event_name == 'workflow_dispatch' && inputs.stillfail_ref != ''
     runs-on: windows-latest
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 10 || 5 }}
+    timeout-minutes: 5
     env:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
     defaults:
