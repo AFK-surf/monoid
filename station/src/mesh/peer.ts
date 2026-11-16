@@ -162,13 +162,13 @@ const STALLED = "the other station took nothing for 30 s";
 /// fail on the way (a file that changed while it was read, the other end gone). `failed`, told before the reset (at
 /// once: a read waiting on the stream is given its end as it is reset, front.ts `FrontStream.reset`) whether it was
 /// the bytes' own source that failed (reading them, `CHECK_BYTES`) or the stream taking them, and with what.
-async function sendBytes(stream: Stream, bytes: Bytes, failed?: (source: boolean, error: Error) => void): Promise<void> {
+async function sendBytes(stream: Stream, bytes: Bytes, failed?: (source: boolean, error: Error) => void, idleMs = IDLE_MS): Promise<void> {
   let source = true;
   try {
     for await (const piece of bytes) {
       bytes[CHECK_BYTES]?.();
       source = false;
-      await within(IDLE_MS, stream.write(piece), STALLED);
+      await within(idleMs, stream.write(piece), STALLED);
       source = true;
     }
     source = false;
@@ -258,10 +258,10 @@ const received = (conn: Connection): number | null => {
 /// let go when it fails or its peer is no longer heard. `addr`: where a peer is, asked in a workspace (the relays its
 /// ways keep on and those they turn off, relays.ts `stationAddr`; tests give its sockets). `answerMs`: how long an
 /// answer is waited for, `checkMs` before its connection is asked whether it is still there, `heardMs` how long that
-/// ask takes at most (tests shorten them).
+/// ask takes at most, `idleMs` how long a request's bytes wait for the other end to take a piece (tests shorten them).
 export function peerCall(
   endpoint: Endpoint, cloud: Cloud, given?: (id: string, workspace?: string | null) => Addr, outside?: Outside, answerMs = ANSWER_MS,
-  timing: { checkMs?: number; heardMs?: number } = {},
+  timing: { checkMs?: number; heardMs?: number; idleMs?: number } = {},
 ): StationCall {
   const addr = given ?? ((id: string, workspace?: string | null) => stationAddr(cloud, id, workspace ?? null));
   // The relays each station is not reached through, held by the endpoint itself (peer-relays.ts), set before it is
@@ -278,6 +278,7 @@ export function peerCall(
   };
   const checkMs = timing.checkMs ?? CHECK_MS;
   const heardMs = timing.heardMs ?? HEARD_MS;
+  const idleMs = timing.idleMs ?? IDLE_MS;
   const connections = new Map<string, Connection>();
   /// The workspace each station was last asked in: what a connection kept to it is held to as the ways change.
   const askedIn = new Map<string, string | null>();
@@ -471,7 +472,7 @@ export function peerCall(
         const watched = watch(target, conn, before);
         answer = await Promise.race([reader.line(), watched.gone]).finally(watched.stop);
       } else {
-        await within(IDLE_MS, stream.write(head), late);
+        await within(idleMs, stream.write(head), late);
         // A refusal can come before they all went (the other end read none of them): the rest is not sent.
         const answered = reader.line();
         answered.catch(() => {});
@@ -482,12 +483,14 @@ export function peerCall(
         const sending = sendBytes(stream, body, (source, error) => {
           if (source) sourceFailed = error;
           log.info("mesh", source ? "a request's bytes failed at their source: its stream reset" : "a request's bytes were not taken by the stream: its stream reset", { peer: target.slice(0, 12), method: String(request?.method ?? ""), error: error.message });
-        }).then(() => void (sent = true));
+        }, idleMs).then(() => void (sent = true));
         await Promise.race([sending, answered]);
         const watched = watch(target, conn, before);
         answer = await within(answerMs, Promise.race([answered, watched.gone]), late).finally(watched.stop);
         if (!sent) {
-          await stream.reset(STOPPED).catch(() => {});
+          // (not waited for, as `sendBytes`'s: an answer that came early from an end gone since, and a write held by
+          // flow control, would hold the reset behind it till the connection ends)
+          void stream.reset(STOPPED).catch(() => {});
           sending.catch(() => {});
         }
         // (no answer came, its bytes having failed at their source: that is why, as it is)
