@@ -1294,6 +1294,8 @@ export class Directory extends DurableObject<Env> {
       this.#run("DELETE FROM invitations WHERE id = ?", id);
       this.#run("UPDATE users SET admitted = 'invitation' WHERE sub = ? AND admitted IS NULL", sub);
       if (!existing) this.#run("INSERT INTO members (workspace, sub, role, added_at) VALUES (?, ?, ?, ?)", workspace, sub, row!.role, nowSeconds());
+      // As with the invitation's link, accepting grants its role without lowering one already held.
+      else if (ROLES.indexOf(row!.role as Role) < ROLES.indexOf(existing.role as Role)) this.#run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", row!.role, workspace, sub);
     });
     this.#changed(workspace, true);
     return this.#view(sub, workspace);

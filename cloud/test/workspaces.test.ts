@@ -128,6 +128,36 @@ test("an invitation waits for its email: signing in with it shows the invitation
   }
 });
 
+for (const via of ["id", "token"] as const) {
+  for (const [addedRole, invitedRole, expectedRole] of [["member", "admin", "admin"], ["member", "owner", "owner"], ["owner", "member", "owner"]] as const) {
+    test(`accepting an invitation by ${via} after first sign-in joins as ${addedRole} applies ${invitedRole} without losing a stronger role`, async () => {
+      const h = await harness();
+      try {
+        const alice = h.as(await h.login("alice"));
+        const home = await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as { id: string };
+        assert.equal((await alice("POST", `/v1/workspaces/${home.id}/members`, { role: addedRole, emails: ["bob@example.test"] })).status, 200);
+        const response = await alice("POST", `/v1/workspaces/${home.id}/invitations`, { role: invitedRole, email: "bob@example.test" });
+        assert.equal(response.status, 200);
+        const invitation = await response.json() as { id: string; token: string };
+
+        // Signing in claims the pending membership first, leaving the invitation to accept in the app or by link.
+        const bob = h.as(await h.login("bob"));
+        const before = await (await bob("GET", "/v1/me")).json() as any;
+        assert.equal(before.workspaces[0].role, addedRole);
+        assert.equal(before.invitations[0].role, invitedRole);
+        const accepted = await bob("POST", via === "id" ? `/v1/invitations/${invitation.id}/accept` : "/v1/invitations/accept", via === "id" ? undefined : { token: invitation.token });
+        assert.equal(accepted.status, 200);
+        assert.equal((await accepted.json() as any).role, expectedRole, "both acceptance routes honor the invitation without lowering an existing role");
+        const after = await (await bob("GET", "/v1/me")).json() as any;
+        assert.equal(after.workspaces[0].role, expectedRole);
+        assert.deepEqual(after.invitations, [], "the accepted invitation is consumed");
+      } finally {
+        await h.close();
+      }
+    });
+  }
+}
+
 test("the web app may use this origin's /auth/callback; other redirects are refused", async () => {
   const h = await harness();
   try {
