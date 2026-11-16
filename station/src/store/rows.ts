@@ -730,10 +730,6 @@ export const LEGACY_MESSAGES_BEFORE = `SELECT * FROM merged WHERE thread = ?1 AN
 export const MESSAGE_PAGE_ENTRIES = `SELECT e.* FROM json_each(?2) j
   CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER) ORDER BY e.n`;
 
-/// The usage page's calls are kept added up by this much time (schema.ts USAGE_QUARTERS): a quarter of an hour, which
-/// every time zone's offset is a whole number of.
-export const QUARTER_MS = 900_000;
-
 /// A context falling under half of what the call before sent (at least this much), on the same account and model, was
 /// compacted (sessions/pool.ts; what schema.ts USAGE_COMPACTIONS keeps).
 export const COMPACTED_FROM = 50_000;

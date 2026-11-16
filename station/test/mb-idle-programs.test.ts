@@ -247,14 +247,11 @@ test("the usage checker goes when idle or trimmed, what it found kept, and answe
   const dir = mkdtempSync(join(tmpdir(), "mb-idle-minutes-"));
   const path = join(dir, "stillfail.db");
   let store = Store.open(path);
-  // As on a station before minute summaries existed (test/usage-minute-reader.test.ts): never complete, so the checker
-  // would stay.
+  // As on a station whose chat statistics were never filled: never complete, so the checker would stay.
   for (const [key, ws] of [["a", "workspace-a"], ["b", "workspace-b"]] as const) {
     store.insertSession({ key, ws, connect: key, runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: 1, lastActiveAt: 1 });
   }
-  store.db.exec(`DROP TRIGGER usage_minute_add; DROP TRIGGER usage_minute_drop; DROP TRIGGER usage_minute_grow;
-    DROP TRIGGER usage_minute_session_add; DROP TRIGGER usage_minute_session_move; DROP TRIGGER usage_minute_session_drop;
-    DROP TABLE usage_minute; DROP TABLE usage_day_quarters; DROP TABLE usage_minute_scope; DROP TABLE usage_minute_sessions; DROP TABLE usage_minute_seen; DROP TABLE usage_minute_all;`);
+  store.db.exec("UPDATE usage_chat_progress SET done = 0");
   const midnight = Date.UTC(2026, 0, 2);
   const call = (id: string, at: number) => ({ id, at, model: "m", subagent: true, fast: false, input: 1, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 1, context: null, window: null });
   const of = { turn: null, person: null, thread: null, profile: null };
@@ -267,21 +264,21 @@ test("the usage checker goes when idle or trimmed, what it found kept, and answe
   const reader = new MinuteReader(path, { after: t.after }, binary!);
   const viewer = { workspace: "workspace-a", home: false };
   try {
-    await assert.rejects(reader.ready(viewer), /minute.*unavailable/);
+    await assert.rejects(reader.readyChats(viewer), /chat.*unavailable/);
     assert.equal(reader.running, true);
     assert.equal(t.armed(IDLE_MS), 1, "nothing asked: it goes after IDLE_MS");
     t.fire(IDLE_MS);
     assert.equal(reader.running, false);
     await e.ended();
     assert.equal(running("usage-check"), 0);
-    await assert.rejects(reader.ready(viewer), /minute.*unavailable/, "started again, the same answer");
+    await assert.rejects(reader.readyChats(viewer), /chat.*unavailable/, "started again, the same answer");
     assert.equal(reader.running, true);
     assert.equal(reader.trimIdle(), 1);
     assert.equal(reader.trimIdle(), 0);
     await e.ended();
-    await assert.rejects(reader.ready(viewer), /minute.*unavailable/);
+    await assert.rejects(reader.readyChats(viewer), /chat.*unavailable/);
     // An ask under way is never let go.
-    const under = reader.ready(viewer).catch(() => {});
+    const under = reader.readyChats(viewer).catch(() => {});
     assert.equal(reader.trimIdle(), 0);
     await under;
   } finally {

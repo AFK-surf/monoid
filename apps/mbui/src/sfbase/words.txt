@@ -1790,6 +1790,15 @@ web-main.usage.ranked
 web-main.usage.seePrices
 web-main.usage.showAll
 web-main.usage.splitBy
+web-main.usage.breakdown
+web-main.usage.rank.chats
+web-main.usage.rank.people
+web-main.usage.rank.models
+web-main.usage.rank.profiles
+web-main.usage.allTime
+web-main.usage.rates
+web-main.usage.ratesNote
+web-main.usage.tokens
 web-main.versions.auto
 web-main.versions.autoIdleTip
 web-main.versions.autoTip

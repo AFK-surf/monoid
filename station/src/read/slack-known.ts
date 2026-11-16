@@ -32,7 +32,7 @@ function readJson<T>(path: string, empty: T, shape: (v: Json) => T): T {
 /// Each connect's Slack workspace (`slack.team`), as config.json has it; a Feishu, Comma or group connect's names are keyed by
 /// the connect itself (src/feishu, src/comma: its people's ids are its app's own, or its Comma Group's), a Feishu one's
 /// company its team. `book`: the platform whose names book has them.
-type Team = { id: string; name: string; book: keyof typeof NAMES_FILE };
+export type Team = { id: string; name: string; book: keyof typeof NAMES_FILE };
 export function teams(s: Store): Map<string, Team> {
   const own = readJson(join(s.dataDir, "config.json"), new Map<string, Team>(), (raw) => {
     const out = new Map<string, Team>();
@@ -73,9 +73,20 @@ export function book(s: Store, platform: keyof typeof NAMES_FILE = "slack"): Rec
   return readJson(join(s.dataDir, NAMES_FILE[platform]), {}, (v) => (v !== null && typeof v === "object" && !Array.isArray(v) ? v : {}));
 }
 
+/// A connect's place on its platform, by its id: a connect moved here from another station is named on what its chats
+/// said before as `<connect>@<station>` (a person `slack:claude-ember@d70c…:U09…`), and goes by the connect of that name
+/// here where no connect is named so whole.
+export function teamOf(s: Store, connect: string): Team | undefined {
+  const all = teams(s);
+  const whole = all.get(connect);
+  if (whole !== undefined) return whole;
+  const at = connect.indexOf("@");
+  return at > 0 ? all.get(connect.slice(0, at)) : undefined;
+}
+
 /// A Slack person of a connect, as far as known: their name, email and profile picture's address ("" when not known).
 export function knownPerson(s: Store, connect: string, user: string): { name: string; email: string; picture: string } | null {
-  const t = teams(s).get(connect);
+  const t = teamOf(s, connect);
   const person = book(s, t?.book)[personKey(t?.id ?? "?", user)]?.person;
   const said = (v: Json) => (typeof v === "string" ? v : "");
   return person && typeof person.name === "string" ? { name: person.name, email: said(person.email), picture: said(person.picture) } : null;

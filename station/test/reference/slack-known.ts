@@ -7,10 +7,10 @@
 // the person or channel, and the pages are told to read again then.
 import { channelKey } from "../../src/connects/keys.ts";
 import type { Json, Store } from "./store.ts";
-import { teams, book, knownPerson } from "../../src/read/slack-known.ts";
+import { teams, teamOf, book, knownPerson } from "../../src/read/slack-known.ts";
 
 export * from "../../src/read/slack-known.ts";
-export { teams, book, knownPerson };
+export { teams, teamOf, book, knownPerson };
 
 /// A connect's Slack workspace's name, when known.
 export function teamName(s: Store, connect: string): string | null {
@@ -21,7 +21,7 @@ export function teamName(s: Store, connect: string): string | null {
 /// A channel's name of a connect's Slack, as far as known (null for a direct message, or not known yet).
 export function knownChannel(s: Store, connect: string | null, channel: string): string | null {
   if (connect === null) return null;
-  const t = teams(s).get(connect);
+  const t = teamOf(s, connect);
   const name = book(s, t?.book)[channelKey(t?.id ?? "?", channel)]?.channel;
   return typeof name === "string" ? name : null;
 }
@@ -35,7 +35,7 @@ export function slackCreator(s: Store, reference: string): Json | null {
   if (colon <= 0 || colon >= rest.length - 1) return null;
   const [connect, user] = [rest.slice(0, colon), rest.slice(colon + 1)];
   const person = knownPerson(s, connect, user);
-  const v: Json = { id: reference, name: person?.name ? person.name : user, email: person?.email ? person.email : null, via: teams(s).get(connect)?.book ?? "slack" };
+  const v: Json = { id: reference, name: person?.name ? person.name : user, email: person?.email ? person.email : null, via: teamOf(s, connect)?.book ?? "slack" };
   if (person?.picture) v.picture = person.picture;
   return v;
 }

@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { makeStore, sessionUsages } from "./reference/store.ts";
-import { addUsageColumns, addUsageCompactions, addUsageQuarters, addUsageTotals } from "../src/store/schema.ts";
+import { addUsageColumns, addUsageCompactions, addUsageTotals } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
-import { installIncrementalUsageTotals } from "../src/store/usage-detail.ts";
+import { installIncrementalUsageTotals } from "../src/store/usage-totals-source.ts";
 
 function oldUsage(withColumns = true): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -38,7 +38,6 @@ test("the incremental source for missing totals installs without reading old cal
 for (const [name, upgrade, withColumns] of [
   ["columns", addUsageColumns, false],
   ["session totals", addUsageTotals, true],
-  ["quarter totals", addUsageQuarters, true],
   ["compactions", addUsageCompactions, true],
 ] as const) {
   test(`an old database installs ${name} without reading or rewriting old calls`, () => {

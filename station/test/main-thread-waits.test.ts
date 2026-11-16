@@ -161,7 +161,7 @@ test("a turn, a tool call and a usage record: no file, no process, their stateme
     const toolCall = await counted(() => r.call(key, "chat_history", { to }));
     assert.deepEqual(toolCall, { files: 0, processes: 0, statements: STATEMENTS.toolCall });
     // Compact usage installed, as the usage module installs it as the station starts (usage/module.ts).
-    installCompactUsage(r.store.db, () => r.store.now());
+    installCompactUsage(r.store.db);
     // A call of its recorded already: its context kept, as a session at work has it.
     r.store.recordUsage("/t.jsonl", { session: key, offset: 50, model: "opus" }, "claude", [[
       { id: "call-0", at: r.store.now(), model: "opus", subagent: false, fast: false, input: 10, cacheRead: 100, cacheWrite: 5, cacheWriteLong: 0, output: 20, calls: 1, context: 110, window: 200_000 },
@@ -390,7 +390,7 @@ test("the usage counter writes what it read of two sessions' transcripts in one 
   const store = Store.open(join(dir, "stillfail.db"), null, time.clock);
   const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [{ home: join(dir, "homes/cc") }] }), clock: time.clock });
   try {
-    installCompactUsage(store.db, () => store.now());
+    installCompactUsage(store.db);
     const now = store.now();
     const call = (id: string, at: number) => `${JSON.stringify({ type: "assistant", timestamp: iso(at), isSidechain: false, message: { id, model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 2 } } })}\n`;
     const paths: string[] = [];

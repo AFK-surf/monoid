@@ -1962,7 +1962,7 @@ export class Views implements Owner {
             // the tasks other stations' chats ran here, as its usage says them (a station from before says none)
             runs: arr(get(this.ok({ topic: "stationUsage", station: s.address }), "remoteRuns"))
               .filter((r) => typeof get(r, "at") === "number" && typeof get(r, "session") === "string")
-              .map((r) => ({ at: get(r, "at") as number, session: get(r, "session") as string })),
+              .map((r) => ({ at: get(r, "at") as number, session: get(r, "session") as string, ...(typeof get(r, "count") === "number" ? { count: get(r, "count") as number } : {}) })),
             // its chats' calls, by day, chat, profile and model, as the usage page reads them
             calls: arr(get(this.ok({ topic: "stationUsage", station: s.address }), "rows")),
           };

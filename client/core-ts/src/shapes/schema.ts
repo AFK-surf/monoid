@@ -3880,13 +3880,15 @@ export const SHAPES: Record<string, Shape> = {
     ["label", "String"],
     ["value", "String"],
     ["change", opt("String"), { doc: "Against the days before as many (`versus`): ↑18%, 持平; none where they spent nothing or are not all read." }],
-  ], { doc: "折合费用 $1,911 (按 API 价算). (What it is said under it and which way `change` goes, `sub` and `trend`, are the core's.)", keepNone: true }),
+    ["sub", opt("String"), { doc: "What is said under it: 缓存命中 92%, 日均 1,204 次 (none where nothing is)." }],
+  ], { doc: "折合费用 $1,911 (按 API 价算). (Which way `change` goes, `trend`, is the core's.)", keepNone: true }),
   UsageOnly: struct([
     ["title", "String", { said: true }],
   ], { doc: "The one the usage page shows alone: 只看 林 (which list and item it is, `list` and `key`, the page asked by).", keepNone: true }),
   UsageSeries: struct([
     ["key", "String"],
     ["name", "String", { said: true }],
+    ["costText", opt("String"), { doc: "What it cost over the days, in words beside its name: $1,204." }],
   ], { doc: "A part of each day's bar: an item of the list it is split by (`key` its key there), or the rest (`key` empty).", keepNone: true }),
   UsageDay: struct([
     ["day", "String"],
@@ -3916,6 +3918,7 @@ export const SHAPES: Record<string, Shape> = {
     ["tokensText", "String"],
     ["chat", opt("UsageChat")],
     ["topModel", opt("String"), { said: true }],
+    ["deleted", opt("bool"), { doc: "The chats no station names any more, all of them one row (`key` deleted/all): nothing to open." }],
   ], { doc: "A person, chat, account or model, and what it spent: `share` of the total cost (of the calls, when nothing was\npriced), `detail` its calls and tokens in a line (`callsText`, `tokensText` each alone: 1,204 · 3.2 万). A person's `person` (with `shown`); a chat's page (`chat`), when\nit is still there; an account's `topModel`, the model it used the most tokens of, in words (最多 Opus 5.5)." }),
   UsageChat: struct([
     ["station", "String"],

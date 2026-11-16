@@ -365,7 +365,7 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       } else if place == "connects" {
         (444, 0, 306)
       } else {
-        (348, 0, 274)
+        (361, 0, 282)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
       t.run_for(kept_switch_over_ms)

@@ -1313,7 +1313,10 @@ export class StationsSync {
         return this.#usageRead(address, topic, `/usage?from=${part.from}&tz=${offset}`, put, ctx, attempt);
       }
       const range = usageHistoryRange(now, offset);
-      const path = `/usage?from=${from}&tz=${offset}&history=1&historyFrom=${range.from}&historyTo=${range.to}`;
+      // (the tasks other stations' chats ran here only of the days the card counts them over, 7, and one more for the
+      // clock's day; a station that gathers them says each day's in one: `remoteFrom`, which one from before ignores)
+      const remoteFrom = Math.max(from, now - 8 * 86_400_000);
+      const path = `/usage?from=${from}&tz=${offset}&history=1&historyFrom=${range.from}&historyTo=${range.to}&remoteFrom=${remoteFrom}`;
       return this.#usageRead(address, topic, `${path}&allowPartial=1`, undefined, ctx, attempt);
     });
   }

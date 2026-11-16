@@ -26,24 +26,21 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
 import { hasLegacyDecisionTime, installDecisionTimeIndex } from "./legacy-decision-time.ts";
 import { hasDecisionSessionRepair, hasLegacyDecisionSession, hasSharedDecisionSession, installDecisionSessionIndex,
   DecisionSessionsUnavailable, LEGACY_LAST_DECISION_SHARED, LEGACY_LAST_DECISION_SEPARATE, LEGACY_LAST_DECISION_REPAIR } from "./legacy-decision-session.ts";
-import { retiredUsage } from "./usage-retire.ts";
 import { findRuntimeSource, type RuntimeSource } from "./runtime-source.ts";
 import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
 import * as handover from "./handover.ts";
-import { installUsageMinutes } from "./usage-minutes.ts";
-import { installIncrementalUsageTotals, installUsageDetail, usageTotalsComplete } from "./usage-detail.ts";
+import { installIncrementalUsageTotals, usageTotalsComplete } from "./usage-totals-source.ts";
 import { installUsageSpan } from "./usage-span.ts";
 import { installUsageChatStats } from "./usage-chat-stats.ts";
-import { retireDuplicateUsage } from "./usage-unified.ts";
-import { installEmptyUsageHistory, moveUsageHistory } from "./usage-history.ts";
+import { installUsage15m, moveUsage15m } from "./usage-15m.ts";
 import { compactRecentlyCompacted, hasCompactUsage, savedCompactContext } from "./usage-compact.ts";
 import { DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns } from "./remote-runs.ts";
 import { HAS_ACTIVE_WATCH, HAS_SESSION_ACTIVE_WATCH, HAS_ACTIVE_WATCH_BEFORE_UPGRADE, HAS_SESSION_ACTIVE_WATCH_BEFORE_UPGRADE, installActiveWatches } from "./watch-jobs.ts";
@@ -758,11 +755,9 @@ export class Store {
       addUsageColumns(db);
       installUsageSpan(db);
       addUsageTotals(db);
-      if (!retiredUsage(db)) addUsageCompactions(db);
+      if (!hasCompactUsage(db)) addUsageCompactions(db);
       installUsageCompactions(db);
-      addUsageQuarters(db);
-      installUsageMinutes(db);
-      installUsageDetail(db, clock.currentTimeMillisUnsafe());
+      installUsage15m(db, clock.currentTimeMillisUnsafe());
       installIncrementalUsageTotals(db);
       usage.installUsageCounter(db, clock.currentTimeMillisUnsafe());
       installRemoteRuns(db);
@@ -780,7 +775,6 @@ export class Store {
       installJobNameFirst(db);
       addCardOutcomes(db);
       installUsageChatStats(db);
-      installEmptyUsageHistory(db);
       addSessionTurns(db);
       addSessionWork(db, clock.currentTimeMillisUnsafe());
       addPendingCards(db);
@@ -1119,7 +1113,7 @@ export class Store {
       else this.#run("UPDATE sessions SET ws = ? WHERE ws = ?", to, from);
       this.#wsOf.clear();
       // The calls of the sessions gone before them were `from`'s as well: the whole workspace's go.
-      moveUsageHistory(this.db, from ?? "", to ?? "");
+      moveUsage15m(this.db, from ?? "", to ?? "");
       for (const key of keys) changes.push({ type: "session", key });
       if (keys.length > 0 && from !== to) this.#sessionWorkspaceChanged();
     });
@@ -4152,11 +4146,6 @@ export class Store {
   }
 
   // ── usage (store/usage.rs) ──
-
-  /// Once the previous station has exited, stop maintaining redundant historical summaries.
-  retireDuplicateUsage(): boolean {
-    return retireDuplicateUsage(this.db);
-  }
 
   usageCounter(): { since: number; through: number } {
     return this.#one("SELECT since, through FROM usage_counter WHERE id = 1") as { since: number; through: number };

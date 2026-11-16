@@ -920,7 +920,9 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-account" => "profile-account:ws1/st1/cc"
     "settings-profiles-station" => "profiles:ws1/st1"
     "settings-me-reading" => "me"
-    "settings-usage-details-pending" => "usage"
+    "settings-usage-details-pending" | "settings-usage-real" => "usage"
+    // (its prices of the same workspace's: usage_real's)
+    "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
     | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
@@ -3354,6 +3356,19 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     }
+    // (what the core makes of a workspace spread over three stations as real ones are: usage_real.mbt; split as asked,
+    // the core's choice where none is, all of it where a part or a day is picked)
+    "usage" if mode.has_prefix("settings-usage-real") =>
+      usage_real(
+        match params.get("days") {
+          Some(Number(n, ..)) => n.to_int()
+          _ => 7
+        },
+        match params.get("split") {
+          Some(String(l)) => l
+          _ => ""
+        },
+      )
     "usage" =>
       Some(
         fx_usage(

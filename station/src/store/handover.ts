@@ -14,11 +14,19 @@ type Json = any;
 type Row = Record<string, unknown>;
 
 /// The tables a chat's rows are in, in the order they are put in (what a row names before it).
-export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries"] as const;
+/// What its agents spent (`usage`, `usage_files`, `session_usage`) last, sent only to a station that says it takes them
+/// (`handover.begin`'s `usage`).
+export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage"] as const;
 export type ChatTable = (typeof CHAT_TABLES)[number];
 /// Of each thread: its own rows (by its log's number), and each viewer's marks of it.
 export const BY_N: readonly ChatTable[] = ["entries", "letters", "closed_cards"];
 export const MARKS: readonly ChatTable[] = ["reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed"];
+/// What a session's calls are, sent after its other rows: their threads there are known by then.
+export const USAGE_TABLES: readonly ChatTable[] = ["usage", "usage_files", "session_usage"];
+/// The columns of a call (`usage`) a station sends and puts in: what was spent, never a station's own marks of how it
+/// counted it (`compact_counted` and those after it), which the station it goes to sets as it puts each in, its
+/// triggers counting it there.
+export const USAGE_COLUMNS = ["id", "at", "session", "turn", "thread", "person", "profile", "runtime", "model", "subagent", "fast", "input", "cache_read", "cache_write", "cache_write_long", "output", "calls", "context", "context_window"] as const;
 /// The most rows of a page.
 export const PAGE = 500;
 
@@ -70,6 +78,19 @@ export function chatPage(db: DatabaseSync, table: ChatTable, of: number | string
       const [t, n] = (after as [number, number] | null) ?? [-1, -1];
       return all("SELECT * FROM deliveries WHERE session = ? AND delivered_at IS NULL AND (thread > ? OR (thread = ? AND n > ?)) ORDER BY thread, n LIMIT ?", of as string, t, t, n, limit);
     }
+    case "usage": {
+      // (by its session's index, usage_session (session, at), then its id)
+      const [at, id] = (after as [number, string] | null) ?? [Number.MIN_SAFE_INTEGER, ""];
+      const have = columnsOf(db, "usage");
+      const cols = USAGE_COLUMNS.filter((c) => have.has(c)).join(", ");
+      return all(`SELECT ${cols} FROM usage INDEXED BY usage_session WHERE session = ? AND (at > ? OR (at = ? AND id > ?)) ORDER BY at, id LIMIT ?`, of as string, at, at, id, limit);
+    }
+    case "usage_files":
+      // (a session's transcripts, by their paths: no index of a session's, the table walked in its paths' order once
+      // over a chat's pages)
+      return all("SELECT * FROM usage_files WHERE session = ? AND path > ? ORDER BY path LIMIT ?", of as string, (after as string | null) ?? "", limit);
+    case "session_usage":
+      return all("SELECT * FROM session_usage WHERE session = ?", of as string);
   }
 }
 
@@ -94,6 +115,10 @@ export function afterOf(table: ChatTable, row: Row): After {
       return row.id;
     case "deliveries":
       return [row.thread, row.n];
+    case "usage":
+      return [row.at, row.id];
+    case "usage_files":
+      return row.path;
     default:
       return null;
   }
@@ -122,6 +147,9 @@ export type Made = {
   letters: [number, number, number][];
   members: [number, string][];
   rows: Record<string, Row[]>;
+  /// Rows there before that a row put in replaced (a transcript's place read further, a session's usage newer), as
+  /// they were: put back where it fails.
+  before?: Record<string, Row[]>;
 };
 
 /// How a chat's rows are put in here: the station it came from and its data directory, this one's; how its connects'
@@ -415,8 +443,74 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         touched.sessions.add(String(r.session));
         break;
       }
+      case "usage": {
+        // (its thread as it is here, none where it is not one of the chat's; its account as it is here)
+        if (r.thread !== null && r.thread !== undefined) r.thread = thread(r.thread)?.id ?? null;
+        if (typeof r.profile === "string" && ctx.profiles[r.profile] !== undefined) r.profile = ctx.profiles[r.profile];
+        // (only what this put in is taken out as it fails: a call here already, of a chat handed back, stays)
+        if (putUsage(db, r)) (ctx.made.rows.usage ??= []).push({ id: r.id });
+        ctx.counts.rows.usage = (ctx.counts.rows.usage ?? 0) + 1;
+        break;
+      }
+      case "usage_files": {
+        r.path = moved(r.path, ctx.fromData, ctx.toData);
+        const was = putUsageFile(db, r);
+        if (was === null) (ctx.made.rows.usage_files ??= []).push({ path: r.path });
+        else if (was !== false) madeBefore(ctx, "usage_files", "path", was);
+        ctx.counts.rows.usage_files = (ctx.counts.rows.usage_files ?? 0) + 1;
+        break;
+      }
+      case "session_usage": {
+        const was = db.prepare("SELECT * FROM session_usage WHERE session = ?").get(r.session as string) as Row | undefined;
+        if (typeof r.session === "string" && typeof r.usage === "string" && was?.usage !== r.usage) {
+          db.prepare("INSERT INTO session_usage (session, usage) VALUES (?1, ?2) ON CONFLICT (session) DO UPDATE SET usage = excluded.usage").run(r.session, r.usage);
+          if (was === undefined) (ctx.made.rows.session_usage ??= []).push({ session: r.session });
+          else madeBefore(ctx, "session_usage", "session", was);
+        }
+        ctx.counts.rows.session_usage = (ctx.counts.rows.session_usage ?? 0) + 1;
+        touched.sessions.add(String(r.session));
+        break;
+      }
     }
   }
+}
+
+/// Row `was` of `table` (by its key `key`) as it was before this hand-over first put one of its key in: kept once, so
+/// that what was there before, not what a page of this one put, is put back.
+function madeBefore(ctx: ImportCtx, table: string, key: string, was: Row): void {
+  const ours = (rows: Row[] | undefined) => rows?.some((x) => x[key] === was[key]) === true;
+  if (ours(ctx.made.rows[table]) || ours(ctx.made.before?.[table])) return;
+  ((ctx.made.before ??= {})[table] ??= []).push(was);
+}
+
+/// A call put in (`r`, as `USAGE_COLUMNS` say it), where none of its id is here: whether this put it in. Its columns
+/// only, so that the marks of how this station counts it are its own defaults and its triggers count it (one that
+/// rewrites a plain insert into its own, as usage-compact.ts `usage_compact_legacy_insert` does, says no change of the
+/// statement's: so it is looked for after).
+export function putUsage(db: DatabaseSync, r: Row): boolean {
+  if (typeof r.id !== "string" || typeof r.session !== "string" || typeof r.at !== "number" || typeof r.runtime !== "string") return false;
+  if (db.prepare("SELECT 1 FROM usage WHERE id = ?").get(r.id) !== undefined) return false;
+  const have = columnsOf(db, "usage");
+  const cols = USAGE_COLUMNS.filter((c) => have.has(c) && r[c] !== undefined);
+  db.prepare(`INSERT INTO usage (${cols.join(", ")}) SELECT ${cols.map(() => "?").join(", ")} WHERE NOT EXISTS (SELECT 1 FROM usage WHERE id = ?)`)
+    .run(...cols.map((c) => r[c] as SQLInputValue), r.id);
+  return db.prepare("SELECT 1 FROM usage WHERE id = ?").get(r.id) !== undefined;
+}
+
+/// How far a transcript was read (`usage_files`), put in: never back from further than it was read here. Null: put in
+/// anew; false: here already as far or further; else the row as it was before.
+export function putUsageFile(db: DatabaseSync, r: Row): Row | null | false {
+  if (typeof r.path !== "string" || typeof r.offset !== "number") return false;
+  const was = db.prepare("SELECT * FROM usage_files WHERE path = ?").get(r.path) as Row | undefined;
+  if (was !== undefined && Number(was.offset) >= r.offset) return false;
+  if (was === undefined) {
+    insert(db, "usage_files", r);
+    return null;
+  }
+  const have = columnsOf(db, "usage_files");
+  const cols = Object.keys(r).filter((c) => have.has(c) && c !== "path");
+  db.prepare(`UPDATE usage_files SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE path = ?`).run(...cols.map((c) => r[c] as SQLInputValue), r.path);
+  return was;
 }
 
 /// What a hand-over that failed put in, taken out again (inside a transaction of the store's), but the sessions put in
@@ -433,6 +527,14 @@ export function dropImport(db: DatabaseSync, ctx: ImportCtx): string[] {
     }
   }
   for (const [thread, session] of ctx.made.members) run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, session);
+  // (what a row put in replaced, as it was)
+  for (const [table, rows] of Object.entries(ctx.made.before ?? {})) {
+    for (const row of rows) {
+      const have = columnsOf(db, table);
+      const cols = Object.keys(row).filter((c) => have.has(c));
+      run(`INSERT OR REPLACE INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, ...cols.map((c) => row[c] as SQLInputValue));
+    }
+  }
   for (const s of ctx.made.sessions) {
     if (s.before === null) continue;
     const have = columnsOf(db, "sessions");
@@ -453,4 +555,88 @@ export function dropEmptyThreads(db: DatabaseSync, ctx: ImportCtx): number[] {
     gone.push(t.id);
   }
   return gone;
+}
+
+// ── the calls of chats handed away before their calls went with them (replica/handover.ts `#syncHandedUsage`) ──
+
+/// A chat handed from here (`handed_over`) to `station` with calls kept here, of a session after `after`, at most
+/// `limit`, by session: only those with a call or a session's usage (by usage_session, session_usage's key), so a
+/// station with none of them looks at nothing more.
+export type HandedUsage = { session: string; ws: string | null; thread: number | null; there: number | null };
+export function handedWithUsage(db: DatabaseSync, station: string, after: string, limit = 10): HandedUsage[] {
+  return db.prepare(`SELECT h.session, h.ws, h.thread, h.there FROM handed_over h WHERE h.session > ? AND h.station = ?
+    AND (EXISTS (SELECT 1 FROM usage u INDEXED BY usage_session WHERE u.session = h.session LIMIT 1)
+      OR EXISTS (SELECT 1 FROM session_usage su WHERE su.session = h.session LIMIT 1))
+    ORDER BY h.session LIMIT ?`).all(after, station, limit) as HandedUsage[];
+}
+
+/// The stations chats were handed to from here.
+export function handedStations(db: DatabaseSync): string[] {
+  return (db.prepare("SELECT DISTINCT station FROM handed_over").all() as { station: string }[]).map((r) => r.station);
+}
+
+/// A thread a call names, as the station it goes to finds it: its place (surface, channel, ts), its home, and the
+/// connect the session took part in it by.
+export type ThreadRef = { id: number; surface: string; channel: string; threadTs: string; home: string | null; connect: string | null };
+export function threadRefs(db: DatabaseSync, session: string, ids: readonly number[]): ThreadRef[] {
+  const out: ThreadRef[] = [];
+  for (const id of new Set(ids)) {
+    const t = db.prepare("SELECT id, surface, channel, thread_ts, home FROM threads WHERE id = ?").get(id) as Row | undefined;
+    if (t === undefined) continue;
+    const m = db.prepare("SELECT connect FROM thread_sessions WHERE thread = ? AND session = ?").get(id, session) as Row | undefined;
+    out.push({ id, surface: String(t.surface), channel: String(t.channel), threadTs: String(t.thread_ts), home: (t.home as string | null) ?? null, connect: (m?.connect as string | null) ?? null });
+  }
+  return out;
+}
+
+/// The thread here of `ref` for session `session`: of the same place (its connect's surface as it is here), else one
+/// of the session's of the same channel and ts (a surface named otherwise here); null: none.
+export function threadOfRef(db: DatabaseSync, session: string, ref: ThreadRef, connects: Record<string, string>): number | null {
+  const at = db.prepare("SELECT id FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?").get(surfaceHere(ref.surface, connects), ref.channel, ref.threadTs) as { id: number } | undefined;
+  if (at !== undefined && (ref.surface !== STILLFAIL_SURFACE || db.prepare("SELECT 1 FROM thread_sessions WHERE thread = ? AND session = ?").get(at.id, session) !== undefined)) return at.id;
+  const own = db.prepare("SELECT t.id FROM thread_sessions m JOIN threads t ON t.id = m.thread WHERE m.session = ? AND t.channel = ? AND t.thread_ts = ? LIMIT 1").get(session, ref.channel, ref.threadTs) as { id: number } | undefined;
+  return own?.id ?? null;
+}
+
+/// What a page of a handed chat's calls put in here (`importHandedUsage`).
+export type HandedImport = { added: number; files: number };
+
+/// Whether session `session` has a call here (by usage_session).
+export function hasUsage(db: DatabaseSync, session: string): boolean {
+  return db.prepare("SELECT 1 FROM usage INDEXED BY usage_session WHERE session = ? LIMIT 1").get(session) !== undefined;
+}
+
+/// A page of the calls of session `session` (here, and this station's), and of how far its transcripts were read, put
+/// in, in a transaction of its own: each call of an id not here (its thread by `threads`, the ids there to here, none
+/// where not found; its account by `profiles`), each transcript's place further than here (its path by the data
+/// directories). Its usage as kept there is the caller's (replica/handover.ts `#takeUsage`).
+export function importHandedUsage(db: DatabaseSync, a: { session: string; threads: Record<string, number | null>; profiles: Record<string, string>; fromData: string; toData: string; usage: Row[]; files: Row[] }): HandedImport {
+  const out: HandedImport = { added: 0, files: 0 };
+  const run = () => {
+    for (const r0 of a.usage) {
+      if (r0?.session !== a.session) continue;
+      const r: Row = { ...r0 };
+      if (r.thread !== null && r.thread !== undefined) r.thread = a.threads[String(r.thread)] ?? null;
+      if (typeof r.profile === "string" && a.profiles[r.profile] !== undefined) r.profile = a.profiles[r.profile];
+      if (putUsage(db, r)) out.added++;
+    }
+    for (const f0 of a.files) {
+      if (f0?.session !== a.session) continue;
+      const f: Row = { ...f0, path: moved(f0.path, a.fromData, a.toData) };
+      if (putUsageFile(db, f) !== false) out.files++;
+    }
+  };
+  if (db.isTransaction) {
+    run();
+    return out;
+  }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    run();
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return out;
 }

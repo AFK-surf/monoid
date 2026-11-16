@@ -7,7 +7,6 @@
 // card or identity that does not parse is none.
 import { DatabaseSync } from "node:sqlite";
 import { Refused } from "../api/request.ts";
-import { USAGE_DETAIL_PENDING } from "../store/usage-detail.ts";
 import { hasRuntimeOrderIndex } from "../store/schema.ts";
 import { CARD_POSTS_PENDING, CARD_POST_LATEST, cardPostsReady } from "../store/card-post-index.ts";
 import { legacyMergedNeedsRepair, legacyMergedReadReady } from "../store/legacy-edits-build.ts";
@@ -209,8 +208,6 @@ export const TURN_COUNT_PENDING = "turn count pending: ";
 
 /// The calls of one day for one thread, person, profile and model, added up (store/usage.ts).
 export type { UsageGroup };
-
-export { USAGE_DETAIL_PENDING };
 
 export const USAGE_CHATS_PENDING = "usage chat statistics are still being filled";
 

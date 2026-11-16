@@ -436,8 +436,6 @@ async fn usage_checker(host : @host.Host, db_path : String) -> Unit {
     }
     let answer : Json = try {
       let (ready, name) = match ask {
-        { "viewer": _, .. } => (@usage.minutes_ready(db), "minute")
-        { "detail": v, .. } => (@usage.detail_ready(db, v), "detail")
         { "chats": v, .. } => (@usage.chats_ready(db, v), "chat and card")
         _ => (@usage.remote_ready(db), "remote task")
       }
@@ -509,26 +507,6 @@ async fn builder(host : @host.Host, db_path : String, name : String, step : (@sq
       }
     } catch {
       @legacy.Fallback => { "fallback": true }
-      e => if @sql.busy(e) { { "done": false } } else { { "done": false, "error": Json::string(message(e)) } }
-    }
-    host.say(answer.stringify())
-  }
-}
-
-///|
-/// The usage statistics' workspace upkeep (usage/module.ts `watchCompactMoves`): each `{"wake": true, scope?, range?}`
-/// a batch, answered as the thread of before answered (test/workers/usage-scope-worker.ts): `done`, and `session`,
-/// `sessions`, `from`, `after`, `converted` where they apply.
-async fn usage_scope(host : @host.Host, db_path : String) -> Unit {
-  let db = @sql.Db::attach(host, db_path, wait=250)
-  db.exec("PRAGMA synchronous = NORMAL")
-  while host.line() is Some(line) {
-    if line == "" {
-      continue
-    }
-    let ask : Json = @json.parse(line) catch { _ => Json::null() }
-    guard ask is { "wake": True, .. } else { continue }
-    let answer : Json = @usagefill.scope_batch(db, ask) catch {
       e => if @sql.busy(e) { { "done": false } } else { { "done": false, "error": Json::string(message(e)) } }
     }
     host.say(answer.stringify())
@@ -970,15 +948,13 @@ fn main {
         _ => None
       }))
     (Some("usage-retire"), Some(db), _) =>
-      // (asked a step at a time: `{"drop": true}` the retired indexes, else the fill; each answers whether it is done)
+      // (asked a step at a time: `{"drop": true}` the retired statistics, else the fill; each answers whether it is done)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "usage retirement", (db, ask) => match ask {
         { "drop": True, .. } => Some(@usagefill.drop_step(db))
         _ => Some(@usagefill.fill_step(db))
       }))
     (Some("usage-counter"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_counter(host, db))
-    (Some("usage-scope"), Some(db), _) =>
-      @host.run(shell_dir=beside(db, "shell"), host => usage_scope(host, db))
     (Some("signin-save"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "sign-in index", (db, ask) => match ask {
         String(session) => Some(@signin.step(db, session))
@@ -1157,7 +1133,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-scope|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
       2
     }
   }

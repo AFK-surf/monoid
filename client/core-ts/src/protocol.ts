@@ -62,6 +62,10 @@ export class Beside {
 /// options left out). `station` is `"<workspace>/<station>"`.
 export type Topic = { topic: string; [param: string]: unknown };
 
+/// A task another station's chat ran on a station, as its usage says it (`remoteRuns`): when it began and whose session;
+/// `count` how many such tasks a station that gathers them said in one (one where none is said: a station from before).
+export type RemoteRun = { at: number; session: string; count?: number };
+
 type Param = "string" | "u64" | "u32" | "u16" | "bool" | "object";
 /// How each param is kept: `req` must be given; `def` is filled in when absent (and always sent); `opt` is null when
 /// absent and sent so; `skip` is left out when absent (`skip_serializing_if`); `skipFalse`, a bool left out when false.

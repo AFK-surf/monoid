@@ -21,9 +21,9 @@ test("an unfinished remote-task summary does not read task records or report a p
     try {
       assert.throws(() => remoteRunCount(makeStore(store.db, "."), { workspace: "workspace-a", home: false }),
         /remote.*(not ready|pending|being filled)/i);
-      assert.throws(() => remoteRunsSince(makeStore(store.db, "."), 0n, { workspace: "workspace-a", home: false }),
+      assert.throws(() => remoteRunsSince(makeStore(store.db, "."), 0n, 9223372036854775807n, 0n, { workspace: "workspace-a", home: false }),
         /remote.*(not ready|pending|being filled)/i);
-      const result = readUsage(makeStore(store.db, "."), "en", 0n, 100n, 0n, false,
+      const result = readUsage(makeStore(store.db, "."), "en", 0n, 900_000n, 0n, false,
         { workspace: "workspace-a", home: false }, true);
       assert.equal(result.remoteRuns, undefined, "an incomplete task count is not returned as zero");
       assert.equal(result.history.remoteRuns, undefined, "the history leaves out its task count while it is unavailable");
@@ -89,17 +89,17 @@ test("closing a reader rejects remote summary requests waiting for handover", as
   await waiting;
 });
 
-test("ready remote task statistics do not wait for unrelated minute summaries", async () => {
+test("ready remote task statistics do not wait for the unrelated chat statistics", async () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-remote-independent-"));
   const path = join(dir, "stillfail.db");
   const store = Store.open(path);
-  store.db.exec("UPDATE usage_minute_all SET done = 0 WHERE id = 1");
+  store.db.exec("UPDATE usage_chat_progress SET done = 0 WHERE id = 1");
   const priority = new SharedArrayBuffer(8);
   Atomics.store(new Int32Array(priority), 0, 1); // The other index cannot take a write permit.
   const reader = new MinuteReader(path, { priority });
   try {
     await reader.readyRemote();
-    assert.equal((store.db.prepare("SELECT done FROM usage_minute_all WHERE id = 1").get() as { done: number }).done, 0);
+    assert.equal((store.db.prepare("SELECT done FROM usage_chat_progress WHERE id = 1").get() as { done: number }).done, 0);
   } finally {
     await reader.close();
     store.close();

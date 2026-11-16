@@ -23,6 +23,10 @@
 // Raised once, 2026-11-16: the wide profiles' place opens on 概览 (sfpages profiles_overview.mbt) rather than an
 // unanswered profile's waiting frame, showing the workspace's two-chart quota overview at once.
 
+// Raised once, 2026-11-16: a phone's 用量 says under each of its figures what the core says there (缓存命中 87%, 日均
+// 514 次: UsageTile `sub`, dropped by the shape before) and each row's line under its title whole on as many lines as it
+// takes, its share at its bar's end: words a new thing it shows, not more done for what it showed before.
+
 // Written again, 2026-11-15: 账号, 字体 and 下方栏 made once as nodes, and the settings' sidebar beside every settings
 // page on a medium or large screen (sfdesk settings_frame.mbt settings_side_node): what their old views built is made
 // now, counted as the tree's.
@@ -339,7 +343,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-slack-app": (610, 743, 252),
   "phone settings-memory": (477, 616, 190),
   "phone settings-memory-doc": (370, 464, 126),
-  "phone settings-usage": (639, 758, 160),
+  "phone settings-usage": (656, 778, 180),
   "phone settings-archive": (311, 354, 52),
   "phone settings-kept": (524, 635, 114),
   "phone settings-kept-many": (546, 645, 100),

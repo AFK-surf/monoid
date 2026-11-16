@@ -128,7 +128,7 @@ below, sends them along).
   divergence of one station (the owner's 「避免脚本乱改改错」). A chat of a key live where it would go (in sight there:
   one that went on there apart from it) is never merged into: the plan says it cannot move (`move.chats.live`) and
   `handover.begin` refuses it before anything is written. What it had yet to be handed goes with it and is marked
-  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. Only once the
+  handed here once it is shown there (store `deliveredThere`), so none of it is handed to its agent again as it comes back. What its agents spent (`usage`, `usage_files`, `session_usage`) goes with its rows to a station that takes them (`handover.begin` `usage`, `AFTER_SHOWN`), put in once by call id with its threads and accounts mapped there and its kept summary recomputed from all its calls there; chats handed before their calls went with them have theirs sent in pages as that station is heard from (`handover.usage`, `handover.ts` `usageSyncedFile`, following a chat moved on up to two hops). Only once the
   other counted what it has does this one say it went; before, a failure undoes it there and the chat goes on here
   (`handover.drop`: answered once its rows are out and its record says it drops; then, by that station itself after
   the placing under way (its next process where this one stops first), what it placed and the directories made for

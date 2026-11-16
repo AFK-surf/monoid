@@ -6,8 +6,8 @@ import { hasLegacyAgent, installLegacyAgent } from "./legacy-agent-build.ts";
 import { hasLegacyLoginCards, installLegacyLoginCards } from "./legacy-login-cards.ts";
 import { hasLegacyEdits, hasOldEditIndex, installLegacyEdits, legacyEditLatest, legacyEditsUseOldIndex, usesLegacyEdits } from "./legacy-edits-build.ts";
 import { repairWidgetSourceBeforeAdd, widgetSourceBeforeAddNeedsRepair } from "./widget-sources.ts";
-import { COMPACTED_FROM, QUARTER_MS, STILLFAIL_SURFACE } from "./rows.ts";
-import { incrementalTotalsDecided } from "./usage-detail.ts";
+import { COMPACTED_FROM, STILLFAIL_SURFACE } from "./rows.ts";
+import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 
 /// Bump on a change a station before it cannot open. 12 is the Rust station's, brought up on open (store.ts
 /// `#upgradeFrom12`); a database of another version is refused.
@@ -840,90 +840,6 @@ export function addUsageTotals(db: DatabaseSync): void {
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
-  }
-}
-
-/// The calls added up by quarter of an hour (`quarter`: their time, ms, over QUARTER_MS) and by session, thread, person,
-/// profile, runtime, model and speed (none of them said: 0 or ''), kept by the database itself as calls are recorded (or
-/// their output grows), as the totals are. Kept for older station processes during handover; the current usage page
-/// reads the finer statistics in usage-detail.ts. Adding up its 30 days read every call of them, many on a station, each time a page showing
-/// it was told usage changed (every minute while agents work): 30 to 100 seconds a read on a machine short of memory,
-/// both of the station's readers held by it and every other read waiting.
-const USAGE_QUARTERS_DROP = `
-CREATE TRIGGER usage_quarters_drop AFTER DELETE ON usage BEGIN
-  UPDATE usage_quarters SET calls = calls - OLD.calls, input = input - OLD.input, cache_read = cache_read - OLD.cache_read, cache_write = cache_write - OLD.cache_write,
-    cache_write_long = cache_write_long - OLD.cache_write_long, output = output - OLD.output
-  WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session AND thread = COALESCE(OLD.thread, 0) AND person = COALESCE(OLD.person, '')
-    AND profile = COALESCE(OLD.profile, '') AND runtime = OLD.runtime AND model = COALESCE(OLD.model, '') AND fast = OLD.fast;
-  DELETE FROM usage_quarters WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session AND thread = COALESCE(OLD.thread, 0)
-    AND person = COALESCE(OLD.person, '') AND profile = COALESCE(OLD.profile, '') AND runtime = OLD.runtime
-    AND model = COALESCE(OLD.model, '') AND fast = OLD.fast AND calls <= 0;
-END;`;
-const USAGE_QUARTERS_KEPT = `
-CREATE TRIGGER usage_quarters_add AFTER INSERT ON usage BEGIN
-  INSERT INTO usage_quarters VALUES (NEW.at / ${QUARTER_MS}, NEW.session, COALESCE(NEW.thread, 0), COALESCE(NEW.person, ''), COALESCE(NEW.profile, ''), NEW.runtime,
-    COALESCE(NEW.model, ''), NEW.fast, NEW.calls, NEW.input, NEW.cache_read, NEW.cache_write, NEW.cache_write_long, NEW.output)
-  ON CONFLICT (quarter, session, thread, person, profile, runtime, model, fast) DO UPDATE SET calls = calls + excluded.calls, input = input + excluded.input,
-    cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write, cache_write_long = cache_write_long + excluded.cache_write_long,
-    output = output + excluded.output;
-END;
-${USAGE_QUARTERS_DROP}
-CREATE TRIGGER usage_quarters_grow AFTER UPDATE OF output ON usage WHEN NEW.output <> OLD.output BEGIN
-  UPDATE usage_quarters SET output = output + NEW.output - OLD.output
-  WHERE quarter = NEW.at / ${QUARTER_MS} AND session = NEW.session AND thread = COALESCE(NEW.thread, 0) AND person = COALESCE(NEW.person, '')
-    AND profile = COALESCE(NEW.profile, '') AND runtime = NEW.runtime AND model = COALESCE(NEW.model, '') AND fast = NEW.fast;
-END;
-`;
-const USAGE_QUARTERS = `
-CREATE TABLE usage_quarters (
-  quarter INTEGER NOT NULL,
-  session TEXT NOT NULL,
-  thread INTEGER NOT NULL,
-  person TEXT NOT NULL,
-  profile TEXT NOT NULL,
-  runtime TEXT NOT NULL,
-  model TEXT NOT NULL,
-  fast INTEGER NOT NULL,
-  calls INTEGER NOT NULL,
-  input INTEGER NOT NULL,
-  cache_read INTEGER NOT NULL,
-  cache_write INTEGER NOT NULL,
-  cache_write_long INTEGER NOT NULL,
-  output INTEGER NOT NULL,
-  PRIMARY KEY (quarter, session, thread, person, profile, runtime, model, fast)
-) WITHOUT ROWID;
-${USAGE_QUARTERS_KEPT}`;
-
-/// Keep an existing quarter index for older station processes. A fresh database can start one empty; current readers
-/// use usage_detail, so an older database without it does not need an incomplete replacement.
-export function addUsageQuarters(db: DatabaseSync): void {
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_compact_since'").get()) return;
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_history_from_detail'").get()) return;
-  const made = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_quarters'").get() !== undefined;
-  if (!made()) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // Current readers use usage_detail. An obsolete quarter index cannot be made complete without reading old calls.
-      if (!made() && !db.prepare("SELECT 1 FROM usage LIMIT 1").get()) db.exec(USAGE_QUARTERS);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-  if (!made()) return;
-  const bounded = () => ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'usage_quarters_drop'").get() as { sql: string } | undefined)?.sql ?? "")
-    .includes(`DELETE FROM usage_quarters WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session`);
-  if (!bounded()) {
-    // Only the trigger changes; the existing totals need no rebuild.
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      if (!bounded()) db.exec(`DROP TRIGGER IF EXISTS usage_quarters_drop; ${USAGE_QUARTERS_DROP}`);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
   }
 }
 

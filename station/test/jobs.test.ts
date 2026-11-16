@@ -550,7 +550,7 @@ describe("jobs", { concurrency: true }, () => {
 
   test("a task another station's chat runs here is remembered as it begins, after it and its session are gone, 90 days", async () => {
     const r = new Rig();
-    const runs = () => remoteRunsSince({ db: r.store.db } as never, 0n).map((x) => x.session);
+    const runs = () => remoteRunsSince({ db: r.store.db } as never, 0n, 9223372036854775807n, 0n).map((x) => x.session);
     // a task of a session here is not
     const own = await r.jobs.start("s1", "own", "exit 0", r.work, null, false);
     const job = await r.jobs.startId("remote:ws:peer:s", "t", "exit 0", r.work, null, false, "remote_run");

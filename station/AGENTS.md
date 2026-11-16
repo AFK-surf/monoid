@@ -103,6 +103,15 @@
   the `*-bounded.test.ts` tests count the rows a read fetches; a new read gets one. Old data a new index needs is
   built in the background (`src/read/*-builder.ts`), its batches taking one shared permit and yielding to writes
   (`src/store/backfill.ts`); until it is built, the read is bounded some other way, never a scan.
+- What the agents spent has one statistic, kept by the database itself in the same write as each call
+  (`src/store/usage-15m.ts`: usage_15m by quarter hour, workspace, session, chat, person, account and model, with its
+  quarters' and workspaces' totals): a read never waits for one to be prepared (no 503, no worker; the lead,
+  2026-11-16, after 41 tables of statistics and their fills fell out of step), and takes the calls themselves only
+  where a quarter is not wholly in its span or its local day. A session gone keeps what it spent in its workspace. A
+  database from before counts from its opening and takes its older calls in afterwards (the MoonBit builder's,
+  `mb/src/usagefill`); the statistics of before are dropped once the station before has gone
+  (`src/store/usage-retire.ts`).
+  `test/usage-15m.test.ts` holds the quarters to the calls through every way of writing them.
 - A session can take part in thousands of threads (a chat that posts each release to Slack starts one each time):
   what its agent is told, its turns, its tools and the archive look at its recent ones (store `recentSessionThreads`,
   readers' `recentThreadRows`), never a loop over `sessionThreads`, which is for what must see every one (a share, an

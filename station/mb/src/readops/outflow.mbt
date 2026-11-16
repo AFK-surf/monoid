@@ -189,7 +189,16 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
       Some(colon) if colon > 0 && colon < rest.length() - 1 => {
         let connect = rest.view(end_offset=colon).to_owned()
         let user = rest.view(start_offset=colon + 1).to_owned()
-        let team = teams_of().get(connect)
+        // (slack-known.ts `teamOf`: a connect moved here, named with the station it came from, by its own name here)
+        let teams = teams_of()
+        let team = match teams.get(connect) {
+          Some(t) => Some(t)
+          None =>
+            match connect.find("@") {
+              Some(at) if at > 0 => teams.get(connect.view(end_offset=at).to_owned())
+              _ => None
+            }
+        }
         let book_file = match team {
           Some(t) if t.book == "feishu" => "feishu-names.json"
           Some(t) if t.book == "comma" => "comma-names.json"

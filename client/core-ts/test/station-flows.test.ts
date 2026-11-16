@@ -2365,7 +2365,11 @@ test("what_the_agents_spent_is_read_again_from_the_day_a_change_touched", async 
   const ui = core.connect();
   subscribe(core, ui, 1, { topic: "stationUsage", station: ST });
   await host.settle();
-  const asked = () => host.requests.filter((r) => r.url.includes("/admin/api/usage?")).map((r) => r.url.slice(r.url.indexOf("?") + 1));
+  const urls = () => host.requests.filter((r) => r.url.includes("/admin/api/usage?")).map((r) => r.url.slice(r.url.indexOf("?") + 1));
+  // (a whole read asks the tasks other stations' chats ran of the last 8 days alone: what the card counts)
+  const remoteFrom = (u: string) => Number(/&remoteFrom=(\d+)/.exec(u)?.[1] ?? NaN);
+  const asked = () => urls().map((u) => u.replace(/&remoteFrom=\d+/, ""));
+  assert.equal(remoteFrom(urls()[0]!), Math.max(from, now - 8 * 86_400_000));
   assert.deepEqual(asked(), [`from=${from}&tz=${offset}&history=1&historyFrom=${range.from}&historyTo=${range.to}&allowPartial=1`], "shown: read whole");
   // A call recorded today: today alone read again, in place of what is held of it.
   push("usage", { from: now - 1000 });
