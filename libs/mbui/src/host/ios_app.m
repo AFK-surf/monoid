@@ -1722,10 +1722,9 @@ void mb_host_frames_paced(double hz) {
   mb_host_wake_after((every - 0.5) * 1000.0 / top);
 }
 
-#include "groups.h"
-
+// (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
-  mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
+  mb_render_present(buf, count, r, g, b);
 }
 
 #include "ios_ime.h"

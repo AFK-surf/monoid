@@ -443,7 +443,7 @@ fn ride_put_out(
 /// (push_box_clip, clamp_inst_clip: a corner the cut moves square); else its outer. Never the header's as its outer
 /// where it has none: an outer with no corner's radius is none (scene.mbt 40-51), what it cut drawn whole (a row's
 /// words in a round box scrolled past the list's top, over what is above it). As the host draws a header out
-/// (groups.h's mb_groups_draw_out), the same.
+/// (groups.h's mb_groups_floats), the same.
 fn inst_cut_to(s : FixedArray[Double], b : Int, h0 : Double, h1 : Double, h2 : Double, h3 : Double) -> Unit {
   if h0 == 0.0 && h1 == 0.0 && h2 == 0.0 && h3 == 0.0 {
     return
@@ -1062,7 +1062,7 @@ let ride_head_blank : FixedArray[Double] = FixedArray::make(inst_size, 0.0)
 ///|
 /// Row kept `k`'s instances from `i0`, `n` of them, written into `s` from instance `at`, moved by (dx, dy), their
 /// shapes' pieces `seg_by` on, cut to (h0, h1, h2, h3) as well (none: all 0; inst_cut_to): what a header of its group
-/// stands for (the host's mb_groups_draw_out, groups.h).
+/// stands for (the host's mb_groups_floats, groups.h).
 fn ride_put(
   k : RideKept,
   i0 : Int,

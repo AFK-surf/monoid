@@ -14,6 +14,8 @@
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
 #include "contained.h"
 #include "bands.h"
+// the groups of instances the host keeps, drawn out as gl_present takes a frame
+#include "groups.h"
 
 // the numbers of an instance (src/ui/scene.mbt)
 #define MB_INST 60
@@ -457,6 +459,10 @@ static GLuint target_fb;
 static void glass_lost(void);
 static void canvas_lost(void);
 
+// What the app does not paint left clear, what is under the surface showing (Android's over another app: OverActivity,
+// Native.overOther).
+static volatile int over_other;
+
 static GLuint compile(GLenum type, const char *src) {
   GLuint s = glCreateShader(type);
   glShaderSource(s, 1, &src, NULL);
@@ -580,10 +586,14 @@ static int gn;
 // the app's part of the surface (MBView: the soft keyboard over the rest), in its pixels from the foot
 static int vy0, vhp;
 
+// the blur kept in the levels is of the last capture while it is (kept_ok: capture, below)
+static int kept_ok;
+
 // a new context has none of the old textures
 static void glass_lost(void) {
   memset(lv, 0, sizeof lv);
   lv_w = lv_h = 0;
+  kept_ok = 0;
 }
 
 static level level_tex(GLenum format, int w, int h) {
@@ -610,6 +620,7 @@ static void ensure_levels(int w, int h) {
     }
   lv_w = w > lv_w ? w : lv_w;
   lv_h = h > lv_h ? h : lv_h;
+  kept_ok = 0;
   for (int j = 0; j < 4; j++)
     lv[j] = level_tex(j == 0 ? GL_RGBA8 : GL_RGB10_A2, (lv_w + (1 << j) - 1) >> j, (lv_h + (1 << j) - 1) >> j);
   lv[4] = level_tex(GL_RGB10_A2, lv_w, lv_h);
@@ -745,26 +756,37 @@ static void ensure_canvas(void) {
   }
 }
 
-// what the run [start, end) of glass sees, frosted glass of the same capture further on (glass.mbt shares_capture)
-// too; 0 when none of it shows
-static int capture(const float *f, int32_t start, int32_t end, int32_t count) {
+// What a capture of glass is of, worked out before any of the GPU's work: its rectangle in the surface's pixels from its
+// foot (px0, pb0, w × h; the app's top, `top`), how many times it is halved (k, at most 3) and the Gaussian left after
+// (sg), whether its edge is contained, and the glass's own numbers (its bounds, liquid's shapes). Zeroed whole first,
+// so two of the same compare the same (as Metal's: apple_render.m Grab).
+typedef struct {
+  int px0, pb0, w, h, top, k, contained, n;
+  float sg;
+  float gb[4], shape[32], rad[8];
+  MBContained edge;
+} Grab;
+
+// The capture the run [start, end) of glass makes, frosted glass of the same capture further on (glass.mbt
+// shares_capture) under it too; 0 when none of it shows, or it is outside the part drawn.
+static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count) {
+  memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + a[23] : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
-  gn = 0;
   for (int32_t i = start; i < end; i++) {
     const float *b = f + i * MB_INST;
     float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
     float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
     if (kind == 6) {
       bx0 = b[0] - a[23]; by0 = b[1] - a[23]; bx1 = b[0] + b[2] + a[23]; by1 = b[1] + b[3] + a[23];
-      if (gn < 8) {
-        for (int k = 0; k < 4; k++) gshape[gn * 4 + k] = b[k];
-        grad[gn] = b[4];
-        gn++;
+      if (m->n < 8) {
+        for (int k = 0; k < 4; k++) m->shape[m->n * 4 + k] = b[k];
+        m->rad[m->n] = b[4];
+        m->n++;
       }
     }
     if (bx0 < x0) x0 = bx0;
@@ -782,7 +804,7 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count) {
     if (bx1 > x1) x1 = bx1;
     if (by1 > y1) y1 = by1;
   }
-  ggb[0] = x0 - 2; ggb[1] = y0 - 2; ggb[2] = x1 + 2; ggb[3] = y1 + 2;
+  m->gb[0] = x0 - 2; m->gb[1] = y0 - 2; m->gb[2] = x1 + 2; m->gb[3] = y1 + 2;
   float sc = (float)cur_scale;
   // in the surface's pixels, from its foot (GL's way up)
   int top = vy0 + vhp;
@@ -795,40 +817,38 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count) {
   if (px1 <= px0 || pb1 <= pb0 || x1 <= x0 || y1 <= y0) return 0;
   // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
   if (cut_on && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return 0;
-  int w = px1 - px0, h = pb1 - pb0;
-  ensure_levels(w, h);
-  glDisable(GL_BLEND);
-  // (the copy and the passes whole, not cut to the part: a blit is cut by the scissor too)
-  glDisable(GL_SCISSOR_TEST);
-  glBindFramebuffer(GL_READ_FRAMEBUFFER, target_fb);
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, lv[0].fb);
-  glBlitFramebuffer(px0, pb0, px1, pb1, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-  glUseProgram(post);
-  MBContained edge;
-  int contained = mb_contained_make(&edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc);
-  if (contained) {
-    glUniform4fv(pu_c, 9, (const float *)&edge);
-    post_pass(&lv[0], w, h, &lv[4], w, h, 3, 0, 0, 0);
-  }
+  m->px0 = px0; m->pb0 = pb0; m->w = px1 - px0; m->h = pb1 - pb0; m->top = top;
+  m->contained = mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc);
   float sp = blur * sc;
   int k = 0;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
-  int lw[4] = {w}, lh[4] = {h};
-  for (int j = 1; j <= k; j++) {
-    lw[j] = (lw[j - 1] + 1) / 2;
-    lh[j] = (lh[j - 1] + 1) / 2;
-    post_pass(j == 1 && contained ? &lv[4] : &lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
-  }
   // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
-  float sg = sqrtf(sk * sk - pre > 0 ? sk * sk - pre : 0);
-  if (sg > 0.3f) {
-    level *from = contained && k == 0 ? &lv[4] : &lv[k];
-    level *tmp = contained && k == 0 ? &lv[0] : &lv[4];
-    post_pass(from, lw[k], lh[k], tmp, lw[k], lh[k], 2, sg, 1, 0);
-    post_pass(tmp, lw[k], lh[k], from, lw[k], lh[k], 2, sg, 0, 1);
+  m->k = k;
+  m->sg = sqrtf(sk * sk - pre > 0 ? sk * sk - pre : 0);
+  return 1;
+}
+
+// The size of a grab's level j (its passes write each level's foot left)
+static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
+  lw[0] = m->w; lh[0] = m->h;
+  for (int j = 1; j <= 3; j++) {
+    lw[j] = (lw[j - 1] + 1) / 2;
+    lh[j] = (lh[j - 1] + 1) / 2;
   }
+}
+
+// What the glass shows of a grab blurred in the levels: bd_tex, r_tex and the uniforms that say where in them it is.
+static void show_blur(const Grab *m) {
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  int k = m->k, contained = m->contained, px0 = m->px0, pb0 = m->pb0, top = m->top;
+  float sc = (float)cur_scale;
+  memcpy(ggb, m->gb, sizeof ggb);
+  memcpy(gshape, m->shape, sizeof gshape);
+  memcpy(grad, m->rad, sizeof grad);
+  gn = m->n;
   level *L = contained && k == 0 ? &lv[4] : &lv[k];
   float d = (float)(1 << k);
   bd_tex = L->t;
@@ -844,7 +864,104 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count) {
   rmap[0] = sc / rd / R->w; rmap[1] = -sc / rd / R->h;
   rmap[2] = -(float)px0 / rd / R->w; rmap[3] = (float)(top - pb0) / rd / R->h;
   ruvc[0] = 0.5f / R->w; ruvc[1] = 0.5f / R->h; ruvc[2] = (lw[rk] - 0.5f) / R->w; ruvc[3] = (lh[rk] - 0.5f) / R->h;
-  return 1;
+}
+
+// A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
+// Gaussian left, then shown (show_blur).
+static void blur(const Grab *m) {
+  int w = m->w, h = m->h, k = m->k, contained = m->contained;
+  ensure_levels(w, h);
+  glDisable(GL_BLEND);
+  // (the copy and the passes whole, not cut to the part: a blit is cut by the scissor too)
+  glDisable(GL_SCISSOR_TEST);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, target_fb);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, lv[0].fb);
+  glBlitFramebuffer(m->px0, m->pb0, m->px0 + w, m->pb0 + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  glUseProgram(post);
+  if (contained) {
+    glUniform4fv(pu_c, 9, (const float *)&m->edge);
+    post_pass(&lv[0], w, h, &lv[4], w, h, 3, 0, 0, 0);
+  }
+  int lw[4], lh[4];
+  grab_levels(m, lw, lh);
+  for (int j = 1; j <= k; j++)
+    post_pass(j == 1 && contained ? &lv[4] : &lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
+  if (m->sg > 0.3f) {
+    level *from = contained && k == 0 ? &lv[4] : &lv[k];
+    level *tmp = contained && k == 0 ? &lv[0] : &lv[4];
+    post_pass(from, lw[k], lh[k], tmp, lw[k], lh[k], 2, m->sg, 1, 0);
+    post_pass(tmp, lw[k], lh[k], from, lw[k], lh[k], 2, m->sg, 0, 1);
+  }
+  show_blur(m);
+}
+
+// The blur the levels hold, as long as no capture came after it (kept_ok): what it was of. What a capture copies is
+// what the frame drew before it (its instances up to the glass, the pieces of the frame's shapes they are drawn by,
+// the ground the frame cleared to) in the grab's rectangle of a surface of that size: a frame that draws all that the
+// same under the same glass (a caret blinking in a composer, a spinner turning, a button lit under the hand, over a
+// list at rest) shows the blur as it is, with no copy and no passes, the framebuffer drawn into not left for them
+// (apple_render.m's same_under, Metal's). A stream or a native view's picture drawn under it (its pictures change under
+// the same instances) is blurred anew each frame, as is a frame an image under it had no texture for yet.
+static float *kept_under;
+static size_t kept_under_cap, kept_under_n;
+static Grab kept_grab;
+static double kept_key[9];
+
+// The floats a capture of the run at start is of, and their count: those before it and the shapes' pieces (from
+// `pieces` on), 0 when a stream or a native view's picture is among them.
+static size_t under_of(const float *f, int32_t start, int32_t count, int32_t pieces) {
+  for (int32_t i = 0; i < start; i++)
+    if (f[i * MB_INST + 20] > (float)MB_STREAM_TEX) return 0;
+  return (size_t)(start + (count - pieces)) * MB_INST;
+}
+
+static int same_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[9]) {
+  size_t n = under_of(f, start, count, pieces);
+  if (!kept_ok || n == 0 || n != kept_under_n || memcmp(&kept_grab, m, sizeof *m) != 0 ||
+      memcmp(kept_key, key, sizeof kept_key) != 0)
+    return 0;
+  size_t a = (size_t)start * MB_INST;
+  return memcmp(kept_under, f, a * sizeof(float)) == 0 &&
+         memcmp(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float)) == 0;
+}
+
+static void keep_under(const float *f, int32_t start, int32_t count, int32_t pieces, const Grab *m, const double key[9]) {
+  size_t n = under_of(f, start, count, pieces);
+  kept_ok = 0;
+  if (n == 0) return;
+  if (kept_under_cap < n) {
+    kept_under = (float *)realloc(kept_under, n * sizeof(float));
+    kept_under_cap = n;
+  }
+  size_t a = (size_t)start * MB_INST;
+  memcpy(kept_under, f, a * sizeof(float));
+  memcpy(kept_under + a, f + (size_t)pieces * MB_INST, (n - a) * sizeof(float));
+  kept_under_n = n;
+  kept_grab = *m;
+  memcpy(kept_key, key, sizeof kept_key);
+  kept_ok = 1;
+}
+
+static void main_state(void);
+
+// What the run [start, end) of glass sees (`pieces`: where the frame's shapes' pieces start, `r`, `g`, `b` the ground it
+// was cleared to), blurred anew or as the levels keep it; 0 when none of it shows. Leaves the main programs' state.
+static int capture(const float *f, int32_t start, int32_t end, int32_t count, int32_t pieces, double r, double g,
+                   double b) {
+  Grab m;
+  int shows = grab_of(&m, f, start, end, count);
+  double key[9] = {fb_w, fb_h, cur_scale, cur_w, cur_h, r, g, b, over_other};
+  if (shows && same_under(f, start, count, pieces, &m, key)) {
+    show_blur(&m);
+  } else if (shows) {
+    blur(&m);
+    // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
+    // to be shown again as theirs)
+    if (encode_missing) kept_ok = 0;
+    else keep_under(f, start, count, pieces, &m, key);
+  }
+  main_state();
+  return shows;
 }
 
 // The program that draws instances of `kind` (-1 any) used, its uniforms set if they changed since it was last.
@@ -893,10 +1010,6 @@ static void main_state(void) {
   prog_gen++;
   use_prog(-1);
 }
-
-// What the app does not paint left clear, what is under the surface showing (Android's over another app: OverActivity,
-// Native.overOther).
-static volatile int over_other;
 
 // The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn) into segs_tex.
 
@@ -951,16 +1064,22 @@ static int views_drawn_in(void) {
   return 0;
 }
 
-// A frame presented (the host's mb_host_present, its glyphs in the atlases first): kept, and drawn into the canvas,
-// only the part that differs where it holds the frame before, then onto target_fb.
-static void gl_present(double *buf, int32_t count, double r, double g, double b) {
+// A frame presented (the host's mb_host_present, its glyphs in the atlases first): kept as floats, its groups' headers
+// drawn out (groups.h), and drawn. A frame drawn whole (nothing said of its parts, all of it said, a picture missing
+// from the last, a native view's picture in it) goes straight onto target_fb: through the canvas it would be drawn
+// whole there and blitted again, every pixel read and written twice more (45 MB a frame of a fold's screen as a list
+// scrolls), and a tiler's frame drawn whole on its chip is written out once. Glass reads what is drawn under it out of
+// target_fb as well (capture: the surface's own framebuffer is read as GLES 3 reads any, its rows and the app's part,
+// vy0 and vhp, the same). The canvas then holds no frame (canvas_ok): the first frame drawn in part after it is drawn
+// whole into the canvas and shown, those after only the parts that differ.
+static void gl_present(const double *buf, int32_t count, double r, double g, double b) {
   size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
   // (and the frame's ground after it, and a row of the shapes' pieces more: segs_upload reads whole rows)
   if (fcap < n + MB_INST + SEGS_ROW * 4) {
     fcap = n * 2 + MB_INST + SEGS_ROW * 4;
-    fbuf = realloc(fbuf, fcap * sizeof(float));
+    fbuf = (float *)realloc(fbuf, fcap * sizeof(float));
   }
-  for (size_t i = 0; i < n; i++) fbuf[i] = (float)buf[i];
+  mb_groups_floats(fbuf, buf, count);
   kept_count = count;
   kept_r = r;
   kept_g = g;
@@ -969,6 +1088,13 @@ static void gl_present(double *buf, int32_t count, double r, double g, double b)
   if (offscreen) {
     draw_parts(target_fb, canvas_ok);
     canvas_ok = 1;
+    return;
+  }
+  if (!dirty_told || dirty_whole || pictures_missing) {
+    dirty_told = dirty_whole = dirty_n = 0;
+    canvas_ok = 0;
+    draw_into(target_fb, 0);
+    pictures_missing = encode_missing;
     return;
   }
   ensure_canvas();
@@ -1079,16 +1205,11 @@ int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double 
   return ok;
 }
 
-// The frame kept drawn whole onto the surface again (a native view's picture changed: Android's Native.redraw), through
-// the canvas as a frame presented is.
+// The frame kept drawn whole onto the surface again (a native view's picture changed: Android's Native.redraw),
+// straight onto it as a frame presented whole is (gl_present): the canvas then holds no frame.
 static void draw_kept(void) {
-  if (offscreen || !canvas_fb) {
-    draw_into(target_fb, 0);
-    return;
-  }
-  draw_into(canvas_fb, 0);
-  canvas_ok = 1;
-  canvas_shown();
+  draw_into(target_fb, 0);
+  if (!offscreen) canvas_ok = 0;
 }
 
 // The frame kept drawn into framebuffer `fb` (the surface's size): `part` 1, only the part `cut` over what it holds
@@ -1191,6 +1312,9 @@ static void draw_into(GLuint fb, int part) {
   // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
   int32_t start = 0;
   int bound = 0, shows = 0;
+  // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
+  int32_t pieces = count;
+  while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
   while (start < count) {
     int tid = (int)fbuf[start * MB_INST + 20];
     int kind = (int)(fbuf[start * MB_INST + 5] + 0.5f);
@@ -1205,9 +1329,8 @@ static void draw_into(GLuint fb, int part) {
     use_prog(own ? kind : -1);
     if (tid < 0) {
       if (tid != bound) {
-        shows = capture(fbuf, start, end, count);
+        shows = capture(fbuf, start, end, count, pieces, r, g, b);
         bound = tid;
-        main_state();
       }
       if (shows) {
         for (int i = 0; i < MB_INST / 4; i++)

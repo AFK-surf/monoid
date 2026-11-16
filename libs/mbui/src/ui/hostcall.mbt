@@ -71,6 +71,8 @@ struct FakeHost {
   mut reduce_transparency : Bool
   // the system asks for more contrast (Tester::set_increase_contrast)
   mut increase_contrast : Bool
+  // the system slows the device down for its heat (Tester::set_thermal_throttled)
+  mut thermal_throttled : Bool
   // the person's setting for motion: reduced (Tester::set_reduce_motion; or the environment's MBUI_REDUCE_MOTION=1)
   mut reduce_motion : Bool
   logs : Array[String]
@@ -782,6 +784,14 @@ let presented_ms : Ref[Double] = { val: 0.0 }
 ///|
 fn h_reduce_transparency() -> Bool {
   @hostapi.reduce_transparency() || h_env("MBUI_GLASS") == "solid"
+}
+
+///|
+/// Whether glass is drawn solid as the system has it: it asks for less transparency, or it slows the device down for
+/// its heat (@hostapi.thermal_throttled), when the blur's copies and passes each frame of glass costs are let go till it
+/// cools. A tape keeps it as one ("glass": envrec.mbt), so a run is drawn again as it was.
+fn h_glass_solid() -> Bool {
+  h_reduce_transparency() || @hostapi.thermal_throttled()
 }
 
 ///|

@@ -241,6 +241,21 @@ public class MainActivity extends Activity {
     /** The Wi-Fi multicast lock held while on screen, when the manifest asks for it (src/hostapi/system.mbt). */
     private android.net.wifi.WifiManager.MulticastLock multicast;
 
+    /**
+     * The device's thermal status, followed while the app is on screen: moderate or worse (the system slowing the CPU
+     * and GPU for the heat) draws glass solid till it cools (@hostapi.thermal_throttled), a frame asked as it changes.
+     */
+    private android.os.PowerManager.OnThermalStatusChangedListener thermal;
+
+    private static boolean thermalHot(int status) {
+        return status >= android.os.PowerManager.THERMAL_STATUS_MODERATE;
+    }
+
+    private static void thermalSaid(int status) {
+        Native.thermal(thermalHot(status));
+        Host.requestFrame();
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -259,6 +274,12 @@ public class MainActivity extends Activity {
         Updates.started();
         // the window's size classes and the device's fold, said to the app as they change (src/hostapi/system.mbt)
         folds.start();
+        android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
+        if (power != null && thermal == null) {
+            thermal = MainActivity::thermalSaid;
+            power.addThermalStatusListener(getMainExecutor(), thermal);
+            thermalSaid(power.getCurrentThermalStatus());
+        }
         // back on screen after a while off it: said to the app (src/hostapi/system.mbt)
         if (hiddenAt != 0) {
             long away = Math.max(0, android.os.SystemClock.elapsedRealtime() - hiddenAt);
@@ -278,6 +299,9 @@ public class MainActivity extends Activity {
             NativeViews.behind();
         }
         folds.stop();
+        android.os.PowerManager power = getSystemService(android.os.PowerManager.class);
+        if (power != null && thermal != null) power.removeThermalStatusListener(thermal);
+        thermal = null;
         if (multicast != null) multicast.release();
         if (hiddenAt == 0) hiddenAt = android.os.SystemClock.elapsedRealtime();
         // a newer build ready put in place once the app stays out of sight a while (Updates.stopped)

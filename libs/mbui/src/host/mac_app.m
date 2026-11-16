@@ -2058,8 +2058,7 @@ void mb_host_frames_paced(double hz) {
   mb_host_wake_after((every - 0.5) * 1000.0 / top);
 }
 
-#include "groups.h"
-
+// (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a window nobody can see draws nothing: what drawing holds was given back as it went (mb_render_trim), and a
   // frame drawn now would take it again, the GPU drawing it for nobody, a frame for each answer the core gives; shown
@@ -2067,7 +2066,7 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a window of the run beside the first draws each frame it is asked: what it presented is what the app compares the
   // next with, @damage)
   if (win_active == 0 && !window_seen && !looked_at_run()) return;
-  mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
+  mb_render_present(buf, count, r, g, b);
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,

@@ -56,8 +56,8 @@ int main(void) {
     canvas_ok = 1;
 
     // An identical frame while shown is skipped.
-    CHECK(same_as_shown(inst, 1, 0.1, 0.2, 0.3) == 1);
-    CHECK(glass_through(inst, 1) == 0);
+    CHECK(same_as_shown(f, 1, 0.1, 0.2, 0.3) == 1);
+    CHECK(glass_through(f, 1) == 0);
 
     // A frame with a visible hole (kind 9) turns mlayer.opaque off; once the hole leaves, mlayer.opaque is YES again.
     double hole[MB_INST] = {0};
@@ -70,7 +70,9 @@ int main(void) {
     hole[17] = 0;
     hole[18] = 400;
     hole[19] = 300;
-    CHECK(glass_through(hole, 1) == 1);
+    float hole_f[MB_INST];
+    for (int i = 0; i < MB_INST; i++) hole_f[i] = (float)hole[i];
+    CHECK(glass_through(hole_f, 1) == 1);
     last_inst = NULL;
     mb_render_present(hole, 1, 0.1, 0.2, 0.3);
     CHECK(mlayer.opaque == NO);
@@ -78,6 +80,57 @@ int main(void) {
     mb_render_present(inst, 1, 0.1, 0.2, 0.3);
     CHECK(mlayer.opaque == YES);
     CHECK(shown_ok == 1);
+    // A frame drawn whole with no glass goes straight into the drawable: the canvas holds no frame after it.
+    CHECK(canvas_ok == 0);
+    // One said to differ in a part is drawn into the canvas (whole, as it held none) and copied.
+    double moved[MB_INST];
+    memcpy(moved, inst, sizeof moved);
+    moved[0] = 12;
+    mb_host_render_dirty(0, 0, 200, 100);
+    mb_render_present(moved, 1, 0.1, 0.2, 0.3);
+    CHECK(shown_ok == 1);
+    CHECK(canvas_ok == 1);
+    // One with glass (slot 20 negative) goes through the canvas, whose copy its blur reads, though drawn whole.
+    double glass[2 * MB_INST];
+    memcpy(glass, inst, sizeof inst);
+    memcpy(glass + MB_INST, inst, sizeof inst);
+    glass[MB_INST + 5] = 5;
+    glass[MB_INST + 7] = 10;
+    glass[MB_INST + 11] = 0.5;
+    glass[MB_INST + 20] = -1;
+    canvas_ok = 0;
+    mb_render_present(glass, 2, 0.1, 0.2, 0.3);
+    CHECK(shown_ok == 1);
+    CHECK(canvas_ok == 1);
+
+    // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
+    // doubles, then made a float, as the app's own instance moved there would be.
+    double kept[MB_INST];
+    memcpy(kept, inst, sizeof kept);
+    kept[0] = 10.1;
+    kept[1] = 20.3;
+    double kept_moves[1] = {0};
+    mb_host_group_set(5, kept, kept_moves, 1);
+    double head[MB_INST] = {0};
+    head[0] = 0.2;
+    head[1] = -7.7;
+    head[5] = MB_GROUP_HEAD;
+    head[12] = 5;
+    head[13] = 0;
+    head[14] = 1;
+    mb_render_present(head, 1, 0.1, 0.2, 0.3);
+    CHECK(shown_ok == 1);
+    CHECK(last_count == 1);
+    CHECK(last_inst[0] == (float)(10.1 + 0.2));
+    CHECK(last_inst[1] == (float)(20.3 + -7.7));
+    CHECK(last_inst[2] == 100.0f);
+    CHECK(last_inst[5] == 0.0f);
+    // the same frame again is the one on the screen: nothing drawn
+    float shown_first = last_inst[0];
+    CHECK(same_as_shown(last_inst, 1, 0.1, 0.2, 0.3) == 1);
+    mb_render_present(head, 1, 0.1, 0.2, 0.3);
+    CHECK(last_inst[0] == shown_first);
+    mb_host_group_drop(5);
     free(last_inst);
     last_cap = 0;
 
@@ -105,7 +158,7 @@ int main(void) {
 
     mb_render_set_size(400, 300, 2);
     CHECK(CGSizeEqualToSize(mlayer.drawableSize, CGSizeMake(800, 600)));
-    CHECK(same_as_shown(inst, 1, 0.1, 0.2, 0.3) == 0);
+    CHECK(same_as_shown(f, 1, 0.1, 0.2, 0.3) == 0);
 
     // Even if shown_ok were set while drawableSize differed from the view's size, restoring drawableSize via
     // mb_render_set_size clears shown_ok so the new drawable size is presented.
@@ -114,7 +167,7 @@ int main(void) {
     mb_render_set_size(400, 300, 2);
     CHECK(CGSizeEqualToSize(mlayer.drawableSize, CGSizeMake(800, 600)));
     CHECK(shown_ok == 0);
-    CHECK(same_as_shown(inst, 1, 0.1, 0.2, 0.3) == 0);
+    CHECK(same_as_shown(f, 1, 0.1, 0.2, 0.3) == 0);
 
     last_inst = NULL;
   }

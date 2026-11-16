@@ -88,9 +88,10 @@ let reads_out_said : HostSaid[Bool] = host_said(false, h_a11y_on)
 let motion_reduced_said : HostSaid[Bool] = host_said(false, motion_reduced_asked)
 
 ///|
-/// Whether glass is drawn solid as the system says (Ctx::glass_solid).
+/// Whether glass is drawn solid as the system says (Ctx::glass_solid): less transparency asked, or the device slowed
+/// for its heat (h_glass_solid).
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
-let glass_solid_said : HostSaid[Bool] = host_said(false, h_reduce_transparency)
+let glass_solid_said : HostSaid[Bool] = host_said(false, h_glass_solid)
 
 ///|
 /// Whether the system asks for more contrast (more_contrast).

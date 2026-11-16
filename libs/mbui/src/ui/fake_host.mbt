@@ -573,6 +573,12 @@ impl @hostapi.Host for FakeHost with increase_contrast(self) {
 }
 
 ///|
+/// The system slows the device down for its heat (Tester::set_thermal_throttled).
+impl @hostapi.Host for FakeHost with thermal_throttled(self) {
+  self.thermal_throttled
+}
+
+///|
 /// Its performance record (Tester::set_perf): -1 none kept here, 0 off, 1 on.
 impl @hostapi.Host for FakeHost with perf_state(self) {
   self.perf

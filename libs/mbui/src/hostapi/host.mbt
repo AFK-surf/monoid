@@ -101,6 +101,7 @@ pub(open) trait Host {
   back_enabled(Self, Bool) -> Unit = _
   reduce_transparency(Self) -> Bool = _
   increase_contrast(Self) -> Bool = _
+  thermal_throttled(Self) -> Bool = _
   gpu_ms(Self) -> Double = _
   cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
@@ -755,6 +756,11 @@ impl Host with reduce_transparency(_) {
 
 ///|
 impl Host with increase_contrast(_) {
+  false
+}
+
+///|
+impl Host with thermal_throttled(_) {
   false
 }
 
@@ -2353,6 +2359,14 @@ pub fn reduce_transparency() -> Bool {
 /// an app reads (never).
 pub fn increase_contrast() -> Bool {
   current.val.increase_contrast()
+}
+
+///|
+/// Whether the system is slowing the device down for its heat (glass drawn solid till it cools, its blur's passes
+/// left undone): Android's thermal status moderate or worse (API 29 on), macOS's and iOS's thermal state serious or
+/// critical; Windows and Linux say none an app reads (never). The host asks a frame as it changes.
+pub fn thermal_throttled() -> Bool {
+  current.val.thermal_throttled()
 }
 
 ///|

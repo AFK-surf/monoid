@@ -4,6 +4,7 @@
 #include "corner_sl.h"
 #include "contained.h"
 #include "bands.h"
+#include "groups.h"
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
 
@@ -636,9 +637,9 @@ static int is_through(float tid) {
 }
 
 // what of instance b shows: its rect cut by its clip's (x0 y0 x1 y1); 0 when nothing does
-static int shows_of(const double *b, float r[4]) {
-  r[0] = (float)fmax(b[0], b[16]); r[1] = (float)fmax(b[1], b[17]);
-  r[2] = (float)fmin(b[0] + b[2], b[18]); r[3] = (float)fmin(b[1] + b[3], b[19]);
+static int shows_of(const float *b, float r[4]) {
+  r[0] = fmaxf(b[0], b[16]); r[1] = fmaxf(b[1], b[17]);
+  r[2] = fminf(b[0] + b[2], b[18]); r[3] = fminf(b[1] + b[3], b[19]);
   return r[2] > r[0] && r[3] > r[1];
 }
 
@@ -646,15 +647,15 @@ static int shows_of(const double *b, float r[4]) {
 // a backdrop over the views whose holes were painted before it (the last of them: `under`), at that view's place
 // among them. Told to the views (which say whether they can frost: else none is through, the glass as before).
 // Returns whether any hole shows in this frame.
-static int glass_through(const double *f, int32_t count) {
+static int glass_through(const float *f, int32_t count) {
   // Instances are in content points; the system views underneath are placed in window points.
   double zoom = mlayer && mlayer.contentsScale > 0 ? vscale / mlayer.contentsScale : 1.0;
   float holes[MB_HOLES][4];
   int nh = 0, has_hole = 0;
   through_n = 0;
   for (int32_t i = 0; i < count; i++) {
-    const double *b = f + i * MB_INST;
-    int kind = (int)(b[5] + 0.5);
+    const float *b = f + i * MB_INST;
+    int kind = (int)(b[5] + 0.5f);
     float r[4];
     if (kind == 9) {
       if (shows_of(b, r)) {
@@ -663,13 +664,13 @@ static int glass_through(const double *f, int32_t count) {
       }
       continue;
     }
-    if (kind != 5 || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through((float)b[20]) || !shows_of(b, r))
+    if (kind != 5 || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through(b[20]) || !shows_of(b, r))
       continue;
     // (its blur reaches a hole near it too)
-    float m = 3.0f * fabsf((float)b[7]);
+    float m = 3.0f * fabsf(b[7]);
     for (int h = 0; h < nh; h++)
       if (holes[h][0] < r[2] + m && r[0] - m < holes[h][2] && holes[h][1] < r[3] + m && r[1] - m < holes[h][3]) {
-        through_tid[through_n++] = (float)b[20];
+        through_tid[through_n++] = b[20];
         break;
       }
   }
@@ -677,11 +678,11 @@ static int glass_through(const double *f, int32_t count) {
   int n = 0;
   int32_t under = 0;
   for (int32_t i = 0; i < count && through_n; i++) {
-    const double *b = f + i * MB_INST;
-    int kind = (int)(b[5] + 0.5);
-    if (kind == 9) under = (int32_t)(b[20] + 0.5) - MB_VIEW_TEX;
+    const float *b = f + i * MB_INST;
+    int kind = (int)(b[5] + 0.5f);
+    if (kind == 9) under = (int32_t)(b[20] + 0.5f) - MB_VIEW_TEX;
     float r[4];
-    if (kind != 5 || !is_through((float)b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
+    if (kind != 5 || !is_through(b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
     double *e = frosts + n++ * MB_FROST_N;
     for (int k = 0; k < 4; k++) {
       e[k] = r[k] * zoom;
@@ -1022,7 +1023,10 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
-          keep_under(f, start, count, seg_base, &m, key);
+          // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
+          // kept to be shown again as theirs)
+          if (encode_missing) kept_ok = 0;
+          else keep_under(f, start, count, seg_base, &m, key);
           enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
         }
         bound = tid;
@@ -1078,9 +1082,32 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
   return n;
 }
 
-// The instances into the next buffer of the ring (as floats), and a copy
-// kept for snapshots.
-static id<MTLBuffer> upload(const double *inst, int32_t count, double r, double g, double b) {
+// The frame as floats as it comes (mb_groups_floats: a window's; as it is: one drawn offscreen), before it is the
+// window's last (upload): each frame made here once, compared, put in the ring and kept from here.
+static float *next_inst;
+static size_t next_cap;
+
+// Room in next_inst for `count` instances.
+static float *next_room(int32_t count) {
+  size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
+  if (next_cap < need) {
+    next_inst = realloc(next_inst, need);
+    next_cap = need;
+  }
+  return next_inst;
+}
+
+// Instances `inst` into next_inst as they are (no header of a group among them drawn out: a frame drawn offscreen, as
+// it always was).
+static void next_as_is(const double *inst, int32_t count) {
+  float *f = next_room(count);
+  size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
+  for (size_t i = 0; i < n; i++) f[i] = (float)inst[i];
+}
+
+// The frame in next_inst (`count` instances) into the next buffer of the ring, and kept as the window's last frame
+// (for snapshots, and what the next is compared with): next_inst and the last swapped, nothing copied again.
+static id<MTLBuffer> upload(int32_t count, double r, double g, double b) {
   buf_i = (buf_i + 1) % 3;
   size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
   // (and the frame's ground after its instances: a rect over all the window, opaque, a part drawn again first)
@@ -1092,18 +1119,19 @@ static id<MTLBuffer> upload(const double *inst, int32_t count, double r, double 
   }
   float *f = (float *)bufs[buf_i].contents;
   int32_t n = count * MB_INST;
-  for (int32_t i = 0; i < n; i++) f[i] = (float)inst[i];
+  if (n > 0) memcpy(f, next_inst, (size_t)n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
   gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
-  // keep a copy for snapshots
-  if (last_cap < need) {
-    last_inst = realloc(last_inst, need);
-    last_cap = need;
-  }
-  memcpy(last_inst, f, (size_t)n * sizeof(float));
+  // kept for snapshots: the floats just made, the last's room the next frame's
+  float *was = last_inst;
+  size_t was_cap = last_cap;
+  last_inst = next_inst;
+  last_cap = next_cap;
+  next_inst = was;
+  next_cap = was ? was_cap : 0;
   last_count = count;
   last_bg[0] = r; last_bg[1] = g; last_bg[2] = b;
   return bufs[buf_i];
@@ -1112,13 +1140,11 @@ static id<MTLBuffer> upload(const double *inst, int32_t count, double r, double 
 // Whether a frame is the one on the screen to the last number: then it draws nothing and takes no drawable (the app
 // builds a frame for what it waits on, as a clock's next second, that may show nothing new). Not one a layer presents
 // with its transaction (a resize's: mac_app.m drawWithWindow), which the window's change waits for.
-static int same_as_shown(const double *inst, int32_t count, double r, double g, double b) {
+static int same_as_shown(const float *f, int32_t count, double r, double g, double b) {
   if (!shown_ok || shown_streams || mlayer.presentsWithTransaction || count != last_count) return 0;
   if (vw != shown_w || vh != shown_h || vscale != shown_scale || r != last_bg[0] || g != last_bg[1] || b != last_bg[2]) return 0;
-  int32_t n = count * MB_INST;
-  for (int32_t i = 0; i < n; i++)
-    if ((float)inst[i] != last_inst[i]) return 0;
-  return 1;
+  size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
+  return n == 0 || (last_inst && memcmp(f, last_inst, n * sizeof(float)) == 0);
 }
 
 // The canvas a window's frames are drawn into (partial redraw, above), tw × th pixels: made again at another size,
@@ -1260,11 +1286,14 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   // apart from the view's move, which the frame's transaction takes to the screen: a refresh or two apart, the page
   // out of step with its hole as the list moved
   // (the views' frost of glass over them put where it shows now, with them: glass_through)
-  int has_hole = glass_through(inst, count);
+  // the frame as floats, its groups' headers drawn out (groups.h): made once, compared, put in the ring, kept
+  float *f = next_room(count);
+  mb_groups_floats(f, inst, count);
+  int has_hole = glass_through(f, count);
   BOOL want_opaque = !has_hole;
   int opaque_changed = mlayer && mlayer.opaque != want_opaque;
   int with_views = (mb_views_take_moved() || opaque_changed) && !mlayer.presentsWithTransaction;
-  if (!opaque_changed && same_as_shown(inst, count, r, g, b)) {
+  if (!opaque_changed && same_as_shown(f, count, r, g, b)) {
     // (what was said of it, nothing changed, not left for the next)
     dirty_told = dirty_whole = dirty_n = 0;
     return;
@@ -1274,15 +1303,29 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   double p0 = CACurrentMediaTime();
   dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
   double p1 = CACurrentMediaTime();
-  id<MTLBuffer> buf = upload(inst, count, r, g, b);
+  // (whether it has glass, which copies what is drawn under it out of what it is drawn into: slot 20 negative)
+  int glass = 0;
+  for (int32_t i = 0; i < count && !glass; i++) glass = f[i * MB_INST + 20] < 0.0f;
+  id<MTLBuffer> buf = upload(count, r, g, b);
   double e0 = CACurrentMediaTime();
+  // A frame drawn whole (nothing said of its parts, all of it said, a picture missing from the last) with no glass in
+  // it is drawn straight into the drawable once it is had: the canvas would only be drawn whole and copied again, a
+  // pass reading and writing every pixel twice more (30-45 MB a frame of a Retina window, as it scrolls), and the
+  // drawable, framebufferOnly, is all such a frame needs. The canvas then holds no frame: the next drawn in part is
+  // drawn whole into it first (canvas_ok). Glass copies what is under it out of what it is drawn into (blur), which a
+  // drawable that is only a framebuffer cannot be read for: a frame with glass goes through the canvas, as do frames
+  // drawn in part.
+  int tw = (int)mlayer.drawableSize.width, th = (int)mlayer.drawableSize.height;
+  int direct = !glass && tw > 0 && th > 0 && (!dirty_told || dirty_whole || pictures_missing);
   // drawn into the canvas and committed before asking for the drawable, so the GPU draws the canvas while nextDrawable
   // waits on the swapchain and the drawable is held only for the final copy; a drawable of another size than the
   // canvas (a resize between) redraws the canvas at that size before copying
-  int tw = (int)mlayer.drawableSize.width, th = (int)mlayer.drawableSize.height;
   int checked = 0;
   id<MTLCommandBuffer> cb = nil;
-  if (tw > 0 && th > 0) {
+  if (direct) {
+    dirty_told = dirty_whole = dirty_n = 0;
+    canvas_ok = 0;
+  } else if (tw > 0 && th > 0) {
     ensure_canvas(tw, th);
     cb = [queue commandBuffer];
     checked = draw_parts(cb, canvas, buf, count, r, g, b, canvas_ok);
@@ -1293,7 +1336,10 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   id<CAMetalDrawable> drawable = [mlayer nextDrawable];
   double p3 = CACurrentMediaTime();
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
-  if (drawable) {
+  if (drawable && direct) {
+    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL);
+    pictures_missing = encode_missing;
+  } else if (drawable) {
     int dw = (int)drawable.texture.width, dh = (int)drawable.texture.height;
     if (dw != tw || dh != th) {
       ensure_canvas(dw, dh);
@@ -1318,8 +1364,8 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     shown_h = vh;
     shown_scale = vscale;
     shown_streams = 0;
-    const float *f = (const float *)buf.contents;
-    for (int32_t i = 0; i < count && !shown_streams; i++) shown_streams = f[i * MB_INST + 20] > (float)MB_STREAM_TEX;
+    const float *bf = (const float *)buf.contents;
+    for (int32_t i = 0; i < count && !shown_streams; i++) shown_streams = bf[i * MB_INST + 20] > (float)MB_STREAM_TEX;
   }
   if (drawable) mb_latency_presenting(drawable, p0, p1, p2, p3);
   // (a layer that presents with its transaction: shown with the window's change it was drawn for, mac_app.m
@@ -1427,7 +1473,8 @@ static uint8_t *read_last(int *pw, int *ph) {
 // the last frame, and its pixels as read_last gives them.
 uint8_t *mb_render_read(const double *inst, int32_t count, double r, double g, double b, int *pw, int *ph) {
   @autoreleasepool {
-    upload(inst, count, r, g, b);
+    next_as_is(inst, count);
+    upload(count, r, g, b);
     return read_last(pw, ph);
   }
 }
@@ -1609,7 +1656,8 @@ void mb_render_draw_timed(const double *inst, int32_t count, double r, double g,
   @autoreleasepool {
     dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
     double t0 = CACurrentMediaTime();
-    id<MTLBuffer> buf = upload(inst, count, r, g, b);
+    next_as_is(inst, count);
+    id<MTLBuffer> buf = upload(count, r, g, b);
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     // (only the parts said to differ, as a window's canvas is drawn: the target is kept across frames too)
     draw_parts(cb, off_target, buf, count, r, g, b, off_ok);
