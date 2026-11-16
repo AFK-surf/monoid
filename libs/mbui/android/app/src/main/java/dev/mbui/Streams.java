@@ -47,7 +47,10 @@ import java.util.concurrent.Executors;
  * at once where it came by a route (direct: past the app's queue, acknowledged here). What it says is told to the app
  * between frames (StreamLayer.streamed), not as a frame asked for.
  *
- * <p>Called from the C host (android_host.c mb_host_stream_*) on the GL thread, but for the decoders' own threads.
+ * <p>Called from the C host (android_host.c mb_host_stream_*) on the app's thread (MBView's), but for the decoders' own
+ * threads. What is of the GL context (a SurfaceTexture made, latched or let go, a frame drawn into a stream's texture)
+ * is done on the GL thread (MBView.toRender: in its order among the frames, before the frame that shows it); what a
+ * stream says, and a stream on its layer (Own: no GL), on the app's.
  */
 final class Streams {
     // ---- android_host.c: the conversion of src/host/avc.h, and the texture a stream is drawn with ----
@@ -61,8 +64,9 @@ final class Streams {
     /** The texture stream `id` is drawn with now (0: none). */
     static native void texture(int id, int tex);
 
-    private static final HashMap<Integer, Stream> streams = new HashMap<>();
-    /** SurfaceTextures whose decoder has stopped, let go of on the GL thread (their context's) as it next calls here. */
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Stream> streams =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** SurfaceTextures whose decoder has stopped, let go of on the GL thread (their context's) as it next does a stream's work. */
     private static final ConcurrentLinkedQueue<SurfaceTexture> stopped = new ConcurrentLinkedQueue<>();
 
     /** A SurfaceTexture and its Surface done with (the decoder's thread, once the decoder on it stopped). */
@@ -75,6 +79,21 @@ final class Streams {
 
     private static void dropSurfaces() {
         for (SurfaceTexture t; (t = stopped.poll()) != null; ) t.release();
+    }
+
+    /**
+     * {@code r} on the GL thread, in its order among the frames (MBView.toRender), the SurfaceTextures stopped let go
+     * first; a Java exception out of it said (System.err, as android_host.c streams_threw says one) and cleared.
+     */
+    private static void onGl(Runnable r) {
+        MBView.toRender(() -> {
+            try {
+                dropSurfaces();
+                r.run();
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+            }
+        });
     }
     private static int nextId;
 
@@ -101,7 +120,7 @@ final class Streams {
     private static int h264Known;
 
     static int open() {
-        dropSurfaces();
+        if (!stopped.isEmpty()) onGl(() -> {});
         int id = ++nextId;
         streams.put(id, new Stream(id));
         opened.add(id);
@@ -112,7 +131,7 @@ final class Streams {
         Stream s = streams.get(id);
         if (s == null) return;
         if (s.layered) s.own().configure(false, avcc, w, h);
-        else s.configure(avcc, w, h);
+        else onGl(() -> s.configure(avcc, w, h));
     }
 
     /** An H.265 config (hvcC): only a stream on its layer takes it (its own decoder; android_host.c h265_here). */
@@ -129,7 +148,7 @@ final class Streams {
         else s.say("d " + num(ts));
     }
 
-    /** Whether stream `id` is shown on a layer of its own (StreamLayer: its view of kind 4 open), GL thread. */
+    /** Whether stream `id` is shown on a layer of its own (StreamLayer: its view of kind 4 open), the app's thread. */
     static void layered(int id, boolean on) {
         Stream s = streams.get(id);
         if (s != null) s.layered = on;
@@ -151,7 +170,7 @@ final class Streams {
 
     /**
      * One 20 ms sound packet of stream `id` (3840 bytes, 48 kHz stereo PCM16 little-endian; empty: stop, what is queued
-     * let go), the app's (GL thread) or a route's (`direct`: android_host.c mb_stream_route_take, the engine's thread).
+     * let go), the app's (its thread) or a route's (`direct`: android_host.c mb_stream_route_take, the engine's thread).
      */
     static void audio(int id, byte[] data) {
         // (behind another app, its window off the screen: no sound, as no picture; the user, 2026-10-29)
@@ -298,7 +317,7 @@ final class Streams {
     /** Its own decoders, by stream id (any thread: a route's frames come on the engine's). */
     private static final java.util.concurrent.ConcurrentHashMap<Integer, Own> owns = new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** What stream `id`'s layer showed, its picture now (StreamLayer.grab), GL thread: the app draws it itself. */
+    /** What stream `id`'s layer showed, its picture now (StreamLayer.grab, MBView.toRender), GL thread: the app draws it itself. */
     static void grabbed(int id, Bitmap b) {
         Stream s = streams.get(id);
         if (s == null) return;
@@ -309,19 +328,21 @@ final class Streams {
 
     /** A command for stream `id`'s decoder or SurfaceTexture (@ui's stream_feed.mbt); "latch" is a frame shown. */
     static void codec(int id, String cmd, byte[] data) {
-        dropSurfaces();
         Stream s = streams.get(id);
-        if (s != null && s.video != null) s.video.command(cmd, data);
+        // (its decoder made on the GL thread as its config came: there in order before this)
+        if (s != null) onGl(() -> {
+            if (s.video != null) s.video.command(cmd, data);
+        });
         if (cmd.startsWith("latch ") && throwShow != null && throwShow.equals(String.valueOf(++shows))) throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
     }
 
     static void jpeg(int id, byte[] data, double ts) {
         Stream s = streams.get(id);
-        if (s != null) s.jpeg(data, ts);
+        if (s != null) onGl(() -> s.jpeg(data, ts));
     }
 
     static String next(int id) {
-        dropSurfaces();
+        if (!stopped.isEmpty()) onGl(() -> {});
         Stream s = streams.get(id);
         if (s == null) return "";
         synchronized (s.events) {
@@ -342,16 +363,17 @@ final class Streams {
     private static int inputCalls, startCalls;
 
     static void show(int id, double ts) {
-        dropSurfaces();
         Stream s = streams.get(id);
         if (s != null && s.own != null) s.own.show(ts);
-        else if (s != null) s.show(ts);
+        else if (s != null) onGl(() -> s.show(ts));
         if (throwShow != null && throwShow.equals(String.valueOf(++shows))) throw new RuntimeException("MBUI_STREAM_THROW_SHOW: show " + shows);
     }
 
     static void close(int id) {
         Stream s = streams.remove(id);
-        if (s != null) s.close();
+        if (s == null) return;
+        s.closeApp();
+        onGl(s::close);
     }
 
     // MBUI_STREAM_HOLD_DECODER=MS (a test's, android-streams.sh anew): as the context is lost each decoder's thread held
@@ -525,7 +547,7 @@ final class Streams {
             this.id = id;
         }
 
-        /** Its own decoder, made as its first config comes (GL thread). */
+        /** Its own decoder, made as its first config comes (the app's thread: on its layer, no GL). */
         Own own() {
             if (own == null) {
                 own = new Own(this);
@@ -605,7 +627,8 @@ final class Streams {
             if (video != null) surfaceAnew();
         }
 
-        void close() {
+        /** The stream closed (the app's thread): its sound and its own decoder (on its layer: no GL) let go. */
+        void closeApp() {
             opened.remove(id);
             Sound sound = sounds.remove(id);
             if (sound != null) sound.release();
@@ -613,6 +636,10 @@ final class Streams {
                 owns.remove(id);
                 own.release();
             }
+        }
+
+        /** The stream closed (GL thread): what is of the GL context let go. */
+        void close() {
             // the SurfaceTexture let go once the decoder drawing on it has stopped (on its thread)
             if (video != null) video.release(st, surface);
             else if (st != null) {
@@ -1051,7 +1078,7 @@ final class Streams {
         /** the last of them shown (-1 none since the config), and how many came, their bytes (under `this`) */
         private volatile double directAt = -1;
         private long directFrames, directBytes;
-        /** what the app was told of them (GL thread: toldDirect) */
+        /** what the app was told of them (the app's thread: toldDirect) */
         private double toldAt = -1;
         private long toldFrames, toldBytes;
 
@@ -1063,7 +1090,7 @@ final class Streams {
             handler = new Handler(thread.getLooper());
         }
 
-        /** A config (avcC, or hvcC for H.265): the decoder made anew for it, from the next key frame (GL thread). */
+        /** A config (avcC, or hvcC for H.265): the decoder made anew for it, from the next key frame (the app's thread). */
         void configure(boolean hevc, byte[] config, int w, int h) {
             // (the frames after it the app's to show, whatever their times)
             directAt = -1;
@@ -1118,7 +1145,7 @@ final class Streams {
             });
         }
 
-        /** Frame `ts` shown by the app (GL thread): put on the layer, those decoded before it passed over. */
+        /** Frame `ts` shown by the app (its thread): put on the layer, those decoded before it passed over. */
         void show(double ts) {
             handler.post(() -> {
                 if (codec == null) return;
@@ -1134,7 +1161,7 @@ final class Streams {
             });
         }
 
-        /** What came by its route since the app was last told ("D TS N BYTES"), "" nothing (GL thread). */
+        /** What came by its route since the app was last told ("D TS N BYTES"), "" nothing (the app's thread). */
         String toldDirect() {
             long frames, bytes;
             synchronized (this) {

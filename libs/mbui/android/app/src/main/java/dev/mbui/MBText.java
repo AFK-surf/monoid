@@ -29,11 +29,12 @@ import java.util.LinkedHashSet;
  * (with kerning, from Paint.getTextRunAdvances), and each cluster rasterized
  * as it is asked for, put where MoonBit says (its atlas.mbt: what goes where,
  * and what makes room) in an atlas: the words' (their cover, a byte a texel)
- * or colour glyphs' (RGBA). Called on the GL thread
- * only, but for the drawing ahead (ahead): the glyphs shaped and not drawn
+ * or colour glyphs' (RGBA). Called on the app's thread
+ * only (MBView's), but for the drawing ahead (ahead): the glyphs shaped and not drawn
  * yet, drawn on a thread of their own and taken when they are first asked
- * for; what was put in a frame uploaded once, a row of the atlas at a time,
- * before the frame is drawn (flush).
+ * for; what was put in a frame handed over with it (MBView.handOver) and
+ * uploaded on the GL thread once, a row of the atlas at a time, before the
+ * frame is drawn (upload; flush with both on one thread).
  */
 final class MBText {
     static final class Entry {
@@ -170,7 +171,7 @@ final class MBText {
         }
     }
 
-    /** The typeface a style is drawn in at a weight: its face given, else the system's (face). (On either thread: the faces given are changed on the GL thread.) */
+    /** The typeface a style is drawn in at a weight: its face given, else the system's (face). (On either thread: the faces given are changed on the app's thread.) */
     static synchronized Typeface typeface(int style, int weight) {
         int f = faceId(style);
         Typeface given = f > 0 ? faceTypeface(f, weight, (style & 1) != 0) : null;
@@ -224,7 +225,7 @@ final class MBText {
         return paintIn(paints, size, weight, style);
     }
 
-    /** The paint of a font at a size in pixels, kept in `paints` (the GL thread's, or the thread ahead's). */
+    /** The paint of a font at a size in pixels, kept in `paints` (the app's thread's, or the thread ahead's). */
     static Paint paintIn(HashMap<Long, Paint> paints, float size, int weight, int style) {
         long k = fontKey(size, weight, style);
         Paint p = paints.get(k);
@@ -464,6 +465,11 @@ final class MBText {
      * bound for each glyph before.
      */
     static void flush() {
+        upload(placed);
+    }
+
+    /** The glyphs `placed` (in the order put) into their atlases, as flush says, and the list let go (GL thread). */
+    static void upload(ArrayList<Placed> placed) {
         int n = placed.size();
         if (n == 0) return;
         int bound = -1;
@@ -547,7 +553,7 @@ final class MBText {
     static int aheadCount;
     static Thread aheadThread;
 
-    /** The glyphs of keys[0..n) to draw ahead, at the scale and in the faces of now. GL thread. */
+    /** The glyphs of keys[0..n) to draw ahead, at the scale and in the faces of now. The app's thread. */
     static void ahead(int[] ks, int n) {
         float sc = density();
         boolean any = false;
@@ -589,7 +595,7 @@ final class MBText {
 
     /**
      * What was drawn ahead of `e` at `sc` in the faces of now, taken; null when it was not (asked and not begun: no
-     * longer asked, drawn here). While the thread ahead draws it, waited for. GL thread.
+     * longer asked, drawn here). While the thread ahead draws it, waited for. The app's thread.
      */
     static Drawn drawnAhead(Entry e, float sc) {
         synchronized (lock) {
@@ -622,7 +628,7 @@ final class MBText {
         }
     }
 
-    /** The thread ahead: each glyph asked for drawn with its own paints, as the GL thread would draw it. */
+    /** The thread ahead: each glyph asked for drawn with its own paints, as the app's thread would draw it. */
     static void drawAhead() {
         HashMap<Long, Paint> mine = new HashMap<>();
         int mineFaces = -1;
@@ -652,7 +658,7 @@ final class MBText {
                 }
                 d = draw(e, sc, paintIn(mine, e.size * sc, e.weight, e.style), f);
             } catch (Throwable x) {
-                // (out of memory for its picture, as much as anything: let be, drawn on the GL thread when it is asked
+                // (out of memory for its picture, as much as anything: let be, drawn on the app's thread when it is asked
                 // for; never left DRAWING for that thread to wait on)
                 Host.log("glyph ahead: " + x);
             }
@@ -741,11 +747,21 @@ final class MBText {
         return true;
     }
 
-    /** After each frame is drawn, on the GL thread: the picture asked for (refFrame), before it is shown. */
-    static void frameDrawn() {
-        if (frameName == null) return;
+    /** The picture asked of the frame being made (refFrame), taken with it as it is handed over (the app's thread). */
+    static String takeFrameName() {
         String name = frameName;
         frameName = null;
+        return name;
+    }
+
+    /** After each frame is drawn, with both on the GL thread: the picture asked for (refFrame), before it is shown. */
+    static void frameDrawn() {
+        String name = takeFrameName();
+        if (name != null) frameDrawn(name);
+    }
+
+    /** After a frame is drawn, on the GL thread: the picture of it asked for (refFrame), before it is shown. */
+    static void frameDrawn(String name) {
         int w = Host.view.getWidth(), h = Host.view.getHeight();
         ByteBuffer buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder());
         GLES30.glReadPixels(0, 0, w, h, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf);

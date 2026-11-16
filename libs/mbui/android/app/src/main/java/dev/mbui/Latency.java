@@ -19,11 +19,12 @@ import java.util.Random;
  * InputConnection, as Host.drive's), a key every 60 to 140 ms; {@code scroll} a finger down at the point, 60 moves of
  * 3 points every 4 to 12 ms one way, lifted (what it flings after drawn too), the next gesture the other way; {@code
  * drag} the same held, 30 moves up and 30 down, lifted where it went down; {@code anim} no input. An event is taken to
- * arrive as it is posted. The frame showing it is the first the drawing thread begins after the app took it there (MBView
- * hands each input to that thread). Its parts: waiting for the main thread (queue), handling it there (handle), to the
- * app's handling on the drawing thread and through it (gl), to the frame's start (tick: the vsync asked for), the frame
- * (build: built, laid out, painted, drawn), from its swap to the compositor's latch (latch: the GPU, the presentation
- * time MBView gives it), and to the display (screen). Of the frames: what share of the refreshes from the first frame
+ * arrive as it is posted. The frame showing it is the first the app's thread begins after the app took it there (MBView
+ * hands each input to that thread), or the one that took that one's place before the GL thread drew it (the frame
+ * waiting: merged). Its parts: waiting for the main thread (queue), handling it there (handle), to the app's handling
+ * on its thread and through it (gl), to the frame's start (tick: the vsync asked for), the frame (build: built, laid
+ * out, painted, handed over, drawn on the GL thread), from its swap to the compositor's latch (latch: the GPU, the
+ * presentation time MBView gives it), and to the display (screen). Of the frames: what share of the refreshes from the first frame
  * shown to the last showed a new one, and how many never showed. One line, "LATENCY …", on the log; then the app ends.
  */
 final class Latency {
@@ -36,7 +37,9 @@ final class Latency {
     }
 
     private static final class Fr {
-        long start, end, id;
+        long start, end;
+        /** the frame the swap presents (latencyFrame; -1 none), -2 till it is drawn */
+        long id = -2;
         /** rendering complete, latch, first composition, display present (ns; -1 none, -2 not yet) */
         final long[] t = {-2, -2, -2, -2};
         boolean measured, settled;
@@ -66,18 +69,16 @@ final class Latency {
         return 1;
     }
 
-    /** A frame begins (the drawing thread, MBView.onDrawFrame). */
+    /** A frame begins (the app's thread, MBView.frameOnApp; the GL thread's with ONE). */
     static void frameBegins() {
         if (running) frameStart = System.nanoTime();
     }
 
-    /** It is drawn, its swap next (the drawing thread): the events taken before it began are its. */
-    static void frameEnds() {
-        if (!running) return;
+    /** It is made (the app's thread, as it is handed over): the events taken before it began are its; its number, -1 none. */
+    static int frameBuilt() {
+        if (!running) return -1;
         Fr f = new Fr();
         f.start = frameStart;
-        f.end = System.nanoTime();
-        f.id = Native.latencyFrame();
         f.measured = measuring;
         synchronized (Latency.class) {
             int k = frames.size();
@@ -88,12 +89,35 @@ final class Latency {
                 e.frame = k;
                 framed++;
             }
+            return k;
+        }
+    }
+
+    /** Frame `from`, never drawn, replaced by frame `to` (the frame waiting): its events `to`'s, it no frame shown. */
+    static void merged(int from, int to) {
+        if (from < 0) return;
+        synchronized (Latency.class) {
+            for (Ev e : events)
+                if (e.frame == from) e.frame = to;
+            Fr f = frames.get(from);
+            f.measured = false;
+            f.settled = true;
+        }
+    }
+
+    /** Frame `k` drawn, its swap next (the GL thread). */
+    static void frameEnds(int k) {
+        if (!running || k < 0) return;
+        synchronized (Latency.class) {
+            Fr f = frames.get(k);
+            f.end = System.nanoTime();
+            f.id = Native.latencyFrame();
         }
         settle(false);
     }
 
     /**
-     * What the system says of the frames not settled yet (the drawing thread): a frame is settled once its display
+     * What the system says of the frames not settled yet (the GL thread): a frame is settled once its display
      * present is said, or none comes (the frame never shown, or no longer kept: {@code all}, as the run ends).
      */
     private static void settle(boolean all) {
@@ -102,6 +126,7 @@ final class Latency {
             for (int i = Math.max(0, frames.size() - 64); i < frames.size(); i++) {
                 Fr f = frames.get(i);
                 if (f.settled) continue;
+                if (f.id == -2 && !all) continue;
                 if (f.id < 0) {
                     f.settled = true;
                     continue;
@@ -129,8 +154,8 @@ final class Latency {
             synchronized (Latency.class) {
                 events.add(e);
             }
-            // (after what the handling handed the drawing thread)
-            v.queueEvent(() -> e.gl = System.nanoTime());
+            // (after what the handling handed the app's thread)
+            MBView.onApp(() -> e.gl = System.nanoTime());
         });
     }
 

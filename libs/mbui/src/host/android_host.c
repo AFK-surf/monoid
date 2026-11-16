@@ -1,7 +1,14 @@
 // Android host: the C side of android/ (dev.mbui.*). Java owns the
 // Activity, the GLSurfaceView, input and the input method; this file owns the
 // GLES3 renderer and forwards between Java and the MoonBit callbacks. All
-// MoonBit code runs on the GL thread. Built by scripts/android.sh.
+// MoonBit code runs on the app's thread (MBView's logic thread: its frames,
+// its input, what it is told), the GL context is the GL thread's (what draws
+// and swaps): a frame is made on the one and handed to the other (the frame
+// waiting, below), what the app asks of the GL context put on the GL thread's
+// queue in its order among the frames (MBView.toRender), or done there while
+// the app waits (gl_sync: a read back). A run to a declared moment and
+// mbui-render's (MBView.ONE) have both on the GL thread, as before. Built by
+// scripts/android.sh.
 #include <sys/resource.h>
 #include <dlfcn.h>
 #include <jni.h>
@@ -251,17 +258,33 @@ static moonbit_string_t mstr(JNIEnv *env, jstring s) {
 
 // ---------------------------------------------------------------------------
 // Images: dev.mbui.Images decodes them on background threads and uploads
-// them here, on the GL thread, which is the only one that touches this.
+// them on the GL thread. What the app reads of them (imgs) is the app's
+// thread's alone; their textures (img_texs) the GL thread's alone, an upload
+// told to the app after it (Native.imageTold).
 
 typedef struct {
   int state;  // 0 decoding, 1 ready, -1 failed or freed
-  GLuint tex;
   int w, h, ow, oh;
   int told;  // its decode told to the app (outside_cb), once: not again when decoded anew for a new context
 } mb_image;
 
-static mb_image *imgs;  // by id; ids are not reused
+static mb_image *imgs;  // by id; ids are not reused (the app's thread)
 static int nimgs, img_cap;
+// (the GL thread) each image's texture, and whether it was freed (its texture let go as it comes, if after)
+static GLuint *img_texs;
+static uint8_t *img_gone;
+static int img_tex_cap;
+
+static void img_texs_hold(int id) {
+  if (id < img_tex_cap) return;
+  int cap = img_tex_cap ? img_tex_cap : 256;
+  while (cap <= id) cap *= 2;
+  img_texs = realloc(img_texs, (size_t)cap * sizeof *img_texs);
+  img_gone = realloc(img_gone, (size_t)cap);
+  memset(img_texs + img_tex_cap, 0, (size_t)(cap - img_tex_cap) * sizeof *img_texs);
+  memset(img_gone + img_tex_cap, 0, (size_t)(cap - img_tex_cap));
+  img_tex_cap = cap;
+}
 
 // a stream's texture (Streams.java; its instances' image is MB_STREAM_TEX + its id: src/hostapi/stream.mbt), and a
 // native view's picture (NativeViews.Picture; MB_VIEW_TEX + its id: src/hostapi/host.mbt view_tex_base), below
@@ -277,16 +300,21 @@ static void views_lost(JNIEnv *env);
 // one shows, the canvas is taken away (gles_render.h: its picture one white texel, its coverage what is drawn), the
 // layer under the surface seen there.
 #define MB_VIEWS_UNDER 1
-static uint8_t *views_under;  // by id
+static uint8_t *views_under;  // by id (said on the app's thread, read on the GL thread's: under views_under_mu)
 static int views_under_cap;
+static pthread_mutex_t views_under_mu = PTHREAD_MUTEX_INITIALIZER;
 static GLuint white_tex;  // in the context now; 0 once it is lost
 static int view_under(int tid) {
   int id = tid - MB_VIEW_TEX;
-  return id > 0 && id < views_under_cap && views_under[id];
+  pthread_mutex_lock(&views_under_mu);
+  int under = id > 0 && id < views_under_cap && views_under[id];
+  pthread_mutex_unlock(&views_under_mu);
+  return under;
 }
 
 JNIEXPORT void JNICALL Java_dev_mbui_StreamLayer_under(JNIEnv *env, jclass c, jint id, jboolean on) {
   if (id <= 0) return;
+  pthread_mutex_lock(&views_under_mu);
   if (id >= views_under_cap) {
     int cap = views_under_cap ? views_under_cap : 16;
     while (cap <= id) cap *= 2;
@@ -295,6 +323,7 @@ JNIEXPORT void JNICALL Java_dev_mbui_StreamLayer_under(JNIEnv *env, jclass c, ji
     views_under_cap = cap;
   }
   views_under[id] = on ? 1 : 0;
+  pthread_mutex_unlock(&views_under_mu);
 }
 
 static GLuint image_tex(int id) {
@@ -311,22 +340,29 @@ static GLuint image_tex(int id) {
   }
   if (id > MB_VIEW_TEX) return view_tex(id - MB_VIEW_TEX);
   if (id > MB_STREAM_TEX) return stream_tex(id - MB_STREAM_TEX);
-  return id > 0 && id < nimgs && imgs[id].state == 1 ? imgs[id].tex : 0;
+  return id > 0 && id < img_tex_cap ? img_texs[id] : 0;
 }
 
-// a new context has none of the old textures: forget them and decode again; each told the app again as it is uploaded
-// anew (Native.imageDone), so what draws it is drawn again then, not left as the frames drawn without it had it
-static void images_lost(JNIEnv *env) {
+// a new context has none of the old textures (GL thread): forget them and decode again; each told the app again as it
+// is uploaded anew (Native.imageTold: its `told` cleared first, Native.imagesUntold on the app's thread), so what
+// draws it is drawn again then, not left as the frames drawn without it had it
+static int images_lost(JNIEnv *env) {
   static int first = 1;
   if (first) {
     first = 0;
-    return;
+    return 0;
   }
-  for (int i = 0; i < nimgs; i++) imgs[i].tex = 0, imgs[i].told = 0;
+  if (img_tex_cap) memset(img_texs, 0, (size_t)img_tex_cap * sizeof *img_texs);
   white_tex = 0;
   (*env)->CallStaticVoidMethod(env, images_cls, m_img_reload);
   streams_lost(env);
   views_lost(env);
+  return 1;
+}
+
+// (the app's thread) every image's decode to be told again as it is uploaded into the new context
+JNIEXPORT void JNICALL Java_dev_mbui_Native_imagesUntold(JNIEnv *env, jclass c) {
+  for (int i = 0; i < nimgs; i++) imgs[i].told = 0;
 }
 
 static int image_new(void) {
@@ -343,11 +379,16 @@ static int image_new(void) {
 // Renderer: GLES 3's (gles_render.h, Linux's too), in the GLSurfaceView's context; the glyphs' atlases written by
 // MBText (MBText.flush, as a frame is presented).
 
+// the app on its own thread: what a frame says differs goes with it to the GL thread, a read back done there (the frame
+// waiting, gl_sync, below)
+#define MB_HOST_THREADS 1
 #include "gles_render.h"
 
-JNIEXPORT void JNICALL Java_dev_mbui_Native_surfaceCreated(JNIEnv *env, jclass c) {
+// (GL thread) whether the context was made anew under a drawing set up before (its textures lost: the app's thread
+// told by MBView, MBText.reset and Native.imagesUntold)
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_surfaceCreated(JNIEnv *env, jclass c) {
   gl_setup();
-  images_lost(env);
+  return images_lost(env) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL Java_dev_mbui_Native_atlasTexture(JNIEnv *env, jclass c) { return (jint)atlas; }
@@ -370,16 +411,273 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_thermal(JNIEnv *env, jclass c, jbool
 
 int32_t mb_host_thermal_throttled(void) { return thermal_hot; }
 
-// (the frame as the app gave it, its groups' headers drawn out as gl_present takes it: groups.h)
-void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
-  // the glyphs placed in the atlas as the frame was painted, uploaded before it is drawn (MBText.flush)
-  JNIEnv *env = env_();
-  (*env)->CallStaticVoidMethod(env, text_cls, m_flush);
-  gl_present(buf, count, r, g, b);
+// ---------------------------------------------------------------------------
+// The frame waiting (MBView's two threads). The app's thread makes a frame (mb_host_present: its floats, its groups'
+// headers drawn out, in a buffer of the pool; the size it was laid out at; what of it was said to differ) as `made`,
+// handed over as the frame ends (Native.publish) as the one `pending`; the GL thread takes the newest pending as it
+// draws (Native.take: its floats become fbuf, the frame kept), the next's buffer the one it gave back. A frame handed
+// over while the one before still waits takes its place, what both said to differ joined (all of it where either was
+// drawn whole): the newest drawn, never a queue of old ones behind the hand. MBView holds its lock round publish and
+// take, and hands the frame's glyphs (MBText) over with it. With both on one thread (MBView.ONE) a frame is drawn as
+// it is presented, as before.
+static int one_thread = 1;
+
+JNIEXPORT void JNICALL Java_dev_mbui_Native_twoThreads(JNIEnv *env, jclass c) { one_thread = 0; }
+
+typedef struct {
+  int told, whole, n;
+  double r[MB_PARTS][4];
+} said_parts;
+
+typedef struct {
+  float *f;
+  size_t cap;
+  int32_t count;
+  double r, g, b, w, h, scale;
+  said_parts said;
+  int has;
+} handed_frame;
+
+static handed_frame made, pending;
+// what the app said differs of the frame being made (the app's thread), and the size it lays out at (Native.frame)
+static said_parts said_now;
+static double app_w, app_h, app_scale;
+
+#define MB_POOL 3
+static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static float *pool_f[MB_POOL];
+static size_t pool_cap[MB_POOL];
+
+// A buffer of at least `need` floats (its room in *cap), from the pool where it has one.
+static float *pool_take(size_t need, size_t *cap) {
+  float *got = NULL;
+  size_t got_cap = 0;
+  pthread_mutex_lock(&pool_mu);
+  for (int i = 0; i < MB_POOL; i++)
+    if (pool_f[i] && pool_cap[i] >= need) {
+      got = pool_f[i];
+      got_cap = pool_cap[i];
+      pool_f[i] = NULL;
+      break;
+    }
+  pthread_mutex_unlock(&pool_mu);
+  if (!got) {
+    got_cap = need + need / 4;
+    got = malloc(got_cap * sizeof(float));
+  }
+  *cap = got_cap;
+  return got;
 }
 
-// (MBView.onDrawFrame, GL thread: only a native view's picture changed since the last frame)
-JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) { draw_kept(); }
+static void pool_give(float *f, size_t cap) {
+  if (!f) return;
+  pthread_mutex_lock(&pool_mu);
+  for (int i = 0; i < MB_POOL; i++)
+    if (!pool_f[i]) {
+      pool_f[i] = f;
+      pool_cap[i] = cap;
+      f = NULL;
+      break;
+    }
+  pthread_mutex_unlock(&pool_mu);
+  free(f);
+}
+
+static void said_add(said_parts *d, double x, double y, double w, double h) {
+  d->told = 1;
+  if (w < 0 || h < 0) {
+    d->whole = 1;
+  } else if (w > 0 && h > 0) {
+    // (more than it keeps: the last one grown round it)
+    if (d->n == MB_PARTS) {
+      double *e = d->r[MB_PARTS - 1];
+      double x1 = fmax(e[0] + e[2], x + w), y1 = fmax(e[1] + e[3], y + h);
+      e[0] = fmin(e[0], x);
+      e[1] = fmin(e[1], y);
+      e[2] = x1 - e[0];
+      e[3] = y1 - e[1];
+    } else {
+      double *e = d->r[d->n++];
+      e[0] = x; e[1] = y; e[2] = w; e[3] = h;
+    }
+  }
+}
+
+// What frame `d` said differs joined with what the one it takes the place of (`was`, never drawn) said.
+static void said_join(said_parts *d, const said_parts *was) {
+  if (!d->told || d->whole) return;
+  if (!was->told || was->whole) {
+    d->whole = 1;
+    return;
+  }
+  for (int i = 0; i < was->n; i++) said_add(d, was->r[i][0], was->r[i][1], was->r[i][2], was->r[i][3]);
+}
+
+void mb_host_render_dirty(double x, double y, double w, double h) {
+  if (one_thread) gl_dirty_add(x, y, w, h);
+  else said_add(&said_now, x, y, w, h);
+}
+
+// (the frame as the app gave it, its groups' headers drawn out as it is taken: groups.h)
+void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
+  JNIEnv *env = env_();
+  if (one_thread) {
+    // the glyphs placed in the atlas as the frame was painted, uploaded before it is drawn (MBText.flush)
+    (*env)->CallStaticVoidMethod(env, text_cls, m_flush);
+    gl_present(buf, count, r, g, b);
+    return;
+  }
+  // (presented twice in one frame: the second in the first's place, both said)
+  if (made.has) {
+    said_parts was = made.said;
+    made.said = said_now;
+    said_join(&made.said, &was);
+  } else {
+    made.said = said_now;
+  }
+  said_now = (said_parts){0};
+  size_t need = gl_frame_floats(count);
+  if (made.cap < need) {
+    pool_give(made.f, made.cap);
+    made.f = pool_take(need, &made.cap);
+  }
+  mb_groups_floats(made.f, buf, count);
+  made.count = count;
+  made.r = r;
+  made.g = g;
+  made.b = b;
+  made.w = app_w;
+  made.h = app_h;
+  made.scale = app_scale;
+  made.has = 1;
+}
+
+// (the app's thread, under MBView's lock, as a frame ends) the frame made handed over: whether there was one
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_publish(JNIEnv *env, jclass c) {
+  if (!made.has) return JNI_FALSE;
+  if (pending.has) {
+    said_join(&made.said, &pending.said);
+    if (pending.w != made.w || pending.h != made.h || pending.scale != made.scale) made.said.whole = made.said.told = 1;
+  }
+  // (the pending one's buffer, never drawn, the next made's)
+  float *f = pending.f;
+  size_t cap = pending.cap;
+  pending = made;
+  made = (handed_frame){0};
+  made.f = f;
+  made.cap = cap;
+  return JNI_TRUE;
+}
+
+// (GL thread, under MBView's lock) the frame pending taken as the one kept (fbuf), to be drawn (Native.draw): whether
+// there was one
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_take(JNIEnv *env, jclass c) {
+  if (!pending.has) return JNI_FALSE;
+  float *was = fbuf;
+  size_t was_cap = fcap;
+  fbuf = pending.f;
+  fcap = pending.cap;
+  kept_count = pending.count;
+  kept_r = pending.r;
+  kept_g = pending.g;
+  kept_b = pending.b;
+  cur_w = pending.w;
+  cur_h = pending.h;
+  cur_scale = pending.scale;
+  dirty_told = pending.said.told;
+  dirty_whole = pending.said.whole;
+  dirty_n = pending.said.n;
+  memcpy(dirty, pending.said.r, sizeof dirty);
+  pending = (handed_frame){0};
+  pool_give(was, was_cap);
+  return JNI_TRUE;
+}
+
+// (GL thread) the frame taken drawn (gl_present_kept: straight onto the surface or through the canvas)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_draw(JNIEnv *env, jclass c) { gl_present_kept(kept_count, kept_r, kept_g, kept_b); }
+
+// (MBView.onDrawFrame, GL thread: only a native view's picture changed since the last frame, or nothing to draw but the
+// surface to fill)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) {
+  // (no frame of the app's yet, a new surface's first not come in a while: left clear, the window's ground under it)
+  if (!fbuf) {
+    glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    return;
+  }
+  draw_kept();
+}
+
+// What the app's thread asks of the GL context and waits for (a read back), done there (Native.glSync, from
+// MBView.glSync: the frame pending taken first, as the one presented last) or here with both on one thread.
+static struct {
+  int kind, id;
+  const void *in;
+  int32_t count, x, y, w, h;
+  double r, g, b, scale;
+  void *out;
+  int32_t result;
+} sync_ask;
+static jclass mbview_cls;
+static jmethodID m_gl_sync;
+static int32_t image_pixels_gl(int32_t id, int w, int h, moonbit_bytes_t out);
+
+static int32_t gl_sync_run(void) {
+  switch (sync_ask.kind) {
+    case 1: return gles_drawn_pixels(sync_ask.x, sync_ask.y, sync_ask.w, sync_ask.h, sync_ask.out);
+    case 2:
+      return gles_pixels_of(sync_ask.in, sync_ask.count, sync_ask.r, sync_ask.g, sync_ask.b, sync_ask.scale, sync_ask.w,
+                            sync_ask.h, sync_ask.out);
+    case 3: return image_pixels_gl(sync_ask.id, sync_ask.w, sync_ask.h, sync_ask.out);
+  }
+  return 0;
+}
+
+JNIEXPORT void JNICALL Java_dev_mbui_Native_glSync(JNIEnv *env, jclass c) { sync_ask.result = gl_sync_run(); }
+
+static int32_t gl_sync(int kind, int id, const void *in, int32_t count, double r, double g, double b, double scale,
+                       int32_t x, int32_t y, int32_t w, int32_t h, void *out) {
+  sync_ask.kind = kind;
+  sync_ask.id = id;
+  sync_ask.in = in;
+  sync_ask.count = count;
+  sync_ask.r = r;
+  sync_ask.g = g;
+  sync_ask.b = b;
+  sync_ask.scale = scale;
+  sync_ask.x = x;
+  sync_ask.y = y;
+  sync_ask.w = w;
+  sync_ask.h = h;
+  sync_ask.out = out;
+  sync_ask.result = 0;
+  if (one_thread) return gl_sync_run();
+  JNIEnv *env = env_();
+  if (!mbview_cls) {
+    jclass v = (*env)->FindClass(env, "dev/mbui/MBView");
+    mbview_cls = (*env)->NewGlobalRef(env, v);
+    (*env)->DeleteLocalRef(env, v);
+    m_gl_sync = (*env)->GetStaticMethodID(env, mbview_cls, "glSync", "()Z");
+  }
+  jboolean ran = (*env)->CallStaticBooleanMethod(env, mbview_cls, m_gl_sync);
+  // (no GL thread to do it: the surface gone, its view paused)
+  return ran ? sync_ask.result : 0;
+}
+
+int32_t mb_render_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t out) {
+  if (w <= 0 || h <= 0 || x < 0 || y < 0) return 0;
+  if ((size_t)Moonbit_array_length(out) < (size_t)w * h * 4) return 0;
+  return gl_sync(1, 0, NULL, 0, 0, 0, 0, 0, x, y, w, h, out);
+}
+
+int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double g, double b, double scale, int32_t w,
+                            int32_t h, moonbit_bytes_t out) {
+  if (count <= 0 || !(scale > 0) || w <= 0 || h <= 0) return 0;
+  if ((size_t)Moonbit_array_length(out) < (size_t)w * h * 4) return 0;
+  return gl_sync(2, 0, inst, count, r, g, b, scale, 0, 0, w, h, out);
+}
 
 // Without the surface (mbui-render, src/render: started as an app, on the GL thread with the surface's context
 // current): gles_render.h's framebuffer of its own, the text at the list's scale (MBText.setScale, not the screen's
@@ -444,9 +742,15 @@ static double frame_late;
 JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_frame(JNIEnv *env, jclass c, jfloat w, jfloat h,
                                                      jfloat scale, jdouble now, jdouble late) {
   frame_late = late;
-  cur_w = w;
-  cur_h = h;
-  cur_scale = scale;
+  // (the size it is laid out at: the GL thread's to draw at as it takes the frame, its own with both on one thread)
+  app_w = w;
+  app_h = h;
+  app_scale = scale;
+  if (one_thread) {
+    cur_w = w;
+    cur_h = h;
+    cur_scale = scale;
+  }
   want_frame = 0;
   frame_now = now;
   if (cb.frame) cb.frame(w, h, scale, now);
@@ -492,7 +796,7 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_text(JNIEnv *env, jclass c, jint kin
 
 // The system's back (MainActivity: OnBackAnimationCallback, its predictive back gesture; on older systems
 // onBackPressed): kind 0 started, 1 moved, 2 gone back, 3 called off; x in logical pixels, edge 0 left, 1 right.
-// The app in front or not (@hostapi.set_app_state), as MainActivity tells it (Host.appState), on the GL thread.
+// The app in front or not (@hostapi.set_app_state), as MainActivity tells it (Host.appState), on the app's thread.
 static void (*state_cb)(int32_t);
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
 JNIEXPORT void JNICALL Java_dev_mbui_Native_appState(JNIEnv *env, jclass c, jint state) {
@@ -561,7 +865,7 @@ void mb_host_request_frame(void) {
   (*env)->CallStaticVoidMethod(env, host_cls, m_request_frame);
 }
 
-// A message posted from outside the frames (post.h), on whatever thread: the app told on the GL thread, between frames
+// A message posted from outside the frames (post.h), on whatever thread: the app told on its thread, between frames
 // (Host.posted: Native.posted, below), and it takes what changes only signals then (ui's messages_between), a frame
 // asked for only where something is left for one. A thread the VM does not know is attached for the call and let go
 // after.
@@ -1015,7 +1319,7 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_outside(JNIEnv *env, jclass c, jint 
   if (outside_cb) outside_cb(kind, id, state);
 }
 
-// Something posted since (mb_post_wake, Host.posted: on the GL thread, between frames): the app told (MB_OUTSIDE_POSTED),
+// Something posted since (mb_post_wake, Host.posted: on the app's thread, between frames): the app told (MB_OUTSIDE_POSTED),
 // or, before it has said where it is told, a frame asked for.
 JNIEXPORT void JNICALL Java_dev_mbui_Native_posted(JNIEnv *env, jclass c) {
   if (outside_cb) outside_cb(MB_OUTSIDE_POSTED, 0, 0);
@@ -1209,7 +1513,7 @@ JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_snapshot(JNIEnv *env, jclass c, 
 // mb_host_image_free. Told nothing: the app reads it failed as it asks (mb_host_image_info), at once.
 static int32_t image_unmade(JNIEnv *env, int id, const char *what) {
   if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-  imgs[id] = (mb_image){-1, 0, 0, 0, 0, 0, 1};
+  imgs[id] = (mb_image){-1, 0, 0, 0, 0, 1};
   LOG("image %d: no room in Java's heap for %s", id, what);
   return id;
 }
@@ -1253,51 +1557,82 @@ int32_t mb_host_image_info(int32_t id, double *out) {
   return im->state;
 }
 
+// (its texture let go on the GL thread, after the frames handed over before it: Images.free, MBView.toRender)
 void mb_host_image_free(int32_t id) {
   if (id <= 0 || id >= nimgs) return;
-  mb_image *im = &imgs[id];
-  if (im->tex) glDeleteTextures(1, &im->tex);
-  *im = (mb_image){-1};
+  imgs[id] = (mb_image){-1};
   JNIEnv *env = env_();
   (*env)->CallStaticVoidMethod(env, images_cls, m_img_free, id);
 }
 
+// (GL thread) image `id` freed: its texture let go, and one uploaded after let go as it comes
+JNIEXPORT void JNICALL Java_dev_mbui_Native_imageGone(JNIEnv *env, jclass c, jint id) {
+  if (id <= 0) return;
+  img_texs_hold(id);
+  if (img_texs[id]) glDeleteTextures(1, &img_texs[id]);
+  img_texs[id] = 0;
+  img_gone[id] = 1;
+}
+
+static int32_t gl_sync(int kind, int id, const void *in, int32_t count, double r, double g, double b, double scale,
+                       int32_t x, int32_t y, int32_t w, int32_t h, void *out);
+
 // A ready image's pixels read back from its texture through a framebuffer of its own (premultiplied RGBA, as
-// uploaded), rows from the top (as the bitmap's were uploaded).
-int32_t mb_host_image_pixels(int32_t id, moonbit_bytes_t out) {
-  if (id <= 0 || id >= nimgs) return 0;
-  mb_image *im = &imgs[id];
-  if (im->state != 1 || !im->tex) return 0;
-  if ((size_t)Moonbit_array_length(out) < (size_t)im->w * im->h * 4) return 0;
+// uploaded), rows from the top (as the bitmap's were uploaded): on the GL thread, the app waiting (gl_sync).
+static int32_t image_pixels_gl(int32_t id, int w, int h, moonbit_bytes_t out) {
+  GLuint tex = id > 0 && id < img_tex_cap ? img_texs[id] : 0;
+  if (!tex) return 0;
   GLint was = 0;
   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &was);
   GLuint fb = 0;
   glGenFramebuffers(1, &fb);
   glBindFramebuffer(GL_FRAMEBUFFER, fb);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, im->tex, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
   int ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
   if (ok) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, im->w, im->h, GL_RGBA, GL_UNSIGNED_BYTE, out);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out);
   }
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)was);
   glDeleteFramebuffers(1, &fb);
   return ok;
 }
 
-JNIEXPORT void JNICALL Java_dev_mbui_Native_imageDone(JNIEnv *env, jclass c, jint id, jint tex,
-                                                     jint w, jint h, jint ow, jint oh) {
-  GLuint t = (GLuint)tex;
-  if (id <= 0 || id >= nimgs || imgs[id].state == -1) {  // freed meanwhile
-    if (t) glDeleteTextures(1, &t);
-    return;
-  }
-  int told = imgs[id].told;
+int32_t mb_host_image_pixels(int32_t id, moonbit_bytes_t out) {
+  if (id <= 0 || id >= nimgs) return 0;
   mb_image *im = &imgs[id];
-  if (im->tex && im->tex != t) glDeleteTextures(1, &im->tex);
-  *im = (mb_image){t ? 1 : -1, t, w, h, ow, oh, 1};
+  if (im->state != 1) return 0;
+  if ((size_t)Moonbit_array_length(out) < (size_t)im->w * im->h * 4) return 0;
+  return gl_sync(3, id, NULL, 0, 0, 0, 0, 0, 0, 0, im->w, im->h, out);
+}
+
+// (GL thread) image `id` uploaded as texture `tex` (0: it did not decode): kept for the frames to draw it, unless it
+// was freed meanwhile; whether the app is to be told (Native.imageTold, on its thread).
+JNIEXPORT jboolean JNICALL Java_dev_mbui_Native_imageDone(JNIEnv *env, jclass c, jint id, jint tex) {
+  GLuint t = (GLuint)tex;
+  if (id <= 0) {
+    if (t) glDeleteTextures(1, &t);
+    return JNI_FALSE;
+  }
+  img_texs_hold(id);
+  if (img_gone[id]) {  // freed meanwhile
+    if (t) glDeleteTextures(1, &t);
+    return JNI_FALSE;
+  }
+  if (img_texs[id] && img_texs[id] != t) glDeleteTextures(1, &img_texs[id]);
+  img_texs[id] = t;
+  return JNI_TRUE;
+}
+
+// (the app's thread) image `id`'s upload done: what it is, and the app told once (not again as it is decoded anew for
+// a new context)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_imageTold(JNIEnv *env, jclass c, jint id, jboolean ok, jint w, jint h,
+                                                     jint ow, jint oh) {
+  if (id <= 0 || id >= nimgs || imgs[id].state == -1) return;  // freed meanwhile
+  int told = imgs[id].told;
+  imgs[id] = (mb_image){ok ? 1 : -1, w, h, ow, oh, 1};
   if (told) return;
-  if (outside_cb) outside_cb(MB_OUTSIDE_IMAGE, id, t ? 1 : -1);
+  if (outside_cb) outside_cb(MB_OUTSIDE_IMAGE, id, ok ? 1 : -1);
 }
 
 // A sign-in in the browser that comes back here (host_native.mbt `browser_login`): dev.mbui.BrowserLogin, a loopback
@@ -1442,9 +1777,10 @@ void mb_host_pick_end(int32_t id) {
 // Native views in the canvas (host_native.mbt `view_*`): dev.mbui.NativeViews keeps them in a layer under the GL
 // surface, a video player (Media3's ExoPlayer, its bytes read through the app) or a WebView, each drawing into a
 // picture of its own (NativeViews.Picture), which the frame draws where the app paints the view (kind 9, its image
-// MB_VIEW_TEX + its id: present). Called on the GL thread; NativeViews moves to the main thread what must run there.
+// MB_VIEW_TEX + its id: present). Called on the app's thread; NativeViews moves to the main thread what must run there,
+// to the GL thread what is of its context (each picture's texture, said here by NativeViews.texture and part there).
 
-static GLuint *view_texs;  // by id
+static GLuint *view_texs;  // by id (GL thread)
 // the part of its content each one's picture is, by id: its top and its height, of the content's (0 1: all of it)
 static float *view_parts;
 static int view_cap;
@@ -1930,8 +2266,8 @@ int32_t mb_host_mods_held(void) { return 0; }
 
 // ---------------------------------------------------------------------------
 // Streams (src/hostapi/stream.mbt): dev.mbui.Streams decodes (MediaCodec, BitmapFactory) and draws each frame the app
-// shows into a texture of its own on the GL thread, told here (Streams.texture) for the renderer to draw the stream's
-// instances with. What MediaCodec takes of H.264 is made by avc.h, the conversion the hosts share.
+// shows into a texture of its own on the GL thread (what the app asks of a stream done there, in its order among the
+// frames: Streams.java), told here (Streams.texture) for the renderer to draw the stream's instances with. What MediaCodec takes of H.264 is made by avc.h, the conversion the hosts share.
 
 #include "avc.h"
 
@@ -1940,7 +2276,7 @@ static jmethodID m_st_open, m_st_h264, m_st_frame, m_st_jpeg, m_st_next, m_st_sh
 static GLuint *stream_texs;  // by id
 static int stream_cap;
 
-// (looked up as the first stream opens, on the GL thread under a call from Java: the app's class loader)
+// (looked up as the first stream opens, on the app's thread under a call from Java: the app's class loader)
 static JNIEnv *streams_env(void) {
   JNIEnv *env = env_();
   if (!streams_cls) {

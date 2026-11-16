@@ -24,13 +24,24 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 /**
- * The surface the MoonBit app draws on. Everything MoonBit runs on the GL
- * thread: frames there, and input is queued onto it. Frames are paced by the
- * display's vsync (Choreographer), one per vsync at most, each told that
- * vsync's time, as Compose's frames are: a frame asked for while touches are
- * handled (the input phase of a vsync) is drawn at that vsync, one asked for
- * by a frame (an animation) at the next; the system's back, said in a vsync's
- * animation phase, is drawn by the next (back()).
+ * The surface the MoonBit app draws on. Everything MoonBit runs on the app's
+ * own thread (the logic thread, one for the process: its frames there, and
+ * input handed to it); the GL context is the GL thread's, which draws each
+ * frame the app made and swaps it. A GPU slowed by its heat, or a display's
+ * buffers all taken, holds only the GL thread in eglSwapBuffers: the app goes
+ * on taking the touches and laying out the next frame meanwhile, and the GL
+ * thread draws the newest it was handed (the frame waiting: android_host.c),
+ * never a queue of old ones. What the app asks of the GL context (a picture's
+ * texture made or let go, a stream's frame latched) is put on the GL thread's
+ * queue (toRender) in its order among the frames: done before the frame handed
+ * over after it is drawn, and after the one handed over before it. Frames are
+ * paced by the display's vsync (Choreographer), one per vsync at most, each
+ * told that vsync's time, as Compose's frames are: a frame asked for while
+ * touches are handled (the input phase of a vsync) is made at that vsync, one
+ * asked for by a frame (an animation) at the next; the system's back, said in
+ * a vsync's animation phase, is made by the next (back()). A run to a declared
+ * moment (Host.shotAt) and mbui-render's (MBUI_DL) make and draw each frame on
+ * the GL thread, as one did before (ONE).
  */
 public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private static boolean started;  // MoonBit's main runs once per process
@@ -43,9 +54,32 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private int mine;
     final float density;
 
+    /**
+     * The app made and drawn on the GL thread alone, as before there were two (a run to a declared moment: its frames
+     * on a clock of their own, each drawn as it is made; mbui-render's, whose MoonBit main holds that thread while it
+     * draws): decided as the first view is made, once the activity has taken its hooks (MainActivity).
+     */
+    static boolean ONE;
+    private static boolean decided;
+
+    /** The app's thread (null with ONE): MoonBit's frames, input and what it is told run here, one at a time. */
+    private static android.os.HandlerThread logicThread;
+    private static android.os.Handler logic;
+    private static int logicTid;
+
     public MBView(Context c) {
         super(c);
         density = c.getResources().getDisplayMetrics().density;
+        if (!decided) {
+            decided = true;
+            ONE = Host.shotAt >= 0 || System.getenv("MBUI_DL") != null;
+            if (!ONE) {
+                logicThread = new android.os.HandlerThread("mbui-logic", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
+                logicThread.start();
+                logic = new android.os.Handler(logicThread.getLooper());
+                logic.post(() -> logicTid = android.os.Process.myTid());
+            }
+        }
         setEGLContextClientVersion(3);
         setEGLConfigChooser(8, 8, 8, 8, 0, 0);
         // On top of the window, translucent: the app over another app (OverActivity) draws over that app, nothing of
@@ -97,6 +131,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     // ---- its surface (main thread) ----
 
+    /** Whether its GL thread draws: its surface there and the view not paused (onStop to onResume). */
+    private volatile boolean glAlive, paused;
+
     /** Its surface made: the streams' layers (StreamLayer) put under it, where it is the host's. */
     @Override
     public void surfaceCreated(android.view.SurfaceHolder holder) {
@@ -107,8 +144,123 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** Its surface gone: the streams' layers off the screen with it (kept, to be put under the next). */
     @Override
     public void surfaceDestroyed(android.view.SurfaceHolder holder) {
+        glAlive = false;
         StreamLayer.parentGone(this);
         super.surfaceDestroyed(holder);
+    }
+
+    /** Its drawing paused (MainActivity's onStop): the app makes no frame for it till it is resumed. */
+    @Override
+    public void onPause() {
+        paused = true;
+        super.onPause();
+    }
+
+    /** Its drawing resumed: a frame made for it at once. */
+    @Override
+    public void onResume() {
+        super.onResume();
+        paused = false;
+        wantFrame();
+    }
+
+    // ---- the app's thread ----
+
+    /** {@code r} run on the app's thread (MoonBit's), after what is there now: the GL thread's with ONE. */
+    static void onApp(Runnable r) {
+        if (logic != null) {
+            logic.post(r);
+            return;
+        }
+        MBView v = Host.view;
+        if (v != null) v.queueEvent(r);
+    }
+
+    /** Runs r on the app's thread and asks for a frame. */
+    void toApp(Runnable r) {
+        onApp(r);
+        wantFrame();
+    }
+
+    // ---- the GL thread's queue: what the app asks of the GL context, in its order among the frames ----
+
+    /** A task of the GL thread's queue, numbered among the frames handed over (under `mail`). */
+    private static final class GlTask {
+        final long seq;
+        final Runnable r;
+
+        GlTask(long seq, Runnable r) {
+            this.seq = seq;
+            this.r = r;
+        }
+    }
+
+    /**
+     * The frame waiting and the GL thread's queue (under `mail`): the number of each task and frame handed over
+     * (seq); the frame pending's (-1: none), the glyphs it puts in the atlases (all those placed since the frame drawn
+     * last, a frame taking another's place taking its glyphs too), when it is to be shown, the picture of it asked
+     * (MBText.refFrame) and its frame of a latency run; whether the frame kept is to be drawn again (only a native
+     * view's picture changed) and when it is to be shown then. The floats are android_host.c's (Native.publish, take).
+     */
+    private static final Object mail = new Object();
+    private static long seq;
+    private static final ArrayDeque<GlTask> glTasks = new ArrayDeque<>();
+    private static long pendingSeq = -1;
+    private static java.util.ArrayList<MBText.Placed> pendingGlyphs = new java.util.ArrayList<>();
+    private static long pendingShows;
+    private static String pendingRef;
+    private static int pendingLat = -1;
+    private static boolean redrawOwed;
+    private static long redrawShows;
+    private static int redrawLat = -1;
+    /** How many frames the app's thread has made (handed over or not: one that presents nothing too). */
+    private static long made;
+
+    /**
+     * {@code r} run on the GL thread (its context current): after the frames handed over before it are drawn, before
+     * those handed over after it (from the app's thread: a texture let go once no frame left to draw draws it; a
+     * stream's frame latched for the frame that shows it); from another thread (a picture decoded), as soon as it can.
+     * With ONE, the GL thread's queue as it was.
+     */
+    static void toRender(Runnable r) {
+        MBView v = Host.view;
+        if (ONE) {
+            if (v != null) v.queueEvent(r);
+            return;
+        }
+        synchronized (mail) {
+            glTasks.add(new GlTask(++seq, r));
+        }
+        if (v != null) v.queueEvent(MBView::glTasksDue);
+    }
+
+    /** The tasks of the GL thread's queue that may run now: all those before the frame pending (all of them, none). */
+    private static void glTasksDue() {
+        runTasks(pendingSeqNow());
+    }
+
+    private static long pendingSeqNow() {
+        synchronized (mail) {
+            return pendingSeq >= 0 ? pendingSeq : Long.MAX_VALUE;
+        }
+    }
+
+    /** The tasks numbered before {@code upto} run, in their order (GL thread); each one's failure said, not thrown. */
+    private static void runTasks(long upto) {
+        while (true) {
+            GlTask t;
+            synchronized (mail) {
+                t = glTasks.peek();
+                if (t == null || t.seq >= upto) return;
+                glTasks.poll();
+            }
+            try {
+                t.r.run();
+            } catch (RuntimeException e) {
+                Host.log("gl: " + e);
+                android.util.Log.e("mbui", "gl task", e);
+            }
+        }
     }
 
     // ---- GL thread ----
@@ -116,25 +268,66 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         drawingThread();
-        Native.surfaceCreated();
-        MBText.reset();
+        boolean lost = Native.surfaceCreated();
+        NativeViews.textureMostRead();
         mine = ++setUp;
+        glAlive = true;
+        if (ONE) {
+            MBText.reset();
+            if (!started) {
+                started = true;
+                // (a run to a declared moment: the app's clock is its frames' from the start, shotFrame below)
+                if (Host.shotAt >= 0) Native.ownClock();
+                Native.start();
+            }
+            return;
+        }
+        contextMade(lost);
         if (!started) {
             started = true;
-            // (a run to a declared moment: the app's clock is its frames' from the start, shotFrame below)
-            if (Host.shotAt >= 0) Native.ownClock();
-            Native.start();
+            Native.twoThreads();
+            logic.post(Native::start);
         }
+        // (the first frame the app makes, waited for a while before the surface is shown without one: frameFirst)
+        fresh = 1000;
+    }
+
+    /**
+     * Drawing set up in a context made anew (GL thread): what the app's thread keeps of what was in the old one let go
+     * there (the glyphs' places in the atlases, MBText.reset; the images' textures, to be told again as each is
+     * uploaded anew: Native.imagesUntold), and a frame of the app's made, drawn whole.
+     */
+    private void contextMade(boolean lost) {
+        logic.post(() -> {
+            MBText.reset();
+            if (lost) Native.imagesUntold();
+        });
+        pacer.appWanted.set(true);
+        wantFrame();
     }
 
     @Override
     public void onSurfaceChanged(GL10 gl, int w, int h) {
-        // (a new surface, told after it is made, or the same at another size: whatever was said of the rate, nothing said)
-        pacer.sayRate(false);
         Native.resize(w, h);
+        // (a new surface, told after it is made, or the same at another size: whatever was said of the rate, nothing said)
+        if (ONE) {
+            pacer.sayRate(false);
+            return;
+        }
+        logic.post(() -> pacer.sayRate(false));
+        // (the frame of the new size waited for a while: the one the surface shows next is the app's at that size)
+        fresh = Math.max(fresh, 100);
+        wantFrame();
     }
 
-    /** Which vsync the next frame is drawn for, and the rate the surface says of the display (FramePacer). */
+    /**
+     * How long the next frame drawn waits for one the app makes (ms; 0: none): the first a surface shows, and one at a
+     * new size, are the app's made for it, not the frame kept (none yet, or at the old size) drawn again. A while at
+     * most: the app's thread may be busy (a long first frame), or wait on this thread itself (glSync).
+     */
+    private int fresh;
+
+    /** Which vsync the next frame is made for, and the rate the surface says of the display (FramePacer). */
     private final FramePacer pacer = new FramePacer(new FramePacer.Platform() {
         @Override public long nanoTime() { return System.nanoTime(); }
 
@@ -145,15 +338,26 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override public void postVsync() { postVsync.run(); }
 
         @Override public void atNextVsyncOnDrawing(Runnable r) {
-            Host.main.post(() -> Choreographer.getInstance().postFrameCallback(t -> queueEvent(r)));
+            Host.main.post(() -> Choreographer.getInstance().postFrameCallback(t -> onApp(r)));
         }
 
-        @Override public void requestRender() { MBView.this.requestRender(); }
+        @Override public void requestRender() { makeFrame(); }
 
         @Override public boolean setRate(float rate) { return surfaceRate(rate); }
 
         @Override public boolean typing() { return MBView.typing(); }
     });
+
+    /** A frame made as soon as the app's thread can (FramePacer's requestRender): drawn on the GL thread with ONE. */
+    private final java.util.concurrent.atomic.AtomicBoolean making = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private void makeFrame() {
+        if (ONE) {
+            requestRender();
+            return;
+        }
+        if (making.compareAndSet(false, true)) logic.post(this::frameOnApp);
+    }
 
     // A picture at a declared moment (Host.shotAt, --ei shot_at MS: scripts/shots.sh android): the run's frames are on
     // a clock of their own, 1/60 s a frame from 0, as a stable run's on macOS (mac_app.m) and the browser's
@@ -162,7 +366,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     // for after it drawn at the same moment. The clock stands still while the app awaits the host (an image decoding:
     // what its last frame said), so the picture is of the app at MS on its own clock, however fast the machine is.
     // Never "once the app is at rest": that is settling by another name (a moment is declared, or a drive waits for the
-    // page's own named event).
+    // page's own named event). Both on the GL thread (ONE).
     private double shotClock;
     private int shotFrames;
     private volatile boolean shotTaken;
@@ -221,6 +425,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         // a view not the host's (its activity paused under another of the app's: an OverActivity's draws), kept as it
         // last drew: one thread draws the app at a time
         if (Host.view != this) return;
+        if (!ONE) {
+            drawOnGl();
+            return;
+        }
         Latency.frameBegins();
         boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
         // another view set the drawing up in its own context since this one did (an OverActivity came and went): set
@@ -249,7 +457,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             showAt(at[1]);
             NativeViews.framed(false);
             pacer.redrawn();
-            Latency.frameEnds();
+            Latency.frameEnds(Latency.frameBuilt());
             return;
         }
         long began = System.nanoTime();
@@ -267,20 +475,226 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         // (the native views moved in it: their frames follow once they rest)
         NativeViews.framed(more || later);
         Script.frameDrawn();
-        frameWorked(System.nanoTime() - began);
-        Latency.frameEnds();
+        frameWorked(System.nanoTime() - began, 0);
+        Latency.frameEnds(Latency.frameBuilt());
     }
 
-    // ---- the drawing thread, as the system's own ----
+    /**
+     * A frame of the app's made (its thread, as the pacer asks: FramePacer's requestRender), as the GL thread made one
+     * with ONE (onDrawFrame above), and handed over to be drawn (handOver); only the last drawn again where only a
+     * native view's picture changed. None while its drawing is paused, or it is not the host's: asked for again as it
+     * is resumed (onResume).
+     */
+    private void frameOnApp() {
+        making.set(false);
+        if (Host.view != this || paused) return;
+        Latency.frameBegins();
+        boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
+        float w = getWidth() / density, h = Math.max(1, getHeight() - Host.imeBottom) / density;
+        long[] at = pacer.vsyncAt();
+        if (pictured && !app) {
+            int lat = Latency.frameBuilt();
+            synchronized (mail) {
+                redrawOwed = true;
+                redrawShows = at[1];
+                if (redrawLat >= 0) Latency.merged(redrawLat, lat);
+                redrawLat = lat;
+                made++;
+                mail.notifyAll();
+            }
+            requestRender();
+            NativeViews.framed(false);
+            pacer.redrawn();
+            return;
+        }
+        long began = System.nanoTime();
+        FramePacer.Begun b = pacer.begin(at, began);
+        boolean later = takeBacks(b.vsync != 0 ? b.vsync : began);
+        wakeFor = -1;
+        buildingFor = b.now;
+        pacedRate = 0;
+        boolean more = Native.frame(w, h, density, b.now, b.late);
+        buildingFor = -1;
+        handOver(b.shows);
+        pacer.ended(more, later, b.following, pacedRate);
+        NativeViews.framed(more || later);
+        frameWorked(System.nanoTime() - began, glWorked);
+    }
 
     /**
-     * This thread builds, lays out and draws every frame: what Compose's UI thread and HWUI's RenderThread do between
-     * them. GLSurfaceView makes it a plain thread (nice 0), while the system raises the app in front's UI thread and
-     * RenderThread (THREAD_PRIORITY_TOP_APP_BOOST, or SCHED_FIFO) and its scheduler and governor favour them: a frame
-     * here could wait behind the core's thread, pictures decoding and the system's own work, on whatever core and clock
-     * the phone gave it. Raised as a display thread, and its work per frame told to the system (ADPF's
-     * PerformanceHintManager, as HWUI tells its frames' since Android 12) against the display's frame, so the CPUs it
-     * runs on are clocked for it.
+     * The frame the app made handed over to the GL thread (the app's thread), to be shown at {@code shows}: with the
+     * glyphs it put in the atlases, the picture of it asked (MBText.refFrame) and its frame of a latency run; one still
+     * waiting there replaced by it (android_host.c Native.publish), its glyphs kept before this one's, its latency
+     * run's events this one's.
+     */
+    private void handOver(long shows) {
+        boolean any;
+        synchronized (mail) {
+            made++;
+            // (a new surface's GL thread waiting for the app's frame: drawOnGl, whether or not this one presented)
+            mail.notifyAll();
+            any = Native.publish();
+            if (any) {
+                int lat = Latency.frameBuilt();
+                if (pendingSeq >= 0 && pendingLat >= 0) {
+                    if (lat >= 0) Latency.merged(pendingLat, lat);
+                    else lat = pendingLat;
+                }
+                pendingSeq = ++seq;
+                pendingShows = shows;
+                pendingLat = lat;
+                pendingGlyphs.addAll(MBText.placed);
+                MBText.placed.clear();
+                String ref = MBText.takeFrameName();
+                if (ref != null) pendingRef = ref;
+            }
+        }
+        if (any) requestRender();
+    }
+
+    /** The GL thread's time drawing the last frame (ns), told to the system with the app's (frameWorked). */
+    private volatile long glWorked;
+
+    /**
+     * The frame handed over drawn (GL thread), the GL thread's queue's tasks before it done first and those after it
+     * after; else the frame kept drawn again (a native view's picture changed, or the surface asks for a frame: GLSurfaceView
+     * swaps whatever this draws). A new surface's first frame, or one at a new size, waits a while for the app's.
+     */
+    private void drawOnGl() {
+        if (mine != setUp) {
+            // another view set the drawing up in its own context since this one did (an OverActivity came and went):
+            // set up again here, at this view's size, and the app's frame made for it
+            Native.surfaceCreated();
+            Native.resize(getWidth(), getHeight());
+            mine = ++setUp;
+            contextMade(true);
+            fresh = Math.max(fresh, 100);
+        }
+        long t0 = System.nanoTime();
+        boolean took;
+        long frameSeq = -1, shows = 0;
+        java.util.ArrayList<MBText.Placed> glyphs = null;
+        String ref = null;
+        int lat = -1;
+        boolean redraw;
+        synchronized (mail) {
+            if (fresh > 0 && pendingSeq < 0 && !redrawOwed) {
+                long until = System.nanoTime() + fresh * 1_000_000L, from = made;
+                for (long left = fresh; pendingSeq < 0 && made == from && left > 0;
+                     left = (until - System.nanoTime()) / 1_000_000L) {
+                    try {
+                        mail.wait(left);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+            }
+            fresh = 0;
+            took = Native.take();
+            if (took) {
+                frameSeq = pendingSeq;
+                pendingSeq = -1;
+                glyphs = pendingGlyphs;
+                pendingGlyphs = new java.util.ArrayList<>();
+                shows = pendingShows;
+                ref = pendingRef;
+                pendingRef = null;
+                lat = pendingLat;
+                pendingLat = -1;
+            }
+            redraw = redrawOwed;
+            redrawOwed = false;
+            if (!took && redraw) {
+                shows = redrawShows;
+                lat = redrawLat;
+            } else if (redrawLat >= 0) {
+                Latency.merged(redrawLat, lat);
+            }
+            redrawLat = -1;
+        }
+        // what the app asked of the context before this frame: done first (a stream's frame latched, a texture made)
+        if (took) runTasks(frameSeq);
+        // the native views' pictures come since the last frame, for this one to draw where it shows them
+        NativeViews.latch();
+        if (took) {
+            MBText.upload(glyphs);
+            Native.draw();
+        } else {
+            Native.redraw();
+        }
+        showAt(shows);
+        if (ref != null) MBText.frameDrawn(ref);
+        Latency.frameEnds(lat);
+        glWorked = System.nanoTime() - t0;
+        // what the app asked of it after: done now, but for what follows a frame handed over meanwhile
+        runTasks(pendingSeqNow());
+    }
+
+    /**
+     * What the app's thread waits for of the GL context (android_host.c gl_sync: a read back): done on the GL thread,
+     * the frame pending taken first as the one presented last (and drawn there with the next frame); false where there
+     * is no GL thread to do it (no surface, paused) or it did not in a while (it waits on the app's: no frame comes),
+     * which the app reads as nothing read.
+     */
+    static boolean glSync() {
+        MBView v = Host.view;
+        if (v == null || !v.glAlive || v.paused) return false;
+        final Object done = new Object();
+        final boolean[] state = {false, false};  // ran, given up
+        v.queueEvent(() -> {
+            synchronized (done) {
+                if (state[1]) return;
+                boolean took;
+                long frameSeq = -1;
+                java.util.ArrayList<MBText.Placed> glyphs = null;
+                synchronized (mail) {
+                    took = Native.take();
+                    if (took) {
+                        frameSeq = pendingSeq;
+                        pendingSeq = -1;
+                        glyphs = pendingGlyphs;
+                        pendingGlyphs = new java.util.ArrayList<>();
+                        // (drawn as the next frame: the one it took the place of was shown)
+                        redrawOwed = true;
+                        redrawShows = pendingShows;
+                        if (pendingLat >= 0) Latency.frameEnds(pendingLat);
+                        pendingLat = -1;
+                    }
+                }
+                if (took) {
+                    runTasks(frameSeq);
+                    MBText.upload(glyphs);
+                }
+                Native.glSync();
+                state[0] = true;
+                done.notify();
+            }
+            v.requestRender();
+        });
+        synchronized (done) {
+            long until = System.nanoTime() + 2_000_000_000L;
+            for (long left = 2000; !state[0] && left > 0; left = (until - System.nanoTime()) / 1_000_000L) {
+                try {
+                    done.wait(left);
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+            if (!state[0]) state[1] = true;
+            return state[0];
+        }
+    }
+
+    // ---- the drawing threads, as the system's own ----
+
+    /**
+     * The app's thread builds and lays out every frame, the GL thread draws it: what Compose's UI thread and HWUI's
+     * RenderThread do between them. GLSurfaceView makes the GL thread a plain thread (nice 0), while the system raises
+     * the app in front's UI thread and RenderThread (THREAD_PRIORITY_TOP_APP_BOOST, or SCHED_FIFO) and its scheduler
+     * and governor favour them: a frame could wait behind the core's thread, pictures decoding and the system's own
+     * work, on whatever core and clock the phone gave it. Both raised as display threads, and their work per frame
+     * told to the system together (ADPF's PerformanceHintManager, as HWUI tells its frames' since Android 12: one
+     * session of both threads) against the display's frame, so the CPUs they run on are clocked for it as it heats.
      */
     private void drawingThread() {
         try {
@@ -288,25 +702,34 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         } catch (RuntimeException e) {
             Host.log("drawing thread: priority: " + e);
         }
-        // (a session per thread: GLSurfaceView starts another as the view is shown again)
         int tid = android.os.Process.myTid();
-        if (android.os.Build.VERSION.SDK_INT < 31 || tid == hintTid) return;
+        if (ONE) {
+            hintsFor(new int[] {tid});
+            return;
+        }
+        // (the app's thread's id first: its post ahead of this one)
+        logic.post(() -> hintsFor(new int[] {logicTid, tid}));
+    }
+
+    /** One session of the threads {@code tids} (a session per thread set: GLSurfaceView starts another GL thread as the view is shown again). */
+    private void hintsFor(int[] tids) {
+        if (android.os.Build.VERSION.SDK_INT < 31 || java.util.Arrays.equals(tids, hintTids)) return;
         if (hints != null) hints.close();
         hints = null;
-        hintTid = tid;
+        hintTids = tids;
         android.os.PerformanceHintManager pm = getContext().getSystemService(android.os.PerformanceHintManager.class);
         long target = pacer.framePeriod * 7 / 10;
         try {
-            hints = pm == null ? null : pm.createHintSession(new int[] {tid}, target);
+            hints = pm == null ? null : pm.createHintSession(tids, target);
         } catch (RuntimeException e) {
             Host.log("drawing thread: hints: " + e);
         }
         hintTarget = target;
     }
 
-    /** The system told what this thread's work over a frame (null: Android before 12, or a phone without ADPF). */
+    /** The system told what the drawing threads' work over a frame (null: Android before 12, or a phone without ADPF). */
     private android.os.PerformanceHintManager.Session hints;
-    private int hintTid;
+    private int[] hintTids;
     private long hintTarget;
     /** The display's frame, ms (FramePacer's framePeriod). */
     double framePeriodMs() {
@@ -365,7 +788,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     /** The field's typing begun or ended (MainActivity, as the keyboard shows or goes): the rate said or let go from now. */
     void typingChanged() {
-        queueEvent(pacer::typingChanged);
+        onApp(pacer::typingChanged);
     }
 
     @Override
@@ -384,13 +807,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     }
 
     /**
-     * A frame's work done (GL thread): how long it took, against 70% of the display's frame as it is now. The system
-     * clocks the CPUs so that a frame takes about as long as its target, one a little over as often as one a little
-     * under; one over the display's frame misses the next vsync, so the target leaves room under it, as HWUI's does
-     * (its frames' targets are 70% of their time).
+     * A frame's work done (the app's thread; with ONE the GL thread): how long making it took and how long the GL
+     * thread took drawing the last ({@code gl}), the longer told, against 70% of the display's frame as it is now. The
+     * system clocks the CPUs so that a frame takes about as long as its target, one a little over as often as one a
+     * little under; one over the display's frame misses the next vsync, so the target leaves room under it, as HWUI's
+     * does (its frames' targets are 70% of their time).
      */
-    private void frameWorked(long nanos) {
+    private void frameWorked(long nanos, long gl) {
         if (hints == null) return;
+        nanos = Math.max(nanos, gl);
         long target = pacer.framePeriod * 7 / 10;
         if (target != hintTarget) {
             hintTarget = target;
@@ -557,11 +982,6 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     }
 
 
-    /** Runs r on the GL thread and asks for a frame. */
-    void toGL(Runnable r) {
-        queueEvent(r);
-        wantFrame();
-    }
 
     // ---- input ----
 
@@ -576,7 +996,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             case MotionEvent.ACTION_DOWN:
                 // (the display's highest from a finger going down: what it moves moves at it from its first frame)
                 pacer.touching = true;
-                queueEvent(() -> pacer.sayRate(true));
+                onApp(() -> pacer.sayRate(true));
                 requestFocus();
                 break;
             case MotionEvent.ACTION_UP: Host.lifts++; pacer.touching = false; break;
@@ -592,7 +1012,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 final int id = e.getPointerId(i);
                 final float x = e.getX(i) / density, y = e.getY(i) / density;
                 final int phase = a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_POINTER_DOWN ? 10 : 12;
-                toGL(() -> Native.touch(phase, id, x, y, t));
+                toApp(() -> Native.touch(phase, id, x, y, t));
                 return true;
             }
             case MotionEvent.ACTION_CANCEL: {
@@ -605,7 +1025,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                     xs[p] = e.getX(p) / density;
                     ys[p] = e.getY(p) / density;
                 }
-                toGL(() -> { for (int p = 0; p < n; p++) Native.touch(13, ids[p], xs[p], ys[p], t); });
+                toApp(() -> { for (int p = 0; p < n; p++) Native.touch(13, ids[p], xs[p], ys[p], t); });
                 return true;
             }
             case MotionEvent.ACTION_MOVE: {
@@ -626,7 +1046,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                     xs[p * (h + 1) + h] = e.getX(p) / density;
                     ys[p * (h + 1) + h] = e.getY(p) / density;
                 }
-                toGL(() -> {
+                toApp(() -> {
                     for (int k = 0; k <= h; k++)
                         for (int p = 0; p < n; p++) Native.touch(11, ids[p], xs[p * (h + 1) + k], ys[p * (h + 1) + k], ts[k]);
                 });
@@ -686,12 +1106,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
                 int id = item.getItemId();
                 // as the input method's own (MBInput.performContextMenuAction): the keys and the paste the field takes
                 if (id == android.R.id.paste) paste();
-                else if (id == android.R.id.selectAll) toGL(() -> Native.key(12, 0));
-                else if (id == android.R.id.copy) toGL(() -> Native.key(13, 0));
-                else if (id == android.R.id.cut) toGL(() -> Native.key(14, 0));
+                else if (id == android.R.id.selectAll) toApp(() -> Native.key(12, 0));
+                else if (id == android.R.id.copy) toApp(() -> Native.key(13, 0));
+                else if (id == android.R.id.cut) toApp(() -> Native.key(14, 0));
                 else if (id >= TEXT_MENU_OWN && id < TEXT_MENU_OWN + 8) {
                     int k = id - TEXT_MENU_OWN;
-                    toGL(() -> Native.key(60 + k, 0));
+                    toApp(() -> Native.key(60 + k, 0));
                 }
                 mode.finish();
                 return true;
@@ -723,7 +1143,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (t == null || t.length() == 0) return;
         String s = t.toString();
         // (text kind 8: put in as typed, a step of its own to undo)
-        toGL(() -> Native.text(8, s, 0, 0));
+        toApp(() -> Native.text(8, s, 0, 0));
     }
 
     /** A key with the focus a key catcher's (Device.catching): its named keys and shortcuts as keys, a character as
@@ -732,13 +1152,13 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) return false;
         int[] k = Device.catchKey(e);
         if (k != null) {
-            toGL(() -> Native.key(k[0], k[1]));
+            toApp(() -> Native.key(k[0], k[1]));
             return true;
         }
         int ch = e.getUnicodeChar();
         if (ch <= 0) return false;
         String s = new String(Character.toChars(ch));
-        toGL(() -> Native.text(0, s, 0, 0));
+        toApp(() -> Native.text(0, s, 0, 0));
         return true;
     }
 
@@ -752,19 +1172,19 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         int sk = shortcutKey(e);
         if (sk != 0) {
             int mods = Device.keyMods(e);
-            toGL(() -> Native.key(sk, mods));
+            toApp(() -> Native.key(sk, mods));
             return true;
         }
         int k = keyCode(code);
         if (k != 0) {
             int mods = Device.keyMods(e);
-            toGL(() -> Native.key(k, mods));
+            toApp(() -> Native.key(k, mods));
             return true;
         }
         int ch = e.getUnicodeChar();
         if (ch != 0 && Host.imeActive) {
             String s = new String(Character.toChars(ch));
-            toGL(() -> Native.text(0, s, 0, 0));
+            toApp(() -> Native.text(0, s, 0, 0));
             return true;
         }
         return super.onKeyDown(code, e);
@@ -877,9 +1297,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             composing = false;
             composingText = "";
             if (s.equals("\n")) {
-                view.toGL(() -> Native.key(7, 0));
+                view.toApp(() -> Native.key(7, 0));
             } else {
-                view.toGL(() -> Native.text(0, s, 0, 0));
+                view.toApp(() -> Native.text(0, s, 0, 0));
             }
             return true;
         }
@@ -890,7 +1310,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             if (Host.imeLog()) Host.log("ime: setComposingText " + s);
             composingText = s;
             composing = s.length() > 0;
-            view.toGL(() -> Native.text(1, s, s.length(), 0));
+            view.toApp(() -> Native.text(1, s, s.length(), 0));
             return true;
         }
 
@@ -900,21 +1320,21 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             if (composing) {
                 composing = false;
                 composingText = "";
-                view.toGL(() -> Native.text(2, "", 0, 0));
+                view.toApp(() -> Native.text(2, "", 0, 0));
             }
             return true;
         }
 
         @Override
         public boolean setSelection(int start, int end) {
-            view.toGL(() -> Native.text(3, "", start, end));
+            view.toApp(() -> Native.text(3, "", start, end));
             return true;
         }
 
         @Override
         public boolean deleteSurroundingText(int before, int after) {
             // (a field takes it as its Backspace, its Delete; a key catcher as that many: src/ui/device.mbt)
-            if (before > 0 || after > 0) view.toGL(() -> Native.text(4, "", before, after));
+            if (before > 0 || after > 0) view.toApp(() -> Native.text(4, "", before, after));
             return true;
         }
 
@@ -930,13 +1350,13 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             if (k == 0) k = shortcutKey(e);
             if (k != 0) {
                 int kk = k, mods = Device.keyMods(e);
-                view.toGL(() -> Native.key(kk, mods));
+                view.toApp(() -> Native.key(kk, mods));
                 return true;
             }
             int ch = e.getUnicodeChar();
             if (ch != 0) {
                 String s = new String(Character.toChars(ch));
-                view.toGL(() -> Native.text(0, s, 0, 0));
+                view.toApp(() -> Native.text(0, s, 0, 0));
             }
             return true;
         }
@@ -949,15 +1369,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             }
             // a key catcher has no text of its own to select, copy or cut
             if (Device.catching) return false;
-            if (id == android.R.id.selectAll) view.toGL(() -> Native.key(12, 0));
-            else if (id == android.R.id.copy) view.toGL(() -> Native.key(13, 0));
-            else if (id == android.R.id.cut) view.toGL(() -> Native.key(14, 0));
+            if (id == android.R.id.selectAll) view.toApp(() -> Native.key(12, 0));
+            else if (id == android.R.id.copy) view.toApp(() -> Native.key(13, 0));
+            else if (id == android.R.id.cut) view.toApp(() -> Native.key(14, 0));
             return true;
         }
 
         @Override
         public boolean performEditorAction(int action) {
-            view.toGL(() -> Native.key(7, 0));
+            view.toApp(() -> Native.key(7, 0));
             return true;
         }
 
@@ -1048,7 +1468,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             final int seq = ++Host.imeSent;
             final int fa = a, fb = b, fcs = cs, fce = ce;
             if (Host.imeLog()) Host.log("ime: edited " + a + "," + b + " composing " + cs + "," + ce + " (" + t.length() + ")");
-            view.toGL(() -> {
+            view.toApp(() -> {
                 Native.text(6, "", fcs, fce);
                 Native.text(5, t, fa, fb);
                 Host.imeTaken = seq;
@@ -1095,7 +1515,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             if (text.toString().equals("\n")) {
                 // Enter: the field's to decide (a new line, or sent), after what is composed is in
                 finishComposingText();
-                view.toGL(() -> Native.key(7, 0));
+                view.toApp(() -> Native.key(7, 0));
                 return true;
             }
             return super.commitText(text, pos);
@@ -1177,7 +1597,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             int k = keyCode(e.getKeyCode());
             if (k != 0) {
                 int mods = Device.keyMods(e);
-                view.toGL(() -> Native.key(k, mods));
+                view.toApp(() -> Native.key(k, mods));
                 return true;
             }
             int ch = e.getUnicodeChar();
@@ -1188,15 +1608,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override
         public boolean performContextMenuAction(int id) {
             if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) view.paste();
-            else if (id == android.R.id.selectAll) view.toGL(() -> Native.key(12, 0));
-            else if (id == android.R.id.copy) view.toGL(() -> Native.key(13, 0));
-            else if (id == android.R.id.cut) view.toGL(() -> Native.key(14, 0));
+            else if (id == android.R.id.selectAll) view.toApp(() -> Native.key(12, 0));
+            else if (id == android.R.id.copy) view.toApp(() -> Native.key(13, 0));
+            else if (id == android.R.id.cut) view.toApp(() -> Native.key(14, 0));
             return true;
         }
 
         @Override
         public boolean performEditorAction(int action) {
-            view.toGL(() -> Native.key(7, 0));
+            view.toApp(() -> Native.key(7, 0));
             return true;
         }
 

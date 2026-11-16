@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * through the Custom Tabs protocol's own extras: no androidx needed; a browser without them opens a plain view), take
  * the one GET that comes back to &lt;path&gt; under that host name, answer it, stop listening, and bring the app back in
  * front of the browser. Nothing here knows whose sign-in it is: the app checks what came back (its state) and
- * exchanges it. The app polls it each frame (one is asked for when the browser comes back). Called from the GL thread.
+ * exchanges it. The app polls it each frame (one is asked for when the browser comes back). Called from the app's thread (MBView's).
  */
 final class BrowserLogin {
     private static final class Login {
