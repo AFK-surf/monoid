@@ -269,8 +269,10 @@ async fn Agents::own_replay(self : Agents, id : Int, kind : String, path : Strin
   let mut pos = 0L
   while pos < at {
     let length = if at - pos < REPLAY_CHUNK.to_int64() { at - pos } else { REPLAY_CHUNK.to_int64() }
+    // (read off this program's thread, client/shell's `fs.*`: a slow disk holds no other session read here meanwhile)
     let read = try {
-      Some(self.host.shell_sync("fs.bytes", { "path": Json::string(path), "from": Json::number(pos.to_double()), "length": Json::number(length.to_double()) }))
+      let (json, _) = self.host.shell("fs.bytes", { "path": Json::string(path), "from": Json::number(pos.to_double()), "length": Json::number(length.to_double()) })
+      Some(json)
     } catch {
       _ => None
     }

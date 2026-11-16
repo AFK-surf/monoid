@@ -194,7 +194,7 @@ async fn[X] Actors::in_lane(self : Actors, lane : String, f : async () -> X rais
 
 ///|
 fn Actors::room(self : Actors, workspace : String, peer : String, session : String) -> String {
-  rjoin([self.remote.root, "sessions", rhash(Json::array([jstr(workspace), jstr(peer), jstr(session)]))])
+  self.rjoin([self.remote.root, "sessions", rhash(Json::array([jstr(workspace), jstr(peer), jstr(session)]))])
 }
 
 ///|
@@ -204,13 +204,13 @@ async fn Actors::seen(self : Actors, workspace : String, peer : String, session 
 }
 
 ///|
-fn job_of_task(dir : String) -> String {
-  "remote_" + rbasename(dir)
+fn Actors::job_of_task(self : Actors, dir : String) -> String {
+  "remote_" + self.rbasename(dir)
 }
 
 ///|
 async fn Actors::task_running(self : Actors, dir : String) -> Bool raise {
-  let job = self.rstore("getJob", [jstr(job_of_task(dir))])
+  let job = self.rstore("getJob", [jstr(self.job_of_task(dir))])
   str_of(job.value("state")) == Some("running")
 }
 

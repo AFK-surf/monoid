@@ -12,7 +12,7 @@ fn pushes(got : Json) -> Bool {
 /// The tasks started from here not told yet followed again, and those here whose source missed their last change told
 /// (the transport is there: Node's `attached`).
 async fn Actors::resume(self : Actors) -> Unit raise {
-  let outgoing = rjoin([self.remote.root, "outgoing"])
+  let outgoing = self.rjoin([self.remote.root, "outgoing"])
   let followed : Array[String] = []
   for name in self.readdir_names(outgoing) {
     if self.remote.stopped {
@@ -21,7 +21,7 @@ async fn Actors::resume(self : Actors) -> Unit raise {
     if !name.has_suffix(".json") {
       continue
     }
-    let path = rjoin([outgoing, name])
+    let path = self.rjoin([outgoing, name])
     let v = self.read_json(path) catch { _ => continue }
     if !(field_of(v, "delivered") is True) {
       followed.push(path)
@@ -54,12 +54,12 @@ async fn Actors::resume(self : Actors) -> Unit raise {
 
 ///|
 async fn Actors::push_missed(self : Actors) -> Unit raise {
-  let incoming = rjoin([self.remote.root, "incoming"])
+  let incoming = self.rjoin([self.remote.root, "incoming"])
   for name in self.readdir_names(incoming) {
     if self.remote.stopped {
       return
     }
-    let meta = self.read_json(rjoin([incoming, name, "task.json"])) catch { _ => continue }
+    let meta = self.read_json(self.rjoin([incoming, name, "task.json"])) catch { _ => continue }
     if text_of(meta, "push") != "" && field_of(meta, "pushed") != self.said(name) {
       self.push_out(name)
     }
@@ -78,7 +78,7 @@ fn Actors::push_out(self : Actors, id : String) -> Unit {
     return
   }
   self.remote.pushing[id] = false
-  let record = rjoin([self.remote.root, "incoming", id, "task.json"])
+  let record = self.rjoin([self.remote.root, "incoming", id, "task.json"])
   self.again(
     async fn() {
       self.remote.pushing[id] = false
@@ -118,7 +118,7 @@ async fn Actors::changed_there(self : Actors, workspace : String, request : Json
   if !is_hex64(ref_) {
     raise refusal("ref is required")
   }
-  let path = rjoin([self.remote.root, "outgoing", "\{ref_}.json"])
+  let path = self.rjoin([self.remote.root, "outgoing", "\{ref_}.json"])
   let entry = self.read_json(path) catch { _ => raise refusal("unknown task") }
   // Only what the task's own station says is taken (`check` asks that one), so this need not be from it.
   if text_of(entry, "workspace") != workspace {
@@ -361,9 +361,9 @@ async fn Actors::settle(self : Actors, path : String, entry : Json, got : Json) 
 /// A session was archived or deleted: its tasks started from here are no longer followed, its prepared tasks go
 /// (Node writes its use record closing and asks its stations to remove its directories).
 async fn Actors::unfollow_session(self : Actors, session : String) -> Unit raise {
-  let outgoing = rjoin([self.remote.root, "outgoing"])
+  let outgoing = self.rjoin([self.remote.root, "outgoing"])
   for name in self.readdir_names(outgoing) {
-    let file = rjoin([outgoing, name])
+    let file = self.rjoin([outgoing, name])
     let seen = self.read_json(file) catch { _ => continue }
     if text_of(seen, "session") != session || field_of(seen, "delivered") is True {
       continue
@@ -375,12 +375,12 @@ async fn Actors::unfollow_session(self : Actors, session : String) -> Unit raise
 
 ///|
 fn Actors::prepared_dir(self : Actors, session : String) -> String {
-  rjoin([self.remote.root, "prepared", rhash(jstr(session))])
+  self.rjoin([self.remote.root, "prepared", rhash(jstr(session))])
 }
 
 ///|
 fn Actors::outgoing_path(self : Actors, workspace : String, session : String, station : String, key : String) -> String {
-  rjoin([self.remote.root, "outgoing", "\{rhash(Json::array([jstr(workspace), jstr(session), jstr(station), jstr(key)]))}.json"])
+  self.rjoin([self.remote.root, "outgoing", "\{rhash(Json::array([jstr(workspace), jstr(session), jstr(station), jstr(key)]))}.json"])
 }
 
 ///|
@@ -545,7 +545,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     spec["small"] = jbool(true)
   }
   let prepared_name = "\{rhash(Json::array([jstr(workspace), jstr(session), jstr(station), jstr(key)]))}.json"
-  let prepared = rjoin([self.prepared_dir(session), prepared_name])
+  let prepared = self.rjoin([self.prepared_dir(session), prepared_name])
   if action == "prepare" {
     // Any earlier spec fenced off before validation or a request: a start must not quietly use the task the target
     // kept from an earlier prepare that succeeded.
@@ -560,7 +560,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     }
     match dir {
       Null => ()
-      String(d) if d.has_prefix("/") => ()
+      String(d) if @nodepath.is_absolute(self.sep, d) => ()
       _ => raise refusal("dir must be an absolute path on this machine")
     }
     // An older station would silently use the ordinary queue. Asked once for both small-task support and sync.
@@ -578,7 +578,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     }
     match back {
       Null => ()
-      Array(b) if b.length() <= 100 && b.iter().all(p => p is String(s) && s != "" && !s.has_prefix("/") && !s.split("/").flat_map(x => x.split("\\")).any(x => x == "..")) =>
+      Array(b) if b.length() <= 100 && b.iter().all(p => p is String(s) && s != "" && !@nodepath.is_absolute(self.sep, s) && !s.split("/").flat_map(x => x.split("\\")).any(x => x == "..")) =>
         spec["back"] = back
       _ => raise refusal("back must be paths relative to the task's directory (at most 100)")
     }
@@ -599,7 +599,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
     } catch {
       // Not moved into its session's directory yet, or moved meanwhile.
       _ => try {
-        self.read_json(rjoin([self.remote.root, "prepared", prepared_name]))
+        self.read_json(self.rjoin([self.remote.root, "prepared", prepared_name]))
       } catch {
         _ => self.read_json(prepared) catch { _ => Json::null() }
       }
@@ -651,7 +651,7 @@ async fn Actors::tool(self : Actors, tool : String, session : String, args : Jso
       self.write_json(path, Json::object(e))
     }
     // Its station tells this one when it changes (`task.changed`), naming this record.
-    let base = rbasename(path)
+    let base = self.rbasename(path)
     request["push"] = jstr(base.view(end_offset=base.length() - 5).to_string())
   }
   try {

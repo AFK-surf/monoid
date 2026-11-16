@@ -51,6 +51,24 @@ pub fn Pieces::lines(self : Pieces, bytes : Bytes) -> Array[Bytes] {
 }
 
 ///|
+/// What is held of a line its stream ended without its newline (a process's last words, ended before it wrote one),
+/// taken: None where nothing is held.
+pub fn Pieces::rest(self : Pieces) -> Bytes? {
+  if self.parts.length() == 0 {
+    return None
+  }
+  let line = FixedArray::make(self.size, b'\x00')
+  let mut at = 0
+  for p in self.parts {
+    line.blit_from_bytes(at, p, 0, p.length())
+    at += p.length()
+  }
+  self.parts.clear()
+  self.size = 0
+  Some(line.unsafe_reinterpret_as_bytes())
+}
+
+///|
 /// `bytes` then `tail` written to `out` as base64 (padded), as the bytes it is sent as: what a runner is given to write
 /// (a prompt of MBs) not put together again as a string first.
 pub fn base64_into(out : @buffer.Buffer, bytes : Bytes, tail : Bytes) -> Unit {

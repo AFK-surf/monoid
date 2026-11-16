@@ -129,11 +129,13 @@ priv struct Actors {
   mut agents : Agents?
   /// the live view of the sessions (live.mbt), Node's shell of it `#live`
   mut live : LiveState
+  /// the separator of this station's system's paths (`--sep`): what is joined here as Node joins it (remote_files.mbt)
+  sep : String
 }
 
 ///|
-fn Actors::new(host : @host.Host) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new() }
+fn Actors::new(host : @host.Host, sep : String) -> Actors {
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep }
 }
 
 ///|
@@ -358,8 +360,8 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
 ///|
 /// The sessions' program (`--sessions`): the agents' output read (agents.mbt) and the actors (this file) in one, each
 /// line of Node's to the one it is for: an actor's says `actor`, or is an answer, a wait's time, the database's place.
-pub async fn serve_sessions(host : @host.Host) -> Unit {
-  let s = Actors::new(host)
+pub async fn serve_sessions(host : @host.Host, sep : String) -> Unit {
+  let s = Actors::new(host, sep)
   let a = Agents::new(host)
   s.agents = Some(a)
   host.say(({ "ready": true } : Json).stringify())

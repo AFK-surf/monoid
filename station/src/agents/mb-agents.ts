@@ -91,6 +91,8 @@ export class AgentsHost {
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
   readonly #replays = new Map<number, (live: Record<string, Json>) => void>();
   readonly #ownReplays = new Map<number, { done: (said: Json) => void; failed: (error: Error) => void }>();
+  /// The processes whose reading a handover holds (`freeze`, till `thaw`): held again in a program started again.
+  readonly #held = new Set<HostedProcess>();
   #closed = false;
 
   private constructor(data: string) {
@@ -137,17 +139,18 @@ export class AgentsHost {
     if (this.#closed) return;
     log.warn("agents", "the program reading agents ended; starting it again", { code });
     this.#proc = null;
-    // (what it read again of an output is lost with it: those threads' live steps as none were open)
-    for (const done of this.#replays.values()) done({});
-    this.#replays.clear();
-    for (const r of this.#ownReplays.values()) r.failed(new Error("the program reading agents ended while it read an output again"));
-    this.#ownReplays.clear();
+    // (what it read again of an output is lost with it: those threads' live steps as none were open; a handover holding
+    // its reading goes on with what each process's session said last, hub.ts `handOver`)
+    this.#settle("the program reading agents ended while it read an output again");
     // (each process read again from where it was acknowledged, the turn as its session knows it)
     const again = [...this.#sessions.values()];
     // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
     wall.after(1_000, () => {
       if (this.#closed) return;
       for (const p of again) if (!p.gone) this.attach(p);
+      // (what a handover holds stays held: its answer, the states, was given already)
+      const held = again.filter((p) => !p.gone && this.#held.has(p));
+      if (held.length > 0) this.post({ freeze: this.number(), only: held.map((p) => p.n) });
     });
   }
 
@@ -191,7 +194,7 @@ export class AgentsHost {
       if (Array.isArray(said.threads)) heard.threads = said.threads;
       p.heard(heard);
     } else if (said.exit !== undefined) p.inTurn(() => p.exited_(said.code ?? null, said.signal ?? null, typeof said.stderr === "string" ? said.stderr : ""));
-    else if (said.closed !== undefined) p.inTurn(() => p.closed_());
+    else if (said.closed !== undefined) p.inTurn(() => p.closed_(typeof said.stderr === "string" ? said.stderr : ""));
     // (its socket closed once it was read to its end: nothing more of it to read)
     else if (said.ended !== undefined) p.inTurn(() => this.forget(p));
     else p.inTurn(() => p.left_());
@@ -258,6 +261,7 @@ export class AgentsHost {
 
   forget(p: HostedProcess) {
     this.#sessions.delete(p.n);
+    this.#held.delete(p);
     // (it runs while it has a process to read: started again for the next)
     if (this.#sessions.size === 0 && this.#replays.size === 0 && this.#ownReplays.size === 0) this.#idle();
   }
@@ -268,6 +272,7 @@ export class AgentsHost {
     const held = only.filter((p) => this.#sessions.get(p.n) === p);
     if (this.#proc === null || held.length === 0) return;
     const id = this.number();
+    for (const p of held) this.#held.add(p);
     const states = await new Promise<Record<string, { turn: Json; live: Json }>>((resolve) => {
       this.#freezes.set(id, resolve);
       this.post({ freeze: id, only: held.map((p) => p.n) });
@@ -281,6 +286,7 @@ export class AgentsHost {
   /// Read on again (a handover that did not happen).
   thaw(only: HostedProcess[]) {
     for (const p of only) {
+      this.#held.delete(p);
       if (this.#sessions.get(p.n) !== p) continue;
       p.thawed();
       this.post({ thaw: p.n });
@@ -294,7 +300,20 @@ export class AgentsHost {
     if (AgentsHost.#shared.get(this.#data) === this) AgentsHost.#shared.delete(this.#data);
     const proc = this.#proc;
     this.#proc = null;
+    // (nothing more will be said of what was asked of it: what waits on it goes on)
+    this.#settle();
     await proc?.release(this.#user);
+  }
+
+  /// What waits on the program's answer, answered as none will come: a freeze with no states (each session's own), a
+  /// replay with no live steps, a read again failed.
+  #settle(why = "the program reading agents was let go while it read an output again") {
+    for (const done of this.#freezes.values()) done({});
+    this.#freezes.clear();
+    for (const done of this.#replays.values()) done({});
+    this.#replays.clear();
+    for (const r of this.#ownReplays.values()) r.failed(new Error(why));
+    this.#ownReplays.clear();
   }
 }
 
@@ -494,7 +513,8 @@ export class HostedProcess {
     return told;
   }
 
-  closed_(): void | Promise<void> {
+  /// Its socket closed with no end told (`stderr`: the last lines its process wrote there).
+  closed_(stderr = ""): void | Promise<void> {
     if (this.gone || this.#said !== null) return;
     if (pidAlive(this.info.runner)) {
       log.warn("agents::process", "another station took the runner over; letting go", { label: this.#options.label });
@@ -504,7 +524,7 @@ export class HostedProcess {
     } else {
       this.#said = "runner gone";
       this.#resolveExit(this.#said);
-      const told = this.#frozen ? undefined : this.#options.exit(this.#said, "");
+      const told = this.#frozen ? undefined : this.#options.exit(this.#said, stderr);
       this.#host.forget(this);
       return told;
     }

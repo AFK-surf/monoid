@@ -2,7 +2,17 @@
 package "station/nodepath"
 
 // Values
+pub fn basename(String, String) -> String
+
+pub fn dirname(String, String) -> String
+
+pub fn is_absolute(String, String) -> Bool
+
 pub fn join(String, Array[String]) -> String
+
+pub fn relative_parts(String, String) -> Array[String]?
+
+pub fn with_extension(String, String, String) -> String
 
 // Errors
 

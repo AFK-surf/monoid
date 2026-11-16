@@ -17,6 +17,7 @@ pub(all) struct Pieces {
 }
 pub fn Pieces::lines(Self, Bytes) -> Array[Bytes]
 pub fn Pieces::new() -> Self
+pub fn Pieces::rest(Self) -> Bytes?
 
 // Type aliases
 

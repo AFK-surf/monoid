@@ -68,3 +68,17 @@ test "what a runner is given to write, as base64 of it and its tail" {
     }
   }
 }
+
+///|
+test "what a stream ended without its newline is taken whole, once" {
+  let p = Pieces::new()
+  assert_eq(p.rest(), None)
+  assert_eq(p.lines(b"first\nfatal: "), [b"first"])
+  assert_eq(p.lines(b"no such"), [])
+  assert_eq(p.lines(b" model"), [])
+  assert_eq(p.rest(), Some(b"fatal: no such model"))
+  assert_eq(p.rest(), None)
+  // (nothing of it left to come before what follows)
+  assert_eq(p.lines(b"next\n"), [b"next"])
+  assert_eq(p.rest(), None)
+}

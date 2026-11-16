@@ -142,7 +142,7 @@ async fn Actors::scan(self : Actors, dir : String, paths : Array[String], hash :
   let mut i = 0
   while i < paths.length() {
     let end = if i + scan_batch < paths.length() { i + scan_batch } else { paths.length() }
-    let abs = paths[i:end].iter().map(p => jstr(rjoin([dir, p]))).collect()
+    let abs = paths[i:end].iter().map(p => jstr(self.rjoin([dir, p]))).collect()
     match self.fs("fs.scan", { "paths": Json::array(abs), "hash": jbool(hash), "most": jnum(max_file) }) {
       Array(got) if got.length() == end - i => out.append(got)
       _ => raise refusal("the files of \{dir} could not be listed")
@@ -346,7 +346,7 @@ async fn Actors::list_local(self : Actors, dir : String) -> Listing raise {
         deeper = true
         continue
       }
-      queue.push((rjoin([path, name]), rel2, depth + 1))
+      queue.push((self.rjoin([path, name]), rel2, depth + 1))
     }
   }
   if deeper {
@@ -542,7 +542,7 @@ async fn Actors::send_blobs(self : Actors, station : String, base : Map[String, 
   let s : Sending = { station, base, id, pack, after: true, ratio: 1.0, batch: [], raw: 0, bytes: 0.0, packed: 0.0, requests: 0 }
   defer (try { ignore(self.fs("pack.close", { "id": pack })) } catch { _ => () })
   for f in need {
-    let abs = rjoin([dir, f.path])
+    let abs = self.rjoin([dir, f.path])
     if f.mode == link_mode {
       self.add_piece(s, { hash: f.hash, size: f.size, offset: 0, length: f.size, abs, path: f.path, link: true })
       continue

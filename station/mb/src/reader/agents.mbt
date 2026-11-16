@@ -12,7 +12,8 @@
 // `begin` (a prompt's turn begun: `compact` for a /compact), `keep`, `route`, `aborting`, `renewed`, `done` (read to the end: its runner
 // may go), `detach` (let go for the next station; `leave`: the runner asked to close, a pipe's), `freeze` and `thaw` (its lines held while the station hands over).
 // It says on stdout `lines` (a session's events, its turn, up to where), `exit` (how its process ended, its last lines
-// of stderr), `closed` (the runner's socket closed with no exit said), `left` (let go), `frozen` (each session's turn
+// of stderr, the one it ended without a newline too), `closed` (the runner's socket closed with no exit said: what it
+// read told before it, and its last lines of stderr), `left` (let go), `frozen` (each session's turn
 // and live steps as they stand).
 
 ///|
@@ -60,6 +61,8 @@ priv struct Hosted {
   mut later : Bool
   mut left : Bool
   mut exited : Bool
+  /// its socket closed with no end told: kept only until Node took, or let go, the batches told it last (`gone`)
+  mut closed : Bool
   stderr : Array[String]
   /// its session's actor is in this program (Node said `route`): what it reads is told Node as a batch, kept here
   /// until Node says it took it (`routed`, actors.mbt), then given that actor here, not by Node
@@ -202,6 +205,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
             h.batch_threads.clear()
             h.batch_before.clear()
             self.advance_ack(h)
+            self.gone(h)
           }
         }
       }
@@ -269,6 +273,7 @@ fn Agents::acked(self : Agents, h : Hosted, to : Int64) -> Unit {
     h.acked_to = to
   }
   self.advance_ack(h)
+  self.gone(h)
 }
 
 ///|
@@ -310,7 +315,16 @@ fn Agents::take(self : Agents, n : Int, k : Int) -> (Array[@jsjson.JValue], Int6
     h.acked_to = batch.1
   }
   self.advance_ack(h)
+  self.gone(h)
   Some(batch)
+}
+
+///|
+/// A process whose socket closed let go once no batch told Node of it waits to be taken.
+fn Agents::gone(self : Agents, h : Hosted) -> Unit {
+  if h.closed && h.batches.is_empty() && self.sessions.get(h.n) is Some(now) && physical_equal(now, h) {
+    self.sessions.remove(h.n)
+  }
 }
 
 ///|
@@ -386,6 +400,7 @@ fn hosted(n : Int, turn : @claude.Turn, live : @claude.Live, kind~ : String) -> 
     later: false,
     left: false,
     exited: false,
+    closed: false,
     stderr: [],
     routed: false,
     batches: Map([]),
@@ -429,12 +444,25 @@ async fn Agents::attach(self : Agents, h : Hosted, socket : String) -> Unit {
       }
     }
   }
-  self.sessions.remove(n)
   ignore(self.host.shell("tcp.close", { "id": conn })) catch { _ => () }
+  if h.left || h.exited {
+    self.sessions.remove(n)
+  }
   if h.left {
     self.host.say(({ "left": Json::number(n.to_double()) } : Json).stringify())
   } else if !h.exited {
-    self.host.say(({ "closed": Json::number(n.to_double()) } : Json).stringify())
+    // Its runner gone with no end told (killed, or the machine's memory short): what was read of it is told first, as
+    // an end told is (`exit`), and its last words with it. Not where it is held for a handover: the station taking it
+    // over reads on from what was acknowledged, and its turn goes on there.
+    if !h.frozen {
+      self.flush(h)
+      self.cut_short(h)
+    }
+    stderr_rest(h)
+    self.host.say(({ "closed": Json::number(n.to_double()), "stderr": Json::string(h.stderr.join("\n")) } : Json).stringify())
+    // (what was told it in a batch is given its actor once Node says it took it: `take`)
+    h.closed = true
+    self.gone(h)
   } else {
     self.host.say(({ "ended": Json::number(n.to_double()) } : Json).stringify())
   }
@@ -464,13 +492,7 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
       }
       if err {
         for l in lines {
-          let text = @jscase.trim(strip_cr(@utf8.decode_lossy(l.0)))
-          if text != "" {
-            h.stderr.push(text.view(end_offset=if text.length() > 300 { 300 } else { text.length() }).to_string())
-            while h.stderr.length() > 3 {
-              ignore(h.stderr.remove(0))
-            }
-          }
+          said_on_stderr(h, l.0)
           h.acked_err = l.1
         }
         if lines.length() > 0 && h.told <= h.acked_out {
@@ -490,12 +512,9 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
     { "op": "exit", .. } => {
       self.flush(h)
       // (what a turn running had open ends with its process: its steps, what was being said)
-      if h.own is Some(own) && !h.left {
-        let events = own.cut_short()
-        if events.length() > 0 {
-          self.tell(h, h.told, own.turn(), events)
-        }
-      }
+      self.cut_short(h)
+      // (its last words, where it ended before their newline: often why a runtime that would not start ended)
+      stderr_rest(h)
       h.exited = true
       self.host.say(
         ({
@@ -507,6 +526,38 @@ fn Agents::message(self : Agents, h : Hosted, message : Json) -> Unit {
       )
     }
     _ => ()
+  }
+}
+
+///|
+/// A line of its stderr kept, the last 3 of them told with its end (each of 300 characters at most).
+fn said_on_stderr(h : Hosted, line : Bytes) -> Unit {
+  let text = @jscase.trim(strip_cr(@utf8.decode_lossy(line)))
+  if text != "" {
+    h.stderr.push(text.view(end_offset=if text.length() > 300 { 300 } else { text.length() }).to_string())
+    while h.stderr.length() > 3 {
+      ignore(h.stderr.remove(0))
+    }
+  }
+}
+
+///|
+/// What its stderr ended with and no newline after, kept as its last line.
+fn stderr_rest(h : Hosted) -> Unit {
+  if h.err_part.rest() is Some(line) {
+    said_on_stderr(h, line)
+  }
+}
+
+///|
+/// What a turn running had open, ended with its process (DeepSeek Harness', Cursor's, an ACP runtime's): its steps,
+/// what was being said, told after what it said before.
+fn Agents::cut_short(self : Agents, h : Hosted) -> Unit {
+  if h.own is Some(own) && !h.left {
+    let events = own.cut_short()
+    if events.length() > 0 {
+      self.tell(h, h.told, own.turn(), events)
+    }
   }
 }
 

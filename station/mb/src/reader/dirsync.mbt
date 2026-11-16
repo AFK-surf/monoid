@@ -145,7 +145,7 @@ fn same_content(a : Json?, b : Json?) -> Bool {
 async fn Actors::actual(self : Actors, mirror : String, files : Map[String, Json], verify? : Map[String, Bool] = {}) -> Map[String, Json] raise {
   let out : Map[String, Json] = {}
   for path, e in files {
-    let abs = rjoin([mirror, path])
+    let abs = self.rjoin([mirror, path])
     guard self.lstat(abs) is Some(st) else { continue }
     let same = !verify.contains(path) &&
       st.value("size") == Some(entry_at(e, 2)) &&
@@ -188,8 +188,8 @@ async fn Actors::sync_begin(self : Actors, manifest_path : String, mirror_root :
       base[path] = current
     }
   }
-  self.write_json(rjoin([syncing, "actual.json"]), Json::object(files))
-  self.write_json(rjoin([syncing, "base.json"]), Json::object(base))
+  self.write_json(self.rjoin([syncing, "actual.json"]), Json::object(files))
+  self.write_json(self.rjoin([syncing, "base.json"]), Json::object(base))
   match manifest {
     Some(m) => num_of(m.value("version")).unwrap_or(0.0)
     None => 0.0
@@ -249,7 +249,7 @@ fn plan_part(request : Json) -> Json raise {
 ///|
 /// Removes the empty directories from `path`'s up to the mirror's.
 async fn Actors::prune_empty(self : Actors, mirror : String, path : String) -> Unit {
-  let mut d = rdirname(path)
+  let mut d = self.rdirname(path)
   while d.length() > mirror.length() && d.has_prefix(mirror) {
     // (a folder that is not empty is not removed: fs.remove without `recursive`)
     match (try self.lstat(d) catch { _ => None }) {
@@ -257,7 +257,7 @@ async fn Actors::prune_empty(self : Actors, mirror : String, path : String) -> U
       _ => return
     }
     try self.remove(d) catch { _ => return }
-    d = rdirname(d)
+    d = self.rdirname(d)
   }
 }
 
@@ -296,9 +296,9 @@ async fn Actors::apply_plan(
       ready.push((path, hash, mode, None))
       continue
     }
-    let temp = rjoin([scratch, i.to_string()])
+    let temp = self.rjoin([scratch, i.to_string()])
     self.remove(temp)
-    let blob = rjoin([blobs, hash])
+    let blob = self.rjoin([blobs, hash])
     let has_blob = self.there(blob)
     let from = if has_blob { None } else { by_hash.get(hash) }
     if !has_blob && from is None {
@@ -306,7 +306,7 @@ async fn Actors::apply_plan(
     }
     if mode == link_mode {
       let target = match from {
-        Some(f) => self.read_link(rjoin([mirror, f]))
+        Some(f) => self.read_link(self.rjoin([mirror, f]))
         None => self.read_text(blob).unwrap_or("")
       }
       if !link_inside(path, target) {
@@ -323,7 +323,7 @@ async fn Actors::apply_plan(
           } else {
             ignore(self.fs("fs.copy", { "from": jstr(blob), "to": jstr(temp) }))
           }
-        Some(f) => ignore(self.fs("fs.copy", { "from": jstr(rjoin([mirror, f])), "to": jstr(temp) }))
+        Some(f) => ignore(self.fs("fs.copy", { "from": jstr(self.rjoin([mirror, f])), "to": jstr(temp) }))
       }
       ignore(self.fs("fs.chmod", { "path": jstr(temp), "mode": jnum(if mode == exec_mode { 0o755.to_double() } else { 0o644.to_double() }) }))
     }
@@ -394,7 +394,7 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
   }
   let set : Array[(String, String, String)] = []
   let remove : Array[String] = []
-  for line in self.read_text(rjoin([syncing, "plan.jsonl"])).unwrap_or("").split("\n") {
+  for line in self.read_text(self.rjoin([syncing, "plan.jsonl"])).unwrap_or("").split("\n") {
     let line = line.to_string()
     if line == "" {
       continue
@@ -419,11 +419,11 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
       _ => ()
     }
   }
-  let base = match self.read_json(rjoin([syncing, "base.json"])) {
+  let base = match self.read_json(self.rjoin([syncing, "base.json"])) {
     Object(b) => b.copy()
     _ => {}
   }
-  let root = rjoin([work, mirror])
+  let root = self.rjoin([work, mirror])
   // Read again at commit: a task's output may have changed while the source sent its files.
   let verify : Map[String, Bool] = {}
   for s in set {
@@ -490,7 +490,7 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
     self.write_whole(manifest_path, js_text(m))
   }
   let (written, removed) = try {
-    self.apply_plan(work, mirror, rjoin([syncing, "scratch"]), rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
+    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
   } catch {
     e => {
       finish()
@@ -529,7 +529,7 @@ async fn Actors::sync_changes(self : Actors, manifest_path : String, base : Stri
       "newMode": match is_ { Some(i) => entry_at(i, 1); None => Json::null() },
     }
     if is_ is Some(i) && entry_at(i, 1) == jstr(link_mode) {
-      change["link"] = jstr(self.read_link(rjoin([base, path])))
+      change["link"] = jstr(self.read_link(self.rjoin([base, path])))
     }
     changes.push(Json::object(change))
   }
@@ -595,7 +595,7 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
     let (hash, size, offset, length) = p
     let piece = raw[at:at + length].to_owned()
     at += length
-    let done = rjoin([blobs, hash])
+    let done = self.rjoin([blobs, hash])
     if self.there(done) {
       continue
     }

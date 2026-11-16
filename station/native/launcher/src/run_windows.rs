@@ -121,7 +121,10 @@ impl Os for System {
         // Node listens where it may (127.0.0.1, any port) and says where once it serves; the launcher's ports, which
         // agents and the CLI are told, it is given to say as its own.
         let ports = format!("{},{}", self.ports.0, self.ports.1);
-        command.arg(crate::main_js(app)).arg("run").arg("--app").arg(app).arg("--data").arg(&self.options.data).arg("--launcher-pipe").arg(&name).arg("--launcher-ports").arg(ports).arg("--launcher-heartbeat");
+        command.arg(crate::main_js(app)).arg("run").arg("--app").arg(app).arg("--data").arg(&self.options.data).arg("--launcher-pipe").arg(&name).arg("--launcher-ports").arg(ports);
+        // What it holds only in memory (the vault's grants) carried to the next at a handover, and its heartbeat, as
+        // on Unix (lifecycle.rs takes both from either; tests/node_flags.rs holds the two to what Node reads).
+        command.args(["--launcher-carries", "--launcher-heartbeat"]);
         command.stdin(Stdio::null()).creation_flags(CREATE_NEW_PROCESS_GROUP);
         let mut child = command.spawn()?;
         let pid = child.id();

@@ -75,7 +75,8 @@ test("let go where its runner cannot see a one-way close, it is asked to leave a
   assert.equal(host.program(), null);
 
   HostedProcess.adopt(host, info, options, null, null);
-  await until(() => heard.length === 2);
+  // (its ack goes to the runner after Node took the line, on the program's next turn: waited for, as the first's)
+  await until(() => heard.length === 2 && ops[1]!.includes("ack"));
   assert.deepEqual(heard, ["one", "two"]);
   assert.deepEqual(ops[1]!.slice(0, 2), ["attach", "ack"]);
 });

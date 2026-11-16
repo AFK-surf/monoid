@@ -1084,7 +1084,7 @@ fn main {
         _ => None
       }))
     (None, _, Some(data)) if flag("--sessions") is Some(_) =>
-      @host.run(shell_dir=data + "/shell", host => serve_sessions(host))
+      @host.run(shell_dir=data + "/shell", host => serve_sessions(host, flag("--sep").unwrap_or("/")))
     (None, _, Some(data)) if flag("--serve") is Some(socket) =>
       @host.run(shell_dir=data + "/shell", host => {
         let sep = flag("--sep").unwrap_or("/")

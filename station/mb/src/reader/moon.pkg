@@ -42,6 +42,7 @@ import {
   "station/cursor",
   "station/acp",
   "station/pieces",
+  "station/nodepath",
   "station/admit",
   "moonbitlang/core/encoding/base64",
   "moonbitlang/core/encoding/hex",
