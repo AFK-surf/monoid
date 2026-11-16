@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
 import { AGY_FILE_TOKENS, AgyDriver, SESSIONS, agyAccountFile, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { profileRuntimes } from "../src/agents/profiles.ts";
@@ -263,7 +264,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
       "gpt-oss-120b": [],
       "gemini-pro-orchestrator": [],
     },
-    defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "high" },
+    defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "medium" },
   });
   const medCat = agyCatalog(
     ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high", "claude-opus-5-5-low", "claude-opus-5-5-high"],
@@ -271,6 +272,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
   );
   assert.deepEqual(medCat.defaults, { "gemini-4-carbon": "medium", "claude-opus-5-5": "high" });
   assert.equal(agyVariant("gemini-4-carbon", undefined, ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high"], "gemini-4-carbon-medium"), "gemini-4-carbon-medium");
+  assert.equal(agyVariant("claude-opus-5-5", undefined, ["claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high"], "gemini-4-carbon-medium"), "claude-opus-5-5-medium");
   assert.equal(agyVariant("claude-opus-5-5", undefined, ["claude-opus-5-5-low", "claude-opus-5-5-high"], "gemini-4-carbon-medium"), "claude-opus-5-5-high");
   assert.deepEqual(agyBaseModel("claude-opus-5-5-medium"), { model: "claude-opus-5-5", effort: "medium" });
   assert.equal(agyVariant("gpt-oss-120b", undefined, ["gpt-oss-120b-medium"]), "gpt-oss-120b-medium");
@@ -1353,4 +1355,132 @@ test("uncheckOutdated migrates legacy tiered agy model IDs in config.json to bas
   assert.deepEqual(raw.profiles[0].models, ["gemini-4-carbon", "claude-opus-5-5"]);
   assert.equal(raw.profiles[0].model, "gemini-4-carbon");
   assert.equal(raw.connects[0].bind.model, "gemini-4-carbon");
+});
+
+test("a Claude session at max effort crossing runtimes to Antigravity CLI lands on medium", async () => {
+  const cfg = hubConfig(
+    {
+      profiles: [
+        { id: "cc", name: "CC", runtime: "claude", home: "/cc", access: { kind: "subscription" }, model: "claude-opus-5-5", models: ["claude-opus-5-5"] },
+        { id: "ag", name: "AG", runtime: "agy", home: "/ag", access: { kind: "subscription" }, model: "gemini-4-carbon", models: ["gemini-4-carbon", "claude-opus-5-5"] },
+      ],
+    },
+    "/x",
+  );
+  const sessions = new Map<string, any>([
+    ["s-opus", { key: "s-opus", runtime: "claude", profile: "cc", profilePinned: false, model: "claude-opus-5-5", effort: "max", runtimeSessionId: "cc-1" }],
+  ]);
+  const pool = new SessionAccounts({
+    config: () => cfg,
+    store: {
+      getSession: (k: string) => sessions.get(k),
+      setSessionProfile: (k: string, id: string, pinned: boolean) => Object.assign(sessions.get(k), { profile: id, profilePinned: pinned }),
+      setSessionRuntime: (k: string, runtime: string, profile: string, profilePinned: boolean, model: string | null, effort: string | null) =>
+        Object.assign(sessions.get(k), { runtime, profile, profilePinned, model, effort, runtimeSessionId: null }),
+      setSessionContextBefore: () => {},
+      ranIn: () => {},
+      lastTurn: () => ({ endedAt: 1000 }),
+      recentlyCompacted: () => false,
+      compactionsReady: () => false,
+      lastContexts: () => [],
+      compactionPoints: () => new Map(),
+    } as never,
+    running: () => [],
+    clock: { currentTimeMillisUnsafe: () => 2000 } as never,
+  });
+  pool.setHealth((id) => ({
+    check: {
+      state: "ok",
+      models: id === "cc" ? ["claude-opus-5-5"] : ["gemini-4-carbon", "claude-opus-5-5"],
+      modelEfforts: id === "ag" ? { agy: { "gemini-4-carbon": ["low", "medium", "high"], "claude-opus-5-5": ["low", "medium", "high"] } } : undefined,
+    },
+    quota: { state: "ok", windows: [] },
+  }));
+
+  assert.deepEqual(pool.spend("s-opus", "cc"), ["CC", "AG"]);
+  const moved = sessions.get("s-opus")!;
+  assert.equal(moved.runtime, "agy");
+  assert.equal(moved.effort, null);
+
+  const { options, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1" });
+  const session = await driver.open({ ...options, model: moved.model, effort: moved.effort ?? undefined }, () => {});
+  assert.equal(session.currentModelId, "claude-opus-5-5-medium");
+  assert.equal(rpc(dump).find((m) => m.method === "session/set_model").params.modelId, "claude-opus-5-5-medium");
+  await session.dispose();
+});
+
+test("opening an Antigravity session writes repository-rules hooks in --gemini-dir/config/hooks.json and disables them without instructions", async () => {
+  const { options, driver } = setup();
+  const ws = mkdtempSync(join(data, "agy-hooks-ws-"));
+  const hooksFile = join(geminiDir(options.profile.home), "config", "hooks.json");
+  mkdirSync(dirname(hooksFile), { recursive: true });
+  writeFileSync(hooksFile, JSON.stringify({ custom: { PostInvocation: [{ command: "echo {}" }] } }));
+
+  const s = await driver.open({ ...options, cwd: ws }, () => {});
+  await s.dispose();
+
+  const hooks = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.deepEqual(hooks.custom, { PostInvocation: [{ command: "echo {}" }] });
+  assert.equal(hooks.stillfail?.enabled, true);
+  const matcher = new RegExp(`^(?:${hooks.stillfail.PostToolUse[0].matcher})$`);
+  for (const tool of ["run_command", "read_file", "write_file", "edit_file", "view_file", "grep_search", "find_by_name", "list_dir"]) {
+    assert.equal(matcher.test(tool), true, tool);
+  }
+  const cmd: string = hooks.stillfail.PostToolUse[0].hooks[0].command;
+  assert.equal(cmd.includes(REPO_RULES_HOOK), true);
+  assert.match(cmd, process.platform === "win32" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
+  assert.equal(hooks.stillfail.PostInvocation[0].command, cmd);
+
+  const userRepo = mkdtempSync(join(data, "agy-user-repo-"));
+  const s2 = await driver.open({ ...options, cwd: userRepo, instructions: "", skills: undefined }, () => {});
+  await s2.dispose();
+  assert.equal(JSON.parse(readFileSync(hooksFile, "utf8")).stillfail?.enabled, false);
+});
+
+test("Antigravity sessions materialize shared and symlinked preset skills into .agent/skills with non-symlink SKILL.md", async () => {
+  const { options, driver } = setup();
+  const ws = mkdtempSync(join(data, "agy-ws-"));
+  const shared = mkdtempSync(join(data, "agy-shared-skills-"));
+  const preset = mkdtempSync(join(data, "agy-preset-skills-"));
+  mkdirSync(join(shared, "team-skill", "scripts"), { recursive: true });
+  mkdirSync(join(shared, "team-skill", ".venv"), { recursive: true });
+  writeFileSync(join(shared, "team-skill", "SKILL.md"), "---\nname: team-skill\ndescription: v1\n---\n");
+  writeFileSync(join(shared, "team-skill", "scripts", "run.sh"), "#!/bin/sh\n");
+  writeFileSync(join(shared, "team-skill", ".venv", "huge"), "skip");
+  mkdirSync(join(preset, "deploy"), { recursive: true });
+  writeFileSync(join(preset, "deploy", "SKILL.md"), "---\nname: deploy\ndescription: preset\n---\n");
+
+  mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+  symlinkSync(join(preset, "deploy"), join(ws, ".agents", "skills", "deploy"), "dir");
+
+  const s = await driver.open({ ...options, cwd: ws, skills: shared }, () => {});
+  await s.dispose();
+
+  const teamDir = join(ws, ".agent", "skills", "team-skill");
+  const deployDir = join(ws, ".agent", "skills", "deploy");
+  assert.equal(existsSync(join(teamDir, "SKILL.md")), true);
+  assert.equal(lstatSync(teamDir).isSymbolicLink(), false);
+  assert.equal(lstatSync(join(teamDir, "SKILL.md")).isSymbolicLink(), false);
+  assert.equal(readFileSync(join(teamDir, "SKILL.md"), "utf8"), "---\nname: team-skill\ndescription: v1\n---\n");
+  assert.equal(existsSync(join(teamDir, "scripts", "run.sh")), true);
+  assert.equal(existsSync(join(teamDir, ".venv")), false);
+  assert.equal(existsSync(join(deployDir, "SKILL.md")), true);
+  assert.equal(lstatSync(join(deployDir, "SKILL.md")).isSymbolicLink(), false);
+
+  // Atomic replacement of SKILL.md and removal of a preset skill update .agent/skills on the next session open.
+  writeFileSync(join(shared, "team-skill", "SKILL.md.next"), "---\nname: team-skill\ndescription: v2\n---\n");
+  rmSync(join(shared, "team-skill", "SKILL.md"));
+  writeFileSync(join(shared, "team-skill", "SKILL.md"), readFileSync(join(shared, "team-skill", "SKILL.md.next")));
+  rmSync(join(shared, "team-skill", "SKILL.md.next"));
+  rmSync(join(ws, ".agents", "skills", "deploy"), { force: true });
+  const sNext = await driver.open({ ...options, cwd: ws, skills: shared }, () => {});
+  await sNext.dispose();
+  assert.equal(readFileSync(join(teamDir, "SKILL.md"), "utf8"), "---\nname: team-skill\ndescription: v2\n---\n");
+  assert.equal(existsSync(deployDir), false);
+
+  // A session continued from a terminal (skills: undefined) writes no .agent/skills.
+  const userRepo = mkdtempSync(join(data, "agy-user-skills-"));
+  const sTerm = await driver.open({ ...options, cwd: userRepo, instructions: "", skills: undefined }, () => {});
+  await sTerm.dispose();
+  assert.equal(existsSync(join(userRepo, ".agent")), false);
 });

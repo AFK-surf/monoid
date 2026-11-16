@@ -8,17 +8,19 @@
 // - a message for the running turn steers it (`promptTakeover`); its model is session/set_model;
 // - the station keeps the transcript (acp.ts KeptTranscript), with each turn's usage: the prompt's answer says it.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { cp, lstat, mkdir, readdir, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { existsSync, mkdirSync, type Stats } from "node:fs";
+import { copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
+import { link as linkPath } from "../ops/links.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, errorText, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
 import { accessKind, expandRoute, profileEnv, profileModel } from "./profiles.ts";
+import { AGY_REPO_RULES_COMMAND } from "./repo-rules.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions, type Profile } from "./runtime.ts";
 
 type Json = any;
@@ -340,6 +342,101 @@ export function agyEnv(options: OpenOptions): Record<string, string> {
 /// after its own system prompt.
 export const agyOpening = (instructions: string): Json => (instructions === "" ? {} : { _meta: { antigravity: { systemPrompt: { append: instructions } } } });
 
+/// Where `agy acp` reads global hooks under `--gemini-dir`, outside the session's workspace.
+export const agyHooksFile = (home: string) => join(geminiDir(home), "config", "hooks.json");
+
+/// The tools of Antigravity CLI that touch files or directories in a repository (`repo-rules-hook.mjs`).
+export const AGY_REPO_RULES_TOOLS = "run_command|read_file|write_file|edit_file|view_file|grep_search|find_by_name|list_dir";
+const AGY_HOOK_SECONDS = 10;
+
+/// Keeps the profile's global `hooks.json` telling repository rules (`AGENTS.md`, `CLAUDE.md`) as `agy`'s tools touch
+/// directories below the session's workspace (`PostToolUse` queues, `PostInvocation` injects; `enabled` false for a
+/// session continued without the station's instructions); any other named hooks in the file stay as they are.
+export async function agyHooks(home: string, enabled: boolean): Promise<void> {
+  const file = agyHooksFile(home);
+  let current: Record<string, unknown> = {};
+  let rawNow: string | null = null;
+  try {
+    rawNow = await readFile(file, "utf8");
+    const parsed = JSON.parse(rawNow);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) current = parsed;
+  } catch {}
+  const next = {
+    ...current,
+    stillfail: {
+      enabled,
+      PostToolUse: [{ matcher: AGY_REPO_RULES_TOOLS, hooks: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }] }],
+      PostInvocation: [{ type: "command", command: AGY_REPO_RULES_COMMAND, timeout: AGY_HOOK_SECONDS }],
+    },
+  };
+  const text = `${JSON.stringify(next, null, 2)}\n`;
+  if (rawNow === text) return;
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, text);
+}
+
+const NOT_SKILL_ENTRIES = new Set([".git", "node_modules", ".venv"]);
+
+/// Antigravity CLI confines workspace skills to paths inside the workspace (`pinnedEvalSymlinks` skips symbolic links in
+/// `.agents/skills/` that resolve outside `cwd`, 1.5.9). Materializes each skill of `<cwd>/.agents/skills/` (the
+/// workspace's and any preset's, `sessionSkills` and `keepCopy`) and `skillsDir` into `<cwd>/.agent/skills/<name>/` as a
+/// directory of its own with `SKILL.md` hard-linked (or copied across devices) and its sibling scripts and references
+/// linked beside it, without adding the shared skills directory to `Active Workspaces`.
+export async function agySkills(cwd: string, skillsDir?: string): Promise<void> {
+  const sources = new Map<string, string>();
+  const dotAgents = join(cwd, ".agents", "skills");
+  for (const name of await readdir(dotAgents).catch(() => [] as string[])) {
+    if (!name.startsWith(".")) sources.set(name, join(dotAgents, name));
+  }
+  if (skillsDir !== undefined) {
+    for (const name of await readdir(skillsDir).catch(() => [] as string[])) {
+      if (!name.startsWith(".") && !sources.has(name)) sources.set(name, join(skillsDir, name));
+    }
+  }
+  const root = join(cwd, ".agent", "skills");
+  const valid = new Map<string, { dir: string; skillMd: string; stat: Stats }>();
+  for (const [name, src] of sources) {
+    try {
+      const dir = await realpath(src);
+      const skillMd = await realpath(join(dir, "SKILL.md"));
+      const st = await stat(skillMd);
+      if (st.isFile()) valid.set(name, { dir, skillMd, stat: st });
+    } catch {}
+  }
+  for (const old of await readdir(root).catch(() => [] as string[])) {
+    if (!valid.has(old)) await rm(join(root, old), { recursive: true, force: true });
+  }
+  if (valid.size === 0) return;
+  await mkdir(root, { recursive: true });
+  for (const [name, { dir, skillMd, stat: srcStat }] of valid) {
+    const target = join(root, name);
+    const targetMeta = await lstat(target).catch(() => null);
+    if (targetMeta !== null && !targetMeta.isDirectory()) await rm(target, { recursive: true, force: true });
+    await mkdir(target, { recursive: true });
+    const dstMd = join(target, "SKILL.md");
+    const dstMeta = await lstat(dstMd).catch(() => null);
+    const sameInode = dstMeta !== null && !dstMeta.isSymbolicLink() && dstMeta.dev === srcStat.dev && dstMeta.ino === srcStat.ino;
+    const sameCopy = dstMeta !== null && !dstMeta.isSymbolicLink() && dstMeta.dev !== srcStat.dev && dstMeta.size === srcStat.size && Math.abs(dstMeta.mtimeMs - srcStat.mtimeMs) < 1;
+    if (!sameInode && !sameCopy) {
+      await rm(dstMd, { force: true });
+      await hardLink(skillMd, dstMd).catch(async () => {
+        await copyFile(skillMd, dstMd);
+      });
+    }
+    const siblings = (await readdir(dir).catch(() => [] as string[])).filter((e) => e !== "SKILL.md" && !NOT_SKILL_ENTRIES.has(e));
+    const keep = new Set(["SKILL.md", ...siblings]);
+    for (const existing of await readdir(target).catch(() => [] as string[])) {
+      if (!keep.has(existing)) await rm(join(target, existing), { recursive: true, force: true });
+    }
+    for (const entry of siblings) {
+      const at = join(target, entry);
+      if ((await lstat(at).catch(() => null)) === null) {
+        await linkPath(join(dir, entry), at, { junction: true }).catch(() => {});
+      }
+    }
+  }
+}
+
 /// The thinking levels Antigravity's ACP models append to a family's name (`gemini-4-carbon-high`, `claude-opus-5-5-medium`).
 export const AGY_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -361,7 +458,7 @@ export function agyTierIn(result: Json): string | null {
 }
 
 /// The base models, their thinking levels (`[]` where at most one variant is offered, e.g. `gpt-oss-120b-medium`), and
-/// any default level reported by `currentModelId`.
+/// any default level (`currentModelId`'s for its model, else `medium` where offered, else `high`).
 export function agyCatalog(availableModels: readonly string[], currentModelId?: string | null): AgyCatalog {
   const models: string[] = [];
   const levels = new Map<string, Set<string>>();
@@ -385,9 +482,11 @@ export function agyCatalog(availableModels: readonly string[], currentModelId?: 
       defaults[model] =
         cur !== null && cur.model === model && cur.effort !== undefined && sorted.includes(cur.effort)
           ? cur.effort
-          : sorted.includes("high")
-            ? "high"
-            : sorted[sorted.length - 1]!;
+          : sorted.includes("medium")
+            ? "medium"
+            : sorted.includes("high")
+              ? "high"
+              : sorted[sorted.length - 1]!;
     }
   }
   return { models, efforts, defaults };
@@ -409,7 +508,7 @@ export function agyVariant(model: string, effort: string | undefined, availableM
   if (availableModels.includes(base)) return base;
   const variants = availableModels.filter((m) => agyBaseModel(m).model === base);
   if (variants.length === 0) return null;
-  return variants.find((m) => m === `${base}-high`) ?? variants.find((m) => m === `${base}-medium`) ?? variants[0]!;
+  return variants.find((m) => m === `${base}-medium`) ?? variants.find((m) => m === `${base}-high`) ?? variants[0]!;
 }
 
 /// The models session/new or session/load lists (ACP's `models`), the current first.
@@ -525,6 +624,10 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const until = borrowed ? await agyExpiry(options.profile.home) : null;
     // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
     if (options.resume !== undefined) await this.ensureConversation(options.profile.home, options.resume);
+    if (!probe) {
+      await agyHooks(options.profile.home, options.instructions !== "");
+      if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
+    }
     const session = await super.begin(options, events, probe);
     session.signInUntil = until;
     return session;
@@ -549,6 +652,8 @@ export class AgyDriver extends AcpDriver<AgySession> {
         throw error;
       }
     }
+    await agyHooks(options.profile.home, options.instructions !== "");
+    if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
     return session;
   }
 
@@ -560,6 +665,16 @@ export class AgyDriver extends AcpDriver<AgySession> {
     // Not one the station kept.
     if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) throw new Error(`no Antigravity conversation ${options.resume}`);
     return { command: this.command, args: agyArgs(options.profile.home), env: agyEnv(options), opening: agyOpening(options.instructions) };
+  }
+
+  protected override async initialized(session: AgySession, answer: Json, options: OpenOptions): Promise<void> {
+    if (
+      accessKind(options.profile) === "api-provider" &&
+      Array.isArray(answer?.result?.authMethods) &&
+      answer.result.authMethods.some((m: Json) => m?.id === "gemini-api-key")
+    ) {
+      await session.request(`auth:${uuid()}`, "authenticate", { methodId: "gemini-api-key" });
+    }
   }
 
   protected async ready(session: AgySession, options: OpenOptions, probe: boolean) {
@@ -665,6 +780,7 @@ export class AgySession extends AcpSession {
   /// Between turns, another model or thinking level is set in the running process, read from its next turn on.
   retune(options: OpenOptions) {
     if (this.turn.closed || this.turn.busy || this.sessionId === "" || this.outlived()) return false;
+    if (options.skills !== undefined) void agySkills(options.cwd, options.skills).catch(() => {});
     const model = options.model ?? profileModel(options.profile);
     if (model === undefined) return false;
     const target = agyVariant(model, options.effort, this.availableModels, this.defaultModelId);

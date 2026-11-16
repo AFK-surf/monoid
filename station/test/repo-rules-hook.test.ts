@@ -120,3 +120,79 @@ test("what one call tells stays under what Claude Code takes whole; the rest fol
   assert.equal(told({ tool_name: "Edit", tool_input: { file_path: join(big, "app", "AGENTS.md") } }, "s7"), "");
   assert.equal(told({ tool_name: "Bash", tool_input: { command: "ls notes/" } }, "s7"), "");
 });
+
+test("Antigravity CLI's protojson PostToolUse queues AGENTS.md and CLAUDE.md rules and PostInvocation injects them", () => {
+  const ccRepo = join(workspace, "cc-only");
+  mkdirSync(join(ccRepo, ".git"), { recursive: true });
+  mkdirSync(join(ccRepo, ".claude"), { recursive: true });
+  mkdirSync(join(ccRepo, "web", "src"), { recursive: true });
+  writeFileSync(join(ccRepo, ".claude", "CLAUDE.md"), "root rule DOTCLAUDE_FALCON");
+  writeFileSync(join(ccRepo, "web", "CLAUDE.md"), "web rule SWIFT");
+  writeFileSync(join(ccRepo, "web", "src", "page.tsx"), "export {};\n");
+
+  const conversationId = "2be6c385-f255-498e-91dd-1f88064d021f";
+  const common = {
+    conversationId,
+    workspacePaths: [workspace],
+    transcriptPath: join(root, ".gemini", "antigravity-cli", "brain", conversationId, ".system_generated", "logs", "transcript.jsonl"),
+    artifactDirectoryPath: join(root, ".gemini", "antigravity-cli", "brain", conversationId),
+    modelName: "claude-opus-5-5-medium",
+    lastUserInput: "fix web/src/page.tsx",
+    cwd: workspace,
+  };
+  const agyCall = (payload: object) => {
+    const out = execFileSync(process.execPath, [REPO_RULES_HOOK], {
+      input: JSON.stringify({ ...common, ...payload }),
+      env: { ...process.env, TMPDIR: root, TEMP: root, TMP: root },
+    }).toString();
+    return out === "" ? null : JSON.parse(out);
+  };
+
+  // PostToolUse (as agy 1.5.9 sends it) returns `{}` and queues rules from both `wt` (AGENTS.md) and `cc-only` (.claude/CLAUDE.md + CLAUDE.md).
+  assert.deepEqual(
+    agyCall({
+      hookEventName: "PostToolUse",
+      stepIdx: 5,
+      toolCall: {
+        id: "2d9dd882-e769-441f-be84-aa0982d7a995",
+        name: "run_command",
+        args: { CommandLine: "cat wt/apps/x/src/a.txt cc-only/web/src/page.tsx", WaitMsBeforeAsync: 5000, toolSummary: "Read files" },
+      },
+    }),
+    {},
+  );
+  const first = agyCall({ hookEventName: "PostInvocation", invocationNum: 0, initialNumSteps: 4 });
+  const injected: string = first?.injectSteps?.[0]?.systemMessage?.systemMessage ?? "";
+  assert.match(injected, /wt\/AGENTS\.md[\s\S]*root rule HERON[\s\S]*x rule/);
+  assert.match(injected, /cc-only\/\.claude\/CLAUDE\.md \(the repository's rules for agents working in .*cc-only\/; follow them\):\n\nroot rule DOTCLAUDE_FALCON[\s\S]*web rule SWIFT/);
+
+  // Nothing queued on the next invocation, or when touching the same directory via read_file.
+  assert.deepEqual(agyCall({ hookEventName: "PostInvocation", invocationNum: 1, initialNumSteps: 7 }), {});
+  assert.deepEqual(
+    agyCall({
+      hookEventName: "PostToolUse",
+      stepIdx: 8,
+      toolCall: { id: "c83d6f75-1036-4b66-a955-971098364e70", name: "read_file", args: { Path: join(ccRepo, "web", "src", "page.tsx") } },
+    }),
+    {},
+  );
+  assert.deepEqual(agyCall({ hookEventName: "PostInvocation", invocationNum: 2, initialNumSteps: 9 }), {});
+
+  // Editing the rules file itself via edit_file does not echo it back to the session that edited it.
+  const later = new Date(Date.now() + 90_000);
+  writeFileSync(join(ccRepo, "web", "CLAUDE.md"), "web rule PEREGRINE");
+  utimesSync(join(ccRepo, "web", "CLAUDE.md"), later, later);
+  assert.deepEqual(
+    agyCall({
+      hookEventName: "PostToolUse",
+      stepIdx: 10,
+      toolCall: {
+        id: "f91a2201-4411-4091-b20a-881122334455",
+        name: "edit_file",
+        args: { Path: join(ccRepo, "web", "CLAUDE.md"), Target: "web rule SWIFT", Replacement: "web rule PEREGRINE" },
+      },
+    }),
+    {},
+  );
+  assert.deepEqual(agyCall({ hookEventName: "PostInvocation", invocationNum: 3, initialNumSteps: 11 }), {});
+});
