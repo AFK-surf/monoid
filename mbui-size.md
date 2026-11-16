@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.53 | 65.33 | 95.75 | 119.56 |
 | [5af32b80c](https://github.com/AFK-surf/monoid/commit/5af32b80ca0ae9f2a3107cdbfe14533ba12ca274) station: disk, mounts, /proc and unchanged plane f | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.53 | 65.33 | 95.68 | 123.07 |
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.51 | 65.33 | 95.83 | 115.71 |
 | [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.83 | 120.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4fd173dcd](https://github.com/AFK-surf/monoid/commit/4fd173dcd677e96df69758ed551925efffaadb63) mbc: function types the same are one type, so one  | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 | [f5d90eb2f](https://github.com/AFK-surf/monoid/commit/f5d90eb2f054be595b6a273f118348fe5c609873) Pi (pi) as a runtime, on a provider's key, an Open | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 116.69 |
 | [0ca41c2dc](https://github.com/AFK-surf/monoid/commit/0ca41c2dc5227651f8b2d980a59b31335dc376a2) station: carry a room's own clone after its worktr | 2.45 | 3.43 | 14.61 | 35.77 | 57.04 | 31.38 | 64.68 | 99.91 | 124.89 |
-| [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 2.45 | 3.43 | 14.61 | 35.76 | 57.04 | 31.38 | 64.68 | 99.8 | 121.03 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [5af32b80c](https://github.com/AFK-surf/monoid/commit/5af32b80ca0ae9f2a3107cdbfe14533ba12ca274) station: disk, mounts, /proc and unchanged plane f | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4fd173dcd](https://github.com/AFK-surf/monoid/commit/4fd173dcd677e96df69758ed551925efffaadb63) mbc: function types the same are one type, so one  | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.36 |
 | [f5d90eb2f](https://github.com/AFK-surf/monoid/commit/f5d90eb2f054be595b6a273f118348fe5c609873) Pi (pi) as a runtime, on a provider's key, an Open | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
 | [0ca41c2dc](https://github.com/AFK-surf/monoid/commit/0ca41c2dc5227651f8b2d980a59b31335dc376a2) station: carry a room's own clone after its worktr | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
-| [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
