@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.65 | 184.2 |
 | [2c83f8771](https://github.com/AFK-surf/monoid/commit/2c83f8771bda03f00e56d135146c79c5bf087f21) station, app: a Claude code pasted without its #st | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.5 | 65.24 | 95.57 | 117.52 |
 | [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 2.47 | 3.45 | 14.76 | 35.95 | 57.87 | 31.5 | 65.24 | 95.57 | 126.45 |
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 2.46 | 3.45 | 14.75 | 35.94 | 57.77 | 31.5 | 65.24 | 95.57 | 113.84 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.78 | 109.37 |
 | [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.64 | 99.85 | 119.89 |
-| [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 2.45 | 3.43 | 14.61 | 35.72 | 57.03 | 31.32 | 64.53 | 100.11 | 116.99 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [2c83f8771](https://github.com/AFK-surf/monoid/commit/2c83f8771bda03f00e56d135146c79c5bf087f21) station, app: a Claude code pasted without its #st | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da5199d49](https://github.com/AFK-surf/monoid/commit/da5199d49dd4aea1f35ae5cc951e2b3011bcf579) mbui: declare highp int in ES 3.00 fragment shader | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
 | [562c119d1](https://github.com/AFK-surf/monoid/commit/562c119d1dd246a3c13ae4b3a9789ce94a846dac) station: read simulator cases and jobs' logs witho | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.35 |
 | [0e89f1fc8](https://github.com/AFK-surf/monoid/commit/0e89f1fc8f7edcaafcc379725ed6febd09267a4b) station: pack, restore and read archived workspace | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
-| [1de5e18fe](https://github.com/AFK-surf/monoid/commit/1de5e18fec6f729a2089d501c07f4231d9a6ac7a) station: share a MEMORY.md only its owner reads in | 0.42 | 0.55 | 2.1 | 3.2 | 5.02 | 1.55 | 4.13 | 57.25 |
