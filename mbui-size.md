@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.83 | 120.14 |
 | [ce12dbc01](https://github.com/AFK-surf/monoid/commit/ce12dbc0114410c695f6848d53218bb599d4e611) mbui, app: main's switches sweep green again after | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 2.45 | 3.43 | 14.61 | 35.76 | 57.04 | 31.38 | 64.68 | 99.8 | 121.03 |
 | [120fb0394](https://github.com/AFK-surf/monoid/commit/120fb039449ef411858e11d061102c9f710f16f2) mbui: space Han and Latin words an eighth of an em | 2.45 | 3.43 | 14.61 | 35.76 | 57.04 | 31.38 | 64.68 | 99.8 | 121.03 |
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
-| [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 2.45 | 3.43 | 14.61 | 35.76 | 57.03 | 31.37 | 64.66 | 99.83 | 125.19 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [ce12dbc01](https://github.com/AFK-surf/monoid/commit/ce12dbc0114410c695f6848d53218bb599d4e611) mbui, app: main's switches sweep green again after | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5c7d24ef8](https://github.com/AFK-surf/monoid/commit/5c7d24ef872f52f20b382ef4b638af54918f9126) station: uninstall this machine's station for good | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.3 |
 | [120fb0394](https://github.com/AFK-surf/monoid/commit/120fb039449ef411858e11d061102c9f710f16f2) mbui: space Han and Latin words an eighth of an em | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
 | [3e514e094](https://github.com/AFK-surf/monoid/commit/3e514e094db8bd928ab08cafd75598672e02b133) fix(station): read the update feed again after a f | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.35 |
-| [8a3bd8f21](https://github.com/AFK-surf/monoid/commit/8a3bd8f210f11a60a922f0f4d9c1fa464b271411) fix(mbui): remove grayscale stem post-pass, prefer | 0.42 | 0.55 | 2.1 | 3.2 | 5.03 | 1.55 | 4.13 | 57.33 |
