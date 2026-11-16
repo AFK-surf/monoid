@@ -847,7 +847,7 @@ test("a shared skill: copied and linked under its name, edits go back to the hos
   assert.ok(lstatSync(link).isSymbolicLink());
   assert.match(readFileSync(join(link, "SKILL.md"), "utf8"), /first/);
   const id = a.config.raw().sharedSkills.ember.id;
-  assert.equal(b.sharing.skillView("ember")!.role, "user");
+  assert.equal((await b.sharing.skillView("ember"))!.role, "user");
   // An edit on the copy, sent to the host on the version it was made on.
   writeFileSync(join(readlinkSync(link), "SKILL.md"), "---\nname: ember\ndescription: 项目记忆：ember\n---\nfrom mini\n");
   await b.sharing.stateWritten();
