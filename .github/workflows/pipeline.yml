@@ -1102,6 +1102,9 @@ jobs:
           if [ "${{ steps.finish.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
           else
+            # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
+            # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
+            tail -40 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
             bash .github/mac-release-prebuild.sh stop
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
           fi
