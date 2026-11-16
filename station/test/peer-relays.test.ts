@@ -20,7 +20,7 @@ test("each station held to its disabled relays before it is dialed; the dial say
     await call(P1, W1, { method: "describe" });
     await call(P2, W2, { method: "describe" });
     // W1 turned still.fail's off for its own (and so iroh's public ones too); W2 turned nothing off.
-    assert.deepEqual(told, [`disabled b ${ours} true`, "dial b -", "dial c -"]);
+    assert.deepEqual(told, [`disabled b ${ours} true`, "dial b -", "disabled c none false", "dial c -"]);
     assert.deepEqual(dialed.map((a) => a.relays), [[OWN], OURS], "dialed by the relays of the workspace asked in");
   } finally {
     call.close?.();
@@ -39,14 +39,14 @@ test("one set a station of two workspaces, whoever dials it and whichever worksp
     await call(BOTH, W2, { method: "describe" });
     await web.tunnel(BOTH, 8080, true);
     // What both workspaces turn off: W1 still.fail's, W2 none, so none; W2 keeps still.fail's on, so iroh's public ones are not off either.
-    assert.deepEqual(a.told.filter((t) => t.startsWith("disabled d")), [], `none told for one with none off: ${a.told.join(" | ")}`);
+    assert.deepEqual(a.told.filter((t) => t.startsWith("disabled d")), ["disabled d none false"], `none told for one with none off: ${a.told.join(" | ")}`);
     assert.equal(a.policies.has(BOTH), false);
     // W2 turns one of still.fail's off too: what both turn off, held once for every caller.
     setWay(waysOf(cloud), W2, OURS[0]!, false);
     await peerRelaysOf(a.endpoint, cloud)!.again();
     await Promise.all([call(BOTH, W1, { method: "describe" }), call(BOTH, W2, { method: "describe" }), web.tunnel(BOTH, 8080, true)]);
     assert.deepEqual(a.policies.get(BOTH), { relays: [OURS[0]!], noPublic: false });
-    assert.deepEqual(a.told.filter((t) => t.startsWith("disabled d")), [`disabled d ${OURS[0]} false`]);
+    assert.deepEqual(a.told.filter((t) => t.startsWith("disabled d")), ["disabled d none false", `disabled d ${OURS[0]} false`]);
   } finally {
     call.close?.();
     web.close();
@@ -92,7 +92,7 @@ test("an endpoint from before (no such operation): a connection whose chosen pat
   try {
     await call(P2, W2, { method: "describe" });
     setWay(waysOf(cloud), W2, OURS[0]!, false);
-    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await peerRelaysOf(endpoint, cloud)!.again();
     assert.equal(made[0]!.isClosed(), true);
     ways.set(P2, { relay: `${OURS[1]}/` });
     await call(P2, W2, { method: "describe" });
@@ -100,5 +100,57 @@ test("an endpoint from before (no such operation): a connection whose chosen pat
   } finally {
     call.close?.();
     closePeerRelays(endpoint);
+  }
+});
+
+
+test("a failed policy prevents a dial and is retried by the next request", async () => {
+  const cloud = twoWorkspaces();
+  const a = dialing(PEER_BYTES_ALPN, { result: { ok: true } }, () => ({ ip: "192.168.1.9:4433" }), true);
+  const apply = a.endpoint.disabledRelays!.bind(a.endpoint);
+  a.endpoint.disabledRelays = async () => { throw new Error("policy unavailable"); };
+  const call = peerCall(a.endpoint, cloud);
+  try {
+    await assert.rejects(call(P1, W1, { method: "describe" }), /policy unavailable/);
+    assert.equal(a.dialed.length, 0);
+    a.endpoint.disabledRelays = apply;
+    await call(P1, W1, { method: "describe" });
+    assert.equal(a.dialed.length, 1);
+    assert.deepEqual(a.policies.get(P1), { relays: [...OURS].sort(), noPublic: true });
+  } finally {
+    call.close?.();
+    closePeerRelays(a.endpoint);
+  }
+});
+
+test("a ways change during the first policy is applied before its waiting dial", async () => {
+  const cloud = twoWorkspaces();
+  const a = dialing(PEER_BYTES_ALPN, { result: { ok: true } }, () => ({ ip: "192.168.1.9:4433" }), true);
+  const apply = a.endpoint.disabledRelays!.bind(a.endpoint);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let first = true;
+  a.endpoint.disabledRelays = async (...args) => {
+    if (first) {
+      first = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await apply(...args);
+  };
+  const call = peerCall(a.endpoint, cloud);
+  try {
+    const request = call(P2, W2, { method: "describe" });
+    await entered.promise;
+    setWay(waysOf(cloud), W2, OURS[0]!, false);
+    assert.equal(a.dialed.length, 0);
+    release.resolve();
+    await request;
+    assert.deepEqual(a.told, ["disabled c none false", `disabled c ${OURS[0]} false`, "dial c -"]);
+    assert.deepEqual(a.policies.get(P2), { relays: [OURS[0]!], noPublic: false });
+  } finally {
+    release.resolve();
+    call.close?.();
+    closePeerRelays(a.endpoint);
   }
 });

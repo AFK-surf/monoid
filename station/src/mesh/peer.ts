@@ -340,7 +340,7 @@ export function peerCall(
     const open = connections.get(target);
     if (open !== undefined && !open.isClosed()) {
       // Kept from before its relay was turned off (the workspace's ways): let go, dialed anew through those on.
-      if (holds() || !goesThrough(open, addr(target, ws).disabledRelays)) return { made: Promise.resolve(open), dial: null, leave: () => {} };
+      if (holds() || !goesThrough(open, addr(target, ws).disabledRelays)) return { made: (held?.hold(target) ?? Promise.resolve()).then(() => open), dial: null, leave: () => {} };
       connections.delete(target);
       log.info("mesh", "a station's connection goes through a relay turned off: closed, dialed anew", { peer: target.slice(0, 12) });
       open.close(0, "its relay turned off");
@@ -521,7 +521,10 @@ export function peerCall(
   const arrived = (conn: Connection) => {
     const target = conn.remoteId();
     // (a station that came to this one: held to its disabled relays as one dialed is, its connection's paths too)
-    void held?.hold(target);
+    void held?.hold(target).catch((error) => {
+      log.warn("mesh", "incoming station relay policy failed", { peer: target.slice(0, 12), error: (error as Error).message });
+      conn.close(0, "relay policy unavailable");
+    });
     const kept = connections.get(target);
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });

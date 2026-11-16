@@ -256,6 +256,7 @@ export class PeerHttp implements PeerRoute {
   /// A new stream to station `id` (asked in `workspace`): on the connection kept, or a new one when that one is gone, or
   /// goes through a relay the workspace's ways turned off since.
   private async stream(id: string, given: string, workspace: string): Promise<Stream> {
+    await this.relaysHeld?.hold(id);
     this.askedIn.set(id, workspace);
     for (let attempt = 0; ; attempt++) {
       let made = this.connections.get(id);

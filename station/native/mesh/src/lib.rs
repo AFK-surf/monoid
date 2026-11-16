@@ -915,7 +915,7 @@ mod tests {
         /// The peer as the station dials it: by `relays`, and by its address on this machine.
         fn addr(&self, relays: &[&RelayUrl]) -> Addr {
             let port = self.peer.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
-            Addr { id: hex::encode(self.peer.id().as_bytes()), relays: Some(relays.iter().map(|r| r.to_string()).collect()), ips: Some(vec![format!("127.0.0.1:{port}")]) }
+            Addr { disabled_relays: None, id: hex::encode(self.peer.id().as_bytes()), relays: Some(relays.iter().map(|r| r.to_string()).collect()), ips: Some(vec![format!("127.0.0.1:{port}")]) }
         }
 
         async fn dial(&self, relays: &[&RelayUrl]) -> Connection {

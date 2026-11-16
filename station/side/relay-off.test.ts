@@ -49,9 +49,10 @@ function freePort(): Promise<number> {
 }
 
 /// iroh-relay in dev mode (plain HTTP) on `port`: its url, and what stops it.
-async function relay(t: After, port: number): Promise<{ url: string; stop(): void }> {
+async function relay(t: After, port: number): Promise<{ url: string; sent(): Promise<number>; stop(): void }> {
+  const metricsPort = await freePort();
   const config = join(tmpdir(), `relay-off-${process.pid}-${port}.toml`);
-  writeFileSync(config, `enable_relay = true\nhttp_bind_addr = "127.0.0.1:${port}"\nenable_metrics = false\nenable_quic_addr_discovery = false\n`);
+  writeFileSync(config, `enable_relay = true\nhttp_bind_addr = "127.0.0.1:${port}"\nenable_metrics = true\nmetrics_bind_addr = "127.0.0.1:${metricsPort}"\nenable_quic_addr_discovery = false\n`);
   const child: ChildProcess = spawn(RELAY_BIN!, ["--dev", "--config-path", config], { stdio: "ignore" });
   const stop = () => {
     child.kill("SIGKILL");
@@ -60,7 +61,15 @@ async function relay(t: After, port: number): Promise<{ url: string; stop(): voi
   t.after(stop);
   const url = `http://127.0.0.1:${port}`;
   while (!(await fetch(url).then(() => true, () => false))) await sleep(50);
-  return { url, stop };
+  const sent = async () => {
+    const response = await fetch(`http://127.0.0.1:${metricsPort}/metrics`);
+    assert.equal(response.status, 200);
+    const metrics = await response.text();
+    const counter = metrics.match(/^relayserver_send_packets_recv_total\s+(\d+)$/m);
+    assert.ok(counter, `missing relay datagram counter: ${metrics}`);
+    return Number(counter[1]);
+  };
+  return { url, sent, stop };
 }
 
 /// The two relays: still.fail's the one iroh puts after the other (a relay transport of its own with
@@ -199,4 +208,51 @@ test("still.fail's relays turned off: two stations on the addon talk through the
 test("so do two on the MoonBit front, as the station has it", async (t) => {
   needs();
   await turnedOff(t, { target: await front(t), dialer: await front(t) });
+});
+
+
+async function narrowedWhileKept(t: After, mesh: Mesh) {
+  const { ours, own } = await relays(t);
+  const bind = (m: Mesh) => m.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [ours.url, own.url], discovery: false, bindAddr: "127.0.0.1:0" });
+  const target = await bind(loadMesh());
+  t.after(() => target.close().catch(() => {}));
+  const dialer = await bind(mesh);
+  t.after(() => dialer.close().catch(() => {}));
+  echoing(target);
+  await Promise.all([target.online(), dialer.online()]);
+  const conn = await wall.within(20_000, dialer.connect({ id: target.id(), relays: [ours.url, own.url], ips: target.sockets() }, ALPN), "dial timed out");
+  const ready = () => (conn.paths?.() ?? []).some((p) => p.selected && p.ip)
+    && relayed(conn).includes(sameUrl(ours.url)) && relayed(conn).includes(sameUrl(own.url));
+  await until(ready, 30_000);
+  assert.ok(ready(), `expected direct selected and both relay backups: ${JSON.stringify(conn.paths?.())}`);
+  assert.equal(await round(conn, "before policy"), "before policy");
+  assert.ok(dialer.disabledRelays, "live policy operation present");
+  await dialer.disabledRelays(target.id(), [ours.url], false);
+  await until(() => !relayed(conn).includes(sameUrl(ours.url)));
+  assert.ok(!relayed(conn).includes(sameUrl(ours.url)), "forbidden backup abandoned");
+  const ownBefore = await own.sent();
+  const untilPackets = async (count: number) => {
+    await wall.within(30_000, (async () => {
+      while ((await own.sent()) < ownBefore + count) await sleep(50);
+    })(), "allowed relay did not carry the observation window");
+  };
+  // Let pre-ack packets drain, then measure a second window bounded by actual allowed-relay traffic.
+  await untilPackets(4);
+  const before = await ours.sent();
+  await untilPackets(12);
+  assert.equal(await ours.sent(), before, "forbidden relay received datagrams in the second window");
+  assert.ok((conn.paths?.() ?? []).some((p) => p.ip), "direct path survived");
+  assert.equal(await round(conn, "same connection after policy"), "same connection after policy");
+  assert.ok(homes(dialer).includes(sameUrl(ours.url)), "endpoint still resides on the relay for other peers");
+  conn.close(0, "done");
+}
+
+test("live policy removes a direct connection's relay backup on the addon", async (t) => {
+  needs();
+  await narrowedWhileKept(t, loadMesh());
+});
+
+test("live policy removes a direct connection's relay backup through the MoonBit front", async (t) => {
+  needs();
+  await narrowedWhileKept(t, await front(t));
 });

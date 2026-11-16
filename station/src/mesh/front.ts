@@ -578,13 +578,18 @@ class FrontEndpoint implements Endpoint {
           try {
             const { front: next, said } = await FrontEndpoint.#link(this.#socket, this.#bind);
             if (this.#closed) return next.close();
+            try {
+              // Restore restrictions before accepting or dialing on this endpoint.
+              for (const args of this.#disabled.values()) await next.ask("disabledRelays", { args });
+              if (this.#routed) await next.ask("route", this.#routed);
+              this.#relays = await next.ask("relayStatus").catch(() => []);
+            } catch (error) {
+              next.close();
+              throw error;
+            }
             this.#front = next;
             this.#said = said;
-            // (what the front gone said of the relays is not this one's)
-            this.#relays = await next.ask("relayStatus").catch(() => []);
             this.#watch(next);
-            if (this.#routed) await next.ask("route", this.#routed).catch(() => {});
-            for (const args of this.#disabled.values()) await next.ask("disabledRelays", { args }).catch((e) => log.warn("mesh", "a station's disabled relays not held on the front linked to again", { error: (e as Error).message }));
             log.info("mesh", "linked to the front again", { station: said.id });
             return;
           } catch (e) {
@@ -595,7 +600,8 @@ class FrontEndpoint implements Endpoint {
     });
   }
 
-  #ask(op: string, args: Record<string, unknown> = {}) {
+  async #ask(op: string, args: Record<string, unknown> = {}) {
+    if (this.#again) await this.#again;
     return this.#front.ask(op, args);
   }
 

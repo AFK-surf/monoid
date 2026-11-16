@@ -48,7 +48,7 @@ export class PeerRelays {
   constructor(endpoint: Holding, cloud: Cloud) {
     this.#endpoint = endpoint;
     this.#cloud = cloud;
-    const again = () => void this.again();
+    const again = () => void this.again().catch((error) => log.warn("mesh", "disabled relays could not be updated", { error: (error as Error).message }));
     this.#stops = [waysOf(cloud).listen(again), cloud.listen(again)];
   }
 
@@ -60,7 +60,7 @@ export class PeerRelays {
   /// Every station held, held anew as the ways and rosters are now; one of no workspace of this one's let go.
   /// Resolves once each is in force.
   again(): Promise<void> {
-    return Promise.all([...this.#held.keys()].map((peer) => this.#then(peer, () => this.#give(peer)))).then(() => {});
+    return Promise.all([...new Set([...this.#held.keys(), ...this.#going.keys()])].map((peer) => this.#then(peer, () => this.#give(peer)))).then(() => {});
   }
 
   async #give(peer: string): Promise<void> {
@@ -73,18 +73,21 @@ export class PeerRelays {
       await this.#endpoint.disabledRelays(peer, now?.relays ?? [], now?.public ?? false);
     } catch (e) {
       if (/no operation|not a function/.test((e as Error).message)) this.supported = false;
-      else log.warn("mesh", "a station's disabled relays were not held", { peer: peer.slice(0, 12), error: (e as Error).message });
+      else throw e;
       return;
     }
     if (now === null) this.#held.delete(peer);
     else this.#held.set(peer, key);
+    // A roster or ways event may have arrived while the endpoint applied the previous set.
+    if (keyOf(peerDisabled(this.#cloud, peer)) !== key) await this.#give(peer);
   }
 
   #then(peer: string, f: () => Promise<void>): Promise<void> {
     const next = (this.#going.get(peer) ?? Promise.resolve()).then(f, f);
-    const settled = next.finally(() => {
+    const clean = () => {
       if (this.#going.get(peer) === settled) this.#going.delete(peer);
-    });
+    };
+    const settled = next.then(clean, clean);
     this.#going.set(peer, settled);
     return next;
   }
