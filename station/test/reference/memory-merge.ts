@@ -1,3 +1,8 @@
+// The TypeScript the station merged the agents' memory with before it moved to the MoonBit program (station/mb
+// src/memory, reader `--builder memory`: station/src/share/memory-mb.ts), kept for the tests to compare the program
+// with (test/mb-memory-merge.test.ts): this file's functions as share/memory-merge.ts had them, and what of
+// share/memory.ts moved with them (`decide`, the files read by `#read`, as `readMemory`).
+//
 // Two versions of one file of the agents' memory made apart, put together (share/memory.ts): what each station of a
 // workspace computes alike from the same two versions, so they come to one without a station to decide.
 //
@@ -7,6 +12,14 @@
 // - Without one (two stations that kept the memory apart before it was shared): MEMORY.md's lines both, each once, a
 //   line only one of them had marked with that station's name (`[ccvm] `), since nothing tells whether it is of that
 //   machine alone; another file is the newer's, the other kept beside it (`conflictPath`) for an agent to merge.
+
+import { createHash } from "node:crypto";
+import type { Dirent } from "node:fs";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { portableName } from "../../src/ops/paths.ts";
+import { BUILTIN_SKILLS, FEEDBACK_SKILL } from "../../src/sessions/agent-home.ts";
+import { memoryPath, type Rec, SKIPPED } from "../../src/share/memory.ts";
 
 /// The most lines a side of a merge may have past what the two share at their start and end: beyond it no merge is
 /// tried (the newer is kept and the other beside it).
@@ -149,4 +162,123 @@ export function alike(a: string, b: string): boolean {
   const said = pairs.filter(([i]) => la[i]!.trim() !== "").length;
   const least = Math.min(la.filter((l) => l.trim() !== "").length, lb.filter((l) => l.trim() !== "").length);
   return least > 0 && said * 2 >= least;
+}
+
+// ── share/memory.ts's, as it was ──
+
+const FILE_MOST = 512 * 1024;
+const SKILL_MOST = 4 * 1024 * 1024;
+const SKILL_FILES = 200;
+const PREV_MOST = 16;
+const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL]);
+const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const modeOf = (m: number) => ((m & 0o100) !== 0 ? 0o755 : 0o644);
+const own = (m: number) => (m & 0o077) === 0;
+
+/// Which of two records is the newer: the later, then the station of the greater id, then the greater hash.
+const newer = (a: Rec, b: Rec) => (a.at !== b.at ? a.at > b.at : a.by !== b.by ? a.by > b.by : a.hash > b.hash);
+const history = (r: Rec) => [r.hash, ...r.prev].filter((h) => h !== "");
+
+export type Outcome = { kind: "keep" } | { kind: "take"; rec: Rec } | { kind: "merge"; rec: Rec; content: Buffer | null; beside: { path: string; rec: Rec; content: Buffer } | null };
+
+export function decide(path: string, mine: Rec | undefined, theirs: Rec, contentOf: (hash: string) => Buffer | null, nameOf: (station: string) => string): Outcome {
+  if (mine === undefined) return { kind: "take", rec: theirs };
+  if (mine.hash === theirs.hash) return newer(theirs, mine) ? { kind: "take", rec: theirs } : { kind: "keep" };
+  if (theirs.prev.includes(mine.hash) && mine.hash !== "") return { kind: "take", rec: theirs };
+  if (mine.prev.includes(theirs.hash) && theirs.hash !== "") return { kind: "keep" };
+  // Deleted on one and still there on the other: what is there stays (an edit is not lost to a delete).
+  if (theirs.hash === "" && mine.hash === "") return newer(theirs, mine) ? { kind: "take", rec: theirs } : { kind: "keep" };
+  const [w, l] = newer(theirs, mine) ? [theirs, mine] : [mine, theirs];
+  const at = Math.max(w.at, l.at) + 1;
+  const made = (content: Buffer | null, prevOf: Rec[]): Rec => ({
+    hash: content === null ? "" : sha(content),
+    at,
+    by: w.by,
+    prev: [...new Set(prevOf.flatMap(history))].slice(0, PREV_MOST * 2),
+    size: content?.length ?? 0,
+    mode: (w.hash !== "" ? w : l).mode,
+  });
+  if (w.hash === "" || l.hash === "") {
+    const kept = w.hash === "" ? l : w;
+    const content = contentOf(kept.hash);
+    if (content === null) return { kind: "keep" };
+    return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
+  }
+  const wc = contentOf(w.hash);
+  const lc = contentOf(l.hash);
+  if (wc === null || lc === null) return { kind: "keep" };
+  const lh = history(l);
+  const common = lh.find((h) => history(w).includes(h));
+  const base = common === undefined ? null : contentOf(common);
+  let text: string | null = null;
+  if (isText(wc) && isText(lc)) {
+    if (base !== null && isText(base)) text = merge3(base.toString("utf8"), wc.toString("utf8"), lc.toString("utf8"));
+    else if (common !== undefined) {
+      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
+    } else if (path === "MEMORY.md") {
+      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), w.origin ? nameOf(w.by) : null, l.origin ? nameOf(l.by) : null);
+    } else if (alike(wc.toString("utf8"), lc.toString("utf8"))) {
+      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
+    }
+  }
+  if (text !== null) {
+    const content = Buffer.from(text, "utf8");
+    return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
+  }
+  const besidePath = conflictPath(path, nameOf(l.by));
+  const besideRec: Rec = { hash: sha(lc), at, by: w.by, prev: [], size: lc.length, mode: l.mode };
+  return { kind: "merge", rec: made(wc, [w, l]), content: wc, beside: memoryPath(besidePath) ? { path: besidePath, rec: besideRec, content: lc } : null };
+}
+
+/// The memory's files in `dir` as they are now (path → bytes and mode), and the skills that are not shared as they
+/// are (too large, a link): MemorySync's `#read`.
+export async function readMemory(dir: string): Promise<{ files: Map<string, { bytes: Buffer; mode: number; mtime: number }>; held: Set<string> }> {
+  const files = new Map<string, { bytes: Buffer; mode: number; mtime: number }>();
+  const held = new Set<string>();
+  try {
+    const st = await lstat(join(dir, "MEMORY.md"));
+    if (!st.isFile() || own(st.mode)) {}
+    else if (st.size <= FILE_MOST) files.set("MEMORY.md", { bytes: await readFile(join(dir, "MEMORY.md")), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
+    else held.add("MEMORY.md");
+  } catch {}
+  let skills: Dirent[] = [];
+  try {
+    skills = await readdir(join(dir, "skills"), { withFileTypes: true });
+  } catch {}
+  for (const skill of skills) {
+    const prefix = `skills/${skill.name}/`;
+    if (BUILTIN.has(skill.name) || !portableName(skill.name) || SKIPPED.has(skill.name)) continue;
+    if (!skill.isDirectory()) {
+      held.add(prefix);
+      continue;
+    }
+    const found = new Map<string, { bytes: Buffer; mode: number; mtime: number }>();
+    let bytes = 0;
+    let over = false;
+    const walk = async (rel: string) => {
+      let entries: Dirent[] = [];
+      try {
+        entries = await readdir(join(dir, "skills", skill.name, rel), { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (over || !portableName(e.name) || SKIPPED.has(e.name)) continue;
+        const sub = rel === "" ? e.name : `${rel}/${e.name}`;
+        if (e.isDirectory()) await walk(sub);
+        else if (e.isFile()) {
+          const full = join(dir, "skills", skill.name, sub);
+          const st = await lstat(full);
+          if (own(st.mode)) continue;
+          bytes += st.size;
+          if (st.size > FILE_MOST || bytes > SKILL_MOST || found.size >= SKILL_FILES) over = true;
+          else found.set(prefix + sub, { bytes: await readFile(full), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
+        }
+      }
+    };
+    await walk("");
+    if (over || !found.has(`${prefix}SKILL.md`)) held.add(prefix);
+    else for (const [p, f] of found) files.set(p, f);
+  }
+  return { files, held };
 }

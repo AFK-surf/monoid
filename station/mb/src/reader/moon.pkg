@@ -33,6 +33,7 @@ import {
   "station/readops",
   "station/replica",
   "station/footprint",
+  "station/memory",
   "station/front",
   "station/jsjson",
   "station/jscase",

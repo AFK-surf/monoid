@@ -224,13 +224,16 @@
 
 - A workspace's MEMORY.md and team skills are one for all its stations (the user, 2026-11-14: 「直接全局共享，跟 station
   相关的直接说明是哪个 station」): `src/share/memory.ts` keeps each file's recent versions and brings the stations level,
-  merging two versions made apart from the one both came from (`src/share/memory-merge.ts`, as `git merge-file`, both
-  kept where both changed). What is one machine's says which station it is of; the agents' instructions say so. No
-  CRDT library (it grows, and every station would have to compact it together). With no version both came from (each
-  station's memory of before) MEMORY.md's lines, and a file both kept on since it was copied, are put together each
-  line once; skills of one name and nothing alike are kept apart as `<name>-<station>` (the user, 2026-11-14).
-  Two versions of one history whose common version a station does not keep (and the other could not give) keep
-  every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
+  merging two versions made apart from the one both came from (as `git merge-file`, both kept where both changed). The
+  files are read, hashed and kept in blobs/, and two versions merged, by the MoonBit program (`--builder memory`,
+  `mb/src/memory`, `src/share/memory-mb.ts`, let go idle), none of their bytes on the main thread but those it writes
+  or sends: no merge in TypeScript to fall back to, the one it replaced is `test/reference/memory-merge.ts`, which
+  `test/mb-memory-merge.test.ts` holds it to byte for byte. What is one machine's says which station it is of; the
+  agents' instructions say so. No CRDT library (it grows, and every station would have to compact it together). With
+  no version both came from (each station's memory of before) MEMORY.md's lines, and a file both kept on since it was
+  copied, are put together each line once; skills of one name and nothing alike are kept apart as `<name>-<station>`
+  (the user, 2026-11-14). Two versions of one history whose common version a station does not keep (and the other
+  could not give) keep every line of both: a merge never drops what either had. `test/memory-sync-random.test.ts` holds it over random
   worlds (`MEMORY_RANDOM_SEEDS` for more; it fails on 0.1.9133's code), `test/memory-sync-upgrade.test.ts` that what
   0.1.9133 to 0.1.9168 left (a skill kept apart twice, a station's own file moved) is mended (`#mend`).
 - Every session reads MEMORY.md and a project's skill whole, so neither may grow into a log: past `MEMORY_MOST`,

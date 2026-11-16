@@ -1,0 +1,79 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/memory"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+}
+
+// Values
+pub fn alike(String, String) -> Bool
+
+pub async fn answer(@host.Host, @json.Json, String) -> @json.Json
+
+pub fn aside_of(String, String) -> String?
+
+pub fn body_of(String) -> String
+
+pub fn conflict_path(String, String) -> String
+
+pub async fn decide(String, Rec?, Rec, async (String) -> Bytes?, async (Bytes) -> String, (String) -> String, Int32) -> Outcome
+
+pub fn is_text(BytesView) -> Bool
+
+pub fn js_after(String, String) -> Bool
+
+pub fn lines_of(String) -> Array[String]
+
+pub fn matches(Array[String], Array[String]) -> Array[(Int32, Int32)]?
+
+pub fn merge3(String, String, String) -> String?
+
+pub fn portable_name(String) -> Bool
+
+pub fn rec_json(Rec) -> @json.Json
+
+pub fn rec_of(@json.Json) -> Rec?
+
+pub fn station_tag(String) -> String
+
+pub fn text_of(BytesView) -> String
+
+pub fn union_lines(String, String, String?, String?) -> String
+
+// Errors
+pub suberror Failed {
+  Failed(String)
+}
+
+// Types and methods
+pub struct Blobs {
+  host : @host.Host
+  dir : String
+  sep : String
+  mut made : Int32
+}
+pub async fn Blobs::content(Self, String) -> Bytes?
+pub async fn Blobs::has(Self, String) -> Bool
+pub async fn Blobs::keep(Self, Bytes) -> String
+pub fn Blobs::new(@host.Host, String, String) -> Self
+
+pub enum Outcome {
+  Keep
+  Take
+  Merge(Rec, (String, Rec)?)
+}
+
+pub struct Rec {
+  hash : String
+  at : Double
+  by : String
+  prev : Array[String]
+  size : Double
+  mode : Double
+  origin : Bool
+}
+
+// Type aliases
+
+// Traits

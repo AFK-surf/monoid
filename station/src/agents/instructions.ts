@@ -43,7 +43,8 @@ export async function readMemory(path: string): Promise<string> {
 /// and the longest line of one. Every session of the workspace reads MEMORY.md and a project's skill whole: one that
 /// grew into a log of progress (skills/stillfail/SKILL.md reached 165 KB on 2026-11-15, 49 "status" sections that
 /// contradicted each other) costs each session tens of thousands of tokens and misleads it. A merge keeps both
-/// versions where two stations changed one place (share/memory-merge.ts), so what came twice is the agents' to tidy too.
+/// versions where two stations changed one place (share/memory.ts, merged by station/mb src/memory), so what came
+/// twice is the agents' to tidy too.
 export const MEMORY_MOST = 8 * 1024;
 export const SKILL_MOST = 24 * 1024;
 export const LINE_MOST = 1500;

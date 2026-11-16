@@ -503,7 +503,7 @@ if [ $full = 1 ]; then
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pieces && moon test --target native src/admit'
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. Cursor's
     # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,

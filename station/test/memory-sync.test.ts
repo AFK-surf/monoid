@@ -1,4 +1,5 @@
-// The agents' memory kept level between the stations of a workspace (src/share/memory.ts, memory-merge.ts): stations
+// The agents' memory kept level between the stations of a workspace (src/share/memory.ts, its merges the MoonBit
+// program's: mb/src/memory, test/memory-program.ts): stations
 // as directories of their own, a cloud that only lists who is in the workspace, the station transport a direct call.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Cloud } from "../src/cloud/state.ts";
-import { MemorySync, decide, type Rec } from "../src/share/memory.ts";
-import { merge3, unionLines } from "../src/share/memory-merge.ts";
+import { MemorySync, type Rec } from "../src/share/memory.ts";
+import { decideMb, fresh, mb } from "./memory-program.ts";
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -226,22 +227,23 @@ test("three stations come to one memory whatever the order", async () => {
   }
 });
 
-test("merge3: both sides' changes in different places taken, one place changed by both keeps both, the newer first", () => {
-  assert.equal(merge3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n"), "A\nb\nC\n");
-  assert.equal(merge3("a\nb\n", "a\nb\nnew\n", "a\nb\nold\n"), "a\nb\nnew\nold\n");
-  assert.equal(merge3("a\nb\n", "a\n", "a\nb\n"), "a\n");
+test("merge3: both sides' changes in different places taken, one place changed by both keeps both, the newer first", async () => {
+  assert.equal(await mb.merge3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n"), "A\nb\nC\n");
+  assert.equal(await mb.merge3("a\nb\n", "a\nb\nnew\n", "a\nb\nold\n"), "a\nb\nnew\nold\n");
+  assert.equal(await mb.merge3("a\nb\n", "a\n", "a\nb\n"), "a\n");
 });
 
-test("unionLines: lines both had once and unmarked", () => {
-  assert.equal(unionLines("- x\n- y\n", "- [ccvm] x\n- z\n", null, "Studio"), "- x\n- y\n- [Studio] z\n");
+test("unionLines: lines both had once and unmarked", async () => {
+  assert.equal(await mb.unionLines("- x\n- y\n", "- [ccvm] x\n- z\n", null, "Studio"), "- x\n- y\n- [Studio] z\n");
 });
 
-test("decide: a version made after this one's is taken, an older one kept", () => {
+test("decide: a version made after this one's is taken, an older one kept", async () => {
   const r = (hash: string, prev: string[], at: number): Rec => ({ hash, at, by: A, prev, size: 1, mode: 0o644 });
   const h1 = "1".repeat(64);
   const h2 = "2".repeat(64);
-  assert.equal(decide("MEMORY.md", r(h1, [], 1), r(h2, [h1], 2), () => null, () => "").kind, "take");
-  assert.equal(decide("MEMORY.md", r(h2, [h1], 2), r(h1, [], 1), () => null, () => "").kind, "keep");
+  const blobs = fresh();
+  assert.equal((await decideMb("MEMORY.md", r(h1, [], 1), r(h2, [h1], 2), new Map(), () => "", blobs)).kind, "take");
+  assert.equal((await decideMb("MEMORY.md", r(h2, [h1], 2), r(h1, [], 1), new Map(), () => "", blobs)).kind, "keep");
 });
 
 test("one skill each station kept on since it was copied: merged, each line once, not kept apart", async () => {
@@ -299,13 +301,14 @@ test("a station from before 0.1.9133, answering as it answers what it does not k
   }
 });
 
-test("decide: two versions of one history whose common version is not kept here keep every line of both", () => {
+test("decide: two versions of one history whose common version is not kept here keep every line of both", async () => {
   const h = (t: string) => createHash("sha256").update(t).digest("hex");
   const [base, mine, theirs] = ["- a\n", "- a\n- mine\n", "- theirs\n"];
   const r = (t: string, by: string, at: number): Rec => ({ hash: h(t), at, by, prev: [h(base)], size: t.length, mode: 0o644 });
   const contents = new Map([[h(mine), Buffer.from(mine)], [h(theirs), Buffer.from(theirs)]]);
-  const out = decide("MEMORY.md", r(mine, A, 2), r(theirs, B, 3), (x) => contents.get(x) ?? null, () => "");
+  const blobs = fresh();
+  const out = await decideMb("MEMORY.md", r(mine, A, 2), r(theirs, B, 3), contents, () => "", blobs);
   assert.equal(out.kind, "merge");
-  const text = out.kind === "merge" ? out.content!.toString() : "";
+  const text = readFileSync(join(blobs, out.rec.hash), "utf8");
   for (const line of ["- a", "- mine", "- theirs"]) assert.ok(text.split("\n").includes(line), `${line} in ${text}`);
 });

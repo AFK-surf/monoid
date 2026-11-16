@@ -630,6 +630,8 @@ export const AgentsLive = (control: Control) =>
         agentHome: () => settings().agentHome,
       });
       remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
+      // (its program, idle, let go when the station is short of memory)
+      readers.onTrim(() => memorySync.trimIdle());
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
