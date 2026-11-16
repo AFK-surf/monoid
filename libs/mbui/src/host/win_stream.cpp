@@ -1940,6 +1940,110 @@ void *mb_stream_srv(int id) {
   return s->bgra_srv;
 }
 
+// ---- the frame shown, for an app's own native code (a frame copied, a still saved) ----
+
+// What mb_stream_grab hands its taker: the texture read back and where it came from
+struct Grab {
+  ID3D11DeviceContext *ctx;
+  ID3D11Texture2D *staging;
+  ID3D11Query *copied;
+  int w, h;
+  double ts;
+  mb_stream_grabbed_fn done;
+  void *arg;
+};
+
+static DWORD WINAPI grab_read(void *p) {
+  Grab *g = (Grab *)p;
+  D3D11_MAPPED_SUBRESOURCE map = {};
+  HRESULT hr;
+  // (the GPU's copy waited for without the device's lock, which the window's frames take too: its event asked after,
+  // each asking a moment's hold of the lock; a Map that waited would hold it till the copy is done. Not Sleep(1),
+  // which is a scheduler tick, 15.6 ms unless the timer was made finer: the copy itself takes a few ms)
+  if (g->copied) {
+    BOOL done = FALSE;
+    while (g->ctx->GetData(g->copied, &done, sizeof done, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_FALSE) SwitchToThread();
+  }
+  while ((hr = g->ctx->Map(g->staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &map)) == DXGI_ERROR_WAS_STILL_DRAWING)
+    SwitchToThread();
+  if (SUCCEEDED(hr)) {
+    g->done(g->arg, (const uint8_t *)map.pData, g->w, g->h, (int)map.RowPitch, g->ts);
+    g->ctx->Unmap(g->staging, 0);
+  } else {
+    g->done(g->arg, NULL, 0, 0, 0, g->ts);
+  }
+  if (g->copied) g->copied->Release();
+  g->staging->Release();
+  g->ctx->Release();
+  free(g);
+  return 0;
+}
+
+// The frame stream `id` shows now, whole (the decoder's picture as it is drawn: BGRA, its own size, not the size it is
+// drawn at), handed to `done` on a thread of its own as top-down rows `pitch` bytes apart, with the frame's time, and
+// let go as `done` returns; rows NULL where it could not be read. On the UI thread, as the app draws: it costs the
+// window a copy the GPU makes (its own texture into one the CPU reads) and nothing it waits on; `done` is to take the
+// rows and return (the texture they are in is held till it does). 1 asked, 0 none shown
+// (or no device to read it with).
+int mb_stream_grab(int id, mb_stream_grabbed_fn done, void *arg) {
+  Stream *s = stream_of(id);
+  if (!s || s->closed || !done) return 0;
+  ID3D11ShaderResourceView *srv = (ID3D11ShaderResourceView *)mb_stream_srv(id);
+  if (!srv) return 0;
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  if (!dev) return 0;
+  ID3D11Resource *res = NULL;
+  ID3D11Texture2D *src = NULL;
+  srv->GetResource(&res);
+  if (!res) return 0;
+  HRESULT hr = res->QueryInterface(IID_PPV_ARGS(&src));
+  res->Release();
+  if (FAILED(hr)) return 0;
+  D3D11_TEXTURE2D_DESC td;
+  src->GetDesc(&td);
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.SampleDesc.Count = 1;
+  td.SampleDesc.Quality = 0;
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  td.MiscFlags = 0;
+  ID3D11Texture2D *staging = NULL;
+  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
+    src->Release();
+    return 0;
+  }
+  ID3D11DeviceContext *ctx = NULL;
+  dev->GetImmediateContext(&ctx);
+  ctx->CopySubresourceRegion(staging, 0, 0, 0, 0, src, 0, NULL);
+  src->Release();
+  // (its end marked, and the work sent to the GPU now, not with the next frame's)
+  ID3D11Query *copied = NULL;
+  D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
+  if (SUCCEEDED(dev->CreateQuery(&qd, &copied))) ctx->End(copied);
+  ctx->Flush();
+  Grab *g = (Grab *)calloc(1, sizeof *g);
+  g->ctx = ctx;
+  g->staging = staging;
+  g->copied = copied;
+  g->w = (int)td.Width;
+  g->h = (int)td.Height;
+  g->ts = s->cur.ts;
+  g->done = done;
+  g->arg = arg;
+  HANDLE t = CreateThread(NULL, 0, grab_read, g, 0, NULL);
+  if (!t) {
+    if (copied) copied->Release();
+    staging->Release();
+    ctx->Release();
+    free(g);
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
+}
+
 // Sound plays here unless a run says not to (MBUI_STREAM_AUDIO=0, to compare).
 int32_t mb_host_stream_audio_here(void) {
   const char *v = getenv("MBUI_STREAM_AUDIO");
