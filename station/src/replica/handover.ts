@@ -45,7 +45,7 @@ import type { Ask } from "./peers.ts";
 import { Gone, type Need, Said, UNANSWERED, sayOf } from "../move/module.ts";
 import type { KeptSend } from "../api/admin.ts";
 import { LACK_MOST, type MadeGit, RETRY_MOST_MS, RETRY_MS, connectsThere, gatherSoon, placeSoon, rebuildGits } from "./retire.ts";
-import { flushOnce, flushesOnce, lackingIn, receiveFile, sendGathered } from "./sending.ts";
+import { PACK_ENCODING, flushOnce, flushesOnce, lackingIn, receiveFile, receivePack, sendGathered } from "./sending.ts";
 import { carriedTo, moved } from "./restore.ts";
 import type { Told } from "../move/told.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
@@ -208,6 +208,8 @@ export type HandoverDeps = {
   lackMost?: number;
   /// The most bytes one `handover.lacking` hashes here (HASH_MOST; a test's smaller).
   hashMost?: number;
+  /// The most files and bytes of one pack sent from here (sending.ts PACK_MAX_FILES, PACK_MAX_BYTES; a test's smaller).
+  packMost?: { files?: number; bytes?: number };
   /// The work done here of a hand-over's files: gathered, placed; `drop`, a test's: waited for before a drop takes its
   /// files out.
   work?: { gather: typeof gatherSoon; place: typeof placeSoon; drop?: (id: string) => Promise<void> };
@@ -1002,13 +1004,21 @@ export class Handover {
           if (next.length >= rest.length) break;
           rest = next;
         }
-        return { lacking: [...lacking] };
+        // (whether it takes packs: a station from before says nothing, and is sent a file a request)
+        return { lacking: [...lacking], ...(answer?.pack === PACK_ENCODING ? { pack: PACK_ENCODING } : {}) };
       },
       put: async (hash, bytes, path, size) => {
         const answer = await d.ask(o.to, withBytes({ method: "handover.put", workspace: o.ws, origin: here, id: o.id, name: hash }, bytes));
         if (carriedPlace(d.data, path)) o.sentBytes = (o.sentBytes ?? 0) + size;
         return answer;
       },
+      // (a pack of one names its file, as a file's request does)
+      putPack: (entries, bytes, strict) => d.ask(o.to, withBytes({
+        method: "handover.put", workspace: o.ws, origin: here, id: o.id, pack: PACK_ENCODING, strict, count: entries.length,
+        ...(entries.length === 1 ? { name: entries[0]!.hash } : {}),
+      }, bytes)),
+      took: (f) => void (carriedPlace(d.data, f.path) && (o.sentBytes = (o.sentBytes ?? 0) + f.size)),
+      ...(d.packMost !== undefined ? { packMost: d.packMost } : {}),
       most: d.lackMost ?? LACK_MOST,
       // (what it lacks there asked first only where all of it might not fit: else no more is asked than it sends)
       ...(held || typeof begun?.free !== "number" || begun.free - (g.bytes + Math.ceil(g.bytes / 20)) >= floor ? {} : { adds: fits }),
@@ -1394,14 +1404,26 @@ export class Handover {
                 else missing.add(f.hash);
               }
               // (one unchecked is said lacking too: an asker from before sends it rather than take it as in place)
+              // (`pack`: what it lacks it takes a pack at a time, sending.ts `receivePack`)
               return {
                 lacking: hashes.filter((h: string) => lacking.has(h) && (olderOut || missing.has(h) || unchecked.has(h) || !placed.has(h))),
                 ...(unchecked.size > 0 ? { unchecked: [...unchecked].filter((h) => !missing.has(h)) } : {}),
+                pack: PACK_ENCODING,
               };
             }
             case "handover.prune":
               return await this.#step(peer, i, request, () => this.#serialIn(i, () => this.#prune(i)));
             case "handover.put": {
+              // (a pack: its files taken as they come, each checked as one is; `fail`, a test's, as each begins)
+              if (request.pack === PACK_ENCODING) {
+                const named = request.name === undefined ? undefined : String(request.name);
+                if (bytes === null || (named !== undefined && !HASH.test(named))) throw new Refused(why("badRequest", { detail: "not a pack" }));
+                await receivePack(inFiles(this.#d.data, id), bytes as Bytes, {
+                  strict: request.strict !== false, flush: this.#flush === null, ...(named !== undefined ? { name: named } : {}),
+                  ...(typeof request.count === "number" ? { count: request.count } : {}), onFile: () => this.#d.fail?.("put"),
+                });
+                return { ok: true };
+              }
               const name = String(request.name ?? "");
               if (bytes === null || !HASH.test(name)) throw new Refused(why("badRequest", { detail: "not a file's hash" }));
               this.#d.fail?.("put");

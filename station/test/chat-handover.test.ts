@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { sessionKey } from "../src/sessions/hub.ts";
@@ -16,6 +16,7 @@ import { say } from "../src/sessions/lifecycle.ts";
 import { given, message, reply } from "./hub-fakes.ts";
 import { RETRY_MS } from "../src/replica/retire.ts";
 import { PeerGone } from "../src/mesh/peer.ts";
+import { type Bytes, BYTES, bytesOf } from "../src/mesh/bus.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { hearLines } from "../src/ops/log.ts";
 import { WS, A, B, C, world, endTurn, stillfailChat, gitEnv, filesOf, entries, homeThread, startedAgainChangesNothing } from "./move-world.ts";
@@ -608,7 +609,8 @@ async function roomyChat(a: ReturnType<ReturnType<typeof world>["get"]>) {
 }
 
 test("a file's request that meets the other station's connection gone (no answer) is sent again once from its start, dialed anew: the chat goes, each file taken there once, none sent before it sent again", async () => {
-  const w = world();
+  // (a pack a file, so that each file is a request of its own: a pack of several is the next test's)
+  const w = world(undefined, { packMost: { files: 1 } });
   const a = w.get(A);
   const b = w.get(B);
   const { key } = await roomyChat(a);
@@ -639,6 +641,45 @@ test("a file's request that meets the other station's connection gone (no answer
   assert.equal(taken.filter((h) => h === tried[0]).length, 1, "the one taken before it not sent again");
 });
 
+test("a pack of several files whose request meets the other station's connection gone halfway is sent again of only what it lacks then: those it took before are not sent again, none is missing", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const { key } = await stillfailChat(a);
+  const room = a.rig.session(key).workspace;
+  // (bytes that do not compress, so that the pack's stream comes a file at a time)
+  for (let i = 0; i < 6; i++) writeFileSync(join(room, `part-${i}.bin`), randomBytes(300 * 1024));
+  const hashed = (dir: string) => (existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String).filter((n) => /(^|\/)[0-9a-f]{64}$/.test(n)).map((n) => n.slice(-64)) : []);
+  const inDir = join(b.rig.dir, "replica", "handover", "in");
+  const packs: { count: number; there: string[] }[] = [];
+  w.tamper((to, r) => {
+    if (to !== B || r.method !== "handover.put" || r.pack !== "zstd") return r;
+    packs.push({ count: Number(r.count), there: hashed(inDir) });
+    if (packs.length !== 1) return r;
+    // (its connection gone once a megabyte of it went: what came before is taken there, the rest never comes)
+    const bytes = bytesOf(r)!;
+    async function* cut(): Bytes {
+      let went = 0;
+      for await (const piece of bytes) {
+        if (went >= 1024 * 1024) throw new Error("the other station answered nothing");
+        went += piece.length;
+        yield piece;
+      }
+    }
+    return { ...r, [BYTES]: cut() };
+  });
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  w.tamper(null);
+  assert.equal(out.failed, null, JSON.stringify(out));
+  assert.equal(a.rig.store.handedTo(key)?.station, B, "it went");
+  assert.ok(packs[0]!.count >= 6, `the room's files went in one pack: ${JSON.stringify(packs)}`);
+  const took = packs[1]!.there.filter((h) => !packs[0]!.there.includes(h));
+  assert.ok(took.length >= 2, `the pack cut halfway took some of its files there first: ${took.length}`);
+  assert.equal(packs[1]!.count, packs[0]!.count - took.length, `sent again: only what it lacked then (${packs[1]!.count} of ${packs[0]!.count}, ${took.length} there)`);
+  for (const n of readdirSync(room).filter((n) => n.endsWith(".bin"))) assert.deepEqual(readFileSync(join(b.rig.session(key).workspace, n)), readFileSync(join(room, n)), `${n} there as it is here`);
+});
+
 test("a request with no bytes that meets the other station's connection gone is sent again once, dialed anew; the station's second in the turn makes it gone, and the hand-over fails in the station's words, nothing held, nothing left there", async () => {
   // (once: a page of its rows)
   {
@@ -659,7 +700,7 @@ test("a request with no bytes that meets the other station's connection gone is 
   }
   // (twice in the turn, a file and then the file again: gone)
   {
-    const w = world();
+    const w = world(undefined, { packMost: { files: 1 } });
     const a = w.get(A);
     const b = w.get(B);
     const { key, thread } = await roomyChat(a);
@@ -682,7 +723,7 @@ test("a request with no bytes that meets the other station's connection gone is 
   }
   // (once a turn, not once a file: a file sent again and taken, then a later, other file meeting no answer: gone)
   {
-    const w = world();
+    const w = world(undefined, { packMost: { files: 1 } });
     const a = w.get(A);
     const b = w.get(B);
     const { key } = await roomyChat(a);

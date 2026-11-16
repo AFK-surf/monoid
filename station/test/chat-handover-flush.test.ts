@@ -47,7 +47,9 @@ test("a hand-over's placings flush once each, before each is told placed, as man
     const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
     await w.quiet();
     assert.equal(out.failed, null, JSON.stringify(out));
-    assert.ok(puts >= n, `${n}: its files sent one a request (${puts})`);
+    // (its room's files a pack a batch of what is asked (`lackMost`, 50 here), with its list and the index: a request a
+    // file before packs)
+    assert.ok(puts >= 1 && puts < n / 5, `${n}: its files sent in packs (${puts} requests)`);
     assert.deepEqual(order, ["flush", "told first", "flush", "told held"], `${n} files: one flush a placing, each before it is told`);
   }
 });

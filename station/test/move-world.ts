@@ -66,6 +66,10 @@ export type Station = {
   gathering?: (scratch: string) => Promise<void>;
   /// The most bytes one `handover.lacking` hashes here (none: the station's own).
   hashMost?: number;
+  /// The most files and bytes of a pack sent from here (none: the station's own).
+  packMost?: { files?: number; bytes?: number };
+  /// What it answers a request, changed on its way back (a test's: a station from before).
+  answered?: (request: Json, answer: Json) => Json;
   gitting?: (args: string[]) => Promise<void>;
   dropping?: (id: string) => Promise<void>;
   removing?: (dir: string) => Promise<void>;
@@ -91,7 +95,7 @@ export const ANSWER_MS = 30_000;
 /// Stations of workspace "ws" (each its own Rig, its connects and its moves); A has the Slack connects cl and gpt.
 /// `answerMs`: each request between them fails as mesh/peer.ts fails it when its answer did not come within ANSWER_MS
 /// on the test's clock (the station asked goes on with it).
-export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
+export function world(ids: string[] = [A, B], o: { answerMs?: boolean; packMost?: { files?: number; bytes?: number } } = {}) {
   const t = testClock();
   const stations = new Map<string, Station>();
   const roster = ids.map((id) => ({ id, name: id.slice(0, 1).toUpperCase() }));
@@ -104,7 +108,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
   const heard: { from: string; to: string; method: string; name?: string; at: number; answered: number | null; failed: string | null }[] = [];
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0 } as unknown as Station;
+    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0, ...(o.packMost !== undefined ? { packMost: o.packMost } : {}) } as unknown as Station;
     st.bus = new PeerBus({ sleep: async () => {} });
     st.bus.attach(async (to, ws, request) => {
       const there = stations.get(to);
@@ -118,6 +122,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
       let answer: Json;
       try {
         answer = across(await (deadline === null ? handled : Promise.race([handled, deadline])));
+        if (there.answered !== undefined) answer = there.answered(sent, answer);
         seen.answered = st.fibers.now();
       } catch (e) {
         seen.failed = (e as Error).message;
@@ -200,6 +205,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean } = {}) {
         boot: () => st.boot ?? 0,
         lackMost: 50,
         hashMost: st.hashMost,
+        packMost: st.packMost,
         remove: async (dir) => {
           await st.removing?.(dir);
           await rm(dir, { recursive: true, force: true });
