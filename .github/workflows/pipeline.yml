@@ -458,6 +458,9 @@ jobs:
     env:
       STILLFAIL_CHECK_PART: station-tests
       STILLFAIL_STATION_SHARD: ${{ matrix.shard }}/6
+      # (four files at a time on its four vCPUs, not Node's three (availableParallelism - 1): much of a slice's time is
+      # its files waiting on the MoonBit reader's processes and the model runners' workers, a slot held idle)
+      STILLFAIL_NODE_TEST_JOBS: 4
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
