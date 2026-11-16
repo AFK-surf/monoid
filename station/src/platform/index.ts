@@ -88,8 +88,12 @@ export type Platform = {
   /// How Node runs a command (a name on PATH, or a path) with `args`: on Windows a .cmd is run around cmd when it can
   /// be (npm's, Vite+'s), else through it, quoted.
   runnable(command: string, args: string[], env: NodeJS.ProcessEnv): { file: string; args: string[]; windowsVerbatimArguments?: true };
-  /// The shell jobs and device commands run under (/bin/sh; Git for Windows' sh).
+  /// The shell jobs, device commands and the vault's runs go under (/bin/sh; Git for Windows' sh, found by `env`: an
+  /// error that says how to get it where there is none).
   posixShell(env?: NodeJS.ProcessEnv): string;
+  /// `posixShell` off the station's thread; on Windows, where `env` finds none, by the PATH the registry gives a
+  /// process started now too (`savedPath`: Git installed since the station started).
+  posixShellSoon(env?: NodeJS.ProcessEnv): Promise<string>;
   /// A command as a group of its own, ended whole (as spawned detached on Unix; under `stillfail-runner --job` on
   /// Windows).
   grouped(program: string, args: string[]): [string, string[]];

@@ -113,30 +113,73 @@ async function findCommandSoon(name: string, env: Env): Promise<Found | null> {
   return null;
 }
 
-let shell: string | null | undefined;
-
-/// CLAUDE_CODE_GIT_BASH_PATH (Claude Code's own setting), else Git's sh beside the git on PATH, else where Git installs
-/// by default; never System32's bash (WSL's, another machine's files).
-function posixShell(env: NodeJS.ProcessEnv = process.env): string {
-  if (shell === undefined) shell = gitShell(env);
-  if (shell === null) throw new Error("jobs and commands on Windows run under Git Bash: install Git for Windows (git-scm.com), or set CLAUDE_CODE_GIT_BASH_PATH");
-  return shell;
-}
-
-function gitShell(env: NodeJS.ProcessEnv): string | null {
-  const candidates: string[] = [];
-  if (env.CLAUDE_CODE_GIT_BASH_PATH) candidates.push(env.CLAUDE_CODE_GIT_BASH_PATH);
-  for (const dir of pathOf(env).split(delimiter)) {
+/// Where Git's sh may be, in the order it is looked for: CLAUDE_CODE_GIT_BASH_PATH (Claude Code's own setting), else
+/// Git's sh beside a git in `dirs` (Git's cmd\ is what its installer puts on PATH; its sh is in bin\), else an sh.exe
+/// in them, else where Git installs by default; never System32's bash (WSL's, another machine's files). `dirs`: `env`'s
+/// PATH, or (`saved`) the registry's, where only those are looked in. `beside`: a file that must be there too (a
+/// directory's git.exe). Windows' paths whatever runs it, so its tests run on every machine.
+function shellCandidates(env: Env, dirs: string[], saved = false): { path: string; beside?: string }[] {
+  const found: { path: string; beside?: string }[] = [];
+  if (env.CLAUDE_CODE_GIT_BASH_PATH && !saved) found.push({ path: env.CLAUDE_CODE_GIT_BASH_PATH });
+  for (const dir of dirs) {
     if (dir === "" || /\\system32\\?$/i.test(dir)) continue;
-    // Git's cmd\ (git.exe) is what an installer puts on PATH; its sh is in bin\.
-    if (existsSync(join(dir, "git.exe"))) candidates.push(join(dirname(dir), "bin", "sh.exe"));
-    candidates.push(join(dir, "sh.exe"));
+    found.push({ path: win32.join(win32.dirname(dir), "bin", "sh.exe"), beside: win32.join(dir, "git.exe") });
+    found.push({ path: win32.join(dir, "sh.exe") });
   }
-  for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs")]) {
-    if (root) candidates.push(join(root, "Git", "bin", "sh.exe"));
+  if (!saved) {
+    for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, "Programs")]) {
+      if (root) found.push({ path: win32.join(root, "Git", "bin", "sh.exe") });
+    }
   }
-  return candidates.find((p) => existsSync(p)) ?? null;
+  return found;
 }
+
+/// Git's sh by `env` (shellCandidates, the first there), or null.
+export function gitShell(env: Env, there: (path: string) => boolean = isFile): string | null {
+  const found = shellCandidates(env, pathOf(env).split(win32.delimiter)).find((c) => (c.beside === undefined || there(c.beside)) && there(c.path));
+  return found?.path ?? null;
+}
+
+/// `gitShell` off the station's thread, and where none is found by `env`, by the PATH the registry gives a process
+/// started now (`readSaved`): Git installed after the station started, wherever it was put, is found without a restart.
+export async function gitShellSoon(env: Env, readSaved: (env: Env) => Promise<string[] | null> = savedPath, there: (path: string) => Promise<boolean> = isFileSoon): Promise<string | null> {
+  const look = async (candidates: { path: string; beside?: string }[]) => {
+    for (const c of candidates) if ((c.beside === undefined || (await there(c.beside))) && (await there(c.path))) return c.path;
+    return null;
+  };
+  return (await look(shellCandidates(env, pathOf(env).split(win32.delimiter)))) ?? (await look(shellCandidates(env, (await readSaved(env)) ?? [], true)));
+}
+
+const isFileSoon = async (p: string) => (await stat(p).catch(() => null))?.isFile() ?? false;
+
+const NO_SHELL = "jobs and commands on Windows run under Git Bash: install Git for Windows (git-scm.com), or set CLAUDE_CODE_GIT_BASH_PATH";
+
+/// Platform.posixShell and posixShellSoon, Git's sh found by gitShell and gitShellSoon: each found one kept by what of
+/// the environment found it (the same environment asks no file again), none never kept (Git installed meanwhile is
+/// found at the next ask).
+export function posixShells(there: (path: string) => boolean = isFile, readSaved?: (env: Env) => Promise<string[] | null>, thereSoon?: (path: string) => Promise<boolean>) {
+  const kept = new Map<string, string>();
+  const keyOf = (env: Env) => JSON.stringify([env.CLAUDE_CODE_GIT_BASH_PATH, pathOf(env), env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA]);
+  const keep = (key: string, shell: string | null) => {
+    if (shell === null) throw new Error(NO_SHELL);
+    // (a few environments only: the station's, and what its runs are given)
+    if (kept.size >= 32) kept.delete(kept.keys().next().value!);
+    kept.set(key, shell);
+    return shell;
+  };
+  return {
+    posixShell(env: NodeJS.ProcessEnv = process.env): string {
+      const key = keyOf(env);
+      return kept.get(key) ?? keep(key, gitShell(env, there));
+    },
+    async posixShellSoon(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+      const key = keyOf(env);
+      return kept.get(key) ?? keep(key, await gitShellSoon(env, readSaved, thereSoon));
+    },
+  };
+}
+
+const { posixShell, posixShellSoon } = posixShells();
 
 /// A path as a shim names it: in the shim's own directory (`%dp0%\…`, `%~dp0\…`), or as written.
 export type Named = { beside: string } | { at: string };
@@ -460,6 +503,7 @@ export const windows: Platform = {
     return { file: env.ComSpec ?? process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
   },
   posixShell,
+  posixShellSoon,
   /// Under `stillfail-runner --job`, whose job holds the command and all it starts (what a shell execs, its parent
   /// gone, too), ended whole when the runner is.
   grouped: (program, args) => [runnerBinary(), ["--job", "--", program, ...args]],
@@ -491,7 +535,7 @@ export const windows: Platform = {
       }
     };
     await beside(path, script);
-    await beside(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
+    await beside(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(await posixShellSoon())}" "%~dp0${name}" %*\r\n`);
     return `${path}.cmd`;
   },
 

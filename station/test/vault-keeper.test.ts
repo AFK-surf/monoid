@@ -4,7 +4,7 @@
 // loopback ports of the run's own; nothing waits on time (the keeper's clock is the test's).
 import assert from "node:assert/strict";
 import { type KeyObject, X509Certificate, createPublicKey, generateKeyPairSync, randomBytes, sign as nodeSign, verify } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { type IncomingMessage, request as httpRequest } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { type Socket, connect as netConnect } from "node:net";
@@ -17,7 +17,7 @@ import { type Entry, entryHash, genesis, signedBytes as lockBytes } from "../src
 import { type BoxCert, type Grant, type Item, type Request, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, seal, signedBytes } from "../src/vault/crypto.ts";
 import { Keeper, hostAllowed } from "../src/vault/keeper.ts";
 import { Proxy, placeholder, swap } from "../src/vault/proxy.ts";
-import { runWith } from "../src/vault/run.ts";
+import { capture, runWith } from "../src/vault/run.ts";
 import { HIDDEN, Scrubber, scrub } from "../src/vault/scrub.ts";
 import { PLAIN, PlainStore } from "../src/vault/plain.ts";
 import { Secrets } from "../src/vault/secrets.ts";
@@ -382,6 +382,30 @@ test("a command run with a grant in its environment: its output comes back with 
     assert.equal(ran.output.split(HIDDEN).length - 1, 2, ran.output);
     assert.match(ran.output, /done/);
     assert.deepEqual(used, ["environment"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/// Git's cmd\ where its installer puts it, on Windows: all of Git a PATH it set up holds (its sh is in bin\, not on it).
+const gitCmd = process.platform !== "win32" ? null
+  : ([process.env.ProgramFiles, process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Programs")].flatMap((root) => (root ? [join(root, "Git", "cmd")] : [])).find((dir) => existsSync(join(dir, "git.exe"))) ?? null);
+
+test("a command run with a grant, or for a secret to keep, goes by Git's sh where only Git's cmd\\ is on PATH", { skip: gitCmd === null && "Windows with Git for Windows installed where its installer puts it" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vault-run-"));
+  const root = process.env.SystemRoot ?? "C:\\Windows";
+  // As a station started by Windows has it: System32 and Git's cmd\, no sh on it.
+  const env = { PATH: `${join(root, "System32")};${gitCmd}`, SystemRoot: root };
+  try {
+    const held = { request: { id: "r_env" }, grant: { mode: "env", hosts: [] }, secret: { kind: "token", name: "gh", fields: { value: TOKEN } }, uses: 0 } as unknown as Parameters<typeof runWith>[0];
+    const ran = await runWith(held, { command: 'printf "%s\\n" "$GH_TOKEN"; echo done >&2; exit 3', cwd: dir, env: "GH_TOKEN", timeoutMs: 60_000 }, new Proxy(dir, Date.now), env, () => {});
+    assert.equal(ran.code, 3, ran.output);
+    assert.ok(!ran.output.includes(TOKEN), ran.output);
+    assert.ok(ran.output.includes(HIDDEN) && ran.output.includes("done"), ran.output);
+    const got = await capture("printf kept-value; echo said >&2", dir, env, 60_000);
+    assert.equal(got.code, 0, got.err);
+    assert.equal(got.out, "kept-value");
+    assert.match(got.err, /said/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

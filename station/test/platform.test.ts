@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { portableComponent, portableName } from "../src/ops/paths.ts";
 import { unix } from "../src/platform/unix.ts";
-import { cmdPath, drives, readShim, savedPathOf, windows } from "../src/platform/windows.ts";
+import { cmdPath, drives, gitShell, gitShellSoon, posixShells, readShim, savedPathOf, windows } from "../src/platform/windows.ts";
+import { syncCalls } from "./main-thread-sync.ts";
 
 const src = fileURLToPath(new URL("../src", import.meta.url));
 
@@ -192,6 +193,69 @@ test("a .cmd so written runs what is at such a path", { skip: process.platform !
     writeFileSync(join(dir, "wrapper.cmd"), `@"${cmdPath(join(home, "bin", "say.cmd"), env)}" %*\r\n`);
     const ran = spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", join(dir, "wrapper.cmd"), "hi"], { env, encoding: "utf8" });
     assert.equal(ran.stdout.trim(), "said hi", ran.stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/// Files there, as Windows names them (case aside), for Git's sh found on any machine.
+function windowsFiles(...paths: string[]) {
+  const there = new Set(paths.map((p) => p.toLowerCase()));
+  return { there, has: (p: string) => there.has(p.toLowerCase()), soon: async (p: string) => there.has(p.toLowerCase()) };
+}
+
+test("Windows' sh is Git's, found beside the git its installer put on PATH, never System32's", async () => {
+  const git = "C:\\Program Files\\Git";
+  const fs = windowsFiles(`${git}\\cmd\\git.exe`, `${git}\\bin\\sh.exe`, "C:\\Windows\\System32\\sh.exe", "D:\\own\\sh.exe", "C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\sh.exe");
+  const none = async () => null;
+  // Only Git's cmd\ on PATH (what its installer does): its bin\sh.exe.
+  const onPath = { PATH: `C:\\Windows\\System32;${git}\\cmd` };
+  assert.equal(gitShell(onPath, fs.has), `${git}\\bin\\sh.exe`);
+  assert.equal(await gitShellSoon(onPath, none, fs.soon), `${git}\\bin\\sh.exe`);
+  // Claude Code's own setting first.
+  const set = { ...onPath, CLAUDE_CODE_GIT_BASH_PATH: "D:\\own\\sh.exe" };
+  assert.equal(gitShell(set, fs.has), "D:\\own\\sh.exe");
+  assert.equal(await gitShellSoon(set, none, fs.soon), "D:\\own\\sh.exe");
+  // System32 (WSL's bash and the like) never; where Git installs by default.
+  const system = { Path: "C:\\Windows\\System32\\", LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local" };
+  assert.equal(gitShell(system, fs.has), "C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\sh.exe");
+  assert.equal(gitShell({ PATH: "C:\\Windows\\System32" }, fs.has), null);
+  assert.equal(gitShell({ PATH: "C:\\Windows\\System32", ProgramFiles: "C:\\Program Files" }, fs.has), `${git}\\bin\\sh.exe`);
+  assert.equal(await gitShellSoon({ PATH: "C:\\Windows\\System32", ProgramFiles: "C:\\Program Files" }, none, fs.soon), `${git}\\bin\\sh.exe`);
+});
+
+test("Windows' sh installed after the station started is found by the registry's PATH, and none found is never kept", async () => {
+  const fs = windowsFiles();
+  const env = { PATH: "C:\\Windows\\System32" };
+  let saved: string[] | null = null;
+  const readSaved = async () => saved;
+  assert.equal(await gitShellSoon(env, readSaved, fs.soon), null);
+  // Git put on D:\ meanwhile: the registry names its cmd\, which this process was never given.
+  fs.there.add("d:\\git\\cmd\\git.exe");
+  fs.there.add("d:\\git\\bin\\sh.exe");
+  saved = ["C:\\Windows\\System32", "D:\\Git\\cmd"];
+  assert.equal(await gitShellSoon(env, readSaved, fs.soon), "D:\\Git\\bin\\sh.exe");
+
+  const later = windowsFiles();
+  const shells = posixShells(later.has, async () => null, later.soon);
+  const withRoot = { ...env, ProgramFiles: "C:\\Program Files" };
+  await assert.rejects(shells.posixShellSoon(withRoot), /install Git for Windows \(git-scm\.com\), or set CLAUDE_CODE_GIT_BASH_PATH/);
+  assert.throws(() => shells.posixShell(withRoot), /install Git for Windows/);
+  later.there.add("c:\\program files\\git\\bin\\sh.exe");
+  assert.equal(await shells.posixShellSoon(withRoot), "C:\\Program Files\\Git\\bin\\sh.exe");
+  // Found once, kept for that environment: no file asked again.
+  later.there.clear();
+  assert.equal(shells.posixShell(withRoot), "C:\\Program Files\\Git\\bin\\sh.exe");
+  assert.equal(await shells.posixShellSoon(withRoot), "C:\\Program Files\\Git\\bin\\sh.exe");
+});
+
+test("Windows' sh looked for off the station's thread waits on no file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "git-shell-"));
+  try {
+    const env = { PATH: `C:\\Windows\\System32;${dir}`, ProgramFiles: dir, CLAUDE_CODE_GIT_BASH_PATH: join(dir, "nope.exe") };
+    let found: string | null = "";
+    assert.deepEqual(await syncCalls(async () => void (found = await gitShellSoon(env, async () => [dir]))), []);
+    assert.equal(found, null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
