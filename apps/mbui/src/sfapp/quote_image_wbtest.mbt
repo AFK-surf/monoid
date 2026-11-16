@@ -678,16 +678,21 @@ test "an agent's video and file card right clicked: 引用 quotes each, its file
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   open_fixture_mode("chat-download")
   t.run_for(@ui.move_most_ms)
-  // (the video in its middle, nothing over it naming it; the card on its name)
-  let (x, y) = demo_video_at(t)
-  let card = t.words().filter(fn(w) { w.0.has_prefix("发布包") })
-  assert_true(card.length() > 0)
-  for at in [(x, y), (card[0].1 + 4.0, card[0].2 + 4.0)] {
-    t.right_click(at.0, at.1)
+  // (the video in its middle, nothing over it naming it; the card on its name: each where it is as it is right
+  // clicked, the first's menu drawn back and its quote come into the composer before the second)
+  for card in [false, true] {
+    let (x, y) = if card {
+      let words = t.words().filter(fn(w) { w.0.has_prefix("发布包") })
+      assert_true(words.length() > 0)
+      (words[0].1 + 4.0, words[0].2 + 4.0)
+    } else {
+      demo_video_at(t)
+    }
+    t.right_click(x, y)
     t.draw()
     t.tap_text("引用")
     t.frame()
-    t.frame()
+    t.run_for(@ui.move_most_ms)
   }
   assert_true(viewer.get() is None)
   let d = chat_draft()

@@ -161,8 +161,18 @@ fn chat_goes_to(
         jump.went = (target, off)
         jump.put.set(1)
         // (what was meant in it before the eyes too, where it lies low in a long message: a search's words, a quote's
-        // passage; not back where the reader was: ListPlace::bring's `sought`, what its words mark: View::sought)
-        place.bring(k, offset=@sfbase.kept_place_under(off, c), sought=back is None)
+        // passage; not back where the reader was: ListPlace::bring's `sought`, what its words mark: View::sought. One in
+        // sight already glides there, the eyes taken along to it as it lights (what is between measured as it shows);
+        // one out of sight, its place only counted, there at once: `glide`)
+        let in_sight = match jump.sight.untracked() {
+          Some((first, last)) =>
+            match (rs.keys.search(first), rs.keys.search(k), rs.keys.search(last)) {
+              (Some(a), Some(i), Some(b)) => a <= i && i <= b
+              _ => false
+            }
+          None => false
+        }
+        place.bring(k, offset=@sfbase.kept_place_under(off, c), glide=back is None && in_sight, sought=back is None)
         // (back where the reader was: nothing of it shown; a search's: its words marked, nothing flashing; else it
         // flashes, from now)
         if back is None {

@@ -1,29 +1,30 @@
-// A menu of the presenters' (the library's dropdown, kit's dropdown_menu and menu_panel, in the web's
-// look) as nodes of the window's tree: a modal layer over the window, nothing under it dimmed, its small panel beside
-// what opened it (where it was drawn as it opened: under it, `offset` off, lined up `along` it, over it where there is
-// not the room under: View::beside), grown out of that side as it comes (pop_in), gone at once as it closes (as the
-// presenters let go of a menu the frame it closes); its rows as menu_row draws them (as high as the screen's pick row at least, its icon or a choice's check in
-// a column before its words where one has one, a danger's in red, one not to be chosen faint), headings and lines
-// between parts; what it holds scrolling where it is taller than the window leaves it. Its rows are one roving group, the
-// one with the focus lit: Up and Down move the focus along them (not round), Home and End to the ends, letters typed
-// (alone or with Shift) to the first whose words start with them (a second's worth together), shown, what holds them
-// bringing it into sight; the pointer moving onto one gives it the focus, unseen. Enter, Space, a tap or a click choose
-// one (it closes, then what it does goes on); a press on what of its panel cannot be chosen does nothing. Escape, back
-// and a press outside close it. Opened by the keyboard, the focus on its first row, shown; else on its panel, nothing
-// lit, till a key or the pointer moves it.
+// A menu of the presenters' (the library's dropdown, kit's dropdown_menu and menu_panel, in the web's look) as nodes of
+// the window's tree: a modal layer over the window, nothing under it dimmed, its small panel beside what opened it
+// (where it was drawn as it opened: under it, `offset` off, lined up `along` it, over it where there is not the room
+// under: View::beside), grown out of that side as it comes (pop_in), drawn back into it as it closes (pop_out, as kit's
+// menu goes), nothing of it pressed, modal or read out from the moment it closes; its rows as menu_row draws them (as
+// high as the screen's pick row at least, its icon or a choice's check in a column before its words where one has one,
+// a danger's in red, one not to be chosen faint), headings and lines between parts; what it holds scrolling where it is
+// taller than the window leaves it. Its rows are one roving group, the one with the focus lit: Up and Down move the
+// focus along them (not round), Home and End to the ends, letters typed (alone or with Shift) to the first whose words
+// start with them (a second's worth together), shown, what holds them bringing it into sight; the pointer moving onto
+// one gives it the focus, unseen. Enter, Space, a tap or a click choose one (it closes, then what it does goes on); a
+// press on what of its panel cannot be chosen does nothing. Escape, back and a press outside close it. Opened by the
+// keyboard, the focus on its first row, shown; else on its panel, nothing lit, till a key or the pointer moves it.
 
 ///|
-/// A menu in `parent` while `open()` (let go of at once once not): what `content` holds as it is now (None a line
-/// between parts: its rows, what can be chosen of them, the keys' way along them and what a choice does, all from the
-/// same of it, read again as it is told changed, the menu open as it was, its focus where it was), headed by
-/// `title` ("" none), beside what `anchor` makes in its layer (what opened it, where that is drawn), `offset` off
-/// it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first row); `keep_field`: opened by a
-/// finger with a field focused (kit's dropdown_menu: its input method left in place): the focus left in that field, what
-/// is typed still its (View::leaves_typing), every key, the wheel and every press the menu's as ever. `choose` with the item chosen, once,
-/// as it closes; `cancel` as it is closed unchosen. `shown`, `gone`: as dialog_layer_node's. `side`: the side of what
-/// opened it it goes on (a submenu's beside its row: submenu_row_node). Not `modal` (a submenu's, as kit's
-/// dropdown_menu's `submenu`): what is under it its own as ever, a press outside its panel closing it as it goes down
-/// and going on to what it lands on; the arrow key back toward what opened it (away from `side`) closing it too.
+/// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
+/// what `content` holds as it is now (None a line between parts: its rows, what can be chosen of them, the keys' way
+/// along them and what a choice does, all from the same of it, read again as it is told changed, the menu open as it
+/// was, its focus where it was), headed by `title` ("" none), beside what `anchor` makes in its layer (what opened it,
+/// where that is drawn), `offset` off it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first
+/// row); `keep_field`: opened by a finger with a field focused (kit's dropdown_menu: its input method left in place):
+/// the focus left in that field, what is typed still its (View::leaves_typing), every key, the wheel and every press
+/// the menu's as ever. `choose` with the item chosen, once, as it closes; `cancel` as it is closed unchosen. `shown`,
+/// `gone`: as dialog_layer_node's. `side`: the side of what opened it it goes on (a submenu's beside its row:
+/// submenu_row_node). Not `modal` (a submenu's, as kit's dropdown_menu's `submenu`): what is under it its own as ever,
+/// a press outside its panel closing it as it goes down and going on to what it lands on; the arrow key back toward
+/// what opened it (away from `side`) closing it too.
 pub fn menu_node(
   parent : @view.View,
   open : () -> Bool,
@@ -49,12 +50,24 @@ pub fn menu_node(
       shown()
       layer.owns(gone) |> ignore
       let t = theme()
-      // (how far in it is, from the moment it opened)
+      // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
+      // as panel_node's)
       let way = EdgeWay::new(0.0)
       way.go(layer, 1.0, @kit.pop_ms)
+      layer.reacts(fn() { layer.leaving() }, at_start=false, fn(going) {
+        if going {
+          way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+        } else {
+          way.go(layer, 1.0, @kit.pop_ms)
+        }
+      })
       let look = fn() {
         let p = way.shown(layer)
-        @kit.pop_in.at(p, p)
+        if layer.leaving() {
+          @kit.pop_out.at(p, p)
+        } else {
+          @kit.pop_in.at(p, p)
+        }
       }
       let live = fn() { !layer.leaving() }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
@@ -111,6 +124,8 @@ pub fn menu_node(
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
       .modal(By(fn() { modal && live() }))
+      // (going, nothing of it read out, as panel_node's)
+      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
       if !modal {
@@ -337,6 +352,7 @@ pub fn menu_node(
       })
       |> ignore
     },
+    leave=@kit.pop_out_ms,
   )
 }
 
