@@ -131,25 +131,30 @@ pub fn board_lane_words(lane : String) -> String {
 }
 
 ///|
-/// Where chat `i` stands on the board, as its row says (the core's): a message of the viewer's that did not go, or the
-/// chat waiting on them (a decision, help asked, failed); keeping watch; at work (running, waiting on what it set off,
-/// being made, no agent in it yet); else done and not yet put away.
+/// Where chat `i` stands on the board, as the core works it out for the viewer (its row's `stage`, client/core-ts
+/// chat-stage.ts: one rule with the bell's 待处理 and the sidebar's counts): it needs them (a message of theirs that did
+/// not go, a card or a need they decide, gone wrong for them), keeping watch, at work (or asking a colleague), else
+/// ended (the core says none: done).
 pub fn board_lane_of(i : ChatItem) -> String {
   if i.unsent {
     "wait"
-  } else if i.state_lead == "watch" {
-    "watch"
-  } else if i.state == "block" ||
-    i.state == "failed" ||
-    i.state_lead == "decision" ||
-    i.state_lead == "need" ||
-    i.decision_text is Some(_) {
-    "wait"
-  } else if i.state == "run" || i.state_lead == "wait" || i.pending || i.agents.is_empty() {
-    "run"
   } else {
-    "done"
+    match i.stage {
+      "wait" | "watch" | "run" => i.stage
+      // (a core that says no stage: keeping watch or at work as its row says, else ended; a core of today says a stage
+      // for every row but an ended one, so this never goes against it)
+      _ if i.state_lead == "watch" => "watch"
+      _ if i.state == "run" || i.pending || i.agents.is_empty() => "run"
+      _ => "done"
+    }
   }
+}
+
+///|
+/// Of the chats `items` the board shows, those 待收口 holds the viewer has read and may put away at once (归档已读): not
+/// pinned, not being made, not one keeping watch, nor one not read (a result just delivered stays).
+pub fn board_archivable_settled(items : Array[ChatItem]) -> Array[ChatItem] {
+  items.filter(fn(i) { board_lane_of(i) == "done" && !i.unread && i.pinned != Some(true) && !i.pending && i.swipe_archive })
 }
 
 ///|
@@ -436,6 +441,13 @@ pub fn board_filter_of(src : Source, ws : String) -> String {
 }
 
 ///|
+/// Whether the board shows chat `i` as a card of its own: not one an agent leads (chat_create for me), which is its
+/// leader's, said under it (its card's `subchats`).
+pub fn board_card_own(i : ChatItem) -> Bool {
+  !i.opener_led
+}
+
+///|
 /// The chats of workspace `ws` the board shows: every one listed (as board_filter_of narrows them), the newest first,
 /// and a draft started whose chat the core does not list yet as that chat's card (under the key it is made under: the
 /// same card as its pending row and the station's row after it).
@@ -445,7 +457,9 @@ pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
     Some(v) =>
       for d in v.days {
         for i in d.items {
-          all.push(i)
+          if board_card_own(i) {
+            all.push(i)
+          }
         }
       }
     None => ()
@@ -476,6 +490,7 @@ fn board_coming(s : BoardStarted) -> ChatItem {
     "stationName": Json::string(s.draft.station_name),
     "title": Json::string(s.draft.title),
     "state": "run",
+    "stage": "run",
     "pending": true,
     "stateLead": "wait",
     "stateText": Json::string(starting),

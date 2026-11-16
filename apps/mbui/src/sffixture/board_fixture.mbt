@@ -104,6 +104,7 @@ pub fn board_days(f : Fixture) -> Array[Json] {
   let at_work = fn(id : String, title : String, station : String, ago : String, words : String, more : Map[String, Json]) {
     let m = more.copy()
     m["state"] = "run"
+    m["stage"] = "run"
     m["tone"] = "busy"
     m["stateText"] = Json::string(words)
     m["stateLead"] = ""
@@ -114,7 +115,7 @@ pub fn board_days(f : Fixture) -> Array[Json] {
   let waits = fn(id : String, title : String, station : String, ago : String, more : Map[String, Json], then : String) {
     if board_answered("s-" + id) {
       let m = more.copy()
-      for k in ["decision", "stateLead", "stateLeadText", "stateRest", "stateText", "state", "tone"] {
+      for k in ["decision", "stateLead", "stateLeadText", "stateRest", "stateText", "state", "tone", "stage"] {
         m.remove(k)
       }
       at_work(id, title, station, "刚刚", then, m)
@@ -131,6 +132,7 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       waits("c1", "整理发布清单", "ws1/st1", "6 分钟前", {
         "unread": true,
         "tone": "wait",
+        "stage": "wait",
         "decision": { "seq": 8, "options": [], "text": "等 林 决定 · 要不要把旧的截图也一起换掉？" },
         "stateText": "等 林 决定 · 要不要把旧的截图也一起换掉？",
         "stateLead": "decision",
@@ -143,6 +145,7 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       waits("c3", "夜里的构建又失败了", "ws1/st2", "15 分钟前", {
         "state": "block",
         "tone": "wait",
+        "stage": "wait",
         "stateText": "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？",
         "stateLead": "need",
         "stateRest": "测试机的磁盘满了，要不要清理旧的缓存？",
@@ -152,19 +155,22 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       waits("c9", "迁移数据库的演练", "ws1/st2", "32 分钟前", {
         "state": "failed",
         "tone": "alert",
+        "stage": "wait",
         "stateText": "出错：演练到第二步时 Maple 连接中断",
         "agents": [claude],
         "people": [me, zhou],
-        "creator": { "id": "zhou@example.com", "name": "周", "via": "cloud" },
       }, "正在从第二步重新演练…"),
+      // (it leads another chat (chat_create for me), at work under it: said on its card, not a card of its own)
       at_work("c11", "首页的列表改成按天分组", "ws1/st1", "2 分钟前", "正在把分组标题换成相对日期，已改完 3 个文件", {
         "agents": [gemini],
         "people": [me, zhou],
         "pinned": true,
+        "subchats": "1 个子会话进行中",
       }),
       row("c12", "接入飞书的审批通知", "ws1/st2", "9 分钟前", {
         "state": "run",
         "tone": "busy",
+        "stage": "run",
         "stateText": "等 CI：第 3 项检查还在跑",
         "stateLead": "wait",
         "stateRest": "第 3 项检查还在跑",
@@ -175,7 +181,15 @@ pub fn board_days(f : Fixture) -> Array[Json] {
         "people": [ana],
         "creator": { "id": "ana@example.com", "name": "Ana", "via": "cloud" },
       }),
-      at_work("c13", "补一下部署文档", "ws1/st1", "12 分钟前", "正在补第四节：回滚的步骤", {
+      // (a card 周 decides: at work for the viewer, never theirs to answer)
+      row("c13", "补一下部署文档", "ws1/st1", "12 分钟前", {
+        "tone": "wait",
+        "stage": "run",
+        "decision": { "seq": 6, "options": [], "text": "等 周 决定 · 回滚写成脚本还是保留手动步骤？" },
+        "stateText": "等 周 决定 · 回滚写成脚本还是保留手动步骤？",
+        "stateLead": "decision",
+        "stateLeadText": "等 周 决定",
+        "stateRest": " · 回滚写成脚本还是保留手动步骤？",
         "agents": [codex],
         "people": [zhou],
         "creator": { "id": "zhou@example.com", "name": "周", "via": "cloud" },
@@ -183,16 +197,8 @@ pub fn board_days(f : Fixture) -> Array[Json] {
     ],
   )
   let earlier = [
-    row("c4", "给设置页加一个深色模式开关", "ws1/st1", "40 分钟前", {
-      "unread": true,
-      "tone": "done",
-      "stateText": "做完了：开关和三处颜色都改好了，已合进 main",
-      "stateLead": "done",
-      "stateRest": "开关和三处颜色都改好了，已合进 main",
-      "agents": [codex],
-      "people": [me],
-    }),
-    row("c7", "Slack 里问的报销流程", "ws1/st2", "1 小时前", {
+    // (read, and newer than the result not read under it: 待收口 puts the unread first all the same)
+    row("c7", "Slack 里问的报销流程", "ws1/st2", "25 分钟前", {
       "tone": "done",
       "connect": "slack-1",
       "originKind": "slack",
@@ -204,6 +210,15 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       "people": [ana],
       "creator": { "id": "ana@example.com", "name": "Ana", "via": "cloud" },
     }),
+    row("c4", "给设置页加一个深色模式开关", "ws1/st1", "40 分钟前", {
+      "unread": true,
+      "tone": "done",
+      "stateText": "做完了：开关和三处颜色都改好了，已合进 main",
+      "stateLead": "done",
+      "stateRest": "开关和三处颜色都改好了，已合进 main",
+      "agents": [codex],
+      "people": [me],
+    }),
     row("c8", "把旧的截图都换成新的", "ws1/st1", "昨天 10:30", {
       "settled": true,
       "stateText": "做完了：首页和聊天页的 12 张截图都换了",
@@ -212,10 +227,14 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       "agents": [gemini],
       "people": [me, ana],
     }),
+    // (its watch woke it: at work for a moment, watching all the same)
     row("c5", "盯着 CI，绿了告诉我", "ws1/st2", "1 小时前", {
-      "stateText": "监控中：每 5 分钟看一次主干的构建",
-      "stateLead": "watch",
-      "stateRest": "监控中：每 5 分钟看一次主干的构建",
+      "state": "run",
+      "tone": "busy",
+      "stage": "watch",
+      "stateText": "正在巡检：主干构建刚刚变绿",
+      "stateLead": "",
+      "stateRest": "正在巡检：主干构建刚刚变绿",
       "watch": { "text": "监控中：主干构建", "ask": "「主干构建」仍在监控。归档会停止监控。" },
       "agents": [claude],
       "people": [me],
@@ -321,6 +340,7 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
         0,
         row(key, "新对话", station, "刚刚", {
           "state": "",
+          "stage": "run",
           "pending": true,
           "clientKey": Json::string(key),
           "agents": [],
@@ -339,6 +359,7 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
         0,
         row("cb\{n}", text(p, "text"), station, "刚刚", {
           "state": "run",
+          "stage": "run",
           "tone": "busy",
           "stateText": "正在读取仓库与分析改动点…",
           "stateLead": "",
@@ -352,5 +373,50 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
       Some(Ok(Json::object({})))
     }
     _ => None
+  }
+}
+
+///|
+/// The board's 待处理 (the core's `workspaceMarks`), as the core lists it of the board's chats (client/core-ts
+/// views/marks.ts): what waits for the viewer read or not (整理发布清单's decision, unread; 夜里的构建又失败了's need,
+/// read), what went wrong for them, then what is unread (给设置页加一个深色模式开关).
+pub fn board_marks() -> Json {
+  let item = fn(kind : String, session : String, title : String, text : String, what : String, station : String, at : Double) {
+    let m : Map[String, Json] = {
+      "kind": Json::string(kind),
+      "workspace": "ws1",
+      "station": Json::string(station),
+      "stationName": Json::string(if station == "ws1/st1" { "Willow" } else { "Maple" }),
+      "session": Json::string("s-" + session),
+      "thread": Json::number(session.length().to_double()),
+      "title": Json::string(title),
+      "text": Json::string(text),
+      "what": Json::string(what),
+      "at": Json::number(at),
+    }
+    m
+  }
+  let c1 = item("wait", "c1", "整理发布清单", "等 林 决定 · 要不要把旧的截图也一起换掉？", "要不要把旧的截图也一起换掉？", "ws1/st1", 6.0)
+  c1["seq"] = Json::number(8.0)
+  let c3 = item("wait", "c3", "夜里的构建又失败了", "要你帮忙：测试机的磁盘满了，要不要清理旧的缓存？", "测试机的磁盘满了，要不要清理旧的缓存？", "ws1/st2", 5.0)
+  let c9 = item("alert", "c9", "迁移数据库的演练", "出错：演练到第二步时 Maple 连接中断", "演练到第二步时 Maple 连接中断", "ws1/st2", 4.0)
+  c9["failure"] = "ws1/st2/c9@4"
+  let c4 = item("done", "c4", "给设置页加一个深色模式开关", "做完了：开关和三处颜色都改好了，已合进 main", "开关和三处颜色都改好了，已合进 main", "ws1/st1", 3.0)
+  c4["seq"] = Json::number(4.0)
+  {
+    "workspaces": {
+      "ws1": {
+        "workspaceName": "星火工作室",
+        "alert": 1,
+        "wait": 2,
+        "unread": 1,
+        "tone": "alert",
+        "label": "1 个出错 · 2 个待你处理 · 1 个有新消息",
+        "badge": 4,
+        "items": [Json::object(c9), Json::object(c1), Json::object(c3), Json::object(c4)],
+      },
+    },
+    "badge": 4,
+    "badgeKinds": { "on": true, "wait": true, "failed": true, "done": true, "message": true, "services": true },
   }
 }

@@ -761,7 +761,6 @@ pub fn fix_attention_marks() -> Json {
       "station": Json::string(station),
       "stationName": Json::string(name),
       "thread": Json::number(thread),
-      "workspaceName": "家里",
     }
     m
   }
@@ -776,6 +775,7 @@ pub fn fix_attention_marks() -> Json {
   {
     "workspaces": {
       "ws1": {
+        "workspaceName": "家里",
         "alert": 1,
         "wait": 1,
         "unread": 1,

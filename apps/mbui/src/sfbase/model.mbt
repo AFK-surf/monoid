@@ -116,6 +116,13 @@ pub(all) struct ChatItem {
   slack_url : String
   slack_app : String
   feishu_url : String
+  /// its column on the board for the viewer, as the core works it out (client/core-ts chat-stage.ts): wait, watch, run;
+  /// "" ended (待收口)
+  stage : String
+  /// the chats it leads still at work, in words (1 个子会话进行中), "" none
+  subchats : String
+  /// an agent leads it (chat_create for me): it asks that agent, and the board shows it under it (its `subchats`)
+  opener_led : Bool
 }
 
 ///|
@@ -302,6 +309,9 @@ pub fn chat_item(v : Json) -> ChatItem {
     slack_url: text(s, "slackUrl"),
     slack_app: text(s, "slackApp"),
     feishu_url: text(s, "feishuUrl"),
+    stage: text(s, "stage"),
+    subchats: text(s, "subchats"),
+    opener_led: flag(field(s, "opener"), "led"),
   }
 }
 

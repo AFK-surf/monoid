@@ -72,6 +72,8 @@ priv struct BoardOwn {
   /// the chats and the stations by their keys (View::keyed_by): a card reads its own, told only as that one changes,
   /// never as another does
   items_by : @signals.KeyedList[String, ChatItem]
+  /// the chats the board shows, as its columns are worked out of them (what 归档已读 counts and puts away)
+  items : () -> Array[ChatItem]
   /// the drafts by their ids, worked out as they change, in the same change: a draft started or deleted is gone from its
   /// card as the card leaves (a keyed list follows its source a reaction after, the card leaving with its words then);
   /// the device's own few, read by the drafts' cards alone
@@ -254,7 +256,8 @@ fn board_holds(col : String, i : ChatItem, me : () -> String) -> Bool {
 }
 
 ///|
-/// The cards of column `col` (board_columns'), in order: 待派发's drafts, then its chats (pinned first).
+/// The cards of column `col` (board_columns'), in order: 待派发's drafts, then its chats (pinned first; in 待收口 then
+/// those just delivered and not read, then those read: what is new on top, what is only to put away under it).
 fn board_cards(
   col : String,
   items : Array[ChatItem],
@@ -286,6 +289,20 @@ fn board_cards(
       out.push(ChatKey(@sfbase.row_name(i)))
     }
   }
+  let fresh = fn(i : ChatItem) { i.unread }
+  if col == "done" {
+    for i in chats {
+      if i.pinned != Some(true) && fresh(i) {
+        out.push(ChatKey(@sfbase.row_name(i)))
+      }
+    }
+    for i in chats {
+      if i.pinned != Some(true) && !fresh(i) {
+        out.push(ChatKey(@sfbase.row_name(i)))
+      }
+    }
+    return out
+  }
   for i in chats {
     if i.pinned != Some(true) {
       out.push(ChatKey(@sfbase.row_name(i)))
@@ -293,6 +310,46 @@ fn board_cards(
   }
   out
 }
+
+///|
+/// 待收口's chats read put away at once (归档已读, sfbase's board_archivable_settled): each archived as its card's 归档
+/// archives it, the chat open beside the board closed where it is one of them, one toast saying how many and taking
+/// them all back.
+fn board_archive_settled(src : Source, items : Array[ChatItem]) -> Unit {
+  let gone = @sfbase.board_archivable_settled(items)
+  guard gone.length() > 0 else { return }
+  let asked : Array[Map[String, Json]] = []
+  for i in gone {
+    if @sfbase.board_pick.untracked().map(fn(p) { @sfbase.row_is(i, p) }).unwrap_or(false) {
+      @sfbase.board_pick.set(None)
+    }
+    leave_archived(i)
+    let params : Map[String, Json] = {
+      "station": Json::string(i.station),
+      "session": Json::string(i.session),
+      "archived": Json::boolean(true),
+    }
+    match i.thread {
+      Some(th) => params["thread"] = Json::number(th)
+      None => ()
+    }
+    asked.push(params)
+    @sfbase.act(src, @sf.t("android-chat.archive.verb"), "", "chat.archive", Json::object(params), at_once=true)
+  }
+  // (one toast for all of them, its 撤销 asking each back: what one row's archive says, for the whole press)
+  @sfbase.toast_later(
+    @sf.t("web-main.board.archived_read", args=[("n", gone.length().to_string())]),
+    action=@sf.t("android-chat.archived.undo"),
+    run=fn() {
+      for k, params in asked {
+        let back = params.copy()
+        back["archived"] = Json::boolean(false)
+        @sfbase.act(src, @sf.t("android-misc.archive.restoreWhat"), "", "chat.archive", Json::object(back), done=if k == asked.length() - 1 { @sf.t("android-misc.archive.restored") } else { "" }, at_once=true)
+      }
+    },
+  )
+}
+
 
 ///|
 /// Home's chats as the board in `v`, of the workspace in view (`workspace`): `width` how wide it is given (its
@@ -365,6 +422,7 @@ pub fn board_node(
     room_made: @signals.signal(0),
     stations: fn() { stations_now.get() },
     items_by: v.keyed_by(items, @sfbase.row_name),
+    items,
     drafts_by: fn() { drafts_map.get() },
     stations_by: v.keyed_by(fn() { stations_now.get() }, fn(c) { c.station }),
     me: fn() { me_now.get() },
@@ -1160,6 +1218,15 @@ fn board_column(
   |> ignore
   let cards_now = @signals.computed(fn(_) { (own.cards_of)(key) })
   let cards = fn() { cards_now.get() }
+  // (待收口's: how many of its chats read may be put away at once)
+  let settled_now = @signals.computed(fn(_) {
+    if key == "done" {
+      @sfbase.board_archivable_settled((own.items)()).length()
+    } else {
+      0
+    }
+  })
+  let settled_n = fn() { settled_now.get() }
   // (lit faintly while a card in hand may be let go on it, coming and going as a control answering does)
   let lit = @sf.EdgeWay::new(0.0)
   col.reacts(fn() { (own.over_is)(key) }, fn(on) { lit.go(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
@@ -1184,6 +1251,15 @@ fn board_column(
       if key == "draft" {
         @sf.icon_button_node(h, "plus", fn() { board_words("new-here") }, fn() { board_open_add(own) |> ignore }, tips~)
         |> ignore
+      }
+      // (待收口's chats read put away at once, while there are some)
+      if key == "done" {
+        h.show(fn() { settled_n() > 0 }, fn(k) {
+          @sf.icon_button_node(k, "archive", fn() { @sf.t("web-main.board.archive_read", args=[("n", settled_n().to_string())]) }, fn() {
+            board_archive_settled(src, @signals.untracked(own.items))
+          }, tips~)
+          |> ignore
+        }, along_row=true)
       }
     })
     |> ignore
@@ -1250,6 +1326,28 @@ fn board_column(
             })
             |> ignore
           }
+        }
+        // (narrow, 待收口's chats read put away at once from its top, while there are some: how many, and 归档已读)
+        if key == "done" && !wide {
+          h.show(fn() { settled_n() > 0 }, fn(a) {
+            a.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).padding(Is((4.0, 0.0, 0.0, 8.0))) |> ignore
+            a.box(fn(w) {
+              w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(w, fn() { @sf.t("web-main.board.read_n", args=[("n", settled_n().to_string())]) }, fn() {
+                card_meta_look
+              })
+              |> ignore
+            })
+            |> ignore
+            a.box(fn(k) {
+              k.shrink(Is(0.0)) |> ignore
+              @sf.button_node(k, fn() { @sf.t("web-main.board.archive_read_short") }, fn() {
+                board_archive_settled(src, @signals.untracked(own.items))
+              }, tone=Ghost, icon="archive")
+              |> ignore
+            })
+            |> ignore
+          })
         }
       },
     )
@@ -1801,6 +1899,8 @@ fn board_chat_card(
   let title = fn() { item().map(fn(i) { @sfbase.board_title_of(i) }).unwrap_or("") }
   let r = fn() { item().map(fn(i) { row_ref(i) }) }
   let stands = fn() { item().map(fn(i) { @sfbase.board_lane_of(i) }).unwrap_or("done") }
+  // (in 待收口: a result just delivered and not read, its title bolder, where it stands in green; one read, quieter)
+  let fresh = fn() { item().map(fn(i) { i.unread }).unwrap_or(false) }
   let open = fn() {
     guard @signals.untracked(r) is Some(r) else { return }
     if wide && @signals.untracked(own.side) {
@@ -1879,7 +1979,20 @@ fn board_chat_card(
       head.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
       head.box(fn(t) {
         t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-        @sf.words_node(t, title, fn() { card_title_look }) |> ignore
+        // (ended: bolder while not read, quieter once read, whatever the board is grouped by; else as it is: a card of
+        // another state's column is never one ended, so its look reads nothing)
+        let look = if lane == "done" || !@sfbase.board_lanes.contains(lane) {
+          fn() {
+            match (stands(), fresh()) {
+              ("done", true) => card_title_fresh_look
+              ("done", false) => card_title_read_look
+              _ => card_title_look
+            }
+          }
+        } else {
+          fn() { card_title_look }
+        }
+        @sf.words_node(t, title, look) |> ignore
       })
       |> ignore
       head.show(fn() { item().map(fn(i) { i.pinned == Some(true) }).unwrap_or(false) }, fn(m) {
@@ -1896,7 +2009,7 @@ fn board_chat_card(
         m.height(By(fn() { Some(@sf.theme().t.meta_line) })).lines_up(Is(Some(Middle))).row(Is(true)).shrink(Is(0.0)) |> ignore
         m.pick(stands, fn(mm, st) {
           match st {
-            "done" => @sf.icon_node(mm, "check", 14.0, By(fn() { @sf.theme().p.green_ink })) |> ignore
+            "done" => @sf.icon_node(mm, "check", 14.0, By(fn() { if fresh() { @sf.theme().p.green_ink } else { @sf.theme().p.muted } })) |> ignore
             "watch" => @sf.icon_node(mm, "watch", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
             "run" => chat_mark_node(mm, fn() { "busy" })
             _ =>
@@ -1914,7 +2027,7 @@ fn board_chat_card(
           match (stands(), item()) {
             ("wait", Some(i)) if i.state == "failed" || i.unsent => card_state_red
             ("wait", _) => card_state_warn
-            ("done", _) => card_state_done()
+            ("done", _) if fresh() => card_state_done()
             _ => card_state_muted
           }
         })
@@ -1923,6 +2036,20 @@ fn board_chat_card(
       |> ignore
     })
     |> ignore
+    // the chats it leads still at work (1 个子会话进行中): why it is at work, its mark on its line's first line
+    card.show(fn() { item().map(fn(i) { i.subchats != "" }).unwrap_or(false) }, fn(sub) {
+      sub.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
+      sub.box(fn(m) {
+        m.height(By(fn() { Some(@sf.theme().t.meta_line) })).lines_up(Is(Some(Middle))).row(Is(true)).shrink(Is(0.0)) |> ignore
+        @sf.icon_node(m, "spawned", 13.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
+      sub.box(fn(w) {
+        w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+        @sf.words_node(w, fn() { item().map(fn(i) { i.subchats }).unwrap_or("") }, fn() { card_meta_look }) |> ignore
+      })
+      |> ignore
+    })
     // where it runs, where from, when; its agents and its people at the end
     card.box(fn(m) {
       m.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
@@ -2017,6 +2144,14 @@ fn card_said(i : ChatItem?) -> String {
 ///|
 // kept across runs: a value (no field of it changes)
 let card_title_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, wrap=true, max_lines=2, leading=L5)
+
+///|
+// kept across runs: a value (no field of it changes)
+let card_title_fresh_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, wrap=true, max_lines=2, leading=L5)
+
+///|
+// kept across runs: a value (no field of it changes)
+let card_title_read_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Normal, wrap=true, max_lines=2, leading=L5)
 
 ///|
 // kept across runs: a value (no field of it changes)

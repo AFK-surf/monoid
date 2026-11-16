@@ -2844,6 +2844,10 @@ web-main.board.start
 web-main.board.start_now
 web-main.board.delete
 web-main.board.archive
+web-main.board.archive_read
+web-main.board.archive_read_short
+web-main.board.archived_read
+web-main.board.read_n
 web-main.board.drop_archive
 web-main.board.drag_archive
 web-main.board.drop_delete

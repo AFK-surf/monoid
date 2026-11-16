@@ -236,6 +236,12 @@ fn attention_key(i : Json) -> String {
 }
 
 ///|
+/// Workspace `ws`'s mark as the core says it (its name, its mark, its 待处理).
+fn attention_mark(src : Source, ws : String) -> Json? {
+  field(field(src.topic("workspaceMarks", @sfbase.marks_asked()).get().value, "workspaces"), ws)
+}
+
+///|
 /// Whether 待处理 lists any chat (what a bell with no services or stations of its own, the phone's, lights by).
 pub fn attention_any(src : Source, w : Workspace) -> Bool {
   attention_groups(src, w, true).length() > 0
@@ -302,7 +308,7 @@ fn attention_groups(src : Source, w : Workspace, shown : Bool) -> Array[(String,
       for ws in order {
         let list = items(by.get(ws), "items").filter(fn(i) { !shown || !attention.gone.contains(attention_key(i)) })
         if list.length() > 0 {
-          groups.push((ws, text(Some(list[0]), "workspaceName"), list))
+          groups.push((ws, text(by.get(ws), "workspaceName"), list))
         }
       }
     }
@@ -343,10 +349,10 @@ fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close
     group("", None, fn() { open_jobs(c, src, w) })
   }
   for g in groups {
-    // each workspace's mark before its name, as the core says it with its chats (MarkItem's workspaceEmoji, workspaceIcon)
-    let first_item = Some(g.2[0])
+    // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
+    let mark = attention_mark(src, g.0)
     let lead = fn(c : @ui.Ctx) {
-      @sf.workspace_badge(c, g.1, text(first_item, "workspaceEmoji"), text(first_item, "workspaceIcon"), att_ws_mark)
+      @sf.workspace_badge(c, g.1, text(mark, "workspaceEmoji"), text(mark, "workspaceIcon"), att_ws_mark)
     }
     group(if several { g.1 } else { "" }, Some(lead), fn() {
       for i in g.2 {
@@ -469,8 +475,8 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, close : () -
     |> ignore
   })
   v.each(groups, fn(g) { g.0 }, fn(gb, g) {
-    // each workspace's mark before its name, as the core says it with its chats (MarkItem's workspaceEmoji, workspaceIcon)
-    let first_item = fn() { g.get().2.get(0) }
+    // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
+    let first_item = fn() { attention_mark(src, g.get().0) }
     @sf.panel_group_node(
       gb,
       fn() { if several() { g.get().1 } else { "" } },
@@ -511,62 +517,78 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
     @sf.style_node(r, fn() { if @sf.lit_in_node(r) { att_item_on } else { att_item } })
     @sf.presses_node(r, go)
     r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-    r.box(fn(m) {
-      @sf.style_node(m, fn() { att_mark })
-      m.box(fn(dot) {
-        let look = fn() -> (@ui.Color, String) {
-          match text(v(), "kind") {
-            "alert" => (Data(@sf.theme().p.red), "web-main.attention.alertOne")
-            "done" => (@sf.mark_blue, "web-main.chatMark.done")
-            _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
+    // (its first line: the dot, the title and 忽略, their middles on one line; the line under it from the title's edge,
+    // never the dot centred on both: the user, 2026-11-14)
+    r.box(fn(head) {
+      @sf.style_node(head, fn() { att_head })
+      head.box(fn(m) {
+        @sf.style_node(m, fn() { att_mark })
+        m.box(fn(dot) {
+          let look = fn() -> (@ui.Color, String) {
+            match text(v(), "kind") {
+              "alert" => (Data(@sf.theme().p.red), "web-main.attention.alertOne")
+              "done" => (@sf.mark_blue, "web-main.chatMark.done")
+              _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
+            }
           }
-        }
-        @sf.style_node(dot, fn() {
-          let (ground, _) = look()
-          att_dot.then(@ui.style(bg=ground))
+          @sf.style_node(dot, fn() {
+            let (ground, _) = look()
+            att_dot.then(@ui.style(bg=ground))
+          })
+          dot.says(By(fn() { Some(@view.said(Image, label=@sf.t(look().1))) })) |> ignore
         })
-        dot.says(By(fn() { Some(@view.said(Image, label=@sf.t(look().1))) })) |> ignore
+        |> ignore
       })
       |> ignore
-    })
-    |> ignore
-    r.box(fn(words) {
-      @sf.style_node(words, fn() { att_text }, in_row=true)
-      @sf.words_node(words, title, fn() { att_title }) |> ignore
-      words.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
-        @sf.words_node(l, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
+      head.box(fn(words) {
+        @sf.style_node(words, fn() { att_text }, in_row=true)
+        @sf.words_node(words, title, fn() { att_title }) |> ignore
       })
-    })
-    |> ignore
-    r.show(
-      at_once=true,
-      fn() { attention_dismiss(src, i()) is Some(_) && (!@sf.pointer_rests() || @sf.lit_in_node(r)) },
-      fn(d) {
-        d.box(fn(x) {
-          @sf.style_node(x, fn() { if @sf.lit_node(x) { att_dismiss_on } else { att_dismiss } })
-          @sf.presses_node(x, fn() {
-            match attention_dismiss(src, @signals.untracked(i)) {
-              Some(f) => f()
+      |> ignore
+      head.show(
+        at_once=true,
+        fn() { attention_dismiss(src, i()) is Some(_) && (!@sf.pointer_rests() || @sf.lit_in_node(r)) },
+        fn(d) {
+          d.box(fn(x) {
+            @sf.style_node(x, fn() { if @sf.lit_node(x) { att_dismiss_on } else { att_dismiss } })
+            @sf.presses_node(x, fn() {
+              match attention_dismiss(src, @signals.untracked(i)) {
+                Some(f) => f()
+                None => ()
+              }
+            })
+            x.says(Is(Some(@view.said(Button, label=@sf.t("web-main.attention.dismiss"))))) |> ignore
+            @sf.words_node(x, fn() { @sf.t("web-main.attention.dismiss") }, fn() {
+              if @sf.lit_node(x) {
+                att_dismiss_on_words
+              } else {
+                att_dismiss_words
+              }
+            })
+            |> ignore
+            match tips {
+              Some(layer) => @sf.tip_node(layer, x, fn() { attention_note(v()) }) |> ignore
               None => ()
             }
           })
-          x.says(Is(Some(@view.said(Button, label=@sf.t("web-main.attention.dismiss"))))) |> ignore
-          @sf.words_node(x, fn() { @sf.t("web-main.attention.dismiss") }, fn() {
-            if @sf.lit_node(x) {
-              att_dismiss_on_words
-            } else {
-              att_dismiss_words
-            }
-          })
           |> ignore
-          match tips {
-            Some(layer) => @sf.tip_node(layer, x, fn() { attention_note(v()) }) |> ignore
-            None => ()
-          }
+        },
+      )
+    })
+    |> ignore
+    r.show(at_once=true, fn() { attention_line(v()) != "" }, fn(l) {
+      l.box(fn(u) {
+        @sf.style_node(u, fn() { att_under })
+        // (the dot's column, empty: the line starts where the title does)
+        u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
+        u.box(fn(words) {
+          @sf.style_node(words, fn() { att_text }, in_row=true)
+          @sf.words_node(words, fn() { attention_line(v()) }, fn() { att_line }) |> ignore
         })
         |> ignore
-      },
-    )
+      })
+      |> ignore
+    })
   })
   |> ignore
 }
@@ -645,33 +667,39 @@ fn attention_item(
       "done" => (@sf.mark_blue, "web-main.chatMark.done")
       _ => (Data(@sf.theme().p.warn_ink), "web-main.attention.waitOne")
     }
-    c.box(style=att_mark, fn() {
-      let dot = c.box(style=att_dot.then(@ui.style(bg=ground)), fn() {  })
-      c.semantics(dot, Image, label=@sf.t(said))
-    })
-    |> ignore
-    c.box(style=att_text, fn() {
-      c.text(title, style=att_title) |> ignore
-      if line != "" {
-        c.text(line, style=att_line) |> ignore
+    // (its first line: the dot, the title and 忽略 on one line; the line under it from the title's edge)
+    c.box(style=att_head, fn() {
+      c.box(style=att_mark, fn() {
+        let dot = c.box(style=att_dot.then(@ui.style(bg=ground)), fn() {  })
+        c.semantics(dot, Image, label=@sf.t(said))
+      })
+      |> ignore
+      c.box(style=att_text, fn() { c.text(title, style=att_title) |> ignore }) |> ignore
+      match dismiss {
+        // (always to a finger, which hovers over nothing)
+        Some(d) if @sf.pointed_or_finger(c, hover) => {
+          c.on_press(drop, fn() {
+            d()
+          })
+          let on = c.lit(drop)
+          let x = c.box(style=if on { att_dismiss_on } else { att_dismiss }, id=drop, fn() {
+            c.text(@sf.t("web-main.attention.dismiss"), style=if on { att_dismiss_on_words } else { att_dismiss_words })
+            |> ignore
+          })
+          c.semantics(x, Button, id=drop, label=@sf.t("web-main.attention.dismiss"))
+          @sf.tip(c, key + "/dismiss-tip", drop, note)
+        }
+        _ => ()
       }
     })
     |> ignore
-    match dismiss {
-      // (always to a finger, which hovers over nothing)
-      Some(d) if @sf.pointed_or_finger(c, hover) => {
-        c.on_press(drop, fn() {
-          d()
-        })
-        let on = c.lit(drop)
-        let x = c.box(style=if on { att_dismiss_on } else { att_dismiss }, id=drop, fn() {
-          c.text(@sf.t("web-main.attention.dismiss"), style=if on { att_dismiss_on_words } else { att_dismiss_words })
-          |> ignore
-        })
-        c.semantics(x, Button, id=drop, label=@sf.t("web-main.attention.dismiss"))
-        @sf.tip(c, key + "/dismiss-tip", drop, note)
-      }
-      _ => ()
+    if line != "" {
+      c.box(style=att_under, fn() {
+        // (the dot's column, empty: the line starts where the title does)
+        c.box(style=att_mark, fn() {  }) |> ignore
+        c.box(style=att_text, fn() { c.text(line, style=att_line) |> ignore }) |> ignore
+      })
+      |> ignore
     }
   })
   c.semantics(b, Button, id~, label=title)
@@ -713,10 +741,21 @@ let att_empty : @ui.Style = @ui.css("w=Full p=S2_5")
 let att_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, leading=L6)
 
 ///|
-/// A row (item): 6 by 10 in, its dot's column and words 10 apart, its corner the panel's inner (--panel-in); pointed
-/// at, on the pointer's ground. Its words start where a long job's do above it (open_job_row), not 11 left of them.
+/// A row (item): 6 by 10 in, its corner the panel's inner (--panel-in); pointed at, on the pointer's ground. Its first
+/// line (att_head) over the line under it (att_under).
 // kept across runs: a value (no field of it changes)
-let att_item : @ui.Style = @ui.style(row=true, w=Full, px=S2_5, py=S1_5, gap=S2_5, align=ACenter, radius=@sf.panel_in)
+let att_item : @ui.Style = @ui.style(w=Full, px=S2_5, py=S1_5, radius=@sf.panel_in)
+
+///|
+/// A row's first line: its dot's column, its title and 忽略, 10 apart, their middles on one line. Its words start where
+/// a long job's do above it (open_job_row), not 11 left of them.
+// kept across runs: a value (no field of it changes)
+let att_head : @ui.Style = @ui.css("row w=Full gap=S2_5 align=ACenter")
+
+///|
+/// The line under a row's title, from the title's edge: an empty dot's column (att_mark) and att_head's gap before it.
+// kept across runs: a value (no field of it changes)
+let att_under : @ui.Style = @ui.css("row w=Full gap=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

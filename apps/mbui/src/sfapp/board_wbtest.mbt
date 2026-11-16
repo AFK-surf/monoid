@@ -780,3 +780,66 @@ test "大屏, a Mac's window (its buttons in the app's top row): the board's bar
   t.run_for(@ui.move_most_ms)
   assert_eq(board_faults(t), [])
 }
+
+///|
+test "大屏: each card where the core says its chat stands: one an agent leads under its leader, a colleague's card at work, a watch woken watching, 待收口's unread first; 归档已读 puts away those read alone" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  // (led by another chat's agent: under it, its leader's card saying so, not a card of its own)
+  let led = @sfbase.chat_item({ "id": "c16", "title": "执行：状态与通知编码", "opener": { "session": "s-c11", "led": true } })
+  assert_false(@sfbase.board_card_own(led))
+  assert_true(@sfbase.board_card_own(@sfbase.chat_item({ "id": "c17", "opener": { "session": "s-c11" } })))
+  assert_eq(board_lane_now(src, "首页的列表改成按天分组"), "run")
+  assert_true(board_words_at(t, "1 个子会话进行中") is Some(_))
+  // (a card 周 decides: at work for the viewer; a watch its watch woke: watching all the same)
+  assert_eq(board_lane_now(src, "补一下部署文档"), "run")
+  assert_eq(board_lane_now(src, "盯着 CI，绿了告诉我"), "watch")
+  // (待收口: the result not read over those read)
+  let top = fn(w : String) { board_words_at(t, w).map(fn(r) { r.1 }).unwrap_or(-1.0) }
+  assert_true(top("给设置页加一个深色模式开关") >= 0.0 && top("给设置页加一个深色模式开关") < top("Slack 里问的报销流程"))
+  assert_eq(board_faults(t), [])
+  t.click(Button, label="归档已读 (2)")
+  t.run_for(@ui.move_most_ms)
+  // (one toast for both, its 撤销 the whole press's)
+  assert_true(board_words_at(t, "已归档 2 个已读的对话") is Some(_))
+  assert_true(board_words_at(t, "给设置页加一个深色模式开关") is Some(_))
+  assert_true(board_words_at(t, "Slack 里问的报销流程") is None)
+  assert_true(board_words_at(t, "把旧的截图都换成新的") is None)
+  assert_true(t.query(Button, label="归档已读 (2)") is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "小屏: 待收口 says how many it has read and puts them away from its top, the result not read kept" {
+  let (t, _) = board_at("board", 390.0, 844.0, platform=2)
+  t.click(Button, label="待收口 3")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.board_lane.get(), "done")
+  assert_true(board_words_at(t, "已读 2 项") is Some(_))
+  assert_eq(board_faults(t), [])
+  t.click(Button, label="归档已读")
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "已读 2 项") is None)
+  assert_true(board_words_at(t, "给设置页加一个深色模式开关") is Some(_))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+/// How many times words `w` are drawn.
+fn board_words_n(t : @ui.Tester, w : String) -> Int {
+  t.words().filter(fn(x) { x.0 == w }).length()
+}
+
+///|
+test "小屏: 待处理 lists what waits for the viewer read or not, and 全部已读 takes only what was unread" {
+  let (t, _) = board_at("board", 390.0, 844.0, platform=2)
+  t.click(Button, label="待处理")
+  t.run_for(@ui.move_most_ms)
+  // (夜里的构建又失败了 asks them and was looked at: listed as 整理发布清单, not read yet, is; each beside its card)
+  assert_eq(board_words_n(t, "夜里的构建又失败了"), 2)
+  assert_eq(board_words_n(t, "整理发布清单"), 2)
+  let done_before = board_words_n(t, "给设置页加一个深色模式开关")
+  board_tap_words(t, "全部已读")
+  assert_eq(board_words_n(t, "给设置页加一个深色模式开关"), done_before - 1)
+  assert_eq(board_words_n(t, "夜里的构建又失败了"), 2)
+  assert_eq(board_words_n(t, "整理发布清单"), 2)
+}
