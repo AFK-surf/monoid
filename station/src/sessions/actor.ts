@@ -174,8 +174,8 @@ export type SessionDeps = {
   /// station set to, and its large context's prompt cache over.
   coldAfresh?(key: string, now: number): boolean;
   /// What a session whose runtime session could not be resumed is told with its next prompt (sessions/afresh.ts
-  /// `toldResumeLost`).
-  resumeLost?(key: string): string;
+  /// `toldResumeLost`), found off the station's thread.
+  resumeLost?(key: string): string | Promise<string>;
   /// What a session compacted or gone on in a new conversation is told when its chats are long (sessions/afresh.ts
   /// `toldLongChat`): to read back what people said in them. Null when they are not.
   longChat?(key: string): string | null;
@@ -395,7 +395,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   const row = store.getSession(key);
   // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
   const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.())) : null;
-  let prompt = lost ? `${deps.resumeLost?.(key) ?? resumeLost(key, [])}\n\n${handed}` : handed;
+  let prompt = lost ? `${(await deps.resumeLost?.(key)) ?? resumeLost(key, [])}\n\n${handed}` : handed;
   if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
   // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
   const long = lost || afresh !== null || compacted ? (deps.longChat?.(key) ?? null) : null;

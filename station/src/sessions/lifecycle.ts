@@ -648,7 +648,7 @@ export async function deleteSession(hub: Hub, key: string) {
 /// Copies a machine session's transcript to where the station's runtimes keep theirs (`shared`:
 /// data/transcripts/<runtime>), at the same place under it, so a profile resumes it there: for Codex every file it keeps
 /// the thread in. The originals are not touched. Where the transcript read is. Off the main thread: a Codex home's
-/// rollouts walked as read/machine.ts `rolloutsIn` walks them, bounded the same (ops/walk.ts), and a transcript of
+/// rollouts walked as read/machine.ts `transcriptOf` walks them, bounded the same (ops/walk.ts), and a transcript of
 /// hundreds of MB copied by the file system's own copy.
 async function copyTranscript(roots: Roots, session: MachineSession, shared: string): Promise<string> {
   const root = session.runtime === "claude" ? roots.claude : roots.codex;

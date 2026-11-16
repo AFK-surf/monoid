@@ -1,14 +1,11 @@
-// Sessions this machine's own Claude Code and Codex keep (run in a terminal, in ~/.claude and ~/.codex), for a person
-// to go on with one in a chat: ported from the Rust station's machine_sessions.rs (`list`, `find`, `conversation` and what
-// they read with), and the routes' answers (admin/mod.rs GET /machine-sessions, GET /machine-sessions/:runtime/:id).
-// Only read; blocking (many transcripts), so it runs in a reader thread.
-//
-// Directories are read in the order the file system gives (opendir, as Rust's read_dir), not sorted: which of equally
-// recent files comes first, and which project a Claude session is found in first, stay the Rust's.
-import { type Dirent, closeSync, lstatSync, opendirSync, openSync, readSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { type Json } from "./store.ts";
-import { splitWhitespace, trim, trimStart } from "../../../client/core-ts/src/whitespace.ts";
+// Sessions this machine's own Claude Code and Codex keep (run in a terminal, in ~/.claude and ~/.codex): where they are,
+// and what the station itself still looks up of them. Listing them and reading one (GET /machine-sessions, GET
+// /machine-sessions/:runtime/:id) is the MoonBit readers' (mb/src/readops/machine.mbt); the TypeScript they replaced
+// is test/reference/machine.ts. What is here runs on the station's thread, so it never reads the disk synchronously:
+// a transcript's path is found by a walk that yields (ops/walk.ts).
+import { opendir, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { walkBounded } from "../ops/walk.ts";
 
 export type Runtime = "claude" | "codex";
 
@@ -28,297 +25,17 @@ export type MachineSession = {
   updatedAt: number; size: number; session: string | null; path: string;
 };
 
-/// Enough of a first message to know it by.
-const FIRST = 200;
-/// Records read from a transcript's start for its directory and first message.
-const HEAD_RECORDS = 400;
-/// Bytes read from a transcript's end for its latest name.
-const TAIL = 256 * 1024;
-/// A line longer than this is passed over (read as an empty one): a screenshot or a tool's output a Codex rollout keeps
-/// (seen at 16 MB, a head of 51 MB) holds nothing a listing wants, and a reader's heap is bounded (read/pool.ts).
-const LINE_LIMIT = 256 * 1024;
-
-// ---- Rust's text handling ----
-
-export const str = (v: Json): string | null => (typeof v === "string" ? v : null);
-export const get = (v: Json, k: string): Json => (v !== null && typeof v === "object" && !Array.isArray(v) ? v[k] : undefined);
-
-/// serde_json::from_str::<Value>(line).ok().
-export function parse(line: string): Json | undefined {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-}
-
 /// Path::extension: after the last dot of the name, unless that dot starts it.
 export function extension(name: string): string | null {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1) : null;
 }
 
-/// std::fs::read_dir, flattened: a directory's entries in the file system's order; none when it cannot be read.
-export function readDir(dir: string): Dirent[] {
-  let d;
-  try {
-    d = opendirSync(dir);
-  } catch {
-    return [];
-  }
-  const out: Dirent[] = [];
-  try {
-    for (let e = d.readSync(); e !== null; e = d.readSync()) out.push(e);
-  } catch {
-    // An entry that does not read ends it, as `flatten` skips it.
-  } finally {
-    d.closeSync();
-  }
-  return out;
-}
-
-const isFile = (p: string) => statSync(p, { throwIfNoEntry: false })?.isFile() ?? false;
-
-const STRICT = new TextDecoder("utf-8", { fatal: true });
-
-/// BufRead::lines over a file, `map_while(Result::ok)`: its lines (without "\n" or "\r\n"), stopping at the first that is
-/// not UTF-8; at most `limit`.
-export function lines(path: string, limit = Infinity): string[] {
-  let fd: number;
-  try {
-    fd = openSync(path, "r");
-  } catch {
-    return [];
-  }
-  const out: string[] = [];
-  try {
-    const chunk = Buffer.alloc(1 << 16);
-    let pending: Buffer[] = [];
-    // Bytes of the line read so far; past LINE_LIMIT what comes until its end is dropped, and it is read as "".
-    let pendingSize = 0;
-    let over = false;
-    const take = (bytes: Buffer): boolean => {
-      if (over) {
-        over = false;
-        out.push("");
-        return out.length < limit;
-      }
-      let line = bytes;
-      if (line.length && line[line.length - 1] === 0x0a) line = line.subarray(0, -1);
-      if (line.length && line[line.length - 1] === 0x0d) line = line.subarray(0, -1);
-      try {
-        out.push(STRICT.decode(line));
-      } catch {
-        return false;
-      }
-      return out.length < limit;
-    };
-    for (;;) {
-      let n: number;
-      try {
-        n = readSync(fd, chunk, 0, chunk.length, null);
-      } catch {
-        return out;
-      }
-      if (n === 0) break;
-      let start = 0;
-      const keep = (part: Buffer) => {
-        if (over) return;
-        pendingSize += part.length;
-        if (pendingSize > LINE_LIMIT) {
-          over = true;
-          pending = [];
-        } else pending.push(Buffer.from(part));
-      };
-      for (let nl = chunk.indexOf(0x0a, start); nl >= 0 && nl < n; nl = chunk.indexOf(0x0a, start)) {
-        keep(chunk.subarray(start, nl + 1));
-        const line = Buffer.concat(pending);
-        pending = [];
-        pendingSize = 0;
-        start = nl + 1;
-        if (!take(line)) return out;
-      }
-      if (start < n) keep(chunk.subarray(start, n));
-    }
-    if (pending.length || over) take(Buffer.concat(pending));
-    return out;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-// ---- what was said ----
-
-/// transcript.rs injected: context Codex adds as a person's message under a tag of its own.
-function injected(text: string): boolean {
-  const t = trimStart(text);
-  return ["environment_context", "user_instructions", "permissions", "skills_instructions", "collaboration_mode"].some((tag) => {
-    if (!t.startsWith(`<${tag}`)) return false;
-    const after = t.slice(tag.length + 1);
-    const next = [...after.slice(0, 2)][0];
-    return after === "" || (!/^[\p{Alphabetic}\p{N}]$/u.test(next!) && next !== "_");
-  });
-}
-
-/// not_said: what a person typed that the runtime keeps as their message though it is not what they said.
-function notSaid(text: string): boolean {
-  const t = trimStart(text);
-  return (
-    t === "" ||
-    ["<command-", "<local-command", "<system-reminder>", "<bash-", "<user-memory-input>", "Caveat: ", "This session is being continued from a previous conversation"].some((p) =>
-      t.startsWith(p),
-    )
-  );
-}
-
-/// typed: what the person typed in a part of a Codex user message (none of the instructions it adds; of an editor's
-/// context before a request, only the request).
-function typed(text: string): string | null {
-  const t = trimStart(text);
-  if (t.startsWith("# AGENTS.md instructions")) return null;
-  if (!t.startsWith("#")) return text;
-  for (const mark of ["## My request for Codex:", "## My request:"]) {
-    const at = t.lastIndexOf(mark);
-    if (at >= 0) return trim(t.slice(at + mark.length));
-  }
-  return text;
-}
-
-/// wrapped: context Codex adds as a person's message, one tag around all of it.
-function wrapped(text: string): boolean {
-  const t = trim(text);
-  if (!t.startsWith("<")) return false;
-  const close = t.indexOf(">", 1);
-  if (close < 0) return false;
-  const name = t.slice(1, close);
-  return name !== "" && /^[A-Za-z0-9_-]+$/.test(name) && t.endsWith(`</${name}>`);
-}
-
-type Said = [person: boolean, text: string];
-
-function claudeSaid(r: Json): Said[] {
-  const kind = str(get(r, "type")) ?? "";
-  const flag = (k: string) => get(r, k) === true;
-  if ((kind !== "user" && kind !== "assistant") || ["isMeta", "isSidechain", "isCompactSummary", "isApiErrorMessage"].some(flag)) return [];
-  const person = kind === "user";
-  const content = get(get(r, "message"), "content");
-  const texts: string[] =
-    typeof content === "string"
-      ? [content]
-      : Array.isArray(content)
-        ? content.filter((b) => get(b, "type") === "text").map((b) => str(get(b, "text"))).filter((t): t is string => t !== null)
-        : [];
-  return texts.filter((t) => trim(t) !== "" && !(person && notSaid(t))).map((t) => [person, trim(t)]);
-}
-
-function codexSaid(r: Json): Said[] {
-  const p = get(r, "payload");
-  if (get(r, "type") !== "response_item" || get(p, "type") !== "message") return [];
-  const role = get(p, "role");
-  if (role !== "user" && role !== "assistant") return [];
-  const person = role === "user";
-  // Each part on its own: Codex puts its context in parts of their own, beside what the person said.
-  const content = get(p, "content");
-  const text = (Array.isArray(content) ? content : [])
-    .map((b) => str(get(b, "text")))
-    .filter((t): t is string => t !== null)
-    .map((t) => (person ? typed(t) : t))
-    .filter((t): t is string => t !== null)
-    .filter((t) => trim(t) !== "" && !(person && (injected(t) || wrapped(t) || notSaid(t))))
-    .join("\n");
-  return trim(text) === "" ? [] : [[person, trim(text)]];
-}
-
-/// codex_event_said: Codex's events of what was said: item_completed with a UserMessage or AgentMessage item (newer),
-/// user_message and agent_message (older).
-function codexEventSaid(r: Json): Said[] {
-  if (get(r, "type") !== "event_msg") return [];
-  const p = get(r, "payload");
-  if (p === undefined) return [];
-  let person: boolean;
-  let text: string | null;
-  switch (get(p, "type")) {
-    case "user_message": {
-      person = true;
-      const m = str(get(p, "message"));
-      text = m === null ? null : typed(m);
-      break;
-    }
-    case "agent_message":
-      person = false;
-      text = str(get(p, "message"));
-      break;
-    case "item_completed": {
-      const item = get(p, "item");
-      const t = get(item, "type");
-      if (t === "UserMessage") person = true;
-      else if (t === "AgentMessage") person = false;
-      else return [];
-      const content = get(item, "content");
-      const parts = (Array.isArray(content) ? content : []).map((b) => str(get(b, "text"))).filter((t): t is string => t !== null);
-      text = parts.map((t) => (person ? typed(t) : t)).filter((t): t is string => t !== null).join("\n");
-      break;
-    }
-    default:
-      return [];
-  }
-  if (text === null) return [];
-  const t = trim(text);
-  return t !== "" && !(person && (wrapped(t) || notSaid(t))) ? [[person, t]] : [];
-}
-
-export const hasCodexEvents = (records: Json[]) => records.some((r) => codexEventSaid(r).some(([person]) => person));
-
-/// said: Claude's messages; Codex's events of what was said when it writes them, else its model messages.
-export function said(runtime: Runtime, events: boolean, r: Json): Said[] {
-  if (runtime === "claude") return claudeSaid(r);
-  return events ? codexEventSaid(r) : codexSaid(r);
-}
-
-// ---- the sessions ----
-
-/// stamp: when a file was last written (ms) and its size.
-export function stamp(path: string): [number, number] | null {
-  const meta = statSync(path, { throwIfNoEntry: false, bigint: true });
-  if (!meta) return null;
-  return [Number(meta.mtimeNs / 1_000_000n), Number(meta.size)];
-}
-
-/// How far rolloutsIn goes: Codex keeps its rollouts at sessions/<year>/<month>/<day>/, a year's of daily use a few
-/// thousand files; a directory under it that is a disk or share mounted there, a link (to the home, say) or a tree a
-/// million entries deep is not walked, synchronously, on a reader thread or the station's (ops/walk.ts says why).
+/// How far a walk of Codex's rollouts goes: Codex keeps them at sessions/<year>/<month>/<day>/, a year's of daily use a
+/// few thousand files; a directory under it that is a disk or share mounted there, a link (to the home, say) or a tree a
+/// million entries deep is not walked (ops/walk.ts says why).
 export const ROLLOUT_DEPTH = 8;
 export const ROLLOUT_ENTRIES = 100_000;
-
-/// rollouts_in: Codex's rollout-*.jsonl files under a directory, at any depth up to ROLLOUT_DEPTH, at most
-/// ROLLOUT_ENTRIES entries looked at, on the directory's own file system, no link followed below it (`dir` itself may
-/// be one). Whether it stopped short.
-export function rolloutsIn(dir: string, out: string[], most: { depth?: number; entries?: number } = {}): boolean {
-  const root = statSync(dir, { throwIfNoEntry: false, bigint: true });
-  if (!root?.isDirectory()) return false;
-  const depthMost = most.depth ?? ROLLOUT_DEPTH;
-  let left = most.entries ?? ROLLOUT_ENTRIES;
-  let short = false;
-  const visit = (at: string, depth: number) => {
-    for (const entry of readDir(at)) {
-      if (left-- <= 0) {
-        short = true;
-        return;
-      }
-      const path = join(at, entry.name);
-      if (entry.isDirectory()) {
-        if (depth >= depthMost) short = true;
-        else {
-          // (lstat: a directory made a link since it was listed is not followed)
-          const sub = lstatSync(path, { throwIfNoEntry: false, bigint: true });
-          if (sub?.isDirectory() && sub.dev === root.dev) visit(path, depth + 1);
-        }
-      } else if (entry.name.startsWith("rollout-") && extension(entry.name) === "jsonl") out.push(path);
-    }
-  };
-  visit(dir, 1);
-  return short;
-}
 
 /// rollout_of: a rollout file of a thread: rollout-<time>-<id>.jsonl, or rollout-<time>-<id>_<more>.jsonl.
 export function rolloutOf(path: string, id: string): boolean {
@@ -326,136 +43,62 @@ export function rolloutOf(path: string, id: string): boolean {
   return name.endsWith(`-${id}.jsonl`) || name.includes(`-${id}_`);
 }
 
-/// tail: the records in the last part of a file (whole lines only).
-function tail(path: string, size: number): Json[] {
-  let fd: number;
-  try {
-    fd = openSync(path, "r");
-  } catch {
-    return [];
-  }
-  const from = Math.max(0, size - TAIL);
-  const parts: Buffer[] = [];
-  try {
-    const chunk = Buffer.alloc(1 << 16);
-    for (let at = from; ; ) {
-      const n = readSync(fd, chunk, 0, chunk.length, at);
-      if (n === 0) break;
-      parts.push(Buffer.from(chunk.subarray(0, n)));
-      at += n;
-    }
-  } catch {
-    return [];
-  } finally {
-    closeSync(fd);
-  }
-  const text = Buffer.concat(parts).toString("utf8");
-  let whole = text;
-  if (from > 0) {
-    const nl = text.indexOf("\n");
-    whole = nl >= 0 ? text.slice(nl + 1) : "";
-  }
-  // str::lines: split at "\n", a "\r" before it dropped, no empty last line.
-  const ls = whole.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
-  if (whole.endsWith("\n") || whole === "") ls.pop();
-  return ls.map(parse).filter((r) => r !== undefined);
-}
-
-/// claude_title: the name given by hand, else the runtime's latest.
-function claudeTitle(records: Json[]): string | null {
-  const latest = (kind: string, field: string) => {
-    const r = records.findLast((r) => get(r, "type") === kind);
-    const t = str(get(r, field));
-    return t === null || trim(t) === "" ? null : trim(t);
-  };
-  return latest("custom-title", "customTitle") ?? latest("ai-title", "aiTitle") ?? latest("summary", "summary");
-}
-
-/// clip: whitespace collapsed, at most `max` characters (and an ellipsis past them).
-function clip(text: string, max: number): string {
-  const line = splitWhitespace(text).join(" ");
-  const chars = [...line];
-  return chars.length > max ? `${chars.slice(0, max).join("")}…` : line;
-}
-
-/// read: a transcript as the pages list it; none when it ran nowhere or asked nothing.
-export function read(runtime: Runtime, path: string, updatedAt: number, size: number): MachineSession | null {
-  const head = lines(path, HEAD_RECORDS).map(parse).filter((r) => r !== undefined);
-  const events = runtime === "codex" && hasCodexEvents(head);
-  let firstSaid: string | null = null;
-  for (const r of head) {
-    const found = said(runtime, events, r).find(([person]) => person);
-    if (found) {
-      firstSaid = found[1];
-      break;
-    }
-  }
-  const first = firstSaid === null ? null : clip(firstSaid, FIRST);
-  let id: string | null;
-  let cwd: string | null;
-  if (runtime === "claude") {
-    const name = basename(path);
-    const dot = name.lastIndexOf(".");
-    id = dot > 0 ? name.slice(0, dot) : name;
-    cwd = head.map((r) => str(get(r, "cwd"))).find((c) => c !== null) ?? null;
-  } else {
-    const meta = get(head.find((r) => get(r, "type") === "session_meta"), "payload");
-    if (meta === undefined) return null;
-    [id, cwd] = [str(get(meta, "id")), str(get(meta, "cwd"))];
-  }
-  if (id === null || cwd === null || first === null) return null;
-  const records = [...head, ...tail(path, size)];
-  const title = runtime === "claude" ? claudeTitle(records) : null;
-  let model: string | null = null;
-  for (let i = records.length - 1; i >= 0 && model === null; i--) {
-    const r = records[i];
-    const m =
-      runtime === "claude"
-        ? get(r, "type") === "assistant" ? get(get(r, "message"), "model") : undefined
-        : get(r, "type") === "turn_context" ? get(get(r, "payload"), "model") : undefined;
-    if (typeof m === "string" && !m.startsWith("<")) model = m;
-  }
-  return { runtime, id, cwd, title, first, model, updatedAt, size, session: null, path };
-}
-
-/// codex_names: the names Codex gave its threads (session_index.jsonl beside sessions/: the latest line for an id counts).
-export function codexNames(r: Roots): Map<string, string> {
-  const names = new Map<string, string>();
-  for (const line of lines(join(dirname(r.codex), "session_index.jsonl"))) {
-    const v = parse(line);
-    const [id, name] = [str(get(v, "id")), str(get(v, "thread_name"))];
-    if (id !== null && name !== null && trim(name) !== "") names.set(id, trim(name));
-  }
-  return names;
-}
-
-export function named(s: MachineSession, names: Map<string, string>): MachineSession {
-  if (s.title === null) s.title = names.get(s.id) ?? null;
-  return s;
-}
-
-/// find: one of the machine's sessions, by its runtime and id.
-export function find(r: Roots, runtime: Runtime, id: string): MachineSession | null {
+/// Where the machine keeps the transcript of its session `id` of `runtime`, found as the readers' `find` finds it
+/// (test/reference/machine.ts), off the station's thread: Claude Code's in the first project directory, in the file
+/// system's order, holding <id>.jsonl; Codex's the latest written of the thread's rollouts, walked as ops/walk.ts walks,
+/// bounded by ROLLOUT_DEPTH and ROLLOUT_ENTRIES. Only the files' names and stats are read, not their records: a session
+/// the station went on with was read whole when it did, and a transcript is only added to. None where there is none.
+export async function transcriptOf(r: Roots, runtime: Runtime, id: string): Promise<string | null> {
   if (id === "" || !/^[A-Za-z0-9-]+$/.test(id)) return null;
-  let path: string | undefined;
   if (runtime === "claude") {
-    path = readDir(r.claude).map((d) => join(r.claude, d.name, `${id}.jsonl`)).find(isFile);
-  } else {
-    const rollouts: string[] = [];
-    rolloutsIn(r.codex, rollouts);
-    const mine = rollouts
-      .filter((p) => rolloutOf(p, id))
-      .map((p) => [stamp(p)?.[0], p] as const)
-      .filter((m): m is readonly [number, string] => m[0] !== undefined)
-      .sort((a, b) => b[0] - a[0]);
-    path = mine.map(([, p]) => p).find((p) => {
-      const st = stamp(p);
-      return st !== null && read(runtime, p, st[0], st[1])?.id === id;
-    });
+    let dir;
+    try {
+      dir = await opendir(r.claude);
+    } catch {
+      return null;
+    }
+    let left = ROLLOUT_ENTRIES;
+    try {
+      for await (const d of dir) {
+        if (left-- <= 0) break;
+        const path = join(r.claude, d.name, `${id}.jsonl`);
+        if (await isFile(path)) return path;
+      }
+    } catch {
+      // An entry that does not read ends it, as the readers' `read_dir` stops there.
+    }
+    return null;
   }
-  if (path === undefined) return null;
-  const st = stamp(path);
-  if (st === null) return null;
-  const s = read(runtime, path, st[0], st[1]);
-  return s !== null && s.id === id ? named(s, codexNames(r)) : null;
+  const mine: string[] = [];
+  await walkBounded(
+    r.codex,
+    (e) => {
+      if (e.file && e.depth > 0 && e.name.startsWith("rollout-") && extension(e.name) === "jsonl" && rolloutOf(e.path, id)) mine.push(e.path);
+    },
+    { maxDepth: ROLLOUT_DEPTH, maxEntries: ROLLOUT_ENTRIES, followRoot: true },
+  );
+  let latest: [number, string] | null = null;
+  for (const path of mine) {
+    const at = await writtenAt(path);
+    if (at !== null && (latest === null || at > latest[0])) latest = [at, path];
+  }
+  return latest?.[1] ?? null;
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/// When a file was last written (ms), where it is one.
+async function writtenAt(path: string): Promise<number | null> {
+  try {
+    const meta = await stat(path, { bigint: true });
+    return meta.isFile() ? Number(meta.mtimeNs / 1_000_000n) : null;
+  } catch {
+    return null;
+  }
 }

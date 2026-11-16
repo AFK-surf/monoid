@@ -61,8 +61,8 @@
   workspace, the home, a mirrored directory) goes through `src/ops/walk.ts` `walkBounded`: on its root's file system,
   no link followed (`followLinks` where a tree's folders are linked in by design, as ~/.agents/skills, codex.ts
   `hostSkillsOff`: each real directory gone into once, so a link back up ends), bounded in entries, depth and time,
-  yielding as it goes; a new walk does too, never a recursion of its own (`src/read/machine.ts` `rolloutsIn`,
-  synchronous on a reader thread, keeps the same bounds by itself). A workspace's size on disk
+  yielding as it goes; a new walk does too, never a recursion of its own (`src/read/machine.ts` `transcriptOf` walks
+  Codex's rollouts so, by `ROLLOUT_DEPTH` and `ROLLOUT_ENTRIES`). A workspace's size on disk
   (`src/sessions/footprint.ts`: its soft limit, a room's cleanup) is the MoonBit program's (`--builder footprint`,
   `mb/src/footprint`), a process a measure, killed as it is called off, walking as `walkBounded` does with every
   entry stat'ed: no walk in TypeScript to fall back to, the one it replaced is `test/footprint-reference.ts`, which

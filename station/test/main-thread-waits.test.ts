@@ -5,7 +5,7 @@
 // takes now (STATEMENTS): a change may lower them, never raise them; its files and processes, where they are fixed at
 // their cause, none.
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -30,6 +30,7 @@ import { fingerprint, profileFilesRead } from "../src/sessions/decision.ts";
 import { LiveHub } from "../src/sessions/live.ts";
 import { sessionSeen } from "../src/api/seen.ts";
 import { autoArchive } from "../src/sessions/lifecycle.ts";
+import { toldResumeLost } from "../src/sessions/afresh.ts";
 import { iso } from "../src/read/transcript.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
 import { claudeProject } from "./usage-counter-reference.ts";
@@ -105,6 +106,9 @@ const STATEMENTS = {
   // that all comes after one (sessions/mb-actor.ts): the same work, counted whole, in either.
   // 21 since the actor reads its last turn and ends its wait in the MoonBit program (actor_store.mbt).
   autoArchiveLook: 21,
+  // The session's thread list, its row and its runtime sessions (afresh.ts `toldResumeLost`): the machine's transcript
+  // is looked for by a walk off this thread (read/machine.ts `transcriptOf`), no file of it here.
+  resumeLost: 5,
 } as const;
 
 test("a transcript growing: read and told, its length gathered, written with the others' once LENGTHS_GATHER_MS is up", async () => {
@@ -441,6 +445,49 @@ test("the auto-archive's look is a reader's: here only the sessions it archives 
     assert.deepEqual(keys.map((key) => r.store.getSession(key)?.archivedAt !== null), [true, true, true, false], "the three done, not the one at work");
     // For each session archived, its archiving; nothing for the one that stays, nor for the look itself.
     assert.deepEqual(look, { files: 0, processes: 0, statements: STATEMENTS.autoArchiveLook });
+  } finally {
+    await r.close();
+  }
+});
+
+test("a session continued from a terminal whose resume was lost is told its transcript there, found off the main thread", async () => {
+  const r = new Rig();
+  const roots = { claude: join(r.dir, "machine/claude"), codex: join(r.dir, "machine/codex") };
+  r.roots = roots;
+  const put = (path: string, at: number) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify({ type: "user", cwd: "/w" })}\n`);
+    utimesSync(path, at, at);
+  };
+  try {
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    const claudeId = "0b7c2f6e-1111-4c2a-9d3e-aaaaaaaaaaaa";
+    const codexId = "0b7c2f6e-2222-4c2a-9d3e-bbbbbbbbbbbb";
+    // Claude Code's in one of several projects; Codex's in two rollouts, the later written the one told.
+    for (const p of ["-w-a", "-w-b", "-w-c"]) mkdirSync(join(roots.claude, p), { recursive: true });
+    put(join(roots.claude, "-w-b", `${claudeId}.jsonl`), 1_790_000_000);
+    put(join(roots.codex, "2026/11/01", `rollout-2026-11-01T10-00-00-${codexId}.jsonl`), 1_790_000_000);
+    put(join(roots.codex, "2026/11/02", `rollout-2026-11-02T10-00-00-${codexId}.jsonl`), 1_790_000_100);
+    put(join(roots.codex, "2026/11/03", `rollout-2026-11-03T10-00-00-${claudeId}.jsonl`), 1_790_000_200);
+    const as = (runtime: string, id: string) => {
+      r.store.db.prepare("DELETE FROM runtime_sessions WHERE session_key = ?").run(key);
+      r.store.db.prepare("UPDATE sessions SET runtime = ?, cwd = '/w', runtime_session_id = ? WHERE key = ?").run(runtime, id, key);
+    };
+    as("claude", claudeId);
+    let told = "";
+    const claude = await counted(async () => (told = await toldResumeLost(r.hub, key)));
+    assert.ok(told.includes(join(roots.claude, "-w-b", `${claudeId}.jsonl`)), told);
+    assert.deepEqual(claude, { files: 0, processes: 0, statements: STATEMENTS.resumeLost });
+    as("codex", codexId);
+    const codex = await counted(async () => (told = await toldResumeLost(r.hub, key)));
+    assert.ok(told.includes(join(roots.codex, "2026/11/02", `rollout-2026-11-02T10-00-00-${codexId}.jsonl`)), told);
+    assert.deepEqual(codex, { files: 0, processes: 0, statements: STATEMENTS.resumeLost });
+    // None on the machine: told without one.
+    as("claude", "0b7c2f6e-3333-4c2a-9d3e-cccccccccccc");
+    assert.ok(!(await toldResumeLost(r.hub, key)).includes(roots.claude));
   } finally {
     await r.close();
   }

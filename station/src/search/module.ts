@@ -6,7 +6,7 @@ import { routes } from "../api/routes/search.ts";
 import { rootsOf } from "../drive/drive.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Events, HelperFolders, Own, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
-import { SKILL_READ, readSkill, skillForPeer } from "./skills.ts";
+import { SKILL_READ, type SkillCatalog, formatSkillFromCatalog, skillForPeer } from "./skills.ts";
 import { SEARCH, searchForPeer, searchTools } from "./tool.ts";
 import { FileSearch } from "./files.ts";
 import { Search } from "./search.ts";
@@ -48,16 +48,19 @@ export const SearchLive = Layer.effectDiscard(
     });
     yield* Effect.acquireRelease(Effect.sync(() => search.start()), () => Effect.promise(() => search.stop()));
     // (its program let go with the readers' idle ones when the station is short of memory: ops/self-memory.ts)
-    (yield* Readers).onTrim(() => search.trimIdle());
+    const readers = yield* Readers;
+    readers.onTrim(() => search.trimIdle());
+    // A workspace's skills as GET /memory reads them (none: the home one's), by the readers: never on this thread.
+    const readCatalog = async (workspace?: string): Promise<SkillCatalog> => JSON.parse(await readers.read("memory", workspace ? { workspace } : {}, "zh"));
     const link = (session: string) => hub.link(session);
     // Another station of the workspace searching this one (the agents' `search` tool there).
     bus.on(SEARCH, (_peer, request, workspace) => searchForPeer({ search, link }, request, workspace ?? null, cloud.home()));
-    bus.on(SKILL_READ, (_peer, request, workspace) => skillForPeer(data, request, workspace ?? null, cloud.home()));
+    bus.on(SKILL_READ, (_peer, request, workspace) => skillForPeer(readCatalog, request, workspace ?? null, cloud.home()));
     parts.routes(routes({ search, config, events }));
     parts.tools(
       searchTools({
         search,
-        readSkill: (workspace, name, file) => readSkill(data, workspace, name, file),
+        readSkill: async (workspace, name, file) => formatSkillFromCatalog(await readCatalog(workspace), name, file),
         workspaceOf: (session) => {
           const row = store.getSession(session);
           if (!row) return null;

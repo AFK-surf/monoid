@@ -9,7 +9,7 @@ import { coldAfresh, coldWorth } from "../../../client/core-ts/src/cache-policy.
 import { LONG_CHAT, afresh, cleared, longChat, resumeLost, threadAddress } from "../agents/instructions.ts";
 import type { Profile } from "../agents/runtime.ts";
 import { log } from "../ops/log.ts";
-import { find as findMachineSession } from "../read/machine.ts";
+import { transcriptOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
 import { homesFirst, transcriptPaths } from "../read/transcript.ts";
 import type { Hub } from "./hub.ts";
@@ -59,13 +59,13 @@ export function goesAfresh(hub: Hub, key: string, now: number): boolean {
 /// What a session whose runtime session could not be resumed is told as its new one starts: where its earlier
 /// conversation is, to read back.
 /// One continued from a terminal is told where that conversation is on the machine: its own transcript there (not the
-/// station's copy, which may be what failed).
-export function toldResumeLost(hub: Hub, key: string): string {
+/// station's copy, which may be what failed), found off the station's thread (read/machine.ts `transcriptOf`).
+export async function toldResumeLost(hub: Hub, key: string): Promise<string> {
   const threads = threadsToldOf(hub, key);
   const row = hub.store.getSession(key);
   const first = hub.store.runtimeSessions(key)[0];
   const runtime = row?.runtime === "claude" || row?.runtime === "codex" ? row.runtime : null;
-  const terminal = row?.cwd && first !== undefined && runtime !== null ? (findMachineSession(hub.machineRoots(), runtime, first)?.path ?? null) : null;
+  const terminal = row?.cwd && first !== undefined && runtime !== null ? await transcriptOf(hub.machineRoots(), runtime, first) : null;
   return resumeLost(key, threads, terminal);
 }
 
