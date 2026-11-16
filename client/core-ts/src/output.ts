@@ -173,6 +173,14 @@ export class Output {
       }
       return out;
     }
+    // (a map's values, each where its own keyed lists are: collections.ts Spec `item`)
+    if (spec.item && !spec.key && isObject(raw) && !Array.isArray(raw)) {
+      const out: Record<string, unknown> = { ...raw };
+      for (const [k, val] of Object.entries(raw)) {
+        out[k] = this.#build(topic, val, spec.item, ty === undefined ? undefined : present.itemOf(ty), path === "" ? k : `${path}.${k}`, `${fields}/${k}`, was, now);
+      }
+      return out;
+    }
     return raw;
   }
 

@@ -172,7 +172,13 @@ function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[]
   const by = present.lastBy(row, me, slackUsers, members);
   const mine = get(by, "mine") === true;
   const card = decisions.ofRow(row);
+  // (what it asks is told only to whom it asks: its assignee, else whoever started it, where it names one;
+  // chat-stage.ts needsViewer)
+  const asked = decisions.asked(row);
+  const decider = asked === null ? null : decisions.decider(asked.card, get(row, "creator"));
+  const asksMe = decider === null || present.isViewer(me, decider, slackUsers);
   if (card !== null && now.decision !== null && now.decision !== then.decision) {
+    if (!asksMe) return null;
     const text = typeof get(get(card, "message"), "text") === "string" ? card.message.text : "";
     const line = decisions.line(text);
     const cut = line.indexOf(" · ");
@@ -187,6 +193,7 @@ function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[]
   // Blocked on what it asks that waits for them and was not told yet: not on an ask told before (woken by a job between,
   // it ends blocked on it again), nor on one answered since (nothing waits for them).
   if (now.state === "block" && card === null && now.told !== null && now.told !== then.told) {
+    if (!asksMe) return null;
     let need: string | null = null;
     for (const a of arr(get(row, "agents"))) {
       if (present.sessionStatus(a) !== "block") continue;

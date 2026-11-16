@@ -293,10 +293,10 @@ export function shapeOf(topic: Topic): Ty | undefined {
   return TOPIC_SHAPES[topic.topic];
 }
 
-/// The shape of a list's items (`Vec<T>`, `Option<Vec<T>>`).
+/// The shape of a list's items (`Vec<T>`, `Option<Vec<T>>`), or of a map's values (`Map<T>`).
 export function itemOf(ty: Ty): Ty | undefined {
   if (typeof ty === "object" && "opt" in ty) return itemOf(ty.opt);
-  return typeof ty === "object" && "vec" in ty ? ty.vec : undefined;
+  return typeof ty === "object" && "vec" in ty ? ty.vec : typeof ty === "object" && "map" in ty ? ty.map : undefined;
 }
 
 /// The shape of a struct's field.

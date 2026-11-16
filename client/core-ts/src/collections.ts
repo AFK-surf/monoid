@@ -8,7 +8,8 @@ import { compareKeys, equal, isObject, sharedValue } from "./util.ts";
 import { walked, work } from "./work.ts";
 
 /// Where the keyed lists of a value are: `key` (the fields an item's key is made of) says the value at this place is
-/// one; `item` where the keyed lists of each item are; `fields` those of an object's fields.
+/// one; `item` where the keyed lists of each item are (of a list, or of a map's values: an object's fields `fields`
+/// does not name); `fields` those of an object's fields.
 export type Spec = { key?: string[]; item?: Spec; fields?: Record<string, Spec> };
 
 /// A key as it goes out: the one field's value, or the fields' values in order.
@@ -55,6 +56,8 @@ const SPECS: Record<string, Spec> = {
   stationMove: { fields: { targets: items("station"), modules: { key: ["id"], item: { fields: { items: items("id") } } } } },
   // (a pool by its name: what one change of the accounts moves goes out as that pool's fields that moved)
   profilesOverview: { fields: { pools: items("title") } },
+  // (each workspace's 待处理 by its chats: one coming, going or changing is that item alone, not the list again)
+  workspaceMarks: { fields: { workspaces: { item: { fields: { items: { key: ["station", "thread", "session"] } } } } } },
 };
 
 export function specOf(topic: Topic): Spec | null {
@@ -96,7 +99,7 @@ function at(path: Segment[], old: unknown, next: unknown, spec: Spec | null, ops
     for (const key of Object.keys(next)) if (!has.call(old, key) || old[key] !== next[key]) changed.push(key);
     if (changed.length > 1) changed.sort(compareKeys);
     for (const key of changed) {
-      if (has.call(old, key)) at([...path, key], old[key], next[key], spec?.fields?.[key] ?? null, ops);
+      if (has.call(old, key)) at([...path, key], old[key], next[key], spec?.fields?.[key] ?? spec?.item ?? null, ops);
       else ops.push({ path: [...path, key], set: next[key] });
     }
     const gone: string[] = [];
@@ -235,7 +238,7 @@ function shareAt(prev: unknown, next: unknown, spec: Spec | null, kept: Kept): u
     let fields: Record<string, unknown> | null = all ? null : {};
     for (let k = 0; k < keys.length; k++) {
       const key = keys[k]!;
-      const field = shareAt(prev[key], next[key], spec?.fields?.[key] ?? null, kept);
+      const field = shareAt(prev[key], next[key], spec?.fields?.[key] ?? spec?.item ?? null, kept);
       if (fields === null && (field !== prev[key] || !(key in prev))) {
         fields = {};
         for (let j = 0; j < k; j++) fields[keys[j]!] = prev[keys[j]!];

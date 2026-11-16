@@ -516,11 +516,9 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   assert.deepEqual([m.workspaces.ws.wait, m.workspaces.ws.alert, m.workspaces.ws.label], [2, 0, "2 个待你处理"]);
   // Of the lists the rail leads to: 我参与的 has the one of theirs waiting, 监控中 nothing.
   assert.deepEqual([m.workspaces.ws.tone, m.workspaces.ws.mineTone, m.workspaces.ws.watchingTone], ["wait", "wait", undefined]);
-  // 待处理 and the badge are the same: the cards waiting for them not looked at since they came (k3 read: its row still
-  // says it).
-  assert.deepEqual([m.badge, m.workspaces.ws.badge], [1, 1]);
-  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"]]);
-  assert.equal(m.workspaces.ws.items[0].text, "待处理 · k1 要合吗？", "its row's line");
+  // 待处理 and the badge are the same: the cards waiting for them, looked at or not (k3 read: it still waits).
+  assert.deepEqual([m.badge, m.workspaces.ws.badge], [2, 2]);
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"], ["wait", "k3", 4, "studio"]]);
   assert.equal(m.workspaces.ws.items[0].what, "k1 要合吗？", "the same without its lead");
 });
 
@@ -597,7 +595,7 @@ test("待处理_lists_the_unread_the_badge_counts_last_of_all_with_how_far_to_re
   assert.deepEqual([listed(), marks.value.badge], [[["wait", "k1", 5], ["done", "person", 30]], 2]);
 });
 
-test("待处理_is_what_went_wrong_till_let_go_or_waits_not_looked_at_since_of_what_the_badge_counts", async () => {
+test("待处理_is_what_went_wrong_till_let_go_and_what_waits_till_answered_of_what_the_badge_counts", async () => {
   const t = setup();
   const marks = ui();
   t.subscribe(1, { topic: "workspaceMarks" });
@@ -620,9 +618,14 @@ test("待处理_is_what_went_wrong_till_let_go_or_waits_not_looked_at_since_of_w
   await t.readAll([[marks, 1]]);
   const listed = () => marks.value.workspaces.ws.items.map((i: J) => [i.kind, i.session]);
   // gone wrong, read or not, till it runs again or is let go: as the workspace's mark says (pengxiao, 2026-10-28);
-  // the badge only what was not read
+  // the badge counts them read or not too, as what waits (chat-stage.ts needsViewer, 2026-11-16)
   assert.deepEqual(listed(), [["alert", "new"], ["alert", "old"], ["wait", "k1"]]);
-  assert.deepEqual([marks.value.workspaces.ws.alert, marks.value.workspaces.ws.label, marks.value.badge], [2, "2 个出错 · 1 个待你处理", 2]);
+  assert.deepEqual([marks.value.workspaces.ws.alert, marks.value.workspaces.ws.label, marks.value.badge], [2, "2 个出错 · 1 个待你处理", 3]);
+  // a card looked at and not answered still waits there, as the sidebar still counts it
+  const seen = deciding("k1", 7, 5, now - 3000, false);
+  t.set(rows("ws/st"), [failed("new", now - 1000, true), failed("old", now - 2000, false), seen]);
+  await t.readAll([[marks, 1]]);
+  assert.deepEqual([listed(), marks.value.workspaces.ws.wait, marks.value.badge], [[["alert", "new"], ["alert", "old"], ["wait", "k1"]], 1, 3]);
   const old = marks.value.workspaces.ws.items[1].failure;
   assert.equal(old, "ws/st/old@1", "a failure names its chat and when it ended");
   // let go (忽略): off 待处理 and the workspace's mark

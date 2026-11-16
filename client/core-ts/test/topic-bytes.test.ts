@@ -81,7 +81,6 @@ const OVER_DELTA: Record<string, number> = {
   "driveBrowse columns/file": 16,
   "archive/down": 16,
   "notices/card": 16,
-  "workspaceMarks/card": 8,
   "longJobs/job": 16,
   "resources/sample": 8,
   "connects mine/down": 8,

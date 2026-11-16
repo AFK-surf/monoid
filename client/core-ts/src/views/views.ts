@@ -37,7 +37,7 @@ import { ofAddress } from "../workspace.ts";
 import { presentHistory } from "../history.ts";
 import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
-import { archiveHintOf, badgeKindsOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
+import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
 import { markdown, type MdStore } from "../markdown.ts";
 import { heardFiles } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
@@ -47,6 +47,7 @@ import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
+import { stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
 import { fleetView } from "./fleet.ts";
@@ -137,6 +138,18 @@ const stationOnline = (v: Value | undefined): boolean => !down(linkValue(v));
 /// The viewer's `archiveHint` of the prefs (an error: none): what the chat list reads of them, made again only as it
 /// changes, not as the app writes another pref (`workspace`, at every switch of workspace).
 const archiveHintIn = (v: Value | undefined): ArchiveHint => archiveHintOf(v !== undefined && "ok" in v ? (v.ok ?? null) : null);
+/// The failures of a station's chats its viewer let go (the prefs' `failsGone` of its workspace, as views/marks.ts
+/// `failureOf` names them), which a row's stage reads (chat-stage.ts `needsViewer`): one picker a station, so that the
+/// store keeps what it picked while the prefs say the same of it.
+const goneIns = new Map<string, (v: Value | undefined) => readonly string[]>();
+function goneIn(station: string): (v: Value | undefined) => readonly string[] {
+  let pick = goneIns.get(station);
+  if (pick === undefined) {
+    pick = (v) => [...failsGoneOf(v !== undefined && "ok" in v ? (v.ok ?? null) : null, ofAddress(station))].filter((k) => k.startsWith(`${station}/`)).sort();
+    goneIns.set(station, pick);
+  }
+  return pick;
+}
 /// What a chat's page reads of the prefs (its side panel's tabs, the station updates let be), so that another of them
 /// written (the workspace, at every switch of it) makes no chat again.
 const chatPrefsIn = (v: Value | undefined): J => {
@@ -275,8 +288,8 @@ let listRowShapes: string | null = null;
 /// name, its mark where there are several), the viewer, the workspace's members, who the viewer is in Slack there (its
 /// overview's part, `slackUsers`) and the viewer's `archiveHint`. A row is taken as kept only under the key in force;
 /// test/list-rows.test.ts holds that a row made otherwise under another of any of these has another key.
-export function listRowKey(s: StationInfo, mark: { emoji: string | null; icon: string | null } | null, me: J, slackUsers: string[], members: J[], hint: ArchiveHint): string {
-  return textKey(JSON.stringify([KEPT.listRow.making, (listRowShapes ??= shapeKey("ListedChat")), lang(), brand.name(), s.address, s.name, mark, me, slackUsers, membersKey(members), hint]));
+export function listRowKey(s: StationInfo, mark: { emoji: string | null; icon: string | null } | null, me: J, slackUsers: string[], members: J[], hint: ArchiveHint, gone: readonly string[] = []): string {
+  return textKey(JSON.stringify([KEPT.listRow.making, (listRowShapes ??= shapeKey("ListedChat")), lang(), brand.name(), s.address, s.name, mark, me, slackUsers, membersKey(members), hint, gone]));
 }
 
 /// A workspace's members as a key (conform.ts textKey), once for each list of them (a workspace's is shared and never
@@ -399,7 +412,7 @@ function stateLineOf(line: ReturnType<typeof present.rowStateLine>): J {
 }
 
 /// What a station's list rows are made with besides their records (#listRow), and the key they are kept by.
-type Around = { s: StationInfo; mark: { emoji: string | null; icon: string | null } | null; me: J; slackUsers: string[]; members: J[]; hint: ArchiveHint; key: string };
+type Around = { s: StationInfo; mark: { emoji: string | null; icon: string | null } | null; me: J; slackUsers: string[]; members: J[]; hint: ArchiveHint; gone: readonly string[]; key: string };
 
 /// What a list read first (#head) that is a row kept beside its record, not its record: by itself (#chats `keptRow`).
 const headKept = new WeakMap<object, HeadRow>();
@@ -2269,7 +2282,7 @@ export class Views implements Owner {
             // (kept beside its record under the key in force, where it was read or kept this run; else made, and kept)
             const keeps = key !== null && shown === raw && this.#keepable(s.address, raw);
             const kept = keeps ? data.kept(KEPT.listRow, [s.address, String(raw.id)], key) : undefined;
-            const made = kept !== undefined ? kept.whole : this.#chatRow(s, shown, me, slackUsers, members_, watching, mark, hint);
+            const made = kept !== undefined ? kept.whole : this.#chatRow(s, shown, me, slackUsers, members_, watching, mark, hint, false, this.#goneOf(s.address));
             // Frozen all through: a row made once and shared from then on (output.ts takes it as it is). What it took of
             // its record as it is was frozen all through with it (db/account.ts `frozen` freezes a part after all of
             // its own): deepFreeze stops there, and walks only what was made here.
@@ -2537,13 +2550,19 @@ export class Views implements Owner {
   /// of is another: one short string a station, not a row.
   #listKeyOf(s: StationInfo, several: boolean, me: J, members: J[], hint: ArchiveHint): string {
     const part = this.#core.data.overviewPart(s.address);
-    const of: unknown[] = [s.address, s.name, several ? s.emoji : null, several ? s.icon : null, several, get(me, "email"), members, part, hint, lang(), brand.name()];
+    const gone = this.#goneOf(s.address);
+    const of: unknown[] = [s.address, s.name, several ? s.emoji : null, several ? s.icon : null, several, get(me, "email"), members, part, hint, gone, lang(), brand.name()];
     const was = this.#listKeys.get(s.address);
     if (was !== undefined && was.of.length === of.length && was.of.every((x, i) => x === of[i])) return was.key;
     const slackUsers = arr(get(part, "slackUsers")).filter((u): u is string => typeof u === "string");
-    const key = listRowKey(s, several ? { emoji: s.emoji, icon: s.icon } : null, me, slackUsers, members, hint);
+    const key = listRowKey(s, several ? { emoji: s.emoji, icon: s.icon } : null, me, slackUsers, members, hint, gone);
     this.#listKeys.set(s.address, { of, key });
     return key;
+  }
+
+  /// The failures of `station`'s chats the viewer let go (goneIn), as its rows' stage reads them.
+  #goneOf(station: string): readonly string[] {
+    return this.#core.store.select({ topic: "prefs" }, goneIn(station));
   }
 
   /// What a row of `station`'s list is made with besides its record, as a list makes it (#chats), and its key; null while
@@ -2553,7 +2572,7 @@ export class Views implements Owner {
     // the station's part, the prefs, the language, the viewer)
     const scope = ofAddress(station);
     const ws = this.value({ topic: "workspace", workspace: scope });
-    const of: unknown[] = [ws === undefined ? undefined : "ok" in ws ? ws.ok : ws, this.#core.data.overviewPart(station), this.#core.store.select({ topic: "prefs" }, archiveHintIn), this.#core.emailOf(scope), lang(), brand.name()];
+    const of: unknown[] = [ws === undefined ? undefined : "ok" in ws ? ws.ok : ws, this.#core.data.overviewPart(station), this.#core.store.select({ topic: "prefs" }, archiveHintIn), this.#goneOf(station), this.#core.emailOf(scope), lang(), brand.name()];
     const was = this.#arounds.get(station);
     if (was !== undefined && was.of.every((x, i) => x === of[i])) return was.around;
     const around = this.#aroundMade(station);
@@ -2572,7 +2591,7 @@ export class Views implements Owner {
     const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
     const slackUsers = arr(get(this.#core.data.overviewPart(station), "slackUsers")).filter((u): u is string => typeof u === "string");
     const mark = stations.length > 1 ? { emoji: s.emoji, icon: s.icon } : null;
-    return { s, mark, me, slackUsers, members, hint, key: this.#listKeyOf(s, stations.length > 1, me, members, hint) };
+    return { s, mark, me, slackUsers, members, hint, gone: this.#goneOf(station), key: this.#listKeyOf(s, stations.length > 1, me, members, hint) };
   }
 
   /// Whether a record's list row is one kept beside it: made of it and of what the key says alone. Not one changing here
@@ -2591,7 +2610,7 @@ export class Views implements Owner {
   #keptMade(station: string, record: J): ListRow | null {
     const a = this.#aroundOf(station);
     if (a === null || !this.#keepable(station, record)) return null;
-    const whole = this.#listRow(a.s, record, a.me, a.slackUsers, a.members, a.mark, a.hint);
+    const whole = this.#listRow(a.s, record, a.me, a.slackUsers, a.members, a.mark, a.hint, a.gone);
     deepFreeze(whole);
     const sent = conformTy("ListedChat", whole);
     if (!("ok" in sent) || !isObject(sent.ok)) return null;
@@ -2686,9 +2705,9 @@ export class Views implements Owner {
   /// A station's row as the list shows it (null: not in this list; made by #listRow); `whole`, as its own `chatRow` gives
   /// it, its record cloned and worked out whole, with what a press, a hold, a swipe or a pointer reads of it besides (its
   /// watch, its swipe's question, its card: the menu's are #rowMenu's), which the list's rows are made without.
-  #chatRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], watching: boolean, mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, whole = false): J {
+  #chatRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], watching: boolean, mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, whole = false, gone: readonly string[] = []): J {
     work.rows++;
-    if (!whole) return watching && !present.watches(arr(get(raw, "agents"))) ? null : this.#listRow(s, raw, me, slackUsers, members_, mark, hint);
+    if (!whole) return watching && !present.watches(arr(get(raw, "agents"))) ? null : this.#listRow(s, raw, me, slackUsers, members_, mark, hint, gone);
     work.rowsCloned++;
     let row = structuredClone(raw);
     Object.assign(row, this.#placeOf(s, raw, mark));
@@ -2728,6 +2747,7 @@ export class Views implements Owner {
       if (ask !== null) row.swipeAsk = ask;
     }
     Object.assign(row, stateLineOf(present.rowStateLine(row)));
+    Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
     else delete row.opener;
@@ -2758,7 +2778,7 @@ export class Views implements Owner {
   /// cloned whole into each row, three quarters of it never sent, 2026-11-11), the rest made here: its agents, its last
   /// line, its people as the row draws them. What only its whole row says (its card, its agents' summaries, who said its
   /// last line by name) is not worked out for it; what its state line and mark are worked out of is read of the record.
-  #listRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint): J {
+  #listRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, gone: readonly string[]): J {
     const row: J = {};
     for (const k of LIST_ROW_TAKEN) {
       const v = raw[k];
@@ -2809,6 +2829,9 @@ export class Views implements Owner {
     Object.assign(row, archivingOf(stood, hint));
     if (row.pending !== true) row.swipeArchive = true;
     Object.assign(row, stateLineOf(present.rowStateLine(stood)));
+    // Its column on the board and what it says of its own (chat-stage.ts): of its record and who looks alone (a chat
+    // it leads, a background job, said on its record by its station: `opened`, an agent's `waitingAsync`).
+    Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
     if (typeof raw.pinned === "number") pinnedAt.set(row, raw.pinned);
@@ -2857,7 +2880,7 @@ export class Views implements Owner {
     const keepable = isObject(shown) && Object.isFrozen(shown);
     const kept = keepable ? this.#wholeMade.get(shown) : undefined;
     if (kept !== undefined && kept.sig === sig) return kept.row;
-    const made = this.#chatRow(s, shown, me, slackUsers, members_, false, mark, hint, true);
+    const made = this.#chatRow(s, shown, me, slackUsers, members_, false, mark, hint, true, this.#goneOf(s.address));
     if (made !== null) {
       Object.assign(made, this.#rowMenu(s.address, shown, me, menu, connects));
       deepFreeze(made);
@@ -2955,7 +2978,9 @@ export class Views implements Owner {
     // (its title and whether it is archived alone, of their columns)
     const found = this.#core.data.chatTitled(at, session);
     const title = found?.title || str(get(o, "title")) || t("core-views.new_chat");
-    return { station: at, session, title, text: t("core-views.opener", { title }), ...(found?.archived === true ? { archived: true, note: t("core-views.search.archived") } : {}) };
+    return { station: at, session, title, text: t("core-views.opener", { title }), ...(found?.archived === true ? { archived: true, note: t("core-views.search.archived") } : {}),
+      // (it leads this one: chat_create for me. What it asks is its leader's, and the board shows it under its leader)
+      ...(get(o, "led") === true ? { led: true } : {}) };
   }
 
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
@@ -2968,7 +2993,8 @@ export class Views implements Owner {
     if (unsent === undefined) return row;
     const text = format.cleanText(format.plainText(str(unsent.text) ?? ""));
     const { stateAbout: _stateAbout, stateLead: _stateLead, stateLeadText: _stateLeadText, stateRest: _stateRest, ...rest } = row;
-    const marked: J = { ...rest, tone: "alert", unsent: true, stateText: t("core-views.unsent", { text: text === "" ? t("core-views.file") : text }) };
+    // (it needs the viewer: chat-stage.ts needsViewer)
+    const marked: J = { ...rest, tone: "alert", unsent: true, stage: "wait", stateText: t("core-views.unsent", { text: text === "" ? t("core-views.file") : text }) };
     deepFreeze(marked);
     const pinned = pinnedAt.get(row);
     if (pinned !== undefined) pinnedAt.set(marked, pinned);

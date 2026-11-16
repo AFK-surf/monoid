@@ -609,6 +609,8 @@
   "core-views.search.older": "{names} 需要更新后才能搜索",
   "core-views.opened": "创建了 {n} 个对话",
   "core-views.opener": "由「{title}」创建",
+  "core-views.subchats_running_one": "1 个子会话进行中",
+  "core-views.subchats_running": "{n} 个子会话进行中",
   "core-views.search.archived": "已归档",
   "core-views.feishu": "飞书",
   "core-views.admin.enterprise": "企业版",

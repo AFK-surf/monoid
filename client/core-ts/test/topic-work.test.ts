@@ -126,8 +126,11 @@ const OVER_READ_AGAIN: Record<string, number> = {};
 const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   connect: { chats: 624 },
   railCard: { chats: 1016, stations: 1024 },
-  "start 小屏/waited": { chats: 1136, stations: 1248 },
-  "start 小屏/idle": { chats: 1136, stations: 1248 },
+  // (a row of a chat not ended keeps its stage and its chats led still at work beside its record (`chat_row`, KEPT
+  // listRow), so a row kept is read with no record: with stations × 3 its reading went 1248.0 → 1248.4 KB, past the
+  // step, 2026-11-16)
+  "start 小屏/waited": { chats: 1136, stations: 1256 },
+  "start 小屏/idle": { chats: 1136, stations: 1256 },
   "start 大屏/waited": { chats: 1136, stations: 1192 },
   "start 大屏/idle": { chats: 1136, stations: 1192 },
   "stationPart archiving": { people: 16 },
@@ -149,7 +152,6 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   usage: { profiles: 432, stations: 904 },
   fleet: { profiles: 448, stations: 952 },
   "switch 大屏 to 新对话/waited": { profiles: 152 },
-  "switch 大屏 to 新对话/idle": { profiles: 160 },
   "place profiles/waited": { profiles: 80, stations: 96 },
   "place profiles/idle": { profiles: 80, stations: 96 },
   "place usage/waited": { profiles: 424, stations: 904 },
@@ -190,7 +192,9 @@ const GROWS_WRITE: Record<string, Partial<Record<Knob, number>>> = {
   "login alone": { profiles: 48 },
   "login held": { profiles: 48 },
   "message held": { stations: 64 },
-  "card held": { stations: 32 },
+  // (as it reads 15.9 → 21.1 KB with the chats three times, as before; what it writes and sends with them fell from
+  // 22.2 → 34.4 KB (× 1.55) to × 0.93 as 待处理's items went by key, workspaceMarks a keyed list, 2026-11-16)
+  "card held": { stations: 32, chats: 24 },
   "screen held": { stations: 16 },
   "member held": { stations: 48 },
 };
