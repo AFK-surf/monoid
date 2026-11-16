@@ -23,10 +23,12 @@ fn person_words_node(
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   cards? : (@sf.TipLayer, (@sf.LinkOf) -> @sf.LinkCard?),
 ) -> @view.View {
-  let runs = fn() {
+  // (worked out once as what they are worked out of changes, what reads them many times over reading that)
+  let runs_now = @signals.computed(fn(_) {
     let now = m()
     @sf.found_weight(@sfbase.person_runs(now.text, now.words, @sf.theme().p.accent, chat_title=chat_title_of(now)), found())
-  }
+  })
+  let runs = fn() { runs_now.get() }
   // (what a find marks of them: found_marks; and the passage lit where they have it: passage_marks)
   let found_now = fn() {
     match found_at() {
@@ -34,31 +36,33 @@ fn person_words_node(
       None => []
     }
   }
-  let marks = fn() { found_now() + @sf.passage_marks(runs(), lit()) }
-  let shown : @signals.Signal[Array[(String, String, Int)]] = @signals.signal([])
-  let links : Ref[@ui.RunsLinks?] = Ref(None)
+  // (no find and no passage lit, as nearly always: none, their words not read for it)
+  let marks = fn() {
+    let l = lit()
+    if found_at() is None && l.0 == "" {
+      []
+    } else {
+      found_now() + @sf.passage_marks(runs(), l)
+    }
+  }
   let words = v.box(fn(w) {
     w
     .words_runs(By(runs))
     .runs_marks(By(marks))
     // (what a go-to brings before the eyes in them, where they have it: sought_part)
     .sought(fn() { @sf.sought_part(runs(), found_now(), lit().0).map(fn(r) { @ui.runs_piece(w, r.0, r.1) }) })
-    .words_look(By(fn() { @ui.style_words(@sf.theme().t.words) }))
-    .runs_look(By(fn() { { ..@view.runs_plain, link: @sf.theme().p.blue, words: true } }))
-    .ink(By(fn() { @ui.style_ink(@sf.theme().t.words) }))
-    |> ignore
-    links.val = Some(
-      @ui.runs_links(w, runs, fn(h) { open_link(h) }, hold=fn(href, at) { message_link_held(href, at) }, shown?=cards.map(fn(
-        _,
-      ) {
-        fn(now) { shown.set(now) }
-      })),
+    // (how they are set, all from the theme: one binding for the three)
+    .sets_together(
+      fn() {
+        let t = @sf.theme()
+        (@ui.style_words(t.t.words), { ..@view.runs_plain, link: t.p.blue, words: true }, @ui.style_ink(t.t.words))
+      },
+      fn(s) { w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore },
     )
+    |> ignore
   })
-  match (cards, links.val) {
-    (Some((layer, card_of)), Some(l)) => @sf.link_cards_node(v, layer, words, l, fn() { shown.get() }, card_of) |> ignore
-    _ => ()
-  }
+  // (its links pressed, each held for its menu, and their cards where `cards` says them: made once it has a link)
+  @sf.words_links_node(v, words, runs, fn(h) { open_link(h) }, hold=Some(fn(href, at) { message_link_held(href, at) }), cards~)
   words
 }
 
