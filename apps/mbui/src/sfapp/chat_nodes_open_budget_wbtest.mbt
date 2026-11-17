@@ -49,9 +49,12 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // that one's (sf md_block_node's pick: its node), phone up 565 made and a frame 141, wide up 698 before it; a Scroll
   // following that one's as it changes instead, its every read looked up, ran more (instrbench's table 1,743.3K a
   // frame weighted before, 1,762.0K with it, 1,744.0K with the node))
-  "phone cold": (757, 29, 830, 146, 776),
+  // (2026-11-17: the first frame lays out and measures its words once, in the faces and lines they are drawn in, mbui
+  // ui's on_frame and app_tree's app_looks_told, not in the system's and then all again: before it phone cold 830 laid,
+  // 146 measured, 776 bindings, wide cold 3531, 557 and 2634, the same made)
+  "phone cold": (757, 29, 532, 73, 763),
   "phone again": (327, 17, 242, 28, 301),
-  "wide cold": (2443, 483, 3531, 557, 2634),
+  "wide cold": (2443, 483, 2011, 217, 2446),
   "wide again": (882, 130, 881, 123, 1049),
   "phone up": (566, 366, 618, 96, 0),
   "wide up": (699, 382, 910, 125, 0),

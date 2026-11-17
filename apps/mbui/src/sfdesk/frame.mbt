@@ -256,9 +256,16 @@ fn wide_reset() -> Unit {
 /// Whether the window is drawn as this frame: laid out Medium or Large (@sf.layout), by the window's width (not the
 /// box being built's: asked from within the sidebar too).
 pub fn is_wide(c : @ui.Ctx) -> Bool {
+  wide_at(c.window_size().0)
+}
+
+///|
+/// Whether a window `w` wide is drawn as the wide frame (is_wide): what the app's tree tells as its window is first
+/// given, before anything of it is laid out (sfapp's app_tree).
+pub fn wide_at(w : Double) -> Bool {
   // (or where the system lays out its tabs in every pose, the cards across on each screen: an iPhone Duo's outer one too,
   // rail_native.mbt)
-  !(@sf.layout(c.window_size().0) is Small) || @sf.native_able()
+  !(@sf.layout(w) is Small) || @sf.native_able()
 }
 
 ///|

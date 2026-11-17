@@ -63,18 +63,10 @@ pub fn View::tracks(
   // (worked out again only as what the cells say, their size of words or how words are shaped comes to be otherwise:
   // what they read told again the same, or this read anew after what read it let go of it as it was parked, measures
   // nothing again)
-  let extents = @signals.computed(fn(
-    last : (Array[Array[TrackCell]], Double, Int, Array[Array[TrackExtent]])?,
-  ) {
-    let rows = cells()
-    let scale = self.words_scale()
-    let shaped = self.tree.words_redone.get()
-    match last {
-      Some((r, s, d, _) as same) if r == rows && s == scale && d == shaped => same
-      _ => (rows, scale, shaped, measured(rows, scale))
-    }
+  let extents = @signals.memo(fn() { (cells(), self.words_scale(), self.tree.words_redone.get()) }, fn(k) {
+    measured(k.0, k.1)
   })
-  let widths = @signals.computed(fn(_) { share(extents.get().3, room()) })
+  let widths = @signals.computed(fn(_) { share(extents.get(), room()) })
   {
     widths: fn() { widths.get() },
     of: fn(rows) { @signals.untracked(fn() { share(measured(rows, self.words_scale()), room()) }) },

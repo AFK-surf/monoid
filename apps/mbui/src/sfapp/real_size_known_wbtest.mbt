@@ -5,11 +5,13 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
-// Raised once, 2026-11-17: settings-prices' tables' cells measured by the tree's own measurer as they are drawn (mbui
-// View::tracks: sf table_node), each counted as a measure, where @ui.text_advance measured them outside the tree,
-// counted nowhere: phone 164 -> 272 measured, wide 224 -> 436, nothing more shown (each cell twice as it opens: then
-// again with every word of the page, Tree::words_again; measured once more as what read them let go and read anew
-// before View::tracks kept what it measured last: 376 and 592).
+// Lowered, 2026-11-17: a run's first frame measures and lays out its words once, in the faces and lines they are drawn
+// in (mbui ui's on_frame takes the faces given and the host's glyphs before the window's tree is laid out; the app's
+// tree tells its looks, its faces and its lines as its window is first given, app_tree's app_looks_told), where it had
+// laid out and measured all of them in the system's face and lines and then all again as the old frame gave them:
+// every screen's laid and measured down (all of them, laid 978,371 -> 555,078, measured 208,563 -> 89,384), nothing
+// made otherwise. settings-prices' tables' cells measured by the tree's own measurer (mbui View::tracks) count once:
+// phone 272 -> 136 measured, wide 436 -> 166.
 // Raised once, 2026-11-16: the board's cards say their chat as Home's list's rows do (sfpages board_node.mbt: the list's
 // marks on its title's line, who is in it by row_aside_node, its menu), and its columns reach the window's foot (小屏
 // under both bars, 中屏 and 大屏 to the panel's or the window's foot), so they make the cards a taller list shows: new
@@ -432,9 +434,6 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-bars": (533, 635, 126),
   "phone settings-about": (472, 552, 90),
   "phone settings-changelog": (489, 596, 114),
-  // (2026-11-17: its tables' cells measured by the tree's own measurer, mbui View::tracks, each counted as a measure:
-  // before, @ui.text_advance measured them outside the tree, counted nowhere. Twice as it opens: once, then again with
-  // every word of the page as that first measuring asks the system's size of words, Tree::words_again. 164 before it)
   "phone settings-prices": (549, 724, 272),
   "phone settings-notify-off": (707, 827, 144),
   "phone settings-notify-denied": (470, 584, 114),
@@ -828,9 +827,6 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-bars": (626, 1327, 332),
   "wide settings-about": (602, 742, 158),
   "wide settings-changelog": (701, 918, 274),
-  // (2026-11-17: its tables' cells measured by the tree's own measurer, mbui View::tracks, each counted as a measure:
-  // before, @ui.text_advance measured them outside the tree, counted nowhere. Twice as it opens: once, then again with
-  // every word of the page as that first measuring asks the system's size of words, Tree::words_again. 224 before it)
   "wide settings-prices": (640, 858, 436),
   "wide settings-notify-off": (564, 1231, 308),
   "wide settings-notify-denied": (580, 754, 190),

@@ -154,6 +154,15 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (the host's settings, each read of the host so: what read one built again as it changes, host_said.mbt)
   host_settings_arrive()
   env_at_frame()
+  // (what words are measured in and the pixels they are set on, as this frame has them, before the window's tree is
+  // brought (view_frame) and lays out and measures anything of it: its first frame measured once, in the faces given
+  // from outside and the host's glyphs as they are now, never in what it had before them and then all of it again as
+  // they come (frame_body and frame_settings_arrive say each again, for a frame with no window: done, nothing more))
+  c.scale = scale
+  c.whole_px = whole_px_layout()
+  faces_from_env()
+  atlas_said.val = Some(h_atlas_generation())
+  text_arrive()
   // (built whole where what it read changed, painted alone where only what its paint read did, or of its looks by the
   // clock alone: frame_watch.mbt)
   // what is made once laid out, placed and drawn as its frame does; the old view in the room its node is given
