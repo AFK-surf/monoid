@@ -73,6 +73,9 @@ priv struct Actor {
   asked_to_name : Array[String]
   mut overloads : Int
   mut tools_lost : String?
+  /// Taken up from the station before with a Codex thread: its last turn is looked at once for an opaque Bad Request
+  /// (actor_run.mbt `reload_refused`).
+  mut refused_unchecked : Bool
   mut tools_restarts : Int
   mut saying : (String, String)?
   mut last_said : String
@@ -268,6 +271,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         asked_to_name: [],
         overloads: 0,
         tools_lost: None,
+        refused_unchecked: false,
         tools_restarts: 0,
         saying: None,
         last_said: "",

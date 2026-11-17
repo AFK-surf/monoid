@@ -872,6 +872,7 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
   if taken is Some(_) {
     a.runtime = runtime
   }
+  a.refused_unchecked = taken is Some(_) && runtime == "codex"
   a.running_identity = match (taken, snap.value("identity")) {
     (None, _) => Json::null()
     (Some(_), Some(Object(_) as i)) => i
@@ -1275,6 +1276,39 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
 }
 
 ///|
+/// Codex can keep rejecting a loaded thread with only {"detail":"Bad Request"} (an object of that one field, no other
+/// word on why), while the same history loaded anew works. Not evidence of a context limit, nor a reason to retry a 400
+/// by itself: the thread is let go of as the turn fails (`on_turn_ended`), so whatever comes next (a press of Retry, a
+/// person's message, /compact) resumes its history in a thread loaded again, without clearing it, replaying the
+/// original prompt or restarting the account's other threads.
+fn opaque_bad_request(message : String) -> Bool {
+  let refusal = @json.parse(message) catch { _ => Json::null() }
+  match refusal {
+    Object(o) => o.length() == 1 && str_of(o.get("detail")) == Some("Bad Request")
+    _ => false
+  }
+}
+
+///|
+/// A thread taken up from the station before (`adopt`) whose last turn was so refused is let go of before its next use:
+/// it failed before its process was let go of on such a refusal. Asked first wherever the thread is used (a turn,
+/// /compact, a warm-up).
+async fn Actors::reload_refused(self : Actors, a : Actor) -> Unit raise {
+  guard a.refused_unchecked else { return }
+  a.refused_unchecked = false
+  guard a.runtime == "codex" && a.agent is Some(_) && !self.busy(a) else { return }
+  let last = self.last_turn(a)
+  guard str_of(last.value("outcome")) == Some("failed") else { return }
+  let detail = str_of(last.value("detail")).unwrap_or("")
+  guard detail.has_prefix("model: ") && opaque_bad_request(detail.view(start_offset=7).to_string()) else { return }
+  self.log(a, "info", "letting go of a Codex thread taken up after an opaque Bad Request; the next use resumes it")
+  let agent = a.agent
+  self.set_agent(a, None)
+  self.end_process(a, agent)
+  self.notify_store(a)
+}
+
+///|
 async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) -> Unit raise {
   if kind == "input" || kind == "job" {
     a.last_said = ""
@@ -1338,6 +1372,7 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
+  self.reload_refused(a)
   if a.agent is Some(g) && !a.stale && !self.busy(a) {
     let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
     if !(on is Null) && on != a.profile {
@@ -1642,6 +1677,13 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     let agent = a.agent
     self.set_agent(a, None)
     self.log(a, "warn", "ending the process that lost the station's tools; the next one resumes it", fields={ "why": jstr(why) })
+    self.end_process(a, agent)
+    self.notify_store(a)
+  }
+  if a.runtime == "codex" && kind == "failed" && reason == "model" && limit is None && opaque_bad_request(message) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.log(a, "info", "letting go of a Codex thread refused with an opaque Bad Request; the next use resumes it")
     self.end_process(a, agent)
     self.notify_store(a)
   }
