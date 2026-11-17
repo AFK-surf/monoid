@@ -1,6 +1,6 @@
 // A visualization a message places (an HTML file drawn as a page: sfbase's viz_page.mbt) as nodes of the window's tree,
-// in its row (viz_file_of's, as nodes): the frame and document viz_page.mbt keeps, its view ui's native in the row.
-// Not here yet: what it waited under brushed off as it comes in (viz_reveal): its placeholder is gone at once.
+// in its row (viz_file_of's, as nodes): the frame and document viz_page.mbt keeps, its view ui's native in the row,
+// what it waited under brushed off it as it comes in (sfbase's viz_reveal_node).
 
 ///|
 /// The visualization `a` that message `ts` of chat `session` on `station` places, kept by session `key`, in `parent`
@@ -83,82 +83,13 @@ fn viz_shown_node(
             follow_up: Some(@sfbase.viz_follow_up(station, session)),
           },
         )
-      None => {
-        // (its node's own: a view to each node drawing it, the same one again for the node that comes after it)
-        let owner = -(b.id().at + 1)
-        let t = @sf.theme()
-        let f = @sfbase.viz_frame_of(
-          place,
-          html,
-          state,
-          {
-            keep: Some(fn(s) { @sfbase.viz_keep(src, station, key, a.path, s) }),
-            failed: None,
-            follow_up: Some(@sfbase.viz_follow_up(station, session)),
-          },
-          owner,
-          ground=t.p.bg,
-        )
-        f.owner = Some(owner)
-        b.owns(fn() {
-          if f.owner == Some(owner) {
-            f.owner = None
-          }
-        }) |> ignore
-        // the theme told only as it changes (viz_frame's)
-        b.reacts(fn() { (@sf.theme().dark, @sf.theme().p.bg, @ui.font_scale()) }, fn(now) {
-          let (dark, ground, _) = now
-          if @sfbase.viz_theme_news(f, dark, ground) {
-            @sfbase.viz_theme_tell(f, dark, ground)
-          }
-        })
-        // drawn: what it said of its height, or a whole page (or a fragment that says none) loaded, and its host done
-        // drawing it (viz_frame's cover)
-        let drawn = fn() {
-          f.said.get() |> ignore
-          (f.shown || (f.view.state() == 1 && (f.page || f.height == 0))) && f.view.host_done()
-        }
-        b.box(fn(fr) {
-          if f.page {
-            @sf.style_node(fr, fn() { @sfbase.viz_page_frame })
-            fr.aspect(Is(1.0 / @sfbase.viz_page_ratio)) |> ignore
-          } else {
-            @sf.style_node(fr, fn() { viz_node_frame })
-            fr.height(
-              By(fn() {
-                f.said.get() |> ignore
-                Some((if f.height > 0 { f.height } else { @sfbase.viz_first_height }).to_double())
-              }),
-            )
-            |> ignore
-            // (as tall as it says by a move, the list's with what is round it: the height it comes to as its page says it
-            // is for that word's moment, View::resizes; what was read over it does not step)
-            fr.reacts(fn() { f.said.get() }, fn(_) { fr.resizes() |> ignore }, at_start=false)
-          }
-          let n = @ui.native(
-            fr,
-            f.view,
-            corners=fn() {
-              let r = if f.page || @signals.untracked(drawn) { 0.0 } else { @ui.tree_theme().corner(Xl) }
-              (r, r, r, r)
-            },
-            kept=true,
-          )
-          @sf.style_node(n, fn() { @sfbase.viz_fill })
-          // till it has drawn itself, its place as while it came (the line's grey, breathing, its corners the
-          // placeholder's), over it
-          fr.show(at_once=true, fn() { !drawn() }, fn(o) {
-            o.over(Is(true)) |> ignore
-            @sf.style_node(o, fn() { @sfbase.viz_wait_ground })
-            o.box(fn(i) {
-              @sf.style_node(i, fn() { @sfbase.viz_wait_fill })
-              @sf.breathe_node(i)
-            })
-            |> ignore
-          })
+      None =>
+        viz_page_node(b, place, html, state, {
+          keep: Some(fn(s) { @sfbase.viz_keep(src, station, key, a.path, s) }),
+          failed: None,
+          follow_up: Some(@sfbase.viz_follow_up(station, session)),
         })
         |> ignore
-      }
     }
     // under the page, out of its way: the ways to open it on its own
     b.box(fn(ways) {
@@ -199,6 +130,104 @@ fn viz_shown_node(
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// A page of HTML (`html`, what its widget kept: `state`) drawn as `place` in `parent` (viz_frame's, as nodes): what it
+/// says heard by `hears`; a fragment as tall as it says (by a move, the list's with what is round it), a whole page 16:9
+/// of its width; its view ui's native, kept past its node (its chat keeps its pages as it is left), one of its own for
+/// each copy drawn at once (viz_frame_of); its place, breathing, over it till it has drawn itself, then brought in
+/// (viz_reveal_node). Its frame.
+fn viz_page_node(parent : @view.View, place : String, html : String, state : Json?, hears : @sfbase.VizHears) -> @sfbase.VizFrame {
+  let mut made : @sfbase.VizFrame? = None
+  parent.box(fn(b) {
+    // (its node's own: a view to each node drawing it, the same one again for the node that comes after it)
+    let owner = -(b.id().at + 1)
+    let t = @sf.theme()
+    let f = @sfbase.viz_frame_of(place, html, state, hears, owner, ground=t.p.bg)
+    f.owner = Some(owner)
+    b.owns(fn() {
+      if f.owner == Some(owner) {
+        f.owner = None
+      }
+    }) |> ignore
+    // the theme told only as it changes (viz_frame's)
+    b.reacts(fn() { (@sf.theme().dark, @sf.theme().p.bg, @ui.font_scale()) }, fn(now) {
+      let (dark, ground, _) = now
+      if @sfbase.viz_theme_news(f, dark, ground) {
+        @sfbase.viz_theme_tell(f, dark, ground)
+      }
+    })
+    // drawn: what it said of its height, or a whole page (or a fragment that says none) loaded, and its host done
+    // drawing it (viz_frame's cover)
+    let drawn = fn() { f.drawn() }
+    b.box(fn(fr) {
+      if f.page {
+        @sf.style_node(fr, fn() { @sfbase.viz_page_frame })
+        fr.aspect(Is(1.0 / @sfbase.viz_page_ratio)) |> ignore
+      } else {
+        @sf.style_node(fr, fn() { viz_node_frame })
+        fr.height(
+          By(fn() {
+            f.said.get() |> ignore
+            Some((if f.height > 0 { f.height } else { @sfbase.viz_first_height }).to_double())
+          }),
+        )
+        |> ignore
+        // (as tall as it says by a move, the list's with what is round it: the height it comes to as its page says it
+        // is for that word's moment, View::resizes; what was read over it does not step)
+        fr.reacts(fn() { f.said.get() }, fn(_) { fr.resizes() |> ignore }, at_start=false)
+      }
+      // drawn, the first time: brought in, as a message's image is (viz_reveal_node), from that moment, once (however
+      // soon its node is let go and made again, as its chat is left and gone back to); what it waited under let go at
+      // its declared end. One drawn already (its chat kept as it was left) comes as it is.
+      let revealing : @signals.Signal[Double?] = @signals.signal(None)
+      // (its corners the placeholder's till what it waited under has gone from over it)
+      let n = @ui.native(
+        fr,
+        f.view,
+        corners=fn() {
+          let r = if f.page || (@signals.untracked(drawn) && revealing.untracked() is None) {
+            0.0
+          } else {
+            @ui.tree_theme().corner(Xl)
+          }
+          (r, r, r, r)
+        },
+        kept=true,
+      )
+      @sf.style_node(n, fn() { @sfbase.viz_fill })
+      // till it has drawn itself, its place as while it came (the line's grey, breathing, its corners the
+      // placeholder's), over it
+      fr.show(at_once=true, fn() { !drawn() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        @sf.style_node(o, fn() { @sfbase.viz_wait_ground })
+        o.box(fn(i) {
+          @sf.style_node(i, fn() { @sfbase.viz_wait_fill })
+          @sf.breathe_node(i)
+        })
+        |> ignore
+      })
+      fr.reacts(drawn, fn(now) {
+        if now && f.reveal is Some(_) && revealing.untracked() is None {
+          let from = fr.cause_at()
+          f.reveal = None
+          revealing.set(Some(from))
+          fr.at_moment(from + @sfbase.viz_reveal_ms, fn() { revealing.set(None) }) |> ignore
+        }
+      })
+      fr.show(at_once=true, fn() { revealing.get() is Some(_) }, fn(o) {
+        match revealing.untracked() {
+          Some(from) => @sfbase.viz_reveal_node(o, f.page, from)
+          None => ()
+        }
+      })
+    })
+    |> ignore
+    made = Some(f)
+  })
+  |> ignore
+  made.unwrap()
 }
 
 ///|

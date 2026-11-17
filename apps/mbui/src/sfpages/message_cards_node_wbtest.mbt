@@ -175,6 +175,7 @@ fn card_new(
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       let core = Some(@sfbase.settings_core(src, card_ws))
       root.box(fn(f) {
@@ -886,6 +887,7 @@ fn card_row_new(w : Double, src : Source, m : Message) -> @ui.Tester {
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })

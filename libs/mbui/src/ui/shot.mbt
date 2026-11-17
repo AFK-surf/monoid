@@ -660,3 +660,24 @@ fn tree_shot_words(tree : @view.Tree) -> Array[String] {
   })
   out
 }
+
+///|
+/// The pictures each picture made as nodes now being taken (take_picture) draws, as Tester::image_nodes says an old
+/// view's: their key and how big each is drawn.
+pub fn Tester::picture_images(self : Tester) -> Array[(String, Double, Double)] {
+  self.reads_own()
+  let out = []
+  for _, s in g().shots {
+    match s.tree {
+      Some(st) =>
+        for d in st.tree.drawn() {
+          match d.image {
+            Some((src, _, _)) => out.push((src, d.w, d.h))
+            None => ()
+          }
+        }
+      None => ()
+    }
+  }
+  out
+}

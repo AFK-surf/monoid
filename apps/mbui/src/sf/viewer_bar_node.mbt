@@ -12,7 +12,8 @@
 /// are the system's at its left; `name` and `meta` under it in the middle, as wide as they are (the window's `width`
 /// less viewer_bar_sides at most), where the file is (`title`, none: "") its tip while the pointer is over them; what `tools` makes in
 /// the row at its end (the corner each is round at given: the window's followed at its corner, a bar's buttons'), the
-/// last as far in from the window's side as a page's bar's last. There while `hidden` holds not (gone up its height and
+/// last as far in from the window's side as a page's bar's last (`capsule_end`: a capsule of words, past the window's
+/// corner as far as a long capsule stands: window_corner_past). There while `hidden` holds not (gone up its height and
 /// faded over 240 ms, eased out, from where it is at the moment it is told, and back so; at once with motion
 /// reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade). A press on it where nothing of it
 /// takes one is its own, moving the window while it has none of the system's title bar (the app's own top row). Its
@@ -32,6 +33,7 @@ pub fn viewer_bar_node(
   tools : (@view.View, @view.Live[Double]) -> Unit,
   went : () -> Unit,
   tips : TipLayer,
+  capsule_end? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   // (hidden as it is made: gone whole, not gone up; its way a motion's, there at once with motion reduced)
@@ -68,7 +70,7 @@ pub fn viewer_bar_node(
         .lines_up(Is(Some(Middle)))
         .height(Is(Some(viewer_bar_h)))
         .gap(Is(@ui.Space::px(S4)))
-        .padding(By(fn() { (bar_start_in(), 0.0, bar_end_in(width()), hairline_h) }))
+        .padding(By(fn() { (bar_start_in(), 0.0, bar_end_in(width(), capsule_end), hairline_h) }))
         |> ignore
         // clear of the window's buttons at its left, the system's (not in full screen)
         row.show(@ui.window_keys_left_now, fn(k) { k.width(Is(Some(viewer_buttons_w))) |> ignore })
@@ -140,10 +142,13 @@ pub fn viewer_bar_node(
 /// How far in from the window's side the bar's last tool stands, the window `w` wide (viewer_bar's end): clear of the
 /// window's buttons where they are the app's; else at the window's corner as a page's bar's last is (window_end_in), as
 /// the window's corner is now for the window's tree, followed.
-fn bar_end_in(w : Double) -> Double {
+fn bar_end_in(w : Double, capsule : Bool) -> Double {
   let roots = @ui.tree_corner_roots_now()
   if @ui.window_keys_own_now() {
     window_keys_room_at(w) + viewer_bar_in
+  } else if capsule {
+    // (a capsule of words at its end, past the window's corner: viewer_bar's capsule_end, window_clear_in)
+    window_corner_past(viewer_bar_in, roots~)
   } else {
     window_end_in(viewer_bar_in, roots~)
   }

@@ -195,6 +195,10 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
   // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
   bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
+  // the chat being shared as a picture, and a visualization over the whole screen, over the bar: nodes of the tree's of
+  // their own (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
   // an image opened over the pages, over the bar: nodes of the tree's of its own (sfbase's viewer_tree.mbt); what is
   // opened otherwise, the old view's over them (narrow_over's preview)
   // (its stage the box it is laid out in, this node's: the window's less the system's bars beside it, as the root's
@@ -332,16 +336,13 @@ fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
 }
 
 ///|
-/// Over the pages laid out Small: the bottom bar, the chat being made public, a visualization over the whole screen (a
-/// file open over them is the window's tree's: sfbase viewer_tree.mbt).
+/// Over the pages laid out Small: the bottom bar (a file open over them, the chat being shared as a picture and a
+/// visualization over the whole screen are the window's tree's: sfbase viewer_tree.mbt, sfpages' publish.mbt, sfbase's
+/// viz_page.mbt).
 fn narrow_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // the bottom bar: on a place's top page with nothing over it; none while this device waits to be confirmed in the
   // workspace's safe mode (its Home is the wait: lock_gate)
   bottom_bar(c, src, w, place_of(app.nav.top()), narrow_bar_shown(src, w))
-  // the chat being made public (sfpages' publish.mbt)
-  @sfpages.publish_layer(c, src)
-  // a visualization over the whole screen (viz.mbt)
-  viz_full_layer(c, src)
 }
 
 ///|

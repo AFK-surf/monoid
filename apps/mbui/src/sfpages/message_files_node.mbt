@@ -14,6 +14,8 @@ priv struct MessageFilesAt {
   view : () -> ChatView
   /// its message's `said` as it changes: said while the chat shows (its pictures brushed in only then)
   said : () -> Bool
+  /// in a picture of the chat being shared, how it draws them (MessageNodeHere's)
+  picture : MessagePicture?
 }
 
 ///|
@@ -59,12 +61,15 @@ fn message_files_node(
     let list = fn() { listed.get() }
     s.by_room(fn(r, room) {
       r.box(fn(files) {
+        // (in a picture of the chat being shared, the room each one's ✕ hangs in past its top kept over the first line,
+        // and between lines on top of their own, out to the scale's next step: publish.mbt)
+        let hung = if place.picture is Some(_) { @sf.corner_remove_reach(@sf.message_file_corner) } else { 0.0 }
         @sf.style_node(files, fn() {
           let wrap = if mine() { files_wrap_end } else { files_wrap }
-          let o = over()
+          let o = over() + hung
           if o > 0.0 { wrap.then(@ui.style(pt=@sf.room_of(o))) } else { wrap }
         })
-        files.wraps(Is(Some(files_gap))) |> ignore
+        files.wraps(Is(Some(if hung > 0.0 { scale_up(files_gap + hung) } else { files_gap }))) |> ignore
         // (the files kept by key: a file's block told as that file changes, comes or goes, never as another does)
         let by_key = files.keyed_by(list, @sfbase.file_key)
         files.each(fn() { by_key.keys() }, fn(k) { k }, fn(slot, k) {
@@ -82,6 +87,8 @@ fn message_files_node(
           let a = fn() { found.get() }
           slot.box(fn(item) {
             item.max_width(By(fn() { Some(room.width()) })).shrink(Is(0.0)) |> ignore
+            // (in a picture of the chat being shared, as it draws it: publish.mbt)
+            let drawn = fn(item : @view.View) {
             item.pick(fn() { file_kind(a().name) }, fn(p, kind) {
               match kind {
                 "image" =>
@@ -102,6 +109,11 @@ fn message_files_node(
                 _ => message_file_card_node(p, src, tips, place, a, by, at) |> ignore
               }
             })
+            }
+            match place.picture {
+              Some(pic) => (pic.file)(item, @signals.untracked(by).map(fn(b) { b.2 }).unwrap_or(""), a, drawn)
+              None => drawn(item)
+            }
           })
           |> ignore
         })

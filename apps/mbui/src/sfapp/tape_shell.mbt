@@ -8,8 +8,9 @@
 //   - over it, a station's screen, a film played over the whole window, what opens over the panels (sfdesk's
 //     overlays.mbt), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
 //     under them the tree's;
-//   - over all of it, a station's terminal or a drive's text read, and an image opened: nodes of the tree's (wide_page,
-//     wide_viewer).
+//   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's terminal or a
+//     drive's text read, and an image opened: nodes of the tree's (sfpages' publish_layer_node, sfbase's
+//     viz_full_layer_node, wide_page, wide_viewer).
 
 ///|
 /// The tape's shell (above), in node `v`.
@@ -21,6 +22,10 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (page_local_ms at most), as a page pushed on a phone slides in then
   @sfdesk.tape_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
+  // (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
   wide_page(v, src)
   wide_viewer(v, src)
   // a workspace switched shows once all its rail, sidebar and the page its pane lands on open on is answered (sfdesk's
@@ -38,6 +43,10 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
+  // (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
   wide_page(v, src)
   wide_viewer(v, src)
   // (a workspace switched: as taped_shell's)
@@ -144,8 +153,8 @@ fn taped_under(c : @ui.Ctx, src : Source) -> Unit {
 /// Over the tape's panels (an island, taking presses where it draws them alone): a station's screen over the whole
 /// window, as Android's ScreenActivity is over the app; a film played over it too, as the web's pages of a file opened
 /// (a drive's text read: nodes of its own, wide_page); what opens over the panels (sfdesk's
-/// overlays.mbt); the player sideways turned upright and words picked let go by back first; a visualization over the
-/// whole screen; what is over the frame in every tier (signed_in_over).
+/// overlays.mbt); the player sideways turned upright and words picked let go by back first; what is over the frame in
+/// every tier (signed_in_over).
 fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
   match workspace_in_view(src).0 {
     Some(w) => {
@@ -157,7 +166,6 @@ fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
       @sfdesk.overlays(c, src, w)
       play_back(c)
       pick_back(c)
-      viz_full_layer(c, src)
       signed_in_over(c, src, w)
     }
     None => ()

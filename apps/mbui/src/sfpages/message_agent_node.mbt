@@ -130,7 +130,7 @@ fn agent_said_node(
           fn() { if m().author_kind == "agent" { m().by.runtime } else { "" } },
         )
         let agent = @signals.untracked(fn() { if m().author_kind == "agent" { message_agent_of(here, m().by.agent) } else { "" } })
-        if agent != "" {
+        if agent != "" && here.picture is None {
           message_agent_card_node(pic, src, here, agent, pointed=true)
         }
         // (out of its agent's picture at work: from there, Float)
@@ -276,7 +276,10 @@ fn agent_prose_node(
       lit~,
       // (its tables slid sideways out over the row's side to the pane's edge: the side as the list is laid out when it
       // is made, markdown_node's bleed being a number)
-      bleed=@signals.untracked(fn() { row_side((here.width)()) }),
+      bleed=if here.picture is Some(_) { 0.0 } else { @signals.untracked(fn() { row_side((here.width)()) }) },
+      // (none of its tables' copy keys in a picture of the chat; its tables fitted to the picture taken)
+      copy=here.picture is None,
+      fit_tables=here.picture is Some({ taking: true, .. }),
       on_link~,
       on_link_hold=Some(on_hold),
       on_link_shown?=shown,
@@ -292,15 +295,22 @@ fn agent_prose_node(
           fn(d) { message_files_node(d, src, here.tips, place, fn() { [a] }, fn() { false }, by, at) }
         }
         match placed(name) {
-          // an HTML page: drawn as a page where it is placed (message_viz_node), its card where it cannot be read
+          // an HTML page: drawn as a page where it is placed (message_viz_node), its card where it cannot be read; in a
+          // picture of the chat being shared, as that draws it (publish.mbt)
           Some(a) if is_viz(a.name) =>
             Some({
               draw: fn(d) {
                 let ts = @signals.untracked(m).ts
-                message_viz_node(d, src, here.tips, here.station, here.session, owner_of(place.here(), a), ts, a, card(a))
+                match here.picture {
+                  Some(pic) => (pic.viz)(d, ts, a, card(a))
+                  None =>
+                    message_viz_node(d, src, here.tips, here.station, here.session, owner_of(place.here(), a), ts, a, card(a))
+                }
               },
               image: None,
             })
+          // (in a picture of the chat being shared, a picture it places as its file (its own ✕ on the page): publish.mbt)
+          Some(a) if here.picture is Some(_) => Some({ draw: card(a), image: None })
           // (a picture: its width over its height and its box as wide as it is given there, side by side with others or
           // in a table's cell; made again only for another size, as message_files_node's)
           Some(a) =>

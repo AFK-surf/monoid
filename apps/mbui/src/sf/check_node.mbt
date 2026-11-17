@@ -17,11 +17,30 @@ pub fn check_node(
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
+  check_node_of(loc~, parent, on, turn, label, disabled~) |> ignore
+}
+
+///|
+/// check_node's checkbox, the node given back (what lights beside it while the hand is on it): `side` and `corner` its
+/// own where a row asks another (a theme's rows' check), `edge` its edge while off and the hand not on it (one that
+/// must show beside what is faded: the muted ink).
+#callsite(autofill(loc))
+pub fn check_node_of(
+  parent : @view.View,
+  on : () -> Bool,
+  turn : (Bool) -> Unit,
+  label : () -> String,
+  disabled? : () -> Bool = fn() { false },
+  side? : Double = check_side,
+  corner? : Double = check_corner,
+  edge? : () -> Int64,
+  loc~ : SourceLoc,
+) -> @view.View {
   @headless.toggle(made_for=loc, parent, Checkbox, label, on, turn, disabled~, fn(b, _) {
     b
-    .width(Is(Some(check_side)))
-    .height(Is(Some(check_side)))
-    .radius(Is(check_corner))
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .radius(Is(corner))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .ground(By(fn() {
@@ -35,7 +54,10 @@ pub fn check_node(
       } else if b.pointed() && !disabled() {
         t.field_hover
       } else {
-        t.border
+        match edge {
+          Some(e) => e()
+          None => t.border
+        }
       }
       (1.0, line)
     }))
@@ -44,14 +66,13 @@ pub fn check_node(
     b.show(on, fn(m) {
       m
       .words(Is("✓"))
-      .words_look(Is({ size: check_side * 0.7, weight: 700, line: check_side, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }))
+      .words_look(Is({ size: side * 0.7, weight: 700, line: side, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }))
       .ink(By(fn() { @ui.tree_theme().on_primary }))
       |> ignore
     })
     // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
     focus_ring_node(b)
   })
-  |> ignore
 }
 
 ///|

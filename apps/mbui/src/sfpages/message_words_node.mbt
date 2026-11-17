@@ -410,7 +410,7 @@ fn message_share_of(src : Source, here : MessageNodeHere, m : () -> Message) -> 
 /// Where a message's files are (MessageFilesAt) in the chat `here` is: its station, its session, its view as it
 /// changes; whether the message was said while the chat shows (`said`).
 fn message_files_at(here : MessageNodeHere, said : () -> Bool) -> MessageFilesAt {
-  { station: fn() { here.station }, session: fn() { here.session }, view: here.view, said }
+  { station: fn() { here.station }, session: fn() { here.session }, view: here.view, said, picture: here.picture }
 }
 
 ///|

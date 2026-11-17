@@ -19,6 +19,19 @@ pub(all) struct MessageNodeHere {
   tips : @sf.TipLayer
   stint : () -> Int
   jump : ((String, String) -> Unit)?
+  /// in a picture of the chat being shared (publish.mbt), how its messages' files are drawn there; None in its list
+  picture : MessagePicture?
+}
+
+///|
+/// How a picture of a chat being shared (publish.mbt) draws its messages' files: in the picture itself (`taking`),
+/// else on the page that shares it. `file`: file `a` of message `ts`, as its message draws it (`draw`), in `parent`;
+/// `viz`: a page of HTML `a` placed in message `ts`'s words, in `parent`, its card drawn by `card` where it is not
+/// drawn as itself.
+pub(all) struct MessagePicture {
+  taking : Bool
+  file : (@view.View, String, () -> Attachment, (@view.View) -> Unit) -> Unit
+  viz : (@view.View, String, Attachment, (@view.View) -> Unit) -> Unit
 }
 
 ///|
@@ -136,7 +149,8 @@ fn message_name_node(
   agent : () -> String,
   from : () -> String,
 ) -> Unit {
-  let goes = fn() { agent() != "" || from() != "" }
+  // (in a picture of the chat being shared, only words: what it would open is the chat's, not the picture's)
+  let goes = fn() { here.picture is None && (agent() != "" || from() != "") }
   v.box(fn(b) {
     @sf.style_node(b, fn() { msg_name_room })
     let press = fn() {
@@ -150,7 +164,7 @@ fn message_name_node(
     @sf.presses_node(b, on=goes, press)
     // (its agent's card over it, the card's hand then its presses': one gesture a node)
     let a = @signals.untracked(agent)
-    if a != "" {
+    if a != "" && here.picture is None {
       message_agent_card_node(b, src, here, a, words_along=true, press~)
     }
     b.says(By(fn() { if goes() { Some(@view.said(Link, label=name())) } else { None } })) |> ignore

@@ -48,7 +48,9 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone place workspace/member": (0, 0, 0, 0, 0, 1),
   "phone switcher search/renamed": (0, 0, 0, 0, 0, 75),
   "phone switcher search/down": (0, 0, 0, 0, 0, 0),
-  "phone switcher search/card": (0, 0, 0, 0, 0, 61),
+  // (raised once, 2026-11-17: the shell's old island over the pages lays out the switcher's card with the chat shared as a
+  // picture and a visualization over the whole screen gone from it to nodes of their own)
+  "phone switcher search/card": (0, 0, 0, 0, 0, 70),
   "phone switcher search/archived": (0, 0, 0, 0, 0, 0),
   "phone switcher-found search/renamed": (0, 0, 0, 0, 0, 79),
   "phone switcher-found search/down": (0, 0, 0, 0, 0, 0),

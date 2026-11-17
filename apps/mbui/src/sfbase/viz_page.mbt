@@ -39,6 +39,14 @@ pub(all) struct VizFrame {
 }
 
 ///|
+/// Whether it has drawn itself, as a node reads it (followed): it said its height, or, a whole page (or a fragment that
+/// says none), it loaded; and its host has drawn it (viz_frame's cover).
+pub fn VizFrame::drawn(self : VizFrame) -> Bool {
+  self.said.get() |> ignore
+  (self.shown || (self.view.state() == 1 && (self.page || self.height == 0))) && self.view.host_done()
+}
+
+///|
 /// The pages drawn, by where they are drawn (their message's place and file, a chart's code, the full screen's).
 pub let viz_frames : Map[String, VizFrame] = Map([])
 
@@ -419,6 +427,63 @@ fn viz_reveal(c : @ui.Ctx, f : VizFrame, w : Double, h : Double, waited : (Doubl
 }
 
 ///|
+/// A page come in once it has drawn itself as nodes, over its frame in `parent` (a layer of the frame's room, what goes
+/// past it cut): viz_reveal's, set out at `from` (the moment it was told drawn) for viz_reveal_ms, what it waited under
+/// (the placeholder: a whole page's paper, else the line's grey on the chat's ground, their corners the placeholder's)
+/// brushed off from its top, an edge half its height deep going down it (the ease out) in viz_reveal_steps steps, and
+/// fading out from 800 ms (300 ms). Each strip on the screen's pixels, one meeting the next with no seam; each worked out
+/// of the frame's height as it is drawn (View::moved_by), nothing laid out again for it.
+pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit {
+  // (cut to the frame, its corners the placeholder's where it is a fragment's)
+  parent
+  .over(Is(true))
+  .fills_across(Is(true))
+  .height_share(Is(1.0))
+  .clips(Is(true))
+  .radius(By(fn() { if page { 0.0 } else { @ui.tree_theme().corner(Xl) } }))
+  |> ignore
+  let way = @motion.Eased::new(0.0)
+  way.go(parent, 1.0, viz_reveal_ms, ease=Linear)
+  // (how far in at `t`, eased out: viz_reveal's `e`)
+  let e_at = fn(t : Double) { @ui.Out.at(dmin(1.0, dmax(0.0, (t - from) / viz_reveal_ms))) }
+  let ends = fn(_w : Double, _h : Double) { from + viz_reveal_ms }
+  // (how much of what it waited under is still there as it is drawn)
+  let gone = fn(n : @view.View) {
+    let p = way.shown(n)
+    1.0 - dmin(1.0, dmax(0.0, (p * viz_reveal_ms - viz_reveal_wait_after_ms) / viz_reveal_wait_out_ms))
+  }
+  let steps = viz_reveal_steps.to_double()
+  // strip `k` of the edge (`k` = steps: all of it under the edge), a share of the frame's height (`share`: the frame
+  // `share`'s inverse times as tall as it), at `alpha` of what is left: what it waited under (a whole page's paper, a
+  // fragment's line grey), its top worked out of the frame's height as it is drawn
+  let strip = fn(k : Int, share : Double, alpha : Double) {
+    parent.box(fn(s) {
+      s.over(Is(true)).fills_across(Is(true)).height_share(Is(share)) |> ignore
+      s
+      .ground(By(fn() {
+        @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
+      }))
+      .alpha(By(fn() { alpha * gone(s) }))
+      // (its top, from the frame's: the edge's top, k steps down it, on the screen's pixels)
+      .moved_by(
+        fn(_w, h, t) {
+          let frame = h / share
+          let y = frame * (-0.5 + 1.5 * e_at(t)) + k.to_double() * frame * 0.5 / steps
+          (0.0, (y * s.pixel_scale()).round() / s.pixel_scale())
+        },
+        ends,
+      )
+      |> ignore
+    })
+    |> ignore
+  }
+  for k in 0..<viz_reveal_steps {
+    strip(k, 0.5 / steps, (k.to_double() + 0.5) / steps)
+  }
+  strip(viz_reveal_steps, 1.0, 1.0)
+}
+
+///|
 /// How long a page comes in, when and how fast what it waited under goes, its edge's steps (image_reveal's).
 pub let viz_reveal_ms : Double = 1100.0
 
@@ -719,107 +784,224 @@ pub fn viz_close_full() -> Unit {
 }
 
 ///|
-/// The visualization over the whole window, if one is open, whatever the layout: call after what is under it. On the
-/// page's ground, under the bar every file opened over the whole window has (@sf.viewer_frame_bar: across the top,
-/// clear of the window's own buttons, its way back by name; laid out Small, floating with its ×), the page under it as
-/// tall as the rest; back (Esc) closes it. One that cannot be read is said so and closes.
-pub fn viz_full_layer(c : @ui.Ctx, src : Source) -> Unit {
-  let v = match viz_full.get() {
-    Some(v) => v
-    None => return
-  }
-  match viz_load(c, src, v.station, v.key, v.path) {
-    // fetched once; a link's wait is said under its words
-    None => ()
-    Some(Err(_)) => {
-      c.tell("viz/full-failed", fn() { viz_close_full() })
+/// The visualization over the whole window, if one is open, whatever the layout, in node `v` of the window's tree (laid
+/// out over the pages: narrow_shell, tape_shell), made as one is opened and let go as it is closed. On the page's ground,
+/// under the bar every file opened over the whole window has (laid out Small, floating with its ×: viewer_head_node;
+/// else across the top, its way back by name: viewer_bar_node; beside the system's bars (an iPhone Duo's) theirs, close
+/// and download in them), the page under it as tall as the rest; a modal layer while it is open, back and Escape closing
+/// it. One that cannot be read is said so and closes.
+pub fn viz_full_layer_node(v : @view.View, src : Source) -> Unit {
+  v.box(fn(layer) {
+    layer.over(Is(true)) |> ignore
+    layer.pick(
+      at_once=true,
+      fn() { viz_full.get() },
+      fn(n, open) {
+        match open {
+          Some(full) => viz_full_node(n, src, full)
+          None => ()
+        }
+      },
+    )
+  })
+  |> ignore
+}
+
+///|
+/// Visualization `full` over the whole window in `n` (viz_full_layer_node's): what draws it once its file is read.
+fn viz_full_node(n : @view.View, src : Source, full : VizFull) -> Unit {
+  // (over the pages, the whole of the room it is given: not one more of what is laid out after them)
+  n.over(Is(true)) |> ignore
+  let load = viz_load_node(n, src, full.station, full.key, full.path)
+  // (its file not read: said so, and closed, at the moment that is known; a link's wait is said under its words)
+  n.reacts(fn() { load() is Some(Err(_)) }, fn(failed) {
+    if failed {
+      viz_close_full()
       toast_later(viz_tr("android-misc.viz.cantRead"))
     }
-    Some(Ok((html, state))) => {
-      // (while this one is open, built again or not)
-      let native = @sf.native_over_up(v.name, alive=fn() {
-        match viz_full.untracked() {
-          Some(now) => physical_equal(now, v)
-          None => false
-        }
-      }, owner="viz", over=1)
-      if native {
-        @sf.native_over_act("close", @sf.t("common.close"), "close", fn() { c.tell("viz/full-close", fn() { viz_close_full() }) }, lead=true)
-        @sf.native_over_act("download", @sf.t("android-chat.file.download"), "download", fn() {
-          if html.has_prefix("wasm:base64:") {
-            let b64 = html.unsafe_substring(start=12, end=html.length())
-            keep_bytes(c, v.name, "application/wasm", viz_base64_decode(b64).unwrap_or(b""))
-          } else {
-            keep_bytes(c, v.name, "text/html", @utf8.encode(html))
-          }
-        })
-      }
-      let t = @sf.theme()
-      let (top, foot) = (@sf.viewer_host().room)()
-      c.take_back(fn() { viz_close_full() })
-      // under the bar, as a file's page is (viewer_stage_node's)
-      let under = if native { top } else if c.width <= @sf.viewer_small_w { top + page_small_top } else { viewer_top(c) + desk_page_top }
-      c.layer(fn() {
-        c.box(style=viz_ground, fn() {
-          c.box(style=@ui.style(w=Full, h=Fixed(under)), fn() {  }) |> ignore
-          c.box(style=viz_full_page.then(@ui.style(pr=@sf.room_of(c.space(S3) + @sf.native_clear()))), fn() {
-            match viz_mbui_parse(v.name, html) {
-              Some(widget) =>
-                c.box(style=viz_full_mbui_box, fn() {
-                  viz_mbui_ctx(
-                    c,
-                    "full/" + v.station + "/" + v.key + "/" + v.path,
-                    widget,
-                    state.unwrap_or(Json::null()),
-                    {
-                      keep: Some(fn(s) { viz_keep(src, v.station, v.key, v.path, s) }),
-                      failed: None,
-                      follow_up: Some(viz_follow_up(v.station, v.session)),
-                    },
-                  )
-                })
-                |> ignore
-              None =>
-                viz_frame(
-                  c,
-                  "full/" + v.station + "/" + v.key + "/" + v.path,
-                  html,
-                  state,
-                  {
-                    keep: Some(fn(s) { viz_keep(src, v.station, v.key, v.path, s) }),
-                    failed: None,
-                    follow_up: Some(viz_follow_up(v.station, v.session)),
-                  },
-                  fill=true,
-                  ground=t.p.bg,
-                )
-            }
-          })
-          |> ignore
-          c.box(style=@ui.style(w=Full, h=Fixed(foot)), fn() {  }) |> ignore
-        })
-        |> ignore
-        if !native {
-          @sf.viewer_frame_bar(
-            c,
-            "viz/full",
-            @sf.t("common.back"),
-            v.name,
-            "",
-            false,
-            true,
-            0.0,
-            1.0,
-            @sf.page_viewer_ink(),
-            fn() {  },
-            on_close=viz_close_full,
-          )
-          |> ignore
-        }
-      })
-      |> ignore
+  })
+  n.show(fn() { load() is Some(Ok(_)) }, fn(o) {
+    match @signals.untracked(load) {
+      Some(Ok((html, state))) => viz_full_shown(o, src, full, html, state)
+      _ => ()
+    }
+  })
+}
+
+///|
+/// Visualization `full` read (`html`, what its widget kept: `state`) over the whole window in `n` (viz_full_node's).
+fn viz_full_shown(n : @view.View, src : Source, full : VizFull, html : String, state : Json?) -> Unit {
+  let place = "full/" + full.station + "/" + full.key + "/" + full.path
+  let hears : VizHears = {
+    keep: Some(fn(s) { viz_keep(src, full.station, full.key, full.path, s) }),
+    failed: None,
+    follow_up: Some(viz_follow_up(full.station, full.session)),
+  }
+  // (while it is the one open: the pages under it take no press, key or wheel; back and Escape close it)
+  n
+  .over(Is(true))
+  .modal(Is(true))
+  .on_key(fn(k) {
+    if k.code == @ui.key_escape {
+      viz_close_full()
+      true
+    } else {
+      false
+    }
+  })
+  .takes_back(fn() { viz_close_full() })
+  |> ignore
+  // beside the system's bars (an iPhone Duo's): its name and close and download there in place of a bar of its own, said
+  // as that is so, kept as said while it is the one open (@sf.native_over_up)
+  let alive = fn() {
+    match viz_full.untracked() {
+      Some(now) => physical_equal(now, full)
+      None => false
     }
   }
+  n.reacts(fn() { (@sf.native_on(), @sf.t("common.close"), @sf.t("android-chat.file.download")) }, fn(said) {
+    let (on, close, download) = said
+    if on && @sf.native_over_up(full.name, alive~, owner="viz", over=1) {
+      @sf.native_over_act("close", close, "close", fn() { viz_close_full() }, lead=true)
+      @sf.native_over_act("download", download, "download", fn() {
+        if html.has_prefix("wasm:base64:") {
+          let b64 = html.unsafe_substring(start=12, end=html.length())
+          keep_bytes_now(full.name, "application/wasm", viz_base64_decode(b64).unwrap_or(b""))
+        } else {
+          keep_bytes_now(full.name, "text/html", @utf8.encode(html))
+        }
+      })
+    }
+  })
+  let width = fn() { n.window().0 }
+  let room = fn() { (@sf.viewer_host().room)() }
+  n.box(fn(page) {
+    @sf.style_node(page, fn() { viz_ground })
+    // under the bar, as a file's page is (viewer_stage_node's): beside the system's bars, under their room alone
+    page.box(fn(top) {
+      top.height(
+        By(fn() {
+          let under = if @sf.native_on() {
+            room().0
+          } else if width() <= @sf.viewer_small_w {
+            room().0 + page_small_top
+          } else {
+            room().0 + desk_page_top
+          }
+          Some(under)
+        }),
+      )
+      |> ignore
+    })
+    |> ignore
+    page.box(fn(body) {
+      @sf.style_node(body, fn() { viz_full_page.then(@ui.style(pr=@sf.room_of(@ui.Space::px(S3) + @sf.native_clear()))) })
+      match viz_mbui_parse(full.name, html) {
+        Some(widget) =>
+          body.box(fn(b) {
+            @sf.style_node(b, fn() { viz_full_mbui_box })
+            viz_mbui_node(b, place, widget, fn() { viz_state_of(full.station, full.key, full.path).unwrap_or(state.unwrap_or(Json::null())) }, hears)
+          })
+          |> ignore
+        None => viz_page_fill_node(body, place, html, state, hears)
+      }
+    })
+    |> ignore
+    page.box(fn(foot) { foot.height(By(fn() { Some(room().1) })) |> ignore }) |> ignore
+  })
+  |> ignore
+  // its bar of its own, but beside the system's bars: laid out Small floating at the top with its ×, else across the top
+  // with its way back by name (as a file opened over the window has: viewer_bar_floats)
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  let ink = fn() { @sf.page_viewer_ink() }
+  n.pick(
+    fn() {
+      if @sf.native_on() {
+        0
+      } else if @sf.viewer_bar_floats(width()) {
+        1
+      } else {
+        2
+      }
+    },
+    fn(b, kind) {
+      // (over the page, all of the room: laid out over it, not after it)
+      b.over(Is(true)) |> ignore
+      match kind {
+        1 =>
+          @sf.viewer_head_node(
+            b,
+            fn() { full.name },
+            fn() { "" },
+            fn() { true },
+            fn(_) { 1.0 },
+            fn() { room().0 },
+            width,
+            ink,
+            fn() { @sf.viewer_page_glass() },
+            fn(_) {  },
+            fn() { "" },
+            fn() { viz_close_full() },
+            tips~,
+          )
+          |> ignore
+        2 =>
+          @sf.viewer_bar_node(
+            b,
+            fn() { @sf.t("common.back") },
+            fn() { full.name },
+            fn() { "" },
+            fn() { "" },
+            fn() { false },
+            fn(_) { 1.0 },
+            fn() { room().0 },
+            width,
+            ink,
+            fn(_, _) {  },
+            fn() { viz_close_full() },
+            tips,
+          )
+          |> ignore
+        _ => ()
+      }
+    },
+  )
+  tips_at.val = Some(n.box(fn(l) { l.over(Is(true)) |> ignore }))
+}
+
+///|
+/// A page of its own (`html`, what its widget kept: `state`) drawn as `place` in `parent`, all of the room it is given:
+/// its view ui's native, kept past its node (viz_close lets it go), scrolling in itself; covered by the page's ground till
+/// it has drawn itself and its host has drawn it (viz_frame's cover). The theme told to it as it changes.
+fn viz_page_fill_node(parent : @view.View, place : String, html : String, state : Json?, hears : VizHears) -> Unit {
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { viz_fill })
+    // (its node's own: a view to each node drawing it)
+    let owner = -(b.id().at + 1)
+    let f = viz_frame_of(place, html, state, hears, owner, fill=true, ground=@sf.theme().p.bg)
+    f.owner = Some(owner)
+    b.owns(fn() {
+      if f.owner == Some(owner) {
+        f.owner = None
+      }
+    })
+    |> ignore
+    b.reacts(fn() { (@sf.theme().dark, @sf.theme().p.bg, @ui.font_scale()) }, fn(now) {
+      let (dark, ground, _) = now
+      if viz_theme_news(f, dark, ground) {
+        viz_theme_tell(f, dark, ground)
+      }
+    })
+    let drawn = fn() { f.drawn() }
+    let view = @ui.native(b, f.view, kept=true)
+    @sf.style_node(view, fn() { viz_fill })
+    b.show(at_once=true, fn() { !drawn() }, fn(o) {
+      o.over(Is(true)) |> ignore
+      @sf.style_node(o, fn() { viz_ground })
+    })
+  })
+  |> ignore
 }
 
 ///|

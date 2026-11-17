@@ -140,9 +140,9 @@ pub fn keep_bytes(
 
 ///|
 /// Bytes kept on the device as a file named `name` (keep_bytes's), at a cause (a handler: a press, a frame grabbed):
-/// asked of the host then, what it says of it said as it says.
-pub fn keep_bytes_now(name : String, mime : String, bytes : Bytes) -> Unit {
-  let way = keep_way_of(name)
+/// asked of the host then, what it says of it said as it says; kept `way` (where its name says, where not said).
+pub fn keep_bytes_now(name : String, mime : String, bytes : Bytes, way? : @hostapi.KeepWay) -> Unit {
+  let way = way.unwrap_or(keep_way_of(name))
   let (saved, failed) = keep_words(way)
   match @ui.keep(name, mime, bytes, way~) {
     Some(k) => keepings.push({ keep: k, name, saved, failed, then: fn(_) {  } })

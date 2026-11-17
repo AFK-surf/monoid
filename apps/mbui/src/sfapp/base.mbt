@@ -21,7 +21,7 @@ pub using @sfbase {
   attachment_json,
   open_detail,
   stack_open,
-  viz_full_layer,
+  viz_full_layer_node,
   open_link,
   peek_ms,
   peek_size,

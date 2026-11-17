@@ -642,9 +642,6 @@ fn prose_with_files(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
       size=body_size,
       found=marked_of(here, m.ts),
       bleed=here.gutter,
-      // (none of its tables' copy keys in a picture of the chat)
-      copy=picturing.val is None,
-      fit_tables=picturing.val is Some((_, true)),
       on_link=fn(h) {
         match placed.get(@sf.file_name_of(h)) {
           Some(a) if is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) =>
@@ -673,15 +670,7 @@ fn prose_with_files(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
       paths=m.by.agent != "",
       files=fn(name) {
         match placed.get(name) {
-          // (in a picture of the chat being shared: its own way, publish.mbt, or its card, to tick)
-          Some(a) if is_viz(a.name) && picturing.val is Some((seq, taking)) && publish_viz_drawn(seq, taking, a) =>
-            Some({
-              draw: fn() {
-                publish_viz(c, src, here, seq, taking, a, fn() { message_files(c, src, here, [a], false, by=Some(by), at~, said=m.said) })
-              },
-              image: None,
-            })
-          Some(a) if is_viz(a.name) && picturing.val is None =>
+          Some(a) if is_viz(a.name) =>
             Some({
               draw: fn() {
                 viz_file_of(

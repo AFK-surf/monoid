@@ -63,6 +63,17 @@ fn mine_to_node(here : MessageNodeHere, assignee : String) -> Bool {
 }
 
 ///|
+/// What reads a request again where it is asked to (`open`), but in a picture of the chat being shared, where nothing
+/// of it opens (publish.mbt).
+fn card_history_in(here : MessageNodeHere, open : (@view.View) -> Unit) -> ((@view.View) -> Unit)? {
+  if here.picture is Some(_) {
+    None
+  } else {
+    Some(open)
+  }
+}
+
+///|
 /// A request read again in a panel (card_history's, as nodes; a sheet on a small screen) opened from `from`: `body` in
 /// the panel's words' room.
 fn card_history_node(from : @view.View, body : (@view.View) -> Unit) -> Unit {
@@ -173,7 +184,7 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
         fn() { ask().delivered },
         fn() { (ask().granted_kind, ask().granted_seconds) },
         fn() { message_inline(here) },
-        history=Some(fn(from) {
+        history=card_history_in(here, fn(from) {
           card_history_node(from, fn(b) {
             @sf.ask_words_node(
               b,
@@ -248,7 +259,7 @@ fn phone_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
         fn() { ask().why },
         fn() { @settings.phone_link(core, here.station, ask().link) },
         fn() { message_inline(here) },
-        history=Some(fn(from) {
+        history=card_history_in(here, fn(from) {
           card_history_node(from, fn(b) {
             @sf.ask_words_node(b, fn() { @sf.t("android-misc.adb.ask.chat.title") }, fn() { ask().reason }) |> ignore
           })
@@ -392,7 +403,7 @@ fn vault_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?
         fn() { ask().status },
         fn() { ask().scope },
         fn() { message_inline(here) },
-        history=Some(fn(from) { card_history_node(from, fn(b) { @settings.vault_ask_details_node(b, asked) }) }),
+        history=card_history_in(here, fn(from) { card_history_node(from, fn(b) { @settings.vault_ask_details_node(b, asked) }) }),
       )
     }
   })

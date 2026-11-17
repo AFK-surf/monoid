@@ -147,17 +147,15 @@ pub fn message_files(
       _ => dmin(card_across(c, src, here, a), room)
     }
   })
-  // (in a picture of the chat being shared, each with the room its ✕ hangs in past its top and right: publish.mbt)
-  let hung = if picturing.val is Some(_) { publish_file_hung() } else { 0.0 }
   let rows : Array[Array[Int]] = []
   let mut used = 0.0
   for i, w in widths {
-    if rows.length() == 0 || used + files_gap + w + hung > room {
+    if rows.length() == 0 || used + files_gap + w > room {
       rows.push([i])
-      used = w + hung
+      used = w
     } else {
       rows[rows.length() - 1].push(i)
-      used = used + files_gap + w + hung
+      used = used + files_gap + w
     }
   }
   let column = if mine { files_column_end } else { files_column }
@@ -169,12 +167,6 @@ pub fn message_files(
     _ => []
   }
   let file_keys = if flying_keys.length() > 0 { list.map(fn(a) { @sfbase.file_key(a) }) } else { [] }
-  // (the gap between rows the room the ✕ hangs in past the next's top on top of their own, out to the scale's next step)
-  let column = if hung > 0.0 {
-    column.then(@ui.style(pt=@sf.room_of(hung), gap=@sf.room_of(scale_up(files_gap + hung))))
-  } else {
-    column
-  }
   c.box(style=column, id=row, fn() {
     for r in rows {
       c.box(style=files_row, fn() {
@@ -193,7 +185,7 @@ pub fn message_files(
             "image" | "video" => Some(message_media(c, src, here.station, owner_of(here, a), a, said~))
             _ => None
           }
-          let item = c.box(style=@ui.style(w=Fixed(widths[i] + hung)), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
+          let item = c.box(style=@ui.style(w=Fixed(widths[i])), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
           let paint = media.map(fn(p) { fn(w, h, fit, radius) { media_content(c, p, w, h, fit, radius) } })
           match flight {
             Some(f) => flight_landing(
@@ -394,11 +386,7 @@ fn thumb_ratio(hash : String) -> Double? {
 ///|
 /// One of a message's files (FileItem), `w` wide.
 fn file_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w : Double, by~ : (String, String, String)?, landing_key? : String = "", media? : MediaPicture? = None, corner? : Double = @sf.message_file_corner, at? : String = "", said? : Bool = false) -> Unit {
-  match picturing.val {
-    // (in a picture of the chat being shared: to tick, publish.mbt)
-    Some((seq, taking)) => publish_file(c, src, here, seq, taking, a, w, by~)
-    None => file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
-  }
+  file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
 }
 
 ///|

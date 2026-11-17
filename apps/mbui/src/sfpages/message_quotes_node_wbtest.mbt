@@ -150,6 +150,7 @@ fn qt_seen(
           tips,
           stint: fn() { 0 },
           jump: if s.jumps { Some(fn(ts, text) { jumped.push((ts, text)) }) } else { None },
+          picture: None,
         }
         root.box(fn(f) {
           @sf.style_node(f, fn() { head_frame })

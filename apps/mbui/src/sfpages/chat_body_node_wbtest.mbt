@@ -120,6 +120,7 @@ fn body_new(
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       root.box(fn(f) {
         f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

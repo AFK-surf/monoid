@@ -197,6 +197,7 @@ fn letters_list_node(
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       @sf.panel_list_node(
         b,
@@ -243,6 +244,7 @@ fn letters_list_node(
       tips,
       stint: fn() { 0 },
       jump: None,
+      picture: None,
     }
     b.scrolls_window(
       @view.Scroll::list(),

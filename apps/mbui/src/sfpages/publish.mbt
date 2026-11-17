@@ -8,81 +8,109 @@
 // in a pill of its own over it: 「太不对劲了」「应该放下面，俩按钮，一个取消一个保存到相册，pc 的话直接跟附件预览一样，有顶栏」「pc
 // 也用文字按钮，不要用图标」): on a wide screen the bar a file opened has across the top (back to the chat by its name, 分享图片
 // and how much was hidden), the button 复制图片 at its end; on a small screen 取消 and 保存到相册 side by side at the foot
-// (picture_out). Pressed, the picture is drawn whole off the screen as one long picture (Ctx::shot), the attachments
+// (picture_out). Pressed, the picture is drawn whole off the screen as one long picture (@ui.take_picture), the attachments
 // left out not in it, nor the ticks and the notes of what was hidden that are for the one sharing it, its times as
 // dates; then handed out. A page of HTML an agent's words place is drawn live on the page, as the chat draws it, and in
 // the picture as it looks then (2026-11-02 用户：「分享会话内容时，好像不会把inline html也渲染进去」): a page is the system's
-// view, which no shot holds, so before the picture is taken each is brought into sight and grabbed (publish_walk), its
-// grab drawn in its place; one that cannot be (a browser's frame grabs nothing, a page that did not draw) is its card, as
-// are those left out on the page. Which files an agent's words place, and those words as Markdown, are the core's (the
-// list's `placed`, `md`). The frames draw it over their pages (publish_layer).
+// view, which no picture holds, so before the picture is taken each is brought into sight and grabbed (publish_walk_on),
+// its grab drawn in its place; one that cannot be (a browser's frame grabs nothing, a page that did not draw) is its
+// card, as are those left out on the page. Which files an agent's words place, and those words as Markdown, are the
+// core's (the list's `placed`, `md`). All of it nodes of the window's tree, its messages the chat's page's
+// (MessageNodeHere's `picture` drawing their files its way); the picture made as nodes apart (@ui.take_picture). The
+// shells lay it over their pages (publish_layer_node).
 
 ///|
-/// The sharing as it stands: the chat it is of and its thread (None: closed), the preview as read (0 being read, 1
-/// read, 2 not: `error` says why), the attachments left out (by their `k`), its picture being taken, how many times it
-/// was copied (its button 已复制 a moment after).
+/// The sharing as it stands: the chat it is of and its thread (None: closed), how many times it was opened (what the
+/// shells' layer is made again by), the preview as read (0 being read, 1 read, 2 not: `error` says why), the attachments
+/// and messages left out (by their `k`, message_k), its picture being taken, how many times it was copied (its button
+/// 已复制 a moment after).
 priv struct Publishing {
   of : @signals.Signal[(ChatRef, Double)?]
+  opened : @signals.Signal[Int]
   read : @signals.Signal[Int]
   preview : @signals.Signal[Json?]
   error : @signals.Signal[String]
   off : @sf.LiveMap[String, Bool]
   busy : @signals.Signal[Bool]
   copied : @signals.Signal[Int]
-  /// the chat's thread its page is drawn for: the one open, and once closed while it goes (publish_layer)
-  mut drawn : (ChatRef, Double)?
-  /// the pages of HTML drawn live on the page, by their `k`: each one's place (viz_frame's)
-  viz_boxes : Map[String, String]
+  /// the pages of HTML drawn live on the page, by their `k`, while each is: the box it is drawn in and its frame
+  /// (publish_viz_live); `viz_made` told as one comes or goes
+  viz_at : Map[String, (@view.View, @sfbase.VizFrame)]
+  viz_made : @signals.Signal[Int]
+  /// closed, going as a dialog goes, what it showed kept till it has gone (publish_layer_node)
+  leaving : @signals.Signal[Bool]
+  /// told each time the page's list says what it has in sight (a layout done: where a page of HTML is laid out read then)
+  sighted : @signals.Signal[Int]
   /// those of them whose file could not be read: their cards
   viz_failed : Map[String, Bool]
   /// what each was grabbed as for the picture, by its `k`: its image and the size it was drawn at
   stills : Map[String, (String, Double, Double)]
-  /// the going through them as its picture is asked for, and how many times it was asked
-  mut walk : PublishWalk?
+  /// the going through them as its picture is asked for (publish_walk_on), how many times it was asked
+  walk : @signals.Signal[PublishWalk?]
+  mut todo : Array[String]
   mut walks : Int
+  /// the page that shares it as it is made: its layer, its list, where its list is asked to show a block
+  mut page : PublishPage?
   /// the picture asked for copied, not kept in the photo album (a phone's 复制图片 beside its 保存到相册)
   mut copying : Bool
   /// opened by a message's 多选: its seq, the one message ticked once the preview is read, and brought into sight
   /// once it is laid out (None: all ticked, the page from its top)
   mut picked : Double?
-  /// whether it is still to be brought into sight
+  /// whether it is still to be brought into sight, and what of it is (its message and what was hidden in it) on the
+  /// page as it is made
   mut aim : Bool
+  mut aim_at : @view.View?
 }
 
 ///|
-/// The pages of HTML being grabbed for the picture (publish_walk): their `k`s, which it is at and how far with it (0 to
-/// bring it into sight, 1 waiting till it has drawn itself, 2 waiting for its grab), how far the page was scrolled
-/// (negative: not read yet).
+/// The page that shares it, as it is made: its layer (what its moments and the picture's walk are of), its list's
+/// scroll and what asks it to show a block.
+priv struct PublishPage {
+  layer : @view.View
+  scroll : @view.Scroll
+  place : @view.ListPlace[String]
+}
+
+///|
+/// Where the going through the pages of HTML is (publish_walk_on): which time the picture was asked, which of them it is
+/// at (`todo`'s), how far with it (0 to bring it into sight, 1 waiting till it has drawn itself, 2 waiting for its
+/// grab), and how far the page was scrolled as it began (where it is put back once the picture is taken).
+#derive(Eq)
 priv struct PublishWalk {
-  todo : Array[String]
-  mut at : Int
-  mut step : Int
-  mut back : Double
+  walks : Int
+  at : Int
+  step : Int
+  back : Double
 }
 
 ///|
 let publishing : Publishing = {
   of: @signals.signal(None),
+  opened: @signals.signal(0),
   read: @signals.signal(0, same=fn(a, b) { a == b }),
   preview: @signals.signal(None),
   error: @signals.signal("", same=fn(a, b) { a == b }),
   off: @sf.LiveMap::new(),
   busy: @signals.signal(false, same=fn(a, b) { a == b }),
   copied: @signals.signal(0, same=fn(a, b) { a == b }),
-  drawn: None,
-  viz_boxes: {},
+  viz_at: {},
+  viz_made: @signals.signal(0),
+  leaving: @signals.signal(false),
+  sighted: @signals.signal(0),
   viz_failed: {},
   stills: {},
-  walk: None,
-  copying: false,
+  walk: @signals.signal(None),
+  todo: [],
   walks: 0,
+  page: None,
+  copying: false,
   picked: None,
   aim: false,
+  aim_at: None,
 }
 
 ///|
 pub fn publish_reset() -> Unit {
-  publishing.drawn = None
   publishing.of.set(None)
   publishing.read.set(0)
   publishing.preview.set(None)
@@ -90,12 +118,13 @@ pub fn publish_reset() -> Unit {
   publishing.off.clear()
   publishing.busy.set(false)
   publishing.copied.set(0)
-  publishing.viz_boxes.clear()
   publishing.viz_failed.clear()
   publishing.stills.clear()
-  publishing.walk = None
+  publishing.walk.set(None)
+  publishing.todo = []
   publishing.picked = None
   publishing.aim = false
+  publishing.aim_at = None
 }
 
 ///|
@@ -105,11 +134,12 @@ pub fn publish_reset() -> Unit {
 pub fn open_publish(src : Source, r : ChatRef, thread : Double, picked? : Double? = None) -> Unit {
   publish_reset()
   publishing.of.set(Some((r, thread)))
+  publishing.opened.set(publishing.opened.untracked() + 1)
   publishing.picked = picked
   publishing.aim = picked is Some(_)
   let asked : Map[String, Json] = { "station": Json::string(r.station), "thread": Json::number(thread) }
   (src.call)("chat.publishPreview", Json::object(asked), fn(res) {
-    match publishing.of.get() {
+    match publishing.of.untracked() {
       Some((o, th)) if o.station == r.station && th == thread =>
         match res {
           Ok(v) => {
@@ -145,11 +175,12 @@ fn publish_pick_only(p : Json?) -> Unit {
 }
 
 ///|
-/// Its page closed: it goes (publish_layer), what it showed kept till it has gone, the rest put back as the next opens.
+/// Its page closed: it goes (publish_layer_node), what it showed kept till it has gone, the rest put back as the next
+/// opens.
 pub fn publish_close() -> Unit {
   publishing.of.set(None)
   publishing.busy.set(false)
-  publishing.walk = None
+  publishing.walk.set(None)
 }
 
 ///|
@@ -163,6 +194,7 @@ pub fn publish_open() -> Bool {
 pub fn publish_set(r : ChatRef, thread : Double, preview : Json) -> Unit {
   publish_reset()
   publishing.of.set(Some((r, thread)))
+  publishing.opened.set(publishing.opened.untracked() + 1)
   publishing.preview.set(Some(preview))
   publishing.read.set(1)
 }
@@ -198,37 +230,51 @@ fn publish_kept(p : Json?) -> Int {
 }
 
 ///|
-/// The picture's shot (Ctx::shot).
+/// The picture's key (@ui.take_picture).
 let publish_shot : String = "publish/picture"
 
 ///|
-/// Its picture asked for (`copy`: copied, a phone's 复制图片; else as @sf.picture_out_way says): the pages of HTML in it
-/// grabbed first (publish_walk), then taken.
-fn publish_go(c : @ui.Ctx, copy? : Bool = false) -> Unit {
+/// Its picture asked for (`copy`: copied, a phone's 复制图片; else as @sf.picture_out_way says), at that cause: the pages
+/// of HTML in it grabbed first (publish_walk_on), then taken.
+fn publish_go(copy? : Bool = false) -> Unit {
+  if publishing.busy.untracked() {
+    return
+  }
+  let p = publishing.preview.untracked()
+  if p is None || publish_kept(p) == 0 {
+    return
+  }
   publishing.copying = copy || !@sf.picture_to_album()
   publishing.busy.set(true)
   publishing.stills.clear()
   let todo = publish_viz_todo()
-  if todo.is_empty() {
-    publish_take(c)
-  } else {
-    publishing.walks = publishing.walks + 1
-    publishing.walk = Some({ todo, at: 0, step: 0, back: -1.0 })
+  match publishing.page {
+    Some(page) if !todo.is_empty() => {
+      publishing.walks = publishing.walks + 1
+      publishing.todo = todo
+      let back = page.scroll.at(page.layer.tree)
+      publishing.walk.set(Some({ walks: publishing.walks, at: 0, step: 0, back }))
+    }
+    _ => publish_take()
   }
 }
 
 ///|
-/// The `k`s of the pages of HTML the picture holds, drawn live on the page, in the order they come in it.
+/// The `k`s of the pages of HTML the picture holds, drawn live on the page (not left out, not in a browser), in the order
+/// they come in it.
 fn publish_viz_todo() -> Array[String] {
   let todo = []
-  for j in items(publishing.preview.get(), "list") {
+  if @ui.platform() == 4 {
+    return todo
+  }
+  for j in items(publishing.preview.untracked(), "list") {
     let m = picture_message(@sfbase.message_of(j), true)
     if publishing.off.contains(message_k(m.seq)) {
       continue
     }
     for a in m.attachments {
       let k = file_k(m.seq, a)
-      if publishing.viz_boxes.contains(k) && m.placed.contains(a.name) && is_viz(a.name) {
+      if k != "" && !publishing.viz_failed.contains(k) && m.placed.contains(a.name) && is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) {
         todo.push(k)
       }
     }
@@ -250,86 +296,95 @@ let publish_viz_wait_ms : Double = 8000.0
 let publish_viz_most_h : Double = 8000.0
 
 ///|
-/// Each frame while its picture is asked for: the next of the pages of HTML in it brought into sight on the page (`list`
-/// the page's list by its key, `node`: a host places and draws only what is in sight), left till it has drawn itself,
-/// grabbed, and that kept for the picture; after the last the page scrolled back and the picture taken.
-fn publish_walk(c : @ui.Ctx, list : String, node : Int) -> Unit {
-  guard publishing.walk is Some(w) else { return }
-  if w.back < 0.0 && node >= 0 {
-    w.back = c.list_scrolled(node)
-  }
-  if w.at >= w.todo.length() {
-    publishing.walk = None
-    if node >= 0 {
-      c.list_scroll_by(list, w.back - c.list_scrolled(node))
-    }
-    c.tell("publish/take/\{publishing.walks}", fn() { publish_take(c) })
+/// What the walk through the pages of HTML in the picture said (`w`), at each cause that moves it on (a change of it, a
+/// page come to be drawn on the page, one drawn by its host, a grab answered: publish_walk_said), in the page's layer
+/// `n`: the page brought into sight, under what is over it at the top and over what is at its foot (its message's
+/// block brought to the list's top where it is not made, its page's box then scrolled to where it is not wholly in
+/// sight), left till it has drawn itself, publish_viz_settle_ms more, grabbed, and that kept for the picture; after the
+/// last, the page scrolled back and the picture taken. publish_viz_wait_ms at most at each step: one not there by then
+/// is its card.
+fn publish_walk_on(n : @view.View, w : PublishWalk) -> Unit {
+  guard publishing.page is Some(page) else { return }
+  if w.at >= publishing.todo.length() {
+    publishing.walk.set(None)
+    page.scroll.put(w.back)
+    publish_take()
     return
   }
-  let k = w.todo[w.at]
-  // (the next at once, in this frame: what it waits for brings the frame that goes on)
-  let next = fn() {
-    w.at = w.at + 1
-    w.step = 0
-    publish_walk(c, list, node)
-  }
-  let timer = "publish/walk/\{publishing.walks}/\{k}"
-  let place = match publishing.viz_boxes.get(k) {
-    Some(p) if !publishing.viz_failed.contains(k) => p
-    _ => return next()
-  }
-  let frame = @sfbase.viz_frames.get(place)
-  let laid = @motion.measured_rect(c, publish_viz_measure(k))
-  if @kit.after(c, timer + "/out/" + w.step.to_string(), true, publish_viz_wait_ms) {
-    return next()
-  }
-  match w.step {
-    0 =>
-      match laid {
-        Some((_, y, _, h)) => {
-          if h > publish_viz_most_h {
-            return next()
-          }
-          // (under what is over the page at the top, over what is at its foot)
-          let native = @sf.native_on()
-          let top = publish_head(c, native)
-          if y < top || y + h > c.height - publish_foot_room(c, native) {
-            c.list_scroll_by(list, y - top)
-          }
-          w.step = 1
-          publish_walk(c, list, node)
-        }
-        None => ()
+  let k = publishing.todo[w.at]
+  let next = fn() { publishing.walk.set(Some({ ..w, at: w.at + 1, step: 0 })) }
+  let step = fn(s : Int) { publishing.walk.set(Some({ ..w, step: s })) }
+  match (w.step, publishing.viz_at.get(k)) {
+    // (not drawn as itself on the page: its card)
+    (0, None) => next()
+    (0, Some((box, f))) => {
+      let (_, y, _, h) = box.rect()
+      // (not laid out yet: as the list says what it has in sight once it is)
+      if h <= 0.0 {
+        return
       }
-    1 =>
-      match frame {
-        Some(f) => {
-          let ready = f.shown && f.view.host_done()
-          if @kit.after(c, timer + "/settled", ready, publish_viz_settle_ms) && !f.view.grabbing() {
-            let view = f.view
-            c.tell("publish/grab/\{publishing.walks}/\{k}", fn() { view.grab_frame(0.0) })
-            w.step = 2
-          }
-        }
-        None => ()
+      if h > publish_viz_most_h {
+        return next()
       }
-    _ =>
-      match frame.map(fn(f) { f.view.grabbed() }) {
-        Some(Some(png)) => {
-          match (publish_viz_grab_size(png), laid) {
+      let (ww, wh) = n.window()
+      let top = publish_head_w(ww)
+      if y < top || y + h > wh - publish_foot_w(ww) {
+        page.scroll.put(page.scroll.at(n.tree) + (y - top))
+      }
+      ignore(f)
+      step(1)
+    }
+    (1, Some((_, f))) =>
+      if f.drawn() {
+        // (left to draw what it draws as it comes in, then grabbed: at that moment, where it is still this step)
+        let at = n.cause_at() + publish_viz_settle_ms
+        n.at_moment(at, fn() {
+          if publishing.walk.untracked() == Some(w) && !f.view.grabbing() {
+            f.view.grab_frame(0.0)
+            step(2)
+          }
+        })
+        |> ignore
+      }
+    (2, Some((box, f))) =>
+      match f.view.grabbed() {
+        Some(png) => {
+          let (_, _, bw, bh) = box.rect()
+          match publish_viz_grab_size(png) {
             // (a grab of all of it: one of a part of it is not stretched to all of it)
-            (Some((pw, ph)), Some((_, _, bw, bh))) if ((ph * bw / pw - bh).abs() <= 2.0) => {
-              let src = "mem:publish/\{publishing.walks}/\{k}"
-              @ui.add_image(src, png)
-              publishing.stills[k] = (src, bw, bh)
+            Some((pw, ph)) if (ph * bw / pw - bh).abs() <= 2.0 => {
+              let image = "mem:publish/\{publishing.walks}/\{k}"
+              @ui.add_image(image, png)
+              publishing.stills[k] = (image, bw, bh)
             }
             _ => ()
           }
           next()
         }
-        Some(None) => ()
-        None => next()
+        None => ()
       }
+    // (gone from the page meanwhile: its card)
+    _ => next()
+  }
+}
+
+///|
+/// What moves the walk through the pages of HTML on (publish_walk_on), as it changes: the walk itself, the page it is
+/// at come to be drawn on the page or gone from it, drawn by its host, its grab answered.
+fn publish_walk_said() -> (PublishWalk, Int, Bool, Int)? {
+  match publishing.walk.get() {
+    Some(w) => {
+      publishing.viz_made.get() |> ignore
+      publishing.sighted.get() |> ignore
+      let k = publishing.todo.get(w.at).unwrap_or("")
+      match publishing.viz_at.get(k) {
+        Some((_, f)) => {
+          Some((w, 1, f.drawn(), f.view.grabs_told()))
+        }
+        None => Some((w, 0, false, 0))
+      }
+    }
+    None => None
   }
 }
 
@@ -343,256 +398,444 @@ fn publish_viz_grab_size(png : Bytes) -> (Double, Double)? {
 }
 
 ///|
-/// The picture taken (the attachments ticked in it, nothing else of the page's), then handed out as its button says:
-/// copied, its button 已复制 a moment, else what came of it said.
-fn publish_take(c : @ui.Ctx) -> Unit {
-  c.take_shot(publish_shot, fn(png) {
+/// The picture taken (the attachments ticked in it, nothing else of the page's: publish_picture_node, made apart), then
+/// handed out as its button says: copied, its button 已复制 a moment, else what came of it said.
+fn publish_take() -> Unit {
+  guard publishing.of.untracked() is Some((r, _)) else {
+    publishing.busy.set(false)
+    return
+  }
+  let p = publishing.preview.untracked()
+  let here = publish_here(r, fn() { publish_page_w }, true, None)
+  @ui.take_picture(publish_shot, publish_page_w, fn(paper) { publish_picture_node(paper, here, p) }, fn(png) {
     publishing.busy.set(false)
     let copy = publishing.copying
     // (copied said where its button does not say it: the system's bars, their buttons icons)
-    if picture_out(c, png, copy_said=copy && !@sf.native_on(), copy~) && copy {
-      publishing.copied.set(publishing.copied.get() + 1)
+    if picture_out_now(png, copy_said=copy && !@sf.native_on(), copy~) && copy {
+      publishing.copied.set(publishing.copied.untracked() + 1)
     }
   })
 }
 
 ///|
-/// The page that shares it, while it is open, over the frame's pages (under the presenters and the toasts).
-/// It comes in faded in as a file opened over the window does, and goes as a dialog does (@sf.window_page_in,
-/// @kit.pop_out), drawn as it was while it goes.
-pub fn publish_layer(c : @ui.Ctx, src : Source) -> Unit {
-  let open = publishing.of.get()
-  if open is Some(_) {
-    publishing.drawn = open
-  }
-  guard publishing.drawn is Some((r, thread)) else { return }
-  match @motion.presence(c, "publish", open is Some(_), initial=true, enter=@sf.window_page_in, exit=@kit.pop_out) {
-    Some(look) => publish_page(c, src, r, thread, look, open is None)
-    None => {
-      publishing.drawn = None
-      @sfbase.viz_close("publish/")
-    }
-  }
-}
-
-///|
-/// The page that shares it (PublishDialog): over the whole window on the canvas, a preview at the page's width, what
-/// it is for over it (viewer_frame_act: the bar a file opened has, or 取消 and 保存到相册 at the foot); Esc closes it.
-/// The picture is taken whole off the screen at the chat's maximum column width, with each table fitted to it.
-fn publish_page(c : @ui.Ctx, src : Source, r : ChatRef, thread : Double, look : @ui.Look, leaving : Bool) -> Unit {
-  let p = publishing.preview.get()
-  let messages = items(p, "list")
-  let here : MessageHere = {
+/// Where the chat `r`'s messages are drawn for its picture (MessageNodeHere): its view as it is as it opens, `width`,
+/// in the picture taken (`taking`) or on the page, its tips in `tips`; their files drawn its way (publish_files,
+/// publish_viz_node).
+fn publish_here(r : ChatRef, width : () -> Double, taking : Bool, tips : @sf.TipLayer?) -> MessageNodeHere {
+  let view = publish_view(r)
+  {
     station: r.station,
     session: r.session,
-    view: match @sfbase.view_of_chat(src, r).0 {
+    view: fn() { view },
+    width,
+    tips: tips.unwrap_or(@sf.TipLayer::new(fn() { None })),
+    stint: fn() { 0 },
+    jump: None,
+    picture: Some({
+      taking,
+      file: fn(parent, ts, a, draw) { publish_file_node(parent, ts, a, draw, taking) },
+      viz: fn(parent, ts, a, card) { publish_viz_node(parent, r, ts, a, card, taking) },
+    }),
+  }
+}
+
+///|
+/// The source the page that shares a chat reads its chat's view and its pages of HTML with, as it is made.
+// kept across runs: put as each page is made (publish_node), what the next one's reads
+let publishing_src : Ref[Source?] = Ref(None)
+
+///|
+/// Chat `r`'s view as the page that shares it reads it, as it is asked (what its messages' agents and its title are).
+fn publish_view(r : ChatRef) -> ChatView {
+  @signals.untracked(fn() {
+    match publishing_src.val.bind(fn(src) { @sfbase.view_of_chat(src, r).0 }) {
       Some(v) => v
       None => @sfbase.chat_view_made(Json::null())
-    },
-    go: None,
-    inline: true,
-    gutter: 0.0,
-    list: None,
-    core: None,
-  }
-  // beside the system's bars (an iPhone Duo's): its tabs put away while it is open, its way back and its doing in
-  // their bars in place of its own bar or band (publish_native); the page clear of their column
-  let native = @sf.native_on()
-  let clear = @sf.native_clear()
-  if native && !leaving {
-    publish_native(c, p)
-  }
-  // (the picture's width: the window's on a phone, less the column its boxes to tick stand in before it on the page)
-  let column = dmin(c.width - clear - publish_tick_room(), publish_page_w)
-  // (dismissed by the hand: back, Escape; closed at that moment; not while its picture is being taken, back and Escape
-  // its all the same then)
-  let list_key = "publish/page/" + r.station + "/" + thread.to_string()
-  c.with_dismissed(fn(_) { publish_close() }, fn() {
-    let busy = fn() { publishing.busy.untracked() }
-    c.overlay("publish", modal=true, stays=busy, scrim=@sf.alpha(@sf.theme().p.bg, look.alpha), inert=leaving, fn() {
-      let list_node = Ref(-1)
-      let page = c.box(style=publish_fill, fn() {
-        match publishing.read.get() {
-          0 => c.box(style=publish_note, fn() { @sf.wait_line(c, @sf.t("web-pages.chat.publish.reading"), key="publish/reading") }) |> ignore
-          2 => c.box(style=publish_note, fn() { c.text(publishing.error.get(), style=publish_problem) |> ignore }) |> ignore
-          _ if messages.length() == 0 =>
-            c.box(style=publish_note, fn() { c.text(@sf.t("web-pages.chat.publish.empty"), style=publish_note_words) |> ignore })
-            |> ignore
-          _ =>
-            list_node.val = c.list(list_key, 1, c.height, fn(_) {
-              c.box(style=publish_column_room.then(@ui.style(pr=@sf.room_of(clear))), fn() {
-                // (under what is over it at the top, over the band at the foot)
-                let top = @sf.room_of(publish_head(c, native))
-                let foot = @sf.room_of(publish_page_under + publish_foot_room(c, native))
-                c.box(style=@ui.style(w=Full, max_w=Fixed(publish_page_w + publish_tick_room()), pt=top, pb=foot), fn() {
-                  publish_picture(c, src, here, p, column, false)
-                })
-                |> ignore
-              })
-              |> ignore
-            })
-        }
-        // what it is for: on a wide screen the bar a file opened has (back to the chat), 复制图片 at its end; on a small
-        // one 取消 and 保存到相册 at the foot; beside the system's bars, theirs
-        c.layer(fn() {
-          if native {
-            return
-          }
-          let (label, _) = @sf.picture_out_way()
-          // (copied: 已复制 a moment after; on a phone 复制图片 beside 保存到相册, the user 2026-11-06「手机上都加复制」)
-          let shown = publishing.copied.get() > 0 &&
-            !@kit.after(c, "publish/copied/\{publishing.copied.get()}", true, @sf.copied_ms)
-          // (复制 in the band, beside 保存到相册 on a picture's own page: 复制图片 there cut the row short in English)
-          let copy_label = if shown { @sf.t("common.copied") } else { @sf.t("common.copy") }
-          let go = fn(copy : Bool) {
-            if p is Some(_) && publish_kept(p) > 0 {
-              publish_go(c, copy~)
-            }
-          }
-          @sf.viewer_frame_act(
-            c,
-            "publish",
-            if r.title != "" { r.title } else { @sf.t("common.close") },
-            @sf.t("web-pages.chat.shareImage"),
-            text(p, "hiddenText"),
-            @sf.page_viewer_ink(),
-            if shown && !@sf.picture_to_album() { @sf.t("common.copied") } else { label },
-            copy?=if @sf.picture_to_album() { Some(copy_label) } else { None },
-            busy=publishing.busy.get(),
-            busy_copy=publishing.copying && @sf.picture_to_album(),
-            disabled=p is None || publish_kept(p) == 0,
-            on_close=publish_close,
-            on_act=fn() { go(false) },
-            on_copy=fn() { go(true) },
-          )
-        })
-        |> ignore
-      })
-      c.look(page, look)
-      publish_aim(c, list_key, native)
-      publish_walk(c, list_key, list_node.val)
-      // The image uses the chat's usual maximum column width, independent of the screen's width. Tables fit inside it.
-      if messages.length() > 0 {
-        c.shot(publish_shot, publish_page_w, fn() {
-          c.sized(publish_page_w, c.height, fn() { publish_picture(c, src, here, p, publish_page_w, true) })
-        })
-      }
-    })
-    |> ignore
+    }
   })
 }
 
 ///|
-/// The message 多选 was opened from brought into sight once it is laid out (in the frame it is first measured: the
-/// page opens there, nothing scrolls), under what is over the page at the top, as far down as the paper's room; left
-/// where it is when it is in sight already.
-fn publish_aim(c : @ui.Ctx, list : String, native : Bool) -> Unit {
-  guard publishing.aim && publishing.picked is Some(seq) else { return }
-  match @motion.measured_rect(c, publish_aim_measure(seq)) {
-    Some((_, y, _, h)) => {
-      publishing.aim = false
-      let top = publish_head(c, native)
-      if y < top || y + h > c.height - publish_foot_room(c, native) {
-        c.list_scroll_by(list, y - top - publish_paper_in)
+/// The page that shares it, while it is open, over the shells' pages (narrow_shell, tape_shell), in node `v`: made as it
+/// is opened, let go as it has gone. It comes in faded in as a file opened over the window does, and goes as a dialog
+/// does (@sf.window_page_in, @kit.pop_out), drawn as it was while it goes, the pages under it theirs again from then.
+pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
+  // (which opening is drawn: the one open, and once closed the one going till it has gone, at its declared end)
+  let drawn = @signals.signal(0)
+  let ends : Ref[() -> Unit] = Ref(fn() {  })
+  v.reacts(fn() { if publishing.of.get() is Some(_) { publishing.opened.get() } else { 0 } }, fn(open) {
+    (ends.val)()
+    ends.val = fn() {  }
+    if open > 0 {
+      publishing.leaving.set(false)
+      drawn.set(open)
+    } else if drawn.untracked() > 0 {
+      publishing.leaving.set(true)
+      ends.val = v.at_moment(v.cause_at() + @kit.pop_out_ms, fn() {
+        drawn.set(0)
+        publishing.leaving.set(false)
+      })
+    }
+  })
+  // (over the pages, the whole of the room it is given: publish_node's)
+  v.pick(at_once=true, fn() { drawn.get() }, fn(n, opened) {
+    if opened > 0 {
+      publish_node(n, src)
+    }
+  })
+}
+
+///|
+/// The page that shares it (PublishDialog) in `n` (publish_layer_node's): over the whole window on the canvas, a preview
+/// at the page's width, what it is for over it (viewer_frame_act_node: the bar a file opened has, or 取消 and 保存到相册
+/// at the foot; beside the system's bars, theirs: publish_native); back and Escape close it, but while its picture is
+/// being taken. The picture is taken whole off the screen at the chat's maximum column width (publish_take).
+fn publish_node(n : @view.View, src : Source) -> Unit {
+  guard @signals.untracked(fn() { publishing.of.get() }) is Some((r, _)) else { return }
+  publishing_src.val = Some(src)
+  let busy = fn() { publishing.busy.untracked() }
+  n
+  .over(Is(true))
+  // (the pages under it theirs again as it begins to go)
+  .modal(By(fn() { !publishing.leaving.get() }))
+  .presses(By(fn() { !publishing.leaving.get() }))
+  .ground(By(fn() { @sf.theme().p.bg }))
+  .on_key(fn(k) {
+    if k.code == @ui.key_escape {
+      if !busy() {
+        publish_close()
+      }
+      true
+    } else {
+      false
+    }
+  })
+  .takes_back(fn() {
+    if !busy() {
+      publish_close()
+    }
+  })
+  |> ignore
+  // (in faded, as a file opened over the window: window_page_in; out as a dialog goes, faded and a little smaller:
+  // pop_out. Its ground whole by half its fade and what is on it over the other half, never what it is put over and
+  // its words both seen in one place: the transitions' ground_first)
+  let seen = @sf.EdgeWay::new(0.0)
+  seen.go(n, 1.0, publish_in_ms)
+  let gone = @sf.EdgeWay::new(0.0)
+  n.reacts(fn() { publishing.leaving.get() }, fn(going) {
+    if going {
+      gone.go(n, 1.0, @kit.pop_out_ms, ease=Leave)
+    }
+  })
+  // (how far in it is as `v` is drawn: its ground's share of it, and what is on it)
+  let a = fn(v : @view.View) { seen.shown(v) * (1.0 - gone.shown(v)) }
+  n.alpha(By(fn() { dmin(1.0, 2.0 * a(n)) })).scale(By(fn() { 1.0 - publish_out_shrink * gone.shown(n) })) |> ignore
+  let words = fn(v : @view.View) { dmax(0.0, 2.0 * a(v) - 1.0) }
+  // (what was drawn live on it let go as it has gone, where no other has opened since)
+  n.owns(fn() {
+    if publishing.of.untracked() is None {
+      @sfbase.viz_close("publish/")
+    }
+  })
+  |> ignore
+  // beside the system's bars (an iPhone Duo's): its tabs put away while it is open, its way back and its doing in
+  // their bars in place of its own bar or band
+  n.reacts(fn() { publish_native_said() }, fn(said) { publish_native(said) })
+  // (已复制 a moment after it was copied)
+  let copied_now = publish_copied_shown
+  copied_now.set(false)
+  let copied_due : Ref[() -> Unit] = Ref(fn() {  })
+  n.reacts(fn() { publishing.copied.get() }, fn(times) {
+    if times > 0 {
+      (copied_due.val)()
+      copied_now.set(true)
+      copied_due.val = n.at_moment(n.cause_at() + @sf.copied_ms, fn() { copied_now.set(false) })
+    }
+  })
+  // the walk through its pages of HTML as its picture is asked for, at each cause that moves it on
+  // (publish_viz_wait_ms at most at each step of it, from the moment it came to it: one not there by then is its card)
+  let armed : Ref[PublishWalk?] = Ref(None)
+  let timeout : Ref[() -> Unit] = Ref(fn() {  })
+  n.reacts(publish_walk_said, fn(said) {
+    match said {
+      Some((w, _, _, _)) => {
+        if armed.val != Some(w) {
+          armed.val = Some(w)
+          (timeout.val)()
+          timeout.val = n.at_moment(n.cause_at() + publish_viz_wait_ms, fn() {
+            if publishing.walk.untracked() == Some(w) {
+              publishing.walk.set(Some({ ..w, at: w.at + 1, step: 0 }))
+            }
+          })
+        }
+        publish_walk_on(n, w)
+      }
+      None => {
+        armed.val = None
+        (timeout.val)()
+        timeout.val = fn() {  }
       }
     }
-    None => ()
+  })
+  let width = fn() { n.window().0 }
+  let tips_at : Ref[@view.View?] = Ref(None)
+  let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  n.box(fn(page) {
+    page.fills_across(Is(true)).grow(Is(1.0)).alpha(By(fn() { words(page) })) |> ignore
+    // (one in the other's place at once: what comes is there whole as it is answered, as a page shows what it opens on)
+    page.pick(
+      at_once=true,
+      fn() {
+        match publishing.read.get() {
+          0 => 0
+          2 => 2
+          _ => if items(publishing.preview.get(), "list").length() == 0 { 3 } else { 1 }
+        }
+      },
+      fn(o, state) {
+        match state {
+          1 => publish_list_node(o, src, r, width, tips)
+          _ => {
+            o.over(Is(true)) |> ignore
+            @sf.style_node(o, fn() { publish_note })
+            match state {
+              0 => @sf.wait_line_node(o, fn() { @sf.t("web-pages.chat.publish.reading") }) |> ignore
+              2 => @sf.words_node(o, fn() { publishing.error.get() }, fn() { publish_problem }) |> ignore
+              _ => @sf.words_node(o, fn() { @sf.t("web-pages.chat.publish.empty") }, fn() { publish_note_words }) |> ignore
+            }
+          }
+        }
+      },
+    )
+  })
+  |> ignore
+  // what it is for: on a wide screen the bar a file opened has (back to the chat), 复制图片 at its end; on a small one
+  // 取消, 复制 and 保存到相册 at the foot; beside the system's bars, theirs (publish_native)
+  n.show(fn() { !@sf.native_on() }, fn(o) {
+    o.over(Is(true)).alpha(By(fn() { words(o) })) |> ignore
+    let p = fn() { publishing.preview.get() }
+    @sf.viewer_frame_act_node(
+      o,
+      fn() { if r.title != "" { r.title } else { @sf.t("common.close") } },
+      fn() { @sf.t("web-pages.chat.shareImage") },
+      fn() { text(p(), "hiddenText") },
+      fn() { @sf.page_viewer_ink() },
+      fn() {
+        let (label, _) = @sf.picture_out_way()
+        if copied_now.get() && !@sf.picture_to_album() { @sf.t("common.copied") } else { label }
+      },
+      width,
+      tips,
+      // (copied: 已复制 a moment after; on a phone 复制 beside 保存到相册, the user 2026-11-06「手机上都加复制」; 复制 there:
+      // 复制图片 cut the row short in English)
+      copy?=if @sf.picture_to_album() {
+        Some(fn() { if copied_now.get() { @sf.t("common.copied") } else { @sf.t("common.copy") } })
+      } else {
+        None
+      },
+      busy=fn() { publishing.busy.get() },
+      busy_copy=fn() {
+        publishing.busy.get() |> ignore
+        publishing.copying && @sf.picture_to_album()
+      },
+      disabled=fn() { p() is None || publish_kept(p()) == 0 },
+      on_close=fn() {
+        if !busy() {
+          publish_close()
+        }
+      },
+      on_act=fn() { publish_go(copy=false) },
+      on_copy=fn() { publish_go(copy=true) },
+    )
+  })
+  tips_at.val = Some(n.box(fn(l) { l.over(Is(true)) |> ignore }))
+}
+
+///|
+/// How it comes in (window_page_in's fade), and how much smaller it is as it has gone (pop_out's 0.97).
+pub let publish_in_ms : Double = 140.0
+
+///|
+let publish_out_shrink : Double = 0.03
+
+///|
+/// What it says to the system's bars (an iPhone Duo's), as it changes (publish_native's).
+#derive(Eq)
+priv struct PublishNative {
+  title : String
+  busy : Bool
+  can : Bool
+  copied : Bool
+  album : Bool
+  words : Array[String]
+}
+
+///|
+/// What it says to the system's bars, where they are (publish_native's): 分享图片 their title upright (with how much was
+/// hidden), none on its side (the system floats it over the page's top, on the chat's name and its first message: seen
+/// on the Duo's simulator, 2026-11-06; the page says what it is and what was hidden itself); its doing once there is
+/// something in the picture, not while it is being taken; 已复制 a moment after it was copied.
+fn publish_native_said() -> PublishNative? {
+  if !@sf.native_on() {
+    return None
   }
-}
-
-///|
-/// What message `seq`'s box on the page is measured as, to bring it into sight (publish_aim).
-fn publish_aim_measure(seq : Double) -> String {
-  "publish/aim/" + seq_s(seq)
-}
-
-///|
-/// Its way back and its doing where the system has bars of its own (an iPhone Duo's), as a picture opened has its
-/// (sfbase's vf_native): 分享图片 their title upright (with how much was hidden), close at their lead, 复制图片 (已复制 a
-/// moment after) and 保存到相册 once there is something in the picture; neither while it is being taken. On its side no title:
-/// the system floats it over the page's top, on the chat's name and its first message (seen on the Duo's simulator,
-/// 2026-11-06), and the page says what it is and what was hidden itself.
-fn publish_native(c : @ui.Ctx, p : Json?) -> Unit {
+  let p = publishing.preview.get()
   let hidden = text(p, "hiddenText")
-  let title = if @sf.native_side() {
-    ""
-  } else {
-    @sf.t("web-pages.chat.shareImage") + (if hidden != "" { " · " + hidden } else { "" })
-  }
-  // (kept as said while it is open, built again or not)
-  if !@sf.native_over_up(title, alive=publish_open, owner="publish", over=1) {
+  let copied = publish_copied_shown.get()
+  Some({
+    title: if @sf.native_side() {
+      ""
+    } else {
+      @sf.t("web-pages.chat.shareImage") + (if hidden != "" { " · " + hidden } else { "" })
+    },
+    busy: publishing.busy.get(),
+    can: p is Some(_) && publish_kept(p) > 0,
+    copied,
+    album: @sf.picture_to_album(),
+    words: ["common.close", "common.copied", "desktop.contextMenu.copyImage"].map(fn(k) { @sf.t(k) }) +
+      [@sf.picture_out_way().0, @sf.picture_out_way().1],
+  })
+}
+
+///|
+/// Whether 已复制 shows where it was copied (publish_native_said), told by the page's layer a moment after each copy.
+// kept across runs: a signal set by the page's layer, put back as each page opens
+let publish_copied_shown : @signals.Signal[Bool] = @signals.signal(false)
+
+///|
+/// Its way back and its doing in the system's bars (an iPhone Duo's), as `said` says (publish_native_said), as a picture
+/// opened has its (sfbase's vf_native): close at their lead, 复制图片 and 保存到相册 once there is something in the
+/// picture; neither while it is being taken. Kept as said while it is open (@sf.native_over_up).
+fn publish_native(said : PublishNative?) -> Unit {
+  guard said is Some(s) else { return }
+  if !@sf.native_over_up(s.title, alive=publish_open, owner="publish", over=1) {
     return
   }
-  let busy = publishing.busy.get()
-  @sf.native_over_act("close", @sf.t("common.close"), "close", fn() {
+  @sf.native_over_act("close", s.words[0], "close", fn() {
     if !publishing.busy.untracked() {
       publish_close()
     }
   }, lead=true)
-  if busy || p is None || publish_kept(p) == 0 {
+  if s.busy || !s.can {
     return
   }
-  let (label, icon) = @sf.picture_out_way()
-  let shown = publishing.copied.get() > 0 &&
-    !@kit.after(c, "publish/copied/\{publishing.copied.get()}", true, @sf.copied_ms)
-  let go = fn(copy : Bool) {
-    c.tell("publish/go", fn() {
-      if !publishing.busy.get() {
-        publish_go(c, copy~)
-      }
-    })
-  }
+  let label = s.words[3]
+  let icon = s.words[4]
   // (a phone's 复制图片 before its 保存到相册, as a picture opened has copy before download)
-  if @sf.picture_to_album() {
-    @sf.native_over_act("copy", if shown { @sf.t("common.copied") } else { @sf.t("desktop.contextMenu.copyImage") }, "copy", fn() {
-      go(true)
-    })
+  if s.album {
+    @sf.native_over_act("copy", if s.copied { s.words[1] } else { s.words[2] }, "copy", fn() { publish_go(copy=true) })
   }
-  @sf.native_over_act("act", if shown && !@sf.picture_to_album() { @sf.t("common.copied") } else { label }, icon, fn() {
-    go(false)
-  })
+  @sf.native_over_act("act", if s.copied && !s.album { s.words[1] } else { label }, icon, fn() { publish_go(copy=false) })
 }
 
 ///|
-/// How far down the page under what is over it starts: beside the system's bars their room (its own bar none), else
-/// viewer_frame_act's.
-fn publish_head(c : @ui.Ctx, native : Bool) -> Double {
-  if native {
+/// How far down the page under what is over it starts, the window `w` wide: beside the system's bars their room (its
+/// own bar none), else @sf.viewer_act_head's (the bar on a wide screen, the status bar on a small one).
+fn publish_head_w(w : Double) -> Double {
+  if @sf.native_on() {
     (@sf.viewer_host().room)().0
   } else {
-    @sf.viewer_act_head(c)
+    @sf.viewer_act_head(w)
   }
 }
 
 ///|
-/// How much of the window's foot what is over the page takes: beside the system's bars their room (no band of its own),
-/// else viewer_frame_act's.
-fn publish_foot_room(c : @ui.Ctx, native : Bool) -> Double {
-  if native {
+/// How much of the window's foot what is over the page takes, the window `w` wide: beside the system's bars their room
+/// (no band of its own), else @sf.viewer_act_foot's (the band of a small screen; none on a wide one).
+fn publish_foot_w(w : Double) -> Double {
+  if @sf.native_on() {
     (@sf.viewer_host().room)().1
   } else {
-    @sf.viewer_act_foot(c)
+    @sf.viewer_act_foot(w)
   }
 }
 
 ///|
-/// The picture, `w` wide (as it is taken: `taking`; else as the page shows it): on the page's ground, the chat's name
-/// over its messages as the chat's list draws them (its rows, out of a list: message_row; 2026-10-26 用户, of a picture
-/// that drew them apart: 「渲染跟消息列表完全不一样」): the viewer's own in their bubbles at its end, an agent's cards as
-/// cards, the heads in line with their pictures and the rows as far apart and in as the list has them at that width
-/// (chat_list.mbt); still.fail's mark and name at its foot. On the page each attachment with its box to tick
-/// (publish_file) and, under a message with something hidden in it, how many; in the picture taken only those ticked,
-/// and its times dates (how long ago it was is not so for long).
-fn publish_picture(c : @ui.Ctx, src : Source, here : MessageHere, p : Json?, w : Double, taking : Bool) -> Unit {
-  let narrow = w <= chat_narrow_w
-  let here = { ..here, inline: narrow }
-  // (on the page, before its words a column for its messages' boxes to tick; the picture taken has none)
-  let ticks = if taking { 0.0 } else { publish_tick_room() }
-  let paper = if narrow { publish_paper_narrow } else { publish_paper }
-  // (its edge's room, and how far in its words are: past the pictures out in the margin)
-  let paper_edge = if narrow { row_side_narrow } else { publish_paper_in }
-  let paper_in = if narrow { paper_edge } else { paper_edge + @sf.message_avatar_reach }
-  // (how much was hidden in each, by its seq: the preview's `messages`, by their n)
+/// The page's list in `parent` (publish_node's), the window `width` wide: the chat's name over its messages, still.fail's
+/// mark at its foot, the picture as it would be, at the chat's width (760 at most) in the middle, a column before it
+/// where each message's box to tick stands, under what is over it at the top and over the band at the foot; each
+/// message a block of its own (publish_message_block). Opened from a message's 多选, that message brought into sight once
+/// it is laid out (publish_aim), where it is not in sight already.
+fn publish_list_node(parent : @view.View, src : Source, r : ChatRef, width : () -> Double, tips : @sf.TipLayer) -> Unit {
+  parent.over(Is(true)) |> ignore
+  let scroll = @view.Scroll::list()
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  publishing.page = Some({ layer: parent, scroll, place })
+  parent.owns(fn() {
+    match publishing.page {
+      Some(page) if physical_equal(page.place, place) => publishing.page = None
+      _ => ()
+    }
+  })
+  |> ignore
+  // (the picture's width: the window's on a phone, less the column its boxes to tick stand in before it on the page)
+  let column = fn() { dmin(width() - @sf.native_clear() - publish_tick_room(), publish_page_w) }
+  let here = publish_here(r, column, false, Some(tips))
+  let p = @signals.untracked(fn() { publishing.preview.get() })
+  let hidden = publish_hidden(p)
+  // (opened from a message's 多选: brought into sight as the list is first laid out (the page opens there, nothing
+  // scrolls), under what is over the page at the top, as far down as the paper's room, where it is not in sight then)
+  place.on_sight(fn(_) {
+    publishing.sighted.set(publishing.sighted.untracked() + 1)
+    guard publishing.aim else { return }
+    match publishing.aim_at {
+      Some(said) => {
+        let (_, y, _, h) = said.rect()
+        if h <= 0.0 {
+          return
+        }
+        publishing.aim = false
+        let top = publish_head_w(width())
+        let (_, wh) = parent.window()
+        if y < top || y + h > wh - publish_foot_w(width()) {
+          scroll.put(scroll.at(parent.tree) + (y - top - publish_paper_in))
+        }
+      }
+      None => ()
+    }
+  })
+  parent.box(fn(l) {
+    l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    // (the picture one piece, as it is taken: its messages each made as it opens, every box to tick there for the hand,
+    // the keyboard and a screen reader, as the picture holds them all)
+    l.scrolls_window(
+      scroll,
+      fn() { [publish_picture_key] },
+      fn(slot, _) {
+        slot.box(fn(col) {
+          col.fills_across(Is(true)) |> ignore
+          publish_block(col, column, false, fn(b) {
+            b.padding(By(fn() { (0.0, publish_head_w(width()) + publish_paper_in, 0.0, publish_paper_gap) })) |> ignore
+            publish_title_node(b, column, false, text(p, "title"))
+          })
+          for i, j in items(p, "list") {
+            let m = @sfbase.message_of(j)
+            publish_block(col, column, false, fn(b) { publish_message_block(b, src, here, column, m, hidden, i == 0) })
+          }
+          publish_block(col, column, false, fn(b) {
+            b.padding(By(fn() { (0.0, publish_paper_gap + publish_foot_down, 0.0, publish_paper_in + publish_page_under + publish_foot_w(width())) })) |> ignore
+            publish_brand_node(b, column, false)
+          })
+        })
+        |> ignore
+      },
+      top_covered=fn() { publish_head_w(width()) },
+      comes=fn(_) { false },
+      goes=fn(_) { false },
+      place~,
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The page list's one key: the picture as it would be, one piece.
+let publish_picture_key : String = "picture"
+
+///|
+/// How much was hidden in each of preview `p`'s messages, by its seq (the preview's `messages`, by their n).
+fn publish_hidden(p : Json?) -> Map[Double, String] {
   let hidden : Map[Double, String] = Map([])
   for m in items(p, "messages") {
     match text(Some(m), "hiddenText") {
@@ -600,103 +843,36 @@ fn publish_picture(c : @ui.Ctx, src : Source, here : MessageHere, p : Json?, w :
       h => hidden[number(Some(m), "n")] = h
     }
   }
-  c.box(style=paper.then(@ui.style(pl=@sf.room_of(paper_in + ticks))), fn() {
-    match text(p, "title") {
-      "" => ()
-      title => c.text(title, style=publish_title) |> ignore
-    }
-    c.box(style=if narrow { publish_list_narrow } else { publish_list }, fn() {
-      for j in items(p, "list") {
-        let m = picture_message(@sfbase.message_of(j), taking)
-        let k = message_k(m.seq)
-        let on = !publishing.off.contains(k)
-        if taking && !on {
-          continue
-        }
-        // on the page, its box to tick pointed at (or pressed): the whole of it lit, a band across the picture from
-        // edge to edge (square: it runs out of its sides as a list's row does, nothing in its corners), half the room
-        // between messages over and under it, so that lit one after another they meet
-        let side = @sf.theme().rows.check
-        let down = centred_in(first_line_h(c, m), side)
-        // (told as it is built, read where it is painted: the band built while it is lit or on its way out, up to its
-        // declared end)
-        let lit = if taking {
-          None
-        } else {
-          let pointed = c.hand_lit(c.lit(c.id("publish/tick/" + k)))
-          Some(@motion.told(c, "publish/lit/" + k, if pointed { 1.0 } else { 0.0 }, spec=@motion.tween(@sf.dur_ms, ease=Out)))
-        }
-        let ground = if taking {
-          publish_said
-        } else {
-          let start = paper_in + ticks
-          let half = (if narrow { list_gap_narrow } else { list_gap }) / 2.0
-          publish_said.then(@sf.bleed_start(start)).then(@sf.bleed_end(paper_edge)).then(@sf.bleed_y(half))
-        }
-        c.box(style=ground, fn() {
-          match lit {
-            Some(l) if l.target() > 0.0 || !l.over(c) => {
-              let g = c.layer(fn() { c.box(style=publish_lit, fn() {  }) |> ignore })
-              c.look_by(g, fn() { @ui.look(alpha=l.get(c)) })
-            }
-            _ => ()
-          }
-          // (what it says, faded once out of the picture; its box to tick beside it never is, its edge the muted ink,
-          // so that every one shows: 2026-11-06 用户 of the boxes of those not ticked,「看不清」)
-          let content = Ref(0)
-          let said = c.box(style=publish_said, fn() {
-            content.val = c.box(style=publish_said, fn() {
-            // (its files drawn each to tick: file_item asks picturing)
-            picturing.val = Some((m.seq, taking))
-            message_row(c, src, here, m)
-            picturing.val = None
-            match hidden.get(m.seq) {
-              Some(h) if !taking =>
-                c.box(style=if m.mine { publish_note_mine } else { publish_note_said }, fn() {
-                  @sf.icon(c, "shield-check", size=publish_note_icon_small, color=@sf.theme().p.muted) |> ignore
-                  c.text(h, style=publish_meta) |> ignore
-                })
-                |> ignore
-              _ => ()
-            }
-            })
-            // on the page its box to tick, in the column before the words (before the pictures out in the margin), on
-            // the middle of its first line: its head's, or the first of the viewer's own bubble
-            if !taking {
-              c.layer(fn() {
-                let style = @ui.style(ml=@sf.room_of(-(paper_in - paper_edge + ticks)), pt=@sf.room_of(down))
-                c.box(style=publish_message_tick.then(style), fn() {
-                  let look = @kit.checkbox_look_of(size=side, radius=@sf.theme().rows.check_corner, edge=@sf.theme().p.muted)
-                  let now = @kit.checkbox(c, "publish/tick/" + k, if on { On } else { Off }, label=@sf.t("web-pages.chat.publish.message"), look~).value
-                  if (now == On) != on {
-                    if now == On {
-                      publishing.off.remove(k)
-                    } else {
-                      publishing.off[k] = true
-                    }
-                  }
-                })
-                |> ignore
-              })
-              |> ignore
-            }
-          })
-          if !taking && publishing.aim && publishing.picked == Some(m.seq) {
-            @motion.measure(c, said, publish_aim_measure(m.seq))
-          }
-          // (faded as it is drawn)
-          if !taking {
-            let out = publish_out(c, k, on)
-            c.look_by(content.val, fn() { @ui.look(alpha=publish_faded(out.get(c))) })
-          }
-        })
-        |> ignore
-      }
-    })
+  hidden
+}
+
+///|
+/// A block of the picture in `parent`: the page's column in the middle of the room (the chat's width and, on the page,
+/// the column its boxes to tick stand in before it; clear of the system's column at its end), its paper's sides as the
+/// picture is `column()` wide (narrow: as far in as the chat's list has its words there), what `make` makes in it.
+fn publish_block(parent : @view.View, column : () -> Double, taking : Bool, make : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(room) {
+    room
+    .fills_across(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .padding(By(fn() { (0.0, 0.0, if taking { 0.0 } else { @sf.native_clear() }, 0.0) }))
     |> ignore
-    c.box(style=publish_foot, fn() {
-      @sf.drawable(c, if @sf.theme().dark { "stillfail_mark_dark" } else { "stillfail_mark" }, publish_mark) |> ignore
-      c.text("still.fail", style=publish_brand) |> ignore
+    room.box(fn(paper) {
+      paper
+      .width_share(Is(1.0))
+      .max_width(By(fn() { Some(publish_page_w + (if taking { 0.0 } else { publish_tick_room() })) }))
+      |> ignore
+      paper.box(fn(b) {
+        b
+        .fills_across(Is(true))
+        .margin(By(fn() {
+          let edge = publish_edge(column())
+          (edge, 0.0, edge, 0.0)
+        }))
+        |> ignore
+        make(b)
+      })
+      |> ignore
     })
     |> ignore
   })
@@ -704,10 +880,196 @@ fn publish_picture(c : @ui.Ctx, src : Source, here : MessageHere, p : Json?, w :
 }
 
 ///|
-/// While a message of the picture is drawn (publish_picture): its seq, and whether the picture is being taken. Its files
-/// are drawn each to tick then (file_item: publish_file), a page of HTML its words place by publish_viz.
-// kept across runs: None again after each message of the picture
-let picturing : Ref[(Double, Bool)?] = Ref(None)
+/// How far in from the paper's sides what it holds is, the picture `w` wide: 32, narrow as far in as the chat's list has
+/// its words there (16: chat_list.mbt row_side_narrow).
+fn publish_edge(w : Double) -> Double {
+  if w <= chat_narrow_w {
+    row_side_narrow
+  } else {
+    publish_paper_in
+  }
+}
+
+///|
+/// How far the words are in past the paper's edge, the picture `w` wide, on the page or in the picture taken (`taking`):
+/// past the column of its boxes to tick (on the page) and the pictures out in the margin (wide; narrow, inline).
+fn publish_words_in(w : Double, taking : Bool) -> Double {
+  (if taking { 0.0 } else { publish_tick_room() }) + (if w <= chat_narrow_w { 0.0 } else { @sf.message_avatar_reach })
+}
+
+///|
+/// The chat's name over its messages (the chat's bar's title, its size), where its words start.
+fn publish_title_node(parent : @view.View, column : () -> Double, taking : Bool, title : String) -> Unit {
+  if title == "" {
+    return
+  }
+  @sf.words_node(parent, fn() { title }, fn() { publish_title }).margin(By(fn() { (publish_words_in(column(), taking), 0.0, 0.0, 0.0) }))
+  |> ignore
+}
+
+///|
+/// still.fail's mark and name, where the words start: 16 and 6 apart, muted.
+fn publish_brand_node(parent : @view.View, column : () -> Double, taking : Bool) -> Unit {
+  parent.box(fn(b) {
+    b
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .gap(Is(@ui.Space::px(S1_5)))
+    .margin(By(fn() { (publish_words_in(column(), taking), 0.0, 0.0, 0.0) }))
+    |> ignore
+    @sf.drawable_node(b, "stillfail_mark", publish_mark) |> ignore
+    @sf.words_node(b, fn() { "still.fail" }, fn() { publish_brand }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Message `m` on the page in `parent` (publish_list_node's block), `hidden` how much was hidden in each: as far under
+/// the one before as the chat's list has them (none over the `first`); its box to tick in the column before its words,
+/// on the middle of its first line (its head's, or the first of the viewer's own bubble), its edge the muted ink so that
+/// every one shows (2026-11-06 用户 of the boxes of those not ticked,「看不清」), never faded; the message as the chat's
+/// list draws it (publish_said_node) and, under it, how much was hidden in it, faded once out of the picture; pointed at
+/// (or pressed), its box to tick lights all of it, a band across the paper from edge to edge (square: it runs out of its
+/// sides as a list's row does), half the room between messages over and under it, so that lit one after another they
+/// meet.
+fn publish_message_block(
+  parent : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+  column : () -> Double,
+  m : Message,
+  hidden : Map[Double, String],
+  first : Bool,
+) -> Unit {
+  let k = message_k(m.seq)
+  let gap = fn() { if column() <= chat_narrow_w { list_gap_narrow } else { list_gap } }
+  if !first {
+    parent.padding(By(fn() { (0.0, gap(), 0.0, 0.0) })) |> ignore
+  }
+  let on = fn() { !publishing.off.contains(k) }
+  let out = @motion.eased_on(parent, fn() { !on() }, @motion.tween(@sf.dur_ms, ease=Out))
+  parent.box(fn(band) {
+    band.row(Is(true)).fills_across(Is(true)) |> ignore
+    // (the band across the paper, from edge to edge, half the room between messages over and under it)
+    band.ground_drawn(
+      By(fn() {
+        let edge = publish_edge(column())
+        let half = gap() / 2.0
+        { dx: -edge, dy: -half, dw: edge * 2.0, dh: half * 2.0, corners: None }
+      }),
+    )
+    |> ignore
+    let side = @sf.theme().rows.check
+    band.box(fn(col) {
+      col.width(Is(Some(publish_tick_room()))).shrink(Is(0.0)).padding(Is((0.0, centred_in(first_line_h(m), side), 0.0, 0.0))) |> ignore
+      let tick = @sf.check_node_of(
+        col,
+        on,
+        fn(now) {
+          if now {
+            publishing.off.remove(k)
+          } else {
+            publishing.off[k] = true
+          }
+        },
+        fn() { @sf.t("web-pages.chat.publish.message") },
+        side~,
+        corner=@sf.theme().rows.check_corner,
+        edge=fn() { @sf.theme().p.muted },
+      )
+      @sf.hover_ground_node(band, by=tick)
+    })
+    |> ignore
+    band.box(fn(content) {
+      content
+      .grow(Is(1.0))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .padding(By(fn() { (publish_words_in(column(), true), 0.0, 0.0, 0.0) }))
+      .alpha(By(fn() { publish_faded(out.shown(content)) }))
+      // (a message and, under it, how much was hidden in it, 6 under)
+      .gap(Is(@ui.Space::px(S1_5)))
+      |> ignore
+      if publishing.picked == Some(m.seq) {
+        publishing.aim_at = Some(content)
+      }
+      publish_said_node(content, src, here, m)
+      match hidden.get(m.seq) {
+        Some(h) =>
+          content.box(fn(note) {
+            @sf.style_node(note, fn() { if m.mine { publish_note_mine } else { publish_note_said } })
+            @sf.icon_node(note, "shield-check", publish_note_icon_small, By(fn() { @sf.theme().p.muted })) |> ignore
+            @sf.words_node(note, fn() { h }, fn() { publish_meta }) |> ignore
+          })
+          |> ignore
+        None => ()
+      }
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Message `m` as the chat's list draws it (chat_body_row's, by its kind: the viewer's own, still.fail's notice, a
+/// person's, an agent's), in `parent`, none of the list's own round it (no room over it, none at its sides), its files
+/// drawn as `here` says (its `picture`), nothing it offers of itself.
+fn publish_said_node(parent : @view.View, src : Source, here : MessageNodeHere, m : Message) -> Unit {
+  let key = "p:" + m.ts
+  let none = fn() { 0.0 }
+  let now = fn() { m }
+  if m.mine {
+    mine_said_node(parent, src, here, key, none, none, now) |> ignore
+  } else if m.system {
+    notice_said_node(parent, src, here, key, none, none, now, @sf.LiveMap::new(), @sf.LiveMap::new()) |> ignore
+  } else if m.author_kind == "person" {
+    person_said_node(parent, src, here, key, none, none, now) |> ignore
+  } else {
+    agent_said_node(parent, src, here, key, none, none, now, code=fn(lang) {
+      if lang == "mermaid" {
+        Some(fn(b, code) { @sfbase.viz_mermaid_node(b, src, here.station, code, fn() { @sf.theme().p.subtle }, here.tips) })
+      } else {
+        None
+      }
+    })
+    |> ignore
+  }
+}
+
+///|
+/// The picture taken in `paper` (publish_take's, made apart), as wide as it is said: on the page's ground, the chat's
+/// name over its messages as the chat's list draws them (2026-10-26 用户, of a picture that drew them apart:「渲染跟消息列表
+/// 完全不一样」), only those ticked, only their attachments ticked (picture_message), their times dates (how long ago it was
+/// is not so for long), still.fail's mark and name at its foot; no box to tick, no note of what was hidden.
+fn publish_picture_node(paper : @view.View, here : MessageNodeHere, p : Json?) -> Unit {
+  guard publishing_src.val is Some(src) else { return }
+  let column = fn() { publish_page_w }
+  paper.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+  publish_block(paper, column, true, fn(b) {
+    b.padding(Is((0.0, publish_paper_in, 0.0, publish_paper_in))) |> ignore
+    publish_title_node(b, column, true, text(p, "title"))
+    b.box(fn(list) {
+      list.fills_across(Is(true)).padding(Is((0.0, publish_paper_gap, 0.0, 0.0))).gap(Is(list_gap)) |> ignore
+      for j in items(p, "list") {
+        let m = picture_message(@sfbase.message_of(j), true)
+        if publishing.off.contains(message_k(m.seq)) {
+          continue
+        }
+        list.box(fn(row) {
+          row.fills_across(Is(true)).padding(Is((publish_words_in(publish_page_w, true), 0.0, 0.0, 0.0))) |> ignore
+          publish_said_node(row, src, here, m)
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+    b.box(fn(f) {
+      f.padding(Is((0.0, publish_paper_gap + publish_foot_down, 0.0, 0.0))) |> ignore
+      publish_brand_node(f, column, true)
+    })
+    |> ignore
+  })
+}
 
 ///|
 /// Message `m` as the picture holds it: taken (`taking`), without the attachments left out, its time a date.
@@ -728,7 +1090,7 @@ fn picture_message(m : Message, taking : Bool) -> Message {
 /// Attachment `a` of message `seq`'s number in the preview (its `files`' `k`, by the message's n and where it is); ""
 /// when it has none.
 fn file_k(seq : Double, a : Attachment) -> String {
-  for f in items(publishing.preview.get(), "files") {
+  for f in items(publishing.preview.untracked(), "files") {
     if number(Some(f), "n") == seq && text(field(Some(f), "file"), "path") == a.path {
       return text(Some(f), "k")
     }
@@ -737,195 +1099,195 @@ fn file_k(seq : Double, a : Attachment) -> String {
 }
 
 ///|
-/// An attachment of message `seq` in the picture, `w` wide, as the chat shows it (file_drawn). On the page, as what
-/// waits to go in the composer has it, a ✕ hung on its top right corner (@sf.with_corner_remove) takes it out of the
-/// picture (pressed anywhere on it too): it fades, its ✕ a ＋ that puts it back. In the picture taken (`taking`), as it
-/// is, the room its mark hangs in kept.
-fn publish_file(
-  c : @ui.Ctx,
-  src : Source,
-  here : MessageHere,
-  seq : Double,
-  taking : Bool,
-  a : Attachment,
-  w : Double,
-  by~ : (String, String, String)?,
-) -> Unit {
-  let k = file_k(seq, a)
-  // (the room its mark is hung in kept in the picture too, so that it is laid out as the page has it)
-  if taking || k == "" {
-    c.box(style=@ui.style(pr=@sf.room_of(publish_file_hung())), fn() { file_drawn(c, src, here, a, w, by~) }) |> ignore
-    return
+/// The seq of the preview's message `ts` (its files' `n`), -1 where it holds none.
+fn publish_seq_of(ts : String) -> Double {
+  for j in items(publishing.preview.untracked(), "list") {
+    if text(Some(j), "ts") == ts {
+      return number(Some(j), "seq")
+    }
   }
-  publish_ticked(c, k, w=Some(w), fn() { file_drawn(c, src, here, a, w, by~) })
+  -1.0
 }
 
 ///|
-/// Attachment `k` on the page, drawn by `draw` (`w` wide; None: as wide as there is), with its ✕ (publish_file).
-fn publish_ticked(c : @ui.Ctx, k : String, w~ : Double?, draw : () -> Unit) -> Unit {
-  let on = !publishing.off.contains(k)
-  // (taken out: fading as its ✕ turns into a ＋, as long as a control's change takes, each as it is drawn)
-  let out = publish_out(c, k, on)
-  let id = c.id("publish/file/" + k)
+/// A file of message `ts` in the picture (MessagePicture's `file`), as the chat draws it (`draw`), in `parent`: in the
+/// picture taken (`taking`), as it is, the room its ✕ hangs in kept, so that it is laid out as the page has it; on the
+/// page, as what waits to go in the composer has it, a ✕ hung on its top right corner (publish_ticked) takes it out of
+/// the picture.
+fn publish_file_node(parent : @view.View, ts : String, a : () -> Attachment, draw : (@view.View) -> Unit, taking : Bool) -> Unit {
+  let k = file_k(publish_seq_of(ts), @signals.untracked(a))
+  if taking || k == "" {
+    parent.box(fn(b) {
+      b.padding(Is((0.0, 0.0, @sf.corner_remove_reach(@sf.message_file_corner), 0.0))) |> ignore
+      draw(b)
+    })
+    |> ignore
+  } else {
+    publish_ticked(parent, k, true, draw)
+  }
+}
+
+///|
+/// Attachment `k` on the page in `parent`, drawn by `draw`, with its ✕ (@sf.with_corner_remove_node; `hung`: the room it
+/// hangs in past the right edge kept): taken out, faded as its ✕ turns into a ＋ (that puts it back), as long as a
+/// control's change takes; pressed anywhere on it too (what the chat would open it by does not here).
+fn publish_ticked(parent : @view.View, k : String, hung : Bool, draw : (@view.View) -> Unit) -> Unit {
+  let on = fn() { !publishing.off.contains(k) }
   let flip = fn() {
-    if on {
+    if @signals.untracked(on) {
       publishing.off[k] = true
     } else {
       publishing.off.remove(k)
     }
   }
-  @sf.with_corner_remove(
-    c,
-    "publish/file/" + k,
-    @sf.t(if on { "web-pages.chat.publish.leaveOut" } else { "web-pages.chat.publish.putBack" }),
+  let out = @motion.eased_on(parent, fn() { !on() }, @motion.tween(@sf.dur_ms, ease=Out))
+  @sf.with_corner_remove_node(
+    parent,
+    fn() { @sf.t(if on() { "web-pages.chat.publish.leaveOut" } else { "web-pages.chat.publish.putBack" }) },
     @sf.message_file_corner,
-    w?=w,
-    turn=fn() { out.get(c) * publish_plus_turn },
-    on_remove=flip,
-    fn() {
-      // (pressed anywhere, as its mark is: what the chat would open it by does not here)
-      let card = c.box(style=publish_file_box, fn() {
-        draw()
-        c.layer(fn() { c.box(style=publish_file_press, id~, fn() {  }) |> ignore }) |> ignore
+    fn(i) {
+      i.box(fn(card) {
+        card.fills_across(Is(true)).alpha(By(fn() { publish_faded(out.shown(card)) })) |> ignore
+        draw(card)
       })
-      c.look_by(card, fn() { @ui.look(alpha=publish_faded(out.get(c))) })
+      |> ignore
     },
+    flip,
+    hung~,
+    // (pressed anywhere, as its mark is)
+    whole=true,
+    turn=fn(mark) { out.shown(mark) * publish_plus_turn },
   )
-  c.on_press(id, flip)
+  |> ignore
 }
 
 ///|
-/// Whether page of HTML `a`, placed in message `seq`'s words, is drawn as itself in the picture (publish_viz): on the
-/// page where its host can grab it and it is in the picture (a view fades with nothing round it: one left out is its
-/// card, to put back), in the picture taken once it was grabbed. Otherwise its card.
-fn publish_viz_drawn(seq : Double, taking : Bool, a : Attachment) -> Bool {
+/// A page of HTML `a` placed in message `ts`'s words in the picture (MessagePicture's `viz`), in `parent`, `card` its card:
+/// in the picture taken (`taking`), what it was grabbed as (its own kind's widget as itself), else its card; on the page,
+/// as the chat draws it, keeping nothing and sending nothing, while it can be grabbed and is in the picture (a view fades
+/// with nothing round it: one left out, or in a browser, is its card, to put back), its ✕ on it (publish_ticked).
+fn publish_viz_node(parent : @view.View, r : ChatRef, ts : String, a : Attachment, card : (@view.View) -> Unit, taking : Bool) -> Unit {
+  let seq = publish_seq_of(ts)
   let k = file_k(seq, a)
-  k != "" &&
-  (if @sfbase.is_mbui_viz(a.name) {
-    !publishing.off.contains(k) && !publishing.off.contains(message_k(seq))
-  } else if taking {
-    publishing.stills.contains(k)
-  } else {
-    @ui.platform() != 4 && !publishing.off.contains(k) && !publishing.off.contains(message_k(seq))
-  })
-}
-
-///|
-/// Page of HTML `a` of message `seq` in the picture (publish_viz_drawn): in the picture taken, what it was grabbed as; on
-/// the page, as the chat draws it, keeping nothing and sending nothing (the page's presses are its ✕'s, publish_ticked);
-/// `card` when its file cannot be read.
-fn publish_viz(c : @ui.Ctx, src : Source, here : MessageHere, seq : Double, taking : Bool, a : Attachment, card : () -> Unit) -> Unit {
-  let k = file_k(seq, a)
-  if @sfbase.is_mbui_viz(a.name) {
-    let loaded = @sfbase.viz_load(c, src, here.station, owner_of(here, a), a.path, size=a.size)
-    match loaded {
-      Some(Ok((html, state))) =>
-        match @sfbase.viz_mbui_parse(a.name, html) {
-          Some(widget) => {
-            let place = "publish/" + here.station + ":" + here.session + "/" + k
-            let draw_box = fn() {
-              c.box(style=@sfbase.viz_file_box, fn() {
-                c.box(style=publish_file_box, fn() {
-                  @sfbase.viz_mbui_ctx(c, place, widget, state.unwrap_or(Json::null()), { keep: None, failed: None, follow_up: None })
-                })
-                |> ignore
-              })
-              |> ignore
-            }
-            if taking {
-              draw_box()
-            } else {
-              publish_ticked(c, k, w=None, draw_box)
-            }
-            return
-          }
-          None => {
-            publishing.viz_failed[k] = true
-            return card()
-          }
-        }
-      Some(Err(_)) => {
-        publishing.viz_failed[k] = true
-        return card()
-      }
-      None => {
-        if taking {
-          return card()
-        }
-        publish_ticked(c, k, w=None, fn() {
-          c.box(style=@sfbase.viz_file_box, fn() {
-            c.box(style=publish_file_box, fn() {
-              c.box(style=@sfbase.viz_wait_under, fn() {
-                let i = c.box(style=@sfbase.viz_wait, fn() {  })
-                @sf.breathe(c, i)
-              })
-              |> ignore
-            })
+  if k == "" {
+    return card(parent)
+  }
+  let mbui = @sfbase.is_mbui_viz(a.name)
+  if taking {
+    match publishing.stills.get(k) {
+      _ if mbui => publish_viz_live(parent, r, k, a, card, true)
+      Some((image, w, h)) =>
+        parent.box(fn(b) {
+          @sf.style_node(b, fn() { @sfbase.viz_file_box })
+          // (its grab as it appeared on the page: that size keeps its words and its proportions in a wider picture)
+          b.box(fn(i) {
+            i
+            .width(Is(Some(w)))
+            .height(Is(Some(h)))
+            .image(Is(Some((image, "", (dmax(w, h) * i.pixel_scale()).to_int()))))
+            .image_covers(Is(true))
+            .image_fades(Is(false))
             |> ignore
           })
           |> ignore
         })
-        return
-      }
-    }
-  }
-  if taking {
-    match publishing.stills.get(k) {
-      Some((image, w, h)) =>
-        c.box(style=@sfbase.viz_file_box, fn() {
-          // Its grab is as it appeared on the page; keeping that size also keeps its text and proportions intact in
-          // a wider shared picture.
-          c.image(image, w=Px(w), h=Px(h), fit=FitCover, bg=0L, fade=false) |> ignore
-        })
         |> ignore
-      None => card()
+      None => card(parent)
     }
     return
   }
-  let loaded = @sfbase.viz_load(c, src, here.station, owner_of(here, a), a.path, size=a.size)
-  if loaded is Some(Err(_)) {
-    publishing.viz_failed[k] = true
-    return card()
+  let live = fn() {
+    !publishing.off.contains(k) && !publishing.off.contains(message_k(seq)) && (mbui || @ui.platform() != 4)
   }
-  let place = "publish/" + here.station + ":" + here.session + "/" + k
-  publishing.viz_boxes[k] = place
-  publish_ticked(c, k, w=None, fn() {
-    c.box(style=@sfbase.viz_file_box, fn() {
-      let box = c.box(style=publish_file_box, fn() {
-        match loaded {
-          Some(Ok((html, state))) =>
-            @sfbase.viz_frame(c, place, html, state, { keep: None, failed: None, follow_up: None })
-          _ =>
-            c.box(style=@sfbase.viz_wait_under, fn() {
-              let i = c.box(style=@sfbase.viz_wait, fn() {  })
-              @sf.breathe(c, i)
+  parent.pick(live, fn(p, on) { if on { publish_viz_live(p, r, k, a, card, false) } else { card(p) } })
+}
+
+///|
+/// Page of HTML `k` (`a`) drawn as itself in `parent` (publish_viz_node's), its file read first (its place breathing
+/// meanwhile), its card (`card`) where it cannot be read; on the page with its ✕, in the picture taken (`taking`: its own
+/// kind's widget alone) as it is. One drawn as a page is kept, while it is drawn on the page, for the picture's walk to
+/// grab (publishing.viz_at).
+fn publish_viz_live(parent : @view.View, r : ChatRef, k : String, a : Attachment, card : (@view.View) -> Unit, taking : Bool) -> Unit {
+  guard publishing_src.val is Some(src) else { return card(parent) }
+  let owner = owner_of(
+    { station: r.station, session: r.session, view: publish_view(r), go: None, inline: false, gutter: 0.0, list: None, core: None },
+    a,
+  )
+  let load = @sfbase.viz_load_node(parent, src, r.station, owner, a.path, size=a.size)
+  let ticked = fn(p : @view.View, draw : (@view.View) -> Unit) {
+    if taking {
+      p.box(fn(b) { draw(b) }) |> ignore
+    } else {
+      publish_ticked(p, k, false, draw)
+    }
+  }
+  parent.pick(
+    fn() {
+      match load() {
+        None => 0
+        Some(Err(_)) => 1
+        Some(Ok(_)) => 2
+      }
+    },
+    fn(p, state) {
+      match (state, @signals.untracked(load)) {
+        (2, Some(Ok((html, state)))) => {
+          let place = "publish/" + r.station + ":" + r.session + "/" + k
+          let hears : @sfbase.VizHears = { keep: None, failed: None, follow_up: None }
+          match @sfbase.viz_mbui_parse(a.name, html) {
+            Some(widget) =>
+              ticked(p, fn(b) {
+                @sf.style_node(b, fn() { @sfbase.viz_file_box })
+                @sfbase.viz_mbui_node(b, place, widget, fn() { state.unwrap_or(Json::null()) }, hears)
+              })
+            None if @sfbase.is_mbui_viz(a.name) || taking => {
+              publishing.viz_failed[k] = true
+              card(p)
+            }
+            None =>
+              ticked(p, fn(b) {
+                @sf.style_node(b, fn() { @sfbase.viz_file_box })
+                b.box(fn(box) {
+                  let f = viz_page_node(box, place, html, state, hears)
+                  publishing.viz_at[k] = (box, f)
+                  publishing.viz_made.set(publishing.viz_made.untracked() + 1)
+                  box.owns(fn() {
+                    match publishing.viz_at.get(k) {
+                      Some((at, _)) if physical_equal(at, box) => {
+                        publishing.viz_at.remove(k)
+                        publishing.viz_made.set(publishing.viz_made.untracked() + 1)
+                      }
+                      _ => ()
+                    }
+                  })
+                  |> ignore
+                })
+                |> ignore
+              })
+          }
+        }
+        (1, _) => {
+          publishing.viz_failed[k] = true
+          card(p)
+        }
+        _ =>
+          // its place, breathing as every wait's shapes, till the page comes
+          ticked(p, fn(b) {
+            @sf.style_node(b, fn() { @sfbase.viz_wait_under })
+            b.box(fn(i) {
+              @sf.style_node(i, fn() { @sfbase.viz_wait })
+              @sf.breathe_node(i)
             })
             |> ignore
-        }
-      })
-      @motion.measure(c, box, publish_viz_measure(k))
-    })
-    |> ignore
-  })
+          })
+      }
+    },
+  )
 }
 
 ///|
-/// What the box page of HTML `k` is drawn in is measured as (where it is, to bring it into sight; how tall, its grab).
-fn publish_viz_measure(k : String) -> String {
-  "publish/viz/" + k
-}
-
-///|
-/// An attachment left out (file[data-off]: .45); the shield before how much was hidden, in the bar (14) and under a
-/// message (13).
+/// An attachment left out (file[data-off]: .45); the shield before how much was hidden, under a message (13).
 let publish_off_alpha : Double = 0.45
-
-///|
-/// How far what `k` names is out of the picture (0 in it, 1 out), moving as its tick or its ✕ is pressed: as long as a
-/// control's change takes (vars.dur), easing out. Told as it is built, read where it is drawn.
-fn publish_out(c : @ui.Ctx, k : String, on : Bool) -> @motion.Anim {
-  @motion.told(c, "publish/out/" + k, if on { 0.0 } else { 1.0 }, spec=@motion.tween(@sf.dur_ms, ease=Out))
-}
 
 ///|
 /// How opaque it is, `out` of the picture.
@@ -941,11 +1303,6 @@ let publish_plus_turn : Double = 0.7853981633974483
 let publish_note_icon_small : Double = 13.0
 
 ///|
-/// The page over the whole window (fp): the canvas.
-// kept across runs: a value (no field of it changes)
-let publish_fill : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
-
-///|
 /// Being read, not read, nothing to hold (fpNote: in the middle, muted, the ui's size).
 // kept across runs: a value (no field of it changes)
 let publish_note : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter gap=S3_5")
@@ -959,44 +1316,20 @@ let publish_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 let publish_problem : @ui.TextStyle = @ui.text_style(size=Ui, color=Danger)
 
 ///|
-/// What it would hold (page): the chat's width (760 at most) in the middle, right under what is over it at the top
-/// (the bar on a wide screen, the status bar on a small one: its own 32 the room under them), 64 under (and the band at
-/// the foot of a small screen).
-// kept across runs: a value (no field of it changes)
-let publish_column_room : @ui.Style = @ui.css("w=Full align=ACenter")
-
-///|
-/// The picture (page): 32 round what it holds, 32 down from its top and up from its foot, its parts 16 apart, on the
-/// page's ground (what it is drawn on when it is taken too); its words the messages' pictures' room further in than
-/// its end, as those stand out before them (@sf.message_avatar_reach).
-// kept across runs: a value (no field of it changes)
-let publish_paper : @ui.Style = @ui.style(
-  w=Full,
-  pl=@sf.room_of(publish_paper_in + @sf.message_avatar_reach),
-  pr=S8,
-  py=S8,
-  gap=S4,
-  bg=Bg,
-)
-
-///|
-/// How far in from its sides what it holds is (S8's 32).
+/// How far in from its sides what the picture holds is, and down from its top and up from its foot (S8's 32).
 let publish_paper_in : Double = 32.0
 
 ///|
-/// Narrow, its words as far in as the chat's list has them there (16: chat_list.mbt row_side_narrow).
-// kept across runs: a value (no field of it changes)
-let publish_paper_narrow : @ui.Style = @ui.style(w=Full, px=@sf.room_of(row_side_narrow), py=S8, gap=S4, bg=Bg)
+/// The picture's parts (its name, its messages, its foot) 16 apart; its foot 8 further under its last message.
+let publish_paper_gap : Double = 16.0
+
+///|
+let publish_foot_down : Double = 8.0
 
 ///|
 /// The chat's name over its messages (the chat's bar's title, its size).
 // kept across runs: a value (no field of it changes)
 let publish_title : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, w=Full)
-
-///|
-/// still.fail's mark and name at its foot, 6 apart, 8 under the last message, muted.
-// kept across runs: a value (no field of it changes)
-let publish_foot : @ui.Style = @ui.css("row pt=S2 gap=S1_5 align=ACenter")
 
 ///|
 let publish_mark : Double = 16.0
@@ -1027,27 +1360,6 @@ let publish_note_mine : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter j
 let publish_meta : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
-/// The picture's messages, as far apart as the chat's list has them (28; narrow, 20: chat_list.mbt list_gap).
-// kept across runs: a value (no field of it changes)
-let publish_list : @ui.Style = @ui.style(w=Full, gap=@sf.room_of(list_gap))
-
-///|
-// kept across runs: a value (no field of it changes)
-let publish_list_narrow : @ui.Style = @ui.style(w=Full, gap=@sf.room_of(list_gap_narrow))
-
-///|
-/// A message and, under it, how much was hidden in it (6 under).
-// kept across runs: a value (no field of it changes)
-let publish_said : @ui.Style = @ui.css("w=Full gap=S1_5")
-
-///|
-/// A message's box to tick (on the page): in a column of its own before the picture's words, the paper's edge's room
-/// before it and 12 after it (sf/align.mbt: what goes before a row is a column of its own, the words start after
-/// it), not over the message; on the middle of the message's first line (first_line_h).
-// kept across runs: a value (no field of it changes)
-let publish_message_tick : @ui.Style = @ui.css("w=Full align=AStart")
-
-///|
 /// The column the boxes to tick stand in on the page: a box (the theme's rows' check) and 12 after it.
 fn publish_tick_room() -> Double {
   @sf.theme().rows.check + publish_tick_gap
@@ -1066,33 +1378,11 @@ fn centred_in(line : Double, h : Double) -> Double {
 /// How high message `m`'s first line is, from its top: its head's line (its name, its time; S6), or for the viewer's
 /// own that begins with its words, its bubble's first line (the bubble's 8 over a line of the theme's words); one that
 /// begins with what it quotes or a file, the head's line as well.
-fn first_line_h(c : @ui.Ctx, m : @sfbase.Message) -> Double {
+fn first_line_h(m : @sfbase.Message) -> Double {
   if m.mine && m.text != "" && m.quotes.length() == 0 && beside_quotes(m.quotes, m.attachments).length() == 0 {
-    let line = c.style_size(@sf.theme().t.words).1
-    bubble_in_y * 2.0 + line
+    bubble_in_y * 2.0 + @ui.style_words(@sf.theme().t.words).line
   } else {
     head_line_h
   }
 }
 
-///|
-/// An attachment on the page, faded once taken out.
-// kept across runs: a value (no field of it changes)
-let publish_file_box : @ui.Style = @ui.css("w=Full")
-
-///|
-/// A message's ground while its box to tick is pointed at: the hand's (hover).
-// kept across runs: a value (no field of it changes)
-let publish_lit : @ui.Style = @ui.css("w=Full h=Full bg=Hover")
-
-///|
-/// What takes its presses, all over it.
-// kept across runs: a value (no field of it changes)
-let publish_file_press : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// The room its ✕ (＋ once taken out) hangs in past its top and right edge (@sf.with_corner_remove), kept in the
-/// picture taken too.
-fn publish_file_hung() -> Double {
-  @sf.corner_remove_reach(@sf.message_file_corner)
-}

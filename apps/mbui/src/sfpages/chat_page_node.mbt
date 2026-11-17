@@ -163,6 +163,7 @@ pub fn chat_page_body_node(
             None => ()
           }
         }),
+        picture: None,
       }
       let core = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }).map(fn(w) { @sfbase.settings_core(src, w) })
       chat_body_node(

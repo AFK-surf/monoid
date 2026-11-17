@@ -989,6 +989,38 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a placed p
 }
 
 ///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: a placed page drawn comes in as a message's image does, what it waited under brushed off it in strips, gone at its end" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    let asked : Array[String] = []
+    let t = viz_nodes_open(w, h, platform, asked)
+    let page = viz_nodes_frame(name).view
+    t.view_says(page.id(), "{\"vizMessage\":true,\"type\":\"height\",\"height\":231.4}")
+    viz_nodes_run(t, @ui.move_most_ms, true)
+    let said = viz_nodes_shown(t, page).unwrap()
+    assert_true(viz_nodes_covered(t, said), msg="\{name}: its placeholder over it till its host has drawn it")
+    // (the line's grey drawn within the page's place, whatever its alpha)
+    let line = @sf.palette_of(false).line >> 8
+    let greys = fn() {
+      let (x0, y0, x1, y1) = viz_nodes_shown(t, page).unwrap()
+      t.drawn_rects().filter(fn(d) { d.4 >> 8 == line && d.0 >= x0 - 1.0 && d.1 >= y0 - 1.0 && d.0 + d.2 <= x1 + 1.0 && d.1 < y1 }).length()
+    }
+    t.finish(2, page.id())
+    t.frame()
+    let began = t.time()
+    // half way: what it waited under brushed off it in strips (an image's way in), none of it over all of it
+    t.run_for(@sfbase.viz_reveal_ms / 2.0)
+    let half = greys()
+    assert_false(viz_nodes_covered(t, said), msg="\{name}: half way, nothing over all of it")
+    assert_true(half > 2, msg="\{name}: half way, its strips: \{half}")
+    // in: nothing of it left over the page
+    t.run_for(began + @sfbase.viz_reveal_ms + 1.0 - t.time())
+    assert_eq(greys(), 0, msg="\{name}: in, nothing over it")
+    assert_true(viz_nodes_frame(name).reveal is None, msg="\{name}: come in once")
+  }
+}
+
+///|
 /// The lowest field drawn (the composer's), if any.
 fn composer_field(t : @ui.Tester) -> (Double, Double, Double, Double)? {
   let mut at : (Double, Double, Double, Double)? = None
