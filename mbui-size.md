@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.77 | 61.69 | 96.54 | 122.41 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.76 | 61.69 | 96.55 | 121.64 |
 | [5d60f1e5b](https://github.com/AFK-surf/monoid/commit/5d60f1e5bfccc2e05cafb7b798575b96be8b6262) app, mbui: add and dispatch board tasks with icons | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.76 | 61.69 | 96.55 | 121.64 |
 | [767bf3a54](https://github.com/AFK-surf/monoid/commit/767bf3a5416785c76355e2972f140b9a8ca0abf7) station: route events during handover adoption (#7 | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 30.76 | 61.69 | 96.55 | 109.59 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 2.54 | 3.59 | 15.69 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 128.71 |
 | [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 126.02 |
 | [d22cd0108](https://github.com/AFK-surf/monoid/commit/d22cd0108877e467355bf712e88d98a7ae0efd1f) move: the stations it may not go to are listed, ea | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 117.97 |
-| [f0a58f6f0](https://github.com/AFK-surf/monoid/commit/f0a58f6f07497deeaf5b6f7cac0065359c4ea40f) mbui app: Profile's subscriptions and every pool's | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 117.97 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [5d60f1e5b](https://github.com/AFK-surf/monoid/commit/5d60f1e5bfccc2e05cafb7b798575b96be8b6262) app, mbui: add and dispatch board tasks with icons | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [767bf3a54](https://github.com/AFK-surf/monoid/commit/767bf3a5416785c76355e2972f140b9a8ca0abf7) station: route events during handover adoption (#7 | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.27 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [d22cd0108](https://github.com/AFK-surf/monoid/commit/d22cd0108877e467355bf712e88d98a7ae0efd1f) move: the stations it may not go to are listed, ea | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
-| [f0a58f6f0](https://github.com/AFK-surf/monoid/commit/f0a58f6f07497deeaf5b6f7cac0065359c4ea40f) mbui app: Profile's subscriptions and every pool's | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
