@@ -10,9 +10,12 @@
 # the same to the byte): 1574 pixels of the capsules' ends at most 26 steps of a channel off, the rest the same.
 # Made again as #3192 eased a capsule's end with no kink in how much it bends (run 41288264190's artifact, its a and b
 # the same to the byte): 1566 pixels of the same ends at most 20 steps of a channel off, the rest the same.
+# Mesa 25.2.8-0ubuntu0.24.04.5 draws the same bytes on main (run 44142275717) and #7091 (run 44177034811),
+# in both jobs of each run.
 image ubuntu24 20261023.334.3
 system Ubuntu 24.04.5 LTS x86_64
 mesa 25.2.8-0ubuntu0.24.04.4
+mesa 25.2.8-0ubuntu0.24.04.5
 text pango 1.52.1 harfbuzz 8.3.0 freetype 26.1.20
 fonts 46a5776e52ac319ba6942039a7f90da9
 cpu AMD EPYC 9V45 96-Core Processor
