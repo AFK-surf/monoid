@@ -64,9 +64,15 @@ const fresh = (what: string) => {
   return dir;
 };
 const plain = (v: unknown) => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
-/// Some turns of the loop: what was set going in this process has gone on as far as it goes without the world.
+/// Some turns of the loop: what was set going in this process has gone on as far as it goes without the world. `n` of
+/// them with no file request out, as hub-fakes.ts `settle`: the TypeScript's servers, links and door read and write
+/// their files on libuv's threads, and how many turns that takes is the machine's.
 const turn = async (n = 20) => {
-  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+  for (let quiet = 0; quiet < n; ) {
+    await new Promise((r) => setImmediate(r));
+    // (a file handle's close, the last step of fs/promises' writeFile and readFile, is a request of its own: CloseReq)
+    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
+  }
 };
 
 // ── a clock of a test's own, one each side ──
