@@ -287,7 +287,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
               label: x.label,
               icon: if one_chosen { "" } else { x.icon },
               danger: false,
-              disabled: false,
+              disabled: x.disabled,
               chosen: if one_chosen { Some(x.key == chosen) } else { None },
               heading: false,
               further: false,
