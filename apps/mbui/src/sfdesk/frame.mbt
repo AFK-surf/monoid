@@ -58,9 +58,6 @@ pub(all) struct Wide {
   /// where the move has got to this frame: the sidebar's top row's height, its frosted bands' ground (0 the sidebar's,
   /// 1 the closed bar's), the lists' marks on the rail (0 gone, 1 in)
   mut brand_h : Double
-  /// the room the lists leave for it (list_top_h), and how far the band over them is to the closed bar's for that
-  mut list_top : Double
-  mut list_band : Double
   mut band : Double
   mut mark : Double
   /// the page's bars' padding at its left (clear of the closed bar) and their margins while the folded sidebar is shown
@@ -69,8 +66,6 @@ pub(all) struct Wide {
   mut bar_pl : Double
   mut bar_ml : Double
   mut bar_mr : Double
-  /// where the page starts (the column the block takes, where its move has got)
-  mut page_from : Double
   /// the chat last opened here by the frame (the core's last chat taken once per workspace)
   landed : @signals.Signal[String]
   /// the rail's menu (from its right click): the place right clicked ("" the rail), where; a place dragged to another
@@ -134,14 +129,11 @@ pub let wide : Wide = {
   in_bar: false,
   closed: @signals.signal(false, same=fn(a, b) { a == b }),
   brand_h: 0.0,
-  list_top: 0.0,
-  list_band: 0.0,
   band: 0.0,
   mark: 0.0,
   bar_pl: 0.0,
   bar_ml: 0.0,
   bar_mr: 0.0,
-  page_from: 0.0,
   landed: @signals.signal("", same=fn(a, b) { a == b }),
   rail_menu: @signals.signal(None, same=fn(a, b) { a == b }),
   rail_drag: @signals.signal(None, same=fn(a, b) { a == b }),
@@ -220,15 +212,11 @@ fn wide_reset() -> Unit {
   wide.in_bar = false
   wide.closed.set(false)
   wide.brand_h = 0.0
-  wide.list_top = 0.0
-  wide.list_band = 0.0
   wide.band = 0.0
-  list_room_told()
   wide.mark = 0.0
   wide.bar_pl = 0.0
   wide.bar_ml = 0.0
   wide.bar_mr = 0.0
-  wide.page_from = 0.0
   wide.landed.set("")
   wide.rail_menu.set(None)
   rail_menu_drawn.val = None
@@ -462,6 +450,8 @@ fn dock_side_at(
     shown,
     brand: f.brand,
     band: f.band,
+    list_brand: f.brand,
+    list_band: f.band,
     bar,
     tape: false,
   }
@@ -556,7 +546,7 @@ let dock_line : Double = 1.0
 /// Where the block lays its sidebar out (dock_side_at): its box (x, y, w, h) in what holds the block, the block's own
 /// (x, y, w, h), its corners (linked as its look's are, else one radius: dock_round_node) and its line (how wide, its
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
-/// move has got: fold_bars'), where that move has got between open and the floating bar (the band's), whether the
+/// move has got), where that move has got between open and the floating bar (the band's), whether the
 /// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
 priv struct SideAt {
   box : (Double, Double, Double, Double)
@@ -573,6 +563,9 @@ priv struct SideAt {
   shown : Bool
   brand : Double
   band : Double
+  /// The list's band held at the open end during a fold, so its rows keep their layout through the move.
+  list_brand : Double
+  list_band : Double
   bar : Bool
   tape : Bool
 }
