@@ -184,14 +184,13 @@ fn agent_card_head_node(
   }
   let quota = fn() { field(field(a(), "account"), "quota") }
   let windows = fn() { if text(quota(), "state") == "ok" { items(quota(), "windows") } else { [] } }
-  p.box(fn(h) {
+  @sf.panel_content_row_node(p, fn() { text(s(), "agentText") }, fn(_) { runs() }, fn(h) {
     // (its corners concentric with the card's, its ground the small panel's row's: agent_card_head's Inner)
     @sf.style_node(h, fn() { agent_card_head.then(agent_card_head_round) })
-    @sf.presses_node(h, runs)
+    h.focus_ring_theme() |> ignore
     // (the hand come to it, a pointer over it or a finger down on it: what its press opens asked ahead)
     h.reacts(fn() { @sf.lit_node(h) }, hand, at_start=false)
     h.owns(fn() { hand(false) }) |> ignore
-    h.says(By(fn() { Some(@view.said(Button, label=text(s(), "agentText"))) })) |> ignore
     agent_card_mark_node(h, a, s)
     h.box(fn(w) {
       @sf.style_node(w, fn() { agent_card_who }, in_row=true)
@@ -236,7 +235,6 @@ fn agent_card_head_node(
     })
     |> ignore
   })
-  |> ignore
 }
 
 ///|

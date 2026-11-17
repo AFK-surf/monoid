@@ -893,6 +893,7 @@ pub struct ModelCatalog {
   mut models : Array[String]
   efforts : Array[(String, Array[String])]
   defaults : Array[(String, String)]
+  mut ultrafast_models : Array[String]?
 }
 pub fn ModelCatalog::new() -> Self
 pub fn ModelCatalog::take_page(Self, @jsjson.JValue?) -> Unit raise

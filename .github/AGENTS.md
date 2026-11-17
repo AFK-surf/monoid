@@ -27,7 +27,9 @@
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
   of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
   `shell-apple` is missing (plan's `natives_mac_runner`: too long cold there, 228 and 323 s); the other Apple parts,
-  Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and release signing stay on `Mini1` (`macos-ci`, `quick`), and
+  Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and Android's release stay on `Mini1` (`macos-ci`, `quick`), the
+  Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
+  were cut at five minutes, 2026-11-17), and
   a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
   parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
@@ -48,8 +50,10 @@
   a part that needs more is made faster or gets fewer bases, not longer (10 bases: the owner, 2026-11-11).
 - The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
   notary service, which can take a job's five minutes (2026-11-12, four runs in a row). Nor does Windows' (`desktop-win`): a new MoonBit's cold
-  build was cut at its five minutes run after run and held every part's beta back (the user, 2026-11-17). A failed or cancelled
-  `desktop` leaves the Mac's feed as it was; it is main's red, and `done` waits for it, so the next run plans it again.
+  build was cut at its five minutes run after run and held every part's beta back (the user, 2026-11-17). Nor do the
+  station's and Android's (`station`, `android`): each hands `put` only what it finished, and one cut at its upload held
+  the signed Mac and Windows betas back (main 44147606865, 2026-11-17). A failed or cancelled part leaves its feed as
+  it was; it is main's red, and `done` waits for it, so the next run plans it again.
 - The Android delta's deflater is part of the format: JZlib's version (`libs/mbui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
   (each delta is checked by the Java applier before it is published, so such a change only stops Android's deltas).

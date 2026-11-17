@@ -151,7 +151,7 @@ fn reset() -> Unit {
 /// What the app's own doings ask of the pages (sfbase shell.mbt): home and what is over the pages put their sheets
 /// down too, an invitation's link shows its sheet, the screens live in their cards stop as the app goes behind; a file
 /// asked beside, in the side panel of the chat in view where the frame is the wide one (`wide`, this frame's).
-fn pages_shell(src : Source, wide : Bool) -> Shell {
+fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
   {
     home,
     close_overlays,
@@ -174,6 +174,7 @@ fn pages_shell(src : Source, wide : Bool) -> Shell {
         @sfdesk.bring_page()
       }
     },
+    notice_on_board: fn(r) { wide && @sfdesk.notice_on_board(src, r, window_width) },
     edit_rail: fn() { @sfdesk.wide.editing.set(true) },
   }
 }
@@ -375,7 +376,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   (@sfbase.made_frame.val)(c)
   @sfbase.held_build()
   c.after_build("held/end", fn() { @sfbase.held_end() })
-  shell_set(pages_shell(src, @sfdesk.is_wide(c)))
+  shell_set(pages_shell(src, @sfdesk.is_wide(c), c.window_size().0))
   // the Mac's menu bar, in the app's words (menu_bar.mbt); an item of the pages' chosen is done as its action is, at
   // that moment (@settings.ask_action)
   menu_bar(c, src)
@@ -562,7 +563,7 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     // being otherwise and its faces then changed with nothing measured yet)
     if a.1 > 0.0 {
       let wide = @sfdesk.wide_at(a.1)
-      shell_set(pages_shell(src, wide))
+      shell_set(pages_shell(src, wide, a.1))
       @settings.wide.val = wide
       @ui.set_web_lines(wide)
       faces(src, wide)

@@ -120,3 +120,30 @@ test("incidents come from the repository's workflow alone, and show as its issue
     await h.close();
   }
 });
+
+test("a branch pipeline hands an R2 chunk to its readers by a receipt", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({ statusRepoId: "42", push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }) });
+  try {
+    const ref = "refs/heads/branch";
+    const claims = { repository: "o/r", repository_id: "42", ref, event_name: "push", sha: "a".repeat(40), workflow_ref: `o/r/.github/workflows/pipeline.yml@${ref}` };
+    const put = async (extra: Record<string, unknown>) => {
+      const token = await new SignJWT({ ...claims, ...extra }).setProtectedHeader({ alg: "RS256", kid: "actions" })
+        .setIssuer("https://token.actions.githubusercontent.com").setAudience(h.origin).setIssuedAt().setExpirationTime("10 years").sign(privateKey);
+      return h.fetch("/releases/ci-natives", { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-length": "4" }, body: "part" });
+    };
+    for (const wrong of [{ repository_id: "41" }, { event_name: "pull_request" }, { workflow_ref: "o/r/.github/workflows/other.yml@" + ref }]) {
+      assert.equal((await put(wrong)).status, 401);
+    }
+    const sent = await put({});
+    assert.equal(sent.status, 201);
+    const { receipt } = await sent.json() as { receipt: string };
+    const got = await h.fetch("/releases/ci-natives/" + receipt);
+    assert.equal(got.status, 200);
+    assert.equal(await got.text(), "part");
+    assert.equal((await h.fetch("/releases/ci-natives/station.json")).status, 404);
+  } finally {
+    await h.close();
+  }
+});

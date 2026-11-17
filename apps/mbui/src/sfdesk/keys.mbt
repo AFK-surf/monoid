@@ -35,8 +35,13 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
     true
   })
   act("chat.new", fn(_) {
-    new_chat()
-    true
+    // Home's board takes this action itself, including when the focus is elsewhere in the frame.
+    if @sfbase.board_on_now(src) && app.nav.top() is Home {
+      false
+    } else {
+      new_chat()
+      true
+    }
   })
   act("sidebar.toggle", fn(_) {
     guard framed() else { return false }

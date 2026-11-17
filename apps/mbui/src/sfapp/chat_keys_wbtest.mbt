@@ -84,6 +84,40 @@ test "⌘. stops each of the chat's agents at work (session.stop by its key), an
 }
 
 ///|
+test "the head of an agent's history beside the chat stops its turn while it works (session.stop by its key), a chip as 只看收发 is, before it on its row; at rest it has no stop" {
+  let in_panel = fn(t : @ui.Tester, label : String) {
+    t.all(Button, label~).filter(fn(b) { b.rect.0 > 800.0 })
+  }
+  for status in ["running", "queued"] {
+    let calls : Array[Made] = []
+    let t = keyed_chat(calls, status~, mode="chat-history-side")
+    t.frame()
+    t.frame()
+    let stops = in_panel(t, "停止")
+    assert_eq(stops.length(), 1, msg=status)
+    let ios = in_panel(t, "只看收发")
+    assert_eq(ios.length(), 1, msg=status)
+    let (x, y, w, h) = stops[0].rect
+    let (ix, iy, _, ih) = ios[0].rect
+    // (as tall as 只看收发, on its row, before it)
+    assert_eq(h, ih, msg=status)
+    assert_eq(y + h / 2.0, iy + ih / 2.0, msg=status)
+    assert_true(x + w <= ix, msg=status)
+    t.tap(x + w / 2.0, y + h / 2.0)
+    t.draw()
+    let made = named(calls, "session.stop")
+    assert_eq(made.length(), 1, msg=status)
+    assert_eq(text(Some(made[0].params), "key"), "s-c1")
+  }
+  let calls : Array[Made] = []
+  let t = keyed_chat(calls, mode="chat-history-side")
+  t.frame()
+  t.frame()
+  assert_eq(in_panel(t, "停止").length(), 0)
+  assert_eq(in_panel(t, "只看收发").length(), 1)
+}
+
+///|
 test "⌘⇧H opens the chat's first agent's history beside it; again, with it in front, closes the panel" {
   let calls : Array[Made] = []
   let t = keyed_chat(calls)

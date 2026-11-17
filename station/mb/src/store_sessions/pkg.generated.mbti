@@ -155,6 +155,8 @@ pub fn Store::posts_after(Self, String, Array[@json.Json]) -> @json.Json raise
 pub fn Store::prepared_session_bound(Self, @json.Json) -> Bool raise
 pub fn Store::process_by_group(Self, @json.Json) -> @json.Json raise
 pub fn Store::profile_hours(Self, Double) -> @json.Json raise
+pub fn Store::profile_check(Self, String) -> @json.Json? raise
+
 pub fn Store::profile_status(Self) -> @json.Json raise
 pub fn Store::put_device_build(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::put_model_stars(Self, @json.Json, @json.Json, @json.Json) -> Unit raise

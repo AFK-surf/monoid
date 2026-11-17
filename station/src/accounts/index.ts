@@ -99,7 +99,7 @@ export type CheckRequest = { runtime: Runtime; kind: AccessKind; key: string; vi
 export type CodexAccess = {
   rateLimits(profile: Profile): Promise<Json>;
   resetQuota(profile: Profile, key: string): Promise<Json>;
-  models(profile: Profile): Promise<{ models: string[]; efforts: Map<string, string[]>; defaults?: Map<string, string> }>;
+  models(profile: Profile): Promise<{ models: string[]; efforts: Map<string, string[]>; defaults?: Map<string, string>; ultrafastModels?: string[] }>;
   loginChanged?(profileId: string): Promise<void>;
 };
 
@@ -1283,12 +1283,14 @@ export class Accounts {
         if (codexSubscription && check.models === null) check.models = catalog.models;
         check.modelEfforts = { codex: Object.fromEntries(catalog.efforts) };
         if (catalog.defaults !== undefined) check.modelEffortDefaults = { codex: Object.fromEntries(catalog.defaults) };
+        if (catalog.ultrafastModels !== undefined) check.codexUltrafastModels = catalog.ultrafastModels;
       } catch (e) {
         // A temporary listing failure does not erase a saved selection in the clients.
         const previous = this.checks.get(id);
         if (previous) {
           if (previous.modelEfforts !== undefined) check.modelEfforts = previous.modelEfforts;
           if (previous.modelEffortDefaults !== undefined) check.modelEffortDefaults = previous.modelEffortDefaults;
+          if (previous.codexUltrafastModels !== undefined) check.codexUltrafastModels = previous.codexUltrafastModels;
           if (codexSubscription && check.models === null) check.models = previous.models;
         }
         check.detail = tr(lang, "station.profile.modelsStale", { detail: check.detail });
@@ -1355,6 +1357,7 @@ export class Accounts {
       check.models = previous.models;
       if (check.modelEfforts === undefined && previous.modelEfforts !== undefined) check.modelEfforts = previous.modelEfforts;
       if (check.modelEffortDefaults === undefined && previous.modelEffortDefaults !== undefined) check.modelEffortDefaults = previous.modelEffortDefaults;
+      if (check.codexUltrafastModels === undefined && previous.codexUltrafastModels !== undefined) check.codexUltrafastModels = previous.codexUltrafastModels;
       if (check.fusion === undefined && previous.fusion !== undefined) check.fusion = previous.fusion;
     }
     if (codexSubscription && previous?.codexRevoked) {
