@@ -55,8 +55,8 @@ export function moveLimit(limit: unknown): number {
   return Math.min(Math.max(typeof limit === "number" && Number.isInteger(limit) ? limit : MOVE_PAGE, 1), MOVE_SHOWN_MOST);
 }
 
-/// A station the things may go to, as its row offers it.
-export type MoveTarget = { station: string; name: string; free: string };
+/// Another station of the workspace, as its row offers it: `why` it cannot be chosen now and what makes it so ("" it can).
+export type MoveTarget = { station: string; name: string; free: string; why: string };
 
 /// What GET /move said (`raw`, the asked module's items as many as were read, `more` whether its list goes on) as the
 /// page draws it. `module`: the one whose items are open ("" none); `targets`: the workspace's other whole stations
@@ -226,6 +226,20 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     // (every module empty: the card says so in one line)
     nothing: modules.length > 0 && shown.length === 0 ? t("core-views.move.nothing") : "",
   };
+}
+
+/// Why another station of the workspace cannot be moved to now, with what makes it one ("" it can): it is offline; its
+/// overview not read yet; one from before moving (no `move` in it); moving switched off there (station features.ts
+/// `stationMoveOn`: off on the stable channel, or config.json's `move: false`).
+export function moveWhy(online: boolean, overview: J): string {
+  if (!online) return t("core-views.move.why.offline");
+  if (!isObject(overview)) return t("core-views.move.why.reading");
+  const move = overview.move;
+  if (!isObject(move)) return t("core-views.move.why.old");
+  if (move.offered === true) return "";
+  const updates: J[] = Array.isArray(overview.updates) ? overview.updates : [];
+  const own: J = updates.find((u) => u?.id === "station");
+  return own?.channel === "beta" ? t("core-views.move.why.off") : t("core-views.move.why.stable");
 }
 
 /// A station's room as its target row says it.
