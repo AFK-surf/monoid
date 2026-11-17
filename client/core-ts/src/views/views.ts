@@ -368,7 +368,7 @@ function profileRowsOf(shown: J): J {
 /// refillsOf), nothing else of it walked.
 function windowShown(w: J, c: present.Clock): J {
   const { resetsAt, ...rest } = w;
-  return { ...rest, refills: typeof resetsAt === "number" ? present.refillsOf(resetsAt, c) : null };
+  return { ...rest, ...present.rowRefillsOf(resetsAt, w.left, c.now) };
 }
 
 /// Where a row's chat came from, for one from a connect (`connect`): its mark's kind and its words (Slack · team ·

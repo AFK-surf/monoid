@@ -11,11 +11,6 @@ fn worded_tester(room : Double) -> @ui.Tester {
       { "label": "每月", "mark": "M", "left": 97.0, "level": "ok" },
     ],
   })
-  // (the catalog's words for it, as the app says them)
-  set_words(fn(key, args) {
-    let said = if key == "web-main.quota.figure" { "剩 {left}%" } else { key }
-    args.fold(init=said, fn(said, a) { said.replace_all(old="{" + a.0 + "}", new=a.1) })
-  })
   let t = @ui.Tester::new(
     fn(c) {
       begin(c) |> ignore
@@ -33,10 +28,8 @@ fn worded_tester(room : Double) -> @ui.Tester {
 test "an allowance's windows in words: one way for them all, the longest that fits, each chip whole" {
   // (a phone's row: 326 was what cut all three to 5 小时剩…, 每周剩余…, 每月剩余…, 2026-10-31)
   let ways = [
-    // (a name run on into what is left, 5 小时剩 62%: one line of words, chip_joined)
-    ["5 小时剩 62%", "每周剩 95%", "每月剩 97%"],
-    ["5 小时", "62%", "每周", "95%", "每月", "97%"],
-    ["5H", "62%", "W", "95%", "M", "97%"],
+    ["5h", "62%", "每周", "95%", "每月", "97%"],
+    ["5h", "62%", "W", "95%", "M", "97%"],
   ]
   let said = []
   for room in [600.0, 326.0, 240.0, 170.0] {
@@ -50,8 +43,7 @@ test "an allowance's windows in words: one way for them all, the longest that fi
   }
   // as much as fits: wide, every word of it; narrow, the marks
   assert_eq(said[0], 0)
-  assert_eq(said[3], 2)
-  set_words(fn(key, _) { key })
+  assert_eq(said[3], 1)
 }
 
 ///|
@@ -95,17 +87,17 @@ test "an account's windows and its models' own, five: where no line holds them t
     for room in [900.0, 420.0, 342.0, 300.0, 240.0, 180.0, 130.0] {
       let t = own_tester(room, worded)
       let shown = t.words().filter(fn(w) { w.5 > 0.5 })
-      // (the one of `words` it is said by, there once; or run on into what is left, 每周剩 19%: chip_joined)
+      // The long or short label appears exactly once.
       let at = fn(words : Array[String]) {
-        match shown.filter(fn(w) { words.iter().any(fn(x) { w.0 == x || w.0.has_prefix(x + "剩") }) }) {
+        match shown.filter(fn(w) { words.contains(w.0) }) {
           [w] => w
           found => @halt.saying("\{room}: one of \{Repr(words)}: \{Repr(found)} in \{Repr(shown.map(fn(w) { w.0 }))}")
         }
       }
       // every window said once, whole, within the line's room
       let week = at(["每周", "W"])
-      let fable = at(["每周 · Fable", "Fable"])
-      let sonnet = at(["每周 · Sonnet", "Sonnet"])
+      let fable = at(["每周 Fable", "Fable"])
+      let sonnet = at(["每周 Sonnet", "Sonnet"])
       assert_eq(t.squeeze_faults(), [], msg="\{worded} \{room}")
       assert_true(shown.iter().all(fn(w) { w.1 + w.3 <= room + 0.01 }), msg="\{worded} \{room}: past the line's end: \{Repr(shown)}")
       if fable.2 > week.2 {
@@ -124,7 +116,7 @@ test "an account's windows and its models' own, five: where no line holds them t
 }
 
 ///|
-test "multi-window model pools group each pool with a left group column and aligned short [5H] [W] capsules" {
+test "multi-window model pools group each pool with a left group column and aligned short [5h] [W] capsules" {
   let q = Json::object({
     "state": "ok",
     "windows": [
@@ -158,11 +150,11 @@ test "multi-window model pools group each pool with a left group column and alig
     let find_all = fn(mark : String) { shown.filter(fn(w) { w.0 == mark }) }
     let gemini = find_all("Gemini")[0]
     let claude_gpt = find_all("Claude / GPT")[0]
-    let fives = find_all("5H")
+    let fives = find_all("5h")
     let weeks = find_all("W")
     assert_eq(fives.length(), 2)
     assert_eq(weeks.length(), 2)
-    // Both 5H capsules align at the exact same X coordinate after the left group column
+    // Both 5h capsules align at the exact same X coordinate after the left group column
     assert_eq(fives[0].1, fives[1].1)
     assert_eq(gemini.2, fives[0].2)
     assert_eq(fives[0].2, weeks[0].2)
@@ -187,7 +179,7 @@ test "multi-window model pools group each pool with a left group column and alig
   let nshown = narrow.words().filter(fn(w) { w.5 > 0.5 })
   let nfind = fn(mark : String) { nshown.filter(fn(w) { w.0 == mark }) }
   let ng = nfind("Gemini")[0]
-  let nfives = nfind("5H")
+  let nfives = nfind("5h")
   let nweeks = nfind("W")
   assert_true(nfives[0].2 > ng.2)
   assert_eq(nfives[0].2, nweeks[0].2)
@@ -229,7 +221,7 @@ test "multi-window model pools group each pool with a left group column and alig
     let pgemini = pfind("Gemini")[0]
     let pclaude = pfind("Claude / GPT")[0]
     let pargon = pfind("Argon")[0]
-    let pfives = pfind("5H")
+    let pfives = pfind("5h")
     let pweeks = pfind("W")
     assert_eq(pfives.length(), 2)
     assert_eq(pweeks.length(), 3)
@@ -278,4 +270,106 @@ test "fill_chip_wide is the width a fill chip is laid out at: small and marked, 
       assert_eq(said[i], laid[0].w, msg="\{platform} \{Repr(chip)}")
     }
   }
+}
+
+///|
+test "spent windows show their own refill, including in marked and worded chips" {
+  let spent : Json = { "label": "每周", "mark": "W", "left": 0, "level": "red", "refillShort": "2d", "refills": "2 天后刷新" }
+  let live : Json = { "label": "5 小时", "mark": "5H", "left": 1, "level": "red", "refills": "42 分钟后刷新" }
+  let unknown : Json = { "mark": "M", "left": 0, "level": "red", "refills": Json::null() }
+  let q : Json = { "state": "ok", "windows": [live, spent, unknown] }
+  assert_eq(quota_chips_said(Some(q)), "5h 1% W 2d M 0%")
+  assert_eq(quota_worded(Some(spent), 1), ("每周", "2d"))
+  assert_eq(quota_worded(Some(spent), 2), ("W", "2d"))
+  assert_true(quota_is_refill(Some(spent)))
+  assert_false(quota_is_refill(Some(live)))
+  assert_false(quota_is_refill(Some(unknown)))
+}
+
+///|
+test "quota refill chips match fill_chip_wide and pass contrast and corner audits in light and dark" {
+  let cases : Array[(String, String, Bool, Bool, Bool)] = [
+    ("5h", "42m", false, true, true),
+    ("每周", "2d", false, true, true),
+    ("", "42m", true, true, true),
+    ("5h", "18m", true, true, true),
+    ("5h", "48%", false, true, false),
+  ]
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    for platform in [0, 2] {
+      let said : Array[Double] = cases.map(fn(_) { 0.0 })
+      let t = @ui.Tester::new(
+        fn(c) {
+          begin(c) |> ignore
+          c.with_theme(ui_theme(), fn() {
+            c.box(dir=@ui.Dir::Column, gap=8.0, fn() {
+              for i, item in cases {
+                let (mark, words, small, label_muted, refill) = item
+                said[i] = fill_chip_wide(c, mark, words, small~, label_muted~, refill~)
+                c.box(dir=@ui.Dir::Row, name="qchip-\{i}", fn() {
+                  fill_chip(c, if refill { 0 } else { 48 }, if refill { "red" } else { "ok" }, mark, words, small~, label_muted~, refill~)
+                })
+                |> ignore
+              }
+            })
+            |> ignore
+          })
+        },
+        w=640.0,
+        h=300.0,
+        platform~,
+        dark~,
+      )
+      t.draw()
+      let boxes = t.boxes()
+      for i, item in cases {
+        let holder = boxes.search_by(fn(b) { b.name == "qchip-\{i}" }).unwrap()
+        let laid = boxes.filter(fn(b) { b.parent == holder })
+        assert_eq(laid.length(), 1, msg="\{dark} \{platform} \{Repr(item)}")
+        assert_eq(said[i], laid[0].w, msg="\{dark} \{platform} \{Repr(item)}")
+      }
+      let faults = t.audit()
+      assert_eq(faults, [], msg="audit failed dark=\{dark} platform=\{platform}: \{Repr(faults)}")
+    }
+  }
+  set_dark(None)
+}
+
+///|
+test "quota_worded_node renders refill countdown icon and switches from full label to short mark when narrow" {
+  let q = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时", "mark": "5H", "left": 0.0, "level": "red", "refillShort": "42m", "refills": "42 分钟后刷新" },
+      { "label": "每周", "mark": "W", "left": 40.0, "level": "ok" },
+      { "label": "每周 · Fable", "mark": "Fable", "scope": "Fable", "left": 80.0, "level": "ok" },
+    ],
+  })
+  set_dark(Some(false))
+  @ui.set_tree_theme(ui_theme_now)
+  for room in [600.0, 200.0] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=640.0, h=200.0, platform=0)
+    @ui.set_view_app(fn(root) {
+      root.box(fn(w) {
+        w.width(Is(Some(room))) |> ignore
+        quota_worded_node(w, fn() { Some(q) })
+      })
+      |> ignore
+    })
+    t.draw()
+    let shown = t.words().filter(fn(w) { w.5 > 0.5 }).map(fn(w) { w.0 })
+    assert_true(shown.contains("5h"), msg="\{room}: \{Repr(shown)}")
+    assert_true(shown.contains("42m"), msg="\{room}: \{Repr(shown)}")
+    if room > 300.0 {
+      assert_true(shown.contains("每周"), msg="\{room}: \{Repr(shown)}")
+      assert_true(shown.contains("每周 Fable"), msg="\{room}: \{Repr(shown)}")
+    } else {
+      assert_true(shown.contains("W"), msg="\{room}: \{Repr(shown)}")
+      assert_true(shown.contains("Fable"), msg="\{room}: \{Repr(shown)}")
+    }
+    let faults = t.audit()
+    assert_eq(faults, [], msg="audit failed at \{room}: \{Repr(faults)}")
+  }
+  set_dark(None)
 }

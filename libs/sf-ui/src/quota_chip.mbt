@@ -18,20 +18,14 @@ pub fn has_quota(q : Json?) -> Bool {
 /// it shows none (has_quota).
 pub fn quota_chips_said(q : Json?) -> String {
   guard has_quota(q) && chip_field(q, "windows") is Some(Array(windows)) else { return "" }
-  windows.map(fn(w) { chip_str(Some(w), "mark") + " " + chip_left(Some(w)).to_string() + "%" }).join(" ")
+  windows.map(fn(w) { quota_mark(Some(w)) + " " + quota_figure(Some(w)) }).join(" ")
 }
 
 ///|
-/// An allowance's windows (QuotaChip each): a chip per
-/// window, what is left in it, filled as far as that, its mark before it where `marked` (the web's default; a chat's
-/// agents only with more than one), or `worded`, its name and what is left in words, as a machine's chips say theirs
-/// (每周剩 78%, as 内存剩 12.3 G: a profile's row, where a touch has no tip to say what W is); `small`, a lower line;
-/// `gap` apart; nothing while the core cannot say (`state` not ok) or there is no window.
-/// Worded, the line said one way for all its chips, the longest that fits the room it is given whole (Ctx::box one_of): a
-/// phone's row has not the room for 5 小时剩 62%, 每周剩 95% and 每月剩 97%, so they say 5 小时 62%, 每周 95%…, then
-/// 5H 62%, W 95%…, never one chip a way of its own nor one cut short. Where no line holds them (an account's windows
-/// and its models' own weeks, five: each was cut to …), the account's a line by their names and its models' own a line
-/// under it, each by its model, either going on in lines where it must (quota_chips_lines).
+/// Each window shows its percentage in a fluid fill capsule, or a dedicated refresh capsule
+/// with its short countdown (`42m`, `2d`) when spent.
+/// A worded row uses window names where they fit (5h, 每周, 每月) and short marks (5h, W, M)
+/// in tighter spaces. When a single line cannot hold them, model pools get their own rows.
 /// `lines` (not worded): on a line of its own, as wide as what holds it (under a row's words: a station's account),
 /// where the line has not the room for its chips they go on so too, by their marks.
 /// Each says over it while it is pointed at what is left of it and when it fills again; `key` names them where the same
@@ -78,7 +72,7 @@ pub fn quota_chips(
   }
   // (its ways, each shorter than the one before, the first that fits the line's room shown: Ctx::box one_of)
   c.box(style=quota_chips_line, one_of=true, fn() {
-    for form in 0..<3 {
+    for form in 1..<3 {
       c.box(style=quota_chips_row.then(@ui.style(gap=room(gap))), fn() {
         for w in windows {
           let (mark, words) = quota_worded(Some(w), form)
@@ -90,6 +84,8 @@ pub fn quota_chips(
             words,
             small~,
             key=key + "/" + chip_str(Some(w), "mark") + "/" + form.to_string(),
+            label_muted=true,
+            refill=quota_is_refill(Some(w)),
             said=quota_said(Some(w)),
           )
         }
@@ -116,7 +112,7 @@ fn quota_group_name(w : Json) -> String {
 /// A window's mark within a group `group`: when `group` is already shown as the line's group heading, strip the
 /// repeated `group + " "` prefix from the window's mark (`"Claude / GPT 5H"` -> `"5H"`).
 fn quota_part_mark(group : String, w : Json?) -> String {
-  let mark = chip_str(w, "mark")
+  let mark = quota_mark(w)
   let prefix = group + " "
   if group != "" && mark.has_prefix(prefix) {
     mark.clamped_view(start=prefix.length()).to_owned()
@@ -179,8 +175,8 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
 
 ///|
 /// An allowance's chips where no one line holds them (quota_chips' last way): the account's windows a line, each said
-/// `account`'s way (quota_worded's: 1 its name and what is left, 5 小时 62%; 2 by its mark, where the line before was),
-/// each multi-window model pool a line of its own with its group column on the left and short `[5H %] [W %]` capsules
+/// `account`'s way (quota_worded's: 1 its name and its figure, 每周 │ 62%; 2 by its mark, where the line before was),
+/// each multi-window model pool a line of its own with its group column on the left and short `[5h │ %] [W │ %]` capsules
 /// on the right, and what single models have to themselves (`scope`) a line under it, each by its model (Fable 46%: a
 /// model's name says whose it is, where W says little without a tip); a line going on in lines where even it has not
 /// the room, every chip whole.
@@ -211,6 +207,8 @@ fn quota_chips_lines(c : @ui.Ctx, windows : Array[Json], small : Bool, gap : Dou
               words,
               small~,
               key=key + "/" + chip_str(Some(w), "mark") + "/lines",
+              label_muted=true,
+              refill=quota_is_refill(Some(w)),
               said=quota_said(Some(w)),
             )
           }
@@ -251,7 +249,7 @@ let nav_quota_group : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, 
 /// 对齐」, after rows of one list started some at the mark and some at the text). It keeps every window as a standard
 /// marked capsule (`[mark %]`): all in one line when the provider's widest row fits, or wrapped into logical lines
 /// (`quota_parts`) when a provider's windows are too wide or numerous for one line; multi-window model pools (`Gemini`,
-/// `Claude / GPT`) align their pool name in a left column and their short `[5H %] [W %]` capsules on the right (the
+/// `Claude / GPT`) align their pool name in a left column and their short `[5h │ %] [W │ %]` capsules on the right (the
 /// user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同供应商的账号用同一种就行」「感觉极端情况就应该多行」「感觉这
 /// 里还是要分组」「方案 A：左组名列 + 右短胶囊对齐」). Every way stands from the start, its chips the same gap apart, never
 /// spread to the row's ends (the user, 2026-11-10: 「怎么一会儿左对齐一会儿两端对齐」). Its row gives it the whole
@@ -280,15 +278,16 @@ pub fn nav_quota_chips(
   })
   let pad_y = dmax(0.0, (theme().chat_list.meta_h - fill_chip_small_h) / 2.0)
   let part_chip = fn(group : String, w : Json, chip_key : String) {
-    let left = chip_left(Some(w))
     fill_chip(
       c,
-      left,
+      chip_left(Some(w)),
       chip_str(Some(w), "level"),
       quota_part_mark(group, Some(w)),
-      left.to_string() + "%",
+      quota_figure(Some(w)),
       small=true,
       key=chip_key + "/" + chip_str(Some(w), "mark"),
+      label_muted=true,
+      refill=quota_is_refill(Some(w)),
       said=quota_said(Some(w)),
     )
   }
@@ -377,7 +376,7 @@ pub fn nav_quota_line(c : @ui.Ctx, q : Json?) -> Double {
     return parts.fold(init=0.0, fn(most, p) {
       let mut sum = if p.0 == "" { 0.0 } else { label_w + @ui.Space::S1_5.px() }
       for i, w in p.1 {
-        sum += fill_chip_wide(c, quota_part_mark(p.0, Some(w)), chip_left(Some(w)).to_string() + "%", small=true) +
+        sum += fill_chip_wide(c, quota_part_mark(p.0, Some(w)), quota_figure(Some(w)), small=true, label_muted=true, refill=quota_is_refill(Some(w))) +
           (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
       }
       dmax(most, sum)
@@ -385,26 +384,60 @@ pub fn nav_quota_line(c : @ui.Ctx, q : Json?) -> Double {
   }
   let mut sum = 0.0
   for i, w in windows {
-    sum += fill_chip_wide(c, chip_str(Some(w), "mark"), chip_left(Some(w)).to_string() + "%", small=true) +
+    sum += fill_chip_wide(c, quota_mark(Some(w)), quota_figure(Some(w)), small=true, label_muted=true, refill=quota_is_refill(Some(w))) +
       (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
   }
   sum
 }
 
 ///|
-/// The ways a worded window says itself, each shorter than the one before: its name and what is left (每周剩 95%), its
-/// name and the figure (每周 95%), its mark and the figure (W 95%).
+/// Use the same hour and day units on both sides of a quota chip. In a scoped
+/// mark only its final duration changes (for example, "Gemini 5H").
+pub fn quota_mark(w : Json?) -> String {
+  let mark = chip_str(w, "mark")
+  if !mark.has_suffix("H") && !mark.has_suffix("D") {
+    return mark
+  }
+  let start = mark.rev_find(" ").unwrap_or(-1) + 1
+  let end = mark.length() - 1
+  if start < end && mark.clamped_view(start~, end~).iter().all(fn(c) { c.is_ascii_digit() }) {
+    mark.clamped_view(end~).to_owned() + (if mark.has_suffix("H") { "h" } else { "d" })
+  } else {
+    mark
+  }
+}
+
+///|
+/// A quota chip shows when an empty window refills, if known.
+pub fn quota_figure(w : Json?) -> String {
+  let left = chip_left(w)
+  if left == 0 {
+    let refill = chip_str(w, "refillShort")
+    if refill != "" {
+      return refill
+    }
+  }
+  left.to_string() + "%"
+}
+
+///|
+/// Whether `w` is rendered in its dedicated refill-countdown capsule state.
+pub fn quota_is_refill(w : Json?) -> Bool {
+  chip_left(w) == 0 && chip_str(w, "refillShort") != ""
+}
+
+///|
+/// Numeric durations always use the compact mark. Other windows use their name while it fits.
 fn quota_worded(w : Json?, form : Int) -> (String, String) {
-  let left = chip_left(w).to_string()
-  let name = match chip_str(w, "label") {
-    "" => chip_str(w, "mark")
-    label => label
+  let mark = quota_mark(w)
+  let label = chip_str(w, "label")
+  let typed = mark != chip_str(w, "mark")
+  let name = if form < 2 && !typed && label != "" {
+    label.replace(old=" · ", new=" ")
+  } else {
+    mark
   }
-  match form {
-    0 => (name, t("web-main.quota.figure", args=[("left", left)]))
-    1 => (name, left + "%")
-    _ => (chip_str(w, "mark"), left + "%")
-  }
+  (name, quota_figure(w))
 }
 
 ///|
@@ -421,16 +454,17 @@ pub fn quota_chip(
   key? : String = "quota",
   said? : String,
 ) -> Unit {
-  let left = chip_left(w)
   fill_chip(
     c,
-    left,
+    chip_left(w),
     chip_str(w, "level"),
-    if marked { chip_str(w, "mark") } else { "" },
-    left.to_string() + "%",
+    if marked { quota_mark(w) } else { "" },
+    quota_figure(w),
     small~,
     compact~,
     key=key + "/" + chip_str(w, "mark"),
+    label_muted=true,
+    refill=quota_is_refill(w),
     said=said.unwrap_or(quota_said(w)),
   )
 }

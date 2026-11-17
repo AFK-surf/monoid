@@ -81,11 +81,12 @@ export function attention(overview: J, session: J, now: number): J[] {
         const left = format.round(Math.max(left0, 0));
         const resets = get(w, "resetsAt");
         const until = typeof resets === "number" && Number.isInteger(resets) ? resets : null;
+        const { refills, ...figure } = present.refillsOf(until, left, now);
         out.push({
           kind: "quota",
           text: t("core-views.attention.quota_left", { label, left }),
-          more: until !== null ? format.refillsIn(until, now) : null,
-          quota: { left, mark: marks[i]![0], level: left <= 10 ? "red" : "amber", until },
+          more: refills,
+          quota: { left, mark: marks[i]![0], level: left <= 10 ? "red" : "amber", until, ...figure },
         });
       }
     }

@@ -772,6 +772,7 @@ export const SHAPES: Record<string, Shape> = {
     ["left", "i64", { client: "I54" }],
     ["level", "Level"],
     ["refills", opt("String")],
+    ["refillShort", opt("String")],
     ["time", opt(map("Stamp")), { doc: "Its times in words, by field (`createdAt`, `lastActiveAt`, …)." }],
   ], { doc: "A quota window, as drawn: its mark (5H, W; its model where it is one model's: Fable), what is left, how full (ok | amber | red), when it refills in words." }),
   QuotaCredits: struct([
@@ -3106,6 +3107,7 @@ export const SHAPES: Record<string, Shape> = {
     ["left", "i64", { client: "I54" }],
     ["level", "Level"],
     ["refills", opt("String")],
+    ["refillShort", opt("String")],
   ], { doc: "A window of an allowance as its chip draws it, its tip saying what is left and when it refills (QuotaWindow's)." }),
   PickView: struct([
     ["fastAvailable", opt("bool")],
@@ -3416,6 +3418,7 @@ export const SHAPES: Record<string, Shape> = {
     ["mark", "String"],
     ["level", "Level"],
     ["until", opt("i64"), { client: opt("I54") }],
+    ["refillShort", opt("String")],
   ], { doc: "A window of a session's account running out, as its ring draws it." }),
   Attention: struct([
     ["kind", "String"],

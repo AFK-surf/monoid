@@ -1298,23 +1298,28 @@ pub fn fixture_overview() -> Json {
 }
 
 ///|
+fn fx_window(label : String, mark : String, left : Int, refills : String, scope : String, short? : String) -> Json {
+  let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
+  let fields : Array[(String, Json)] = [
+    ("label", str(label)),
+    ("usedPercent", Json::number((100 - left).to_double())),
+    ("mark", str(mark)),
+    ("left", Json::number(left.to_double())),
+    ("level", str(level)),
+    ("refills", str(refills)),
+  ]
+  if short is Some(s) {
+    fields.push(("refillShort", str(s)))
+  }
+  if scope != "" {
+    fields.push(("scope", str(scope)))
+  }
+  obj(fields)
+}
+
+///|
 /// Realistic multi-account pool across four provider groups for the profiles overview designs.
 fn fx_summary_profiles() -> Array[Json] {
-  let win = fn(label : String, mark : String, left : Int, refills : String, scope : String) -> Json {
-    let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
-    let fields : Array[(String, Json)] = [
-      ("label", str(label)),
-      ("usedPercent", Json::number((100 - left).to_double())),
-      ("mark", str(mark)),
-      ("left", Json::number(left.to_double())),
-      ("level", str(level)),
-      ("refills", str(refills)),
-    ]
-    if scope != "" {
-      fields.push(("scope", str(scope)))
-    }
-    obj(fields)
-  }
   let ok_q = fn(ws : Array[Json]) -> Json {
     obj([("state", str("ok")), ("windows", Json::array(ws)), ("checkedAt", Json::number(0.0)), ("time", obj([("checkedAt", stamp_of("2 分钟前"))]))])
   }
@@ -1335,7 +1340,7 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q_reset(
-          [win("5 小时", "5H", 48, "2 小时后恢复", ""), win("每周", "W", 28, "5 天后恢复", ""), win("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
+          [fx_window("5 小时", "5H", 48, "2 小时后恢复", ""), fx_window("每周", "W", 28, "5 天后恢复", ""), fx_window("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
           1,
           "剩余 1 次重置 · 28 小时后过期",
         ),
@@ -1344,17 +1349,17 @@ fn fx_summary_profiles() -> Array[Json] {
     fx_profile("cc2", "afkdev1@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("afkdev1@proton.me")),
       ("planText", str("Max 20x")),
-      ("quota", ok_q([win("5 小时", "5H", 36, "3 小时后恢复", ""), win("每周", "W", 22, "5 天后恢复", ""), win("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 36, "3 小时后恢复", ""), fx_window("每周", "W", 22, "5 天后恢复", ""), fx_window("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
     ]),
     fx_profile("cc3", "afkdev2@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("afkdev2@proton.me")),
       ("planText", str("Max 5x")),
-      ("quota", ok_q([win("5 小时", "5H", 0, "42 分钟后恢复", ""), win("每周", "W", 40, "4 天后恢复", ""), win("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 0, "42 分钟后恢复", "", short="42m"), fx_window("每周", "W", 40, "4 天后恢复", ""), fx_window("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
     ]),
     fx_profile("cc4", "cuesurf4@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
       ("email", str("cuesurf4@proton.me")),
       ("planText", str("Max 20x")),
-      ("quota", ok_q([win("每周", "W", 0, "2 天后恢复", ""), win("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
+      ("quota", ok_q([fx_window("每周", "W", 0, "2 天后恢复", "", short="2d"), fx_window("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
     ]),
     fx_profile("cc5", "cuesurf2@proton.me", "subscription", "red", "需要登录", "claude", "Claude 订阅", [
       ("email", str("cuesurf2@proton.me")),
@@ -1365,17 +1370,17 @@ fn fx_summary_profiles() -> Array[Json] {
     // ChatGPT 订阅 (3): comfortable pace, and jiachen@cue.surf resets in 14h with 84% weekly quota untouched
     fx_profile("cx", "ChatGPT 团队", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("planText", str("Pro 200")),
-      ("quota", ok_q([win("5 小时", "5H", 82, "3 小时后恢复", ""), win("每周", "W", 68, "3 天后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 82, "3 小时后恢复", ""), fx_window("每周", "W", 68, "3 天后恢复", "")])),
     ]),
     fx_profile("cx2", "jiachen@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("email", str("jiachen@cue.surf")),
       ("planText", str("Pro 200")),
-      ("quota", ok_q([win("5 小时", "5H", 92, "4 小时后恢复", ""), win("每周", "W", 84, "14 小时后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 92, "4 小时后恢复", ""), fx_window("每周", "W", 84, "14 小时后恢复", "")])),
     ]),
     fx_profile("cx3", "yangjinfei@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
       ("email", str("yangjinfei@cue.surf")),
       ("planText", str("Plus")),
-      ("quota", ok_q([win("5 小时", "5H", 100, "5 小时后恢复", ""), win("每周", "W", 0, "2 天后恢复", "")])),
+      ("quota", ok_q([fx_window("5 小时", "5H", 100, "5 小时后恢复", ""), fx_window("每周", "W", 0, "2 天后恢复", "", short="2d")])),
     ]),
     // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools
     fx_profile("ag1", "zover.v@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
@@ -1385,9 +1390,9 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          win("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
-          win("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
-          win("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
+          fx_window("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),
@@ -1398,9 +1403,9 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          win("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
-          win("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
-          win("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
+          fx_window("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),

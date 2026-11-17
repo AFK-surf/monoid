@@ -776,6 +776,7 @@ export interface QuotaWindow {
 	left: number;
 	level: Level;
 	refills?: string;
+	refillShort?: string;
 	/** Its times in words, by field (`createdAt`, `lastActiveAt`, …). */
 	time?: Record<string, Stamp>;
 }
@@ -1066,6 +1067,7 @@ export interface PickQuotaWindow {
 	left: number;
 	level: Level;
 	refills?: string;
+	refillShort?: string;
 }
 
 /** A moment as a page says it: 3 分钟前. (A Stamp's other parts no page of a profile reads.) */

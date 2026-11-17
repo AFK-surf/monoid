@@ -130,7 +130,7 @@ let quota_fields : Array[String] = ["state", "windows", "detail", "creditsText",
 
 ///|
 // kept across runs: a table, never written
-let quota_window_fields : Array[String] = ["label", "scope", "mark", "left", "level", "refills"]
+let quota_window_fields : Array[String] = ["label", "scope", "mark", "left", "level", "refills", "refillShort"]
 
 ///|
 /// Allowance `q` as a profile's row, chips and page are sent it (ProfileQuota): its windows as their chips draw them,

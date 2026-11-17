@@ -15,6 +15,8 @@ pub fn fill_chip_node(
   mark : () -> String,
   words : () -> String,
   small? : Bool = false,
+  label_muted? : Bool = false,
+  refill? : () -> Bool,
   said? : () -> String,
   tips? : TipLayer,
   tips_within? : Bool = false,
@@ -31,6 +33,14 @@ pub fn fill_chip_node(
       f
     }
   }
+  let is_refill = match refill {
+    Some(f) => {
+      let sig = @signals.computed(fn(_) { f() })
+      fn() { sig.get() }
+    }
+    None => fn() { false }
+  }
+  let icon_sz = if small { 9.0 } else { 10.5 }
   let chip = parent.box(made_for=loc, fn(b) {
     // (as high as its words' line at the system's size of words where that is higher than the chip: at 1.3 a small
     // chip's 16 held words of 20, over the line above and below it, a station's row in 选择运行的 station, main
@@ -47,17 +57,22 @@ pub fn fill_chip_node(
       f.box(fn(x) {
         style_node(x, fn() { chip_fill_part })
         x
-        .grow(By(fn() { part().to_double() }))
+        .grow(By(fn() { if is_refill() { 100.0 } else { part().to_double() } }))
         .basis(Is(Some(0.0)))
         .ground(By(fn() {
           let t = theme()
-          let lv = level()
-          if lv == "amber" || lv == "red" {
-            alpha(level_color(lv), chip_fill_share)
-          } else if lv == "progress" {
-            alpha(t.p.accent_text, chip_fill_share)
+          if is_refill() {
+            over(t.p.card, t.p.red_bg)
           } else {
-            alpha(t.p.muted, chip_fill_share)
+            let lv = level()
+            let tint = if lv == "amber" || lv == "red" {
+              level_color(lv)
+            } else if lv == "progress" {
+              t.p.accent_text
+            } else {
+              t.p.muted
+            }
+            alpha(tint, chip_fill_share)
           }
         }))
         |> ignore
@@ -65,31 +80,56 @@ pub fn fill_chip_node(
       |> ignore
       f.box(fn(x) {
         style_node(x, fn() { chip_fill_part })
-        x.grow(By(fn() { (100 - part()).to_double() })).basis(Is(Some(0.0))) |> ignore
+        x.grow(By(fn() { if is_refill() { 0.0 } else { (100 - part()).to_double() } })).basis(Is(Some(0.0))) |> ignore
       })
       |> ignore
     })
     |> ignore
     b.box(fn(w) {
       style_node(w, fn() {
-        let s = if small { chip_words_small } else { chip_words }
-        if mark() == "" || chip_joined(mark(), words()) {
-          s.then(chip_joined_gap)
+        if is_refill() {
+          if small {
+            if mark() == "" { chip_refill_words_small_unmarked } else { chip_refill_words_small }
+          } else if mark() == "" {
+            chip_refill_words_unmarked
+          } else {
+            chip_refill_words
+          }
         } else {
-          s
+          let s = if small { chip_words_small } else { chip_words }
+          if mark() == "" || (!label_muted && chip_joined(mark(), words())) {
+            s.then(chip_joined_gap)
+          } else {
+            s
+          }
         }
       })
       // (its mark made with it, none where it says none: a chip whose mark comes is the same chip, never one making its
       // way in across its words)
       // (a mark run on into its words, 磁盘剩 420 G, one line of words, never two touching)
-      let joined = fn() { chip_joined(mark(), words()) }
-      let k = words_node(w, fn() { if joined() { "" } else { mark() } }, fn() { chip_text })
-      let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() { chip_text })
+      let joined = fn() { !is_refill() && !label_muted && chip_joined(mark(), words()) }
+      let k = words_node(w, fn() { if joined() { "" } else { mark() } }, fn() {
+        if is_refill() { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
+      })
+      match refill {
+        Some(_) => {
+          let ic = icon_node(w, "refresh", icon_sz, By(fn() { theme().p.red }))
+          ic.laid_nowhere(By(fn() { !is_refill() })) |> ignore
+          if squeezes {
+            ic.shrink(Is(0.0)) |> ignore
+          }
+        }
+        None => ()
+      }
+      let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() {
+        if is_refill() { chip_refill_text } else { chip_text }
+      })
       // (squeezed where it may be: its figure cut short with an ellipsis, as the old line's chips kept to the last are;
       // else whole, its mark and figure never squeezed over each other, so a line short of the room for it gives it
       // up whole: View::drops)
       if squeezes {
         w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        k.shrink(Is(0.0)) |> ignore
         f.shrink(Is(1.0)).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
       } else {
         w.shrink(Is(0.0)) |> ignore
@@ -139,9 +179,11 @@ pub fn quota_chips_node(
           c,
           fn() { chip_left(w()) },
           fn() { chip_str(w(), "level") },
-          fn() { if marked { chip_str(w(), "mark") } else { "" } },
-          fn() { chip_left(w()).to_string() + "%" },
+          fn() { if marked { quota_mark(w()) } else { "" } },
+          fn() { quota_figure(w()) },
           small~,
+          label_muted=true,
+          refill=fn() { quota_is_refill(w()) },
           said=fn() { quota_said(w()) },
           tips?,
           tips_within~,
@@ -373,12 +415,8 @@ let chip_kept : Ref[WordsBoxKept?] = Ref(None)
 let chip_small_kept : Ref[WordsBoxKept?] = Ref(None)
 
 ///|
-/// An allowance's windows worded (quota_chips' `worded`, as a node) in `parent`, `q` as the core says it now: each
-/// window's name and what is left in words, as a machine's chips say theirs (每周剩 78%: a profile's row, where a touch
-/// has no tip to say what W is), the line said one way for all its chips, the longest its room holds whole (by that
-/// room: View::by_room), 5 小时剩 62%, then 5 小时 62%, then 5H 62%, never one chip a way of its own nor one cut short;
-/// `gap` apart; nothing while the core cannot say or there is no window. Each says what is left of it and when it fills
-/// again over it while it is pointed at, in `tips`.
+/// Window names and figures in one row when they fit. Use compact marks and wrap as needed.
+/// Pointing at a chip shows its full quota and refill description.
 #callsite(autofill(loc))
 pub fn quota_worded_node(
   parent : @view.View,
@@ -398,21 +436,27 @@ pub fn quota_worded_node(
       // (how wide a line of its chips said `form`'s way stands, `gap` apart: each chip its words' room and theirs)
       let wide = fn(form : Int) {
         let look = @ui.style_words(chip_text)
+        let label_look = @ui.style_words(chip_label_text)
         let size = node_sp(held, look.size)
-        let across = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+        let fig_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+        let mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=label_look.weight) } }
         let side = @ui.Space::S2.px()
         let mut used = 0.0
         for i, w in windows() {
           let (mark, words) = quota_worded(Some(w), form)
-          let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
-          used = used + (if i > 0 { gap } else { 0.0 }) + 2.0 * side + across(mark) + between + across(words)
+          let refill = quota_is_refill(Some(w))
+          let chip_w = if refill {
+            2.0 * side + (if mark == "" { 0.0 } else { mark_w(mark) + 4.0 }) + 10.5 + 4.0 + fig_w(words)
+          } else {
+            let between = if mark == "" { 0.0 } else { @ui.Space::S1_25.px() }
+            2.0 * side + mark_w(mark) + between + fig_w(words)
+          }
+          used = used + (if i > 0 { gap } else { 0.0 }) + chip_w
         }
         used
       }
       let form = fn() {
-        if wide(0) <= given.width() + 0.01 {
-          0
-        } else if wide(1) <= given.width() + 0.01 {
+        if wide(1) <= given.width() + 0.01 {
           1
         } else {
           2
@@ -429,7 +473,9 @@ pub fn quota_worded_node(
             fn() { chip_left(w()) },
             fn() { chip_str(w(), "level") },
             fn() { quota_worded(w(), form()).0 },
-            fn() { quota_worded(w(), form()).1 },
+            fn() { quota_figure(w()) },
+            label_muted=true,
+            refill=fn() { quota_is_refill(w()) },
             said=fn() { quota_said(w()) },
             tips?,
           )
@@ -459,7 +505,7 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
     return parts.fold(init=0.0, fn(most, p) {
       let mut sum = if p.0 == "" { 0.0 } else { label_w + @ui.Space::S1_5.px() }
       for i, w in p.1 {
-        sum += chip(quota_part_mark(p.0, Some(w)), chip_left(Some(w)).to_string() + "%") +
+        sum += chip(quota_part_mark(p.0, Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) +
           (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
       }
       dmax(most, sum)
@@ -467,7 +513,7 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
   }
   let mut sum = 0.0
   for i, w in windows {
-    sum += chip(chip_str(Some(w), "mark"), chip_left(Some(w)).to_string() + "%") +
+    sum += chip(quota_mark(Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) +
       (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
   }
   sum
@@ -475,15 +521,25 @@ pub fn nav_quota_line_node(v : @view.View, q : Json?) -> Double {
 
 ///|
 /// How wide a small chip of `mark` and `words` is in node `v`'s tree (fill_chip_node's: its words' room and theirs, its
-/// mark and figure 5 apart where they do not read as one phrase).
-fn nav_quota_chip_w(v : @view.View) -> (String, String) -> Double {
+/// mark and figure 5 apart normally or separated by the refresh icon when spent).
+fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
   let look = @ui.style_words(chip_text)
+  let label_look = @ui.style_words(chip_label_text)
+  let refill_label_look = @ui.style_words(chip_refill_label_text)
   let size = node_sp(v, look.size)
-  let across = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
-  fn(mark, words) {
+  let fig_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
+  let mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=label_look.weight) } }
+  let refill_mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=refill_label_look.weight) } }
+  fn(mark, words, refill) {
     let side = @ui.Space::S1_25.px()
-    let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
-    (2.0 * side + across(mark) + between + across(words)).ceil()
+    let gap = @ui.Space::S1.px()
+    let w = if refill {
+      2.0 * side + (if mark == "" { 0.0 } else { refill_mark_w(mark) + gap }) + 9.0 + gap + fig_w(words)
+    } else {
+      let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
+      2.0 * side + mark_w(mark) + between + fig_w(words)
+    }
+    w.ceil()
   }
 }
 
@@ -497,7 +553,7 @@ pub fn nav_quota_room_node(v : @view.View, q : Json?) -> (Double, Array[Double])
     _ => []
   }
   let chip = nav_quota_chip_w(v)
-  (nav_quota_line_node(v, q), windows.map(fn(w) { chip(chip_str(Some(w), "mark"), chip_left(Some(w)).to_string() + "%") }))
+  (nav_quota_line_node(v, q), windows.map(fn(w) { chip(quota_mark(Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) }))
 }
 
 ///|
@@ -569,8 +625,10 @@ pub fn nav_quota_chips_node(
         fn() { chip_left(w()) },
         fn() { chip_str(w(), "level") },
         fn() { quota_part_mark(group(), w()) },
-        fn() { chip_left(w()).to_string() + "%" },
+        fn() { quota_figure(w()) },
         small=true,
+        label_muted=true,
+        refill=fn() { quota_is_refill(w()) },
         said=fn() { quota_said(w()) },
         tips?,
       )

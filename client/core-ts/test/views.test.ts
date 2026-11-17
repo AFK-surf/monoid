@@ -765,7 +765,7 @@ test("a_models_own_window_is_said_of_that_model_alone", () => {
   const spent = Object.fromEntries(models(ov, 0).map((m: J) => [m.model, m.spent?.until ?? null]));
   assert.deepEqual(spent, { "claude-fable-5-1": 9000, "claude-opus-5-5": null });
   assert.deepEqual(attention(ov, { profile: "a", model: "claude-opus-5-5" }, 0), []);
-  assert.deepEqual(attention(ov, { profile: "a", model: "claude-fable-5-1" }, 0), [{ kind: "quota", text: "每周 · Fable剩余 0%", more: "即将刷新", quota: { left: 0, mark: "Fable", level: "red", until: 9000 } }]);
+  assert.deepEqual(attention(ov, { profile: "a", model: "claude-fable-5-1" }, 0), [{ kind: "quota", text: "每周 · Fable剩余 0%", more: "即将刷新", quota: { left: 0, mark: "Fable", level: "red", until: 9000, refillShort: "0m" } }]);
   const agyWin = [
     { label: "5 小时 · Gemini", usedPercent: 10, resetsAt: 9000, scope: "gemini" },
     { label: "每周 · Gemini", usedPercent: 20, resetsAt: 9000, scope: "gemini" },

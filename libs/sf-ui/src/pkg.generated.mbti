@@ -631,17 +631,17 @@ pub let files_gap : @ui.Space
 
 pub let files_row_end : @ui.Space
 
-pub fn fill_chip(@ui.Ctx, Int32, String, String, String, small? : Bool, compact? : Bool, drop? : Int32, keep? : Bool, key? : String, said? : String) -> Unit
+pub fn fill_chip(@ui.Ctx, Int32, String, String, String, small? : Bool, compact? : Bool, label_muted? : Bool, refill? : Bool, drop? : Int32, keep? : Bool, key? : String, said? : String) -> Unit
 
 pub let fill_chip_corner : Double
 
 pub let fill_chip_h : Double
 
-pub fn fill_chip_node(@view.View, () -> Int32, () -> String, () -> String, () -> String, small? : Bool, said? : () -> String, tips? : TipLayer, squeezes? : Bool) -> @view.View
+pub fn fill_chip_node(@view.View, () -> Int32, () -> String, () -> String, () -> String, small? : Bool, label_muted? : Bool, refill? : () -> Bool, said? : () -> String, tips? : TipLayer, squeezes? : Bool) -> @view.View
 
 pub let fill_chip_small_h : Double
 
-pub fn fill_chip_wide(@ui.Ctx, String, String, small? : Bool, compact? : Bool) -> Double
+pub fn fill_chip_wide(@ui.Ctx, String, String, small? : Bool, compact? : Bool, label_muted? : Bool, refill? : Bool) -> Double
 
 pub fn find_passage(String, String) -> (Int32, Int32)?
 
@@ -1719,7 +1719,13 @@ pub fn quota_chips(@ui.Ctx, @json.Json?, small? : Bool, marked? : Bool, worded? 
 
 pub fn quota_chips_node(@view.View, () -> @json.Json?, small? : Bool, marked? : Bool, gap? : Double, tips? : TipLayer) -> Unit
 
+pub fn quota_figure(@json.Json?) -> String
+
+pub fn quota_is_refill(@json.Json?) -> Bool
+
 pub fn quota_lines_node(@view.View, () -> @json.Json?, small? : Bool, gap? : Double, in_row? : Bool) -> Unit
+
+pub fn quota_mark(@json.Json?) -> String
 
 pub fn quota_said(@json.Json?) -> String
 

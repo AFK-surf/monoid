@@ -38,6 +38,8 @@ pub fn quota_lines_node(
         fn() { quota_worded(w(), form).0 },
         fn() { quota_worded(w(), form).1 },
         small~,
+        label_muted=true,
+        refill=fn() { quota_is_refill(w()) },
         said=fn() { quota_said(w()) },
         tips?,
       )

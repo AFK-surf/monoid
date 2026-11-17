@@ -72,10 +72,10 @@ test "two allowance windows keep their marks beside their figures when they fit"
   t.draw()
   let runs = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
   let shown = runs.map(fn(r) { r.text })
-  for words in ["5H", "62%", "W", "19%"] {
+  for words in ["5h", "62%", "W", "19%"] {
     assert_true(shown.contains(words), msg="\{words}: \{Repr(shown)}")
   }
-  let chip_words = runs.filter(fn(r) { ["5H", "62%", "W", "19%"].contains(r.text) })
+  let chip_words = runs.filter(fn(r) { ["5h", "62%", "W", "19%"].contains(r.text) })
   assert_true(chip_words.iter().all(fn(r) { r.top == chip_words[0].top }), msg="\{Repr(chip_words)}")
   assert_eq(t.squeeze_faults(), [])
 }
@@ -89,7 +89,7 @@ test "three full allowance windows still fit in the narrowest sidebar" {
     let runs = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
     let shown = runs.map(fn(r) { r.text })
     assert_eq(shown.filter(fn(s) { s == "100%" }).length(), 3, msg="\{platform}, \{digits}: \{Repr(shown)}")
-    let marks = ["5H", "W", "M"]
+    let marks = ["5h", "W", "M"]
     for mark in marks {
       assert_true(shown.contains(mark), msg="\{platform}, \{digits}: \{Repr(shown)}")
     }
@@ -113,7 +113,7 @@ test "a model's own week, marked by the model, still fits beside the account's w
     t.draw()
     let runs = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
     let shown = runs.map(fn(r) { r.text })
-    let marks = ["5H", "W", "Fable"]
+    let marks = ["5h", "W", "Fable"]
     for mark in marks {
       assert_eq(shown.filter(fn(s) { s == mark }).length(), 1, msg="\{platform}, \{digits}: \{mark}: \{Repr(shown)}")
     }
@@ -135,7 +135,7 @@ test "four allowance windows stay readable in the narrowest sidebar" {
   t.draw()
   let runs = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
   let shown = runs.map(fn(r) { r.text })
-  for mark in ["5H", "W", "M", "2D"] {
+  for mark in ["5h", "W", "M", "2d"] {
     assert_true(shown.contains(mark), msg="\{mark}: \{Repr(shown)}")
   }
   assert_eq(shown.filter(fn(s) { s == "100%" }).length(), 4, msg="\{Repr(shown)}")
@@ -153,14 +153,14 @@ test "a profile's offline state and its three allowance windows each have room t
     let sidebar_runs = fn() { t.text_runs().filter(fn(r) { r.x0 < 300.0 }) }
     let whole = fn(phase : String) raise {
       let shown = sidebar_runs().map(fn(r) { r.text })
-      for words in ["5H", "62%", "W", "19%", "M", "97%"] {
+      for words in ["5h", "62%", "W", "19%", "M", "97%"] {
         assert_true(shown.contains(words), msg="\{platform}: \{phase}: \{words}: \{Repr(shown)}")
       }
     }
     whole("offline")
     // The state is not beside the figures: even a long station name cannot squeeze the three chips.
     let state = sidebar_runs().filter(fn(r) { r.text == "Willow 离线" })[0]
-    let first = sidebar_runs().filter(fn(r) { r.text == "5H" })[0]
+    let first = sidebar_runs().filter(fn(r) { r.text == "5h" })[0]
     assert_true(first.top >= state.bottom, msg="state \{Repr(state)}, first chip \{Repr(first)}")
     assert_eq(t.squeeze_faults(), [])
     // Coming back takes the state line away: where the account can be used is its page's, not the row's (the user,
@@ -171,7 +171,7 @@ test "a profile's offline state and its three allowance windows each have room t
     assert_true(sidebar_runs().iter().all(fn(r) { r.text != "Willow 可用" && r.text != "Willow 离线" }))
     whole("online")
     let title = sidebar_runs().filter(fn(r) { r.text == "lin@example.com" })[0]
-    let up = sidebar_runs().filter(fn(r) { r.text == "5H" })[0]
+    let up = sidebar_runs().filter(fn(r) { r.text == "5h" })[0]
     assert_true(up.top < first.top && up.top >= title.bottom, msg="title \{Repr(title)}, first chip \{Repr(up)}")
     // The person's narrowest sidebar still keeps all three windows whole.
     @sfdesk.wide.side_w.set(@sfdesk.side_min)
@@ -438,18 +438,18 @@ test "allowance layout is chosen per provider: a four-window vendor does not shr
   // At the default sidebar width, an Antigravity CLI row with four wide windows wraps its two model pools onto two
   // lines, while the five Claude rows (both three-window and two-window) and ChatGPT keep their marks beside their
   // figures on one line.
-  assert_true(row_in_line("claude1@example.com", "claude2@example.com", ["5H", "W", "Fable"]))
+  assert_true(row_in_line("claude1@example.com", "claude2@example.com", ["5h", "W", "Fable"]))
   assert_true(row_in_line("claude3@example.com", "claude4@example.com", ["W", "Fable"]))
-  assert_true(row_in_line("ChatGPT 团队", "agy@example.com", ["5H", "W"]))
+  assert_true(row_in_line("ChatGPT 团队", "agy@example.com", ["5h", "W"]))
   assert_false(row_in_line("agy@example.com", "备用 key", ["Gemini", "Claude / GPT"]))
   assert_eq(t.squeeze_faults(), [])
   // At the narrowest sidebar width, Claude's three-window rows switch all Claude rows (including two-window claude3)
   // to two lines of standard capsules, while ChatGPT's two-window row still keeps its marks beside its figures on one line.
   @sfdesk.wide.side_w.set(@sfdesk.side_min)
   t.draw()
-  assert_false(row_in_line("claude1@example.com", "claude2@example.com", ["5H", "W", "Fable"]))
+  assert_false(row_in_line("claude1@example.com", "claude2@example.com", ["5h", "W", "Fable"]))
   assert_false(row_in_line("claude3@example.com", "claude4@example.com", ["W", "Fable"]))
-  assert_true(row_in_line("ChatGPT 团队", "agy@example.com", ["5H", "W"]))
+  assert_true(row_in_line("ChatGPT 团队", "agy@example.com", ["5h", "W"]))
   assert_eq(t.squeeze_faults(), [])
 }
 

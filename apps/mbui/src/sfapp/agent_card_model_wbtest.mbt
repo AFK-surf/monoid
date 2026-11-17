@@ -20,7 +20,7 @@ test "a phone's agent card: 模型 says its model and how hard it thinks, over �
   // short of the panel)
   let t = phone_agent_card()
   let model = t.get(Button, label="模型 Opus 5.5 · 高").rect
-  let account = t.get(Button, label="账号 林的 Max · 自动 5H 62% W 18%").rect
+  let account = t.get(Button, label="账号 林的 Max · 自动 5h 62% W 18%").rect
   assert_true(model.1 + model.3 <= account.1, msg="\{Repr(model)} \{Repr(account)}")
   t.click(Button, label="模型 Opus 5.5 · 高")
   t.run_for(@ui.move_most_ms)
@@ -32,7 +32,7 @@ test "a phone's agent card: 模型 says its model and how hard it thinks, over �
 ///|
 test "a phone's agent card: 账号 pressed, who runs it: its accounts, not its models" {
   let t = phone_agent_card()
-  t.click(Button, label="账号 林的 Max · 自动 5H 62% W 18%")
+  t.click(Button, label="账号 林的 Max · 自动 5h 62% W 18%")
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="Claude 订阅") is Some(_) && t.query(Button, label="团队 API key") is Some(_), msg=t.semantics_dump())

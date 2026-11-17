@@ -41,6 +41,8 @@ pub fn fill_chip(
   words : String,
   small? : Bool = false,
   compact? : Bool = false,
+  label_muted? : Bool = false,
+  refill? : Bool = false,
   drop? : Int = 0,
   keep? : Bool = false,
   key? : String = "",
@@ -60,11 +62,13 @@ pub fn fill_chip(
   let rest = 100 - fill
   // (pointed at for its tip, never pressed: what holds it takes the press, a row's)
   let id = if key == "" || said == "" { 0 } else { c.id("fill-chip/" + key) }
+  let base_box = if small { chip_box_small } else { chip_box }
+  let box_style = if refill { base_box.then(@ui.style(bg=DangerBg)) } else { base_box }
   // (its fill a plain rectangle its layer cuts along the chip's corners, its end square where it stops; the chip
   // itself cuts nothing: a box that cuts what it holds gives way to its row, which would cut its figure to an ellipsis
   // beside anything wider: mbui's ui/squeeze.mbt)
-  let b = c.box(style=if small { chip_box_small } else { chip_box }, drop~, keep~, id~, taps=false, points=true, fn() {
-    if fill > 0 {
+  let b = c.box(style=box_style, drop~, keep~, id~, taps=false, points=true, fn() {
+    if !refill && fill > 0 {
       c.layer(fn() {
         c.box(style=chip_fill_row, fn() {
           c.box(style=chip_fill_part.then(@ui.style(w=Grow(fill.to_double()), bg=Data(ground))), fn() {  }) |> ignore
@@ -76,23 +80,43 @@ pub fn fill_chip(
       })
       |> ignore
     }
-    // A figure on its own in a narrow column needs less room around it than a mark and figure in one chip.
-    let words_style = if small && compact {
-      chip_words_small.then(@ui.style(px=S1))
-    } else if small {
-      chip_words_small
-    } else {
-      chip_words
-    }
-    // (a mark run on into its words, 磁盘剩 420 G, one line of words, as fill_chip_node has it)
-    let joined = chip_joined(mark, words)
-    c.box(style=if joined { words_style.then(chip_joined_gap) } else { words_style }, fn() {
-      if mark != "" && !joined {
-        c.text(mark, style=chip_text) |> ignore
+    if refill {
+      let style = if small && compact {
+        chip_refill_words_compact
+      } else if small {
+        chip_refill_words_small
+      } else {
+        chip_refill_words
       }
-      c.text(if joined { mark + words } else { words }, style=chip_text) |> ignore
-    })
-    |> ignore
+      let icon_sz = if small { 9.0 } else { 10.5 }
+      c.box(style~, fn() {
+        if mark != "" {
+          c.text(mark, style=chip_refill_label_text) |> ignore
+        }
+        icon(c, "refresh", size=icon_sz, color=t.p.red) |> ignore
+        c.text(words, style=chip_refill_text) |> ignore
+      })
+      |> ignore
+    } else {
+      // A figure on its own in a narrow column needs less room around it than a mark and figure in one chip.
+      let words_style = if small && compact {
+        chip_words_small.then(@ui.style(px=S1))
+      } else if small {
+        chip_words_small
+      } else {
+        chip_words
+      }
+      // (a mark run on into its words, 磁盘剩 420 G, one line of words, as fill_chip_node has it)
+      let joined = !label_muted && chip_joined(mark, words)
+      let style = if joined { words_style.then(chip_joined_gap) } else { words_style }
+      c.box(style~, fn() {
+        if mark != "" && !joined {
+          c.text(mark, style=if label_muted { chip_label_text } else { chip_text }) |> ignore
+        }
+        c.text(if joined { mark + words } else { words }, style=chip_text) |> ignore
+      })
+      |> ignore
+    }
   })
   // (in a page's bones, one piece: how full it is not known yet)
   c.bone_whole(b)
@@ -103,11 +127,28 @@ pub fn fill_chip(
 /// How wide a fill chip of this mark and these words is laid out (fill_chip's own: its words, what is between and
 /// around them), for what picks a way of saying several by the room they need before any is laid out
 /// (nav_quota_chips: by figures wider than the ones shown).
-pub fn fill_chip_wide(c : @ui.Ctx, mark : String, words : String, small? : Bool = false, compact? : Bool = false) -> Double {
+pub fn fill_chip_wide(
+  c : @ui.Ctx,
+  mark : String,
+  words : String,
+  small? : Bool = false,
+  compact? : Bool = false,
+  label_muted? : Bool = false,
+  refill? : Bool = false,
+) -> Double {
   let side = (if small && compact { @ui.Space::S1 } else if small { @ui.Space::S1_25 } else { @ui.Space::S2 }).px()
-  let between = if mark == "" || chip_joined(mark, words) { 0.0 } else { @ui.Space::S1_25.px() }
-  let marked = if mark == "" { 0.0 } else { c.words_across(mark, chip_text) }
-  c.fitting_width(marked + c.words_across(words, chip_text), [side, side, between])
+  let mark_style = if refill { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
+  let fig_style = if refill { chip_refill_text } else { chip_text }
+  let marked = if mark == "" { 0.0 } else { c.words_across(mark, mark_style) }
+  if refill {
+    let icon_sz = if small { 9.0 } else { 10.5 }
+    let gap = @ui.Space::S1.px()
+    let gaps : Array[Double] = if mark == "" { [side, side, gap] } else { [side, side, gap, gap] }
+    return c.fitting_width(marked + icon_sz + c.words_across(words, fig_style), gaps)
+  }
+  let joined = !label_muted && chip_joined(mark, words)
+  let between = if mark == "" || joined { 0.0 } else { @ui.Space::S1_25.px() }
+  c.fitting_width(marked + c.words_across(words, fig_style), [side, side, between])
 }
 
 ///|
@@ -164,3 +205,38 @@ let chip_words : @ui.Style = @ui.css("row px=S2 gap=S1_25 align=ACenter")
 ///|
 // kept across runs: a value (no field of it changes)
 let chip_words_small : @ui.Style = @ui.css("row px=S1_25 gap=S1_25 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let chip_refill_words : @ui.Style = @ui.css("row px=S2 gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let chip_refill_words_unmarked : @ui.Style = @ui.css("row pl=S1 pr=S2 gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let chip_refill_words_small : @ui.Style = @ui.css("row px=S1_25 gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let chip_refill_words_small_unmarked : @ui.Style = @ui.css("row pl=S0_5 pr=S1_25 gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let chip_refill_words_compact : @ui.Style = @ui.css("row px=S1 gap=S1 align=ACenter")
+
+///|
+/// Its label: regular weight in Fg so window type reads distinctly beside semibold figures while keeping >= 4.5:1 contrast over progress fills.
+// kept across runs: a value (no field of it changes)
+let chip_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Normal, leading=L4, wrap=false, color=Fg, narrow=@ui.text_patch(size=Xs))
+
+///|
+/// Label in an exhausted quota chip: danger ink at medium weight beside the refresh icon.
+// kept across runs: a value (no field of it changes)
+let chip_refill_label_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, leading=L4, wrap=false, color=Danger, narrow=@ui.text_patch(size=Xs))
+
+///|
+/// Countdown in an exhausted quota chip: danger ink at semibold weight.
+// kept across runs: a value (no field of it changes)
+let chip_refill_text : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, leading=L4, wrap=false, color=Danger, narrow=@ui.text_patch(size=Xs))
