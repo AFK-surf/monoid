@@ -1153,6 +1153,9 @@ test("modules: the accounts, planned as the other answers (hosted, borrowed, a t
     const b = await outcome(() => call(method, ...args));
     await turns();
     await p.quiet();
+    // (the TypeScript's writes end with its promises, not in a count of turns: its file of before is let go once its
+    // lines are written, after a plan that writes nothing)
+    await tsM.settled();
     assert.deepEqual(b, a, what);
     assert.deepEqual(mbW.calls, tsW.calls, `${what}: what it asked`);
     sameFiles(tsData, mbData, what);
