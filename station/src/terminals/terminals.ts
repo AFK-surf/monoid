@@ -62,6 +62,9 @@ export type TerminalDeps = {
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone(id: string): void;
   newId(): string;
+  /// Whether a new one is opened here: a `beta` feature of the station's (features.ts `stationFeature("terminal")`);
+  /// those open already are looked at and ended as before.
+  offered?(): boolean;
 };
 
 /// `again`: gives it the screen anew (the size changed: its own terminal is made that size from it).
@@ -201,6 +204,7 @@ export class Terminals {
     const looksOnly = readOnly(viewer);
     let t: Terminal | undefined;
     if (found[1] === "new") {
+      if (this.#deps.offered?.() === false) return refuse(404, "no route: terminals are opened on stations updated on the test channel alone");
       if (looksOnly) return refuse(403, "a read-only member does not open a terminal");
       try {
         t = await this.open({ cols: ask.cols, rows: ask.rows, ...(ask.cwd ? { cwd: ask.cwd } : {}), ...(ask.chat ? { chat: ask.chat } : {}), by: name, workspace: viewer.workspace });

@@ -23,22 +23,22 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 /// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
 /// active board state and returns Home to the ordinary chat list.
 pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chosen = if @settings.feature_from(prefs, "chatPage") { "nodes" } else { "" }
-  if chosen != chat_page_told.val {
-    chat_page_told.val = chosen
-    chat_page_nodes.set(chosen == "nodes")
+  let chat_page = @settings.feature_from(prefs, "chatPage")
+  if chat_page != chat_page_told.val {
+    chat_page_told.val = chat_page
+    chat_page_nodes.set(chat_page)
   }
-  let fv = if @settings.feature_from(prefs, "farviewNative") { "on" } else { "" }
+  let fv = @settings.feature_from(prefs, "farviewNative")
   if fv != farview_told.val {
     farview_told.val = fv
-    farview_native.set(fv == "on")
+    farview_native.set(fv)
   }
-  let bd = if @settings.feature_from(prefs, "board") { "on" } else { "" }
+  let bd = @settings.feature_from(prefs, "board")
   if bd != board_told.val {
-    let was_on = board_told.val == "on"
+    let was_on = board_told.val
     board_told.val = bd
-    board_feature.set(bd == "on")
-    if was_on && bd == "" {
+    board_feature.set(bd)
+    if was_on && !bd {
       board_transient_reset()
       (board_listed.val)()
     }
@@ -46,14 +46,14 @@ pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// The experimental choices last told from `prefs`: none as a run begins.
-let chat_page_told : Ref[String] = Ref("")
+/// The experimental switches last told from `prefs`: none on as a run begins.
+let chat_page_told : Ref[Bool] = Ref(false)
 
 ///|
-let farview_told : Ref[String] = Ref("")
+let farview_told : Ref[Bool] = Ref(false)
 
 ///|
-let board_told : Ref[String] = Ref("")
+let board_told : Ref[Bool] = Ref(false)
 
 ///|
 /// Light or dark, as this device is set (the prefs' `appearance`), or as the system is (@hostapi.system_dark)
@@ -345,9 +345,9 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
-  chat_page_told.val = ""
-  farview_told.val = ""
-  board_told.val = ""
+  chat_page_told.val = false
+  farview_told.val = false
+  board_told.val = false
   attention.told = false
   attention.visible = false
   attention.focused = false

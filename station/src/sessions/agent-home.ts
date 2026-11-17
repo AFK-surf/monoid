@@ -49,7 +49,8 @@ async function makeAgentHome(agentHome: string, dir: string): Promise<void> {
   const [hasSkills, hasMemory] = await Promise.all([there(skills), there(memory)]);
   if (hasSkills && hasMemory) return;
   await mkdir(skills, { recursive: true });
-  await writeBuiltinSkills(dir, await there(join(agentHomePaths(agentHome)[1], FEEDBACK_SKILL)));
+  const shared = agentHomePaths(agentHome)[1];
+  await writeBuiltinSkills(dir, await there(join(shared, FEEDBACK_SKILL)), siteSkills(), await there(join(shared, MOVE_SKILL)));
   // (not over one written meanwhile: the memory brought here by another station)
   if (!hasMemory) await writeFile(memory, "# still.fail memory\n", { flag: "wx" }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
 }
@@ -105,14 +106,18 @@ async function onlySkill(dir: string): Promise<boolean> {
 /// its agents about itself this way. None by default.
 export const siteSkills = (env: NodeJS.ProcessEnv = process.env): string | null => env.STILLFAIL_SITE_SKILLS || null;
 
+/// The skill of moving to another station: only where moving is on (a `beta` feature of the station's, features.ts).
+export const MOVE_SKILL = "stillfail-move";
+
 /// Writes the station's own skills into the shared skills directory; `feedback`: the stillfail-feedback skill too
 /// (else it is taken away, unless someone added to it); `site`: the deployment's skills linked beside them
-/// (`linkSiteSkills`).
-export async function writeBuiltinSkills(agentHome: string, feedback: boolean, site: string | null = siteSkills()): Promise<void> {
+/// (`linkSiteSkills`); `move`: stillfail-move too (else it is taken away so, as stillfail-feedback is).
+export async function writeBuiltinSkills(agentHome: string, feedback: boolean, site: string | null = siteSkills(), move = true): Promise<void> {
   const [, skills] = agentHomePaths(agentHome);
   if (site !== null) await linkSiteSkills(skills, site);
   if (!feedback && (await onlySkill(join(skills, FEEDBACK_SKILL)))) await rm(join(skills, FEEDBACK_SKILL), { recursive: true, force: true });
-  for (const name of feedback ? [...BUILTIN_SKILLS, FEEDBACK_SKILL] : BUILTIN_SKILLS) {
+  if (!move && (await onlySkill(join(skills, MOVE_SKILL)))) await rm(join(skills, MOVE_SKILL), { recursive: true, force: true });
+  for (const name of [...BUILTIN_SKILLS.filter((n) => move || n !== MOVE_SKILL), ...(feedback ? [FEEDBACK_SKILL] : [])]) {
     const { text, files } = await builtinSkill(name);
     const dir = join(skills, name);
     await mkdir(dir, { recursive: true });

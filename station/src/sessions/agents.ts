@@ -95,6 +95,7 @@ import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
 import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
+import { stationMoveOn } from "../features.ts";
 
 /// server.rs `encode` (encodeURIComponent).
 const encode = encodeURIComponent;
@@ -285,6 +286,7 @@ export const AgentsLive = (control: Control) =>
       const hub = new Hub({
         config: settings,
         siteInstructions,
+        moveOn: () => stationMoveOn(config.raw(), app),
         taking: () => control.taking(),
         store,
         previous,

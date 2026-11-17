@@ -167,6 +167,8 @@ export type SessionDeps = {
   siteInstructions?(): string;
   /// This station's name (what its agents are told they run on); "" where it has none.
   ownName?(): string;
+  /// Whether moving to another station is on here (features.ts stationMoveOn): its skill named in the instructions.
+  moveOn?(): boolean;
   maxNudges(): number;
   /// The chat session `key` last heard from (its address), when it has no title and nobody is at work in it.
   untitled?(key: string): string | null;
@@ -358,7 +360,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
   // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
   const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
-  if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.());
+  if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true);
   // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
   // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
   // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
@@ -428,7 +430,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   const store = deps.store;
   const row = store.getSession(key);
   // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
-  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.())) : null;
+  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true)) : null;
   let prompt = lost ? `${(await deps.resumeLost?.(key)) ?? resumeLost(key, [])}\n\n${handed}` : handed;
   if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
   // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
@@ -444,7 +446,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
       try {
         const preset = row.cwd ? null : await presetCopyOf(row.workspace);
         const memory = await deps.linkSkills(row);
-        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.()) + (preset ? presetInstructions(preset) : ""));
+        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true) + (preset ? presetInstructions(preset) : ""));
       } catch {}
     }
     store.setToldNotes(key, latestNote());
@@ -583,7 +585,7 @@ export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath">
 }
 
 /// `memory`: its workspace's memory as `linkSkills` gave it.
-export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName">, memory: string): Promise<OpenOptions> {
+export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName" | "moveOn">, memory: string): Promise<OpenOptions> {
   const skills = row.cwd ? undefined : join(dirname(deps.memoryPath(row.key)), "skills");
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
@@ -599,7 +601,7 @@ export async function openOptions(row: any, profile: Profile & { spelling?(model
     ...(typeof row.context === "number" ? { context: row.context } : {}),
     ...(typeof row.fast === "boolean" ? { fast: row.fast } : {}),
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
-    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.()) + (preset ? presetInstructions(preset) : ""),
+    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true) + (preset ? presetInstructions(preset) : ""),
     ...(skills !== undefined ? { skills } : {}),
     mcpToken: row.token,
     mcpUrl: deps.mcpUrl(),

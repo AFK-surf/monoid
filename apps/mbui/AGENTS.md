@@ -208,10 +208,13 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - The chat's page made as nodes is behind a switch a person turns on, 实验性功能's 试用新对话页 (the experimental
   feature `chatPage`, the prefs' `experimental`; sfbase's `chat_page_from_prefs`), off by default till it lacks nothing
   (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile.
-- What is not yet everyone's is a feature of one registry (`client/core-ts/src/features.ts`, the app's
-  `src/sfapp/settings/features.mbt`, the same: `scripts/features-check.ts`): `beta`, on on the test channel and gone
-  on stable, never a switch; `experimental`, off on both channels till a person turns it on in 设置 › 实验性功能, on
-  this device alone (左子健, 2026-11-16: 「实验性在 beta 也不默认开」). Turned off, what it shows goes back at once,
+- What is not yet everyone's is a feature of one registry, the core's (`client/core-ts/src/features.ts`;
+  `scripts/features-check.ts`), of which the app keeps no copy and no rule: it reads the prefs' `features` and
+  `experimentalItems`, and a station's own as its overview says (`src/sfapp/settings/features.mbt`). `beta`, on on the
+  test channel and gone on stable, never a switch, by the channel of where its code runs: a station's (its terminals,
+  moving its things) by that station's, whatever the app's; `experimental`, off on both channels till a person turns
+  it on in 设置 › 实验性功能, on this device alone (左子健, 2026-11-16: 「实验性在 beta 也不默认开」), and one that still
+  replaces a working path (`betaOnly`) offered on the test channel alone. Turned off, what it shows goes back at once,
   no restart, no page left dead. A feature that graduates or is dropped loses its entry and its branches together.
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes

@@ -1,7 +1,7 @@
 // 实验性功能's 试用新对话页 (the experimental feature `chatPage`, the prefs' `experimental`; sfbase's chat_page_from_prefs):
 // off unless a person turns it on, kept on the device by the core; a chat page open as it is pressed becomes the one
-// chosen at once, and the app started with it kept on (or an older app's `chatPage` kept) opens its first chat on the
-// page made as nodes.
+// chosen at once, and the app started with it kept on opens its first chat on the page made as nodes (an older app's
+// `chatPage` is the core's to read as the switch: client/core-ts features.ts).
 
 ///|
 /// The fixture's chat s-c1, as tests open it.
@@ -107,15 +107,4 @@ test "试用新对话页 kept on: the app started again opens its first chat on 
   let t = setting_tester(src)
   t.run_for(@ui.move_most_ms)
   assert_false(setting_page_nodes(t, "the run after"), msg="the run after: the old page")
-}
-
-///|
-test "试用新对话页 kept by an older app (the prefs' `chatPage`): read as the switch on" {
-  new_run()
-  let src = fixture("chat")
-  (src.call)("prefs.set", { "chatPage": "nodes" }, fn(_) {  })
-  open_chat(setting_chat)
-  let t = setting_tester(src)
-  t.run_for(@ui.move_most_ms)
-  assert_true(setting_page_nodes(t, "an older app's choice"), msg="an older app's choice: the page made as nodes")
 }

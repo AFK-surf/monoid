@@ -1465,6 +1465,8 @@ export interface Overview {
 	copies?: StationCopies;
 	/** Whether moving its things to another station is offered on it (move.ts). None from a station older than it: not offered. */
 	move?: StationMoveOffer;
+	/** The `beta` features it runs, by id (client/core-ts/src/features.ts `station: true`: its own channel decides them). None from a station older than it: none. */
+	features?: string[];
 }
 
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
@@ -1777,11 +1779,6 @@ export interface PrefsView {
 	 */
 	reports?: string;
 	/**
-	 * Legacy setting for the node-based chat page (migrated to `experimental.chatPage` in 设置 → 实验性功能): `nodes`,
-	 * or (none) the one of before.
-	 */
-	chatPage?: string;
-	/**
 	 * When a done chat is offered to archive (drawn faded): `off`, never;
 	 * `reviewed`, only once its station's archive review recommended it; (none) `done`, whenever nothing is left in it
 	 * (where its station's review is on, once it recommended it). Archiving with one tap is there whatever this says.
@@ -1904,7 +1901,7 @@ export interface PrefsView {
 	testChannel?: boolean;
 	/** Experimental features turned on on this device (设置 → 实验性功能), by feature id; unknown or graduated ids are ignored. */
 	experimental?: Record<string, boolean>;
-	/** Effective boolean state of every registered feature on this device (from `FEATURES`, `testChannel` and `experimental`). */
+	/** Each of the device's own features (`FEATURES` but those a station decides, which its overview's `features` says) on or off on this device (from `testChannel` and `experimental`): all the app reads of them. */
 	features?: Record<string, boolean>;
 	/** Experimental features visible in 设置 › 实验性功能 on this channel, in registry order. */
 	experimentalItems?: ExperimentalItem[];

@@ -411,6 +411,8 @@ fn board_bar_at(
         ("prefs", Some(Object(m))) => {
           let m = m.copy()
           m["experimental"] = { "board": true }
+          // (and on, as the core says it: features.ts featuresOf)
+          m["features"] = { "board": true }
           { ..got, value: Some(Json::object(m)) }
         }
         _ => got

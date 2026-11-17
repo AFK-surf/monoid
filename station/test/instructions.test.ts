@@ -17,6 +17,14 @@ test("the session instructions name the session's places, and a project only whe
   assert.ok(!plain.includes("<memory"), "no memory where there is none");
 });
 
+test("stillfail-move is named only where moving is on here (a beta feature of the station's), nothing else changed", () => {
+  const on = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "");
+  const off = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "", "", "", false);
+  assert.ok(on.includes(ts.MOVE_LINE));
+  assert.ok(!off.includes("stillfail-move"));
+  assert.equal(off, on.replace(ts.MOVE_LINE, ""));
+});
+
 test("the session instructions tell the memory they name, as it is now", async () => {
   const dir = mkdtempSync(join(tmpdir(), "instructions-"));
   const path = join(dir, "MEMORY.md");

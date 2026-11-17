@@ -582,7 +582,9 @@ pub fn fixture_page(mode : String) -> String {
   } else {
     mode
   }
-  // (the stable channel's: the same page, as a stable app shows it, sffixture's fixture_stable_mode)
+  // (the stable channel's: the same page, of Willow updated on the stable channel, which runs no `beta` feature of a
+  // station's: sffixture's fixture_stable_mode)
+  fx_station_beta.val = !m.has_suffix("-stable")
   let m = if m.has_suffix("-stable") { m.unsafe_substring(start=0, end=m.length() - 7) } else { m }
   // a sheet up over the page, or the page scrolled down (fixture_open; the library's pages too)
   @sf.page_list_opened.val = fn(c, key, rows) { fixture_scroll(c, key, rows~) }
@@ -2166,6 +2168,7 @@ fn fx_station(address : String) -> Json {
           ("elevation", fx.elevation.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
           ("move", fx_move_offer()),
+          ("features", fx_station_features()),
           ("sharing", Json::boolean(true)),
           (
             "machineLogins",

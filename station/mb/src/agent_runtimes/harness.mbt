@@ -128,7 +128,7 @@ fn call(name : String, args : Array[J]) -> J {
   match name {
     // instructions.ts
     "sessionInstructions" =>
-      js(session_instructions(s(0), o(1), s(2), s(3), s(4), site=o(5).unwrap_or(""), station=o(6).unwrap_or("")))
+      js(session_instructions(s(0), o(1), s(2), s(3), s(4), site=o(5).unwrap_or(""), station=o(6).unwrap_or(""), move=!(a(7) is Some(Bool(false)))))
     "siteInstructionsOf" => js(site_instructions_of(o(0)))
     "overgrown" => js(overgrown(pairs(a(0))))
     "nameUntitled" => js(name_untitled(s(0)))

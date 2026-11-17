@@ -38,6 +38,10 @@ pub let builtin_skills : Array[String] = [
 pub let feedback_skill = "stillfail-feedback"
 
 ///|
+/// `MOVE_SKILL`: written only where moving is on.
+pub let move_skill = "stillfail-move"
+
+///|
 /// The agent home of workspace `ws`, a joined one's made when it is missing: its MEMORY.md and skills/, the station's
 /// own skills in it as the home workspace has them.
 pub async fn Storage::workspace_agent_home(self : Storage, agent_home : String, ws : String?, home : String?, skills_source : String, site : String?) -> String {
@@ -53,8 +57,9 @@ pub async fn Storage::workspace_agent_home(self : Storage, agent_home : String, 
     return dir
   }
   fs.mkdirs(skills)
-  let feedback = fs.there(fs.join([fs.agent_home_paths(agent_home).1, feedback_skill]))
-  self.write_builtin_skills(dir, feedback, skills_source, site)
+  let shared = fs.agent_home_paths(agent_home).1
+  let feedback = fs.there(fs.join([shared, feedback_skill]))
+  self.write_builtin_skills(dir, feedback, skills_source, site, move=fs.there(fs.join([shared, move_skill])))
   if !has_memory {
     fs.write_text(memory, "# still.fail memory\n", exclusive=true) catch {
       e => if code_of(e) != "EEXIST" && fs.lkind(memory) is None { raise e }
@@ -90,7 +95,15 @@ async fn Files::only_skill(self : Files, dir : String) -> Bool {
 
 ///|
 /// Writes the station's own skills into the shared skills directory (agent-home.ts `writeBuiltinSkills`).
-pub async fn Storage::write_builtin_skills(self : Storage, agent_home : String, feedback : Bool, skills_source : String, site : String?) -> Unit {
+/// `move`: stillfail-move too (else taken away, as stillfail-feedback is).
+pub async fn Storage::write_builtin_skills(
+  self : Storage,
+  agent_home : String,
+  feedback : Bool,
+  skills_source : String,
+  site : String?,
+  move? : Bool = true,
+) -> Unit {
   let fs = self.fs
   let (_, skills) = fs.agent_home_paths(agent_home)
   match site {
@@ -100,7 +113,13 @@ pub async fn Storage::write_builtin_skills(self : Storage, agent_home : String, 
   if !feedback && fs.only_skill(fs.join([skills, feedback_skill])) {
     fs.rm(fs.join([skills, feedback_skill]), recursive=true, force=true)
   }
-  let names = if feedback { [..builtin_skills, feedback_skill] } else { builtin_skills }
+  if !move && fs.only_skill(fs.join([skills, move_skill])) {
+    fs.rm(fs.join([skills, move_skill]), recursive=true, force=true)
+  }
+  let names = builtin_skills.filter(n => move || n != move_skill)
+  if feedback {
+    names.push(feedback_skill)
+  }
   for name in names {
     guard fs.read_bytes(fs.join([skills_source, "\{name}.md"])) is Some(text) else {
       raise fs_failed("ENOENT", "open", fs.join([skills_source, "\{name}.md"]))

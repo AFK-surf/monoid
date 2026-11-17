@@ -33,6 +33,7 @@ pub let fixture_move_asked : Array[(String, Json)] = []
 ///|
 /// As a run starts.
 fn move_fixture_reset() -> Unit {
+  fx_station_beta.val = true
   fx_move.offered = false
   fx_move.stage = ""
   fx_move.targets = true
@@ -92,6 +93,31 @@ fn move_fixture_mode(m : String) -> Bool {
 /// Willow's overview's `move`.
 fn fx_move_offer() -> Json {
   obj([("offered", Json::boolean(fx_move.offered))])
+}
+
+///|
+/// Whether Willow is updated on the test channel (a mode's `-stable` says not): it runs its `beta` features then.
+// kept across runs: true as a run begins (move_fixture_reset)
+let fx_station_beta : Ref[Bool] = Ref(true)
+
+///|
+/// A test's switch: Willow updated on the test channel (`beta`) or the stable one, whatever the app's own channel.
+pub fn fixture_station_channel(beta : Bool) -> Unit {
+  fx_station_beta.val = beta
+  fx_changed()
+}
+
+///|
+/// Its overview's `features` (station/src/features.ts): on the test channel its terminals, and moving where it offers it.
+fn fx_station_features() -> Json {
+  let out : Array[Json] = []
+  if fx_station_beta.val {
+    out.push(Json::string("terminal"))
+    if fx_move.offered {
+      out.push(Json::string("stationMove"))
+    }
+  }
+  Json::array(out)
 }
 
 ///|

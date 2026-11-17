@@ -105,7 +105,7 @@ pub let farview_native : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
-/// Whether feature `id` is effectively enabled on this device (`prefs` + channel + local experimental switches).
+/// Whether the device's own feature `id` is on (the prefs' `features`, as the core says them).
 pub fn feature_on(src : Source, id : String) -> Bool {
   @settings.feature_from(src.topic("prefs", {}).get().value, id)
 }

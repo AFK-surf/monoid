@@ -1173,6 +1173,7 @@ export const SHAPES: Record<string, Shape> = {
     ["elevation", opt("StationElevation"), { doc: "Whether it runs as the machine's administrator (a Windows station only; none from one older than it, which\nthen shows nothing)." }],
     ["copies", opt("StationCopies"), { doc: "The copies of its chats kept off it (copies.ts). None from a station older than them, which then shows nothing." }],
     ["move", opt("StationMoveOffer"), { doc: "Whether moving its things to another station is offered on it (move.ts). None from a station older than it: not offered." }],
+    ["features", vec("String"), { default: true, doc: "The `beta` features it runs, by id (client/core-ts/src/features.ts `station: true`: its own channel decides them). None from a station older than it: none." }],
   ], { doc: "A station's overview, with what the clients show of its connects and profiles: each part of it as `stationPart`\nsends it (STATION_PARTS). A station's page is sent its own, `StationOverview`." }),
   StationOverview: struct([
     ["automaticDecisions", opt("StationDecisions")],
@@ -1194,7 +1195,7 @@ export const SHAPES: Record<string, Shape> = {
     ["permissions", opt("StationPermissions"), { doc: "As Overview's." }],
     ["elevation", opt("StationElevation"), { doc: "As Overview's." }],
     ["copies", opt("StationCopies"), { doc: "As Overview's." }],
-    ["move", opt("StationMoveOffer"), { doc: "As Overview's: its ⋯'s 迁移到另一台 station while it says so." }],
+    ["features", vec("String"), { default: true, doc: "As Overview's: what of its 迁移 and 终端 it offers (features.ts `station: true`)." }],
   ], { doc: "A station's overview as its page reads it (`StationView.overview`: station_node.mbt, station_page.mbt, a profile's\npage, the pages of its archiving and its archive policy, a new profile's). The rest of an Overview is not sent there:\nwho is looking, its mesh, its Slack people, teams and apps, its Feishu bots, Comma, its disk, the sign-ins under way\nand the console's (`viewer`, `mesh`, `slackUsers`, `slackTeams`, `slackApps`, `feishuRegistrations`, `comma`, `disk`,\n`logins`, `consoleSignIn`); a connect's page asks `connect`, a part shown of every station `stationPart`." }),
   StationConnect: struct([
     ["id", "String"],
@@ -2685,7 +2686,6 @@ export const SHAPES: Record<string, Shape> = {
     ["dropAs", opt("String"), { doc: "How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path." }],
     ["sendKey", opt("String"), { doc: "How the composer sends on this device (快捷键): `mod`, ⌘Enter (Ctrl+Enter elsewhere), Enter and ⇧Enter a new\nline; or (none) Enter, ⇧Enter a new line. A screen's keyboard's Enter is a new line whatever this says." }],
     ["reports", opt("String"), { doc: "Whether what people use is counted and sent from this device where its host keeps no switch of its own\n(设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts): `off`, or none for on." }],
-    ["chatPage", opt("String"), { doc: "Legacy setting for the node-based chat page (migrated to `experimental.chatPage` in 设置 → 实验性功能): `nodes`,\nor (none) the one of before." }],
     ["archiveHint", opt("String"), { doc: "When a done chat is offered to archive (drawn faded): `off`, never;\n`reviewed`, only once its station's archive review recommended it; (none) `done`, whenever nothing is left in it\n(where its station's review is on, once it recommended it). Archiving with one tap is there whatever this says." }],
     ["screenTouch", opt("String"), { doc: "How a finger drives a station's screen on a phone: `direct` (a tap clicks where it is), or (none) as a\ntrackpad (the finger moves the pointer, a tap clicks where it points)." }],
     ["screenQuality", opt("String"), { doc: "How large a picture of a station's screen this device asks for: `smooth` (at most 1280×720), `hd` (at\nmost 1920×1080), `original` (the screen's own size), or (none) as the window is (at most 1920×1080, 2560×1440 on\na screen that has more)." }],
@@ -2719,7 +2719,7 @@ export const SHAPES: Record<string, Shape> = {
     ["railView", opt("RailView"), { default: true, doc: "The wide screen's rail as clients draw it (the core's, from `rail` and `rails`; none from a core before it)." }],
     ["testChannel", opt("bool"), { doc: "Whether this app runs on the test channel (`beta`)." }],
     ["experimental", map("bool"), { default: true, doc: "Experimental features turned on on this device (设置 → 实验性功能), by feature id; unknown or graduated ids are ignored." }],
-    ["features", map("bool"), { default: true, doc: "Effective boolean state of every registered feature on this device (from `FEATURES`, `testChannel` and `experimental`)." }],
+    ["features", map("bool"), { default: true, doc: "Each of the device's own features (`FEATURES` but those a station decides, which its overview's `features` says) on or off on this device (from `testChannel` and `experimental`): all the app reads of them." }],
     ["experimentalItems", vec("ExperimentalItem"), { default: true, doc: "Experimental features visible in 设置 › 实验性功能 on this channel, in registry order." }],
   ], { doc: "What this device keeps of how its person likes it (the `prefs` topic, `prefs.set`), and what it is." }),
   ExperimentalItem: struct([

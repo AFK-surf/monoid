@@ -120,9 +120,10 @@ chats paused 18 minutes, a half-moved state, no way back), whose start stays swi
 - People move with `POST /move` and `POST /move/back` (owners and admins; 202, the scheduler's
   turn going on; one turn at a time, an agent's and a person's alike: a second while one runs is 409). No card there:
   the press in the app is the confirmation.
-- Moving is a `beta`-channel feature (`stationFeature("stationMove", ...)`, on by default on `beta` stations unless
-  config.json says `move: false`, and off on `stable` stations unless config.json says `move: true`; not one of the
-  settings that move), offered in the overview (`move.offered`) where it is on. Off, every turn is refused before anything is held (the
+- Moving is a `beta` feature of the station's (`features.ts` `stationMoveOn`): on on a station updated on the test
+  channel, off on a stable one, nothing said over it (a drill's stations are on the test channel: e2e-local.sh), offered
+  in the overview (`features`, and `move.offered` for apps from before) where it is on; off, `station_move` is no
+  agent's tool and no instructions name stillfail-move. Off, every turn is refused before anything is held (the
   scheduler asks `refusal` first: here, then `move.open` there, one that refuses it being from before and off, one not reached said to be out of reach), and a
   station that is off takes no `handover.begin` and sends nothing back; `GET /move` still answers. A turn waits in `refusal`
   until the station process before this one is gone (a launcher's hand-over between processes: one process at a time

@@ -164,7 +164,8 @@ describe("instructions.ts, migrations.ts: every text word for word", { skip }, (
     for (const project of [null, "/Users/x/proj"])
       for (const memory of ["", "- a rule\n- another"])
         for (const site of ["", "Read skill site-x."])
-          for (const station of ["", "tokyo-mac-studio-0", "名前 \"q\""]) cases.push(["/ws/chat-1", project, "/repos", "/agent/MEMORY.md", memory, site, station]);
+          for (const station of ["", "tokyo-mac-studio-0", "名前 \"q\""])
+            for (const move of [true, false]) cases.push(["/ws/chat-1", project, "/repos", "/agent/MEMORY.md", memory, site, station, move]);
     await same("sessionInstructions", cases, I.sessionInstructions);
     const texts = await call("texts");
     assert.deepStrictEqual(texts, plain({

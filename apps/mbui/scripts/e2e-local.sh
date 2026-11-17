@@ -28,7 +28,7 @@
 #   scripts/e2e-local.sh rigs-all   up, rigs, down (the side run's, scripts/side.sh rigs); rigs failed, kept the same
 #   scripts/e2e-local.sh move       a station's things moved to another and back, with faults, against what `up`
 #                                   started (e2e/move.ts: alice's device, the test station A, B and a third enrolled
-#                                   beside it, moving switched on in each, E2E_STATION_EXTRA and E2E_MORE_EXTRA)
+#                                   beside it, each on the test channel so that moving is on there: E2E_STATION_EXTRA, E2E_MORE_EXTRA)
 #   scripts/e2e-local.sh move-all   up, move, down (the side run's, scripts/side.sh move); move failed, kept as locks-all's
 #   scripts/e2e-local.sh crash NAME   that station's machine as it loses power: every process of its own SIGKILLed at
 #                                   once (its launcher, Node, runners, agents and jobs: what runs on its data directory
@@ -306,7 +306,7 @@ EOF
   ln -s $E/station/dist $STATION/app/station
   ln -s "$(command -v node)" $STATION/app/node/bin/node
   # its one profile with a model enabled, so a new chat can be made there (newChat.create refuses a station with none)
-  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's switch, e2e/move.ts)
+  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's test channel, e2e/move.ts)
   echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false'"${E2E_STATION_EXTRA:-}"'}' > $STATION/data/config.json
   echo '{}' > $STATION/data/homes/cc/.credentials.json
   # (what this shell has of the machine's own station, a job's notify address and token, is not the test station's)
@@ -1018,7 +1018,7 @@ case "${1:-all}" in
     locks_moved || { rc=$?; kept locks-moved || true; exit $rc; } ;;
   move) move ;;
   move-all)
-    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"move":true,"maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"move":true'}
+    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"updateChannel":"beta","maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"updateChannel":"beta"'}
     trap down EXIT
     up
     rm -f $RUN/*.before.log
