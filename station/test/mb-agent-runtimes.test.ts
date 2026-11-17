@@ -12,7 +12,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { after, describe, mock, test } from "node:test";
+import { after, before, describe, mock, test } from "node:test";
 import { Effect, Exit, Layer, Scope } from "effect";
 import { facts } from "../src/accounts/catalog.ts";
 import { seesImages } from "../src/accounts/models.ts";
@@ -930,12 +930,12 @@ describe("a session opened on its process: what it is started with and asked fir
     }
     assert.equal(await call("hermesModelsAgain", busy, NOW, NOW + 1, true), false);
   });
-  const before = { ...process.env };
+  const was = { ...process.env };
   // Inherited, and not to reach the agents.
-  Object.assign(process.env, { DEEPSEEK_API_KEY: "leaked", CURSOR_API_KEY: "leaked", PI_SESSION_ID: "leaked", WINDSURF_API_KEY: "leaked", XAI_API_KEY: "leaked", GROK_HOME: "/elsewhere", DSH_TELEMETRY_MODE: "ON", GROK_TELEMETRY_ENABLED: "1", LC_ALL: "C", HERMES_HOME: "/ambient" });
+  before(() => void Object.assign(process.env, { DEEPSEEK_API_KEY: "leaked", CURSOR_API_KEY: "leaked", PI_SESSION_ID: "leaked", WINDSURF_API_KEY: "leaked", XAI_API_KEY: "leaked", GROK_HOME: "/elsewhere", DSH_TELEMETRY_MODE: "ON", GROK_TELEMETRY_ENABLED: "1", LC_ALL: "C", HERMES_HOME: "/ambient" }));
   after(() => {
-    for (const k of Object.keys(process.env)) if (!(k in before)) delete process.env[k];
-    Object.assign(process.env, before);
+    for (const k of Object.keys(process.env)) if (!(k in was)) delete process.env[k];
+    Object.assign(process.env, was);
   });
 
   test("DeepSeek Harness: its patch, environment and opening; refusals", async () => {
