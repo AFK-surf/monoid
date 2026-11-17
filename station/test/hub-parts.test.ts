@@ -862,7 +862,7 @@ test("a live rate is in a new snapshot and clears after output has been quiet", 
   await settle();
   await hub.idle();
   assert.equal(rates().at(-1), 0, "an empty delta does not keep the speed alive");
-  assert.deepEqual((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate"), []);
+  assert.deepEqual((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate"), [{ type: "rate", tokensPerSecond: 0 }], "a new snapshot clears what a client held");
   hub.close();
 });
 
