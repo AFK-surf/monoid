@@ -213,8 +213,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
   const [channel, ts] = [v.slice(0, at), v.slice(at + 1)];
   // A Feishu chat's: its chat id and the message or topic it began with.
   if (/^oc_[A-Za-z0-9]+$/.test(channel) && /^om(t)?_[A-Za-z0-9]+$/.test(ts)) return [channel, ts];
-  // A group connect's: its conversation's id, twice (src/group: a conversation is one thread).
-  if (/^[0-9a-f]{16}$/.test(channel) && ts === channel) return [channel, ts];
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  if (/^[ds]_[0-9a-f]{24}$/.test(channel) && (ts === channel || /^t_[0-9a-f]{16}$/.test(ts))) return [channel, ts];
   const dot = ts.indexOf(".");
   if (dot < 0) return null;
   const [secs, micros] = [ts.slice(0, dot), ts.slice(dot + 1)];

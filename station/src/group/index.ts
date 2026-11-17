@@ -1,4 +1,4 @@
-// The group connects on the station (an IM server of AFK-surf/group, joined as a member): kept as every platform's are
+// The group connects on the station (an IM community of AFK-surf/group, `im/2`, joined as a member): kept as every platform's are
 // (connects/connects.ts: connected as config.json and the station's workspace say, what the server calls people and
 // conversations in <data>/group-names.json), with what each heard of its server in <data>/group-threads.json.
 //

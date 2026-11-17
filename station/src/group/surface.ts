@@ -1,65 +1,81 @@
-// A group connect as a chat surface: the station as a member of an IM server of AFK-surf/group, as it is a bot in
-// Slack or Feishu (connects/surface.ts keeps its link up, connected again after a wait that doubles whenever it goes).
-// Its link (link.ts) is let in by the connect's key, and by the code it joins with the first time; then the server's
-// event stream (`GET /events`) tells it what is said in its conversations, gone on from where it was (`since`) or, where
-// the server cannot, read again from each conversation's last message taken (`?after=`, threads.ts), so nothing is
-// taken twice and nothing said while it was away is lost.
+// A group connect as a chat surface: the station as a member of an IM community of AFK-surf/group (`im/2`), as it is a
+// bot in Slack or Feishu (connects/surface.ts keeps its link up, connected again after a wait that doubles whenever it
+// goes). Its link (link.ts) is let in by the connect's key, and by the code it joins with the first time; then the
+// anchor's stream (`GET /events`) tells it each event of its spaces as it is taken, and `POST /sync` what each space
+// took since the last event taken of it (threads.ts), so nothing is taken twice and nothing said while it was away is
+// lost. Every event is checked as the IM's devices check it (event.ts: its id worked out again, its signature its
+// device's), and what the station says is an event signed by the connect's key, its device's own count after its last.
 //
-// A conversation is a thread: its id is both the channel and the thread's ts (`<conv>/<conv>`, not one channel `GROUP`
-// for all: the hub names and groups a chat by its channel, so every conversation would show as the same one), its
-// messages' numbers their ts. Every
-// message of a private chat calls the agent; in a group, one that mentions the bot (`@name`) does, and the rest go to a
-// session that follows the group already (the hub's rule, as Slack's threads: chat_leave stops it until the next
-// mention; the station never leaves the group on the server). A message's files are fetched as the hub records it;
-// what an agent posts goes as one message, its files uploaded first, a card as its question and numbered options in
-// the words (answered by their number or words, which the agent is handed as the option's words).
-import { randomUUID } from "node:crypto";
+// A space's stream is a thread (the IM's session keys them so: the space's id for its lobby, `<space>/<topic>`): the
+// lobby is `<space>/<space>`, a topic `<space>/<topic>`, each a session of its own (the hub names and groups a chat by
+// its channel, the space). A message's ts is its event's place in its space (`aseq`), which every event has, an answer
+// to a card too. Every message of a direct space calls the agent; in a space, one that mentions the bot (`@name`),
+// answers one of its messages or opens a topic that does, and the rest go to a session that follows that stream already
+// (the hub's rule, as Slack's threads: chat_leave stops it until the next mention; the station never leaves the space).
+//
+// What the IM has for an agent besides words: a card goes as a decision (`decision.ask`, its options or a field), its
+// answer (`decision.resolve`) handed to the session as the person's message; while the agent works, what it does is
+// the stream's live state (`POST /spaces/<id>/live`, gone once it ends), whose Stop (`stop` on the stream) stops the
+// turn; and a secret a member hands it end to end (`im-secret/1` to this device, or the anchor's `secret` in passing)
+// reaches the session as a file of its uploads, never in a message's words, a log or what the station keeps.
 import { readFile, stat } from "node:fs/promises";
 import { extname } from "node:path";
+import type { KeyObject } from "node:crypto";
 import { type Clock, Effect } from "effect";
 import type { CardEnd } from "../connects/card-ends.ts";
 import type { BotIdentity } from "../connects/connections.ts";
 import { channelKey, personKey } from "../connects/keys.ts";
 import type { NameBook } from "../connects/names.ts";
-import { StatusLine } from "../connects/status.ts";
+import { type Run, StatusLine } from "../connects/status.ts";
 import { ConnectedSurface } from "../connects/surface.ts";
-import type { Endpoints } from "../mesh/endpoint.ts";
+import { accept } from "../mesh/accept.ts";
+import type { Connection, Endpoints } from "../mesh/endpoint.ts";
+import { Reader, writeLine } from "../mesh/wire.ts";
+import { wall } from "../ops/fibers.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { type ChatMessage, type Handler, type InboundFile, type Member, type Person, type Place, type ThreadRef, splitForSlack } from "../sessions/chat.ts";
 import type { Attachment } from "../store/store.ts";
-import { GroupLink, GroupUnreached, RESUMED, SseLines } from "./link.ts";
+import { Hlc, LOBBY, type Stamped, deviceOfKey, eventId, signEvent, signingKey, stampedOf } from "./event.ts";
+import { GroupLink, GroupUnreached, SseLines } from "./link.ts";
 import type { GroupThreads } from "./threads.ts";
 
 type Json = any;
 
-/// A message as the server says it (protocol.ts `Message`, and the files, edits and deletions of the server's that
-/// has them).
-export type GroupMessage = {
-  n: number;
-  id: string;
-  from: string;
-  text: string;
-  at: number;
-  files?: { id: string; name: string; mime?: string; size: number; sha256?: string; width?: number; height?: number }[];
-  replyTo?: number;
-  edited?: number;
-  deleted?: number;
-};
-/// A conversation as a member's list has it (protocol.ts `Listed`; `last` only there).
-type Conversation = { id: string; kind: "private" | "group"; members: string[]; name: string | null; last?: number };
+/// A file a message carries, as the anchor keeps it (store.mbt `FileRef`).
+export type FileRef = { sha256: string; name: string; mime: string; size: number; width?: number; height?: number };
+/// A message (a post, or a decision asked) as the station heard it.
+type Said = { id: string; space: string; topic: string; aseq: number; kind: string; author: string; text: string; files: FileRef[]; replyTo: string; deleted: boolean };
+type Space = { id: string; kind: "direct" | "space"; name: string; members: string[] };
+type Topic = { title: string; by: string; branchedFrom: string };
 
-/// The longest text of one message, in bytes (the server's TEXT_MOST): an agent's longer words go as several.
-const TEXT_MOST = 16 * 1024;
-/// So many characters at most a message (four bytes each at most).
-const CHARS_MOST = TEXT_MOST / 4;
-/// The most a read of a conversation gives (the server's READ_MOST).
-const READ_MOST = 500;
-/// The largest file a group server takes (32 MiB): a larger one is refused here before it is read.
+/// The longest words of one message, in characters (the anchor's `text_most` counts UTF-16 units: 20,000, so a part of
+/// 10,000 characters, two units each at most, always fits).
+const CHARS_MOST = 10_000;
+/// The most files one message carries (the anchor's `files_most`).
+const FILES_MOST = 10;
+/// The largest file an anchor takes (32 MiB): a larger one is refused here before it is read.
 const FILE_MOST = 32 * 1024 * 1024;
+/// The most options a decision has, and the longest its label, the line under it, a field's hint and a live state's
+/// words are (the anchor's `options_most`, `option_most`; its live state's 200).
+const OPTIONS_MOST = 8;
+const OPTION_MOST = 200;
+const LIVE_MOST = 200;
+/// So many of a stream's last messages are kept in memory (history and quotes answered without asking the anchor).
+const TAIL_MOST = 200;
+/// The most pages of a space's events a history read asks of the anchor (500 events each).
+const HISTORY_PAGES = 40;
 /// The control stream's ping: how often, and how long it may go unanswered before the link is taken for dead.
 const PING_MS = 15_000;
 const STALE_MS = 45_000;
+/// How often a live state still shown is said again: the anchor lets one go 90 s after it was last said.
+const LIVE_AGAIN_MS = 60_000;
+/// The least time between two changes of a stream's live state.
+const LIVE_INTERVAL_MS = 2_000;
+/// So many closed decisions are kept to know an answer to one.
+const CLOSED_KEPT = 256;
+/// So many secrets' ids are kept to know one handed again (by both ways).
+const SECRETS_SEEN = 256;
 
 const MIMES: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
@@ -76,7 +92,8 @@ export function mentions(text: string, name: string): boolean {
   return new RegExp(`(^|[^A-Za-z0-9_])@${escapeRegExp(name)}(?![A-Za-z0-9_])`, "iu").test(text);
 }
 
-/// A card's question as the words of a message: its question, then each option numbered, and how to answer.
+/// A card's question as the words of a message (where the anchor takes no decision): its question, then each option
+/// numbered, and how to answer.
 export function cardWords(text: string, card: Json, lang = stationLang()): { words: string; options: string[] } {
   const options = card?.type === "options" && Array.isArray(card.options) ? card.options.map((o: Json) => String(o?.label ?? "")).filter((l: string) => l !== "") : [];
   const lines = [text.trimEnd()];
@@ -88,24 +105,72 @@ export function cardWords(text: string, card: Json, lang = stationLang()): { wor
   return { words: lines.join("\n").replace(/^\n+/, ""), options };
 }
 
-/// Nothing is said in a conversation while the agent works: the IM has no status line.
-class Quiet extends StatusLine {
-  protected async show(): Promise<boolean> {
-    return true;
+/// A card as a decision's body (the IM's `decision.ask`): its question, its options (each its label, the line under
+/// it and whether it is the one recommended) or a field to type into.
+export function decisionBody(text: string, card: Json): Json {
+  // (as the anchor takes them: 8 options at most, each label once, a label, a line under it and a hint 200 characters)
+  const cut = (s: string) => Array.from(s).slice(0, OPTION_MOST).join("");
+  if (card?.type === "text") return { text, input: "text", options: [], placeholder: cut(typeof card.placeholder === "string" ? card.placeholder : ""), files: [] };
+  const seen = new Set<string>();
+  const options = (Array.isArray(card?.options) ? card.options : [])
+    .filter((o: Json) => typeof o?.label === "string" && o.label.trim() !== "")
+    .map((o: Json) => ({ ...o, label: cut(o.label) }))
+    .filter((o: Json) => !seen.has(o.label) && (seen.add(o.label), true))
+    .slice(0, OPTIONS_MOST)
+    .map((o: Json) => ({ label: o.label, ...(typeof o.detail === "string" && o.detail !== "" ? { detail: cut(o.detail) } : {}), ...(o.recommended === true ? { recommended: true } : {}) }));
+  return { text, input: "options", options, files: [] };
+}
+
+/// The thread of a space's stream, and the stream of a thread.
+export const threadOf = (space: string, topic: string): ThreadRef => ({ channel: space, threadTs: topic === LOBBY || topic === "" ? space : topic });
+export const streamOf = (thread: ThreadRef): { space: string; topic: string } => ({ space: thread.channel, topic: thread.threadTs === thread.channel ? LOBBY : thread.threadTs });
+/// A stream's key, as the IM's session says it (session.mbt `stream_of`).
+export const streamKey = (space: string, topic: string) => (topic === LOBBY || topic === "" ? space : `${space}/${topic}`);
+
+const filesOf = (v: unknown): FileRef[] =>
+  (Array.isArray(v) ? v : []).filter((f) => typeof f?.sha256 === "string" && /^[0-9a-f]{64}$/.test(f.sha256)).map((f) => ({ sha256: f.sha256, name: typeof f.name === "string" ? f.name : "", mime: typeof f.mime === "string" ? f.mime : "", size: typeof f.size === "number" ? f.size : 0, ...(f.width > 0 && f.height > 0 ? { width: f.width, height: f.height } : {}) }));
+const text = (v: unknown) => (typeof v === "string" ? v : "");
+
+/// What the agent does, as the stream's live state: said to the anchor as it changes (and again while it stands, so
+/// the anchor keeps it), taken back ("done") as the turn ends.
+class GroupLive extends StatusLine {
+  private readonly tell: (status: string, messageTs: string | null) => Promise<boolean>;
+  private readonly runs: Run;
+  private standing = "";
+  private again = false;
+
+  constructor(run: Run, tell: (status: string, messageTs: string | null) => Promise<boolean>) {
+    super(run, LIVE_INTERVAL_MS);
+    this.runs = run;
+    this.tell = tell;
+  }
+
+  protected async show(status: string): Promise<boolean> {
+    const shown = await this.tell(status, this.messageTs);
+    if (shown) this.standing = status;
+    if (shown && status !== "" && !this.again) {
+      this.again = true;
+      const loop: Effect.Effect<void> = Effect.sleep(LIVE_AGAIN_MS).pipe( // timer: a heartbeat that keeps the anchor's live state (its 90 s)
+        Effect.andThen(Effect.promise(async () => (this.standing === "" ? false : (await this.tell(this.standing, this.messageTs), true)))),
+        Effect.flatMap((more) => (more ? loop : Effect.sync(() => void (this.again = false)))),
+      );
+      void this.runs(loop).catch(() => {});
+    }
+    return shown;
   }
 }
 
 export type GroupSurfaceOptions = {
   connect: string;
-  /// The server's endpoint id (64 hex) and its relays; where it is besides (a test's).
+  /// The anchor's endpoint id (64 hex) and its relays; where it is besides (a test's).
   server: string;
   relays: string[];
   ips?: string[];
-  /// The connect's key (32 bytes, hex): this device on the server.
+  /// The connect's key (32 bytes, hex): this device in the community, what its events are signed by.
   key: string;
   /// The code it joins by (an invitation, a device code) while it has not; null once it has.
   code: string | null;
-  /// The name it joins as, and is renamed to where the server has another.
+  /// The name it joins as, and is renamed to where the anchor has another.
   botName: string | null;
   threads: GroupThreads;
   book?: NameBook | null;
@@ -129,26 +194,51 @@ export class GroupSurface extends ConnectedSurface {
   private readonly linkPingMs: number;
   private readonly linkStaleMs: number;
   private readonly heardHook: () => void;
+  private readonly clockOf: Clock.Clock | undefined;
+  private readonly key: KeyObject;
+  /// This device (the key's public half).
+  readonly deviceId: string;
+  private readonly hlc = new Hlc();
   /// Whether it was let in since it started: then it says no code again.
   private joined = false;
-  /// The conversations it is in, as last heard.
-  private conversations = new Map<string, Conversation>();
-  /// Conversations it was put in while it listened (an event said so) and has taken no message of yet: the first
-  /// message the stream gives of one is the first that is new to it.
-  private joining = new Set<string>();
-  /// Conversations first heard of in this run's listing, their last number taken as history: one the stream then says
-  /// it was made or put in (after the stream opened, before the listing) is joining after all.
+  /// The spaces it is in, as last heard, and their topics (by `<space>/<topic>`).
+  private spaceRows = new Map<string, Space>();
+  private topics = new Map<string, Topic>();
+  /// Where each space's events were taken to in this run (what the next sync goes on from).
+  private cursors = new Map<string, number>();
+  /// Spaces first heard of in this run, their events up to the place they had then taken as history (`floor`); of those
+  /// first heard of in a sync as a run began (`provisional`), an event the stream then tells at or under it was taken
+  /// after the stream opened: new after all.
+  private floors = new Map<string, number>();
   private provisional = new Set<string>();
+  /// Spaces whose every event this run took, from their first: their streams' tails are their whole.
+  private whole = new Set<string>();
+  /// Each stream's last messages (`TAIL_MOST`), and each kept message by its id and its place.
+  private tails = new Map<string, Said[]>();
+  private byId = new Map<string, Said>();
+  private byAseq = new Map<string, Said>();
+  /// Streams whose tail let messages go.
+  private cut = new Set<string>();
   /// The members' names, by id.
   private members = new Map<string, string>();
-  /// Each conversation's card still waiting: its message's number and its options, by their number. A person's next
-  /// message there closes it, answered or not (`answered`), as does its end on the station (`cardEnded`).
-  private asked = new Map<string, { ts: string; options: string[] }>();
-  /// Events go one at a time, in order.
-  private taking: Promise<void> = Promise.resolve();
+  /// The decisions it asked that wait (by their event's id), and each stream's card still waiting: its ts, its event and
+  /// its options (to read a number said after it). A person's next message there closes it, answered or not
+  /// (`answered`), as does its end on the station (`cardEnded`).
+  private asks = new Map<string, { stream: string; ts: string }>();
+  private asked = new Map<string, { ts: string; id: string; options: string[] }>();
+  /// Its decisions closed so (their ids, the last `CLOSED_KEPT`): an answer to one after is no word to the agent.
+  private closed = new Set<string>();
+  /// Secrets handed it, until the session fetched them (by their file's id), and those already taken.
+  private secrets = new Map<string, Buffer>();
+  private secretsSeen = new Set<string>();
+  /// Events go one at a time, in order (the stream's, a sync's); and what it says, one event at a time.
+  private taking: Promise<unknown> = Promise.resolve();
+  private saying: Promise<unknown> = Promise.resolve();
+  private handler: Handler | null = null;
+  private acceptingSecrets = false;
 
   constructor(options: GroupSurfaceOptions) {
-    if (!/^[0-9a-f]{64}$/.test(options.server)) throw new Error("group.server is the IM server's endpoint id (64 hex)");
+    if (!/^[0-9a-f]{64}$/.test(options.server)) throw new Error("group.server is the IM anchor's endpoint id (64 hex)");
     if (!/^[0-9a-f]{64}$/.test(options.key)) throw new Error("group.key is missing");
     super({ connect: options.connect, book: options.book ?? null, pingMs: options.pingMs ?? PING_MS, staleMs: options.staleMs ?? STALE_MS, backoffMs: options.backoffMs, clock: options.clock, onHeard: options.onHeard });
     this.connect = options.connect;
@@ -159,10 +249,17 @@ export class GroupSurface extends ConnectedSurface {
     this.linkPingMs = options.pingMs ?? PING_MS;
     this.linkStaleMs = options.staleMs ?? STALE_MS;
     this.heardHook = options.onHeard ?? (() => {});
+    this.clockOf = options.clock;
+    this.key = signingKey(options.key);
+    this.deviceId = deviceOfKey(this.key);
     this.link = new GroupLink({ endpoints: options.endpoints, secretKey: Buffer.from(options.key, "hex"), server: options.server, relays: options.relays, ...(options.ips ? { ips: options.ips } : {}) });
   }
 
-  /// This device's endpoint id: what the server knows the connect's key by.
+  private now(): number {
+    return this.clockOf?.currentTimeMillisUnsafe() ?? wall.now();
+  }
+
+  /// This device's endpoint id: what the anchor knows the connect's key by.
   device(): Promise<string> {
     return this.link.device();
   }
@@ -172,11 +269,11 @@ export class GroupSurface extends ConnectedSurface {
     const hello = !this.joined && this.code !== null ? { credential: this.code, ...(this.wanted !== null ? { name: this.wanted } : {}) } : { credential: "" };
     let me = await this.link.connect(hello);
     this.joined = true;
-    if (me.joined) log.info("group", "joined the server", { connect: this.connect, member: me.member });
+    if (me.joined) log.info("group", "joined the community", { connect: this.connect, member: me.member });
     if (this.wanted !== null && this.wanted !== me.name) {
       const renamed = await this.link.ask("POST", "/me/name", { name: this.wanted }).catch(() => null);
       if (renamed?.status === 200) me = { ...me, name: this.wanted };
-      else log.warn("group", "the bot's name not set on the server", { connect: this.connect, status: renamed?.status ?? null });
+      else log.warn("group", "the bot's name not set on the anchor", { connect: this.connect, status: renamed?.status ?? null });
     }
     return { team: "", teamId: this.server, url: "", botUserId: me.member, botName: me.name, botImage: null, botId: "" };
   }
@@ -205,11 +302,20 @@ export class GroupSurface extends ConnectedSurface {
     await this.link.close();
   }
 
-  /// One run of its link: let in again where it went, its event stream opened from where the last one was, what was
-  /// said meanwhile read where that cannot be, then each event taken in order, the control stream pinged meanwhile.
-  /// Ends as the stream does; fails (so its backoff counts) where it could not be opened, or the link stopped answering.
+  /// `f` after what is being taken, in turn.
+  private inTurn<T>(f: () => Promise<T>): Promise<T> {
+    const turn = this.taking.then(f);
+    this.taking = turn.catch(() => {});
+    return turn;
+  }
+
+  /// One run of its link: let in again where it went, the anchor's stream opened, what each space took meanwhile
+  /// synced, then each event taken in order, the control stream pinged meanwhile. Ends as the stream does; fails (so
+  /// its backoff counts) where it could not be opened, or the link stopped answering.
   runSocket(_url: string, handler: Handler): Effect.Effect<void, Error> {
     const self = this;
+    this.handler = handler;
+    this.acceptSecrets();
     const run = Effect.callback<void, Error>((resume) => {
       let cancel = () => {};
       let over = false;
@@ -221,26 +327,24 @@ export class GroupSurface extends ConnectedSurface {
             self.changed();
           }
         }
-        const since = self.threads.since(self.connect);
-        const reply = await self.link.stream("GET", since === null ? "/events" : `/events?since=${encodeURIComponent(since)}`);
+        const reply = await self.link.stream("GET", "/events");
         cancel = reply.cancel;
         if (over) return reply.cancel();
         if (reply.status !== 200) {
           reply.cancel();
           throw new GroupUnreached(`the event stream was answered ${reply.status}`);
         }
-        self.provisional.clear();
         await self.readMembers().catch((e) => log.warn("group", "members not read", { connect: self.connect, error: (e as Error).message }));
-        const resumed = since !== null && reply.headers[RESUMED] === "1";
-        if (!resumed) await self.catchUp(handler);
+        // (the stream follows from its answer on: what it tells after is what this sync did not have)
+        await self.inTurn(async () => {
+          self.provisional.clear();
+          await self.sync(handler, true);
+        });
         self.setStatus(true, null);
         const sse = new SseLines();
         for await (const chunk of reply.chunks) {
           self.heardHook();
-          for (const [event, data, id] of sse.feed(chunk)) {
-            if (event !== "") await self.take(event, data, handler);
-            if (id !== null) self.threads.heardEvent(self.connect, id);
-          }
+          for (const [event, data] of sse.feed(chunk)) if (event !== "") await self.inTurn(() => self.take(event, data, handler));
         }
         // (ended: dialled again at once, as a socket the platform closed is; the link down fails that, on the backoff)
         self.setStatus(false, null);
@@ -268,59 +372,76 @@ export class GroupSurface extends ConnectedSurface {
   private async readMembers() {
     const answer = await this.link.ask("GET", "/members");
     if (answer.status !== 200) return;
-    for (const m of JSON.parse(answer.body.toString())?.members ?? []) {
-      if (typeof m?.id !== "string" || typeof m?.name !== "string") continue;
-      this.members.set(m.id, m.name);
-      this.names.set(m.id, { name: m.name, email: "" });
-    }
+    for (const m of JSON.parse(answer.body.toString())?.members ?? []) this.heardMember(m);
   }
 
-  private async listed(): Promise<Conversation[]> {
-    const answer = await this.link.ask("GET", "/conversations");
-    if (answer.status !== 200) throw new Error(`the conversations were answered ${answer.status}`);
-    const out: Conversation[] = [];
-    for (const c of JSON.parse(answer.body.toString())?.conversations ?? []) {
-      if (typeof c?.id !== "string") continue;
-      const conversation: Conversation = { id: c.id, kind: c.kind === "group" ? "group" : "private", members: Array.isArray(c.members) ? c.members.filter((m: unknown) => typeof m === "string") : [], name: typeof c.name === "string" ? c.name : null, last: typeof c.last === "number" ? c.last : 0 };
-      this.conversations.set(c.id, conversation);
-      out.push(conversation);
-    }
-    return out;
+  private heardMember(m: Json) {
+    if (typeof m?.id !== "string" || typeof m?.name !== "string") return;
+    const known = this.members.get(m.id);
+    this.members.set(m.id, m.name);
+    this.names.set(m.id, { name: m.name, email: "" });
+    if (known !== undefined && known !== m.name) this.book?.person(personKey(this.connect, m.id), async () => ({ name: m.name, email: "" }), (had) => had.name !== m.name);
   }
 
-  /// What was said in its conversations since the last message taken of each; one first heard of is taken as it is now.
-  async catchUp(handler: Handler) {
-    for (const c of await this.listed()) {
-      const last = this.threads.last(this.connect, c.id);
-      if (last === undefined) {
-        if (!this.joining.has(c.id)) {
-          this.threads.took(this.connect, c.id, c.last ?? 0);
-          this.provisional.add(c.id);
-        }
-        continue;
+  /// A space as the anchor says it is now (its row: `space_json`).
+  private heardSpace(j: Json): Space | null {
+    if (typeof j?.id !== "string") return null;
+    const s: Space = { id: j.id, kind: j.kind === "direct" ? "direct" : "space", name: text(j.name), members: Array.isArray(j.members) ? j.members.filter((m: unknown) => typeof m === "string") : [] };
+    this.spaceRows.set(s.id, s);
+    if (s.kind === "space" && s.name !== "") this.book?.channel(channelKey(this.connect, s.id), async () => s.name);
+    return s;
+  }
+
+  /// Where a space's events were taken to (0: none).
+  private cursor(space: string): number {
+    return this.cursors.get(space) ?? this.threads.space(this.connect, space)?.aseq ?? 0;
+  }
+
+  /// What each space took after what was taken of it, taken in, in order; spaces left let go of. A space first heard of
+  /// has what it had then taken as history (`first`: as a run begins, where the stream may tell some of it again).
+  private async sync(handler: Handler, first = false) {
+    for (;;) {
+      const since: Record<string, number> = {};
+      for (const id of new Set([...Object.keys(this.threads.spaces(this.connect)), ...this.cursors.keys()])) since[id] = this.cursor(id);
+      const answer = await this.link.ask("POST", "/sync", { since });
+      if (answer.status !== 200) throw new GroupUnreached(`the anchor did not answer what this device lacks (${answer.status})`);
+      const said = JSON.parse(answer.body.toString());
+      for (const id of Array.isArray(said?.left) ? said.left : []) if (typeof id === "string") this.left(id);
+      for (const j of Array.isArray(said?.spaces) ? said.spaces : []) {
+        const s = this.heardSpace(j);
+        if (s === null || this.threads.space(this.connect, s.id) !== undefined || this.floors.has(s.id)) continue;
+        const floor = typeof j.last_aseq === "number" ? j.last_aseq : 0;
+        this.floors.set(s.id, floor);
+        if (first) this.provisional.add(s.id);
+        this.whole.add(s.id);
+        this.cursors.set(s.id, 0);
+        // (history: what was there before is not asked again of a station started again)
+        this.threads.took(this.connect, s.id, floor);
       }
-      if ((c.last ?? 0) > last) await this.readAfter(c, last, handler);
+      if (said?.dseq !== null && typeof said?.dseq === "object") for (const [space, n] of Object.entries(said.dseq)) if (typeof n === "number") this.threads.said(this.connect, space, n, "");
+      for (const j of Array.isArray(said?.events) ? said.events : []) await this.heard(j, handler);
+      if (said?.more !== true) return;
     }
   }
 
-  /// Its messages after `after`, each taken in order.
-  private async readAfter(c: Conversation, after: number, handler: Handler) {
-    for (let from = after; ; ) {
-      const answer = await this.link.ask("GET", `/conversations/${encodeURIComponent(c.id)}/messages?after=${from}`);
-      if (answer.status !== 200) return;
-      const read = JSON.parse(answer.body.toString());
-      const messages: GroupMessage[] = Array.isArray(read?.messages) ? read.messages : [];
-      for (const m of messages) await this.heard(c, m, handler);
-      if (read?.more !== true || messages.length === 0) return;
-      from = messages[messages.length - 1]!.n;
+  /// A space this member is in no more.
+  private left(space: string) {
+    this.spaceRows.delete(space);
+    this.cursors.delete(space);
+    this.floors.delete(space);
+    this.provisional.delete(space);
+    this.whole.delete(space);
+    for (const k of [...this.tails.keys()]) {
+      if (k !== space && !k.startsWith(`${space}/`)) continue;
+      for (const m of this.tails.get(k)!) {
+        this.byId.delete(m.id);
+        this.byAseq.delete(`${space}#${m.aseq}`);
+      }
+      this.tails.delete(k);
+      this.cut.delete(k);
     }
-  }
-
-  private async conversationOf(id: string): Promise<Conversation | null> {
-    const known = this.conversations.get(id);
-    if (known) return known;
-    await this.listed().catch(() => []);
-    return this.conversations.get(id) ?? null;
+    for (const k of [...this.topics.keys()]) if (k.startsWith(`${space}/`)) this.topics.delete(k);
+    this.threads.forget(this.connect, space);
   }
 
   /// One event of the stream.
@@ -331,186 +452,490 @@ export class GroupSurface extends ConnectedSurface {
     } catch {
       return;
     }
-    if (event === "conversation" && typeof told?.id === "string") {
-      const had = this.conversations.get(told.id);
-      this.conversations.set(told.id, { id: told.id, kind: told.kind === "group" ? "group" : "private", members: Array.isArray(told.members) ? told.members : [], name: typeof told.name === "string" ? told.name : null, last: had?.last });
-      if (typeof told.name === "string" && told.kind === "group") this.book?.channel(channelKey(this.connect, told.id), async () => told.name);
-      if (this.threads.last(this.connect, told.id) === undefined || this.provisional.delete(told.id)) {
-        this.threads.forget(this.connect, told.id);
-        this.joining.add(told.id);
+    if (event === "event") return this.heard(told?.stamped, handler, true);
+    if (event === "space") {
+      const s = this.heardSpace(told);
+      // (a space it is put in while it listens: what it had then is history, what comes after is not)
+      if (s !== null && this.threads.space(this.connect, s.id) === undefined && !this.floors.has(s.id)) {
+        const floor = typeof told.last_aseq === "number" ? told.last_aseq : 0;
+        this.floors.set(s.id, floor);
+        this.whole.add(s.id);
+        this.cursors.set(s.id, 0);
+        this.threads.took(this.connect, s.id, floor);
+        await this.sync(handler);
       }
       return;
     }
-    if (event === "left" && typeof told?.conversation === "string") {
-      this.conversations.delete(told.conversation);
-      this.joining.delete(told.conversation);
-      this.threads.forget(this.connect, told.conversation);
-      return;
-    }
-    if (event === "member" && typeof told?.id === "string" && typeof told?.name === "string") {
-      this.members.set(told.id, told.name);
-      this.names.set(told.id, { name: told.name, email: "" });
-      this.book?.person(personKey(this.connect, told.id), async () => ({ name: told.name, email: "" }), (known) => known.name !== told.name);
-      return;
-    }
-    if (event === "missed") return this.catchUp(handler);
-    if ((event === "message" || event === "message_updated") && typeof told?.conversation === "string" && typeof told?.n === "number") {
-      const c = await this.conversationOf(told.conversation);
-      if (c === null) return;
-      if (event === "message_updated") return this.updated(c, told, handler);
-      let last = this.threads.last(this.connect, c.id);
-      if (last === undefined) {
-        // (put in it while listening: what came before this is history)
-        this.joining.delete(c.id);
-        last = told.n - 1;
-        this.threads.took(this.connect, c.id, last);
+    if (event === "left" && typeof told?.space === "string") return this.left(told.space);
+    if (event === "member") return this.heardMember(told);
+    if (event === "stop") return this.stopPressed(told, handler);
+    if (event === "secret") return this.secretHeard(told, handler);
+  }
+
+  /// A stamped event, taken once in its space's order: folded into what the station keeps of the space, handed to the
+  /// hub where it is a person's word to it. One after a gap is what the next sync brings, with those before it.
+  private async heard(j: Json, handler: Handler, streamed = false) {
+    const aseq = typeof j?.aseq === "number" ? j.aseq : 0;
+    const space = typeof j?.event?.space === "string" ? j.event.space : "";
+    if (aseq < 1 || space === "") return;
+    const at = this.cursor(space);
+    if (aseq <= at) {
+      // (taken as history in the sync a run began with, though the stream says it was taken after it opened)
+      const floor = this.floors.get(space);
+      if (streamed && this.provisional.has(space) && floor !== undefined && aseq <= floor) {
+        const s = stampedOf(j);
+        if (s !== null) await this.toHub(s, handler);
       }
-      if (told.n > last + 1) await this.readAfter(c, last, handler);
-      await this.heard(c, told, handler);
+      return;
+    }
+    if (aseq > at + 1) {
+      if (streamed) await this.sync(handler);
+      return;
+    }
+    const s = stampedOf(j);
+    this.cursors.set(space, aseq);
+    if (s === null) {
+      log.warn("group", "an event not signed by its device: not taken", { connect: this.connect, space, aseq });
+      this.threads.took(this.connect, space, aseq);
+      return;
+    }
+    this.hlc.saw(s.event.hlc[0], s.event.hlc[1]);
+    const said = this.fold(s);
+    const floor = this.floors.get(space) ?? 0;
+    if (aseq > floor) await this.toHub(s, handler);
+    this.threads.took(this.connect, space, aseq, said ? streamKey(space, s.event.topic) : undefined);
+  }
+
+  /// What an event changes of what the station keeps of its space; whether it is a message.
+  private fold(s: Stamped): boolean {
+    const e = s.event;
+    const b = e.body ?? {};
+    if (e.device === this.deviceId) this.threads.said(this.connect, e.space, e.dseq, s.id);
+    switch (e.kind) {
+      case "space.create": {
+        const had = this.spaceRows.get(e.space);
+        if (!had) this.spaceRows.set(e.space, { id: e.space, kind: e.space.startsWith("d_") ? "direct" : "space", name: text(b.name), members: Array.isArray(b.members) ? b.members : [] });
+        return false;
+      }
+      case "space.members": {
+        const had = this.spaceRows.get(e.space);
+        if (!had) return false;
+        const gone = new Set<string>([...(Array.isArray(b.remove) ? b.remove : []), ...(b.leave === true ? [e.author] : [])]);
+        const members = [...new Set([...had.members, ...(Array.isArray(b.add) ? b.add : [])])].filter((m) => !gone.has(m));
+        this.spaceRows.set(e.space, { ...had, members, name: typeof b.name === "string" ? b.name : had.name });
+        return false;
+      }
+      case "topic.open":
+        if (typeof b.topic === "string") this.topics.set(`${e.space}/${b.topic}`, { title: text(b.title), by: e.author, branchedFrom: text(b.branched_from) });
+        return false;
+      case "topic.patch": {
+        const had = this.topics.get(`${e.space}/${text(b.topic)}`);
+        if (had && typeof b.title === "string") had.title = b.title;
+        return false;
+      }
+      case "msg.post":
+      case "decision.ask": {
+        const m: Said = { id: s.id, space: e.space, topic: e.topic, aseq: s.aseq, kind: e.kind, author: e.author, text: text(b.text), files: filesOf(b.files), replyTo: text(b.reply_to), deleted: false };
+        const key = streamKey(e.space, e.topic);
+        const tail = this.tails.get(key) ?? [];
+        tail.push(m);
+        while (tail.length > TAIL_MOST) {
+          const gone = tail.shift()!;
+          this.byId.delete(gone.id);
+          this.byAseq.delete(`${gone.space}#${gone.aseq}`);
+          this.cut.add(key);
+        }
+        this.tails.set(key, tail);
+        this.byId.set(m.id, m);
+        this.byAseq.set(`${e.space}#${s.aseq}`, m);
+        return true;
+      }
+      case "msg.edit": {
+        const m = this.byId.get(text(b.target));
+        if (m && m.author === e.author && !m.deleted) m.text = text(b.text);
+        return false;
+      }
+      case "msg.unsend": {
+        const m = this.byId.get(text(b.target));
+        if (m && m.author === e.author) {
+          m.deleted = true;
+          m.text = "";
+          m.files = [];
+        }
+        return false;
+      }
+      default:
+        return false;
     }
   }
 
-  /// A message, taken once (by its number): handed to the hub unless it is the bot's own or was deleted.
-  private async heard(c: Conversation, m: GroupMessage, handler: Handler) {
-    const last = this.threads.last(this.connect, c.id) ?? 0;
-    if (m.n <= last) return;
-    if (m.from !== this.botUserId() && m.deleted === undefined) {
-      const addressed = c.kind === "private" || mentions(m.text, this.botName());
-      const files: InboundFile[] = (m.files ?? []).filter((f) => typeof f?.id === "string").map((f) => ({ id: f.id, name: f.name || f.id, size: f.size ?? 0, url: `${c.id}/${f.id}` }));
+  /// Whether a topic is about the bot: its title mentions it, or it was branched from the bot's message or one that
+  /// mentions it.
+  private topicAboutBot(space: string, topic: string): boolean {
+    if (topic === LOBBY) return false;
+    const t = this.topics.get(`${space}/${topic}`);
+    if (t === undefined) return false;
+    if (mentions(t.title, this.botName())) return true;
+    const from = t.branchedFrom === "" ? undefined : this.byId.get(t.branchedFrom);
+    return from !== undefined && (from.author === this.botUserId() || mentions(from.text, this.botName()));
+  }
+
+  /// An event handed to the hub where it is a person's word to the agent: a message (a decision a person asked too), an
+  /// edit of one, an answer to one of the bot's decisions.
+  private async toHub(s: Stamped, handler: Handler) {
+    const e = s.event;
+    const b = e.body ?? {};
+    if (e.author === this.botUserId()) return;
+    const thread = threadOf(e.space, e.topic);
+    const stream = streamKey(e.space, e.topic);
+    const ts = String(s.aseq);
+    if (e.kind === "msg.post" || e.kind === "decision.ask") {
+      const m = this.byAseq.get(`${e.space}#${s.aseq}`);
+      const words = text(b.text);
+      const space = this.spaceRows.get(e.space);
+      const replied = m?.replyTo ? this.byId.get(m.replyTo) : undefined;
+      const firstOfTopic = e.topic !== LOBBY && (this.tails.get(stream)?.length ?? 0) <= 1 && !this.cut.has(stream);
+      const addressed = space?.kind === "direct" || mentions(words, this.botName()) || replied?.author === this.botUserId() || (firstOfTopic && this.topicAboutBot(e.space, e.topic));
+      const files: InboundFile[] = filesOf(b.files).map((f) => ({ id: f.sha256, name: f.name || f.sha256, size: f.size, url: `${e.space}/${f.sha256}` }));
+      // (what it answers, or where its topic was branched from: the message its reader is shown first)
+      const origin = firstOfTopic && replied === undefined ? this.topics.get(`${e.space}/${e.topic}`)?.branchedFrom : undefined;
+      const quoted = replied ?? (origin ? this.byId.get(origin) : undefined);
       await handler({
         type: "message",
-        message: { channel: c.id, threadTs: c.id, ts: String(m.n), user: m.from, text: this.answered(c.id, m.text), addressed, ...(files.length > 0 ? { files } : {}), ...(typeof m.replyTo === "number" ? { quoted: String(m.replyTo) } : {}) },
+        message: { channel: thread.channel, threadTs: thread.threadTs, ts, user: e.author, text: this.answered(stream, words), addressed, ...(files.length > 0 ? { files } : {}), ...(quoted !== undefined ? { quoted: String(quoted.aseq) } : {}) },
       });
+      return;
     }
-    this.threads.took(this.connect, c.id, m.n);
-  }
-
-  /// An edit of a message taken (a deletion is not taken: the station keeps what was said).
-  private async updated(c: Conversation, m: GroupMessage, handler: Handler) {
-    if (m.deleted !== undefined || m.from === this.botUserId()) return;
-    if (m.n > (this.threads.last(this.connect, c.id) ?? 0)) return;
-    await handler({ type: "changed", channel: c.id, threadTs: c.id, ts: String(m.n), text: m.text });
+    if (e.kind === "msg.edit") {
+      const m = this.byId.get(text(b.target));
+      if (m === undefined || m.author !== e.author || m.deleted) return;
+      await handler({ type: "changed", channel: thread.channel, threadTs: thread.threadTs, ts: String(m.aseq), text: text(b.text) });
+      return;
+    }
+    if (e.kind === "decision.resolve") {
+      const target = text(b.target);
+      const asked = this.asks.get(target);
+      const known = this.byId.get(target);
+      // (someone else's decision, or one of its own a person's message or the station closed: no word to the agent)
+      if (this.closed.has(target) || (asked === undefined && known !== undefined && known.author !== this.botUserId())) return;
+      this.asks.delete(target);
+      if (asked !== undefined && this.asked.get(asked.stream)?.id === target) this.asked.delete(asked.stream);
+      // (one asked before the station started again, whose ask it no longer has: to a session that follows the stream)
+      const addressed = asked !== undefined || known !== undefined || this.spaceRows.get(e.space)?.kind === "direct";
+      await handler({ type: "message", message: { channel: thread.channel, threadTs: thread.threadTs, ts, user: e.author, text: text(b.choice), addressed } });
+    }
   }
 
   /// A person's message where a card waits: it closes the card (a person's next message does, a decision or not), and
-  /// one that is an option's number is that option's words. Called once a message (`heard`).
-  private answered(conversation: string, text: string): string {
-    const waiting = this.asked.get(conversation);
-    if (waiting === undefined) return text;
-    this.asked.delete(conversation);
-    const n = /^\s*(\d{1,2})\s*$/.exec(text);
+  /// one that is an option's number is that option's words.
+  private answered(stream: string, words: string): string {
+    const waiting = this.asked.get(stream);
+    if (waiting === undefined) return words;
+    this.asked.delete(stream);
+    this.close(waiting.id);
+    const n = /^\s*(\d{1,2})\s*$/.exec(words);
     const label = n === null ? undefined : waiting.options[Number(n[1]) - 1];
-    return label === undefined ? text : label;
+    return label === undefined ? words : label;
   }
 
-  /// A card that stopped waiting on the station (withdrawn, replaced, closed): a number said after it is a number. Only
-  /// the card it was (by its message's number): one posted since stays.
+  /// A card that stopped waiting on the station (withdrawn, replaced, closed): a number said after it is a number, an
+  /// answer to it no word to the agent. Only the card it was (by its ts): one posted since stays.
   async cardEnded(thread: ThreadRef, ts: string, _text: string, _card: Json, _end: CardEnd): Promise<void> {
-    if (this.asked.get(thread.threadTs)?.ts === ts) this.asked.delete(thread.threadTs);
+    const { space, topic } = streamOf(thread);
+    const stream = streamKey(space, topic);
+    const waiting = this.asked.get(stream);
+    if (waiting?.ts !== ts) return;
+    this.asked.delete(stream);
+    this.close(waiting.id);
   }
 
-  private async upload(conversation: string, file: Attachment): Promise<string> {
+  /// One of its decisions closed other than by its answer.
+  private close(id: string) {
+    this.asks.delete(id);
+    this.closed.add(id);
+    if (this.closed.size > CLOSED_KEPT) this.closed.delete(this.closed.values().next().value!);
+  }
+
+  /// Stop pressed on a stream's live state: the turn working for it is stopped (where it is this bot's, or anyone's).
+  private async stopPressed(told: Json, handler: Handler) {
+    const space = text(told?.space);
+    if (!this.spaceRows.has(space)) return;
+    const target = text(told?.target);
+    if (target !== "" && target !== this.botUserId()) return;
+    const thread = threadOf(space, text(told?.topic) || LOBBY);
+    const ts = text(told?.message_ts) || String(typeof told?.at === "number" ? told.at : this.now());
+    // (pressed on what is shown now: never too early for the turn that shows it)
+    await handler({ type: "stop", channel: thread.channel, threadTs: thread.threadTs, ts, localAt: null });
+  }
+
+  // ── secrets ──
+
+  /// The connections other members' devices hand it a secret by, served as they come while the surface runs.
+  private acceptSecrets() {
+    if (this.acceptingSecrets) return;
+    this.acceptingSecrets = true;
+    void this.run(
+      Effect.scoped(
+        accept({ accept: () => this.link.accepted() }, {
+          serve: (conn) => this.secretDialled(conn),
+          failed: (error) => log.info("group", "a secret's connection ended", { connect: this.connect, error: String(error) }),
+          closing: "secret taken",
+        }),
+      ),
+    ).catch(() => {});
+  }
+
+  /// One secret on its own connection (`im-secret/1`): taken where its device is a device of the member it says it is
+  /// from, in the space it names, and answered.
+  private async secretDialled(conn: Connection) {
+    const stream = await conn.acceptBi();
+    if (stream === null) return;
+    const said = await new Reader(stream).line().catch(() => null);
+    const space = text(said?.space);
+    const from = text(said?.from);
+    let ok = false;
+    if (this.spaceRows.has(space) && from !== "" && this.link.open()) {
+      const answer = await this.link.ask("GET", `/spaces/${encodeURIComponent(space)}/devices?member=${encodeURIComponent(from)}`).catch(() => null);
+      const devices: unknown = answer?.status === 200 ? JSON.parse(answer.body.toString())?.devices : [];
+      ok = Array.isArray(devices) && devices.includes(conn.remoteId());
+    }
+    // (answered at once: the device that dialled waits a while, then hands it through the anchor instead)
+    await writeLine(stream, ok ? { ok: true } : { ok: false, error: "not a device of that member in that space" });
+    await stream.finish().catch(() => {});
+    if (ok && this.handler !== null) {
+      const handler = this.handler;
+      await this.inTurn(() => this.secretHeard(said, handler));
+    }
+    await stream.stopped().catch(() => {});
+  }
+
+  /// A secret handed to the bot: the session told of it by its label, its value a file of its uploads (fetched once, of
+  /// memory alone: `download`), never in a message's words. A card waiting there is closed by it, as by any message.
+  private async secretHeard(told: Json, handler: Handler) {
+    const id = text(told?.id);
+    const space = text(told?.space);
+    const from = text(told?.from);
+    const value = typeof told?.value === "string" ? told.value : null;
+    if (id === "" || value === null || from === "" || from === this.botUserId() || !this.spaceRows.has(space) || this.secretsSeen.has(id)) return;
+    this.secretsSeen.add(id);
+    if (this.secretsSeen.size > SECRETS_SEEN) this.secretsSeen.delete(this.secretsSeen.values().next().value!);
+    const label = text(told?.label).slice(0, 80) || "secret";
+    const topic = text(told?.topic) || LOBBY;
+    const thread = threadOf(space, topic);
+    const file = `secret-${id}`;
+    this.secrets.set(file, Buffer.from(value, "utf8"));
+    this.answered(streamKey(space, topic), "");
+    // (between the space's events, its own: a place no event of the space has)
+    const ts = `${this.cursor(space)}.${String(Number.parseInt(id.slice(0, 8), 16) || 1).padStart(10, "0")}`;
+    const name = this.members.get(from) ?? from;
+    const safe = Array.from(label).map((c) => (/[\w.-]/.test(c) ? c : "_")).join("");
+    await handler({
+      type: "message",
+      message: { channel: thread.channel, threadTs: thread.threadTs, ts, user: from, text: tr(stationLang(), "station.group.secretReceived", { label, name }), addressed: true, files: [{ id: file, name: `${safe}.secret`, size: Buffer.byteLength(value), url: `secret:${file}` }] },
+    });
+  }
+
+  // ── saying ──
+
+  /// An event this device says in a stream: signed after its last there, taken by the anchor. What the anchor gave it
+  /// (its id, place and number), or why it refused it.
+  private say(space: string, topic: string, kind: string, body: Json): Promise<{ id: string; aseq: number; n: number } | { refused: string }> {
+    const turn = this.saying.then(async () => {
+      for (let again = 0; ; again++) {
+        const kept = this.threads.space(this.connect, space) ?? { aseq: 0, dseq: 0, prev: "" };
+        const e = signEvent(this.key, { space, author: this.botUserId(), device: this.deviceId, dseq: kept.dseq + 1, hlc: this.hlc.next(this.now()), prev: kept.prev, topic, kind, body });
+        const id = eventId(e);
+        this.threads.said(this.connect, space, e.dseq, id);
+        const answer = await this.link.ask("POST", "/events", { events: [e] });
+        if (answer.status !== 200) throw new Error(`the anchor did not take the message (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
+        const r = JSON.parse(answer.body.toString())?.results?.[0];
+        if (typeof r?.aseq === "number") return { id, aseq: r.aseq, n: typeof r.n === "number" ? r.n : 0 };
+        const why = typeof r?.why === "string" ? r.why : "refused";
+        // (this device's count behind the anchor's, as a station's kept state went back: said again after it)
+        if (why === "dseq" && again === 0 && this.handler !== null) {
+          const handler = this.handler;
+          await this.inTurn(() => this.sync(handler));
+          continue;
+        }
+        return { refused: why };
+      }
+    });
+    this.saying = turn.catch(() => {});
+    return turn;
+  }
+
+  private async upload(space: string, file: Attachment): Promise<FileRef> {
     const size = (await stat(file.path)).size;
-    if (size > FILE_MOST) throw new Error(`${file.name} is ${size} bytes, more than the server takes (${FILE_MOST})`);
+    if (size > FILE_MOST) throw new Error(`${file.name} is ${size} bytes, more than the anchor takes (${FILE_MOST})`);
     const bytes = await readFile(file.path);
     const shape = imageSize(bytes);
     const query = `name=${encodeURIComponent(file.name)}&mime=${encodeURIComponent(mimeOf(file.name))}${shape === null ? "" : `&width=${shape.width}&height=${shape.height}`}`;
-    const answer = await this.link.ask("POST", `/conversations/${encodeURIComponent(conversation)}/files?${query}`, bytes);
-    const id = answer.status < 300 ? JSON.parse(answer.body.toString())?.file?.id : undefined;
-    if (typeof id !== "string") throw new Error(`the server did not take ${file.name} (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
-    return id;
+    const answer = await this.link.ask("POST", `/spaces/${encodeURIComponent(space)}/files?${query}`, bytes);
+    const got = answer.status < 300 ? filesOf([JSON.parse(answer.body.toString())?.file])[0] : undefined;
+    if (got === undefined) throw new Error(`the anchor did not take ${file.name} (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
+    return got;
   }
 
-  private async send(conversation: string, text: string, files: string[]): Promise<GroupMessage> {
-    const body: Json = { id: randomUUID() };
-    if (text !== "") body.text = text;
-    if (files.length > 0) body.files = files;
-    const answer = await this.link.ask("POST", `/conversations/${encodeURIComponent(conversation)}/messages`, body);
-    const message = answer.status < 300 ? JSON.parse(answer.body.toString())?.message : undefined;
-    if (typeof message?.n !== "number") throw new Error(`the server did not take the message (${answer.status}: ${answer.body.toString().slice(0, 200)})`);
-    this.threads.took(this.connect, conversation, message.n);
-    return message;
-  }
-
-  /// The agent's words (a card's question and options with them) and its files, as one message where they fit; its
-  /// number stands for the whole.
+  /// The agent's words and its files, as one message where they fit, a card as a decision (its words where the anchor
+  /// takes none); the first one's ts stands for the whole.
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
-    const conversation = thread.threadTs;
-    let text = message;
-    let options: string[] | null = null;
-    if (card && (card.type === "options" || card.type === "text")) {
-      const said = cardWords(message, card);
-      text = said.words;
-      options = said.options;
-      this.asked.delete(conversation);
+    const { space, topic } = streamOf(thread);
+    const stream = streamKey(space, topic);
+    const asking = card && (card.type === "options" || card.type === "text") ? card : null;
+    if (asking) {
+      const was = this.asked.get(stream);
+      if (was) this.close(was.id);
+      this.asked.delete(stream);
     }
-    const ids: string[] = [];
-    for (const file of files) ids.push(await this.upload(conversation, file));
-    const parts = text === "" ? [""] : splitForSlack(text, CHARS_MOST);
-    let first: GroupMessage | null = null;
+    const refs: FileRef[] = [];
+    for (const file of files) refs.push(await this.upload(space, file));
+    const parts = message === "" ? [""] : splitForSlack(message, CHARS_MOST);
+    for (let at = FILES_MOST; at < refs.length; at += FILES_MOST) parts.push("");
+    let first: string | null = null;
     for (const [i, part] of parts.entries()) {
-      const sent = await this.send(conversation, part, i === 0 ? ids : []);
-      first ??= sent;
+      const carried = refs.slice(i * FILES_MOST, (i + 1) * FILES_MOST);
+      const fileJson = carried.map((f) => ({ ...f }));
+      if (i === 0 && asking) {
+        const ts = await this.ask(space, topic, stream, part, fileJson, asking);
+        first ??= ts;
+        continue;
+      }
+      const r = await this.say(space, topic, "msg.post", { text: part, files: fileJson });
+      if ("refused" in r) throw new Error(`the anchor did not take the message (${r.refused})`);
+      first ??= String(r.aseq);
     }
     if (first === null) throw new Error("nothing to post");
-    if (options !== null && options.length > 0) this.asked.set(conversation, { ts: String(first.n), options });
-    return String(first.n);
+    return first;
+  }
+
+  /// A card asked as a decision, waiting: its ts. Where the anchor takes no such decision, its question and numbered
+  /// options go as words.
+  private async ask(space: string, topic: string, stream: string, part: string, files: Json[], card: Json): Promise<string> {
+    const body = { ...decisionBody(part, card), files };
+    const r = await this.say(space, topic, "decision.ask", body);
+    if (!("refused" in r)) {
+      const options = Array.isArray(body.options) ? body.options.map((o: Json) => o.label) : [];
+      this.asks.set(r.id, { stream, ts: String(r.aseq) });
+      this.asked.set(stream, { ts: String(r.aseq), id: r.id, options });
+      return String(r.aseq);
+    }
+    // (an anchor from before decisions, or one that takes none of these: its words, answered by number)
+    log.info("group", "a card asked as words", { connect: this.connect, why: r.refused });
+    const said = cardWords(part, card);
+    const words = await this.say(space, topic, "msg.post", { text: said.words, files });
+    if ("refused" in words) throw new Error(`the anchor did not take the message (${words.refused})`);
+    if (said.options.length > 0) this.asked.set(stream, { ts: String(words.aseq), id: words.id, options: said.options });
+    return String(words.aseq);
+  }
+
+  /// What the agent does in a stream, said as its live state ("": done).
+  private async live(thread: ThreadRef, status: string, messageTs: string | null): Promise<boolean> {
+    const { space, topic } = streamOf(thread);
+    if (!this.link.open()) return false;
+    const answer = await this.link
+      .ask("POST", `/spaces/${encodeURIComponent(space)}/live`, { topic, state: status === "" ? "done" : "working", text: Array.from(status).slice(0, LIVE_MOST).join(""), stoppable: status !== "", ...(messageTs !== null ? { message_ts: messageTs } : {}) })
+      .catch(() => null);
+    // (an anchor with no live state answers 404: nothing to show it again)
+    return answer !== null && answer.status !== 503;
   }
 
   async download(file: InboundFile): Promise<Uint8Array> {
+    if (file.url?.startsWith("secret:")) {
+      const id = file.url.slice("secret:".length);
+      const value = this.secrets.get(id);
+      this.secrets.delete(id);
+      if (value === undefined) throw new Error("the secret was fetched already");
+      return value;
+    }
     const at = file.url?.indexOf("/") ?? -1;
-    if (file.url === null || at < 0) throw new Error("the server does not give its contents");
-    const answer = await this.link.ask("GET", `/conversations/${encodeURIComponent(file.url.slice(0, at))}/files/${encodeURIComponent(file.url.slice(at + 1))}`);
-    if (answer.status !== 200) throw new Error(`the server answered ${answer.status} for ${file.name}`);
+    if (file.url === null || at < 0) throw new Error("the anchor does not give its contents");
+    const answer = await this.link.ask("GET", `/spaces/${encodeURIComponent(file.url.slice(0, at))}/files/${encodeURIComponent(file.url.slice(at + 1))}`);
+    if (answer.status !== 200) throw new Error(`the anchor answered ${answer.status} for ${file.name}`);
     return answer.body;
   }
 
-  private messageOf(m: GroupMessage, conversation: string): ChatMessage {
-    const files: InboundFile[] = (m.files ?? []).map((f) => ({ id: f.id, name: f.name || f.id, size: f.size ?? 0, url: `${conversation}/${f.id}` }));
-    return { ts: String(m.n), user: m.from, text: m.text, fromBot: m.from === this.botUserId(), ...(files.length > 0 ? { files } : {}) };
+  private messageOf(m: Said): ChatMessage {
+    const files: InboundFile[] = m.files.map((f) => ({ id: f.sha256, name: f.name || f.sha256, size: f.size, url: `${m.space}/${f.sha256}` }));
+    return { ts: String(m.aseq), user: m.author, text: m.text, fromBot: m.author === this.botUserId(), ...(files.length > 0 ? { files } : {}) };
   }
 
-  /// What the conversation said before `before` (a message's number), its last `limit`.
+  /// A space's events after `after`, read of the anchor (500 at most), checked.
+  private async eventsAfter(space: string, after: number): Promise<Stamped[]> {
+    const answer = await this.link.ask("GET", `/spaces/${encodeURIComponent(space)}/events?after=${after}`);
+    if (answer.status !== 200) return [];
+    const got = JSON.parse(answer.body.toString())?.events;
+    return (Array.isArray(got) ? got : []).map(stampedOf).filter((s): s is Stamped => s !== null);
+  }
+
+  /// What a stream said before `before` (an event's place), its last `limit` (where a topic was branched from is its
+  /// first message's quote: `toHub`). Of what is kept where the station heard the space from its first event, else
+  /// read of the anchor.
   history(thread: ThreadRef, before: string, limit: number): Promise<ChatMessage[]> {
     return (async () => {
-      const n = Number(before);
-      const most = Math.max(1, Math.min(READ_MOST, Math.trunc(limit)));
-      const query = Number.isSafeInteger(n) && n > 0 ? `last=${most}&before=${n}` : `last=${most}`;
-      const answer = await this.link.ask("GET", `/conversations/${encodeURIComponent(thread.threadTs)}/messages?${query}`);
-      if (answer.status !== 200) return [];
-      const messages: GroupMessage[] = JSON.parse(answer.body.toString())?.messages ?? [];
-      return messages.filter((m) => m.deleted === undefined).map((m) => this.messageOf(m, thread.threadTs));
+      const { space, topic } = streamOf(thread);
+      const key = streamKey(space, topic);
+      const b = Number.isFinite(Number(before)) && Number(before) > 0 ? Math.ceil(Number(before)) : Number.POSITIVE_INFINITY;
+      const most = Math.max(1, Math.min(TAIL_MOST, Math.trunc(limit)));
+      const kept = (this.tails.get(key) ?? []).filter((m) => m.aseq < b);
+      let said: Said[];
+      if (kept.length >= most || (this.whole.has(space) && !this.cut.has(key))) said = kept;
+      else {
+        said = [];
+        const edits = new Map<string, Said>();
+        for (let after = 0, page = 0; page < HISTORY_PAGES && after + 1 < b; page++) {
+          const got = await this.eventsAfter(space, after);
+          if (got.length === 0) break;
+          for (const s of got) {
+            after = s.aseq;
+            if (s.aseq >= b) break;
+            const e = s.event;
+            const target = edits.get(text(e.body?.target));
+            if (e.kind === "msg.edit" && target && target.author === e.author) target.text = text(e.body?.text);
+            if (e.kind === "msg.unsend" && target && target.author === e.author) target.deleted = true;
+            if ((e.kind !== "msg.post" && e.kind !== "decision.ask") || e.topic !== topic) continue;
+            const m: Said = { id: s.id, space, topic, aseq: s.aseq, kind: e.kind, author: e.author, text: text(e.body?.text), files: filesOf(e.body?.files), replyTo: text(e.body?.reply_to), deleted: false };
+            edits.set(m.id, m);
+            said.push(m);
+            if (said.length > most) said.shift();
+          }
+        }
+      }
+      return said.filter((m) => !m.deleted).slice(-most).map((m) => this.messageOf(m));
     })();
   }
 
-  /// The message a reply quotes; null for the bot's own and where it cannot be read.
+  /// The message a reply quotes (by its place in its space); null for the bot's own and where it cannot be read.
   async quoted(thread: ThreadRef, ts: string): Promise<ChatMessage | null> {
     try {
-      const n = Number(ts);
-      if (!Number.isSafeInteger(n) || n < 1) return null;
-      const answer = await this.link.ask("GET", `/conversations/${encodeURIComponent(thread.threadTs)}/messages?last=1&before=${n + 1}`);
-      const m: GroupMessage | undefined = answer.status === 200 ? JSON.parse(answer.body.toString())?.messages?.[0] : undefined;
-      if (m === undefined || m.n !== n || m.from === this.botUserId() || m.deleted !== undefined) return null;
-      return this.messageOf(m, thread.threadTs);
+      const aseq = Number(ts);
+      if (!Number.isSafeInteger(aseq) || aseq < 1) return null;
+      const space = thread.channel;
+      let m = this.byAseq.get(`${space}#${aseq}`);
+      if (m === undefined) {
+        const s = (await this.eventsAfter(space, aseq - 1))[0];
+        if (s === undefined || s.aseq !== aseq || (s.event.kind !== "msg.post" && s.event.kind !== "decision.ask")) return null;
+        m = { id: s.id, space, topic: s.event.topic, aseq, kind: s.event.kind, author: s.event.author, text: text(s.event.body?.text), files: filesOf(s.event.body?.files), replyTo: "", deleted: false };
+      }
+      if (m.author === this.botUserId() || m.deleted) return null;
+      return this.messageOf(m);
     } catch {
       return null;
     }
   }
 
-  /// The groups it is in.
+  /// The spaces (not direct ones) it is in.
   async places(): Promise<Place[]> {
-    return (await this.listed()).filter((c) => c.kind === "group").map((c) => ({ id: c.id, name: c.name ?? c.id, kind: "group" as const }));
+    return [...this.spaceRows.values()].filter((s) => s.kind === "space").map((s) => ({ id: s.id, name: s.name || s.id, kind: "group" as const }));
   }
 
   async peopleIn(channel: string): Promise<Member[]> {
-    const c = await this.conversationOf(channel);
     if (this.members.size === 0) await this.readMembers().catch(() => {});
-    return (c?.members ?? []).filter((m) => m !== this.botUserId()).map((m) => ({ id: m, name: this.members.get(m) ?? m }));
+    return (this.spaceRows.get(channel)?.members ?? []).filter((m) => m !== this.botUserId()).map((m) => ({ id: m, name: this.members.get(m) ?? m }));
   }
 
-  /// The group's conversation from now on, begun with `message`.
+  /// The space's lobby from now on, begun with `message`.
   async begin(channel: string, message: string): Promise<{ thread: ThreadRef; ts: string }> {
-    const thread = { channel, threadTs: channel };
+    const thread = threadOf(channel, LOBBY);
     return { thread, ts: await this.post(thread, message, []) };
   }
 
@@ -530,30 +955,30 @@ export class GroupSurface extends ConnectedSurface {
     return this.book.person(personKey(this.connect, user), () => this.lookUp(user));
   }
 
-  /// A group's name; a private chat's the other member's.
+  /// A space's name; a direct one's the other member's.
   knownChannel(channel: string): string | null {
     const read = async () => {
-      const c = await this.conversationOf(channel);
-      if (c === null) return null;
-      if (c.kind === "group") return c.name;
-      const other = c.members.find((m) => m !== this.botUserId());
+      const s = this.spaceRows.get(channel);
+      if (s === undefined) return null;
+      if (s.kind === "space") return s.name || null;
+      const other = s.members.find((m) => m !== this.botUserId());
       return other === undefined ? null : ((await this.lookUp(other))?.name ?? null);
     };
-    if (!this.book) return this.conversations.get(channel)?.name ?? null;
+    if (!this.book) return this.spaceRows.get(channel)?.name || null;
     return this.book.channel(channelKey(this.connect, channel), read);
   }
 
   async channelName(channel: string): Promise<string | null> {
-    const c = await this.conversationOf(channel);
-    return c?.kind === "group" ? c.name : null;
+    const s = this.spaceRows.get(channel);
+    return s?.kind === "space" ? s.name || null : null;
   }
 
-  protected statusLine(): StatusLine {
-    return new Quiet(this.run, 60_000);
+  protected statusLine(thread: ThreadRef): StatusLine {
+    return new GroupLive(this.run, (status, messageTs) => this.live(thread, status, messageTs));
   }
 }
 
-/// A picture's size, read of its head (PNG, GIF, JPEG, WebP), so the server can say it before it is fetched; null for
+/// A picture's size, read of its head (PNG, GIF, JPEG, WebP), so the anchor can say it before it is fetched; null for
 /// what is none of these or says no size.
 export function imageSize(b: Uint8Array): { width: number; height: number } | null {
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
