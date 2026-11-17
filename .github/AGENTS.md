@@ -21,7 +21,8 @@
   (any `ci-1` runner), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
   a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
-  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`); the other Apple native parts,
+  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
+  `shell-apple` is missing (plan's `natives_mac_runner`: too long cold there, 228 and 323 s); the other Apple parts,
   Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and release signing stay on `Mini1` (`macos-ci`, `quick`), and
   a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and

@@ -79,7 +79,7 @@ test("after a step failed on github.com's 504: let through; with a limit reached
   assert.equal(reset.ok, true, reset.said);
   const node = await run([{ run: { conclusion: "failure" }, jobs }], { 6: "read ECONNRESET from nodejs.org\n" });
   assert.equal(node.ok, true, node.said);
-  for (const also of ["scripts/with-timeout.sh: not done after 245 s\n", "exit code 124\n", "test lock-world-1 failed\n"]) {
+  for (const also of ["scripts/with-timeout.sh: not done after 245 s\n", "exit code 124\n", "[stillfail] test foo failed\n", "AssertionError [ERR_ASSERTION]: 1 !== 2\n", "test/x.test.ts: left running after its tests (ended now):\n"]) {
     const r = await run([{ run: { conclusion: "failure" }, jobs }], { 6: `504 Gateway Time-out\n${also}` });
     assert.equal(r.ok, false, also);
   }
@@ -101,4 +101,25 @@ test("the runner shut down under a job before its time: let through; every attem
   const r = await run([shut, second], logs);
   assert.equal(r.ok, false);
   assert.match(r.said, /attempt 2: check-station \(2\): NOT let through/);
+});
+
+test("a 504 under scripts/check.sh's own FAILED line: let through; beside what is the change's for certain: not", async () => {
+  const jobs = [job(10, "check-linux", { took: 80, steps: [...setup, step("Full check (ts)", "failure")] }), gateFailed];
+  const curl = "curl: (22) The requested URL returned error: 504 Gateway Time-out\n";
+  const summary = "· Full check … FAILED (12 s)\n";
+  const ok = await run([{ run: { conclusion: "failure" }, jobs }], { 10: curl + summary });
+  assert.equal(ok.ok, true, ok.said);
+  assert.match(ok.said, /check-linux: let through: .*504 Gateway Time-out/);
+  for (const also of ["AssertionError: expected 1\n", "##[error]Process completed with exit code 124.\n", "[stillfail] test foo failed\n"]) {
+    const r = await run([{ run: { conclusion: "failure" }, jobs }], { 10: curl + also + summary });
+    assert.equal(r.ok, false, also);
+    assert.match(r.said, /check-linux: NOT let through/);
+  }
+  // (a check's FAILED with nothing of GitHub's beside it stays the change's)
+  assert.equal((await run([{ run: { conclusion: "failure" }, jobs }], { 10: summary })).ok, false);
+});
+
+test("a step of the natives action failing is the job's setting up", async () => {
+  const r = await run([{ run: { conclusion: "failure" }, jobs: [job(11, "check-core (0)", { took: 30, steps: [...setup, step("Run ./.github/actions/natives", "failure"), step("Core tests", "skipped")] }), gateFailed] }]);
+  assert.equal(r.ok, true, r.said);
 });

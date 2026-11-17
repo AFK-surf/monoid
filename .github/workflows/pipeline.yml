@@ -58,6 +58,7 @@ jobs:
       win_beta: ${{ steps.plan.outputs.win_beta }}
       natives: ${{ steps.natives.outputs.natives }}
       natives_mac: ${{ steps.natives.outputs.natives_mac }}
+      natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
       kit: ${{ steps.plan.outputs.kit }}
       mbui: ${{ steps.plan.outputs.mbui }}
@@ -106,6 +107,15 @@ jobs:
             echo "missing (mac): ${missing_mac:-none}"
             echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
+          fi
+          # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
+          # mesh or shell-apple (iroh's crates built anew: 228 and 323 s with three jobs and no sccache, past a job's 5
+          # minutes); GitHub's macos-26 for a branch missing only the light parts (launcher 14 s, archive-rs 25, reader
+          # 72, helper 33), and for every run while vars.MINI1 is 'off'.
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+            echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
           fi
 
   # The non-Apple native parts for this commit (scripts/native.ts --linux): Linux, Windows cross-builds, Wasm and Android,
@@ -170,18 +180,38 @@ jobs:
             node scripts/native.ts ensure --linux
           fi
 
-  # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac), built on Mini1's quick
-  # runner only when an Apple native part is missing.
+  # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac), built only when an Apple
+  # native part is missing, where plan's natives_mac_runner says: Mini1's quick runner for main and for a branch's
+  # mesh or shell-apple, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
+  # 2026-11-17).
   natives-mac:
     needs: plan
     if: vars.CI_1 != 'off' && needs.plan.outputs.natives_mac == 'needed'
-    runs-on: [self-hosted, quick]
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_runner) }}
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
     steps:
       - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup-mac
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-mac
+      # (GitHub's: the pinned Node, and rustup's Rust the image has, in a target of the job's own; no sccache there)
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/setup
+        with: { pnpm: 'false' }
+      - if: runner.environment != 'self-hosted'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+      # (the reader's compiled MoonBit packages by their content, station/mb/build.sh's MBC_STORE: tens of MB, which
+      # take its build from 72 s to about 20)
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-mac-${{ github.sha }}
+          restore-keys: mbui-reader-mac-
       - uses: ./.github/actions/mbui-moonbit
       - name: Get or build the Apple native parts
         env:

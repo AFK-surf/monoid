@@ -6,8 +6,10 @@
 //   - that never ran what it is for: no runner took it, it has no steps, or what failed of it is only the job's setting
 //     up (its runner's own steps, the checkout, the caches and artifacts, the toolchains: INFRA_STEP);
 //   - cancelled with its whole run (a push after it, by hand, a dead runner's queue given up), before a job's time;
-//   - whose step failed with GitHub's or the network's failure in its log (INFRA_LOG), and nothing a check says when it
-//     fails (CHECK_FAILED) or a limit reached.
+//   - whose step failed with GitHub's or the network's failure in its log (INFRA_LOG), and nothing in it that is the
+//     change's own for certain (HARD_FAILED). Its log is read in that order: what is the change's for certain, then
+//     GitHub's or the network's, then a check's summary of a failure (SOFT_FAILED: scripts/check.sh's `… FAILED`, which
+//     it says of a step that met a 504 too).
 // Never one that ran its time out: 285 s or more (a job's 5 minutes, less what its runner takes to cut it), or a limit
 // said in its log (scripts/with-timeout.sh's, the job's own). What cannot be read (a log gone) is not let through.
 // The attempts' jobs are read from GitHub's API (GH_TOKEN, actions: read), or, for the tests, from
@@ -21,7 +23,7 @@ import { pathToFileURL } from "node:url";
 export const RAN_OUT_S = 285;
 /** The steps that only set a job up: the runner's own, the checkout, the caches and artifacts, the toolchains. */
 export const INFRA_STEP =
-  /^(Set up job|Complete job|Post |Checkout|Run actions\/(checkout|cache|upload-artifact|download-artifact|setup-node)|Run \.\/\.github\/actions\/(node|setup|apt|msvc|mbui-moonbit))/;
+  /^(Set up job|Complete job|Post |Checkout|Run actions\/(checkout|cache|upload-artifact|download-artifact|setup-node)|Run \.\/\.github\/actions\/(node|setup|apt|msvc|mbui-moonbit|natives))/;
 /** GitHub's or the network's failure, as a log says it. */
 export const INFRA_LOG = [
   /\b50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)\b/i,
@@ -33,18 +35,19 @@ export const INFRA_LOG = [
 ];
 /** The runner shut down under the job: GitHub's, but only before the job's time (after it, the job ran out). */
 const SHUTDOWN = /The runner has received a shutdown signal/i;
-/** What a check says when it fails, and a limit reached: never GitHub's. */
-export const CHECK_FAILED = [
-  /\btest\b.*\bfailed\b/i,
-  /\bFAILED\b/,
-  /^✖ /m,
-  /^not ok \d/m,
-  /AssertionError|ERR_ASSERTION/,
-  /\berror(\[E\d+\]|: could not compile| TS\d+)/,
+/** What is the change's own for certain, whatever else its log says: a limit reached, an assertion, a compiler's error, a
+ * process a test file left running, a MoonBit test's failure. Never let through, a 504 beside it or not. */
+export const HARD_FAILED = [
   /\bexit(ed)?( with)?( code)?:? 124\b/i,
   /\bnot done after\b/,
   /exceeded the maximum execution time/i,
+  /AssertionError|ERR_ASSERTION/,
+  /\berror(\[E\d+\]|: could not compile| TS\d+)/,
+  /: left running after its tests/,
+  /^\[[^\]]+\] test .+ failed/m,
 ];
+/** A check's summary of a failure: the change's, unless GitHub's or the network's failure is said beside it. */
+export const SOFT_FAILED = [/\bFAILED\b/, /\btest\b.*\bfailed\b/i, /^✖ /m, /^not ok \d/m];
 
 const seconds = (j) => (j.started_at && j.completed_at ? (Date.parse(j.completed_at) - Date.parse(j.started_at)) / 1000 : 0);
 const BAD = new Set(["failure", "timed_out", "cancelled"]);
@@ -72,16 +75,16 @@ export async function judge(job, run, log) {
   const text = await log();
   if (text == null) return { ok: false, why: `${names} failed, and its log cannot be read to say why` };
   const said = lines(text);
-  const check = CHECK_FAILED.find((p) => p.test(said));
-  if (check) {
-    const at = said.split("\n").find((l) => check.test(l))?.trim().slice(0, 160);
-    return { ok: false, why: `${names} failed: ${at ?? check}` };
-  }
-  const infra = [...INFRA_LOG, SHUTDOWN].find((p) => p.test(said));
-  if (infra) {
-    const at = said.split("\n").find((l) => infra.test(l))?.trim().slice(0, 160);
-    return { ok: true, why: `${names} failed for GitHub's or the network's sake: ${at}` };
-  }
+  const first = (patterns) => {
+    const p = patterns.find((q) => q.test(said));
+    return p && (said.split("\n").find((l) => p.test(l))?.trim().slice(0, 160) ?? String(p));
+  };
+  const hard = first(HARD_FAILED);
+  if (hard) return { ok: false, why: `${names} failed: ${hard}` };
+  const infra = first([...INFRA_LOG, SHUTDOWN]);
+  if (infra) return { ok: true, why: `${names} failed for GitHub's or the network's sake: ${infra}` };
+  const soft = first(SOFT_FAILED);
+  if (soft) return { ok: false, why: `${names} failed: ${soft}` };
   return { ok: false, why: `${names} failed, and its log says nothing of GitHub's or the network's` };
 }
 
