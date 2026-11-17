@@ -337,10 +337,12 @@ fn histories_ticked() -> Unit {
   }
   // (the short column has no switch of its own: the open panel's close there in place of the panel's own (side_panel).
   // Handed last, each frame: short of room the system keeps the last of them whatever its priority, and the page handing
-  // its own again puts them after it: the user, 2026-11-04)
+  // its own again puts them after it: the user, 2026-11-04. Only while the panel is the tape's card in use: beside the
+  // chat or the sidebar it read as theirs, the user, 2026-11-17)
   let key = "page/" + side_close_item
   nav_page.retain(fn(p) { p.0.id != key })
-  if column_short.get() && tabs.length() > 0 {
+  let in_use = !wide.tape.get() || wide.tape_at.get() == Panel
+  if column_short.get() && tabs.length() > 0 && in_use {
     let item : @hostapi.NavItem = {
       id: key,
       title: @sf.t("web-pages.chat.closePanel"),
