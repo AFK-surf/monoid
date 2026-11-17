@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 | [77ebdfed6](https://github.com/AFK-surf/monoid/commit/77ebdfed6d4bf3be3b6a97810364a552e77d3209) Fix unresponsive context menus when switching card | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 | [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 | [ea77860c4](https://github.com/AFK-surf/monoid/commit/ea77860c4f863e70cde9a12d5a800a6d1d589ae1) mbui: a way's speed, press and hold feel, tension  | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 | [254f58fcf](https://github.com/AFK-surf/monoid/commit/254f58fcf7b826be38ed03fe369e75b905fc805a) ci(preview): save Windows HBC_CACHE after mbc-stor | 2.54 | 3.59 | 15.67 | 37.03 | 62.28 | 32.34 | 68.4 | 96.03 | 124.13 |
-| [86fe68199](https://github.com/AFK-surf/monoid/commit/86fe68199d232e055bbd4721a3f9279db868ce2c) mbui: headless menu, combobox and anchor placement | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [77ebdfed6](https://github.com/AFK-surf/monoid/commit/77ebdfed6d4bf3be3b6a97810364a552e77d3209) Fix unresponsive context menus when switching card | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.63 |
 | [ea77860c4](https://github.com/AFK-surf/monoid/commit/ea77860c4f863e70cde9a12d5a800a6d1d589ae1) mbui: a way's speed, press and hold feel, tension  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.46 |
 | [254f58fcf](https://github.com/AFK-surf/monoid/commit/254f58fcf7b826be38ed03fe369e75b905fc805a) ci(preview): save Windows HBC_CACHE after mbc-stor | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.38 |
-| [86fe68199](https://github.com/AFK-surf/monoid/commit/86fe68199d232e055bbd4721a3f9279db868ce2c) mbui: headless menu, combobox and anchor placement | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.38 |
