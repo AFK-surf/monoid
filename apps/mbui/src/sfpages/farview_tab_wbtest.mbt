@@ -481,7 +481,9 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   r.t.run_for(farview_drawn_ms)
   let (made, let_go, laid, measured, bindings) = farview_frames_did(r)
   assert_eq(layouts.val, 1)
-  assert_true(made <= 657 && let_go == 0 && laid <= 684 && measured <= 1 && bindings <= 1471, msg="whole: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
+  // (laid 686: the address the place's capsule, @sf.address_field_node's, as the web service's: its room and its
+  // capsule round the words, 2026-11-18)
+  assert_true(made <= 657 && let_go == 0 && laid <= 686 && measured <= 1 && bindings <= 1471, msg="whole: made \{made} let go \{let_go} laid \{laid} measured \{measured} bindings \{bindings}")
   assert_true(laid >= 550, msg="not a real page's size: laid \{laid}")
   // one badge's words: that word's node made again, nothing measured
   layouts.val = 0

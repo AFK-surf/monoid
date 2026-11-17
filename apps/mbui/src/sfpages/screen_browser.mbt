@@ -50,7 +50,6 @@ fn address_shown(s : ScreenSess) -> String {
 /// One of a view's tabs (view_tabs): a person's page on the station's browser, or the whole of a desktop or one of its
 /// windows; its words, what its tip says, whether it is the one shown, what pressing it does, and its × (none: kept).
 /// What is done is said as a value and done by tab_do in the press's handler, never as a frame is built.
-#derive(Eq)
 priv struct ViewTab {
   key : String
   words : String
@@ -63,7 +62,6 @@ priv struct ViewTab {
 ///|
 /// What one of the view's tabs does pressed: a person's page shown (its id, its title), a desktop's window shown alone
 /// (none: the whole display), a page closed (its id), a new tab.
-#derive(Eq)
 priv enum TabAct {
   Show(String, String)
   Window(Double?)
@@ -158,8 +156,9 @@ fn browser_shown_now(s : ScreenSess) -> Bool {
 }
 
 ///|
-/// The view's tabs in a row in `m` (the viewer's bar's middle with keyboard and mouse): each a capsule, the one shown
-/// pressed, then ＋ where there is one to add.
+/// The view's tabs in a row in `m` (the viewer's bar's middle with keyboard and mouse; @sf.tab_bar_node's capsules, one
+/// tab list: Tab stopping at the one shown, ← → showing each): the one shown on the selected ground, each that closes
+/// its × at its end, then ＋ where there is one to add.
 fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -167,32 +166,61 @@ fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
     s.said.get() |> ignore
     view_tabs(s)
   }
+  let tab_of = fn(key : String) -> ViewTab? {
+    let all = tabs().0
+    match all.search_by(fn(t) { t.key == key }) {
+      Some(i) => Some(all[i])
+      None => None
+    }
+  }
   m.box(fn(row) {
     @sf.style_node(row, fn() { browser_tabs_row }, in_row=true)
     row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    // (each by what it shows: its key, words, note, whether it is the one shown and whether it closes; what pressing it
-    // does looked up as it is pressed)
-    row.each(at_once=true, fn() { tabs().0 }, fn(t) { t.key }, fn(slot, t) {
-      let act = fn(close : Bool) {
-        let x = t.untracked()
-        if close {
-          match x.close {
-            Some(a) => tab_do(s, u, a, pg.close)
-            None => ()
-          }
-        } else {
-          tab_do(s, u, x.press, pg.close)
+    @sf.tab_bar_node(
+      row,
+      fn() { @sf.t(if s.user_tab() { "web-pages.screen.tabs" } else { "web-pages.screen.windows" }) },
+      fn() { tabs().0.map(fn(t) { t.key }) },
+      fn() {
+        let all = tabs().0
+        match all.search_by(fn(t) { t.current }) {
+          Some(i) => all[i].key
+          None => ""
         }
-      }
-      view_tab_node(slot, pg, fn() {
-        let x = t.get()
-        (x.key, x.words, x.note, x.current, x.close is Some(_))
-      }, act)
-    })
-    row.show(at_once=true, fn() { tabs().1 }, fn(k) {
-      // (as tall as the tabs beside it: what is pressed side by side is one height)
-      screen_round_node(k, pg, fn() { "plus" }, fn() { @sf.t("web-pages.screen.newTab") }, fn(_) { tab_do(s, u, Add, pg.close) }, side=browser_tab_h) |> ignore
-    })
+      },
+      // (what pressing it does looked up as it is pressed)
+      fn(key) {
+        match @signals.untracked(fn() { tab_of(key) }) {
+          Some(t) => tab_do(s, u, t.press, pg.close)
+          None => ()
+        }
+      },
+      fn(key) { tab_of(key).map(fn(t) { t.words }).unwrap_or("") },
+      fn(b, key, shown) { @sf.tab_words_node(b, fn() { tab_of(key).map(fn(t) { t.words }).unwrap_or("") }, shown) |> ignore },
+      close=fn(key) {
+        match @signals.untracked(fn() { tab_of(key) }) {
+          Some({ close: Some(a), .. }) => tab_do(s, u, a, pg.close)
+          _ => ()
+        }
+      },
+      closes=fn(key) { tab_of(key).map(fn(t) { t.close is Some(_) }).unwrap_or(false) },
+      close_label=fn(_) { @sf.t("web-pages.screen.closeTab") },
+      trail=fn(e) {
+        e.show(at_once=true, fn() { tabs().1 }, fn(k) {
+          // (as tall as the tabs beside it: what is pressed side by side is one height)
+          screen_round_node(k, pg, fn() { "plus" }, fn() { @sf.t("web-pages.screen.newTab") }, fn(_) {
+            tab_do(s, u, Add, pg.close)
+          }, side=@sf.side_tab_side)
+          |> ignore
+        })
+        |> ignore
+      },
+      at_once=true,
+      tips=pg.tips,
+      tip=fn(_) { true },
+    )
+    .grow(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    |> ignore
   })
   |> ignore
 }
@@ -227,22 +255,45 @@ fn browser_bar_node(b : @view.View, pg : ScreenPage) -> Unit {
 /// ← (→ ⟳ where there is the room, not `narrow`) and the address bar in `row`; narrow, the tabs' button after it.
 fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -> Unit {
   let s = pg.s
-  screen_round_node(row, pg, fn() { "arrow-left" }, fn() { @sf.t("web-pages.screen.back") }, fn(_) {
-    browser_act(s, "screen.back", @sf.t("web-pages.screen.backWhat"))
+  let u = pg.u
+  // (@sf.address_bar_node's: the page's whole address while it is not written in, as the station last said it; picked
+  // whole as it is pressed into, as a browser's is; Escape giving the writing up; what is written gone to on Enter)
+  let field = @ui.Field::new()
+  u.address_field = Some(field)
+  let shown = fn() {
+    s.said.get() |> ignore
+    address_shown(s)
+  }
+  let bar = @sf.address_bar_node(
+    row,
+    field,
+    shown,
+    fn(go) {
+      let p : Map[String, Json] = {
+        "station": Json::string(s.station),
+        "screen": Json::string(s.screen),
+        "url": Json::string(go),
+      }
+      (s.src.call)("screen.openUrl", Json::object(p), screen_act(@sf.t("web-pages.screen.goUrlWhat")))
+    },
+    fn() { @sf.t("web-pages.screen.addressHint") },
+    fn() { browser_act(s, "screen.back", @sf.t("web-pages.screen.backWhat")) },
+    fn() { browser_act(s, "screen.forward", @sf.t("web-pages.screen.forwardWhat")) },
+    fn() { browser_act(s, "screen.reload", @sf.t("web-pages.screen.reloadWhat")) },
+    keys_shown=fn() { !narrow() },
+    placeholder=fn() { @sf.t("web-pages.screen.addressHint") },
+    tips=pg.tips,
+    // (on the viewer's bar, the canvas's ground: the card's with its line, as its field was)
+    framed=true,
+  )
+  bar.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+  // asked to take the keys (⌘L, a new tab), here as it is made or as it is asked
+  bar.reacts(fn() { u.address_asked.get() }, fn(n) {
+    if n > u.address_done {
+      u.address_done = n
+      field.focus()
+    }
   })
-  |> ignore
-  row.show(at_once=true, fn() { !narrow() }, fn(k) {
-    k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
-    screen_round_node(k, pg, fn() { "arrow-right" }, fn() { @sf.t("web-pages.screen.forward") }, fn(_) {
-      browser_act(s, "screen.forward", @sf.t("web-pages.screen.forwardWhat"))
-    })
-    |> ignore
-    screen_round_node(k, pg, fn() { "refresh" }, fn() { @sf.t("web-pages.screen.reload") }, fn(_) {
-      browser_act(s, "screen.reload", @sf.t("web-pages.screen.reloadWhat"))
-    })
-    |> ignore
-  })
-  address_bar_node(row, pg)
   // (the tabs in a row of their own only in the viewer's bar with keyboard and mouse: screen_viewer_bar_node)
   let tabs = fn() {
     s.said.get() |> ignore
@@ -270,95 +321,6 @@ fn browser_seen(s : ScreenSess) -> Unit {
   if s.user_tab() {
     @settings.browser_tab_seen(s.station, s.screen)
   }
-}
-
-///|
-/// One tab of the row in `slot`: its name (cut short), the one shown pressed; pressed the page shown (`act(false)`), its
-/// × closing it (`act(true)`).
-fn view_tab_node(
-  slot : @view.View,
-  pg : ScreenPage,
-  t : () -> (String, String, String, Bool, Bool),
-  act : (Bool) -> Unit,
-) -> Unit {
-  let b = @headless.toggle(slot, Button, fn() { t().1 }, fn() { t().3 }, fn(_) { act(false) }, fn(v, _) {
-    @sf.style_node(v, fn() { if t().4 { browser_tab_box } else { browser_tab_box_kept } }, in_row=true)
-    v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    v.ground(By(fn() { if t().3 { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } })) |> ignore
-    @sf.hover_ground_node(v)
-    @sf.words_node(v, fn() { t().1 }, fn() { browser_tab_words }) |> ignore
-    v.show(at_once=true, fn() { t().4 }, fn(k) {
-      let x = @headless.button(k, fn() { @sf.t("web-pages.screen.closeTab") }, fn(_) { act(true) }, fn(x, _) {
-        @sf.style_node(x, fn() { browser_tab_close_box }, in_row=true)
-        @sf.hover_ground_node(x)
-        @sf.icon_node(x, "close", browser_tab_close_icon, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
-      })
-      @sf.tip_node(pg.tips, x, fn() { @sf.t("web-pages.screen.closeTab") }) |> ignore
-    })
-  })
-  @sf.tip_node(pg.tips, b, fn() { if t().2 != "" { t().2 } else { t().1 } }) |> ignore
-}
-
-///|
-/// The address bar in `row`: the page's whole address while it is not written in (its field holding the address as the
-/// station last said it, set again as that changes), the words written in it gone to on Enter; picked whole as it is
-/// pressed into, as a browser's is; taking the keys where it was asked to (⌘L, a new tab).
-fn address_bar_node(row : @view.View, pg : ScreenPage) -> Unit {
-  let s = pg.s
-  let u = pg.u
-  let field = @ui.Field::new()
-  u.address_field = Some(field)
-  row.box(fn(b) {
-    @sf.style_node(b, fn() { browser_address_box }, in_row=true)
-    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    let shown = fn() {
-      s.said.get() |> ignore
-      address_shown(s)
-    }
-    // (its caret at its start: the address read from its site on, not scrolled to its end)
-    b.reacts(shown, fn(a) {
-      if !field.focused() {
-        field.set(a, caret=0)
-      }
-    })
-    let input = @sf.input_bar_node(
-      b,
-      field,
-      placeholder=@sf.t("web-pages.screen.addressHint"),
-      small=true,
-      // (in a pane's own bar, as tall as its keys)
-      high=if pg.tab_pads is Some(_) { round_bar_side } else { @sf.menu_row_min },
-      submitted=fn(words) {
-        let go = words.trim().to_owned()
-        if go == "" {
-          return
-        }
-        field.let_go()
-        // (the station's address again once it says it, not the words given up)
-        field.set(@signals.untracked(shown), caret=0)
-        let p : Map[String, Json] = {
-          "station": Json::string(s.station),
-          "screen": Json::string(s.screen),
-          "url": Json::string(go),
-        }
-        (s.src.call)("screen.openUrl", Json::object(p), screen_act(@sf.t("web-pages.screen.goUrlWhat")))
-      },
-    )
-    // pressed into: all of it picked, to be written over
-    input.reacts(fn() { field.focused() }, fn(on) {
-      if on {
-        field.pick(0, field.text().length())
-      }
-    }, at_start=false)
-    // asked to take the keys (⌘L, a new tab), here as it is made or as it is asked
-    input.reacts(fn() { u.address_asked.get() }, fn(n) {
-      if n > u.address_done {
-        u.address_done = n
-        field.focus()
-      }
-    })
-  })
-  |> ignore
 }
 
 ///|

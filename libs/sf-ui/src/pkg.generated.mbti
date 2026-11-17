@@ -32,6 +32,10 @@ pub fn action(@ui.Ctx, String, String, icon? : String, busy? : Bool, disabled? :
 
 pub fn action_node(@view.View, () -> String, () -> Unit, icon? : String, busy? : () -> Bool, disabled? : () -> Bool, bad? : Bool) -> Unit
 
+pub fn address_bar_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, () -> Unit, () -> Unit, () -> Unit, can_back? : () -> Bool, can_forward? : () -> Bool, busy? : () -> Bool, stop? : () -> Unit, keys_shown? : () -> Bool, placeholder? : () -> String, lead? : (@view.View) -> Unit, progress? : () -> (Double, @ui.Color)?, start? : (@view.View) -> Unit, end? : (@view.View) -> Unit, tips? : TipLayer, framed? : Bool) -> @view.View
+
+pub fn address_field_node(@view.View, @ui.Field, () -> String, (String) -> Unit, () -> String, placeholder? : () -> String, lead? : (@view.View) -> Unit, end? : ((@view.View) -> Unit)?, progress? : () -> (Double, @ui.Color)?, least? : Double, anywhere? : Bool, framed? : Bool, selects? : Bool) -> @view.View
+
 pub let agent_card_w : @ui.Len
 
 pub fn agent_mark_corner(Double) -> @ui.Radius
@@ -378,6 +382,8 @@ pub fn corner_remove_reach(Double) -> Double
 
 pub fn corners_radius(FixedArray[@paint.CornerOf]) -> @ui.Radius
 
+pub fn count_chip_node(@view.View, () -> String, (@view.View) -> Unit, count? : () -> String, chosen? : () -> Bool, dot? : () -> String, lead? : (@view.View) -> Unit, alarm? : () -> Bool, look? : ChipLook, corner? : () -> Double, named? : () -> String) -> @view.View
+
 pub let custom_field_r : @ui.Radius
 
 pub fn custom_hue(String) -> Int32?
@@ -648,6 +654,8 @@ pub fn fill_chip_node(@view.View, () -> Int32, () -> String, () -> String, () ->
 pub let fill_chip_small_h : Double
 
 pub fn fill_chip_wide(@ui.Ctx, String, String, small? : Bool, compact? : Bool, label_muted? : Bool, refill? : Bool) -> Double
+
+pub fn filter_pill_node(@view.View, () -> String, (@view.View) -> Unit, picked? : () -> Bool, lead? : (@view.View) -> Unit, chevron? : Bool, clear? : () -> Unit, clear_label? : () -> String) -> @view.View
 
 pub fn find_passage(String, String) -> (Int32, Int32)?
 
@@ -1756,6 +1764,8 @@ pub let r_menu : Double
 
 pub let radii : @ui.RadiusScale
 
+pub fn radio_rows_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, (@view.View, () -> String, RadioRow) -> Unit, gap? : Double) -> @view.View
+
 pub fn radius_between(Double) -> @ui.Radius
 
 pub fn rail_ground_radius(@paint.CornerOf, Double, alone? : Double) -> @ui.Radius
@@ -2215,6 +2225,10 @@ pub fn t(String, args? : Array[(String, String)]) -> String
 pub fn t_around(String, String, args? : Array[(String, String)]) -> (String, String)
 
 pub let tab_lens_raised : Raised
+
+pub fn tab_bar_node(@view.View, () -> String, () -> Array[String], () -> String, (String) -> Unit, (String) -> String, (@view.View, String, TabShown) -> Unit, look? : TabLook, close? : (String) -> Unit, closes? : (String) -> Bool, close_label? : (String) -> String, close_shows? : TabClose, trail? : (@view.View) -> Unit, scrolls? : Bool, at_once? : Bool, tips? : TipLayer, tip? : (String) -> Bool) -> @view.View
+
+pub fn tab_words_node(@view.View, () -> String, TabShown) -> @view.View
 
 pub fn table_node(@view.View, () -> String, bleed? : Double, tree? : () -> @json.Json?, copy? : Bool, on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?) -> Unit
 
@@ -2711,6 +2725,13 @@ pub(all) struct ChatList {
   move : @motion.Spec
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) enum ChipLook {
+  Fill
+  Small
+  Row
+}
+
 pub(all) struct Choice {
   key : String
   label : String
@@ -3132,6 +3153,12 @@ pub(all) struct QuoteCardDone {
   card : Int32
 }
 
+pub struct RadioRow {
+  // private fields
+}
+pub fn RadioRow::lit(Self) -> Bool
+pub fn RadioRow::picked(Self) -> Bool
+
 pub(all) struct Raised {
   sigma : Double
   dy : Double
@@ -3300,6 +3327,25 @@ pub fn Surface::radius(Self) -> @ui.Radius
 pub fn Surface::style(Self) -> @ui.Style
 
 type SyncRest
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TabClose {
+  Always
+  Lit
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TabLook {
+  Capsule
+  Groove
+  Chip
+}
+
+pub struct TabShown {
+  // private fields
+}
+pub fn TabShown::front(Self) -> Bool
+pub fn TabShown::lit(Self) -> Bool
 
 #derive(Eq, @debug.Debug)
 pub(all) struct TextMatch {

@@ -796,60 +796,18 @@ fn ov_pool_pill_node(
   selected : () -> Bool,
   on_select : () -> Unit,
 ) -> Unit {
-  // (one of the pools to choose: read out selected while it is the one shown, the pointer's ground over its own)
-  @headless.choice(parent, Button, fn() { title() + " " + count_txt() }, selected, fn(_) { on_select() }, fn(pill, _) {
-    pill
-    .row(Is(true))
-    .gap(Is(6.0))
-    .lines_up(Is(Some(Middle)))
-    .grow(Is(1.0))
-    .basis(Is(Some(0.0)))
-    .min_width(Is(Some(0.0)))
-    .min_height(By(fn() { Some(@sf.theme().items.least) }))
-    .padding(Is((12.0, 7.0, 12.0, 7.0)))
-    .radius(By(ug_row_corner))
-    .ground(By(fn() {
-      let t = @sf.theme()
-      if selected() {
-        @sf.alpha(t.p.accent, if t.dark { 0.18 } else { 0.11 })
-      } else {
-        @ui.tree_theme().color(Tint)
-      }
-    }))
-    |> ignore
-    @sf.focus_ring_node(pill)
-    @sf.hover_ground_node(pill, on=fn() { !selected() })
-
-    @sf.words_node(pill, title, fn() {
-      if selected() {
-        ug_named_title.then(@ui.text_style(color=AccentText, w=@sf.grow))
-      } else {
-        ug_row_title
-      }
-    })
-    .grow(Is(1.0))
-    .basis(Is(Some(0.0)))
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    .allow_ellipsis(Is(true))
-    |> ignore
-
-    pill.box(fn(dot) {
-      dot
-      .width(Is(Some(6.0)))
-      .height(Is(Some(6.0)))
-      .radius(Is(3.0))
-      .shrink(Is(0.0))
-      .ground(By(fn() {
-        let t = @sf.theme()
-        if low() { t.p.red } else { t.p.green }
-      }))
-      |> ignore
-    })
-    |> ignore
-
-    @sf.words_node(pill, count_txt, fn() { ug_line_end }).shrink(Is(0.0)) |> ignore
-  })
+  // (one of the pools to choose (@sf.count_chip_node's Fill): read out selected while it is the one shown, the pointer's
+  // ground over its own; its state's dot red where it runs short, else the online green)
+  @sf.count_chip_node(
+    parent,
+    title,
+    fn(_) { on_select() },
+    count=count_txt,
+    chosen=selected,
+    dot=fn() { if low() { "error" } else { "online" } },
+    corner=ug_row_corner,
+  )
+  .grow(Is(1.0))
   |> ignore
 }
 

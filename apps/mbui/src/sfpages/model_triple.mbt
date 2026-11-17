@@ -1589,7 +1589,7 @@ fn triple_body_node(
               })
               |> ignore
               @sf.panel_head_node(col, fn() { h_effort }) |> ignore
-              triple_choices_node(col, all_efforts, effort_now, pick_effort)
+              triple_choices_node(col, h_effort, all_efforts, effort_now, pick_effort)
             })
             |> ignore
           })
@@ -2114,7 +2114,7 @@ fn triple_sidekick_node(
       } else {
         @sf.panel_head_node(col, fn() { h_effort }) |> ignore
       }
-      triple_choices_node(col, efforts, fn() { if active_group().id == "" { "" } else { now() } }, pick_eff)
+      triple_choices_node(col, h_effort, efforts, fn() { if active_group().id == "" { "" } else { now() } }, pick_eff)
     })
     |> ignore
   })
@@ -2475,39 +2475,35 @@ let triple_pick_chevron : Double = 12.0
 
 ///|
 /// How hard it thinks at the panel's right in node `parent` (`choices()`: its value and its words, from the least to the
-/// most; `now()` the one picked): each a row of the panel's under the one before, the one picked lit and checked, read
-/// out a radio; `pick` given the value pressed.
+/// most; `now()` the one picked): each a row of the panel's under the one before, the one picked lit and checked, one
+/// radio group called `label` (one stop of Tab's, ↑ ↓ picking along it); `pick` given the value pressed or come to.
 fn triple_choices_node(
   parent : @view.View,
+  label : String,
   choices : () -> Array[(String, String)],
   now : () -> String,
   pick : (String) -> Unit,
 ) -> Unit {
-  parent.each(choices, fn(ch) { ch.0 }, fn(r, ch) {
-    let value = ch.untracked().0
-    let words = fn() { ch.get().1 }
-    let on = fn() { now() == value }
-    r.box(fn(b) {
-      @sf.style_node(b, fn() { triple_option_look(on() || @sf.lit_node(b)) })
-      b.says(By(fn() { Some(@view.said(Radio, label=words(), check=if on() { On } else { Off })) })) |> ignore
-      @sf.presses_node(b, fn() { pick(value) })
-      b.min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(b, words, fn() { if on() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-      b.box(fn(e) {
-        @sf.style_node(e, fn() { triple_end }, in_row=true)
-        e.basis(Is(None)).shrink(Is(0.0)) |> ignore
-        e.pick(on, fn(x, checked) {
-          if checked {
-            @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
-          } else {
-            x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
-          }
-        })
+  // (@sf.radio_rows_node's: one radio group named by its column's head, one stop of Tab's, ↑ ↓ picking along it; its
+  // rows the column's hair apart, triple_effort_column's)
+  @sf.radio_rows_node(parent, fn() { label }, choices, now, pick, gap=@ui.Space::SPx.px(), fn(b, words, row) {
+    @sf.style_node(b, fn() { triple_option_look(row.picked() || row.lit()) })
+    b.min_width(Is(Some(0.0))) |> ignore
+    @sf.words_node(b, words, fn() { if row.picked() { triple_picked } else { triple_words } }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    b.box(fn(e) {
+      @sf.style_node(e, fn() { triple_end }, in_row=true)
+      e.basis(Is(None)).shrink(Is(0.0)) |> ignore
+      e.pick(fn() { row.picked() }, fn(x, checked) {
+        if checked {
+          @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+        } else {
+          x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
+        }
       })
-      |> ignore
     })
     |> ignore
   })
+  |> ignore
 }
 
 ///|

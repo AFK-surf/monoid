@@ -1618,50 +1618,7 @@ fn preset_capsule_pill(
   clear_label : String,
   on_clear : () -> Unit,
 ) -> Unit {
-  parent.box(fn(pill) {
-    @sf.style_node(pill, fn() { preset_capsule_outer })
-    pill
-    .shrink(Is(1.0))
-    .min_width(Is(Some(0.0)))
-    .radius(Is(999.0))
-    .ground(By(fn() { if has_value() { @sf.theme().p.neutral_bg } else { 0L } }))
-    .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-    |> ignore
-    pill.box(fn(btn) {
-      @sf.style_node(btn, fn() { if has_value() { preset_capsule_btn_active } else { preset_capsule_btn } })
-      btn
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      .radius(Is(999.0))
-      .says(By(fn() { Some(@view.said(Button, label=words())) }))
-      |> ignore
-      @sf.hover_ground_node(btn)
-      @sf.presses_node(btn, fn() { on_open(btn) })
-      lead(btn)
-      @sf.words_node(btn, words, fn() { if has_value() { new_capsule_words } else { preset_capsule_quiet } })
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      .cuts(Is(true))
-      .allow_ellipsis(Is(true))
-      |> ignore
-      @sf.icon_node(btn, "chevron-down", new_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
-    })
-    |> ignore
-    pill.show(has_value, fn(c) {
-      c.box(fn(x) {
-        @sf.style_node(x, fn() { preset_capsule_clear_btn })
-        x
-        .shrink(Is(0.0))
-        .radius(Is(999.0))
-        .says(Is(Some(@view.said(Button, label=clear_label))))
-        |> ignore
-        @sf.hover_ground_node(x)
-        @sf.presses_node(x, on_clear)
-        @sf.icon_node(x, "close", 13.0, By(fn() { @sf.theme().p.muted })) |> ignore
-      })
-      |> ignore
-    })
-  })
+  @sf.filter_pill_node(parent, words, on_open, picked=has_value, lead~, clear=on_clear, clear_label=fn() { clear_label })
   |> ignore
 }
 
@@ -1779,22 +1736,6 @@ fn preset_station_open(
 ///|
 // kept across runs: a value (no field of it changes)
 let preset_simple_capsules : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_capsule_outer : @ui.Style = @ui.css("row align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_capsule_btn : @ui.Style = @ui.css("row min_h=S11 px=S3 gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_capsule_btn_active : @ui.Style = @ui.css("row min_h=S11 pl=S3 pr=S1_5 gap=S1_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let preset_capsule_clear_btn : @ui.Style = @ui.css("row w=S11 h=S11 align=ACenter justify=JCenter")
 
 ///|
 /// The control's words while no preset is picked: as quiet as what says what is not chosen.

@@ -27,6 +27,34 @@ pub fn style_node(v : @view.View, look : () -> @ui.Style, in_row? : Bool = false
 }
 
 ///|
+/// style_node's, with an outer ring (`ring`, as View::ring takes it) worked out in the same one binding: a tab's
+/// capsule whose ring follows the keyboard's focus on what it holds (tab_bar_node).
+#callsite(autofill(loc))
+fn style_node_ring(
+  v : @view.View,
+  look : () -> @ui.Style,
+  ring : () -> (Double, Double, Int64),
+  in_row? : Bool = false,
+  loc~ : SourceLoc,
+) -> Unit {
+  let was : Ref[StyleSet?] = Ref(None)
+  let rung : Ref[(Double, Double, Int64)?] = Ref(None)
+  v
+  .sets_together(fn() { (style_of(look().base, in_row, loc), ring()) }, fn(sr) {
+    style_set(v, was.val, sr.0, loc)
+    was.val = Some(match was.val {
+      Some(w) => { ..sr.0, says: w.says.joined(sr.0.says) }
+      None => sr.0
+    })
+    if rung.val != Some(sr.1) {
+      v.ring(loc~, Is(sr.1)) |> ignore
+      rung.val = Some(sr.1)
+    }
+  })
+  |> ignore
+}
+
+///|
 /// What a style says of a node (style_node), worked out: each property as it is set, and which of them it sets
 /// (`says`, as it said them as the node was made).
 #derive(Eq)

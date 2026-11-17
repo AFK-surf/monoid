@@ -131,26 +131,39 @@ fn doc_body_node(
         // the pages to pick between: pills as wide as their words, going on in lines, the one in view in the ink
         d.show(fn() { pages().length() > 1 }, fn(chips) {
           @sf.style_node(chips, fn() { md_chips })
-          chips.wraps(Is(Some(md_chips_gap))) |> ignore
-          chips.each(fn() { pages().mapi(fn(n, x) { (n, x.0, x.1) }) }, fn(x) { x.0 }, fn(chip, x) {
-            let n = @signals.untracked(fn() { x.get().0 })
-            let on = fn() { shown_at() == n }
-            @sf.style_node(chip, fn() {
-              if on() {
-                md_chip_on
-              } else if @sf.lit_node(chip) {
-                md_chip_lit
-              } else {
-                md_chip
-              }
-            }, in_row=true)
-            @sf.presses_node(chip, fn() { doc_at[key] = n })
-            chip.says(By(fn() { Some(@view.said(Tab, label=x.get().1, selected=on())) })) |> ignore
-            @sf.words_node(chip, fn() { x.get().1 }, fn() { if on() { md_chip_words_on } else { md_chip_words } }) |> ignore
-            chip.show(fn() { x.get().2 != "" }, fn(o) {
-              @sf.words_node(o, fn() { x.get().2 }, fn() { if on() { md_chip_note_on } else { md_chip_note } }) |> ignore
-            })
-          })
+          // (one tab list: Tab stops at the page in view, ← → choosing along them)
+          let page_of = fn(k : String) { pages().get(md_page_at(k)) }
+          @sf.tab_bar_node(
+            chips,
+            fn() { if skill == "" { @sf.t("web-main.memory.global") } else { skill } },
+            fn() { Array::makei(pages().length(), fn(n) { n.to_string() }) },
+            fn() { shown_at().to_string() },
+            fn(k) { doc_at[key] = md_page_at(k) },
+            fn(k) { page_of(k).map(fn(x) { x.0 }).unwrap_or("") },
+            fn(chip, k, shown) {
+              @sf.words_node(chip, fn() { page_of(k).map(fn(x) { x.0 }).unwrap_or("") }, fn() {
+                if shown.front() {
+                  md_chip_words_on
+                } else {
+                  md_chip_words
+                }
+              })
+              |> ignore
+              chip.show(fn() { page_of(k).map(fn(x) { x.1 }).unwrap_or("") != "" }, fn(o) {
+                @sf.words_node(o, fn() { page_of(k).map(fn(x) { x.1 }).unwrap_or("") }, fn() {
+                  if shown.front() {
+                    md_chip_note_on
+                  } else {
+                    md_chip_note
+                  }
+                })
+                |> ignore
+              })
+            },
+            look=Chip,
+          )
+          .grow(Is(1.0))
+          |> ignore
         })
         // its text: on a card on a narrow page (the narrow app's), on the page itself on a wide one (the web's)
         let words = fn() {
@@ -191,6 +204,16 @@ fn doc_skill_card_node(
   |> ignore
 }
 
+///|
+/// Which page a tab's key (its place, as figures) is.
+fn md_page_at(k : String) -> Int {
+  let mut n = 0
+  for c in k {
+    n = n * 10 + (c.to_int() - '0'.to_int())
+  }
+  n
+}
+
 // ── styles ──────────────────────────────────────────────
 
 ///|
@@ -207,29 +230,10 @@ let md_when_head : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=
 let md_when : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
-/// The pages to pick between (memoryChips: 6 apart, wrapping; memoryChip: 30 high, 12 in, round, the card's ground, the
-/// hover's under the pointer; the one in view the ink's, its words the page's ground).
+/// The pages to pick between (memoryChips: their tab list, 20 over the text, @sf.tab_bar_node's Chip: 30 high, 12 in,
+/// round, the card's ground, the hover's under the pointer; the one in view in the ink, its words the page's ground).
 // kept across runs: a value (no field of it changes)
-let md_chips : @ui.Style = @ui.css("row w=Full pb=S5 gap=S1_5")
-
-///|
-/// The room between the pills' lines where they go on in another (md_chips' gap, as an old view's flow keeps it).
-let md_chips_gap : Double = 6.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let md_chip : @ui.Style = @ui.style(h=Fixed(md_chip_h)).then(@ui.css("row px=S3 gap=S1_5 align=ACenter radius=Full bg=Card"))
-
-///|
-let md_chip_h : Double = 30.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let md_chip_lit : @ui.Style = md_chip.then(@ui.css("bg=Hover"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let md_chip_on : @ui.Style = md_chip.then(@ui.css("bg=Fg"))
+let md_chips : @ui.Style = @ui.css("row w=Full pb=S5")
 
 ///|
 // kept across runs: a value (no field of it changes)
