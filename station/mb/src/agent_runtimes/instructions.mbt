@@ -300,7 +300,12 @@ pub fn parse_thread_address(value : String) -> (String, String)? {
   if is_feishu_chat(channel) && is_feishu_message(ts) {
     return Some((channel, ts))
   }
-  if channel.length() == 16 && all_units(channel, is_hex_lower) && ts == channel {
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  let space = channel.length() == 26 &&
+    (channel.has_prefix("d_") || channel.has_prefix("s_")) &&
+    all_units(sub(channel, 2), is_hex_lower)
+  let topic = ts.length() == 18 && ts.has_prefix("t_") && all_units(sub(ts, 2), is_hex_lower)
+  if space && (ts == channel || topic) {
     return Some((channel, ts))
   }
   let dot = index_of(ts, ".")

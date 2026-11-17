@@ -292,7 +292,7 @@ test("chat: notices, Slack's split, a tool's status, thread addresses", { skip }
   }
   setStationLang("zh");
   await mbLang("zh");
-  for (const a of ["C1/1700000000.000100", " C1/1.2 ", "oc_abc/om_x1", "oc_abc/omt_x1", "0123456789abcdef/0123456789abcdef", "c1/1.2", "C1/1", "C1/1.a", "nope", "CHAT/1794883315.950000", "oc_/om_x"]) {
+  for (const a of ["C1/1700000000.000100", " C1/1.2 ", "oc_abc/om_x1", "oc_abc/omt_x1", "0123456789abcdef/0123456789abcdef", "d_0123456789abcdef01234567/d_0123456789abcdef01234567", "s_0123456789abcdef01234567/t_0123456789abcdef", "s_0123456789abcdef01234567/t_0123456789abcdeF", "x_0123456789abcdef01234567/x_0123456789abcdef01234567", "d_0123456789abcdef0123456/d_0123456789abcdef0123456", "c1/1.2", "C1/1", "C1/1.a", "nope", "CHAT/1794883315.950000", "oc_/om_x"]) {
     await same("parseThreadAddress", () => parseThreadAddress(a), a);
   }
   await same("threadAddress", () => threadAddress("C1", "2.3"), "C1", "2.3");
