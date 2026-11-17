@@ -248,12 +248,10 @@ let named_open_serial : Ref[Int] = Ref(0)
 ///|
 /// A file an agent names by its path: check it in the agent's session before opening it. A path in code can name
 /// something that was never a file, or one removed since the pointer last rested on it. `beside`: asked beside the chat
-/// (its menu's 在侧边打开); else as the press asked, said as it is pressed (beside_held), not as the answer comes.
+/// (its menu's 在侧边打开); else as the press asked, over the whole window or not said as it is pressed (full_held), not
+/// as the answer comes.
 fn open_named(src : Source, station : String, agent : String, path : String, beside? : Bool) -> Unit {
-  let beside = match beside {
-    Some(b) => b
-    None => @sfbase.beside_held()
-  }
+  let full = beside is None && @sfbase.full_held()
   named_open_serial.val += 1
   let serial = named_open_serial.val
   guard agent != "" && !path.has_suffix("/") else { return }
@@ -268,7 +266,10 @@ fn open_named(src : Source, station : String, agent : String, path : String, bes
     match answer {
       Ok(Object(_) as file) if text(Some(file), "kind") != "" && text(Some(file), "kind") != "dir" => {
         let a = attachment_of({ "name": Json::string(stored_name(path)), "path": Json::string(path) })
-        open_preview(station, agent, a, named=true, beside~)
+        match beside {
+          Some(b) => open_preview(station, agent, a, named=true, beside=b)
+          None => open_preview(station, agent, a, named=true, full~)
+        }
       }
       // (not opened is said, as the web's FileRef says a failed open: the press is not left without an answer)
       Ok(_) => toast_later(@sf.t("web-main.preview.openFailed", args=[("name", stored_name(path)), ("error", @sf.t("web-main.preview.openFolder"))]))

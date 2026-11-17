@@ -19,13 +19,19 @@ fn viz_chat() -> (@ui.Tester, (Double, Double)?, (Double, Double)?) {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=viz_chat_h, platform=0)
   nav_rested(t)
   t.run_for(@ui.move_most_ms)
+  let (picture, full) = seen_now(t)
+  (t, picture, full)
+}
+
+///|
+/// Where the picture is drawn and where the visualization's 全屏 is now (each None: not on the screen).
+fn seen_now(t : @ui.Tester) -> ((Double, Double)?, (Double, Double)?) {
   let picture = match t.locate("img:" + viz_chat_picture) {
     [p, ..] => Some(p)
     [] => None
   }
   // (the whole screen, under its page: viz_full_at)
-  let full = viz_full_at(t, viz_views(t).0)
-  (t, picture, full)
+  (picture, viz_full_at(t, viz_views(t).0))
 }
 
 ///|
@@ -47,6 +53,13 @@ fn back_closes(t : @ui.Tester) -> Unit {
 }
 
 ///|
+/// Whether the visualization is over the whole window: on its own, or as its chat's tab (a wide window's: sfbase's
+/// tab_full.mbt).
+fn viz_over() -> Bool {
+  @sfbase.viz_full.get() is Some(_) || @sfbase.tab_full.get() is Some(_)
+}
+
+///|
 /// The page under all of it as it stands: which, how deep.
 fn page_now() -> (Page, Int) {
   (app.nav.top(), app.nav.depth())
@@ -61,9 +74,9 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen, 
   t.tap(fx, fy)
   t.frame()
   t.frame()
-  assert_true(@sfbase.viz_full.get() is Some(_), msg="the 全屏 there opens the visualization")
+  assert_true(viz_over(), msg="the 全屏 there opens the visualization")
   back_closes(t)
-  assert_true(@sfbase.viz_full.get() is None, msg="closed again")
+  assert_true(!viz_over(), msg="closed again")
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get().map(fn(v) { v.in_tree }).unwrap_or(false), msg="the picture there opens the tree's viewer")
@@ -78,7 +91,7 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen, 
   t.tap(fx, fy)
   t.frame()
   t.frame()
-  assert_true(@sfbase.viz_full.get() is None, msg="under the viewer: no visualization opened")
+  assert_true(!viz_over(), msg="under the viewer: no visualization opened")
   let open = viewer.get().map(fn(v) { !v.closing }).unwrap_or(false)
   println("viewer over the 全屏: the press there left the viewer \{if open { "open" } else { "closing" }}")
   if open {
@@ -91,7 +104,7 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen, 
     t.run_for(@sfpages.reveal_ms)
     assert_true(viewer.get() is None && pv_leaving.get() is None, msg="the click closed the picture")
   }
-  assert_true(@sfbase.viz_full.get() is None, msg="nothing else opened")
+  assert_true(!viz_over(), msg="nothing else opened")
   assert_true(page_now() == page, msg="the page as it was")
 }
 
@@ -110,23 +123,26 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen; 
   t.tap(fx, fy)
   t.frame()
   t.frame()
-  assert_true(@sfbase.viz_full.get() is Some(_), msg="全屏: the visualization over the whole window")
+  assert_true(viz_over(), msg="全屏: the visualization over the whole window")
   back_closes(t)
-  assert_true(@sfbase.viz_full.get() is None, msg="back: the visualization closed")
+  assert_true(!viz_over(), msg="back: the visualization closed")
   assert_true(page_now() == page, msg="back: the page as it was")
+  // (its tab beside the chat now, on a wide window: both where they are drawn now)
+  let (picture, full) = seen_now(t)
+  let ((px, py), (fx, fy)) = both_seen(picture, full)
   // (opened again, the picture where it was pressed under it)
   t.tap(fx, fy)
   t.frame()
   t.frame()
-  assert_true(@sfbase.viz_full.get() is Some(_), msg="opened again")
+  assert_true(viz_over(), msg="opened again")
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get() is None, msg="under the visualization: no picture opened")
-  let open = @sfbase.viz_full.get() is Some(_)
+  let open = viz_over()
   println("the visualization over the picture: the press there left it \{if open { "open" } else { "closed" }}")
   if open {
     back_closes(t)
-    assert_true(@sfbase.viz_full.get() is None, msg="back: the visualization closed")
+    assert_true(!viz_over(), msg="back: the visualization closed")
   }
   assert_true(viewer.get() is None, msg="nothing else opened")
   assert_true(page_now() == page, msg="the page as it was")

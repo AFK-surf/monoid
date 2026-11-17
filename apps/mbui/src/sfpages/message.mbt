@@ -645,7 +645,7 @@ fn prose_with_files(c : @ui.Ctx, src : Source, here : MessageHere, m : Message, 
       on_link=fn(h) {
         match placed.get(@sf.file_name_of(h)) {
           Some(a) if is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) =>
-            viz_open_full(a.name, here.station, owner_of(here, a), a.path, here.session, linked=true)
+            viz_open(a.name, here.station, owner_of(here, a), a.path, here.session, linked=true)
           Some(a) => open_file(here, a, at~)
           None =>
             match @sf.path_of_link(h) {

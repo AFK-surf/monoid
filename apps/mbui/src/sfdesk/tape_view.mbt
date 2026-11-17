@@ -1296,7 +1296,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     }, fn(b) { side_bar_node(b, src, r, shown, true, tips) })
     let front = fn() {
       match shown().1 {
-        front if side_node_tab(front) => front
+        front if side_node_tab(front) => full_elsewhere(r, front)
         _ => ""
       }
     }
@@ -1305,7 +1305,10 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     // tab's nodes, 添加 in those corners too; a station's page its page's nodes; any other tab its old view)
     q.pick(at_once=true, front, fn(s, agent) {
       s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-      if agent == "" {
+      if agent == tab_full_mark {
+        // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
+        ()
+      } else if agent == "" {
         behind(
           s,
           fn(c) {
@@ -1323,14 +1326,26 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         .min_height(Is(Some(0.0)))
         |> ignore
       } else if @sfbase.view_tab_file(agent) is Some(_) {
-        side_view_node(s, src, r, agent)
+        tab_held_beside(s, r, agent)
+        side_view_node(s, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
       } else if tab_service(agent) is Some(job) {
+        tab_held_beside(s, r, agent)
         // (alone on the tape: its bar the panel's, its × closing the panel, in the panel's corners)
         let round = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
         let alone = @signals.untracked(fn() { shown().0.length() == 1 && !column_short.get() })
-        service_tab_node(s, src, r, job, if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None }, round, tips)
+        service_tab_node(
+          s,
+          src,
+          r,
+          job,
+          if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None },
+          full_of(r, agent),
+          round,
+          tips,
+        )
       } else if tab_file(agent) is Some((session, path, name)) {
-        file_tab_node(s, src, r, session, path, name, tips)
+        tab_held_beside(s, r, agent)
+        file_tab_node(s, src, r, session, path, name, full_of(r, agent), tips)
       } else if side_screen_tab(agent) is Some(_) {
         side_screen_node(s, src, r, agent, fn() { shown().0 }, true)
       } else if side_adb_tab(agent) is Some(station) {
