@@ -1,7 +1,8 @@
 // A chat's side panel's bar (sideBar: panel.mbt's styles) as nodes of the window's tree, made once over whatever tab is
 // in front, beside the page (side_panel_node) and on the tape (tape_side_node): its tabs, each its mark, its name and
-// its ×, the one in front on the selected ground (or on the tape, a tab alone, its title), the station's screen to a
-// window of its own, the panel's switch at its end; its empty part the app's own top row, moving the window.
+// its ×, the one in front on the selected ground (or on the tape, a tab alone, its title), the agent in front's stop
+// while it works, the station's screen to a window of its own, the panel's switch at its end; its empty part the app's
+// own top row, moving the window.
 
 ///|
 /// What a tab's mark is (side_mark_of): an icon by its name, an agent's maker's mark, a web service's dot of how its
@@ -125,6 +126,50 @@ fn side_bar_node(
           side_tab_node(row, src, r, view, tab, fn() { front() == tab }, tips)
         })
       }
+    })
+    // an agent's history in front while it works (or waits to): its turn stopped (session.stop, as its card's stop),
+    // an icon button of the bar's as those after it are, faded while asked (2026-11-14: 「右侧需要有一个停止按钮」; not in
+    // the head's row of 只看收发 and 详情, whose chips its circle did not match: the maintainer, 2026-11-14)
+    let working = fn() {
+      let tab = front()
+      match view() {
+        Some(v) =>
+          v.agents.iter().find_first(fn(a) { a.key == tab && (a.status == "running" || a.status == "queued") }).map(fn(a) {
+            a.key
+          })
+        None => None
+      }
+    }
+    bar.show(at_once=true, fn() { working() is Some(_) }, fn(e) {
+      e.shrink(Is(0.0)) |> ignore
+      let asked = fn() {
+        match working() {
+          Some(key) => @sfbase.doing("stop/" + r.station + "/" + key)
+          None => false
+        }
+      }
+      @sf.icon_button_node(
+        e,
+        "stop",
+        fn() { @sf.t("web-pages.chat.stopTurn") },
+        fn() {
+          guard working() is Some(key) else { return }
+          let skey = "stop/" + r.station + "/" + key
+          if !@sfbase.doing(skey) {
+            @sfbase.act(
+              src,
+              @sf.t("web-pages.chat.stop"),
+              skey,
+              "session.stop",
+              { "station": Json::string(r.station), "key": Json::string(key) },
+              done=@sf.t("web-pages.chat.stopAsked"),
+            )
+          }
+        },
+        tips~,
+        disabled=asked,
+      )
+      |> ignore
     })
     // the station's screen in front: to a window of its own (a desktop's), its tab closed here (station_tabs.mbt)
     let window_page = fn() {

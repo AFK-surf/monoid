@@ -84,18 +84,25 @@ test "⌘. stops each of the chat's agents at work (session.stop by its key), an
 }
 
 ///|
-test "the head of an agent's history beside the chat stops its turn while it works (session.stop by its key); at rest it has no stop" {
-  let in_panel = fn(t : @ui.Tester) {
-    t.all(Button, label="停止当前任务").filter(fn(b) { b.rect.0 > 800.0 })
+test "the bar of an agent's history beside the chat stops its turn while it works (session.stop by its key), an icon button of the bar's size on its row; at rest it has no stop" {
+  let in_panel = fn(t : @ui.Tester, label : String) {
+    t.all(Button, label~).filter(fn(b) { b.rect.0 > 800.0 })
   }
   for status in ["running", "queued"] {
     let calls : Array[Made] = []
     let t = keyed_chat(calls, status~, mode="chat-history-side")
     t.frame()
     t.frame()
-    let stops = in_panel(t)
+    let stops = in_panel(t, "停止当前任务")
     assert_eq(stops.length(), 1, msg=status)
+    let closes = in_panel(t, "收起侧栏")
+    assert_eq(closes.length(), 1, msg=status)
     let (x, y, w, h) = stops[0].rect
+    let (cx, cy, cw, ch) = closes[0].rect
+    // (the bar's own size, on the bar's row, before its switch)
+    assert_eq((w, h), (cw, ch), msg=status)
+    assert_eq(y + h / 2.0, cy + ch / 2.0, msg=status)
+    assert_true(x < cx, msg=status)
     t.tap(x + w / 2.0, y + h / 2.0)
     t.draw()
     let made = named(calls, "session.stop")
@@ -106,7 +113,7 @@ test "the head of an agent's history beside the chat stops its turn while it wor
   let t = keyed_chat(calls, mode="chat-history-side")
   t.frame()
   t.frame()
-  assert_eq(in_panel(t).length(), 0)
+  assert_eq(in_panel(t, "停止当前任务").length(), 0)
 }
 
 ///|
