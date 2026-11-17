@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
 | [4cc373f9f](https://github.com/AFK-surf/monoid/commit/4cc373f9f84fab44e570275f29396dfdba86c5ab) station: a batch taken as its process is let go is | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
 | [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 2.56 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 114.21 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 122.81 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
 | [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
-| [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [4cc373f9f](https://github.com/AFK-surf/monoid/commit/4cc373f9f84fab44e570275f29396dfdba86c5ab) station: a batch taken as its process is let go is | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.53 |
 | [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.63 |
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
-| [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
