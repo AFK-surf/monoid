@@ -52,23 +52,24 @@ test("a connection sends adaptive pages again after a rate limit and finishes th
   const rig = new Rig();
   const stats = new CommaStats(":memory:", async () => ({ stations: [], unread: [] }), () => () => {});
   const chats = Array.from({ length: 32 }, (_, i) => ({ thread: i + 1, title: i < 12 ? "x".repeat(16_384) : "small", agents: [] }));
-  stats.apply([{ usage: { rows: [] }, chats }], [], 0);
+  await stats.apply([{ usage: { rows: [] }, chats }], [], 0);
+  const rev = (await stats.stats.probe()).through;
   const indexes = { stats: stats.stats, tasks: stats.tasks, start: () => {} };
   const surface = new CommaSurface({ connect: "one", server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     token: "one_token_123", name: "one", tasks: new CommaTasks(join(rig.dir, "comma-tasks.json")), store: rig.store,
     models: () => [], stats: indexes });
   try {
     await surface.start(async () => {});
-    for (let i = 0; i < 2000 && held["stats.index"].through < stats.stats.rev(); i++) {
+    for (let i = 0; i < 2000 && held["stats.index"].through < rev; i++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    assert.equal(held["stats.index"].through, stats.stats.rev());
+    assert.equal(held["stats.index"].through, rev);
     assert.ok(refused && pages.length > 2);
     assert.deepEqual(pages[1], pages[0], "the rate-limited page is retried unchanged");
     assert.ok(pages.every((page) => page.rows.length <= 200 && Buffer.byteLength(JSON.stringify(page.rows)) <= PAGE_BYTES));
     assert.deepEqual([...copy.values()].map((row) => row.thread).sort((a, b) => a - b), chats.map((chat) => chat.thread));
   } finally {
-    await surface.stop(); stats.close(); wss.close();
+    await surface.stop(); await stats.close(); wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close();
   }

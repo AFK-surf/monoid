@@ -3,12 +3,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { ROUTER_TARGETS_INSERT, routerSays, routerSaysAfter } from "../src/comma/chats.ts";
-import { CommaStats } from "../src/comma/stats.ts";
+import { LegacySaid } from "../src/comma/legacy-said.ts";
 import { MANUAL, MessageWriteBusy, Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 
-const nothing = async () => ({ stations: [], unread: [] });
-const quiet = () => () => {};
 
 function member(rig: Rig, key: string) {
   rig.store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
@@ -27,7 +25,7 @@ test("recording Router targets seeks the key and only visits the provided member
 
 test("a Router write treats an older session without a workspace as part of home", async () => {
   const rig = new Rig({ workspaces: ["home"] });
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -40,7 +38,7 @@ test("a Router write treats an older session without a workspace as part of home
 
 test("a Router retry after the deduplication database is locked does not repeat its message", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   const blocker = new DatabaseSync(join(rig.dir, "comma-stats.db"));
   try {
     rig.hub.hold("drain");
@@ -49,9 +47,9 @@ test("a Router retry after the deduplication database is locked does not repeat 
     rig.store.joinThread(thread.id, "a", "ember");
     const home = rig.hub.wsOf("a");
     const w = { thread: thread.id, text: "send once", key: "cm:k1", requester: "Router", connect: "cm" };
-    const put = blocker.prepare("INSERT INTO stats_index (key,source,kind,rev,json) VALUES (?,'stillfail','task',?,'{}')");
+    const put = blocker.prepare("INSERT INTO said (key, n, at) VALUES (?, ?, 0)");
     put.run("one", 1); put.run("two", 2);
-    const cursor = blocker.prepare("SELECT key FROM stats_index ORDER BY rev").iterate();
+    const cursor = blocker.prepare("SELECT key FROM said ORDER BY n").iterate();
     assert.equal(cursor.next().done, false);
     try { assert.throws(() => routerSays(rig.hub, stats, home, w), /database is locked/); }
     finally { cursor.return?.(); }
@@ -65,7 +63,7 @@ test("a Router retry after the deduplication database is locked does not repeat 
 
 test("a retry finishes delivery of the original message even if its text and recipients changed", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b"); member(rig, "c");
@@ -88,7 +86,7 @@ test("a retry finishes delivery of the original message even if its text and rec
 
 test("a retry does not deliver an earlier message to a session that rejoined after it was recorded", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b"); member(rig, "c");
@@ -112,7 +110,7 @@ test("a retry does not deliver an earlier message to a session that rejoined aft
 
 test("a Router message includes a member who joined before the message was recorded", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b");
@@ -134,7 +132,7 @@ test("a Router message includes a member who joined before the message was recor
 
 test("a Router message is not recorded if its chat moved workspaces before the write", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -156,7 +154,7 @@ test("a Router message is not recorded if its chat moved workspaces before the w
 
 test("a Router message is not recorded if its chat was archived before the write", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -177,7 +175,7 @@ test("a Router message is not recorded if its chat was archived before the write
 
 test("a Router delivery waits if the chat moves workspaces after recording", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -202,7 +200,7 @@ test("a Router delivery waits if the chat moves workspaces after recording", asy
 
 test("a retry after reopening the station finishes the original interrupted delivery", async () => {
   const rig = new Rig({ fileStore: true });
-  let stats = CommaStats.at(rig.dir, nothing, quiet);
+  let stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -219,7 +217,7 @@ test("a retry after reopening the station finishes the original interrupted deli
     rig.store = Store.open(join(rig.dir, "stillfail.db"), null);
     rig.hub = rig.newHub({ chats: () => undefined });
     rig.hub.hold("drain");
-    stats = CommaStats.at(rig.dir, nothing, quiet);
+    stats = LegacySaid.at(rig.dir);
     const n = routerSays(rig.hub, stats, rig.hub.wsOf("a"), { ...w, text: "different retry" });
     assert.deepEqual(rig.store.entriesAfter(thread.id, 0).map((e) => [e.n, e.text]), [[n, "survives restart"]]);
     assert.deepEqual(rig.store.pendingMessages("a").map((m) => [m.message.n, m.message.text]), [[n, "survives restart"]]);
@@ -228,7 +226,7 @@ test("a retry after reopening the station finishes the original interrupted deli
 
 test("an interrupted Router write is not delivered after its chat moves to another workspace", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -251,7 +249,7 @@ test("an interrupted Router write is not delivered after its chat moves to anoth
 
 for (const text of ["queued message", "-stop"]) test(`retry wakes a queued ${text === "-stop" ? "command" : "message"} after interruption`, async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -279,7 +277,7 @@ for (const text of ["queued message", "-stop"]) test(`retry wakes a queued ${tex
 
 test("failure to record the key rolls the message back, so a later write can complete", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -300,8 +298,8 @@ test("failure to record the key rolls the message back, so a later write can com
 
 for (const first of ["other connection", "write lock"] as const) test(`two connections racing with one key: ${first} first`, async () => {
   const rig = new Rig({ fileStore: true });
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
-  const otherStats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
+  const otherStats = LegacySaid.at(rig.dir);
   const otherStore = Store.open(join(rig.dir, "stillfail.db"), null);
   const ownStore = rig.store;
   rig.store = otherStore;
@@ -342,7 +340,7 @@ for (const first of ["other connection", "write lock"] as const) test(`two conne
 
 test("a busy delivery or completion can be retried with the same Router key", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -368,7 +366,7 @@ test("a busy delivery or completion can be retried with the same Router key", as
 
 test("a Router write is refused until the old process has actually exited", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -390,7 +388,7 @@ test("a Router write is refused until the old process has actually exited", asyn
 
 test("deleting a session also removes it from an interrupted Router delivery", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b");
@@ -413,7 +411,7 @@ test("deleting a session also removes it from an interrupted Router delivery", a
 
 test("a session removed after the Router message is recorded is not recreated as a delivery", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b");
@@ -435,7 +433,7 @@ test("a session removed after the Router message is recorded is not recreated as
 
 test("a removed member from an older station is not reintroduced by a retry", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a"); member(rig, "b");
@@ -457,7 +455,7 @@ test("a removed member from an older station is not reintroduced by a retry", as
 
 test("expiration of a large interrupted delivery is bounded and cannot deliver a partial target list", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");
@@ -483,7 +481,7 @@ test("expiration of a large interrupted delivery is bounded and cannot deliver a
 
 test("a retry finishing an expired write cannot complete a newer write that reused its key", async () => {
   const rig = new Rig();
-  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  const stats = LegacySaid.at(rig.dir);
   try {
     rig.hub.hold("drain");
     member(rig, "a");

@@ -1,0 +1,113 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/comma"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/sql",
+}
+
+// Values
+pub const PAGE_BYTES : Int32 = 61440
+
+pub const PAGE_ROWS : Int32 = 200
+
+pub fn epoch(@sql.Db, String) -> String raise
+
+pub fn guard_prunes(@sql.Db, String) -> Unit raise
+
+pub fn index_name(String) -> String raise
+
+pub fn install_stats_age(@sql.Db) -> Unit raise
+
+pub fn next_page(@sql.Db, String, Ask) -> Read raise
+
+pub fn prepare(@sql.Db) -> Unit raise
+
+pub fn prune(@sql.Db, String, Int64) -> Unit raise
+
+pub fn pruned(@sql.Db, String) -> Int64 raise
+
+pub fn rev(@sql.Db, String) -> Int64 raise
+
+pub fn rows_since(@sql.Db, String, Int64, Int32, Bool) -> Array[IndexRow] raise
+
+pub async fn serve(@host.Host, String) -> Unit
+
+pub fn stats_age_candidates(@sql.Db, Array[Int32]) -> Array[Kept] raise
+
+pub fn stats_age_ready(@sql.Db, Int32?) -> Bool raise
+
+pub fn stats_age_step(@sql.Db, limit? : Int32) -> (Int32, Bool) raise
+
+pub fn stats_rows_of(Rows, @jsjson.JValue, Array[Int32]) -> Unit raise
+
+pub fn task_rows_of(Rows, @jsjson.JValue) -> Unit raise
+
+pub fn task_title(@sql.Db, Array[Int32]) -> @jsjson.JValue?? raise
+
+// Errors
+
+// Types and methods
+pub(all) struct Ask {
+  epoch : String?
+  through : Int64
+  rows : Int32
+  resetting : Bool
+  reset_floor : Int64
+  task : Bool
+}
+
+pub struct Build {
+  stats : Rows
+  tasks : Rows
+  unread : Array[Array[Int32]]
+  from_day : Array[Int32]
+  mut version : Int64?
+  mut active_turns : Int32
+}
+pub fn Build::apply(Self, @sql.Db, Bool, Int32?) -> (Int32, Int32)? raise
+pub fn Build::new(@jsjson.JValue, @jsjson.JValue, Array[Int32]) -> Self raise
+pub fn Build::turn(Self, @sql.Db) -> (Int32, Int32)? raise
+
+pub(all) struct IndexRow {
+  key : Bytes
+  source : @json.Json
+  kind : @json.Json
+  rev : Int64
+  removed : Bool
+  json : @json.Json
+}
+
+pub(all) struct Kept {
+  key : Bytes
+  json : @json.Json?
+}
+
+pub(all) struct Read {
+  page : @jsjson.JValue?
+  reset : Bool
+  floor : Int64
+  limit : Int32
+  taken : Int32
+  byte_limited : Bool
+  row_limited : Bool
+}
+
+pub(all) struct Row {
+  kind : String
+  json : String
+}
+
+pub struct Rows {
+  order : Array[Array[Int32]]
+  rows : Map[String, (Int32, Row)]
+}
+pub fn Rows::each(Self, (Array[Int32], Row) -> Unit raise) -> Unit raise
+pub fn Rows::length(Self) -> Int32
+pub fn Rows::new() -> Self
+
+// Type aliases
+
+// Traits

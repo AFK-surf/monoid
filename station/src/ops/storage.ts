@@ -78,7 +78,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "repo-index.json", class: "bounded-ephemeral", what: "the repositories found on the machine", maxBytes: 64 * MiB },
   { name: "remote-connects.json", class: "authoritative", what: "connects of other stations (connects/keys.ts)" },
   { name: "comma-tasks.json", class: "authoritative", what: "Comma's tasks" },
-  { name: "comma-stats.db", class: "authoritative", what: "Comma's statistics" },
+  { name: "comma-stats.db", class: "authoritative", what: "what the Router wrote, for stations from before (comma/legacy-said.ts), and their unscoped statistics" },
   { name: "comma-stats.db-*", class: "authoritative", what: "Comma's statistics' log and shared memory" },
   { name: "comma-indexes", class: "authoritative", what: "Comma's indexes" },
   { name: "feishu-threads.json", class: "authoritative", what: "Feishu's threads" },

@@ -5,10 +5,13 @@ import { say } from "../sessions/lifecycle.ts";
 import { wall } from "../ops/fibers.ts";
 import { MANUAL, MessageWriteBusy } from "../store/store.ts";
 import type { WorkspaceReads } from "./peer.ts";
-import { BUILD_DAYS, chatOf, type CommaStats } from "./stats.ts";
+import type { LegacySaid } from "./legacy-said.ts";
+import { BUILD_DAYS, chatOf } from "./stats.ts";
 
 type Json = any;
 type RouterWrite = { id: string; thread: number; n: number; pending: number };
+/// What the Router's writes made, as a station from before keeps it (legacy-said.ts).
+type Said = Pick<LegacySaid, "said" | "remember">;
 
 // An older station answers with raw entries. Bound retries through edits; if no message can be reached in that
 // budget, an explicit upgrade error is safer than answering that the chat has no more messages.
@@ -26,7 +29,7 @@ class AlreadySaid extends Error {
 
 /// The older process only knows the other database. Reject while it is still alive rather than letting a timed-out
 /// request take effect later, after its caller has already been told it failed.
-export function routerSaysAfter(hub: Hub, stats: CommaStats, previousExited: Promise<void>) {
+export function routerSaysAfter(hub: Hub, stats: Said, previousExited: Promise<void>) {
   let ready = false;
   void previousExited.then(() => { ready = true; }, () => {});
   return (workspace: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number => {
@@ -36,7 +39,7 @@ export function routerSaysAfter(hub: Hub, stats: CommaStats, previousExited: Pro
 }
 
 /// A chat's messages and title for the Router, only after the station holding the chat confirms its workspace.
-export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads, "of" | "here" | "there">, ref: string, after: number, limit: number): Promise<Json> {
+export async function routerReads(stats: { taskTitle(ref: string): Promise<Json> }, reads: Pick<WorkspaceReads, "of" | "here" | "there">, ref: string, after: number, limit: number): Promise<Json> {
   const chat = chatOf(ref);
   if (chat === null) throw new Error("no such chat");
   const of = reads.of();
@@ -77,7 +80,7 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
     pages++;
   }
   return {
-    title: stats.taskTitle(ref),
+    title: await stats.taskTitle(ref),
     messages: messages.slice(0, limit).map((m) => ({
       seq: m.n, author_kind: m.authorKind, author: m.person?.name ?? m.person?.email ?? m.author, text: m.text, at: m.at,
     })),
@@ -88,7 +91,7 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
 /// The Router's message in chat `thread` of this station, as `requester` of the Comma connect `connect` (named so in
 /// the chat, as a person of that connect is), once per `key`: its `n`. Only a chat of workspace `home` (one of the
 /// station's, the connect's) on the station's pages; a Slack or Feishu chat is answered where it is.
-export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
+export function routerSays(hub: Hub, stats: Said, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
   try { return routerSaysOnce(hub, stats, home, w); }
   catch (error) {
     if (error instanceof MessageWriteBusy) throw new Error(w.key === "" ? "the station is busy; retry the write" : "the station is busy; retry the Router request with the same key");
@@ -96,7 +99,7 @@ export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: 
   }
 }
 
-function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
+function routerSaysOnce(hub: Hub, stats: Said, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string }): number {
   const db = hub.store.db;
   const find = () => (db.prepare("SELECT CAST(id AS TEXT) AS id, thread, n, pending FROM comma_router_once WHERE key = ?").get(w.key) as RouterWrite | undefined) ?? null;
   const mirror = (written: RouterWrite) => {

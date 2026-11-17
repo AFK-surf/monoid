@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CommaStats } from "../src/comma/stats.ts";
-import { installStatsAge, statsAgeCandidates, statsAgeReady, statsAgeStep } from "../src/comma/stats-age.ts";
+import { CommaStats } from "./reference/comma-stats.ts";
+import { installStatsAge, statsAgeCandidates, statsAgeReady, statsAgeStep } from "./reference/comma-stats-age.ts";
 
 for (const changes of [1, 64, 65, 512]) test(`a build can finish while an older connection changes ${changes} rows between event-loop turns`, async () => {
   const dir = mkdtempSync(join(tmpdir(), "comma-stats-fair-")), path = join(dir, "stats.db");

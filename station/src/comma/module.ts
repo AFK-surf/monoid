@@ -4,7 +4,6 @@
 // writes in them (`task.read`, `task.say`), and what this station answers another's read of them, or write (peer.ts).
 import { hostname } from "node:os";
 import { Effect, Layer } from "effect";
-import { DatabaseSync } from "node:sqlite";
 import { commaEntry, commaRoutes } from "../api/routes/comma.ts";
 import { connectsPart } from "../connects/part.ts";
 import { member } from "../mesh/peer.ts";
@@ -15,7 +14,8 @@ import { makeComma } from "./index.ts";
 import type { CommaChats } from "./surface.ts";
 import { READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
-import { CommaStats, RevIndex, chatOf } from "./stats.ts";
+import { LegacySaid } from "./legacy-said.ts";
+import { CommaStats, EmptyIndex, chatOf } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
@@ -65,21 +65,15 @@ export const CommaLive = Layer.effectDiscard(
     // someone read a chat to (a done chat its creator has not read is one the Task index says waits for them).
     const usage = (changed: () => void) => store.subscribe((change) => void (["usage", "session", "thread", "read"].includes(change.type) && changed()));
     yield* Effect.promise(() => CommaStats.makeDirs(data));
-    // Keep the old database for Router deduplication across a downgrade. Its unscoped indexes are not sent.
+    // Keep the old database's record of the Router's writes for their deduplication across a downgrade: that table
+    // alone, its unscoped indexes neither built nor sent.
     const legacy = yield* Effect.acquireRelease(
-      Effect.sync(() => CommaStats.at(data, async () => ({ stations: [], unread: [] }), usage)),
+      Effect.sync(() => LegacySaid.at(data)),
       (s) => Effect.sync(() => s.close()),
     );
     // A connect of no workspace the station is in now must not receive another's index. Send an empty epoch so Comma
     // also removes rows that an older station already sent to this connect; the regular Task protocol remains there.
-    const empty = yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const db = new DatabaseSync(":memory:");
-        db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-        return { db, stats: new RevIndex(db, "stats_index"), tasks: new RevIndex(db, "task_index"), start: () => {} };
-      }),
-      (index) => Effect.sync(() => index.db.close()),
-    );
+    const empty = { stats: new EmptyIndex("stats_index"), tasks: new EmptyIndex("task_index"), start: () => {} };
     // The general handover timeout can take sessions up before the older process really exits.
     const said = routerSaysAfter(agents.hub, legacy, previous.exited);
     // Another station of the workspace writing in one of this one's chats, for the Router of the Comma connect there.
@@ -91,8 +85,10 @@ export const CommaLive = Layer.effectDiscard(
     });
     const scopes = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
-      (all) => Effect.sync(() => { for (const scope of all.values()) scope.stats.close(); }),
+      (all) => Effect.promise(() => Promise.all([...all.values()].map((scope) => scope.stats.close()))),
     );
+    // Each workspace's indexes' program, let go under the machine's pressure where nothing is asked of it.
+    readers.onTrim(() => [...scopes.values()].reduce((n, scope) => n + scope.stats.trimIdle(), 0));
     const scope = (workspace: string) => {
       const had = scopes.get(workspace);
       if (had !== undefined) return had;

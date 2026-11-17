@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CommaStats, IndexSync, PAGE_BYTES, RevIndex, nextPage, statsWire, taskWire, type Held, type IndexRow } from "../src/comma/stats.ts";
+import { CommaStats, IndexSync, PAGE_BYTES, RevIndex, nextPage, statsWire, taskWire, type Held, type IndexRow } from "./reference/comma-stats.ts";
 
 // Count rows returned by SQLite to the page reader, not bytes read from disk.
 function countPageRows(db: DatabaseSync, count: (rows: number) => void): DatabaseSync {

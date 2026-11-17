@@ -42,11 +42,12 @@ for (const [method, reason, reported] of [
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const rig = new Rig();
   const stats = new CommaStats(":memory:", async () => ({ stations: [], unread: [] }), () => () => {});
-  stats.apply([{ usage: { rows: [] }, chats: [
+  await stats.apply([{ usage: { rows: [] }, chats: [
     { thread: 1, title: "Crowded", agents: method === "stats.index"
       ? Array.from({ length: 1700 }, (_, i) => ({ id: `agent-${i}`, model: "example-model" })) : [] },
     { thread: 2, title: "Later", agents: [] },
   ] }], [], 0);
+  const rev = (await stats.stats.probe()).through;
   const surface = new CommaSurface({ connect: "one", server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     token: "one_token_123", name: "one", tasks: new CommaTasks(join(rig.dir, "comma-tasks.json")), store: rig.store,
     models: () => [], stats: { stats: stats.stats, tasks: stats.tasks, start: () => {} } });
@@ -66,11 +67,11 @@ for (const [method, reason, reported] of [
     assert.deepEqual(fields, { connect: "one", method, error: reported });
     if (method === "stats.index") {
       assert.equal(page.rows.length, 1);
-      assert.ok(page.through < stats.stats.rev(), "the later row is still pending");
+      assert.ok(page.through < rev, "the later row is still pending");
     }
     assert.deepEqual(held[method], { epoch: null, through: 0 }, "the refused reset did not advance the copy");
   } finally {
-    await surface.stop(); stats.close(); wss.close();
+    await surface.stop(); await stats.close(); wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close(); log.info = info;
   }

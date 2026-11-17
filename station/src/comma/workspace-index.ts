@@ -1,6 +1,6 @@
 // The index for one workspace of the station's, its home one or one it joined. The old comma-stats.db remains the
-// Router's compatibility record; its index has no owner recorded and therefore cannot safely be sent after a station
-// is enrolled in a different workspace.
+// Router's compatibility record (legacy-said.ts); its index has no owner recorded and therefore cannot safely be sent
+// after a station is enrolled in a different workspace.
 import { CommaStats, type Read } from "./stats.ts";
 import type { CommaIndexes } from "./surface.ts";
 

@@ -41,7 +41,7 @@ test("a workspace change while Comma answers a probe does not send the old index
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const rig = new Rig();
   const stats = new CommaStats(":memory:", async () => ({ stations: [], unread: [] }), () => () => {});
-  stats.apply([{ usage: { rows: [] }, chats: [{ thread: 1, title: "old workspace title", agents: [] }] }], [], 0);
+  await stats.apply([{ usage: { rows: [] }, chats: [{ thread: 1, title: "old workspace title", agents: [] }] }], [], 0);
   let allowed = true;
   const indexes = { stats: stats.stats, tasks: stats.tasks, start: () => {} };
   const surface = new CommaSurface({ connect: "one", server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
@@ -56,7 +56,7 @@ test("a workspace change while Comma answers a probe does not send the old index
     assert.equal(pages.length, 2);
     assert.equal(pages.some((page) => JSON.stringify(page.rows).includes("old workspace title")), false);
   } finally {
-    await surface.stop(); stats.close(); wss.close();
+    await surface.stop(); await stats.close(); wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close();
   }
@@ -78,13 +78,13 @@ test("a workspace change while an index guard is locked stops its retry before s
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const rig = new Rig();
   const path = join(rig.dir, "index.db");
-  const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {}, undefined, LOCKED_MS);
+  const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {}, { busyMs: LOCKED_MS });
   const blocker = new DatabaseSync(path);
   blocker.exec("BEGIN IMMEDIATE");
   let attempts = 0, allowed = true;
   for (const index of [stats.stats, stats.tasks]) {
-    const follow = index.following.bind(index);
-    index.following = () => { attempts++; return follow(); };
+    const follow = index.follow.bind(index);
+    index.follow = (wire) => { attempts++; return follow(wire); };
   }
   const indexes = { stats: stats.stats, tasks: stats.tasks, start: () => {} };
   const surface = new CommaSurface({ connect: "one", server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
@@ -99,7 +99,7 @@ test("a workspace change while an index guard is locked stops its retry before s
     assert.deepEqual(pages, []);
   } finally {
     if (blocker.isTransaction) blocker.exec("ROLLBACK");
-    blocker.close(); await surface.stop(); stats.close(); wss.close();
+    blocker.close(); await surface.stop(); await stats.close(); wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close();
   }

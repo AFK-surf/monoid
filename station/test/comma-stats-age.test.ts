@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installStatsAge, STATS_AGE_CANDIDATES, statsAgeCandidates, statsAgeReady, statsAgeStep } from "../src/comma/stats-age.ts";
+import { installStatsAge, STATS_AGE_CANDIDATES, statsAgeCandidates, statsAgeReady, statsAgeStep } from "./reference/comma-stats-age.ts";
 
 const schema = `CREATE TABLE stats_index (key TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL,
   rev INTEGER NOT NULL, json TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0);`;

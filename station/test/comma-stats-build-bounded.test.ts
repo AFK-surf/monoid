@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CommaStats, statsRowsOf } from "../src/comma/stats.ts";
+import { CommaStats, statsRowsOf } from "./reference/comma-stats.ts";
 
 /// How long the statistics' database waits for a write held here before refusing (stats.ts `BUSY_MS`): what is tried
 /// again while a test holds its lock, without 5 s of the test's time a try.

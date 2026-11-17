@@ -33,7 +33,7 @@ import { ConnectedSurface } from "../connects/surface.ts";
 import type { Handler, InboundFile, ModelChoice, Person, ThreadRef } from "../sessions/chat.ts";
 import { sessionKey } from "../sessions/hub.ts";
 import type { Attachment, Store } from "../store/store.ts";
-import { type CommaStats, type IndexRow, type RevIndex, IndexSync, heldFrom, probePage, statsWire, taskWire } from "./stats.ts";
+import { type IndexFollower, type PagedIndex, type Wire, IndexBusy, heldFrom } from "./stats.ts";
 import { type CommaTasks, type Start, type Task, TASK_CHANNEL } from "./tasks.ts";
 
 type Json = any;
@@ -152,7 +152,7 @@ export type CommaSurfaceOptions = {
   inScope?: () => boolean;
 };
 
-export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
+export type CommaIndexes = { stats: PagedIndex; tasks: PagedIndex; start(): void };
 
 /// The chats of the Task index (a ref: stats.ts chatRef), as the Router reads one (`task.read`) and writes in it as
 /// itself (`task.say`, once per key).
@@ -244,8 +244,8 @@ export class CommaSurface extends ConnectedSurface {
         this.send({ type: "metadata", capabilities: this.capabilities(), skills: [], system_info: { os: platform(), arch: arch(), hostname: this.name } });
         this.hello();
         if (this.stats !== null && this.inScope()) {
-          void this.sendIndex(socket, "stats.index", statsWire);
-          void this.sendIndex(socket, "task.index", taskWire);
+          void this.sendIndex(socket, "stats.index", "stats");
+          void this.sendIndex(socket, "task.index", "task");
         }
         return;
       case "heartbeat":
@@ -343,14 +343,14 @@ export class CommaSurface extends ConnectedSurface {
   /// Keeps Comma's copy of an index current while `socket` is the connection: asks what Comma holds, sends what it
   /// lacks a page at a time, and again a second after it changed. Comma answers `rate_limited` to more than a few pages
   /// a second; any other refusal ends it until the next connection.
-  private async sendIndex(socket: WebSocket, method: "stats.index" | "task.index", wire: (row: IndexRow) => Json | null) {
+  private async sendIndex(socket: WebSocket, method: "stats.index" | "task.index", wire: Wire) {
     let changed: () => void = () => {};
     let moved = new Promise<void>((resolve) => (changed = resolve));
     let stop = () => {};
     let didClose = false;
     const live = () => !didClose && this.socket_ === socket && this.inScope();
     const closed = new Promise<void>((resolve) => socket.once("close", () => { didClose = true; resolve(); }));
-    let following: IndexSync | null = null;
+    let following: IndexFollower | null = null;
     try {
       // An older process may still be sending the unscoped index. Clear or send ours only after it has exited.
       await Promise.race([this.previousExited, closed]);
@@ -371,13 +371,12 @@ export class CommaSurface extends ConnectedSurface {
         cancel = wall.after(ms, () => finish(true)); // timer: retry a locked index with backoff
         if (!live()) finish(false);
       });
-      const readIndex = async <T>(read: () => T): Promise<{ value: T } | null> => {
+      const readIndex = async <T>(read: () => Promise<T>): Promise<{ value: T } | null> => {
         let delay = 25;
         while (live()) {
-          try { return { value: read() }; }
+          try { return { value: await read() }; }
           catch (error) {
-            const code = (error as { errcode?: number }).errcode;
-            if (code === undefined || ((code & 0xff) !== 5 && (code & 0xff) !== 6)) throw error;
+            if (!(error instanceof IndexBusy)) throw error;
             // An old connection can hold the index during guard installation or acknowledgement. Retry that work,
             // with backoff, until it succeeds or this socket closes.
             if (!await retryWait(delay)) return null;
@@ -386,10 +385,10 @@ export class CommaSurface extends ConnectedSurface {
         }
         return null;
       };
-      const started = await readIndex(() => new IndexSync(stats, wire));
+      const started = await readIndex(() => stats.follow(wire));
       if (started === null) return;
       const sync = following = started.value;
-      const initial = await readIndex(() => probePage(stats));
+      const initial = await readIndex(() => stats.probe());
       if (initial === null) return;
       let page = initial.value;
       while (live()) {
@@ -424,7 +423,7 @@ export class CommaSurface extends ConnectedSurface {
         moved = new Promise<void>((resolve) => (changed = resolve));
         await wall.sleep(1000);
         if (!live()) return;
-        const readAfterChange = await readIndex(() => sync.next(held) ?? probePage(stats));
+        const readAfterChange = await readIndex(async () => (await sync.next(held)) ?? stats.probe());
         if (readAfterChange === null) return;
         page = readAfterChange.value;
       }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { nextPage, RevIndex, statsWire, taskWire } from "../src/comma/stats.ts";
+import { nextPage, RevIndex, statsWire, taskWire } from "./reference/comma-stats.ts";
 
 // Count stored tombstone body bytes returned from SQLite to the page reader.
 function countTombstones(db: DatabaseSync, count: (bytes: number) => void): DatabaseSync {

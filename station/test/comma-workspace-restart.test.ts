@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
 import { workspaceIndex } from "../src/comma/workspace-index.ts";
 import { makeComma } from "../src/comma/index.ts";
-import { CommaStats, RevIndex, type StationRows } from "../src/comma/stats.ts";
+import { CommaStats, EmptyIndex, type StationRows } from "../src/comma/stats.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Rig } from "./hub-fakes.ts";
 
@@ -46,13 +45,11 @@ test("a new home resets the old copy before its own first read completes", async
   config.update((raw) => { raw.connects = [{ id: "new-home", kind: "comma", enabled: true,
     comma: { server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token: "new_home_token_123" } }]; });
   await CommaStats.makeDirs(dir);
-  const legacy = CommaStats.at(dir, nothing, quiet);
-  legacy.apply([row("unscoped old title")], [], 0); legacy.close();
+  const legacy = new CommaStats(join(dir, "comma-stats.db"), nothing, quiet);
+  await legacy.apply([row("unscoped old title")], [], 0); await legacy.close();
   const old = CommaStats.inWorkspace(dir, "old-home", nothing, quiet);
-  old.apply([row("old home title")], [], 0); old.close();
-  const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  const empty = { stats: new RevIndex(db, "stats_index"), tasks: new RevIndex(db, "task_index"), start: () => {} };
+  await old.apply([row("old home title")], [], 0); await old.close();
+  const empty = { stats: new EmptyIndex("stats_index"), tasks: new EmptyIndex("task_index"), start: () => {} };
   let release!: (v: { stations: StationRows[]; unread: string[] }) => void;
   const pending = new Promise<{ stations: StationRows[]; unread: string[] }>((resolve) => { release = resolve; });
   let index: ReturnType<typeof workspaceIndex> | null = null;
@@ -73,8 +70,8 @@ test("a new home resets the old copy before its own first read completes", async
   } finally {
     release({ stations: [], unread: [] });
     await connects.close();
-    if (index !== null) { await (index as ReturnType<typeof workspaceIndex>).stats.settled(); (index as ReturnType<typeof workspaceIndex>).stats.close(); }
-    db.close(); wss.close();
+    if (index !== null) { await (index as ReturnType<typeof workspaceIndex>).stats.settled(); await (index as ReturnType<typeof workspaceIndex>).stats.close(); }
+    wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close();
     if (previousConfig === undefined) delete process.env.STILLFAIL_CONFIG; else process.env.STILLFAIL_CONFIG = previousConfig;

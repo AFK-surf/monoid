@@ -26,15 +26,15 @@ for (const [name, remote] of [
   test(`an incomplete peer answer (${name}) keeps that station's previous rows`, async () => {
     const stats = new CommaStats(":memory:", empty, quiet);
     try {
-      stats.apply([{ station: "away", usage, chats: [chat] }], [], from);
+      await stats.apply([{ station: "away", usage, chats: [chat] }], [], from);
       const read = workspaceRead({ of: () => ({ workspace: "home", home: true }), here: async (op) => local(op), others: async () => ["away"],
         there: async (_station, op) => JSON.stringify(remote(op)) });
       const got = await read(from, to);
-      const changed = stats.apply(got.stations, got.unread, from);
+      const changed = await stats.apply(got.stations, got.unread, from);
       assert.deepEqual(changed, { stats: 0, tasks: 0 }, "an incomplete answer must not tombstone previously held rows");
-      assert.equal(stats.taskTitle("7@away"), "kept");
+      assert.equal(await stats.taskTitle("7@away"), "kept");
       assert.deepEqual(got.unread, ["away"]);
-    } finally { stats.close(); }
+    } finally { await stats.close(); }
   });
 }
 
@@ -80,16 +80,16 @@ test("a later complete answer can remove a peer's rows after its partial answer 
   let complete = false;
   const stats = new CommaStats(":memory:", empty, quiet);
   try {
-    stats.apply([{ station: "away", usage, chats: [chat] }], [], from);
+    await stats.apply([{ station: "away", usage, chats: [chat] }], [], from);
     const read = workspaceRead({ of: () => ({ workspace: "home", home: true }), here: async (op) => local(op), others: async () => ["away"],
       there: async (_station, op) => JSON.stringify(op === "outflowUsage" ? { rows: [], people: {} }
         : complete ? { chats: [], more: false } : { chats: [], more: true, next: null }) });
     const partial = await read(from, to);
-    assert.deepEqual(stats.apply(partial.stations, partial.unread, from), { stats: 0, tasks: 0 });
-    assert.equal(stats.taskTitle("7@away"), "kept");
+    assert.deepEqual(await stats.apply(partial.stations, partial.unread, from), { stats: 0, tasks: 0 });
+    assert.equal(await stats.taskTitle("7@away"), "kept");
     complete = true;
     const done = await read(from, to);
-    assert.deepEqual(stats.apply(done.stations, done.unread, from), { stats: 1, tasks: 1 });
-    assert.equal(stats.taskTitle("7@away"), "");
-  } finally { stats.close(); }
+    assert.deepEqual(await stats.apply(done.stations, done.unread, from), { stats: 1, tasks: 1 });
+    assert.equal(await stats.taskTitle("7@away"), "");
+  } finally { await stats.close(); }
 });

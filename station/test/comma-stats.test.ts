@@ -11,8 +11,9 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { WebSocketServer } from "ws";
 import { workspaceRead } from "../src/comma/peer.ts";
-import { CommaStats, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, heldFrom, nextPage, probePage, taskWire } from "../src/comma/stats.ts";
+import { CommaStats, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, heldFrom, nextPage, probePage, taskWire } from "./reference/comma-stats.ts";
 import { routerSays } from "../src/comma/chats.ts";
+import { CommaStats as MbStats } from "../src/comma/stats.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";
 import { Rig } from "./hub-fakes.ts";
@@ -188,12 +189,12 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
   let builds = 0;
   let previousExited!: () => void;
   const previous = new Promise<void>((resolve) => { previousExited = resolve; });
-  const stats = CommaStats.at(dir, async () => (builds++, { stations: [here([usageRow("2026-11-02", "a", "ann@x")], {}, [chat(7, "need_human")])], unread: [] }), quiet, previous, LOCKED_MS);
+  const stats = new MbStats(join(dir, "comma-stats.db"), async () => (builds++, { stations: [here([usageRow("2026-11-02", "a", "ann@x")], {}, [chat(7, "need_human")])], unread: [] }), quiet, { ready: previous, busyMs: LOCKED_MS });
   const old = new DatabaseSync(join(dir, "comma-stats.db"));
   let locked = false;
   let guardAttempts = 0;
-  const following = stats.stats.following.bind(stats.stats);
-  stats.stats.following = () => { guardAttempts++; return following(); };
+  const follow = stats.stats.follow.bind(stats.stats);
+  stats.stats.follow = (wire) => { guardAttempts++; return follow(wire); };
   const asked: Json[] = [];
   const chats = {
     read: async (ref: string, after: number, limit: number) => (asked.push(["read", ref, after, limit]), { title: "Fix", messages: [], through: 3 }),
@@ -235,24 +236,26 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
     assert.deepEqual(asked, [["read", "7", 1, 100], ["say", "7", "选 main", "k1", "星火工作室", "cm"]]);
 
     // Changed: the next page carries only what changed.
-    stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 2)], {}, [chat(7, "need_human")])], [], FROM);
     const before = pages.length;
-    await until(() => held.through === stats.stats.rev());
+    await stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 2)], {}, [chat(7, "need_human")])], [], FROM);
+    const changedRev = (await stats.stats.probe()).through;
+    await until(() => held.through === changedRev);
     assert.deepEqual(pages.slice(before).flatMap((p) => p.rows).map((r: Json) => r.row.calls), [2]);
 
     // A Comma that does not take the pages: no more are sent.
     refuse = true;
-    stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 3)], {}, [chat(7, "need_human")])], [], FROM);
-    await until(() => pages.at(-1)?.through === stats.stats.rev());
+    await stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 3)], {}, [chat(7, "need_human")])], [], FROM);
+    const refusedRev = (await stats.stats.probe()).through;
+    await until(() => pages.at(-1)?.through === refusedRev);
     const last = pages.length;
-    stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 4)], {}, [chat(7, "need_human")])], [], FROM);
+    await stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 4)], {}, [chat(7, "need_human")])], [], FROM);
     await new Promise((r) => setTimeout(r, 1500));
     assert.equal(pages.length, last);
   } finally {
     if (locked) old.exec("ROLLBACK");
     old.close();
     await surface.stop();
-    stats.close();
+    await stats.close();
     wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.hub.shutdown();
@@ -278,11 +281,11 @@ test("closing a Comma connection stops retrying a locked index guard", async () 
   const rig = new Rig(), dir = tempdir();
   let previousExited!: () => void;
   const previous = new Promise<void>((resolve) => { previousExited = resolve; });
-  const stats = CommaStats.at(dir, nothing, quiet, previous, LOCKED_MS);
+  const stats = new MbStats(join(dir, "comma-stats.db"), nothing, quiet, { ready: previous, busyMs: LOCKED_MS });
   const old = new DatabaseSync(join(dir, "comma-stats.db"));
   let locked = false, attempts = 0;
-  const following = stats.stats.following.bind(stats.stats);
-  stats.stats.following = () => { attempts++; return following(); };
+  const follow = stats.stats.follow.bind(stats.stats);
+  stats.stats.follow = (wire) => { attempts++; return follow(wire); };
   const surface = new CommaSurface({ connect: "cm", server: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, token: "salix_conn_test123", name: "mac", tasks: new CommaTasks(join(dir, "tasks.json")), store: rig.store, models: () => [], stats });
   const until = async (f: () => boolean) => {
     for (let i = 0; i < 500 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
@@ -306,7 +309,7 @@ test("closing a Comma connection stops retrying a locked index guard", async () 
     if (locked) old.exec("ROLLBACK");
     old.close();
     await surface.stop();
-    stats.close();
+    await stats.close();
     wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.hub.shutdown();

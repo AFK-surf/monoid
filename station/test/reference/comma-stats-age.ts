@@ -1,3 +1,6 @@
+// The age index of Comma's statistics as the TypeScript station kept it (test/reference/comma-stats.ts), before it
+// moved to the MoonBit program (station/mb/src/comma age.mbt), for the tests to compare the program with.
+//
 // A conservative index of the days in Comma's stored statistics. It is rebuilt in bounded batches, and every writer,
 // including an older station during handover, marks changed rows for reclassification.
 import type { DatabaseSync } from "node:sqlite";

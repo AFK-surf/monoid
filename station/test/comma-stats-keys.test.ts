@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CommaStats, nextPage, statsRowsOf, type StationRows } from "../src/comma/stats.ts";
+import { CommaStats, nextPage, statsRowsOf, type StationRows } from "./reference/comma-stats.ts";
 
 const from = Date.UTC(2026, 10, 1);
 const usage = (session: string) => ({ day: "2026-11-02", session, thread: 7, person: "ann@x", account: "cc", runtime: "claude", model: null, calls: 1, input: 10, output: 5 });

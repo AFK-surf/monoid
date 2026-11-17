@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { makeComma } from "../src/comma/index.ts";
-import { CommaStats, RevIndex } from "../src/comma/stats.ts";
+import { CommaStats, EmptyIndex } from "../src/comma/stats.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Rig } from "./hub-fakes.ts";
 
@@ -66,9 +66,7 @@ test("a joined workspace's connect sends that workspace's index, never the home'
   const otherStats = new CommaStats(":memory:", async () => ({ stations: otherRows, unread: [] }), () => () => {});
   const joinedRows = [{ usage: { rows: [], people: {} }, chats: [{ thread: 19, title: "joined title", surface: "stillfail", createdAt: 1, lastActiveAt: 2, agents: [] }] }];
   const joinedStats = new CommaStats(":memory:", async () => ({ stations: joinedRows, unread: [] }), () => () => {});
-  const emptyDb = new DatabaseSync(":memory:");
-  emptyDb.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  const empty = { stats: new RevIndex(emptyDb, "stats_index"), tasks: new RevIndex(emptyDb, "task_index"), start: () => {} };
+  const empty = { stats: new EmptyIndex("stats_index"), tasks: new EmptyIndex("task_index"), start: () => {} };
   let home: string | null = "home-workspace", version = 0, previousExited!: () => void;
   const previous = new Promise<void>((resolve) => { previousExited = resolve; });
   let reads = 0, writes = 0, scopesOpened = 0, finishRead!: (value: Json) => void;
@@ -130,7 +128,7 @@ test("a joined workspace's connect sends that workspace's index, never the home'
     assert.deepEqual(titles("joined"), ["joined title"]);
   } finally {
     previousExited(); finishRead({});
-    await connects.close(); stats.close(); otherStats.close(); joinedStats.close(); emptyDb.close(); wss.close();
+    await connects.close(); await stats.close(); await otherStats.close(); await joinedStats.close(); wss.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rig.close();
     if (priorConfig === undefined) delete process.env.STILLFAIL_CONFIG; else process.env.STILLFAIL_CONFIG = priorConfig;

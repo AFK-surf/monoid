@@ -1112,6 +1112,9 @@ fn main {
         { "scope": "search", .. } => Some(@sessions.step(db) && @sessions.audit(db))
         _ => None
       }))
+    (Some("comma-stats"), Some(db), _) =>
+      // (no shell: its database is its own connection's)
+      @host.run(host => @comma.serve(host, db))
     (None, _, Some(data)) if flag("--sessions") is Some(_) =>
       @host.run(shell_dir=data + "/shell", host => serve_sessions(host, flag("--sep").unwrap_or("/")))
     (None, _, Some(data)) if flag("--serve") is Some(socket) =>
@@ -1133,7 +1136,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-counter|signin-save|vault-uses|comma-stats|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
       2
     }
   }
