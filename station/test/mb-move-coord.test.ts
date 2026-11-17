@@ -947,7 +947,9 @@ test("modules: the jobs, kept as their chat is held, moved and moved back, start
   await step("back", () => tsM.back(up, "B"), "back", up, "B");
   await step("back of one not moved", () => tsM.back(item, "B"), "back", item, "B");
   await step("kept again", () => tsM.keep(["chat:old"], "x"), "keep", ["chat:old"], "x");
-  await step("and started", async () => tsM.startKept(["chat:old", "chat:a1"]), "startKept", ["chat:old", "chat:a1"]);
+  // (startKept writes as it goes, waited for by nothing: the TypeScript's file compared once it is written, as the
+  // program's is once it is quiet; main's check-station failed on a slow runner, the TypeScript's line not there yet)
+  await step("and started", async () => (tsM.startKept(["chat:old", "chat:a1"]), await tsM.written()), "startKept", ["chat:old", "chat:a1"]);
   await step("plan after", () => tsM.plan("ws"), "plan", "ws", "B");
 });
 

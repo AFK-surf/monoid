@@ -89,6 +89,11 @@ export class JobsModule implements Module {
     return up.map(({ id: _, ...job }) => job);
   }
 
+  /// Once what it was asked to keep is on the disk: `startKept` writes without waiting.
+  written(): Promise<void> {
+    return this.#k.written();
+  }
+
   /// The kept jobs of `keys` started here again (their chat goes on here).
   startKept(keys: string[]): void {
     const mine = keys.flatMap((k) => [...(this.#keptOf.get(k) ?? [])].flatMap((id) => this.#kept(id) ?? []));

@@ -151,6 +151,11 @@ export class KeptLog<T> {
     return this.#map.size;
   }
 
+  /// Once every change asked so far is on the disk (one asked without waiting for it: `JobsModule.startKept`'s).
+  written(): Promise<void> {
+    return this.#ready;
+  }
+
   async set(key: string, value: T): Promise<void> {
     this.#map.set(key, value);
     await this.#append({ k: key, v: value });
