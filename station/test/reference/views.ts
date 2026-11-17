@@ -515,10 +515,14 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
   const order = sessions.filter((x) => (x.archivedAt !== null) === archived && (scope === null || scope.rows.has(x.key))).map((x) => x.key);
   // In the archive, a chat of its own shows its agents whatever they are doing elsewhere.
   const all = new Map(sessions.map((x) => [x.key, x]));
-  const listed = (t: ListedThread) => (t.thread.hiddenAt !== null) === archived;
+  // (a chat's own session, its thread's `home`: one put away with it, archived or hidden, whichever of the two says so;
+  // two stations merged once left them apart, a chat archived shown again untitled as its session alone, 2026-11-17)
+  const putAway = (t: ListedThread) => t.thread.hiddenAt !== null || (t.thread.home !== null && (all.get(t.thread.home)?.archivedAt ?? null) !== null);
+  const listed = (t: ListedThread) => putAway(t) === archived;
   const inChat = (t: ListedThread): string[] => {
     const alone = archived && t.thread.home === null;
-    return t.sessions.filter((m) => (alone ? all.has(m.session) : shown.has(m.session))).map((m) => m.session);
+    const home = archived ? t.thread.home : null;
+    return t.sessions.filter((m) => (alone ? all.has(m.session) : shown.has(m.session)) || (m.session === home && all.has(m.session))).map((m) => m.session);
   };
   const archivedOf = (x: store.SessionRow) => ({ at: x.archivedAt ?? 0, by: x.archivedBy ?? store.MANUAL, alone: false });
   const watches = titlesOnly ? new Map<string, Json>() : store.watching(s, scope === null ? null : [...scope.sessions]);
@@ -560,7 +564,7 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
     const writers = t.thread.surface !== STILLFAIL_SURFACE && t.summary !== null ? people(t.summary.people) : [];
     for (const m of t.sessions) {
       if (t.thread.surface === STILLFAIL_SURFACE) {
-        if (listed(t)) chatted.add(m.session);
+        if (listed(t) || t.thread.home === m.session) chatted.add(m.session);
       } else {
         if (!origins.has(m.session)) origins.set(m.session, t);
         if (writers.length > 0) spoke.set(m.session, [...(spoke.get(m.session) ?? []), ...writers]);
@@ -680,7 +684,8 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
     }
     if (archived) {
       const home = t.thread.home === null ? undefined : all.get(t.thread.home);
-      row.archived = home !== undefined ? archivedOf(home) : { at: t.thread.hiddenAt ?? 0, by: t.thread.hiddenBy ?? store.MANUAL, alone: true };
+      row.archived = home !== undefined && home.archivedAt !== null ? archivedOf(home)
+        : { at: t.thread.hiddenAt ?? 0, by: t.thread.hiddenBy ?? store.MANUAL, alone: home === undefined };
     }
     rows.push(row);
   }

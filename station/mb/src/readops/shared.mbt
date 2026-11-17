@@ -283,12 +283,23 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       }
     }
   }
-  // (in the archive, a chat of its own shows its agents whatever they are doing elsewhere)
+  // (a chat's own session, its thread's `home`: one put away with it, archived or hidden, whichever of the two says so;
+  // two stations merged once left them apart, a chat archived shown again untitled as its session alone, 2026-11-17)
+  let home_of = (t : Listed) => match field(t.thread, "home") { String(h) => Some(h); _ => None }
+  let put_away = (t : Listed) => !(field(t.thread, "hidden_at") is Null) ||
+    (home_of(t) is Some(h) && all.get(h) is Some(x) && !(field(x, "archived_at") is Null))
+  // (in the archive, a chat of its own shows its agents whatever they are doing elsewhere; one with a home, that home)
   let in_chat = (t : Listed) => {
-    let alone = archived && field(t.thread, "home") is Null
-    t.sessions.filter(m => (if alone { all } else { shown }).contains(js_text(field(m, "session")))).map(m => js_text(field(m, "session")))
+    let alone = archived && home_of(t) is None
+    let home = if archived { home_of(t) } else { None }
+    t.sessions
+    .filter(m => {
+      let k = js_text(field(m, "session"))
+      (if alone { all } else { shown }).contains(k) || (home == Some(k) && all.contains(k))
+    })
+    .map(m => js_text(field(m, "session")))
   }
-  let listed = (t : Listed) => !(field(t.thread, "hidden_at") is Null) == archived
+  let listed = (t : Listed) => put_away(t) == archived
   let watches = watching(db, scope.map(sc => sc.sessions))
   let of = match scope {
     Some(sc) => Some(sc.threads)
@@ -335,7 +346,7 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     for m in t.sessions {
       let s = js_text(field(m, "session"))
       if own {
-        if listed(t) {
+        if listed(t) || home_of(t) == Some(s) {
           chatted.add(s)
         }
       } else {
@@ -499,7 +510,13 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     }
     if archived {
       row["archived"] = match field(t.thread, "home") {
-        String(h) if all.get(h) is Some(home) => archived_of(home)
+        String(h) if all.get(h) is Some(home) && !(field(home, "archived_at") is Null) => archived_of(home)
+        String(h) if all.contains(h) =>
+          {
+            "at": match field(t.thread, "hidden_at") { Null => Json::number(0.0); a => a },
+            "by": match field(t.thread, "hidden_by") { Null => Json::string("manual"); b => b },
+            "alone": false,
+          }
         _ =>
           {
             "at": match field(t.thread, "hidden_at") { Null => Json::number(0.0); a => a },

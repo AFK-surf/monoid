@@ -114,6 +114,17 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
   say(archChat, "person", "p@x", "before it went");
   db.prepare("UPDATE sessions SET archived_at = 6500, archived_by = 'auto' WHERE key = 'arch'").run();
   db.prepare("UPDATE threads SET hidden_at = 6500, hidden_by = 'auto' WHERE id = ?").run(archChat);
+  // A chat and its own session put away apart (two stations merged once, 2026-11-17): its chat archived, its session not;
+  // its session archived, its chat not. Either is put away whole: in the archive as its chat, named, never in the list.
+  session("apart", { ws: "w", lastActiveAt: 880 });
+  const apart = chat("apart", "Apart", ["apart"]);
+  db.prepare("UPDATE threads SET home = 'apart', hidden_at = 6400, hidden_by = 'auto' WHERE id = ?").run(apart);
+  say(apart, "person", "p@x", "left apart");
+  session("apart2", { ws: "w", lastActiveAt: 870 });
+  const apart2 = chat("apart2", "Apart two", ["apart2"]);
+  db.prepare("UPDATE threads SET home = 'apart2' WHERE id = ?").run(apart2);
+  say(apart2, "person", "p@x", "left apart too");
+  db.prepare("UPDATE sessions SET archived_at = 6300, archived_by = 'manual' WHERE key = 'apart2'").run();
   // An agent come of a Feishu group, with nothing said there yet: named by the group.
   writeFileSync(join(data, "feishu-names.json"), JSON.stringify({ "c:fs:oc_abc": { channel: "The group" } }));
   session("fsess", { connect: "fs", ws: "w", lastActiveAt: 950 });
@@ -163,6 +174,13 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
       "\"archiveRecommended\":true", "\"archiveCheck\":", "\"process\":\"running\"", "\"clientKey\":\"ck-1\"", "\"title\":\"Lone\"", "\"authorModel\":\"opus\"",
       "\"authorRuntime\":", "\"said\":{", "\"via\":\"local\"", "\"picture\":\"https://p/una.png\"", "\"via\":\"feishu\"", "\"authorName\":\"blank\"", "\"dismissed\":true", "\"selves\":[\"U1\"]", "\"team\":\"Team One\"", "\"fs\":\"Co\"", "\"hidden\":[", "\"muted\":[", "\"pins\":{\"a1\":5}"])
       assert.ok(said.includes(sign), sign);
+    // Put away apart, put away whole: no row of either in the list; each in the archive as its chat.
+    const shown = JSON.stringify(await read(program, "sharedOf", { sessions: null, threads: null }, "en"));
+    assert.ok(shown.includes(`"session":"a1"`), "the list is read");
+    for (const k of ["apart", "apart2"]) assert.ok(!shown.includes(`"session":"${k}"`), `${k} is not in the list`);
+    const archive = JSON.stringify(await read(program, "chats", { viewer: { email: "p@x", workspace: "w", home: true }, archived: true }, "en"));
+    for (const t of [apart, apart2]) assert.ok(archive.includes(`"thread":${t},`), `chat ${t} is in the archive`);
+    for (const k of ["apart", "apart2"]) assert.equal(archive.split(`"session":"${k}"`).length - 1, 1, `${k} is in the archive once`);
     // A chat whose card the store no longer keeps waiting: none shown, whatever its posts say.
     db.prepare("DELETE FROM pending_cards WHERE thread = ?").run(both);
     assert.deepEqual(await all(program), await all(worker));
