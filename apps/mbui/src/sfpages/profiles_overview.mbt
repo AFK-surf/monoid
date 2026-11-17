@@ -1085,16 +1085,16 @@ pub fn profiles_overview_node(
     }
   }
   let label = fn() { @sf.t("android-misc.bar.action.profiles") }
-  let has_pools = fn() { !pools().is_empty() }
+  let has_pools = @signals.computed(fn(_) { !pools().is_empty() })
   let add_actions = fn(l : @view.View) {
-    profile_share_node(l, core, here, fn() { !frame().named }, tips, has_pools~)
+    profile_share_node(l, core, here, fn() { !frame().named }, tips, has_pools=fn() { has_pools.get() })
     l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
   }
   match bar_actions {
     Some(f) =>
       f(
         fn(l) {
-          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools~)
+          profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
           if bar_add {
             l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
           }

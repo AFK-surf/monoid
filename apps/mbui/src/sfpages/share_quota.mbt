@@ -177,12 +177,12 @@ fn profile_share_node(
   has_pools? : () -> Bool = fn() { false },
 ) -> Unit {
   let scope = fn() { here().workspace }
-  let accounts = fn() { accounts_shareable(core, scope()) }
-  l.show(fn() { shown() && (has_pools() || accounts()) }, fn(s) {
+  let accounts = @signals.computed(fn(_) { accounts_shareable(core, scope()) })
+  l.show(fn() { shown() && (has_pools() || accounts.get()) }, fn(s) {
     let label = fn() {
       if !has_pools() {
         @sf.t("web-main.share.accounts")
-      } else if accounts() {
+      } else if accounts.get() {
         @sf.t("web-main.chat.share")
       } else {
         @sf.t("web-main.share.pool")
@@ -194,7 +194,7 @@ fn profile_share_node(
       let subscriptions = fn() { accounts_share_open(core, fn() { ws }) }
       if !has_pools() {
         subscriptions()
-      } else if !accounts() {
+      } else if !accounts.get() {
         charts()
       } else {
         @sf.menu([
