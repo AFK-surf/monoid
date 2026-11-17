@@ -519,6 +519,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_flag(rich_chat(f.older), "archived")
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
+          } else if f.mode == "chat-actions-run" {
+            let url = "https://github.com/acme/shop/actions/runs/9001"
+            let md : Json = [["p", [["a", [[1, 5]], { "href": url, "to": { "peek": "run" } }]]]]
+            with_message(rich_chat(f.older), "[当前发布](" + url + ")", md=Some(md))
           } else if f.mode == "chat-peeks" {
             with_message(rich_chat(f.older), peeks_answer)
           } else if f.mode == "chat-letters" && f.older == 0 {

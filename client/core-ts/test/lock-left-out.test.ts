@@ -18,7 +18,7 @@ import { type Entry as StationEntry, LockRefusal, entryHash as stationHash } fro
 import { Cloud, personChainsOf, writeState } from "../../../station/src/cloud/state.ts";
 import { wall } from "../../../station/src/ops/fibers.ts";
 import { inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
-import { Log, bring as brought, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
+import { Log, bring as brought, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { hooks } from "../src/core/execute.ts";
 import { CoreError } from "../src/error.ts";
 import { type Entry, Signer } from "../src/lock.ts";
@@ -102,14 +102,14 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   for (const l of o.waiting ? [bob] : (o.named && !o.noApp) || o.rootLost ? [alice, bob, x] : [alice, bob]) bring(l);
   const viewer = viewerOf("s1", { base }, o.rootLost ? "owner" : "member", "ws");
   /// What the station does to each of its asks: `lie`, a device its refusals name to ask in place of those it would.
-  /// `down`: (`rootLost`) its link refused and not dialled again yet: asks fail as a link waiting does, no hello made,
-  /// until it is dialled again (`hello()` of the test, or as it comes online).
-  const st = { lie: null as string | null, refusals: [] as J[], admitted: 0, asked: [] as string[], down: false, personHeld: o.personHeld === true || o.unread === true, personUntold: o.personHeld === true, lockUnread: o.unread === true };
+  /// `down`: (`downs`, `rootLost`'s) its link refused and not dialled again yet: asks fail as a link waiting does, no
+  /// hello made, until it is dialled again (`hello()` of the test, or as it comes online).
+  const st = { lie: null as string | null, refusals: [] as J[], admitted: 0, asked: [] as string[], down: false, personHeld: o.personHeld === true || o.unread === true, personUntold: o.personHeld === true, lockUnread: o.unread === true, ownUnsaid: false, downs: o.rootLost === true };
   /// The link's hello to A, as the station answers it: null where it lets this device in; else its refusal, told the
   /// core as the mesh wire tells it (station/mesh-wire.ts `refusedFor`).
   const hello = (): CoreError | null => {
     const own = inner.adb.personal().entries("s1");
-    const said = { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 ? { person: own } : {}) } };
+    const said = { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 && !st.ownUnsaid ? { person: own } : {}) } };
     try {
       inLockBringing(c, { viewer, exp: 4102444800, iat: 0, sid: "" } as never, "member", viewer.device, said);
     } catch (e) {
@@ -120,7 +120,7 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
       // (its own lock not heard of here yet: the refusals before the test's own say nothing of it)
       if (st.personUntold) delete refusal.person;
       st.refusals.push(refusal);
-      st.down = o.rootLost === true;
+      st.down = st.downs;
       return hooks.lockRefused?.(inner, "ws", A, refusal.lock, refusal) ?? new CoreError("lock_unconfirmed", e.message);
     }
     st.admitted++;
@@ -141,6 +141,8 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
     if (ws !== "ws") return Effect.fail(httpError(404, { error: "no route" }));
     // (its person's own lock not read yet: not answered, until the test lets it be)
     if (st.personHeld && method === "GET" && path === "/lock/person") return Effect.fail(new CoreError("station_offline", "not reached"));
+    // (`ownUnsaid`: a lock of this device's own never taken by the station)
+    if (st.ownUnsaid && method === "POST" && path === "/lock/person") return Effect.fail(new CoreError("station_offline", "not reached"));
     // (the workspace's lock not read of it yet: its links opened first)
     if (st.lockUnread && method === "GET" && (path === "/lock" || path.startsWith("/lock?") || path === "/lock/logs" || path === "/lock/bodies")) return Effect.fail(new CoreError("station_offline", "not reached"));
     // (its link's hello first: a station that refused this device is not dialled again until told to, as the mesh does)
@@ -161,8 +163,11 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   // signs, then `approved`); any other, that it approves nothing here.
   const approvers = new Map<string, Approver>();
   const dialled: string[] = [];
-  dialer.open = (_inner, id) => Effect.flatMap(Effect.promise(() => pipe()), ([here, there]) => Effect.sync(() => {
+  /// The relays each dial went through, in the order dialled.
+  const via: string[][] = [];
+  dialer.open = (_inner, id, relays) => Effect.flatMap(Effect.promise(() => pipe()), ([here, there]) => Effect.sync(() => {
     dialled.push(id);
+    via.push(relays);
     inner.runner.fork(Effect.gen(function* () {
       const hello = (yield* there.next()) as J;
       const a = approvers.get(id);
@@ -203,8 +208,12 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   const now = () => Math.floor(r.host.nowMs() / 1000);
   /// What a failure says of where it got: the station's refusals and admissions, the page.
   const why = () => `refused ${st.refusals.length}, last left ${JSON.stringify(st.refusals.at(-1)?.left)?.slice(0, 30)} error ${String(st.refusals.at(-1)?.error).slice(0, 80)}; admitted ${st.admitted}; standing ${inner.adb.personal().standing("s1")}`;
-  return { why, r, inner, c, st, alice, bob, x, base, A, approvers, dialled, run, ask, page, bring, now, hello, moved };
+  return { why, r, inner, c, st, alice, bob, x, base, A, approvers, dialled, via, run, ask, page, bring, now, hello, moved };
 }
+
+/// What a removal of `sub` said in `l`'s log cancels: the statements of it that admitted them (lock-statements.ts
+/// `cancelsOf`).
+const admitsOf = (l: Log, sub: string) => [...l.bodies].filter(([, b]) => b.kind === "member" && b.sub === sub).map(([h]) => h).sort();
 
 /// Asks counted by what they are, in the order first made.
 const summary = (asked: string[]) => [...asked.reduce((m, a) => m.set(a, (m.get(a) ?? 0) + 1), new Map<string, number>())].map(([a, n]) => `${a} ×${n}`).join(", ");
@@ -587,4 +596,151 @@ test("the root's person's app begun anew, taken out and let in again by an owner
   assert.equal(pl.standing("s1"), "member", "never `replaced`");
   const page = await w.page();
   assert.equal(page.me.unsigned, undefined, "it signs: its log says its signer, nobody asked more than a newcomer is");
+});
+
+// Every other device of a member's lost (2026-11-17): their new app waited for their own devices for good, its page
+// naming none of them, nothing on it to do. It names them (a phone, a computer, by their names), dials them through the
+// workspace's relays too, and once none answered offers to make it their only trusted device (`lock.restartOwn`); made
+// so, it asks nobody and says who is to take them out and add them again (`reboundText`; no approval lets it in while
+// the list binds them by their lock of before), and once taken out it asks an owner as a newcomer and is in.
+const WS_RELAY = "https://ws-relay.example";
+test("every other device of a member's lost: their new app names them, dials them through the workspace's relays, offers 我的其它设备都不在了; made their only trusted device it waits for an admin, taken out it asks an owner and is in", async () => {
+  const w = await setUp({ named: true });
+  // (a link refused waits for its own retry, as the mesh's does: each ask of the station is no hello of its own)
+  w.st.downs = true;
+  const phone = dev();
+  w.x.add("device", { key: phone.key.id, id: phone.base.hex, label: "still.fail Android · Pixel 9", sign_key: phone.signer.id });
+  w.bring(w.x);
+  w.inner.cloudSync.workspaceRelays = (ws: string) => (ws === "ws" ? [WS_RELAY] : []);
+  const pl = w.inner.adb.personal();
+  await w.run(pl.refresh("s1"));
+  assert.equal(pl.standing("s1"), "outside", "a log of theirs it is not on");
+  const before = await w.page();
+  assert.deepEqual([before.me.confirmed, before.me.waiting, before.me.ownLock], [false, true, true], "waiting, to join their own lock");
+  assert.equal(before.me.restartText, undefined, "nothing asked yet: no way out offered before");
+  const asked = await w.ask("lock.pair", { workspace: "ws" });
+  assert.equal(asked.error, undefined, asked.error?.message);
+  const none = await w.page();
+  assert.deepEqual(new Set(w.dialled), new Set([w.x.app.base.hex, phone.base.hex]), "both of their devices dialled");
+  assert.ok(w.via.length > 0 && w.via.every((r) => r.includes(WS_RELAY)), `through the workspace's relays too: ${JSON.stringify(w.via)}`);
+  assert.equal(none.me.pair?.state, "none", `none answered (${JSON.stringify(none.me.pair)})`);
+  const listed = (none.me.pair?.approvers ?? []).map((a: J) => `${a.kind} ${a.nameText}`).sort();
+  console.log(`listed: ${listed.join("; ")}`);
+  assert.deepEqual(listed.map((l: string) => l.split(" ")[0]), ["computer", "phone"], "a computer and a phone");
+  assert.ok(listed.some((l: string) => l === "phone Pixel 9"), `the phone by its name: ${listed}`);
+  assert.equal(none.me.restartText, "我的其它设备都不在了");
+  assert.match(none.me.restartNoteText ?? "", /唯一的受信任设备/);
+  const restarted = await w.ask("lock.restartOwn", { workspace: "ws" });
+  assert.equal(restarted.error, undefined, restarted.error?.message);
+  const log = pl.root("s1");
+  assert.ok(log !== null && log !== w.x.genesis, "their lock begun anew here");
+  assert.equal(pl.standing("s1"), "member");
+  const rebound = await w.page();
+  console.log(`made their only trusted device: ${rebound.me.reboundText} (${w.why()})`);
+  assert.match(rebound.me.reboundText ?? "", /管理员先将你移出再重新添加/, "a member's: an admin to take them out and add them again");
+  assert.deepEqual([rebound.me.confirmed, rebound.me.waiting, rebound.me.pair ?? null, rebound.me.restartText], [false, true, null, undefined], "waiting, nothing to ask");
+  const refused = await w.ask("lock.pair", { workspace: "ws" });
+  assert.equal(refused.error?.code, "lock_rebound", `asking refused with the same words (${refused.error?.message})`);
+  // An owner takes them out: the list binds them by nothing, and the app asks as a newcomer.
+  w.alice.say("member.remove", { sub: "s1", cancels: admitsOf(w.alice, "s1") }, "ws");
+  w.bring(w.alice);
+  w.hello();
+  const out = await w.page();
+  assert.equal(out.me.reboundText, undefined, `nothing to wait for once taken out (${w.why()})`);
+  w.approvers.set(w.alice.app.base.hex, {
+    where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
+    approve: (hello) => {
+      w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
+      w.bring(w.alice);
+      return { t: "approved", workspaces: ["ws"], failed: [] };
+    },
+  });
+  const paired = await w.ask("lock.pair", { workspace: "ws" });
+  assert.equal(paired.error, undefined, paired.error?.message);
+  assert.ok(w.dialled.includes(w.alice.app.base.hex), `an owner's app dialled (${w.why()})`);
+  const done = await w.ask("lock.pairCode", { workspace: "ws", code: CODE });
+  assert.equal(done.error, undefined, done.error?.message);
+  const after = await w.page();
+  assert.equal(after.me.confirmed, true, `in (${w.why()})`);
+  assert.equal(w.c.locked()!.state!.persons.get("s1"), log, "bound by the lock begun here");
+});
+
+test("taken out first, then every other device lost: their new app, made their only trusted device, asks an owner at once", async () => {
+  const w = await setUp({ named: true });
+  // (a link refused waits for its own retry, as the mesh's does: each ask of the station is no hello of its own)
+  w.st.downs = true;
+  w.alice.say("member.remove", { sub: "s1", cancels: admitsOf(w.alice, "s1") }, "ws");
+  w.bring(w.alice);
+  const pl = w.inner.adb.personal();
+  await w.run(pl.refresh("s1"));
+  w.hello();
+  assert.equal(pl.standing("s1"), "outside");
+  assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
+  const none = await w.page();
+  assert.equal(none.me.pair?.state, "none", `their own devices answered nothing (${JSON.stringify(none.me.pair)})`);
+  assert.equal(none.me.restartText, "我的其它设备都不在了");
+  assert.equal((await w.ask("lock.restartOwn", { workspace: "ws" })).error, undefined);
+  const after = await w.page();
+  assert.equal(after.me.reboundText, undefined, `nothing to wait for: the list binds them by nothing (${w.why()})`);
+  w.approvers.set(w.alice.app.base.hex, {
+    where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
+    approve: (hello) => {
+      w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
+      w.bring(w.alice);
+      return { t: "approved", workspaces: ["ws"], failed: [] };
+    },
+  });
+  assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
+  assert.ok(w.dialled.includes(w.alice.app.base.hex), `an owner's app dialled (${w.why()})`);
+  assert.equal((await w.ask("lock.pairCode", { workspace: "ws", code: CODE })).error, undefined);
+  assert.equal((await w.page()).me.confirmed, true, `in (${w.why()})`);
+});
+
+test("an owner whose every other device is lost: made their only trusted device, told another owner takes them out, or `stillfail lock reset`", async () => {
+  const w = await setUp({ rootLost: true });
+  await w.page();
+  const pl = w.inner.adb.personal();
+  await w.run(pl.refresh("s1"));
+  assert.equal(pl.standing("s1"), "outside");
+  assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
+  const none = await w.page();
+  assert.equal(none.me.restartText, "我的其它设备都不在了", `offered (${JSON.stringify(none.me.pair)}; ${w.why()})`);
+  assert.equal((await w.ask("lock.restartOwn", { workspace: "ws" })).error, undefined);
+  w.hello();
+  const rebound = await w.page();
+  assert.match(rebound.me.reboundText ?? "", /另一位 owner.*stillfail lock reset/, `an owner's words (${w.why()})`);
+});
+
+// Their lock begun anew on another device (`replaced`): this device said it was confirmed, and its every ask was
+// refused in words that sent them to another page (`personal_replaced`). It says what happened and lets them say it was them.
+test("their own lock begun anew on another device: not confirmed, told what happened, 是我做的，继续 leaves the lock of before, and it asks to join the new one", async () => {
+  // (a lock of theirs begun here before it heard of any, that never reached the stations, which keep the one begun anew
+  // on X since)
+  const w = await setUp({ named: true, personHeld: true });
+  // (a link refused waits for its own retry, as the mesh's does: each ask of the station is no hello of its own)
+  w.st.downs = true;
+  const pl = w.inner.adb.personal();
+  w.st.ownUnsaid = true;
+  assert.equal(pl.standing("s1"), "none");
+  await w.run(pl.begin("s1", "a lock of their own begun here before"));
+  assert.equal(pl.standing("s1"), "member");
+  w.st.personHeld = false;
+  w.st.personUntold = false;
+  // (its link dialled again: the refusal names the lock the station keeps of theirs)
+  w.hello();
+  await w.page();
+  assert.equal(pl.standing("s1"), "replaced", "the stations keep another of theirs");
+  const replaced = await w.page();
+  assert.deepEqual([replaced.me.confirmed, replaced.me.waiting], [false, true], "not confirmed");
+  assert.equal(replaced.me.replacedTitleText, "你的受信任设备被重新设置过");
+  assert.match(replaced.me.replacedNoteText ?? "", /账号可能已经被盗/);
+  assert.equal(replaced.me.forgetText, "是我做的，继续");
+  assert.equal(replaced.me.pair ?? null, null, "nothing to ask before that");
+  const forgot = await w.ask("lock.forgetOwn", { workspace: "ws" });
+  assert.equal(forgot.error, undefined, forgot.error?.message);
+  assert.equal(pl.standing("s1"), "outside");
+  const after = await w.page();
+  assert.deepEqual([after.me.forgetText, after.me.ownLock], [undefined, true], "asks to join the new one");
+  assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
+  assert.ok(w.dialled.includes(w.x.app.base.hex), `their device on it dialled (${w.why()})`);
 });

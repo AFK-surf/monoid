@@ -1448,6 +1448,8 @@ pub fn Tree::new(
   time? : () -> Double,
   sources? : Bool = false,
 ) -> Tree {
+  // (nothing a tree made before left waiting for its moment's last change: Tree::moment_waits_run)
+  tree_moment_waits.clear()
   // (the moment it is made, taken once: its logic and what it draws start there, and what it is made with is of then)
   let start = match time {
     Some(f) => f()
@@ -3740,6 +3742,7 @@ priv enum Prop {
   Ring
   FocusRing
   BesideOf
+  EdgeDashed
 }
 
 ///|
@@ -3847,6 +3850,7 @@ impl Show for Prop with output(self, logger) {
       Ring => "Ring"
       FocusRing => "FocusRing"
       BesideOf => "BesideOf"
+      EdgeDashed => "EdgeDashed"
     },
   )
 }
@@ -3978,6 +3982,7 @@ fn Prop::ord(self : Prop) -> Int {
     Ring => 92
     FocusRing => 93
     BesideOf => 97
+    EdgeDashed => 94
   }
 }
 
@@ -5076,6 +5081,34 @@ pub fn View::corners_drawn(self : View) -> (Double, Double, Double, Double) {
 pub fn View::edge(self : View, e : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
   self.bind(loc~, Edge, e, Paint, fn(e) { self.tree.nodes[self.at].look.edge = e })
   self
+}
+
+///|
+/// Its edge (View::edge) drawn as dashes round its ground, not one line (an old view's box's `dashed` border: a file
+/// named where it is and not going): paint's.
+#callsite(autofill(loc))
+pub fn View::edge_dashed(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+  let id = self.id()
+  self.owns(fn() { dashed_edges.remove(id) }) |> ignore
+  self.bind(loc~, EdgeDashed, on, Paint, fn(on) { if on { dashed_edges[id] = true } else { dashed_edges.remove(id) } })
+  self
+}
+
+///|
+/// The nodes whose edge is drawn as dashes (View::edge_dashed), kept beside the tree, not in a node's look, the
+/// window's own (ui's window_kept: one window's node ids are not another's): only a few nodes ever say it.
+let dashed_edges : Map[NodeId, Bool] = Map([])
+
+///|
+/// What ui keeps of each window's of the nodes whose edge is dashed (its window_kept), as one window or another comes in.
+pub fn dashed_edges_kept() -> Map[NodeId, Bool] {
+  dashed_edges
+}
+
+///|
+/// Whether node `id`'s edge is drawn as dashes (View::edge_dashed).
+pub fn Tree::edge_dashed_of(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && dashed_edges.get(id).unwrap_or(false)
 }
 
 ///|
@@ -10965,6 +10998,11 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
     }
     self.cause_at = was
     self.change_ended()
+    // (the last change of its moment told: what waited for it done, as of the moment, before where things stand is
+    // worked out: Tree::moment_goes_on)
+    if !same_next {
+      self.moment_waits_run(next_at)
+    }
     // (where things stand once it is told whole, as of its moment, for the next change: Tree::settle_after_change)
     if was < 0.0 && !same_next {
       self.settle_now(next_at)
@@ -10972,6 +11010,43 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       self.sights_now()
     }
   }
+}
+
+///|
+/// Whether the change told now is one of several due at `at`, a later one still to come (Tree::advance_loop): what is
+/// worked out of all of them waits for the last (Tree::moment_waits).
+fn Tree::moment_goes_on(self : Tree, at : Double) -> Bool {
+  self.cause_at == at && self.due_at_too(at)
+}
+
+///|
+/// What waits for the last change of the moment under way (Tree::advance_loop: another due at that same moment): a
+/// page's list's set-out, so that what all the changes of one moment did to its blocks sets out as one
+/// (View::scrolls_window). Kept beside the tree, not in it: only while a tree's advance_loop tells one moment's changes
+/// is anything in it, run by that same loop (Tree::moment_waits_run), so no window's is ever left for another's.
+let tree_moment_waits : Array[() -> Unit] = []
+
+///|
+/// `w` waits for the last change of the moment under way (Tree::moment_goes_on).
+fn Tree::moment_wait_push(self : Tree, w : () -> Unit) -> Unit {
+  ignore(self)
+  tree_moment_waits.push(w)
+}
+
+///|
+/// What waited for the last change of moment `at` (Tree::moment_goes_on), done as that change is told, at its moment.
+fn Tree::moment_waits_run(self : Tree, at : Double) -> Unit {
+  guard !tree_moment_waits.is_empty() else { return }
+  let waits = tree_moment_waits.copy()
+  tree_moment_waits.clear()
+  let was = self.cause_at
+  self.cause_at = at
+  for w in waits {
+    @signals.start_batch()
+    w()
+    @signals.end_batch()
+  }
+  self.cause_at = was
 }
 
 ///|

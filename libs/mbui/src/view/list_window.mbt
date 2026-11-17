@@ -4093,6 +4093,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           flip_rebuild.val = fn() {
             match flip_said.val {
               Some((t, k, w)) if t >= at && t - at < 100.0 && fresh.contains(k) && flip_way.untracked() is Some(_) => {
+                // (the key this flight carries drawn whole on its way alone, as where it is told with the change: one an
+                // earlier flight carried, still going on that one's way as the change came, is on this way now, whole
+                // with it no more, what of it does not fly not held unseen till this one lands)
+                flip_whole.clear()
                 flip_whole[k] = true
                 flip_raise()
                 match after.get(k) {
@@ -4237,6 +4241,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               self.tree.laid_now() |> ignore
             }
             self.tree.old_built_waits.push(wait_old)
+          } else if self.tree.moment_goes_on(at) {
+            // (another change due at this same moment still to come (what a block holds made as one more of the
+            // moment's changes tells it: an answer coming out of its agent's picture as that agent's line goes): set
+            // out once the last of them is told, all of them as one, the changes after this one's merged into it)
+            self.tree.moment_wait_push(fn() { set_out(false) })
           } else {
             set_out(false)
           }

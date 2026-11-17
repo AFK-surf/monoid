@@ -764,3 +764,36 @@ test "安全, at each width and with either hand: off by this person, 重新开�
     assert_false(drawn_whole(t, "重新开启安全模式"), msg=at)
   }
 }
+
+///|
+test "安全, at each width and with either hand: none of its person's devices answering, 我的其它设备都不在了 asks lock.restartOwn once, then whom to ask and nothing to press; their lock begun anew elsewhere, 是我做的，继续 asks lock.forgetOwn once, then the ask to join" {
+  for (w, platform) in page_cases {
+    for case in [("lock-restart", "我的其它设备都不在了", "lock.restartOwn", "先将你移出再重新添加；"), ("lock-replaced", "是我做的，继续", "lock.forgetOwn", "发送批准请求")] {
+      let (mode, label, call, after) = case
+      let asked : Array[String] = []
+      let t = setting_tester(Security, w, platform~, mode~, over=fn(base) {
+        {
+          ..base,
+          call: fn(name, params, done) {
+            if name == call {
+              asked.push(name)
+            }
+            (base.call)(name, params, done)
+          },
+        }
+      })
+      t.run_for(@ui.move_most_ms)
+      let at = "\{mode} \{w} platform \{platform}"
+      assert_true(drawn_whole(t, label), msg=at)
+      let faults = t.audit()
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+      scrolled_to(t, w, label)
+      t.click(Button, label~)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(asked, [call], msg=at)
+      assert_false(drawn_whole(t, label), msg=at)
+      let shown = t.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 }).join("")
+      assert_true(shown.contains(after), msg="\{at}: \{shown}")
+    }
+  }
+}

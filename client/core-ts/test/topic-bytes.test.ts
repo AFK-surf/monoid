@@ -223,7 +223,9 @@ const EMPTY: Record<string, Record<string, string>> = {
   },
   // (what is looked for, `png`, only pictures' names have)
   "chatThings q": { files: ASKED_SO, links: ASKED_SO, pulls: ASKED_SO },
-  "linkPreview page": { labels: KIND, time: KIND },
+  "linkPreview page": { labels: KIND, time: KIND, counts: KIND, jobs: KIND },
+  "linkPreview pull": { counts: KIND, jobs: KIND },
+  "linkPreview run": { labels: KIND, time: KIND },
   "filePeek picture": { "lines.text": KIND, entries: KIND },
   "filePeek text": { entries: KIND },
 };
@@ -504,7 +506,7 @@ const STILL: Record<string, string> = {
   "memberships": READ_ONCE("views/memberships.ts readSoon, and again by station.join"),
   "workspaceWays": BY_PAGE("workspace.setWay: the rest is still.fail's relays, as /v1/me lists them"),
   "changelog news": UNTOLD("what this build got since the changelog was last shown: the device's build, said as a run starts (client.device), and the changelog shown (changelog.seen), on its own page"),
-  "linkPreview page": CARD, "linkPreview pull": CARD, "filePeek picture": CARD, "filePeek text": CARD, "messagePeek": CARD,
+  "linkPreview page": CARD, "linkPreview pull": CARD, "linkPreview run": CARD, "filePeek picture": CARD, "filePeek text": CARD, "messagePeek": CARD,
 };
 /// Those reached by a cause of a test of their own, not of `CAUSES`: by name, the test.
 const REACHED_ELSEWHERE: Record<string, string> = { live: "a working agent's stream" };

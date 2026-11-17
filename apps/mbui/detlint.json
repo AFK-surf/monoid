@@ -688,7 +688,6 @@
     "shader-int": {},
     "raw-hover-ground": {
       "src/sf/menu_node.mbt": 1,
-      "src/sf/panel_parts_node.mbt": 1,
       "src/sf/pick_node.mbt": 1
     },
     "width-structure": {

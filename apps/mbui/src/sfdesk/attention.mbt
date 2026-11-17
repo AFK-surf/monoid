@@ -437,23 +437,26 @@ fn attention_note(v : Json?) -> String {
 }
 
 ///|
-/// A row of 待处理 (`i`, the core's item, of workspace `ws`) pressed: the panel closed, its chat opened over Home, in
-/// its workspace (switched to where it is not `w`).
+/// A row of 待处理 (`i`, the core's item, of workspace `ws`) pressed: its chat beside the board in view, or over Home
+/// in its workspace (switched to where it is not `w`).
 fn attention_go(src : Source, w : Workspace, ws : String, i : Json, close : () -> Unit) -> Unit {
   let v = Some(i)
   let session = text(v, "session")
   close()
-  @sfbase.history_push()
-  if ws != w.id {
-    app.picked.set(ws)
-    (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), @sfbase.answer_unread)
-    desk_home()
-  }
   let chat : ChatRef = {
     station: text(v, "station"),
     session: if session != "" { session } else { "thread:" + number(v, "thread").to_int64().to_string() },
     title: text(v, "title"),
     station_name: text(v, "stationName"),
+  }
+  if ws == w.id && @sfbase.notice_on_board(chat) {
+    return
+  }
+  @sfbase.history_push()
+  if ws != w.id {
+    app.picked.set(ws)
+    (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), @sfbase.answer_unread)
+    desk_home()
   }
   @sfbase.nav_over_home([Chat(chat)])
   @sfbase.show_chosen()

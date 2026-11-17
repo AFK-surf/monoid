@@ -209,7 +209,7 @@ fn peek_holder(
     // (its width (hover_card's; a page's tile as wide as it holds, hover_tile's), the small panel in it, what it holds
     // as small_panel's room holds it (held_reach, held_in), hover_inner in, its words as far in as its look says)
     // (a tile or a card by what the core says it is as it opens: what its width is bound by, said once)
-    let tile = @signals.untracked(fn() { peek() == "" })
+    let tile = @signals.untracked(fn() { peek() == "" || peek() == "run" })
     card.box(fn(w) {
       @sf.style_node(w, fn() { if tile { hover_tile } else { hover_card } })
       // (kept within the room the window has (Ctx::place_most's: as tall as the window less peek_room_in at each end;
@@ -300,6 +300,8 @@ fn peek_layer(v : @view.View) -> @view.View {
 #derive(Eq)
 priv enum PeekShows {
   Change(Bool)
+  Run
+  RunSample
   Sample(Bool)
   Page
 }
@@ -337,12 +339,16 @@ fn link_card_node(
     match text(v, "kind") {
       "github_pull_request" => Change(true)
       "github_issue" => Change(false)
+      "github_actions_run" => Run
+      _ if v is None && read.get().error is None && peek() == "run" => RunSample
       _ => if v is None && read.get().error is None && peek() != "" { Sample(peek() == "pull") } else { Page }
     }
   }
   parent.pick(shows, fn(b, s) {
     @sf.style_node(b, fn() { peek_card_part })
     match s {
+      Run => run_card_node(b, value, href, copy)
+      RunSample => @sf.waiting_node(b, fn(bones) { run_card_node(bones, peek_sample, href, fn(_) {  }) })
       Change(pr) => change_card_node(b, value, pr, copy, fn() { picture("avatar") })
       // (while it is read: a made-up one's, in its bones)
       Sample(pr) => @sf.waiting_node(b, fn(bones) { change_card_node(bones, peek_sample, pr, fn(_) {  }, fn() { "" }) })
@@ -653,9 +659,10 @@ fn state_pill_node(
   glyph : () -> String?,
   words : () -> String,
   own? : Bool = false,
+  style? : @ui.Style = peek_state,
 ) -> Unit {
   let pill = fn(p : @view.View) {
-    @sf.style_node(p, fn() { peek_state }, in_row=true)
+    @sf.style_node(p, fn() { style }, in_row=true)
     p.ground(By(fn() { state_colours(state()).1 })) |> ignore
     p.show(fn() { glyph() is Some(_) }, fn(g) {
       g

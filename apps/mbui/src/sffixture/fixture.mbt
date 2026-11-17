@@ -1303,6 +1303,17 @@ pub fn fixture_link_preview(url : String) -> Json {
         "icon": "fix-icon",
         "image": "fix-image",
       }
+    "https://github.com/acme/shop/actions/runs/9001" =>
+      {
+        "kind": "github_actions_run", "url": url, "repository": "acme/shop", "number": 42,
+        "title": "Build and publish the desktop app", "workflow": "pipeline", "state": "in_progress",
+        "branch": "main", "commit": "bc074d6", "elapsed": "11 分 0 秒",
+        "counts": { "passed": 7, "running": 16, "skipped": 6 },
+        "jobs": [
+          { "name": "desktop-win", "step": "Build, pack and sign the beta Windows app", "url": url + "/job/123#step:2:1" },
+          { "name": "check-linux", "step": "Full check (ts)", "url": url + "/job/456#step:3:1" },
+        ],
+      }
     "https://github.com/acme/shop/pull/128" =>
       {
         "kind": "github_pull_request",
