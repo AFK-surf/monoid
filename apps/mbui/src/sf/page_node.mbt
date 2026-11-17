@@ -1677,8 +1677,8 @@ let status_dot_side : Double = 7.0
 /// for a screen reader; turned by a tap, a press held however long and let go on it, Space or Enter, a screen reader's
 /// press: `turn` told what it is to be (the caller says it so: `on` follows it), a light tick felt under a finger. Its
 /// knob springs to its side (@motion.knob_spring) and its track's colour with it, from where it is at that moment, the knob
-/// drawn longer as fast as it goes (@motion.velocity_capsule), round at rest;
-/// held by a finger, the knob a lens growing as a lift does. In the room a finger's press takes round it, up and down.
+/// drawn longer as fast as it goes (@motion.velocity_capsule), a capsule at rest;
+/// held by a finger, the knob grows into a lens. The press takes the room around it, up and down.
 /// `small`: 26 by 16 (switch_size's). While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
 /// What the keys' focus and a screen reader find is one node, its room: a switch by its name, on or off.
 #callsite(autofill(loc))
@@ -1712,7 +1712,15 @@ pub fn switch_node(
       disabled~,
       hold_press=(@ui.touch_slop(), @ui.long_press_ms),
       fn(room, sw) {
-    let size = fn() { if !small && native_input() is Finger { (64.0, 28.0) } else { switch_size(small) } }
+    let size = fn() {
+      if !small && native_input() is Finger {
+        // Give labels more room on compact touch windows while retaining the capsule.
+        let extra = dclamp(at.window().0 - 360.0, 0.0, 12.0)
+        (52.0 + extra, 28.0)
+      } else {
+        switch_size(small)
+      }
+    }
     let out = fn() { dmax(0.0, (theme().items.least - size().0) / 2.0) }
     room.padding(By(fn() { (out(), 0.0, out(), 0.0) })).margin(By(fn() { (-out(), 0.0, -out(), 0.0) })) |> ignore
     room.box(fn(v) {
@@ -1759,8 +1767,7 @@ pub fn switch_node(
             .ground(Is(0xFFFFFFFFL))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
-            // (drawn longer along its way as fast as it flies, a capsule, round again as it comes to rest: its way's
-            // speed at the moment drawn, its ground alone; none while a finger holds it as a lens)
+            // Stretch the capsule along its way in proportion to its speed, except while it is drawn as a lens.
             .ground_drawn(By(fn() {
               let (_, speed) = knob.motion(track)
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))

@@ -88,12 +88,13 @@ test "styles: how many values of each kind the app's screens use" {
   // 记忆 shows recent diffs inline (tool_diff's faint_ground, red_bg, green_bg and green_ink, by day and by night).
   // Fewer once the settings' last old page (已归档) went to nodes and the old pages' parts with it (settings parts.mbt's
   // nav bar, section heads, empty and waiting rows): text 35 to 32, space 23 to 21, radius 23 to 22.
+  // The glass controls share a neutral track colour, one for each theme.
   inspect(counts.to_string(), content=(
     #|text 32
     #|weight 4
     #|space 21
     #|radius 22
-    #|color 81
+    #|color 83
     #|
 
 

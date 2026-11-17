@@ -3,11 +3,21 @@
 // later as well.
 
 ///|
-/// What tester `t` draws, each instance's numbers rounded to a hundredth (a glyph's place in its atlas left out), in
-/// one order.
-fn wide_drawn(t : @ui.Tester) -> Array[String] {
+/// What the wide page draws outside its switch controls, rounded to a hundredth and sorted.
+fn wide_drawn(t : @ui.Tester) -> Array[String] raise {
   t.draw()
-  let all = t.drawn_instances_keyed().map(fn(a) {
+  let usage = t.get(Switch, label="发送使用统计")
+  let performance = t.get(Switch, label="性能记录")
+  assert_true(usage.check is Some(On))
+  assert_true(performance.check is Some(Off))
+  let switches = [usage.rect, performance.rect]
+  // Switch paint has its own tests. Compare the rest of the wide page at both text sizes.
+  let all = t.drawn_instances_keyed().filter(fn(a) {
+    !switches.iter().any(fn(rect) {
+      let (x, y, w, h) = rect
+      a[0] >= x && a[1] >= y && a[0] + a[2] <= x + w && a[1] + a[3] <= y + h
+    })
+  }).map(fn(a) {
     a
     .mapi(fn(j, x) {
       if a[5] == 1.0 && j == 12 {
@@ -28,7 +38,7 @@ fn wide_drawn(t : @ui.Tester) -> Array[String] {
 /// 关于's blocks on a wide page, 760 wide (a lane's column less its blocks' room), at the system's size of words
 /// `scale`: as an old view's (`node` false) or as nodes, each a section of its own titled (heads false: a wide page's
 /// title all the same), a list's rows, a card of words with a switch, a list's switch and a row that acts.
-fn about_blocks_drawn(node : Bool, scale : Double) -> Array[String] {
+fn about_blocks_drawn(node : Bool, scale : Double) -> Array[String] raise {
   let t = if node {
     @ui.Tester::new(fn(_c) {  }, w=760.0, h=900.0)
   } else {
@@ -97,7 +107,7 @@ fn about_blocks_drawn(node : Bool, scale : Double) -> Array[String] {
 }
 
 ///|
-test "关于's blocks as nodes on a wide page: titled sections, a list's rows, a card of words with a switch, a list's switch and a row that acts, drawn as the old view's at sizes of words 1 and 2" {
+test "关于 on a wide page keeps the switches' states and draws the blocks around them as before at text sizes 1 and 2" {
   for scale in [1.0, 2.0] {
     let old = about_blocks_drawn(false, scale)
     let made = about_blocks_drawn(true, scale)

@@ -158,15 +158,16 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
   // (the wide ones again, 2026-11-16: a setting's switch on its title's line, line_end_node's, never across the middle
   // of the title and its note)
+  // The narrow station settings use the wider glass switch in both themes.
   inspect(out.to_string(), content=(
     #|settings narrow 78734:6ed5f02a
-    #|station narrow 77764:aac1b66a
+    #|station narrow 77681:c8fc7c61
     #|me-reading narrow 24224:218c49a4
     #|settings wide 199887:5614b4e6
     #|station wide 264742:11c47999
     #|me-reading wide 194606:20c162c8
     #|settings-dark narrow 79002:b7e47031
-    #|station-dark narrow 77674:f41d83a6
+    #|station-dark narrow 77608:5135afff
     #|me-reading-dark narrow 24352:6c5ccf8
     #|settings-dark wide 199780:bd21d68e
     #|station-dark wide 264418:3e175919

@@ -206,23 +206,23 @@ pub fn stops_node(
           |> ignore
         }) |> ignore
       }) |> ignore
-      let interior = fn() {
-        let count = n()
-        if count > 2 { Array::makei(count - 2, fn(i) { i + 1 }) } else { [] }
-      }
-      inner.each(interior, fn(i) { i }, at_once=true, fn(dot, i) {
-        let side = @ui.Space::px(S1)
-        let selected = fn() { at() == i.get() }
-        let visible = @motion.NodeWay::new(if @signals.untracked(selected) { 0.0 } else { 1.0 })
-        dot.reacts(at_start=false, selected, fn(on) { visible.go_ms(dot, if on { 0.0 } else { 1.0 }, dur_ms) })
-        style_node(dot, fn() { stops_dot })
-        dot
-        .over(Is(true))
-        .offset(By(fn() { ((i.get().to_double() + 0.5) * cell() - side / 2.0, (thumb_h() - side) / 2.0) }))
-        .alpha(By(fn() { visible.shown(dot) }))
+      // Make the interior markers with the slider, whose panel owns their lifetime.
+      let count = @signals.untracked(n)
+      for i in 1..<(count - 1) {
+        inner.box(fn(dot) {
+          let side = @ui.Space::px(S1)
+          let selected = fn() { at() == i }
+          let visible = @motion.NodeWay::new(if @signals.untracked(selected) { 0.0 } else { 1.0 })
+          dot.reacts(at_start=false, selected, fn(on) { visible.go_ms(dot, if on { 0.0 } else { 1.0 }, dur_ms) })
+          style_node(dot, fn() { stops_dot })
+          dot
+          .over(Is(true))
+          .offset(By(fn() { ((i.to_double() + 0.5) * cell() - side / 2.0, (thumb_h() - side) / 2.0) }))
+          .alpha(By(fn() { visible.shown(dot) }))
+          |> ignore
+        })
         |> ignore
-      })
-      |> ignore
+      }
       // The thumb and the rail follow the same spring.
       let held = @motion.NodeWay::new(0.0)
       let scale = @motion.NodeWay::new(1.0)
@@ -252,6 +252,7 @@ pub fn stops_node(
           .width(By(fn() { Some(tw()) }))
           .height(By(fn() { Some(thumb_h()) }))
           .offset(By(fn() { (x_now(ball), 0.0) }))
+          .ground(By(fn() { theme().p.raised }))
           .alpha(By(fn() { 1.0 - lensed(ball) }))
           .scale(By(fn() { 1.0 + stops_held_grow * dmax(0.0, held.shown(ball)) }))
           |> ignore
