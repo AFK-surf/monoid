@@ -167,6 +167,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own): it slides in as
     the one before slides off, and that one is kept as it was left for back.
 
+- Text files (Markdown, plain text, code, CSV and HTML) open in the chat's side panel by default where one is available;
+  otherwise in the whole-window preview. An explicit 全屏 still opens the whole window (the user, 2026-11-17).
+
 ## Made once, as nodes
 
 - The app is moving off the old immediate-mode view (`Ctx`, built again each frame) onto the window's tree, made once

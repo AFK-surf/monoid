@@ -13,7 +13,7 @@
 // was). Nothing of the whole window's is the tab's: no marking, no stepping to the pictures beside it, no flight from a
 // thumbnail, no keys of the window's.
 //
-// How a file comes here: open_preview asked beside (the command key held as it is pressed: beside_held; a menu's
+// How a file comes here: open_preview defaults text files beside, or is asked beside (the command key held: beside_held; a menu's
 // 在侧边打开; the whole window's 移到侧边), said to the shell (Shell's `beside`), which puts it where the layout has a side
 // panel for the page in view, and says whether it did. A film or a song asked so plays at once (the whole window's from
 // where it was); a tab only shown again (the app begun, the chat opened, the tab or the panel back) plays from its play

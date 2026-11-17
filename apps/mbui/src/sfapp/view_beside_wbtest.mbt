@@ -899,3 +899,39 @@ test "大屏: a film opened beside keeps what its message knew of it: its size, 
   let f = tab_viewer_named(t, beside_film).file
   assert_eq((f.width, f.height, f.duration, f.frames), (1280.0, 720.0, 12500.0, 375), msg="the tab's film as its message has it: \{Repr((f.width, f.height, f.duration, f.frames))}, tabs \{Repr(view_tabs(t))}")
 }
+
+///|
+test "text files default beside the chat; their explicit full-window action still opens over it" {
+  let t = beside_tester()
+  for name in ["说明.md", "list.ts", "数据.csv", "报告.html"] {
+    @sfbase.open_preview("ws1/st1", "s-c1", made_file(name))
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfbase.viewer.get() is None, msg=name + " opens beside")
+    assert_eq(t.all(Tab, label=name, selected=true).length(), 1)
+    assert_true(t.all(Toolbar, label=name).length() > 0)
+  }
+  assert_eq(view_tabs(t).length(), 4)
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_), msg="explicit 全屏 wins over the text default")
+  assert_eq(view_tabs(t).length(), 4)
+}
+
+///|
+test "text files without a side panel fall back to the whole-window preview" {
+  let t = beside_tester(w=390.0, h=844.0, platform=2)
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_))
+  assert_eq(view_tabs(t).length(), 0)
+}
+
+///|
+test "a plain press on a message's text attachment opens its side tab" {
+  let t = beside_tester(mode="chat-files-sent")
+  t.click(Group, label="list.ts")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_eq(t.all(Tab, label="list.ts", selected=true).length(), 1)
+  assert_true(shown_beside(t, "list.ts", "export const estimate"))
+}

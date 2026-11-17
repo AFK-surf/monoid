@@ -91,7 +91,7 @@ pub fn fixture_preview(mode : String) -> Unit {
       }
       // (its bytes read whole, no picture in them: the host says it cannot decode them)
       preview_broken.val = if mode == "chat-preview-broken" { Some(which) } else { None }
-      open_preview("ws1/st1", "s-c1", f.0, steps=if mode == "chat-preview-image" || mode.has_prefix("chat-preview-coming") || mode == "chat-preview-broken" {
+      open_preview("ws1/st1", "s-c1", f.0, beside=false, steps=if mode == "chat-preview-image" || mode.has_prefix("chat-preview-coming") || mode == "chat-preview-broken" {
         NoSteps
       } else {
         InChat(Some(1.0), "s-c1")

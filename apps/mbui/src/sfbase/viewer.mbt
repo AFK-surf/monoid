@@ -1050,7 +1050,7 @@ pub fn preview_rest() -> Double {
 ///|
 /// Opens `a` of the chat on `station` (kept by the session `key`) over everything; `steps`: what an image steps
 /// through; `named`: a file a message names by its path (`a.path`), not one sent with it. `beside`: asked beside the
-/// page (by default as the command key is held as it is pressed: beside_held; a menu's 在侧边打开, the preview's
+/// page (by default for text files or as the command key is held: beside_held; a menu's 在侧边打开, the preview's
 /// 移到侧边): a tab of the side panel where the shell has one for the page in view (Shell's `beside`; a film or a song
 /// played there at once), else over everything all the same. Over everything, what the tabs beside the page play is
 /// paused; `start`: where a film or a song starts there (ms; a tab's 全屏: where the tab's player was), else where it
@@ -1063,9 +1063,14 @@ pub fn open_preview(
   steps? : Stepping = NoSteps,
   named? : Bool = false,
   at? : String = "",
-  beside? : Bool = beside_held(),
+  beside? : Bool,
   start? : Double = -1.0,
 ) -> Unit {
+  let beside = match beside {
+    Some(asked) => asked
+    None =>
+      beside_held() || (preview_kind(a.name).0 is Some(KMarkdown | KText | KCode | KCsv | KHtml))
+  }
   if beside && opens_beside(a.path, a.name) {
     let tab = view_tab_key(station, key, a, drive, named)
     tab_facts_said(tab, a)
