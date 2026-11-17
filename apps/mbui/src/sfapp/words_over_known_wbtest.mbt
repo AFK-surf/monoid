@@ -24,7 +24,5 @@ fn init {
     // its words as they are now where the two meet on the way)
     ("src/sfapp/board_wbtest.mbt", 2),
     ("src/sfapp/composer_wbtest.mbt", 2),
-    ("src/sfapp/preview_wbtest.mbt", 1),
-    ("src/sfapp/wide_wbtest.mbt", 1),
   ])
 }

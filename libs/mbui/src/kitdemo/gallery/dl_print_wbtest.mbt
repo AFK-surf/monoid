@@ -402,6 +402,22 @@ fn partial_shown(phase : Double) -> @ui.Tester {
           |> ignore
         })
         |> ignore
+        // (a drop of liquid glass over the red and blue, lit where the pointer is over it, that moving: what it reads
+        // round it, bent, spread and drawn into its lip, is within what its capture keeps)
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), pl=30.0, pt=14.0, align=AStart, fn() {
+            c.box(
+              w=Px(130.0),
+              h=Px(44.0),
+              radius=22.0,
+              glass=@ui.Glass::liquid(refraction=15.0, chroma=0.24, spot=Some((24.0 + phase * 160.0, 12.0))),
+              fn() {  },
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },
@@ -426,7 +442,8 @@ test "a spinner's two moments' draw lists printed when asked (MBUI_DL_PRINT=part
 ///|
 /// What the renderers draw in strips (src/host/bands.h), in a window 240 by 300 at scale 3: a card's shadow under its
 /// ground, a ground in nine pieces (its middle flat), a ring that is only a border, a ground in a rounded clip (whole),
-/// and a sheet of frosted glass whose shadow is only outside it. Drawn in strips and drawn whole (mbui-render with
+/// a sheet of frosted glass whose shadow is only outside it, and a drop of liquid glass over the blue ground and the
+/// red, lit where the pointer is (its samples crossing the strips' edges). Drawn in strips and drawn whole (mbui-render with
 /// MBUI_STRIPS=0), the same picture to the byte (scripts/render_offscreen.sh, render_check.sh, render_linux.sh,
 /// render_windows.sh).
 fn strips_shown() -> @ui.Tester {
@@ -453,6 +470,20 @@ fn strips_shown() -> @ui.Tester {
               shadow_y=14.4,
               shadow_color=0x00000044L,
               glass=@ui.Glass::frosted(blur=12.0, tint=0xFFFFFF99L, solid=0xFFFFFFFFL),
+              fn() {  },
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), pl=40.0, pt=150.0, align=AStart, fn() {
+            c.box(
+              w=Px(160.0),
+              h=Px(52.0),
+              radius=26.0,
+              glass=@ui.Glass::liquid(refraction=15.0, chroma=0.24, spot=Some((40.0, 10.0))),
               fn() {  },
             )
             |> ignore

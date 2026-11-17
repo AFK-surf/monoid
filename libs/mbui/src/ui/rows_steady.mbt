@@ -37,6 +37,10 @@ let rows_step_least : Double = 12.0
 let rows_step_times : Double = 4.0
 
 ///|
+/// What a sum of places may leave over as it lays out (a millionth of a point), never a speed of its own.
+let rows_sum_left : Double = 1.0e-6
+
+///|
 /// How long after a list is first shown its rows may still come to stand at their own heights (guessed till laid out).
 let rows_first_ms : Double = 100.0
 
@@ -70,11 +74,17 @@ priv struct RowsSteady {
   mut went : Map[String, (Double, Double, Double, Double, Double, Bool, Bool)]
   /// when the hand last pressed, let go, typed, scrolled or went back (rows_steady_hand)
   mut hand : Double
-  /// the last frame's moment judged here (for Tree::lists_steady's answered_seen)
+  /// the moment of the last frame judged (for Tree::rows_steady_seen's answered_in)
   mut judged : Double
-  /// the width each list of the window's tree was laid out at as the last frame was judged (Tree::lists_steady's
-  /// `laid`, View::lays_anew): where it steps, its rows laid out anew in that frame, their step its own
+  /// the width each ancestor node with View::lays_anew reported on the last frame judged
   mut laids : Map[Int, Double]
+  /// each page list's making by its id (a list of the window's tree made anew at the index of one let go of is another:
+  /// shown from then, its rows none of the one before's)
+  mut tree_gens : Map[Int, Int]
+  /// each page list's first block's top under its head (lists_seen's `start`), the end of what shows, whether at its
+  /// top or its foot, how far it is scrolled, and whether and since when it was scrolled after its foot, as the frame
+  /// judged last had them (by its id and making)
+  mut anchors : Map[String, (Double, Double, Bool, Bool, Double, Bool, Double)]
 }
 
 
@@ -93,6 +103,8 @@ let rows_steady : RowsSteady = {
   hand: -1.0e9,
   judged: -1.0e9,
   laids: {},
+  tree_gens: {},
+  anchors: {},
 }
 
 ///|
@@ -122,6 +134,8 @@ fn rows_steady_begin(loc : String, held : Bool) -> Unit {
   rows_steady.hand = -1.0e9
   rows_steady.judged = -1.0e9
   rows_steady.laids.clear()
+  rows_steady.tree_gens.clear()
+  rows_steady.anchors.clear()
   rows_steady.window = (-1.0, -1.0)
   rows_steady.words = -1.0
   rows_steady.file = match loc.find(":") {
@@ -270,12 +284,27 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
           None => ()
         }
       }
-      r = n.next
+        r = n.next
     }
   }
+  // (page lists of the window's tree, View::scrolls_window: sizes_steady.mbt measures what is inside each row from the
+  // row's top, leaving the rows' places in the list to rows_steady)
   match view_tree() {
-    Some(tr) =>
-      for tl in tr.lists_steady(rows_steady.judged, now, period, self.width) {
+    Some(tr) => {
+      let held_down = self.down || view_holds()
+      let laids_now : Map[Int, Double] = Map([])
+      for tl in tr.rows_steady_seen(rows_steady.judged, now, period) {
+        let mut laid_anew = false
+        for lw in tl.laids {
+          laids_now[lw.0] = lw.1
+          if rows_steady.laids.get(lw.0) is Some(was) && was != lw.1 {
+            laid_anew = true
+          }
+        }
+        if rows_steady.tree_gens.get(tl.id) != Some(tl.gen) {
+          rows_steady.tree_gens[tl.id] = tl.gen
+          rows_steady.lists.remove(tl.id)
+        }
         let shown_since = match rows_steady.lists.get(tl.id) {
           Some(t) if now - t <= 2.5 * period + rows_first_ms => t
           Some(_) => -1.0
@@ -286,18 +315,44 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
         }
         rows_steady.lists[tl.id] = if shown_since < 0.0 { -1.0e9 } else { shown_since }
         let settled = shown_since < 0.0 || now > shown_since + rows_first_ms
-        let free = settled && tl.free && !self.down && !view_holds() && now - tl.put_at > 1.5 * period
-        // (laid out anew at another width in this frame, as the window made another size is: its rows' step its own)
-        let laid_anew = match rows_steady.laids.get(tl.id) {
-          Some(w) => w != tl.laid
-          None => false
+        let free = settled && tl.free && !held_down && !laid_anew
+        // (what moves the list's rows with it from outside it: what lies over its top grown or shrunk, its rows as far
+        // under that as they were while it is not held at its foot (a bar opening over the list: theirs is that bar's
+        // way), taken as where they were in the frames before, so a row moved with it is no step of its own and one that
+        // moved in it is said as ever; and the list scrolled after its foot as it is held there with nothing of the
+        // hand's, which sets its rows out from the frame it starts to (its foot moved by what holds it, a way of
+        // another's the list does not see))
+        let list_key = "t\{tl.id}.\{tl.gen}"
+        let (held_by, follow_from) = match rows_steady.anchors.get(list_key) {
+          Some((start, _end, _top, foot, scrolled, was_moving, from)) => {
+            // (not held at its foot: its head grown or shrunk over its keys (a bar opening as part of it) moves what it
+            // shows with it; what only covers its top, drawn over what it shows (a reader's bars over its words), moves
+            // none of it)
+            let by = if !(foot && tl.at_foot) && tl.start != start { tl.start - start } else { 0.0 }
+            // (a frame judged again at its moment: as the first judge of it had it)
+            let again = rows_steady.judged == now
+            let moving = if again { was_moving } else { foot && tl.at_foot && tl.scrolled != scrolled }
+            let from = if !again && moving && !was_moving { now } else { from }
+            (by, if moving { from } else { -1.0e9 })
+          }
+          None => (0.0, -1.0e9)
         }
-        rows_steady.laids[tl.id] = tl.laid
+        let moving_now = follow_from > -1.0e9
+        rows_steady.anchors[list_key] = (
+          tl.start,
+          tl.end,
+          tl.held_top,
+          tl.at_foot,
+          tl.scrolled,
+          moving_now,
+          follow_from,
+        )
+        let set_out = if follow_from > tl.set_out { follow_from } else { tl.set_out }
         let mut said = false
-        for r in tl.rows {
-          let (key, y, h, anew, faint) = r
+        for row in tl.rows {
+          let (num, y, _h, shows, anew, faint) = row
+          let key = "t\{tl.id}.\{tl.gen}/#\{num}"
           here.add(key)
-          let shows = y + h > 0.0 && y < tl.height
           let seen = match rows_steady.seen.get(key) {
             Some(s) => s
             None => {
@@ -306,12 +361,25 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
               s
             }
           }
+          if held_by != 0.0 {
+            for i in 0..<seen.length() {
+              let (a, b, sy) = seen[i]
+              seen[i] = (a, b, sy + held_by)
+            }
+          }
           let gap = seen.length() > 0 && now - seen[seen.length() - 1].1 > 2.5 * period
-          if !free || gap || anew || resized || laid_anew {
+          if !free || gap || anew || resized {
             seen.clear()
             rows_steady.went.remove(key)
           }
-          let returned = if free && shows && seen.length() > 0 {
+          // (out of sight: no sample kept, where it is laid as it is not yet measured (its block as tall as the list
+          // guessed) being none it is seen at; it is followed from the frame it comes in sight, as sizes steady's are)
+          if !shows {
+            seen.clear()
+            rows_steady.went.remove(key)
+            continue
+          }
+          let returned = if free && seen.length() > 0 {
             rows_steady_return(key, now, y - seen[seen.length() - 1].2, period, left=tl.left, faint~)
           } else {
             None
@@ -325,7 +393,6 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
             seen.remove(0) |> ignore
           }
           if free && shows && !said {
-            let set_out = tl.set_out
             let turned = rows_steady.turned.get(key).unwrap_or(-1.0e9)
             let (fault, turn) = rows_steady_fault(seen, period, set_out~, turned~, faint~)
             if turn != turned {
@@ -337,7 +404,10 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
             }
             match fault {
               Some(f) => {
-                out.push("row " + key + " (tree list " + tl.id.to_string() + ") " + f + " seen=[\{seen.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}] set_out=\{set_out}")
+                out.push(
+                  "row " + key + " (list " + tl.named + ") " + f +
+                  " seen=[\{seen.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]",
+                )
                 said = true
               }
               None => ()
@@ -345,6 +415,8 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
           }
         }
       }
+      laids_now.each(fn(k, w) { rows_steady.laids[k] = w })
+    }
     None => ()
   }
   rows_steady.judged = now
@@ -467,8 +539,10 @@ fn rows_steady_fault(
     let v1 = speed(1) * period
     let v2 = speed(2) * period
     if !(set_out > seen[0].1 && set_out <= seen[3].1) {
+      // (by more than what laying out leaves over in its sums: a way come to its end at rest (9, then 0 and 0) is no
+      // stop on its way, whatever crumb of a point a sum leaves where it rests)
       let off = (v1 - (v0 + v2) / 2.0).abs()
-      if off > rows_speed_least && off > 0.5 * dmax(v0.abs(), v2.abs()) {
+      if off > rows_speed_least && off > 0.5 * dmax(v0.abs(), v2.abs()) + rows_sum_left {
         return (Some("went \{v1} a frame between \{v0} and \{v2} at \{seen[2].1}"), turned)
       }
     } else if !faint && v1.abs() > rows_step_least * period / frame_period_default &&

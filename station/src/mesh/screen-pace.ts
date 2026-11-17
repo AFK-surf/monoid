@@ -445,3 +445,63 @@ export class FrameLatency {
     return { frame: Math.round(median(this.#samples.map((s) => s.frame))), before: Math.round(median(this.#samples.map((s) => s.before))) };
   }
 }
+
+/// How much of what went over a view's link was lost, as its station counts it (the statistics' 丢包率): the view's
+/// pictures are nearly all of what goes, from the station to the client, and a QUIC endpoint counts only what it sent
+/// and lost itself (iroh's `udp_tx.datagrams` and `lost_packets` of its paths), so it is the station's to count and the
+/// client's to be told. Sampled every LOSS_EVERY_MS from the connection's selected path, over the last LOSS_WINDOW_MS;
+/// a path changed (another relay, a direct way) or counters gone back start again from it. Fewer than LOSS_MIN_PACKETS
+/// in the window with fewer than LOSS_MIN_LOST lost (a still screen's few packets) says 0, never a share of a handful.
+export const LOSS_EVERY_MS = 1000;
+export const LOSS_WINDOW_MS = 60_000;
+export const LOSS_MIN_PACKETS = 20;
+export const LOSS_MIN_LOST = 3;
+export type LinkPath = { id?: string; selected: boolean; relay?: string | null; ip?: string | null; txPackets: number; lostPackets: number };
+
+export class LinkLoss {
+  readonly #now: () => number;
+  /// The selected path's counters as last sampled, and which path it was.
+  #last: { key: string; sent: number; lost: number } | null = null;
+  /// What each sample added, oldest first.
+  #samples: { at: number; sent: number; lost: number }[] = [];
+  /// The share last said, in percent.
+  #said: number | null = null;
+  constructor(now: () => number) {
+    this.#now = now;
+  }
+
+  /// The connection's paths now: the share to say now (in percent, to a tenth), when it changed since it was last said;
+  /// else null (nothing new, or nothing went in the window).
+  step(paths: readonly LinkPath[]): number | null {
+    const pct = this.sample(paths);
+    if (pct === null || pct === this.#said) return null;
+    this.#said = pct;
+    return pct;
+  }
+
+  /// The share over the window as of now (null: nothing went in it), the counters taken in.
+  sample(paths: readonly LinkPath[]): number | null {
+    const now = this.#now();
+    const way = paths.find((p) => p.selected);
+    if (way === undefined) {
+      this.#last = null;
+    } else {
+      const key = way.id ?? way.relay ?? way.ip ?? "";
+      const last = this.#last;
+      if (last !== null && last.key === key && way.txPackets >= last.sent && way.lostPackets >= last.lost) {
+        this.#samples.push({ at: now, sent: way.txPackets - last.sent, lost: way.lostPackets - last.lost });
+      }
+      this.#last = { key, sent: way.txPackets, lost: way.lostPackets };
+    }
+    while (this.#samples.length > 0 && this.#samples[0]!.at < now - LOSS_WINDOW_MS) this.#samples.shift();
+    let sent = 0;
+    let lost = 0;
+    for (const s of this.#samples) {
+      sent += s.sent;
+      lost += s.lost;
+    }
+    if (sent === 0) return null;
+    if (sent < LOSS_MIN_PACKETS && lost < LOSS_MIN_LOST) return 0;
+    return Math.min(100, Math.round((lost / sent) * 1000) / 10);
+  }
+}

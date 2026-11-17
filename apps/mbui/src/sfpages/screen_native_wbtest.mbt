@@ -130,7 +130,7 @@ test "screen system audio negotiates only on a capable host, mutes immediately, 
   assert_eq(text(Some(r.told("screen.view").last().unwrap()), "audio"), "pcm_s16le")
   r.live()
   r.say({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000, "channels": 2 } })
-  let packet = Bytes::new(3840)
+  let packet = Bytes::make(3840, b'\x00')
   let st = s.stream.unwrap()
   r.say({ "audio": { "ts": 1 } }, bytes=packet)
   assert_true(r.t.stream_fed(st.id()).contains("audio bytes=3840"))

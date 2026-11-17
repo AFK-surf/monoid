@@ -22,7 +22,7 @@ import { LEGACY_FIRST_PERSON_SINCE, LEGACY_HAS_PEOPLE_SINCE, LEGACY_PEOPLE_AFTER
 import { SESSION_LIST_CONNECT, SESSION_LIST_PENDING, SESSION_LIST_SCOPE, SESSION_LIST_SCOPE_CONNECT, sessionListReady } from "./backfill/session-list-index.ts";
 import { SESSION_BINDINGS_PENDING, SESSION_BINDINGS_SELECTED, sessionBindingsReady } from "./backfill/session-bindings-index.ts";
 import { sessionUpJobsReady } from "../../src/store/session-up-jobs.ts";
-import { WORKSPACE_UP_JOBS, workspaceUpJobsReady } from "./backfill/workspace-up-jobs.ts";
+import { WORKSPACE_UP_JOBS, remoteForm, remoteFormWs, workspaceUpJobsReady } from "./backfill/workspace-up-jobs.ts";
 import { JOB_NAME_FIRST_LARGE, JOB_NAME_FIRST_PENDING, JOB_NAME_FIRST_ROW, checkJobNameFirst } from "./backfill/job-name-first.ts";
 import { SAID_BATCH_SIZE, SAID_LATEST, SAID_SCAN, SAID_STATE, saidBoundary } from "../../src/store/said-state.ts";
 import { archiveLastKey } from "./backfill/archive-last.ts";
@@ -34,7 +34,7 @@ import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CAR
 import { TURN_COUNT_BATCH } from "./turn-state.ts";
 import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";
 import * as rows from "../../src/store/rows.ts";
-import { type CardAnswer, type DeliveryCardState, type EntryRow, type InWorkspace, JOBS_RUNNING, LEGACY_MESSAGE_KEYS_BEFORE, LEGACY_MESSAGES_BEFORE, MESSAGE_KEYS_BEFORE, MESSAGE_PAGE_ENTRIES, MESSAGES_BEFORE, type Membership, type MessageRow, type PendingMessage, PEOPLE_AT, SESSION_JOBS, SESSION_OF_RUNTIME, STILLFAIL_SURFACE, type ThreadRow, I64_MAX, MANUAL, authorKind, cardOf, liveShare, ending, parsed, saidBefore, sees, takeChars, toChatShare, toEntry, letterEntry, letterMessage, toMembership, toMessage, toThread } from "../../src/store/rows.ts";
+import { type CardAnswer, type DeliveryCardState, type EntryRow, type InWorkspace, JOBS_RUNNING, LEGACY_MESSAGE_KEYS_BEFORE, LEGACY_MESSAGES_BEFORE, MESSAGE_KEYS_BEFORE, MESSAGE_PAGE_ENTRIES, MESSAGES_BEFORE, type Membership, type MessageRow, type PendingMessage, PEOPLE_AT, SESSION_JOBS, SESSION_OF_RUNTIME, STILLFAIL_SURFACE, type ThreadRow, I64_MAX, MANUAL, authorKind, cardOf, liveShare, ending, parsed, saidBefore, sees, seesMissing, takeChars, toChatShare, toEntry, letterEntry, letterMessage, toMembership, toMessage, toThread } from "../../src/store/rows.ts";
 import { type Json, type SessionRow, toSession, type Store, makeStore, one, all, getSession, getThread, threadSessions, LAST_MESSAGE_PENDING, boundedEditKey, mergedWithBoundedEdit, SAID_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, pendingCardNumber, threadsWithCards, TURN_COUNT_PENDING, USAGE_CHATS_PENDING, REMOTE_RUNS_PENDING } from "../../src/read/store.ts";
 
 export * from "../../src/read/store.ts";
@@ -73,9 +73,9 @@ export function openStore(dataDir: string): Store {
 /// own), not from the sessions themselves.
 export const SEEN_OF = "SELECT key, ws FROM sessions INDEXED BY sessions_ws";
 
-/// Which sessions `viewer` sees: those whose chat is in their workspace (one not there: the
-/// home one's). A read made for no one (null) sees every one. For a viewer, `keys` limits the work and the predicate
-/// to those keys, including missing sessions (which still count as the home workspace's).
+/// Which sessions `viewer` sees: those whose chat is in their workspace (one not there: the home one's, but another
+/// station's task its workspace's: rows.ts `seesMissing`). A read made for no one (null) sees every one. For a viewer,
+/// `keys` limits the work and the predicate to those keys, including missing sessions.
 export function seenBy(s: Store, viewer: InWorkspace | null | undefined, keys?: readonly string[]): (key: string) => boolean {
   if (!viewer) return () => true;
   const wanted = keys === undefined ? null : new Set(keys);
@@ -89,7 +89,7 @@ export function seenBy(s: Store, viewer: InWorkspace | null | undefined, keys?: 
     rows = read("SELECT * FROM sessions");
   }
   const ws = new Map<string, string | null>(rows.map((r) => [r.key, r.ws ?? null]));
-  return (key) => (wanted === null || wanted.has(key)) && sees(viewer, ws.get(key) ?? null);
+  return (key) => (wanted === null || wanted.has(key)) && (ws.has(key) ? sees(viewer, ws.get(key)!) : seesMissing(viewer, key));
 }
 
 /// Whether `viewer` sees a thread: one of its sessions is in their workspace (a thread with none: the home one's).
@@ -1673,7 +1673,9 @@ const toJob = (r: Json): JobRow => {
 
 // SQLite compares the stored bytes; seenBy compares strings decoded by the Node SQLite driver. Different Node versions
 // may stop decoding at a NUL, and old writers can have left non-UTF-8 bytes. Keep unusual values for seenBy to decide.
-const JOB_WORKSPACE_CANDIDATE = `(s.ws = ?1 OR (?2 AND s.ws IS NULL)
+// A job of no session here is the home workspace's, but another station's task its workspace's (rows.ts `seesMissing`).
+const JOB_WORKSPACE_CANDIDATE = `(s.ws = ?1 OR (s.ws IS NULL AND CASE WHEN s.key IS NULL AND substr(j.session_key,1,7) = 'remote:'
+    AND ${remoteForm("j.session_key")} THEN ${remoteFormWs("j.session_key")} = ?1 ELSE ?2 END)
   OR typeof(j.session_key) <> 'text' OR instr(CAST(j.session_key AS BLOB), x'00') > 0
   OR j.session_key GLOB '*[^ -~]*'
   OR (s.ws IS NOT NULL AND (typeof(s.ws) <> 'text' OR instr(CAST(s.ws AS BLOB), x'00') > 0

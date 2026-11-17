@@ -41,7 +41,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
   over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
-  `@headless.split`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
+  `@headless.split`; a Markdown table's and 进程's table over `@headless.table`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
   that may or may not be a button (`own_head_node`, `quote_card_node`, `station_choice_node`, `viewer_steps_node`) are
   counted (detlint's `button-by-hand`) so no new hand-rolled button is added. What only still.fail wants of a control
   stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press
@@ -169,8 +169,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     all of it), a menu a menu's item opens is a level of the same sheet, and on 小屏 whatever a sheet closes for comes
     in its place, one sheet all along and the scrim as it was, never one sheet sinking as the next rises
     (presenters_wbtest's every pair of kinds holds it). On 小屏 a panel's step further in is a page of the same sheet
-    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own): it slides in as
-    the one before slides off, and that one is kept as it was left for back.
+    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own; a confirm, a
+    question, a menu and a pick are sheets of it too, `sheet_shows_node.mbt`, a menu's level a page of its sheet): it
+    slides in as the one before slides off, and that one is kept as it was left for back.
 
 - Text files (Markdown, plain text, code, CSV and HTML) open in the chat's side panel by default where one is available;
   otherwise in the whole-window preview. An explicit 全屏 still opens the whole window (the user, 2026-11-17).
@@ -200,14 +201,22 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   of their make (sfpages' `chat_body_shape`, `View::scrolls_window`'s `reused`), so what a row's block holds reads its
   key through `key()` as it is now, never one taken as it was made (a quote's place, what is picked of it, its flash,
   its menu's band, which block of a long message): `chat_body_reuse_wbtest.mbt` sets each row so taken beside one made
-  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a make holds made only as it is made (a
-  message's paths, its agent's card, the chat's thread) is part of the make.
+  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a part in it keeps of its own (a code block
+  wrapped or copied, how far a table, code or a formula is scrolled across) is its key's by mbui's (`View::reused_bool`,
+  `View::on_reused`, what scrolls in it: `libs/mbui/src/view/reused_state.mbt`), never the part made again for the key.
+  What a make holds made only as it is made (a message's paths, its agent's card, the chat's thread) is part of the make.
+  detlint's `reused-untracked-key` counts a `make_reused` reading its key untracked as it is made, and that count only
+  falls.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`,
   `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
 - The chat's page made as nodes is behind a switch a person turns on, 实验性功能's 试用新对话页 (the experimental
   feature `chatPage`, the prefs' `experimental`; sfbase's `chat_page_from_prefs`), off by default till it lacks nothing
-  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile.
+  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile. Its
+  composer made as nodes (sfpages' `composer_node`) is behind another, 试用新输入框 (`composerNodes`, read with it as the
+  page is made: sfbase's `composer_nodes`), till the composer and the new chat's page lack nothing made so (the owner,
+  2026-11-17: 「要迁就全迁了，用开关保证用户不会受影响」); what it is apart from how it is drawn is one for both views
+  (`composer_state.mbt`, sfbase's `compose_given.mbt`, `composer_send.mbt`), never copied into the view made as nodes.
 - What is not yet everyone's is a feature of one registry, the core's (`client/core-ts/src/features.ts`;
   `scripts/features-check.ts`), of which the app keeps no copy and no rule: it reads the prefs' `features` and
   `experimentalItems`, and a station's own as its overview says (`src/sfapp/settings/features.mbt`). `beta`, on on the
@@ -219,6 +228,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
   its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (#5767).
+  detlint's `width-structure` counts each in a `View::by_room`'s making (its room's `width()` read by a pick's or a
+  show's condition, itself or through a function of the room's body), and that count only falls.
 
 ## Motion
 
@@ -240,6 +251,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   moon.work): `scripts/farview.sh` puts it in `deps/farview` at the commit `farview.pin` names, `moon.work` names it,
   `scripts/env.sh` fetches it with git's own credentials and CI with the read-only deploy key `FARVIEW_DEPLOY_KEY`
   (each workflow's env, the mbui-moonbit action's last step). A newer client is a change of `farview.pin`.
+- Where it cannot be fetched (an account that cannot read AFK-surf/farview, a fork), test what you can with a stand-in
+  kept out of the change, say so in the PR, and open it ready for review, never a draft: a draft's CI never runs, and
+  the full app build with the real client is the upstream CI's (左子健, 2026-11-17).
 
 ## Running the app in development
 
@@ -296,6 +310,11 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   frame given nothing, is held to its bar in `real_size_change_known_wbtest.mbt`, which only falls; a page that comes
   to hold another topic gets its rows by running the test, and a page moved from the old view onto nodes writes its
   rows again (what was built old is made).
+- Those bars, `real_size_bindings_known_wbtest.mbt`'s and `chat_nodes_open_budget_wbtest.mbt`'s only fall: a bar
+  raised, a key the bindings' table held to 0 now above it, or a new row without the screen or change it is of
+  (`src/sfapp/fixture_open.mbt`, `client/core-ts/test/real-size.ts`) is refused as a commit's message is written and in
+  CI (`scripts/mbui-budgets.ts`), unless its message says why on a line of its own, `Budget-raise: <why>`: only
+  something more shown, or an old view's build now made as nodes and counted.
 - What the core sends for what the app subscribes to, in each flow's trace, keeps to its bar
   (`src/sfreplay/topic_bytes.mbt`: KB of values sent whole, values sent whole again, messages for what was let go of;
   each topic's largest value). A page subscribes to what it shows, no more (the user, 2026-11-10); a trace recorded

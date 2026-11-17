@@ -522,11 +522,12 @@ function shown(inner: Inner): J[] {
     .sort((a, b) => a.at - b.at)
     .map((a) => {
       // Who reads the code out decides this: that it also lets someone new into the lock is said as they do. Where the
-      // chain moved, with the role approving says (`admitOf`'s, the note lowered to the view's): 批准后以管理员身份加入,
-      // one workspace's, or each by its name.
+      // chain moved, with the role approving says (`admitOf`'s, the note lowered to the view's): 批准后以管理员身份加入
+      // where it asks into that one workspace alone, else each by its name (one bare among several listed would read
+      // as said of them all).
       const joins = a.places.filter((p) => p.joins === true && p.admit === undefined).map((p) => nameOf(inner, p.ws));
       const admits = a.places.flatMap((p) => (p.admit !== undefined ? [{ ws: p.ws, text: t("core-misc.lock.pairRole", { role: roleText(p.admit.role) }) }] : []));
-      const role = admits.length === 0 ? null : admits.length === 1 ? admits[0]!.text : admits.map((x) => t("core-misc.lock.inWorkspace", { name: nameOf(inner, x.ws), error: x.text })).join(t("core-misc.lock.listSep"));
+      const role = admits.length === 0 ? null : admits.length === 1 && a.places.length === 1 ? admits[0]!.text : admits.map((x) => t("core-misc.lock.inWorkspace", { name: nameOf(inner, x.ws), error: x.text })).join(t("core-misc.lock.listSep"));
       return {
         device: a.device, name: a.name, email: a.email, kind: a.kind, label: a.label, code: a.code, created_at: a.at,
         deviceText: deviceText(a) + (joins.length > 0 ? t("core-misc.lock.pairJoins", { names: joins.join(t("core-misc.lock.listSep")) }) : ""),

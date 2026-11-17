@@ -285,7 +285,10 @@ export class LoginAttempt extends DurableObject<Env> {
         finish.searchParams.set("error", "login_cancelled");
       } else {
         try {
-          const identity = await googleIdentity(this.#env, code, attempt.googleVerifier, attempt.nonce, url.origin);
+          const { role, ...identity } = await googleIdentity(this.#env, code, attempt.googleVerifier, attempt.nonce, url.origin);
+          // Whom the operator's own OpenID provider lets in joins the workspaces open to it (selfhost/setup.ts), with
+          // the role it gives them there (OIDC_ROLE_CLAIM).
+          if (identity.sub.startsWith("oi-")) await this.env.DIRECTORY.getByName("primary").joinBySignIn(identity.email, role ?? null);
           // An account that signed up with this email (a code sent to it) is this one too.
           const account = await this.env.DIRECTORY.getByName("primary").accountFor(identity.sub, identity.email);
           finish = await this.complete(id, attempt, { ...identity, sub: account?.sub ?? identity.sub });

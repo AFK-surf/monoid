@@ -313,7 +313,13 @@
     },
     "layout-drawn-while": {},
     "shader-int": {},
-    "raw-hover-ground": {}
+    "raw-hover-ground": {},
+    "width-structure": {
+      "src/view/grid.mbt": 1
+    },
+    "reused-untracked-key": {},
+    "manual-fade-way": {},
+    "page-at-moment": {}
   },
   "excused": {
     "frame-request": {},
@@ -401,7 +407,11 @@
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
-    "raw-hover-ground": {}
+    "raw-hover-ground": {},
+    "width-structure": {},
+    "reused-untracked-key": {},
+    "manual-fade-way": {},
+    "page-at-moment": {}
   },
   "tester": {
     "names": [

@@ -734,21 +734,23 @@ let tie_slack : Double = 1.0e-6
 let glyphs_carried : FixedArray[Double] = [0.0, 0.0]
 
 ///|
-/// Where a glyph's picture goes across, its cluster at `x` and its own offset `ox` (`sc` pixels a point): `x` set on
-/// the pixels first (as `glyph_sub` rounds the cluster origin), then `ox` in whole pixels.
-fn on_glyph_col(x : Double, ox : Double, sc : Double) -> Double {
+/// Where a glyph's picture goes across, its cluster at `x` and its own offset `ox` (`sc` pixels a point, `z` the zoom
+/// it was drawn at): `x` set on the whole pixel column its quarter-pixel phase is drawn from (glyph_col_of, as
+/// `glyph_sub` chose the phase), then `ox` in whole pixels; a zoomed glyph, drawn at no phase, on the nearest pixel.
+fn on_glyph_col(x : Double, ox : Double, sc : Double, z? : Double = 1.0) -> Double {
   if sc <= 0.0 {
     return x + ox
   }
-  on_pixels(x, sc) + (ox * sc).round() / sc
+  let col = if z == 1.0 { glyph_col_of(glyph_qf(x * sc)) / sc } else { on_pixels(x, sc) }
+  col + (ox * sc).round() / sc
 }
 
 ///|
 /// Where a glyph's picture goes across, `x` as painted and its own offset `ox`: on the pixels where it is laid out
 /// (glyph_origin_x, glyphs_carried).
-fn glyph_x(x : Double, ox : Double, sc : Double) -> Double {
+fn glyph_x(x : Double, ox : Double, sc : Double, z? : Double = 1.0) -> Double {
   let m = glyphs_carried[0] - glyph_origin_x.val
-  on_glyph_col(x - m, ox, sc) + m
+  on_glyph_col(x - m, ox, sc, z~) + m
 }
 
 ///|
@@ -1205,7 +1207,7 @@ fn Ctx::emit_text(
       continue
     }
     let (gw, gh) = (g.gw / z, g.gh / z)
-    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad, g.ox / z, sc)
+    let gx = glyph_x(ox + dx + tl.xs[c] + s.pad, g.ox / z, sc, z~)
     let gy = glyph_row(oy, line.to_double() * tl.line_h + tl.ascent, g.oy / z, sc)
     let adaptive = glass_paint.ink_r > 0.0 && !g.color
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a

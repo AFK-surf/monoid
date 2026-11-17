@@ -30,7 +30,7 @@ import { KEYS, WinInput } from "../src/screens/win-input.ts";
 import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor } from "../src/screens/source.ts";
 import { WINDOWS } from "../src/platform/index.ts";
 import { settle, testClock } from "./hub-fakes.ts";
-import { MAX_UNACKED, QUEUE_MS, START_RATE, START_UNACKED, STILL_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
+import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, QUEUE_MS, START_RATE, START_UNACKED, STILL_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
 import type { Clock } from "effect";
 import { memoryMesh, vanish } from "./memory-mesh.ts";
 import { Superseded } from "../src/mesh/superseded.ts";
@@ -165,14 +165,14 @@ async function link() {
 }
 
 /// A view opened as a client opens one: its head line, the station answering it (`served`), the answer's head.
-async function open(hub: ScreenHub, viewer: Viewer, screen: unknown = { maxWidth: 1920, maxHeight: 1080, codecs: ["h264", "jpeg"], control: true }, path = "/admin/api/screens/fake/view", clock?: Clock.Clock) {
+async function open(hub: ScreenHub, viewer: Viewer, screen: unknown = { maxWidth: 1920, maxHeight: 1080, codecs: ["h264", "jpeg"], control: true }, path = "/admin/api/screens/fake/view", clock?: Clock.Clock, paths?: () => LinkPath[]) {
   const { conn, theirs } = await link();
   const stream = await conn.openBi();
   await writeLine(stream, { method: "POST", path, headers: { "stillfail-lang": "en", "stillfail-build": "0.1.0" }, screen });
   const incoming = (await theirs.acceptBi())!;
   const heard = new Reader(incoming);
   const head = await heard.line();
-  const served = answerScreen(hub, incoming, heard.carry, head, viewer, () => true, clock);
+  const served = answerScreen(hub, incoming, heard.carry, head, viewer, () => true, clock, paths ? { paths } : undefined);
   const client = new Reader(stream);
   const answer = await client.line();
   return { conn, stream, served, answer, client, frames: new FrameIn(stream, client.carry) };
@@ -540,6 +540,118 @@ test("the helper's view of a part of the display: the part asked with the bounds
     );
     view.close();
   });
+});
+
+/// What a view's link lost, as its station counts it (2026-11-17, pengxiao: 「明明丢包很严重，结果显示数据都正常」):
+/// the client counts only what it sent itself, the acknowledgements, and the pictures all go the other way.
+/// A view on a connection whose selected path is `way` and whose counters the test moves on.
+async function lossView(time: ReturnType<typeof testClock>, way: LinkPath) {
+  const hub = new ScreenHub();
+  const source = new FakeSource();
+  hub.add(source);
+  let asked = 0;
+  let paths: LinkPath[] = [way];
+  const v = await open(hub, member, undefined, undefined, time.clock, () => (asked++, paths.map((p) => ({ ...p }))));
+  await until(v.frames, KIND.video);
+  await settle();
+  return {
+    v,
+    set: (...now: LinkPath[]) => void (paths = now),
+    asked: () => asked,
+    /// A second on: the sample taken.
+    tick: async () => {
+      await time.adjust(LOSS_EVERY_MS);
+      await settle();
+    },
+    /// The view finished: every `loss` it was said, in order.
+    end: async () => {
+      await v.stream.finish();
+      const said: number[] = [];
+      for (;;) {
+        const got = await v.frames.next();
+        if (got === null) break;
+        if (got.kind === KIND.state && "loss" in json(got.payload)) said.push(json(got.payload).loss);
+      }
+      await v.served;
+      return said;
+    },
+  };
+}
+
+test("a view's link: what it lost is said each second as it changes, the same share not said again", async () => {
+  const time = testClock();
+  const l = await lossView(time, { id: "0", selected: true, relay: "https://bj.relay/", txPackets: 5000, lostPackets: 40 });
+  // What went before the view is no part of it.
+  l.set({ id: "0", selected: true, relay: "https://bj.relay/", txPackets: 5300, lostPackets: 40 });
+  await l.tick();
+  l.set({ id: "0", selected: true, relay: "https://bj.relay/", txPackets: 5600, lostPackets: 40 });
+  await l.tick();
+  await l.tick();
+  assert.deepEqual(await l.end(), [0], "0% said once, not each second");
+});
+
+test("a view's link losing most of what goes: its share said within a second, though the client acknowledges nothing", async () => {
+  const time = testClock();
+  const l = await lossView(time, { id: "0", selected: true, txPackets: 1000, lostPackets: 0 });
+  // (No ack was written: the view holds its frames back, START_UNACKED on the way.)
+  l.set({ id: "0", selected: true, txPackets: 1100, lostPackets: 28 });
+  await l.tick();
+  // Lost more: 30 of 200 now.
+  l.set({ id: "0", selected: true, txPackets: 1200, lostPackets: 30 });
+  await l.tick();
+  assert.deepEqual(await l.end(), [28, 15]);
+});
+
+test("a view's link on another path: its counters start again from it, what went on it before not counted", async () => {
+  const time = testClock();
+  const l = await lossView(time, { id: "0", selected: true, relay: "https://bj.relay/", txPackets: 1000, lostPackets: 0 });
+  // A direct way now, its own counters (900 of 5000 lost before the view counted it).
+  l.set({ id: "0", selected: false, relay: "https://bj.relay/", txPackets: 1000, lostPackets: 0 }, { id: "1", selected: true, ip: "10.0.0.2:4433", txPackets: 5000, lostPackets: 900 });
+  await l.tick();
+  l.set({ id: "1", selected: true, ip: "10.0.0.2:4433", txPackets: 5100, lostPackets: 900 });
+  await l.tick();
+  // A path without its id (an addon from before): told apart by its relay or address.
+  l.set({ selected: true, relay: "https://tokyo.relay/", txPackets: 7000, lostPackets: 700 });
+  await l.tick();
+  l.set({ selected: true, relay: "https://tokyo.relay/", txPackets: 7100, lostPackets: 701 });
+  await l.tick();
+  assert.deepEqual(await l.end(), [0, 0.5]);
+});
+
+test("a view ended: its link no longer sampled", async () => {
+  const time = testClock();
+  const l = await lossView(time, { id: "0", selected: true, txPackets: 1000, lostPackets: 0 });
+  await l.tick();
+  assert.deepEqual(await l.end(), []);
+  const asked = l.asked();
+  await l.tick();
+  await l.tick();
+  assert.equal(l.asked(), asked);
+});
+
+test("a link's loss over the window: a handful of packets says 0, a path gone or counters back start again, a minute's samples only", () => {
+  let now = 0;
+  const loss = new LinkLoss(() => now);
+  const at = (txPackets: number, lostPackets: number, id = "a"): LinkPath[] => [{ id, selected: true, txPackets, lostPackets }];
+  assert.equal(loss.step(at(100, 10)), null, "the first sample only begins");
+  now += 1000;
+  assert.equal(loss.step(at(100, 10)), null, "nothing went");
+  now += 1000;
+  assert.equal(loss.step(at(105, 11)), 0, "5 packets, one lost: a still screen's few, not 20%");
+  now += 1000;
+  assert.equal(loss.step(at(108, 14)), 50, "4 lost of 8: said");
+  now += 1000;
+  assert.equal(loss.step([]), null, "no path selected: nothing new");
+  now += 1000;
+  assert.equal(loss.step(at(108, 14)), null, "selected again: begun again");
+  now += 1000;
+  assert.equal(loss.step(at(50, 0)), null, "its counters went back: begun again, nothing taken from them");
+  now += 1000;
+  assert.equal(loss.step(at(250, 0)), 1.9, "4 lost of 208 over the window");
+  now += LOSS_WINDOW_MS + 1;
+  assert.equal(loss.step(at(350, 0)), 0, "only the last minute's");
+  now += 1000;
+  assert.equal(loss.step(at(350, 0)), null, "the same said once");
 });
 
 test("a still screen's picture goes again sharper as the rate goes up, a key frame each STILL_MS, until it is at the most it is asked at", async () => {

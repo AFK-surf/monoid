@@ -675,15 +675,36 @@ fn trimmed(o : String) -> String {
 pub fn paste_threshold(c : @ui.Ctx, src : Source) -> Int {
   if !paste_bound_asked.val {
     paste_bound_asked.val = true
-    c.tell("refs/paste-bound", fn() {
-      (src.call)("paste.info", { "text": Json::string("") }, fn(r) {
-        match r {
-          Ok(v) => paste_bound.set(number(Some(v), "threshold").to_int())
-          Err(_) => paste_bound_asked.val = false
-        }
-      })
-    })
+    c.tell("refs/paste-bound", fn() { paste_bound_call(src) })
   }
+  paste_bound.get()
+}
+
+///|
+/// paste_threshold's ask, made now where it was not made yet (a composer made as nodes, as it is made): what reads
+/// paste_bound told as the core answers.
+pub fn paste_bound_ask(src : Source) -> Unit {
+  if !paste_bound_asked.val {
+    paste_bound_asked.val = true
+    paste_bound_call(src)
+  }
+}
+
+///|
+/// The core asked from how many characters words pasted at once go as a file (`paste.info`), asked again where it
+/// failed.
+fn paste_bound_call(src : Source) -> Unit {
+  (src.call)("paste.info", { "text": Json::string("") }, fn(r) {
+    match r {
+      Ok(v) => paste_bound.set(number(Some(v), "threshold").to_int())
+      Err(_) => paste_bound_asked.val = false
+    }
+  })
+}
+
+///|
+/// From how many characters words pasted at once go as a file, as the core said (0 till it has: none taken so).
+pub fn paste_bound_now() -> Int {
   paste_bound.get()
 }
 

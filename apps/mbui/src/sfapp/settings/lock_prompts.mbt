@@ -69,7 +69,7 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
     let places = fn() { items(shown(), "workspaces") }
     v.box(fn(col) {
       @sf.style_node(col, fn() { pair_column })
-      @sf.words_node(col, fn() { fill("web-pages.security.pairBody", [("device", text(rv, "deviceText"))]) }, fn() { pair_body }) |> ignore
+      @sf.words_node(col, fn() { fill("web-pages.security.pairBody", [("device", text(shown(), "deviceText"))]) }, fn() { pair_body }) |> ignore
       // (asked into the person's own lock, no workspace's: said so)
       col.show(fn() { places().is_empty() }, fn(p) {
         @sf.words_node(p, fn() { tr("web-pages.security.pairPersonal") }, fn() { pair_places_head }) |> ignore
@@ -83,6 +83,11 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
           @sf.style_node(line, fn() { pair_place_line })
           @sf.workspace_badge_node(line, fn() { text(wv(), "name") }, fn() { text(wv(), "emoji") }, fn() { text(wv(), "icon") }, pair_place_mark)
           @sf.words_node(line, fn() { text(wv(), "name") }, fn() { pair_place }) |> ignore
+        })
+        // (someone's first device in an upgraded workspace: the role approving lets them in as, the core's `roleText`,
+        // from where 申请访问 and the workspaces' marks start)
+        p.show(fn() { text(shown(), "roleText") != "" }, fn(r) {
+          @sf.words_node(r, fn() { text(shown(), "roleText") }, fn() { pair_body }) |> ignore
         })
       })
       // the code, large, in the code face, in the middle

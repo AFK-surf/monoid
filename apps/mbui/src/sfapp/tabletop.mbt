@@ -195,6 +195,15 @@ fn chat_foot_nodes(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
+/// chat_foot_nodes' with its composer made as nodes (sfbase's composer_nodes) in `n`: over the navigation bar (the
+/// keyboard's top under it), its tips in `tips`.
+fn chat_foot_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer) -> Unit {
+  n.row(Is(false)) |> ignore
+  @sfpages.chat_composer_node(n, src, r, tips)
+  n.box(fn(bar) { bar.height(By(fn() { Some(nav_foot()) })) |> ignore }) |> ignore
+}
+
+///|
 /// A chat's foot under its messages made as nodes (chat_foot_nodes): as wide as the page, as tall as what it holds.
 // kept across runs: a value (no field of it changes)
 let chat_foot_under : @ui.Style = @ui.css("w=Full")

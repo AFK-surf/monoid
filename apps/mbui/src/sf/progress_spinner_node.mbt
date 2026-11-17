@@ -23,7 +23,7 @@ pub fn progress_spinner_node(
   let quarter = @ui.arc(mid, mid, r, from=-0.75 * pi, sweep=0.25 * 2.0 * pi)
   // (how far it has come, drawn: the first part told there at once, each after from where it is drawn)
   let first = @signals.untracked(coming)
-  let at = EdgeWay::new(first.map(part).unwrap_or(0.0))
+  let at = @motion.NodeWay::new(first.map(part).unwrap_or(0.0))
   let told = Ref(first is Some(_))
   parent.box(made_for=loc, fn(v) {
     v
@@ -50,7 +50,7 @@ pub fn progress_spinner_node(
       match c {
         Some(k) =>
           if told.val {
-            at.go(v, part(k), @kit.progress_ms, ease=Out)
+            at.go_ms(v, part(k), @kit.progress_ms, ease=Out)
           } else {
             told.val = true
             at.put(part(k))
