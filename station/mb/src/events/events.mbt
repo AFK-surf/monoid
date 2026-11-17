@@ -26,6 +26,10 @@ pub let head_header : String = "stillfail-head"
 pub let follows_header : String = "stillfail-follows"
 
 ///|
+/// events.ts LIVE_RATES: a running-session snapshot includes each current output rate, and a quiet rate is cleared.
+pub let live_rates_header : String = "stillfail-live-rates"
+
+///|
 /// A login's terminal as it is now (events.ts `loginScreen`'s screen).
 pub(all) struct Screen {
   rows : Array[String]
@@ -980,6 +984,9 @@ fn Events::opened(
   }
   if follows {
     headers.push((follows_header, "running"))
+    if self.deps.held_now is Some(_) {
+      headers.push((live_rates_header, "1"))
+    }
   }
   done(Ok({ headers, stream, }))
 }
