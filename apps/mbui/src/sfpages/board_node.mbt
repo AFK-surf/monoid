@@ -2223,7 +2223,10 @@ fn board_chat_card(
   let open = fn() {
     guard @signals.untracked(r) is Some(r) else { return }
     if wide && @signals.untracked(own.side) {
-      let opening = @sfbase.board_pick.untracked() != Some(r)
+      let opening = match (@sfbase.board_pick.untracked(), @signals.untracked(item)) {
+        (Some(p), Some(i)) => !@sfbase.row_is(i, p)
+        _ => true
+      }
       @sfbase.board_pick.set(if opening { Some(r) } else { None })
       // (its column whole beside the chat as it opens)
       if opening {
