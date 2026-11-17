@@ -893,20 +893,26 @@ jobs:
   station:
     needs: [plan, natives, natives-mac]
     if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
-    runs-on: [self-hosted, macos-ci]
+    # (GitHub's Mac, as desktop's signing: on Mini1 its four packages, ~150 MB, went up to the bucket over the home
+    # line in what was left of its five minutes after 31 s of building, cut there, and took that line from android's
+    # upload beside it, cut too: main 44147606865, 2026-11-17)
+    runs-on: macos-26
     outputs:
       hand: ${{ steps.hand.outputs.key }}
     environment: production
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 } # the release's number is the commits in the history
-      - uses: ./.github/actions/setup-mac
+        with: { fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/natives
       # (MoonBit for the station's reader, station/mb/build.sh, built here where the natives' cache lacks it: pruned on
       # the runner, the stable's station job of 0487f79c found `moon: command not found` four times, 43616763857)
       - uses: ./.github/actions/mbui-moonbit
       - name: Build the station's release (darwin-arm64, linux-x64, linux-arm64, win32-x64)
         env:
+          # (the native parts this commit's natives jobs published, downloaded by scripts/native.ts with GitHub's token)
+          GH_TOKEN: ${{ github.token }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           # AFK's Developer ID and notary profile (.github/mac_signing.py).
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
@@ -916,8 +922,7 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           RELEASE_DIR: ${{ runner.temp }}/release
         run: sh .github/release.sh station
-      # Its files into the bucket from here, staged (scripts/release-put.sh --stage): put takes them back. In the run
-      # artifact they went up through the proxy macos-ci's DNS sends GitHub to, 40 MB a release (2026-10-23).
+      # Its files into the bucket from here, staged (scripts/release-put.sh --stage): put takes them back.
       - name: Stage its files in the bucket
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1637,12 +1642,13 @@ jobs:
   # none out for over an hour and a half. A desktop failed or cancelled leaves the Mac's feed as it was, handing nothing;
   # it is main's red as any job's, and `done` waits for it, so deployed/beta stays and the next run plans the Mac again.
   # So with its build, desktop-build: it hands put nothing, and one cut at its five minutes would hold every part's release
-  # back as the notary did; its Mac build ran 276-287 s on main's releases of 2026-11-14 and 15)
-  # Android hands over its completed still.fail files before uploading monoid's APK. A timeout uploading that APK
-  # held back the notarized Mac build 9922. Publish the available parts; done still requires Android's success.
+  # back as the notary did; its Mac build ran 276-287 s on main's releases of 2026-11-14 and 15. Nor does the station's
+  # or Android's: each hands put only what it finished (release-put.sh --hand), and one cut at its five minutes held
+  # back the Mac's and Windows' betas, signed and ready: main 44147606865, 2026-11-17. `done` still waits for every
+  # part, so deployed/beta stays and the next run plans the one that failed again)
   put:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5

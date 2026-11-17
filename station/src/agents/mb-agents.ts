@@ -146,12 +146,14 @@ export class AgentsHost {
     this.#settle("the program reading agents ended while it read an output again");
     // (each process read again from where it was acknowledged, the turn as its session knows it)
     const again = [...this.#sessions.values()];
+    // (one being let go is gone with it: no `left` will come from this program, nor be asked of the next)
+    for (const p of again) if (p.gone || p.detaching) p.left_();
     // timer: a retry after a failure, with a backoff (one that keeps ending is started again each second at most)
     wall.after(1_000, () => {
       if (this.#closed) return;
-      for (const p of again) if (!p.gone) this.attach(p);
+      for (const p of again) if (!p.gone && !p.detaching) this.attach(p);
       // (what a handover holds stays held: its answer, the states, was given already)
-      const held = again.filter((p) => !p.gone && this.#held.has(p));
+      const held = again.filter((p) => !p.gone && !p.detaching && this.#held.has(p));
       if (held.length > 0) this.post({ freeze: this.number(), only: held.map((p) => p.n) });
     });
   }
@@ -317,8 +319,9 @@ export class AgentsHost {
     if (AgentsHost.#shared.get(this.#data) === this) AgentsHost.#shared.delete(this.#data);
     const proc = this.#proc;
     this.#proc = null;
-    // (nothing more will be said of what was asked of it: what waits on it goes on)
+    // (nothing more will be said of what was asked of it: what waits on it goes on, a process being let go too)
     this.#settle();
+    for (const p of [...this.#sessions.values()]) if (p.gone || p.detaching) p.left_();
     await proc?.release(this.#user);
   }
 
@@ -351,6 +354,8 @@ export class HostedProcess {
   readonly exited: Promise<string>;
   #resolveExit!: (said: string) => void;
   #left: (() => void) | null = null;
+  /// Let go (`detach`), told the program once what it is taking now is taken.
+  #detaching = false;
   #router: Router | null = null;
   /// What comes for a Codex thread not taken up yet is held for it (HostedOptions `orphans`), until `orphansOff`.
   #orphans: boolean;
@@ -466,7 +471,8 @@ export class HostedProcess {
   }
 
   /// What the program read, unless it is let go or held (then not acknowledged: the next station's); acknowledged once
-  /// its session took it, or said taken by its actor, which the program acknowledges then.
+  /// its session took it, or said taken by its actor, which the program acknowledges then. One its session began to
+  /// take before it was let go or held is acknowledged all the same once taken.
   heard(heard: Heard) {
     this.inTurn(() => this.#take(heard));
   }
@@ -501,8 +507,11 @@ export class HostedProcess {
     const router = heard.batch !== undefined ? this.#router : null;
     if (router !== null) heard.routed = true;
     const taken = this.#options.heard(heard);
+    // (taken, it is acknowledged though it was let go or held meanwhile: its session wrote it, and the next must not take
+    // it again; `detach` is told the program after this ack, `inTurn`. 2026-11-17, devin.test.ts: a turn the next driver
+    // never saw, its batch's ack dropped as it was let go while the transcript was written)
     const done = () => {
-      if (taken === true || this.gone || this.#frozen) return;
+      if (taken === true || this.gone) return;
       // (acknowledged by the program as its actor takes them)
       if (router === null || !router.took(heard.batch!)) this.#host.post({ ack: this.n, to: heard.to });
     };
@@ -541,19 +550,33 @@ export class HostedProcess {
       this.gone = true;
       this.done();
       this.#host.forget(this);
+      this.#leftNow();
     } else {
       this.#said = "runner gone";
       this.#resolveExit(this.#said);
       const told = this.#frozen ? undefined : this.#options.exit(this.#said, stderr);
       this.done();
       this.#host.forget(this);
+      this.#leftNow();
       return told;
     }
   }
 
   left_() {
     this.#host.forget(this);
-    this.#left?.();
+    this.#leftNow();
+  }
+
+  /// What waits on its letting go (`allLeft`) goes on, once.
+  #leftNow() {
+    const left = this.#left;
+    this.#left = null;
+    left?.();
+  }
+
+  /// Being let go: `detach` asked, the program not yet told.
+  get detaching() {
+    return this.#detaching && !this.gone;
   }
 
   hasExited() {
@@ -594,13 +617,23 @@ export class HostedProcess {
   }
 
   detach() {
+    // (held at once: nothing told after this is taken, written or said)
     this.#frozen = true;
-    if (this.gone) return;
-    this.gone = true;
+    if (this.gone || this.#detaching) return;
+    this.#detaching = true;
     leave(new Promise<void>((resolve) => {
       this.#left = resolve;
-      // (a pipe has no closing of one side: the runner is asked to close, runner.ts `detach`)
-      this.#host.post({ detach: this.n, ...(platform.runnerSaysLeave ? { leave: true } : {}) });
+      // (after what it is taking now is taken and acknowledged, `#take`: the runner reads on from there for the next)
+      this.inTurn(() => {
+        // (gone meanwhile, its socket closed or the program ended: nothing to tell)
+        if (this.gone || this.#left === null) {
+          this.left_();
+          return;
+        }
+        this.gone = true;
+        // (a pipe has no closing of one side: the runner is asked to close, runner.ts `detach`)
+        this.#host.post({ detach: this.n, ...(platform.runnerSaysLeave ? { leave: true } : {}) });
+      });
     }));
   }
 
