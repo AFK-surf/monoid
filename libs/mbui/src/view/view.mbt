@@ -3645,6 +3645,7 @@ priv enum Prop {
   CutsSoftly
   DrawnOff
   GroundDrawn
+  GroundLit
   MinHeight
   Aspect
   Nowhere
@@ -3750,6 +3751,7 @@ impl Show for Prop with output(self, logger) {
       CutsSoftly => "CutsSoftly"
       DrawnOff => "DrawnOff"
       GroundDrawn => "GroundDrawn"
+      GroundLit => "GroundLit"
       MinHeight => "MinHeight"
       Aspect => "Aspect"
       Nowhere => "Nowhere"
@@ -3885,6 +3887,7 @@ fn Prop::ord(self : Prop) -> Int {
     CutsSoftly => 65
     DrawnOff => 66
     GroundDrawn => 67
+    GroundLit => 96
     MinHeight => 68
     Aspect => 69
     Nowhere => 70
@@ -4792,7 +4795,7 @@ pub fn View::ground_over(self : View, ink : Live[Int64], loc~ : SourceLoc) -> Vi
 
 ///|
 /// Colour `top` composited over `under` (each 0xRRGGBBAA).
-fn blend_ground(under : Int64, top : Int64) -> Int64 {
+pub fn blend_ground(under : Int64, top : Int64) -> Int64 {
   let ta = (top & 0xFFL).to_double() / 255.0
   if ta <= 0.0 {
     return under
@@ -5523,6 +5526,25 @@ pub fn GroundShape::reshaped(self : GroundShape) -> Bool {
 #callsite(autofill(loc))
 pub fn View::ground_drawn(self : View, d : Live[GroundShape], loc~ : SourceLoc) -> View {
   self.bind(loc~, GroundDrawn, d, Place, fn(d) { self.tree.nodes[self.at].look.ground_drawn = d })
+  self
+}
+
+///|
+/// Its ground and how it is drawn (View::ground's colour, View::ground_drawn's shape) said by one binding: a ground that
+/// shows only now and then (a list's row lit as it is gone to, or as its menu shows) bound once, what shape it takes
+/// worked out only while it shows (the binding saying ground_as_laid with no colour). Paint's and place's both, as
+/// View::ground and View::ground_drawn are: nothing laid out again. Not with View::ground or View::ground_drawn on the
+/// same node.
+#callsite(autofill(loc))
+pub fn View::ground_lit(self : View, d : Live[(Int64, GroundShape)], loc~ : SourceLoc) -> View {
+  self.bind(loc~, GroundLit, d, Paint, fn(d) {
+    let look = self.tree.nodes[self.at].look
+    look.ground = d.0
+    if look.ground_drawn != d.1 {
+      look.ground_drawn = d.1
+      self.tree.place_marked_at(self.at)
+    }
+  })
   self
 }
 

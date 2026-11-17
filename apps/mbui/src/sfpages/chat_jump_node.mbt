@@ -696,43 +696,39 @@ fn chat_ask_node(
 }
 
 ///|
-/// What a message's row shows over all it is, said as the ground of its content line node `row` (across the list from
-/// edge to edge, under what it holds: no node of its own, as most rows are never gone to nor have their menu open):
-/// its flash in the theme's secondary emphasis ground (`flash` chat_flash_way's, row `key` gone to and no passage
-/// of it lit), and over that its menu's band (`band` message_menu_band_way's, the pointer's ground as lit as it is).
-fn chat_row_lit_node(row : @view.View, key : () -> String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
-  row.ground(
+/// A message's row lit as all of it (its band): the ground of its own node `row` (all of it, the room over it too),
+/// under all it holds, across the list from edge to edge, from the middle of the room over it (`top`, the row's own)
+/// to the middle of the room over the row under it (`under`: that row's, as the list has it; none under it, as far
+/// again as it starts under its own top), so the bands of two rows meet and those of a long message's pieces are one.
+/// Its flash (row `key` gone to, `flash` chat_flash_way's, not a passage of it: chat_passage_lit's then) in the theme's
+/// secondary emphasis ground, and over that its menu's band (`band` message_menu_band_way's) in the pointer's ground,
+/// composited as View::ground_over is. One binding: where it shows, then too what shape it takes.
+fn chat_row_band_node(
+  row : @view.View,
+  key : () -> String,
+  jump : ChatJump,
+  top : () -> Double,
+  under : () -> Double?,
+  flash : @motion.Way,
+  band : @motion.Way,
+) -> Unit {
+  row.ground_lit(
     By(fn() {
-      let lit = match chat_gone(jump) {
+      let flashed = match chat_gone(jump) {
         (k, _, "") if k == key() => lit_by(@sf.theme().flash_bg(), flash.shown_on(row))
         _ => 0L
       }
-      ground_over(lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)), lit)
+      let ink = @view.blend_ground(flashed, lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)))
+      guard ink != 0L else { return (0L, @view.ground_as_laid) }
+      let over = top() / 2.0
+      let to = match under() {
+        Some(u) => u / 2.0
+        None => over
+      }
+      (ink, { dx: 0.0, dy: over, dw: 0.0, dh: to - over, corners: None })
     }),
   )
   |> ignore
-}
-
-///|
-/// Colour `top` drawn over colour `under` (each 0xRRGGBBAA, its alpha not multiplied in), as one: what the two grounds
-/// laid one over the other came to; either alone where the other is nothing.
-fn ground_over(top : Int64, under : Int64) -> Int64 {
-  let ta = (top & 0xFFL).to_double() / 255.0
-  let ua = (under & 0xFFL).to_double() / 255.0
-  if ua <= 0.0 {
-    return top
-  }
-  if ta <= 0.0 {
-    return under
-  }
-  let a = ta + ua * (1.0 - ta)
-  let mix = fn(shift : Int) -> Int64 {
-    let t = ((top >> shift) & 0xFFL).to_double()
-    let u = ((under >> shift) & 0xFFL).to_double()
-    let c = (t * ta + u * ua * (1.0 - ta)) / a
-    (c + 0.5).to_int64() & 0xFFL
-  }
-  (mix(24) << 24) | (mix(16) << 16) | (mix(8) << 8) | ((a * 255.0 + 0.5).to_int64() & 0xFFL)
 }
 
 ///|
@@ -757,16 +753,9 @@ fn chat_passage_lit(v : @view.View, key : () -> String, jump : ChatJump, flash :
 /// `flashed`: the press's, its cause), made then or later; with motion reduced lit whole for flash_ms, then not. Its
 /// row's key as it is now (`key`): taken for another row's (a block put by and taken again: View::scrolls_window's
 /// `reused`), the flash of the one before let go at once, and that row's as a row made for it would have it.
-fn chat_flash_way(
-  b : @view.View,
-  key : () -> String,
-  jump : ChatJump,
-  on_active? : (Bool) -> Unit = fn(_) {  },
-) -> @motion.Way {
+fn chat_flash_way(b : @view.View, key : () -> String, jump : ChatJump) -> @motion.Way {
   let way = @motion.Way::new(0.0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
-  let rest : Ref[() -> Unit] = Ref(fn() {  })
-  let lit = Ref(false)
   let key_was = Ref(@signals.untracked(key))
   b.reacts(fn() { (chat_gone(jump), key()) }, fn(g) {
     let ((k, at, _), now) = g
@@ -774,33 +763,17 @@ fn chat_flash_way(
     if now != key_was.val {
       key_was.val = now
       (due.val)()
-      (rest.val)()
       way.put(0.0)
-      if lit.val {
-        lit.val = false
-        on_active(false)
-      }
     }
     guard k == now && at >= 0.0 && b.cause_at() < at + @sfbase.flash_ms else { return }
     (due.val)()
-    (rest.val)()
-    lit.val = true
-    on_active(true)
     way.go(1.0, @motion.tween(@sfbase.flash_in_ms, ease=Out), at~)
     let out = at + (if @ui.reduced_motion() { @sfbase.flash_ms } else { @sfbase.flash_held_ms })
     due.val = b.at_moment(out, fn() {
       way.go(0.0, @motion.tween(@sfbase.flash_ms - @sfbase.flash_held_ms, ease=Leave), at=out)
     })
-    rest.val = b.at_moment(at + @sfbase.flash_ms, fn() {
-      lit.val = false
-      on_active(false)
-    }, later=true)
   })
-  b.owns(fn() {
-    (due.val)()
-    (rest.val)()
-  })
-  |> ignore
+  b.owns(fn() { (due.val)() }) |> ignore
   way
 }
 
