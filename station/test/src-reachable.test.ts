@@ -40,7 +40,7 @@ test("every file of src/ with code is reached from src/main.ts and kept in its b
 
 // A step that built an index in TypeScript before a MoonBit builder took it over is the tests' (test/reference/backfill/):
 // beside what the station runs of its file (an install, a read), esbuild leaves it out of the bundle and the test above
-// cannot see it there, so none is declared in src/store/ at all.
+// cannot see it there, so none is declared in src/store/ at all (a `…Step`, a `…Preparation`, a `backfill…`).
 test("src/store/ declares no backfill step", async () => {
   const files = (await readdir(join(ROOT, "src", "store"), { recursive: true }))
     .filter((file) => file.endsWith(".ts") && !file.endsWith(".d.ts")).map((file) => posix(join("src", "store", file))).sort();
@@ -48,7 +48,7 @@ test("src/store/ declares no backfill step", async () => {
   const steps: string[] = [];
   for (const file of files) {
     (await readFile(join(ROOT, file), "utf8")).split("\n").forEach((line, at) => {
-      for (const [, name] of line.matchAll(/\b(?:function\*?|const|let|var|class)\s+(\w+(?:Step|Preparation))\b/g)) {
+      for (const [, name] of line.matchAll(/\b(?:function\*?|const|let|var|class)\s+(\w+(?:Step|Preparation)|backfill[A-Z]\w*)\b/g)) {
         steps.push(`${file}:${at + 1} ${name}`);
       }
     });

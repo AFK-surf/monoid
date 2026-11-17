@@ -44,28 +44,3 @@ export function initializeReboxIndex(db: DatabaseSync): void {
 export function reboxIndexComplete(db: DatabaseSync): boolean {
   return (db.prepare("SELECT done FROM vault_rebox_backfill WHERE id = 1").get() as { done: number }).done === 1;
 }
-
-/// Fill at most `limit` old IDs. The cursor and lookup commit together; triggers cover writes on either side of it.
-export function backfillReboxIndex(db: DatabaseSync, limit = 32): boolean {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const state = db.prepare("SELECT after_ws, after_id, done FROM vault_rebox_backfill WHERE id = 1").get() as
-      { after_ws: string | null; after_id: string | null; done: number };
-    if (state.done) { db.exec("COMMIT"); return true; }
-    const rows = (state.after_ws === null
-      ? db.prepare(REBOX_BACKFILL_FIRST).all(limit)
-      : db.prepare(REBOX_BACKFILL_NEXT).all(state.after_ws, state.after_id!, limit)) as { ws: string; id: string }[];
-    const add = db.prepare(`INSERT INTO vault_rebox_lookup SELECT ws, id FROM vault_requests
-      WHERE ws = ? AND id = ? AND status = 'pending' ON CONFLICT(ws, id) DO NOTHING`);
-    for (const row of rows) add.run(row.ws, row.id);
-    const last = rows.at(-1);
-    const done = rows.length < limit;
-    db.prepare("UPDATE vault_rebox_backfill SET after_ws = ?, after_id = ?, done = ? WHERE id = 1")
-      .run(last?.ws ?? state.after_ws, last?.id ?? state.after_id, done ? 1 : 0);
-    db.exec("COMMIT");
-    return done;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}

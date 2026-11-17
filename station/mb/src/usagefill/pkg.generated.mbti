@@ -6,6 +6,8 @@ import {
 }
 
 // Values
+pub fn drain_chat_dirty_step(@sql.Db, limit? : Int32) -> (Bool, Int32) raise
+
 pub fn drop_step(@sql.Db, batch? : Int32) -> Bool raise
 
 pub fn fill_step(@sql.Db, batch? : Int32) -> Bool raise

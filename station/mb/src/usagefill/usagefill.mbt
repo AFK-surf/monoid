@@ -1,7 +1,8 @@
 // What the station does once the previous station has left its usage statistics (station/src/usage/module.ts
 // `retireAfterPrevious`): the statistics of before the quarters freed in bounded deletes (test/reference/backfill/usage-retire.ts
 // `dropUsageIndexStep`), then the calls from before the quarters began taken in, newest first, whole quarters at a time
-// (test/reference/backfill/usage-retire.ts `fillUsage15mStep`), here for the MoonBit builder.
+// (test/reference/backfill/usage-retire.ts `fillUsage15mStep`), here for the MoonBit builder; and the chats of the
+// sessions that moved between workspaces given their new workspace (`drainUsageChats`).
 
 ///|
 fn get(row : Map[String, Json], name : String) -> Json {
@@ -137,4 +138,70 @@ pub fn fill_step(db : @sql.Db, batch? : Int = 256) -> Bool raise {
   )
   db.exec("COMMIT")
   false
+}
+
+// The chats of sessions that moved (test/reference/backfill/usage-chats.ts `drainUsageChatDirty`).
+
+///|
+/// One transaction of the chats of the sessions that moved between workspaces (usage_chat_dirty, which a session's
+/// change of workspace, key or token marks; run by station/src/usage/module.ts `drainUsageChats`): at most `limit` of
+/// the first waiting session's memberships given its workspace as it is now (none where it is gone), then the session
+/// no longer waiting once none is left of them, else waiting after the last. Whether no session waits after it, and
+/// how many memberships it went through; none waits where the chats' statistics are not there.
+pub fn drain_chat_dirty_step(db : @sql.Db, limit? : Int = 32) -> (Bool, Int) raise {
+  if !has_table(db, "usage_chat_dirty") {
+    return (true, 0)
+  }
+  db.exec("BEGIN IMMEDIATE")
+  errdefer (db.exec("ROLLBACK") catch { _ => () })
+  guard first(
+      db,
+      "SELECT session, thread_after FROM usage_chat_dirty ORDER BY session LIMIT 1",
+      [],
+    )
+    is Some(dirty) else {
+    db.exec("COMMIT")
+    return (true, 0)
+  }
+  let session = get(dirty, "session")
+  let after = get(dirty, "thread_after")
+  let (ws, present) = match
+    first(db, "SELECT ws FROM sessions WHERE key = ?", [session]) {
+    Some(row) => (get(row, "ws"), Json::number(1.0))
+    None => (Json::null(), Json::number(0.0))
+  }
+  let size = Json::number(limit.to_double())
+  let rows = if after is Null {
+    db.all(
+      "SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? ORDER BY thread LIMIT ?",
+      [session, size],
+    )
+  } else {
+    db.all(
+      "SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? AND thread > ? ORDER BY thread LIMIT ?",
+      [session, after, size],
+    )
+  }
+  for row in rows {
+    ignore(
+      db.run(
+        "UPDATE usage_chat_members SET ws = ?, present = ? WHERE session = ? AND thread = ? AND (ws IS NOT ? OR present IS NOT ?)",
+        [ws, present, session, get(row, "thread"), ws, present],
+      ),
+    )
+  }
+  if rows.length() < limit {
+    ignore(db.run("DELETE FROM usage_chat_dirty_scope WHERE session = ?", [session]))
+    ignore(db.run("DELETE FROM usage_chat_dirty WHERE session = ?", [session]))
+  } else {
+    ignore(
+      db.run("UPDATE usage_chat_dirty SET thread_after = ? WHERE session = ?", [
+        get(rows[rows.length() - 1], "thread"),
+        session,
+      ]),
+    )
+  }
+  let done = first(db, "SELECT 1 FROM usage_chat_dirty LIMIT 1", []) is None
+  db.exec("COMMIT")
+  (done, rows.length())
 }

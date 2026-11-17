@@ -6,8 +6,8 @@ import { wall } from "../../src/ops/fibers.ts";
 import { log } from "../../src/ops/log.ts";
 import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../../src/store/backfill.ts";
 import { backfillPendingPreparation, pendingPreparationComplete } from "../../src/vault/pending-index.ts";
-import { backfillReboxIndex } from "../../src/vault/rebox-index.ts";
-import { backfillNextWorkspace, backfillUsePreparation, tryReadUses, type PendingPrepare, type UseAnswer, type UseRead } from "../../src/vault/use-index.ts";
+import { backfillUsePreparation, tryReadUses, type PendingPrepare, type UseAnswer, type UseRead } from "../../src/vault/use-index.ts";
+import { backfillNextWorkspace, backfillReboxIndex } from "../reference/vault/backfill.ts";
 
 const db = new DatabaseSync(workerData.path as string, { timeout: 100 });
 db.exec("PRAGMA synchronous = NORMAL");

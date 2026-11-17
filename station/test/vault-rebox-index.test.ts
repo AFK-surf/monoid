@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { backfillReboxIndex, initializeReboxIndex, reboxIndexComplete, REBOX_READY } from "../src/vault/rebox-index.ts";
+import { initializeReboxIndex, reboxIndexComplete, REBOX_READY } from "../src/vault/rebox-index.ts";
+import { backfillReboxIndex } from "./reference/vault/backfill.ts";
 import { UseIndex } from "../src/vault/use-index.ts";
 
 function fixture(db = new DatabaseSync(":memory:")) {

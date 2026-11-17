@@ -1,9 +1,10 @@
 // The tasks another station's chats ran here. The original rows remain the source of truth; these lookup tables and
-// counts are kept by triggers, including when an older station writes the database. Old rows are filled in small batches.
+// counts are kept by triggers, including when an older station writes the database. Old rows are not filled (the fill
+// that did, in TypeScript, is test/reference/backfill/remote-runs.ts').
 import type { DatabaseSync } from "node:sqlite";
 
 // The workspace is the second colon-delimited part, just as session.split(":")[1] ?? "" read it before.
-const WS = (name: string) => `(CASE WHEN instr(${name}.session, ':') = 0 THEN '' ELSE
+export const WS = (name: string) => `(CASE WHEN instr(${name}.session, ':') = 0 THEN '' ELSE
   CASE WHEN instr(substr(${name}.session, instr(${name}.session, ':') + 1), ':') = 0
     THEN substr(${name}.session, instr(${name}.session, ':') + 1)
     ELSE substr(substr(${name}.session, instr(${name}.session, ':') + 1), 1,
@@ -75,30 +76,3 @@ export const REMOTE_RUNS_OF = `SELECT MAX(at) AS at, session, COUNT(*) AS n FROM
 /// Every workspace's, from `?1` until `?2` a day (`?3`) and chat, by the index on their time.
 export const REMOTE_RUNS_ALL = `SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_by_time WHERE at >= ?1 AND at < ?2
   GROUP BY strftime('%Y-%m-%d', (at + ?3 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session`;
-/// Fill no more than `limit` old rows; writes, deletions, and the cursor commit together.
-export function backfillRemoteRuns(db: DatabaseSync, limit = 32): { done: boolean; processed: number } {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const state = db.prepare("SELECT after_seq, end_seq, done FROM remote_run_progress WHERE id = 1").get() as
-      { after_seq: number | null; end_seq: number | null; done: number };
-    if (state.done) {
-      db.exec("COMMIT");
-      return { done: true, processed: 0 };
-    }
-    const rows = (state.after_seq === null
-      ? db.prepare("SELECT rowid AS seq, at FROM remote_runs WHERE rowid <= ? ORDER BY rowid LIMIT ?").all(state.end_seq, limit)
-      : db.prepare("SELECT rowid AS seq, at FROM remote_runs WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?").all(state.after_seq, state.end_seq, limit)) as
-      { seq: number; at: number }[];
-    const add = db.prepare(`INSERT OR IGNORE INTO remote_run_lookup
-      SELECT ${WS("r")}, r.at, r.rowid, r.job, r.session FROM remote_runs r WHERE r.rowid = ?`);
-    for (const row of rows) add.run(row.seq);
-    const done = rows.length < limit;
-    db.prepare("UPDATE remote_run_progress SET after_seq = ?, done = ? WHERE id = 1")
-      .run(rows.at(-1)?.seq ?? state.after_seq, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, processed: rows.length };
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}

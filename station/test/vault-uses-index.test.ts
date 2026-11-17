@@ -9,7 +9,8 @@ import { Worker } from "node:worker_threads";
 import { PLAIN } from "../src/vault/plain.ts";
 import { initializeReboxIndex } from "../src/vault/rebox-index.ts";
 import { Secrets } from "../src/vault/secrets.ts";
-import { backfillNextWorkspace, backfillUseIndex, initializeUseIndex, PLAIN_USES, USE_BACKFILL_AFTER, UseIndex, VAULT_USES } from "../src/vault/use-index.ts";
+import { backfillUseIndex, initializeUseIndex, PLAIN_USES, USE_BACKFILL_AFTER, UseIndex, VAULT_USES } from "../src/vault/use-index.ts";
+import { backfillNextWorkspace } from "./reference/vault/backfill.ts";
 
 /// Count the JSON fields SQLite actually reads, including those it must examine and then discard. The function has the
 /// same results as json_extract for these request fields, and is deterministic so SQLite can use expression indexes.

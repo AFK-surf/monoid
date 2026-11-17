@@ -948,9 +948,12 @@ fn main {
         _ => None
       }))
     (Some("usage-retire"), Some(db), _) =>
-      // (asked a step at a time: `{"drop": true}` the retired statistics, else the fill; each answers whether it is done)
+      // (asked a step at a time: `{"drop": true}` the retired statistics, `{"drainChats": n}` n chats of the sessions
+      // that moved, else the fill; each answers whether it is done)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "usage retirement", (db, ask) => match ask {
         { "drop": True, .. } => Some(@usagefill.drop_step(db))
+        { "drainChats": Number(n, ..), .. } =>
+          Some(@usagefill.drain_chat_dirty_step(db, limit=if n >= 1.0 { n.to_int() } else { 1 }).0)
         _ => Some(@usagefill.fill_step(db))
       }))
     (Some("usage-counter"), Some(db), _) =>

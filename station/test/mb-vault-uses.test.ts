@@ -10,8 +10,9 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { backfillPendingPreparation, initializePendingIndex } from "../src/vault/pending-index.ts";
-import { backfillReboxIndex, initializeReboxIndex } from "../src/vault/rebox-index.ts";
-import { backfillNextWorkspace, backfillUsePreparation, initializeUseIndex, tryReadUses, UseIndex } from "../src/vault/use-index.ts";
+import { initializeReboxIndex } from "../src/vault/rebox-index.ts";
+import { backfillUsePreparation, initializeUseIndex, tryReadUses, UseIndex } from "../src/vault/use-index.ts";
+import { backfillNextWorkspace, backfillReboxIndex } from "./reference/vault/backfill.ts";
 
 const binary = mbReaderBinary();
 

@@ -161,7 +161,7 @@ function usePreparationState(db: DatabaseSync, ws: string): { done: number; audi
     { done: number; audited: number | null; dirty: number; ambiguous: number } | undefined;
 }
 
-function usePreparationReady(db: DatabaseSync, ws: string): boolean {
+export function usePreparationReady(db: DatabaseSync, ws: string): boolean {
   const state = usePreparationState(db, ws);
   return state?.done === 1 && state.audited === 1 && state.dirty === 0;
 }
@@ -263,24 +263,6 @@ export function backfillUseIndex(db: DatabaseSync, ws: string, limit = 32): bool
     db.exec("ROLLBACK");
     throw e;
   }
-}
-
-/// In the background, discover one workspace at a time through the requests' primary key and fill one batch. Reads
-/// can preempt this work with their own workspace; the saved per-workspace cursor also lets another process resume it.
-export function backfillNextWorkspace(db: DatabaseSync): boolean {
-  const state = db.prepare("SELECT after_ws, done FROM vault_use_backfill_all WHERE id = 1").get() as { after_ws: string | null; done: number };
-  if (state.done) return true;
-  const next = (state.after_ws === null
-    ? db.prepare("SELECT ws FROM vault_requests ORDER BY ws LIMIT 1").get()
-    : db.prepare("SELECT ws FROM vault_requests WHERE ws > ? ORDER BY ws LIMIT 1").get(state.after_ws)) as { ws: string } | undefined;
-  if (!next) {
-    db.prepare("UPDATE vault_use_backfill_all SET done = 1 WHERE id = 1 AND after_ws IS ?").run(state.after_ws);
-    return (db.prepare("SELECT done FROM vault_use_backfill_all WHERE id = 1").get() as { done: number }).done === 1;
-  }
-  if (usePreparationReady(db, next.ws) || backfillUsePreparation(db, next.ws)) {
-    db.prepare("UPDATE vault_use_backfill_all SET after_ws = ? WHERE id = 1 AND after_ws IS ? AND done = 0").run(next.ws, state.after_ws);
-  }
-  return false;
 }
 
 /// How long the MoonBit reader is kept with nothing asked of it and its background done.

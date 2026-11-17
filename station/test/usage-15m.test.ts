@@ -368,7 +368,9 @@ test("the tasks other stations ran here are told a day and chat a row, from thei
 });
 
 test("the chats of sessions that moved are counted again by the station itself, and the page's chats are whole again", async () => {
-  const store = Store.open(":memory:");
+  // (in a file: the MoonBit program counts them, which opens no database in memory)
+  const dir = mkdtempSync(join(tmpdir(), "usage-15m-moved-"));
+  const store = Store.open(join(dir, "stillfail.db"));
   let drain: ReturnType<typeof drainUsageChats> | null = null;
   try {
     for (const [key, ws] of [["a", "A"], ["b", "A"], ["c", null]] as const) session(store, key, ws);
@@ -409,5 +411,6 @@ test("the chats of sessions that moved are counted again by the station itself, 
   } finally {
     drain?.stop();
     store.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

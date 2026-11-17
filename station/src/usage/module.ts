@@ -17,7 +17,6 @@ import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import { stopUsageIndexes, usageIndexesLeft } from "../store/usage-retire.ts";
 import { installCompactUsage } from "../store/usage-compact.ts";
 import { usage15mSince } from "../store/usage-15m.ts";
-import { drainUsageChatDirty } from "../store/usage-chat-stats.ts";
 import { UsageCounter } from "./counter.ts";
 
 /// A session's usage as its summary says it (store.ts `setSessionUsage`): as recorded now (read/usage.ts `usageNow`).
@@ -95,10 +94,9 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
   })));
 }
 
-/// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired statistics freed, then the old
-/// calls taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old
-/// days came in.
-async function retireByProgram(store: StationStore, mb: string, path: string): Promise<void> {
+/// The usage retirement program (`--builder usage-retire`), the backfill permit taken for each step it is asked, and
+/// how it is asked: each ask answered whether it is done; the program's end, or an error it answers, fails it.
+function usageRetireProgram(store: StationStore, mb: string, path: string) {
   const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
   // (one that cannot start says so, then ends: its end fails what was asked)
   program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));
@@ -111,6 +109,14 @@ async function retireByProgram(store: StationStore, mb: string, path: string): P
     });
     program.postMessage(message);
   });
+  return { program, ask };
+}
+
+/// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired statistics freed, then the old
+/// calls taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old
+/// days came in.
+async function retireByProgram(store: StationStore, mb: string, path: string): Promise<void> {
+  const { program, ask } = usageRetireProgram(store, mb, path);
   try {
     while (!(await ask({ drop: true })).done);
     let filled = false;
@@ -136,32 +142,57 @@ export function retireUntilComplete(store: StationStore, exited: Promise<void>, 
   });
 }
 
-/// The chats of sessions that moved between workspaces (usage_chat_dirty) given their new workspace, a batch at a
-/// time, the station's thread given back between them: once the station before has gone, and again each time
-/// sessions move. Pages open are told once none waits (the page's chats are whole again: `chatsIncomplete` no more).
-/// The function returned stops it.
-export function drainUsageChats(store: StationStore, exited: Promise<void>, batch = 32): { drained: () => Promise<void>; stop: () => void } {
+/// Whether a session that moved waits for its chats to be given its new workspace (usage_chat_dirty): one row looked
+/// at by its key, none where the chats' statistics are not there.
+function chatsWaiting(store: StationStore): boolean {
+  const db = store.db;
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_chat_dirty'").get() !== undefined
+    && db.prepare("SELECT 1 FROM usage_chat_dirty LIMIT 1").get() !== undefined;
+}
+
+/// The chats of sessions that moved between workspaces (usage_chat_dirty) given their new workspace by the MoonBit
+/// program (`--builder usage-retire`, asked `{drainChats}`: station/mb src/usagefill `drain_chat_dirty_step`), a batch
+/// a transaction, the backfill permit taken for each so that the station's own writes go first: once the station
+/// before has gone, and again each time sessions move. The program is started only when a session waits and let go
+/// once none does; pages open are told then, once (the page's chats are whole again: `chatsIncomplete` no more).
+/// `binary`: the MoonBit program, a test's own where it gives one. The function returned stops it.
+export function drainUsageChats(store: StationStore, exited: Promise<void>, batch = 32, binary?: string): { drained: () => Promise<void>; stop: () => void } {
   let stopped = false;
   let ready = false;
   let running: Promise<void> | null = null;
   let again = false;
+  let program: MbBackfill | null = null;
+  let warned = false;
+  const drain = async (path: string) => {
+    const asked = usageRetireProgram(store, binary ?? readerBinary(), path);
+    program = asked.program;
+    try {
+      while (!stopped && !(await asked.ask({ drainChats: batch })).done);
+    } finally {
+      program = null;
+      await asked.program.terminate();
+    }
+  };
   const run = async () => {
     do {
       again = false;
-      let moved = false;
-      for (;;) {
-        if (stopped) return;
-        let step: { done: boolean; processed: number };
-        try { step = drainUsageChatDirty(store.db, batch); }
-        catch (error) {
-          log.warn("usage", "the chats of moved sessions could not be counted again", { error: (error as Error).message });
+      if (stopped) return;
+      try {
+        if (!chatsWaiting(store)) continue;
+        const path = store.db.location();
+        if (path === null) {
+          // (no builder opens a database in memory: its moved sessions' chats stay as they are)
+          if (!warned) log.warn("usage", "the chats of moved sessions are counted again only in a file-backed store");
+          warned = true;
           return;
         }
-        if (step.processed > 0) moved = true;
-        if (step.done) break;
-        await new Promise<void>((resolve) => setImmediate(resolve));
+        await drain(path);
+      } catch (error) {
+        if (!stopped) log.warn("usage", "the chats of moved sessions could not be counted again", { error: (error as Error).message });
+        return;
       }
-      if (moved) store.usageChanged([], undefined, true);
+      if (stopped) return;
+      store.usageChanged([], undefined, true);
     } while (again && !stopped);
   };
   const wake = () => {
@@ -173,7 +204,11 @@ export function drainUsageChats(store: StationStore, exited: Promise<void>, batc
   void exited.then(() => { ready = true; wake(); }, () => {});
   return {
     drained: async () => { while (running !== null) await running; },
-    stop: () => { stopped = true; unsubscribe(); },
+    stop: () => {
+      stopped = true;
+      unsubscribe();
+      void (program as MbBackfill | null)?.terminate();
+    },
   };
 }
 

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { backfillUsageCompactions, installUsageCompactions, usageCompactionsReady } from "../src/store/usage-compactions.ts";
+import { installUsageCompactions, usageCompactionsReady } from "../src/store/usage-compactions.ts";
+import { backfillUsageCompactions } from "./reference/backfill/usage-compactions.ts";
 
 function oldDatabase(path = ":memory:") {
   const db = new DatabaseSync(path);
