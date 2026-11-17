@@ -183,15 +183,15 @@ pub fn board_days(f : Fixture) -> Array[Json] {
         "people": [ana],
         "creator": { "id": "ana@example.com", "name": "Ana", "via": "cloud" },
       }),
-      // (a card 周 decides: at work for the viewer, never theirs to answer)
+      // (a card 周 decides: at work for the viewer, never theirs to answer, its line saying whom it waits on under the
+      // waiting arc, as the core's chat-stage.ts lineForViewer says it)
       row("c13", "补一下部署文档", "ws1/st1", "12 分钟前", {
-        "tone": "wait",
+        "tone": "busy",
         "stage": "run",
-        "decision": { "seq": 6, "options": [], "text": "等 周 决定 · 回滚写成脚本还是保留手动步骤？" },
-        "stateText": "等 周 决定 · 回滚写成脚本还是保留手动步骤？",
-        "stateLead": "decision",
-        "stateLeadText": "等 周 决定",
-        "stateRest": " · 回滚写成脚本还是保留手动步骤？",
+        "decision": { "seq": 6, "options": [], "text": "待处理 · 回滚写成脚本还是保留手动步骤？" },
+        "stateText": "等 周 处理：回滚写成脚本还是保留手动步骤？",
+        "stateLead": "wait",
+        "stateRest": "等 周 处理：回滚写成脚本还是保留手动步骤？",
         "agents": [codex],
         "people": [zhou],
         "creator": { "id": "zhou@example.com", "name": "周", "via": "cloud" },
@@ -199,7 +199,8 @@ pub fn board_days(f : Fixture) -> Array[Json] {
     ],
   )
   let earlier = [
-    // (read, and newer than the result not read under it: 待收口 puts the unread first all the same)
+    // (read, and newer than the result not read under it: 待收口 puts the unread first all the same; Ana started it, so
+    // 归档已读 leaves it, archiving it being the whole workspace's: no `archiveRead`)
     row("c7", "Slack 里问的报销流程", "ws1/st2", "25 分钟前", {
       "tone": "done",
       "connect": "slack-1",
@@ -223,6 +224,7 @@ pub fn board_days(f : Fixture) -> Array[Json] {
     }),
     row("c8", "把旧的截图都换成新的", "ws1/st1", "昨天 10:30", {
       "settled": true,
+      "archiveRead": true,
       "stateText": "做完了：首页和聊天页的 12 张截图都换了",
       "stateLead": "done",
       "stateRest": "首页和聊天页的 12 张截图都换了",

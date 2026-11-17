@@ -123,6 +123,8 @@ pub(all) struct ChatItem {
   subchats : String
   /// an agent leads it (chat_create for me): it asks that agent, and the board shows it under it (its `subchats`)
   opener_led : Bool
+  /// ended, nothing left in it, read, and started by the viewer: 待收口's 归档已读 puts it away (the core's archiveRead)
+  archive_read : Bool
 }
 
 ///|
@@ -312,6 +314,7 @@ pub fn chat_item(v : Json) -> ChatItem {
     stage: text(s, "stage"),
     subchats: text(s, "subchats"),
     opener_led: flag(field(s, "opener"), "led"),
+    archive_read: flag(s, "archiveRead"),
   }
 }
 

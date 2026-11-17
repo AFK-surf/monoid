@@ -47,7 +47,7 @@ import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
 import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
-import { stageFields } from "../chat-stage.ts";
+import { lineForViewer, stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
 import { fleetView } from "./fleet.ts";
@@ -2740,7 +2740,7 @@ export class Views implements Owner {
       by.label = typeof by.state === "string" ? t("core-views.by_label", { name, state: present.badgeText(by.state) }) : name;
       by.maker = present.maker(str(by.model));
     }
-    row = decisions.presentRow(row);
+    row = decisions.presentRow(row, me);
     Object.assign(row, archivingOf(row, hint));
     // A swipe is the viewer's own choice: every made chat can be archived this way while its station is there (its
     // station's state, `stationOn`), regardless of the chat's state or whether it is recommended for archiving.
@@ -2753,7 +2753,7 @@ export class Views implements Owner {
       const ask = present.swipeAsk(agents, starter, typeof row.hidden === "boolean");
       if (ask !== null) row.swipeAsk = ask;
     }
-    Object.assign(row, stateLineOf(present.rowStateLine(row)));
+    Object.assign(row, stateLineOf(lineForViewer(present.rowStateLine(row), raw, me, members_)));
     Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
@@ -2826,16 +2826,17 @@ export class Views implements Owner {
     // a whole row's are (decisions.presentRow, present.rowStateLine), its agents' states said as that line reads them.
     const read: J = {
       thread: raw.thread, unread: raw.unread, pinned: raw.pinned, card: raw.card, decision: raw.decision, need: raw.need,
+      creator: raw.creator, opener: raw.opener,
       archiveReminderDismissed: raw.archiveReminderDismissed, archiveReviewed: raw.archiveReviewed, archiveRecommended: raw.archiveRecommended,
       agents: Array.isArray(raw.agents) ? agents.map((a: J) => present.agentStated(a)) : raw.agents, state: present.rowState(agents),
     };
-    const stood = decisions.presentRow(read);
+    const stood = decisions.presentRow(read, me);
     if ("state" in stood) row.state = stood.state;
     else delete row.state;
     if (stood.tone !== undefined) row.tone = stood.tone;
     Object.assign(row, archivingOf(stood, hint));
     if (row.pending !== true) row.swipeArchive = true;
-    Object.assign(row, stateLineOf(present.rowStateLine(stood)));
+    Object.assign(row, stateLineOf(lineForViewer(present.rowStateLine(stood), raw, me, members_)));
     // Its column on the board and what it says of its own (chat-stage.ts): of its record and who looks alone (a chat
     // it leads, a background job, said on its record by its station: `opened`, an agent's `waitingAsync`).
     Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));

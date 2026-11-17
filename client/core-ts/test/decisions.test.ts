@@ -184,6 +184,24 @@ test("a_row_with_a_card_says_so_and_is_marked_wait_until_dismissed", () => {
   assert.deepEqual([row.decision, row.tone], [undefined, undefined]);
 });
 
+test("a_rows_mark_for_its_viewer_waits_only_on_what_they_decide", () => {
+  const lin = { id: "lin@x.com", email: "lin@x.com" };
+  const ana = { id: "ana@x.com", email: "ana@x.com" };
+  const row: J = { state: "block", creator: { email: "lin@x.com" }, card: { ...textCard(5), card: { type: "text", assignee: "ana@x.com" } } };
+  assert.equal(d.tone(row, ana), "wait");
+  assert.equal(d.tone(row, lin), "busy", "a colleague decides it: at work for the viewer");
+  assert.equal(d.tone(row), "wait", "with no viewer said: whoever looks");
+  assert.equal(d.presentRow(row, lin).tone, "busy");
+  assert.equal(d.presentRow(row, ana).tone, "wait");
+  // (a need its starter decides; one a chat's agent leads asks that agent: at work for every person)
+  const need: J = { state: "block", creator: { email: "ana@x.com" }, need: { seq: 7, message: { seq: 7, text: "要 key" } } };
+  assert.deepEqual([d.tone(need, ana), d.tone(need, lin)], ["wait", "busy"]);
+  assert.equal(d.tone({ ...need, opener: { led: true } }, ana), "busy");
+  // (an agent needing someone where its station says not what: whoever looks, as before)
+  assert.equal(d.tone({ state: "block" }, lin), "wait");
+  assert.equal(d.tone({ state: "failed", card: row.card }, lin), "alert");
+});
+
 const said = (seq: number, kind: string, text: string): J => ({ seq, ts: `9.00000${seq}`, authorKind: kind, text, quotes: [], mine: false, by: { name: kind === "person" ? "林晓" : "Claude" } });
 const askedMsg = (seq: number): J => ({ ...said(seq, "agent", "选哪个？"), options: [{ label: "A", recommended: true }, { label: "B" }] });
 const typed = (seq: number): J => ({ ...said(seq, "agent", "key？"), card: { type: "text", placeholder: "sk_" } });

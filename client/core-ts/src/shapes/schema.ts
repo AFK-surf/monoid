@@ -44,13 +44,13 @@ const CHAT_ITEM: Parameters<typeof struct>[0] = [
   ["kept", opt("bool"), { doc: "The viewer kept it (`chat.keep`): never offered for archiving, nor archived on its own; `chat.keep {kept: false}` lets it go. Absent otherwise." }],
   ["hidden", opt("bool"), { doc: "The viewer hid this chat from their list; false when visible, absent on stations before hiding." }],
   ["muted", opt("bool"), { doc: "The viewer silenced notifications for this chat; false when heard, absent on stations before muting." }],
-  ["stateText", opt("String"), { said: true, doc: "Where it stands, in words, for its second line, its agents' states first: 要你帮忙：…, 出问题：…; then 待处理 · … (a\ncard waiting for the viewer, even while an agent works); then 在等：…, 做完了(：…). Absent while it is at work with\nno card waiting, or with nothing to say." }],
+  ["stateText", opt("String"), { said: true, doc: "Where it stands, in words, for its second line, its agents' states first: 要你帮忙：…, 出问题：…; then 待处理 · … (a\ncard waiting for the viewer, even while an agent works; 等 周 处理：… where a colleague decides it); then 在等：…, 做完了(：…). Absent while it is at work with\nno card waiting, or with nothing to say." }],
   ["stateLead", opt("StateLead"), { doc: "What leads `stateText`, for a client to say as a mark of its own (a bell, a check, the waiting arc, the radar;\n待处理 · …'s word in bold), not read back out of its words. Absent when nothing does (an agent's failure, an unsent message)." }],
   ["stateLeadText", opt("String"), { doc: "A card's line's lead word (待处理, Needs attention), drawn in bold before the rest of `stateText`. Absent otherwise." }],
   ["stateRest", opt("String"), { said: true, doc: "What follows the lead in `stateText` (watching: the whole line). Absent with `stateLead`." }],
   ["unsent", opt("bool"), { doc: "A message sent here into it did not go (it waits in the chat to be sent again or dropped): `stateText` says\nwhich (未发送：…), drawn in red, and `tone` is alert. Absent otherwise." }],
   ["stateAbout", opt("i64"), { client: opt("I54"), doc: "The message `stateText` is about (a seq in this chat): the one the agent's state names. Opening the chat from\nthe line may go to it. Absent when none, and for a line that asks for a decision (its chat leads to it: `ChatView.asks`)." }],
-  ["tone", opt("String"), { doc: "Its mark, the most urgent first: alert (an agent failed), wait (a card waits, not dismissed by the viewer; or an\nagent needs them: need_help), busy (at work), done (something unread). Absent for none." }],
+  ["tone", opt("String"), { doc: "Its mark, the most urgent first: alert (an agent failed), wait (a card or need waits for the viewer to decide,\nnot dismissed by them), busy (at work, or waiting on someone else's decision), done (something unread). Absent for none." }],
   ["xshare", opt("RowShare"), { doc: "The other workspaces it is shared with. Absent when none, and from stations before sharing." }],
   ["mayShare", opt("bool"), { doc: "Its menu's 分享给其他 workspace, as its page's (`ChatView.xshare.may`): the viewer is in another workspace and\nstarted it or is an owner or admin of its own. Absent otherwise." }],
   ["mayPublish", opt("bool"), { doc: "Its menu's 分享图片, as its page's (`ChatView.publish.may`): a chat, the viewer not a read-only member. Absent otherwise." }],
@@ -60,6 +60,7 @@ const CHAT_ITEM: Parameters<typeof struct>[0] = [
   ["opener", opt("Opener"), { doc: "The chat an agent opened it from: its row's way back there. Absent for one a person started, and from a\nstation before it." }],
   ["stage", opt("BoardStage"), { doc: "Its column on the board for the viewer (chat-stage.ts boardStageOf): wait (it needs them: a card or need\nthey decide, it went wrong for them, a message of theirs did not go), watch (a watch kept), run (at work, or asking\na colleague). Absent: done, ended (待收口)." }],
   ["subchats", opt("String"), { said: true, doc: "The chats it leads (chat_create for me) still at work, in words (1 个子会话进行中). Absent when none is." }],
+  ["archiveRead", opt("bool"), { doc: "Ended with nothing left in it, read, and started by the viewer (chat-stage.ts archiveRead): 待收口's 归档已读\nputs it away with the others so. Absent otherwise." }],
   ["outside", opt("String"), { said: true, doc: "Another workspace's chat, its name: the `@` menu's `elsewhere` lists them after the workspace's own. Absent for\nthe workspace's own." }],
   ["outsideEmoji", opt("String"), { doc: "With `outside`: that workspace's mark (as a station's), shown before its name; none when none." }],
   ["outsideIcon", opt("String"), { doc: "With `outside`: as a station's icon, shown before the emoji." }],
@@ -74,7 +75,7 @@ export const LISTED_CHAT: readonly string[] = [
   "id", "session", "thread", "clientKey", "station", "stationName", "stationEmoji", "stationIcon", "title", "unread", "hidden",
   "settled", "tone", "state", "connect", "originKind", "originText", "opener", "stateText", "stateLead", "stateLeadText",
   "stateRest", "stateAbout", "unsent", "last", "agents", "people", "creator", "peopleText", "pinned", "pending", "swipeArchive",
-  "stage", "subchats",
+  "stage", "subchats", "archiveRead",
 ];
 
 export const SHAPES: Record<string, Shape> = {

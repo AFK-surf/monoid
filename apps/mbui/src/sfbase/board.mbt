@@ -151,10 +151,12 @@ pub fn board_lane_of(i : ChatItem) -> String {
 }
 
 ///|
-/// Of the chats `items` the board shows, those 待收口 holds the viewer has read and may put away at once (归档已读): not
-/// pinned, not being made, not one keeping watch, nor one not read (a result just delivered stays).
+/// Of the chats `items` the board shows, those 待收口 holds the viewer may put away at once (归档已读), as the core says
+/// (its `archiveRead`, client/core-ts chat-stage.ts): ended with nothing left in it and read (not pinned or kept, none
+/// failed or stopped), and started by the viewer, since archiving takes a chat off the whole workspace's lists; while its
+/// station is there to archive it.
 pub fn board_archivable_settled(items : Array[ChatItem]) -> Array[ChatItem] {
-  items.filter(fn(i) { board_lane_of(i) == "done" && !i.unread && i.pinned != Some(true) && !i.pending && i.swipe_archive })
+  items.filter(fn(i) { board_lane_of(i) == "done" && i.archive_read && !i.pending && i.swipe_archive })
 }
 
 ///|

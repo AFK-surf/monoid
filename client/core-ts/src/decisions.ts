@@ -326,12 +326,16 @@ export function withLetGo(row: J): J {
   return v;
 }
 
-/// A row's mark, the most urgent first.
-export function tone(row: J): string | null {
+/// A row's mark, the most urgent first: an agent failed; it waits for the viewer (a card or need they decide, not let
+/// go: forViewer; an agent needing someone where its station says not what); at work, or asking someone else (a
+/// colleague decides it, or the agent leading it: at work for the viewer, chat-stage.ts boardStageOf); something
+/// unread. Without a viewer (`me` undefined), a card waiting waits for whoever looks.
+export function tone(row: J, me?: J): string | null {
   const state = str(get(row, "state"));
   if (state === "failed") return "alert";
-  if (waits(row) || (state === "block" && !letGo(row))) return "wait";
-  if (state === "run") return "busy";
+  const asks = me === undefined ? waits(row) || (state === "block" && !letGo(row)) : forViewer(row, me) !== null || (state === "block" && asked(row) === null && !led(row));
+  if (asks) return "wait";
+  if (state === "run" || (me !== undefined && undecided(row).length > 0)) return "busy";
   return get(row, "unread") === true ? "done" : null;
 }
 
@@ -344,14 +348,14 @@ export function shown(card: J): J {
   return v;
 }
 
-export function presentRow(row: J): J {
+export function presentRow(row: J, me?: J): J {
   if (!isObject(row)) return row;
   const card = ofRow(row);
   const { card: _card, decision: _decision, ...out } = row as J;
   // Let go by the viewer: its agent asking is not its state for them (no mark, no 要你帮忙).
   if (out.state === "block" && letGo(row)) delete out.state;
   if (card !== null) out.decision = shown(card);
-  const t0 = tone(out);
+  const t0 = tone(me === undefined ? out : { ...out, card: row.card, decision: row.decision }, me);
   if (t0 !== null) out.tone = t0;
   return out;
 }

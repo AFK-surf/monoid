@@ -61,6 +61,37 @@ export function hasOpenAskForOthers(row: J, me: J): boolean {
   return !isLedSubchat(row) && decisions.undecided(row).length > 0 && decisions.forViewer(row, me) === null;
 }
 
+/// Who decides what it asks when that is someone else (a colleague decides its card or need), as the workspace names
+/// them: a member's name, the starter's as its row says them, else their address; null when it asks nobody else.
+export function otherDecider(row: J, me: J, members: J[]): string | null {
+  if (!hasOpenAskForOthers(row, me)) return null;
+  const d = decisions.undecided(row)[0];
+  const creator = get(row, "creator");
+  const who = decisions.decider(d.card, creator);
+  if (who === null) return null;
+  const started = typeof get(d.card, "assignee") !== "string" ? strU(get(creator, "name")) || strU(get(get(creator, "shown"), "name")) || null : null;
+  return present.memberName(members, who) ?? started ?? who;
+}
+
+/// A row's state line (present.rowStateLine's) for the viewer: where it asks a colleague, 等 周 处理：… under the
+/// waiting arc in place of what asks the viewer (待处理 · …, 需要你处理：…), as the board has it at work for them.
+export function lineForViewer(line: Line, row: J, me: J, members: J[]): Line {
+  if (line === null || line[3] === null || (line[3].kind !== "decision" && line[3].kind !== "need")) return line;
+  const name = otherDecider(row, me, members);
+  if (name === null) return line;
+  const asked = decisions.askOf(row, decisions.undecided(row)[0], me).text as string;
+  const text = t("core-views.waits_on", { name, text: asked });
+  return [text, null, asked, { kind: "wait", rest: text }];
+}
+type Line = ReturnType<typeof present.rowStateLine>;
+
+/// Whether the viewer may put it away with 待收口's 归档已读: it ended, nothing in it left (present.archivable: each agent
+/// all_done, nothing waiting, read, not pinned or kept, recommended where its station reviews), and they started it,
+/// since archiving takes it off the whole workspace's lists (swipeAsk asks so for one alone).
+export function archiveRead(row: J, me: J): boolean {
+  return !isLedSubchat(row) && present.archivable(row) && startedBy(row, me);
+}
+
 /// Whether a chat it leads is still at work (its station's `opened`: `led`, `active`).
 function leadsActive(row: J): boolean {
   return arr(get(row, "opened")).some((o) => get(o, "led") === true && get(o, "active") === true);
@@ -106,13 +137,15 @@ export function subchatsLabel(row: J): string | null {
   return n === 1 ? t("core-views.subchats_running_one") : t("core-views.subchats_running", { n });
 }
 
-/// What a row says of where it stands besides (ChatItem `stage`, `subchats`): each left out at its most common (done,
-/// none), so that a row of an ended chat carries no byte more. (Delivered is a done row's `unread`: not said again.)
+/// What a row says of where it stands besides (ChatItem `stage`, `subchats`, `archiveRead`): each left out at its most
+/// common (done, none, not), so that a row of an ended chat carries no byte more than it says. (Delivered is a done
+/// row's `unread`: not said again.)
 export function stageFields(row: J, me: J, opts: ViewerOpts = {}): J {
   const stage = boardStageOf(row, me, opts);
   const out: J = {};
   if (stage !== "done") out.stage = stage;
   const subchats = subchatsLabel(row);
   if (subchats !== null) out.subchats = subchats;
+  if (stage === "done" && archiveRead(row, me)) out.archiveRead = true;
   return out;
 }

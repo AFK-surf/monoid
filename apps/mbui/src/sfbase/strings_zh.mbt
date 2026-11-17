@@ -2869,7 +2869,7 @@ let zh : Map[String, String] = {
   "web-main.board.archive_read": "归档已读 ({n})",
   "web-main.board.archived_read": "已归档 {n} 个已读的对话",
   "web-main.board.archive_read_short": "归档已读",
-  "web-main.board.read_n": "已读 {n} 项",
+  "web-main.board.read_n": "{n} 项可归档",
   "web-main.board.drop_archive": "松开归档",
   "web-main.board.drag_archive": "拖到这里归档",
   "web-main.board.drop_delete": "松开删除",

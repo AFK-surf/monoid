@@ -79,3 +79,29 @@ test("ended_unread_is_delivered_read_is_settled_and_says_nothing_more", () => {
   assert.equal(stage.deliverable({ ...row, unread: false }, "done"), false);
   assert.deepEqual(stage.stageFields({ mine: true, agents: [], pending: true }, me), { stage: "run" });
 });
+
+test("archive_read_takes_only_what_the_viewer_started_ended_and_read", () => {
+  const row: J = { mine: true, creator: creator("lin@x.com"), agents: [done()] };
+  assert.deepEqual(stage.stageFields(row, me), { archiveRead: true });
+  assert.deepEqual(stage.stageFields({ ...row, unread: true }, me), {}, "a result not read stays");
+  assert.deepEqual(stage.stageFields({ ...row, creator: creator("ana@x.com") }, me), {}, "someone else's: archiving it is the whole workspace's");
+  assert.deepEqual(stage.stageFields({ ...row, pinned: 3 }, me), {});
+  const failed: J = { key: "s1", process: "cold", lastTurn: { outcome: "failed", startedAt: 1, endedAt: 2 } };
+  assert.deepEqual(stage.stageFields({ ...row, agents: [failed] }, me, { gone: ["x"], failureOf: () => "x" }), {}, "a failure let go is 待收口's, not ended well");
+  assert.equal(stage.boardStageOf({ ...row, agents: [failed], creator: creator("ana@x.com") }, me), "done");
+  assert.deepEqual(stage.stageFields({ ...row, agents: [failed], creator: creator("ana@x.com") }, me), {});
+});
+
+test("a_colleague_s_ask_reads_as_waiting_on_them_where_the_viewer_s_would_ask", () => {
+  const members = [{ email: "ana@x.com", name: "Ana" }];
+  const row: J = { mine: true, creator: creator("lin@x.com"), agents: [blocked()], card: card(5, "ana@x.com") };
+  const asks: J = ["待处理 · A or B?", null, "A or B?", { kind: "decision", text: "待处理", rest: " · A or B?" }];
+  assert.deepEqual(stage.lineForViewer(asks, row, me, members), ["等 Ana 处理：A or B?", null, "A or B?", { kind: "wait", rest: "等 Ana 处理：A or B?" }]);
+  assert.deepEqual(stage.lineForViewer(asks, { ...row, card: card(5) }, me, members), asks, "the viewer's own: asked of them");
+  // (a need with no card, its starter deciding: named as the row says them)
+  const need: J = { mine: true, creator: creator("zhou@x.com"), agents: [{ ...blocked(), lastTurn: { ...blocked().lastTurn, need: "要 key" } }], need: { seq: 7, message: { seq: 7, text: "要 key" } } };
+  const needLine: J = ["需要你处理：要 key", null, "要 key", { kind: "need", rest: "要 key" }];
+  assert.deepEqual(stage.lineForViewer(needLine, need, me, members), ["等 zhou 处理：要 key", null, "要 key", { kind: "wait", rest: "等 zhou 处理：要 key" }]);
+  const atWork: J = ["等待：CI", 3, "等待：CI", { kind: "wait", rest: "CI" }];
+  assert.deepEqual(stage.lineForViewer(atWork, row, me, members), atWork, "only a line that asks is said again");
+});

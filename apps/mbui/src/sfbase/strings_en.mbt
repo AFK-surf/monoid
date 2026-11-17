@@ -2898,7 +2898,7 @@ let en : Map[String, String] = {
   "web-main.board.archive_read": "Archive read ({n})",
   "web-main.board.archived_read": "Archived {n} read chats",
   "web-main.board.archive_read_short": "Archive read",
-  "web-main.board.read_n": "{n} read",
+  "web-main.board.read_n": "{n} to archive",
   "web-main.board.drop_archive": "Release to archive",
   "web-main.board.drag_archive": "Drag here to archive",
   "web-main.board.drop_delete": "Release to delete",
