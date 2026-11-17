@@ -45,7 +45,7 @@ test "a drive script can hold and release modifiers without another key" {
       },
     )
     let logs = t.drive(
-      "until ＋\nmods cmd\nuntil ↑\nkey enter\nuntil ＋\nmods cmd+alt+shift\nuntil all\nmods none\nuntil ＋\nexit",
+      "until ＋\nmods cmd\nuntil ↑\nmods none\nuntil ＋\nmods cmd\nuntil ↑\nkey enter\nuntil ＋\nmods cmd+alt+shift\nuntil all\nmods none\nuntil ＋\nexit",
     )
     assert_true(logs.contains("DRIVE mods cmd (\{command})"), msg=logs.join("\n"))
     assert_true(logs.contains("DRIVE mods none (0)"), msg=logs.join("\n"))

@@ -42,8 +42,9 @@
 //   key NAME                    a key, with what is held before it: esc, tab, enter, space, up, down, left, right,
 //                               home, end, pageup, pagedown, backspace, a character; cmd+ (⌘ on macOS, Ctrl
 //                               elsewhere), ctrl+, alt+, shift+ (cmd+k, shift+enter, alt+down)
-//   mods MODS                   only modifiers held (cmd, ctrl, alt, shift joined by +), or none to release them;
-//                               later key steps carry their own modifiers
+//   mods MODS                   only modifiers pressed, no other key (the host's code 0): cmd, ctrl, alt, shift joined
+//                               by + as wheel's MODS (cmd+ as a key's), or none to release them all; later key steps
+//                               carry their own modifiers
 //   resize W H                  the window's content resized to W by H (the host's own window, where it can)
 //   trackpad begin|DX DY|end    the keyboard's trackpad (iOS's floating cursor) begun, its finger at DX DY from where it
 //                               began, let go
