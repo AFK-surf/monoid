@@ -225,6 +225,9 @@ export class MbProcess extends EventEmitter {
 
   terminate(): Promise<number> {
     if (this.#exited) return Promise.resolve(this.#child.exitCode ?? 1);
+    // An idle sessions program was unref'ed. Its caller now waits for its close: keep the event loop alive until
+    // that acknowledgement, including when it is the last program a standalone hub test shuts down.
+    this.ref(true);
     return new Promise((resolve) => {
       this.#child.once("close", (code) => resolve(code ?? 1));
       this.#child.kill();

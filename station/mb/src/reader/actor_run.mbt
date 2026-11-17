@@ -148,6 +148,19 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           return
         }
         self.log(a, "info", "trying again a failed turn, as asked")
+        // Codex can keep rejecting a loaded thread with only {"detail":"Bad Request"}, while the same
+        // history loaded anew works. A person's retry reloads that thread, without clearing its history,
+        // replaying the original prompt or restarting the account's other threads. This is not evidence
+        // of a context limit (nor a reason to retry a 400 automatically).
+        let detail = str_of(last.value("detail")).unwrap_or("")
+        if a.runtime == "codex" && detail.has_prefix("model: ") {
+          let refusal = @json.parse(detail.view(start_offset=7).to_string()) catch { _ => Json::null() }
+          if str_of(refusal.value("detail")) == Some("Bad Request") {
+            let agent = a.agent
+            self.set_agent(a, None)
+            self.end_process(a, agent)
+          }
+        }
         self.start_turn(a, "resume", self.words(a, if given_up(last) { "GO_ON_AFTER_UNANSWERED" } else { "GO_ON_AFTER_FAILED" }))
       })
     }
