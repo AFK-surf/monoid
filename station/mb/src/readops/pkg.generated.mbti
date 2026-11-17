@@ -69,6 +69,8 @@ pub fn recent_chat_list(@sql.Db, @json.Json) -> @json.Json raise
 
 pub fn recent_connect_people(@sql.Db, @json.Json) -> @json.Json raise
 
+pub fn remote_ws(String) -> String?
+
 pub fn resource_chats(@sql.Db, @host.Host, String, String, @json.Json) -> @json.Json raise
 
 pub fn review_pending_card(@sql.Db, @json.Json) -> @json.Json raise

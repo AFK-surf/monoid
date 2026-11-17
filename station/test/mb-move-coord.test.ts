@@ -654,7 +654,11 @@ test("told: a step asked of another station, under way, told how it goes and its
   // (told how it goes, then nothing for a silence: asked again; then its end told)
   assert.deepEqual(await s.told("heard", "B", { told: "k1", progress: { done: 1 } }), s.tsT.heard("B", { told: "k1", progress: { done: 1 } }));
   await s.settle();
-  await t.adjust(16_000);
+  // (to the silence's end, then on: the program's ask is written down as it reaches the test, so the clock waits there
+  // for it; past it in one step, it came at 16 s on a slow machine)
+  await t.adjust(15_000);
+  await s.settle();
+  await t.adjust(1_000);
   await s.settle();
   assert.deepEqual(s.asks.mb, s.asks.ts, "asked again after the silence");
   await t.adjust(11_000);
@@ -930,6 +934,9 @@ test("modules: the jobs, kept as their chat is held, moved and moved back, start
     const b = await outcome(() => call(method, ...args));
     await turns();
     await p.quiet();
+    // (the TypeScript's writes end with its promises, not in a count of turns: its file of before is let go once its
+    // lines are written, after a plan that writes nothing)
+    await tsM.settled();
     assert.deepEqual(b, a, what);
     assert.deepEqual(mbW.calls, tsW.calls, `${what}: what it asked`);
     sameFiles(tsData, mbData, what);
@@ -1150,6 +1157,9 @@ test("modules: the accounts, planned as the other answers (hosted, borrowed, a t
     const b = await outcome(() => call(method, ...args));
     await turns();
     await p.quiet();
+    // (the TypeScript's writes end with its promises, not in a count of turns: its file of before is let go once its
+    // lines are written, after a plan that writes nothing)
+    await tsM.settled();
     assert.deepEqual(b, a, what);
     assert.deepEqual(mbW.calls, tsW.calls, `${what}: what it asked`);
     sameFiles(tsData, mbData, what);

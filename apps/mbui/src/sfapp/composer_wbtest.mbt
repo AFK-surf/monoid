@@ -23,11 +23,16 @@ fn fake_core(
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
   nodes? : Bool = false,
+  composed? : Bool = false,
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes)
-  if nodes {
+  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too, `composed`:
+  // sfbase's composer_nodes)
+  if nodes || composed {
     @sfbase.chat_page_nodes.set(true)
+  }
+  if composed {
+    @sfbase.composer_nodes.set(true)
   }
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)

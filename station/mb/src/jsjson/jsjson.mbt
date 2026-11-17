@@ -28,6 +28,14 @@ pub impl Show for SyntaxError with output(self, logger) {
 }
 
 ///|
+/// Its words (moonc 0.10.21 gives a suberror no `to_string` of its own)
+pub fn SyntaxError::to_string(self : SyntaxError) -> String {
+  match self {
+    SyntaxError(m) => m
+  }
+}
+
+///|
 priv struct Parser {
   text : String
   mut at : Int

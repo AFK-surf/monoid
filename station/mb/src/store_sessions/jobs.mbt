@@ -319,8 +319,8 @@ pub fn Store::job_started(
 ) -> Unit raise {
   self.job_update(
     id,
-    "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, queued = 0 WHERE id = ?3",
-    [pgid, flag(restarted), id],
+    "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, started_at = CASE WHEN ?2 = 0 AND COALESCE(queued, 0) <> 0 THEN ?4 ELSE started_at END, queued = 0 WHERE id = ?3",
+    [pgid, flag(restarted), id, self.now_json()],
   )
 }
 

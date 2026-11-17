@@ -1783,7 +1783,7 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
               got.val += bytes.length()
               self.got.set(Some((got.val.to_double(), Some(total.to_double()))))
               if bytes.length() == 0 || got.val >= total {
-                let all = Buffer(size_hint=got.val)
+                let all = Buffer(capacity=got.val)
                 for b in parts {
                   all.write_bytes(b)
                 }

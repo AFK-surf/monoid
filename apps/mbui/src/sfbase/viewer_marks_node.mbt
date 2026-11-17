@@ -34,8 +34,10 @@ fn marks_foot_node(h : @view.View, foot : () -> Double) -> Unit {
       // (the room over them the picture's: nothing of the foot's)
       held.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       let parts = held.box(fn(parts) {
-        // (the notes' cards, while no note is written: note_cards_node)
+        // (the notes' cards, while no note is written: note_cards_node; in the note's place and out of it at once, as the
+        // note's box and the tools are, its own coming in its own: NotePop)
         parts.show(
+          at_once=true,
           fn() {
             marks_said()
             marking.note < 0 && mark_notes().length() > 0
@@ -340,7 +342,7 @@ fn marks_note_shown() -> (Int, Int, String, Int64)? {
 /// asked for, from that moment, and again as another is. 删除 and 完成 done as their press is let go on them.
 fn note_box_node(w : @view.View) -> Unit {
   let keys_in = @ui.capsule_in(note_box_corner, 36.0)
-  let pop = NotePop::new()
+  let pop = @motion.NodeWay::new(0.0)
   w.padding(Is((12.0, 0.0, 12.0, 8.0))) |> ignore
   w.box(fn(b) {
     // (its coming in, from the moment the note was asked for: another asked for, from then again)
@@ -351,11 +353,10 @@ fn note_box_node(w : @view.View) -> Unit {
       },
       fn(id) {
         if id >= 0 {
-          pop.again(b)
+          pop.go_from(b, 0.0, 1.0, @motion.tween(note_pop_ms, ease=Out))
         }
       },
     )
-    b.owns(fn() { (pop.due)() }) |> ignore
     let shown = fn() { pop.shown(b) }
     b
     .padding(Is((keys_in, 10.0, keys_in, keys_in)))
@@ -447,37 +448,6 @@ fn note_box_node(w : @view.View) -> Unit {
     |> ignore
   })
   |> ignore
-}
-
-///|
-/// How far a note's box has come in (note_box_node's): its way, from nothing to all of it over note_pop_ms, and the
-/// moment it is all there (a moment of its node's: what reads it told then, the clock read no more), let go as it
-/// comes in again and as the node is.
-priv struct NotePop {
-  way : @motion.Way
-  ended : @signals.Signal[Int]
-  mut due : () -> Unit
-}
-
-///|
-fn NotePop::new() -> NotePop {
-  { way: @motion.Way::new(0.0), ended: @signals.signal(0), due: fn() {  } }
-}
-
-///|
-/// Coming in anew from nothing, from `n`'s cause's moment.
-fn NotePop::again(self : NotePop, n : @view.View) -> Unit {
-  (self.due)()
-  self.way.put(0.0)
-  self.way.go(1.0, @motion.tween(note_pop_ms, ease=Out), at=n.cause_at())
-  self.due = n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
-}
-
-///|
-/// How far it has come in as `n` is drawn: at the moment it is drawn at while it comes, all of it once it is there.
-fn NotePop::shown(self : NotePop, n : @view.View) -> Double {
-  self.ended.get() |> ignore
-  self.way.shown_on(n)
 }
 
 ///|
@@ -742,6 +712,10 @@ fn marks_pins_node(h : @view.View, vw : Viewer) -> Unit {
         marks_said()
         marking.note == pin.get().0
       }
+      // (opened, grown about its point over dur_ms from the moment it is, and back as it is put down; as it is made, at
+      // once where it is: a control answering)
+      let grown = @motion.NodeWay::new(if @signals.untracked(open) { pin_open_scale } else { 1.0 })
+      p.reacts(open, at_start=false, fn(o) { grown.go_ms(p, if o { pin_open_scale } else { 1.0 }, @sf.dur_ms) })
       p
       .over(Is(true))
       .width(Is(Some(24.0)))
@@ -762,7 +736,7 @@ fn marks_pins_node(h : @view.View, vw : Viewer) -> Unit {
           _ => (0.0, 0.0)
         }
       }))
-      .scale(By(fn() { if open() { pin_open_scale } else { 1.0 } }), about=@view.At(2.0 / 24.0, 22.0 / 24.0))
+      .scale(By(fn() { grown.shown(p) }), about=@view.At(2.0 / 24.0, 22.0 / 24.0))
       .presses(Is(true))
       .says(By(fn() { Some(@view.said(Button, label=pv_fill("android-chat.marks.pin", [("n", pin.get().1.to_string())]))) }))
       .on_press(fn() {
@@ -826,8 +800,8 @@ fn Viewer::marks_rect_on(self : Viewer, n : @view.View) -> (Double, Double, Doub
 ///|
 /// The marks drawn over viewer `vw`'s picture in `h` (a layer over the canvas, all of it; ImageMarks.kt
 /// drawMarks, drawPicked): the lines (a box's rounded edge, an arrow and its barbs, a line drawn by hand, the picked
-/// mark's dashed frame: marks_lines), words edged in their halo (eight times a little off each way, the words over
-/// them), the picked mark's handles (12 round and white, edged 1.5 in the marking colour), each where the picture is
+/// mark's dashed frame: marks_lines), words edged in their halo (View::words_edge: eight times a little off each way,
+/// under them), the picked mark's handles (12 round and white, edged 1.5 in the marking colour), each where the picture is
 /// as it is drawn (Viewer::marks_rect_on), at this zoom's size. As marking is now (marks_drawn: what a finger draws now
 /// with them).
 fn marks_shapes_node(h : @view.View, vw : Viewer) -> Unit {
@@ -841,7 +815,7 @@ fn marks_shapes_node(h : @view.View, vw : Viewer) -> Unit {
     }
   }
   h.box(fn(l) { l.over(Is(true)).lines(By(fn() { laid(l).0 })) |> ignore }) |> ignore
-  // words, edged in their halo: each a node for the words and eight for their edge, under them
+  // words, edged in their halo
   h.each(
     fn() {
       marks_said()
@@ -856,35 +830,39 @@ fn marks_shapes_node(h : @view.View, vw : Viewer) -> Unit {
     fn(x) { x.0 },
     fn(w, words) {
       w.over(Is(true)) |> ignore
-      for o in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (0.0, 0.0)] {
-        let edge = o != (0.0, 0.0)
-        w.box(fn(t) {
-          t
-          .over(Is(true))
-          .words(By(fn() { words.get().1 }))
-          .words_look(By(fn() {
-            let size = match vw.marks_rect_on(t) {
-              Some((_, _, rw, _)) => words.get().3 * rw / dmax(1.0, vw.zoom.nw)
-              None => 0.0
+      // (one node for the words, edged in their halo's colour a little off each way under them: View::words_edge)
+      w.box(fn(t) {
+        t
+        .over(Is(true))
+        .words(By(fn() { words.get().1 }))
+        .words_look(By(fn() {
+          let size = match vw.marks_rect_on(t) {
+            Some((_, _, rw, _)) => words.get().3 * rw / dmax(1.0, vw.zoom.nw)
+            None => 0.0
+          }
+          { size, weight: 600, line: size * 1.3, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        }))
+        .ink(By(fn() { words.get().2 }))
+        .words_edge(By(fn() {
+          let ww = words.get().3
+          match vw.marks_rect_on(t) {
+            Some((_, _, rw, _)) => (ww * rw / dmax(1.0, vw.zoom.nw) * 0.08, halo_of(words.get().2))
+            None => (0.0, 0L)
+          }
+        }))
+        .offset(By(fn() {
+          let (_, _, _, _, x, y) = words.get()
+          match vw.marks_rect_on(t) {
+            Some((rx, ry, rw, _)) => {
+              let k = rw / dmax(1.0, vw.zoom.nw)
+              (rx + x * k, ry + y * k)
             }
-            { size, weight: 600, line: size * 1.3, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-          }))
-          .ink(By(fn() { if edge { halo_of(words.get().2) } else { words.get().2 } }))
-          .offset(By(fn() {
-            let (_, _, _, ww, x, y) = words.get()
-            match vw.marks_rect_on(t) {
-              Some((rx, ry, rw, _)) => {
-                let k = rw / dmax(1.0, vw.zoom.nw)
-                let e = ww * k * 0.08
-                (rx + x * k + o.0 * e, ry + y * k + o.1 * e)
-              }
-              None => (0.0, 0.0)
-            }
-          }))
-          |> ignore
-        })
+            None => (0.0, 0.0)
+          }
+        }))
         |> ignore
-      }
+      })
+      |> ignore
     },
   )
   // the picked mark's handles

@@ -519,12 +519,12 @@ fn publish_node(n : @view.View, src : Source) -> Unit {
   // (in faded, as a file opened over the window: window_page_in; out as a dialog goes, faded and a little smaller:
   // pop_out. Its ground whole by half its fade and what is on it over the other half, never what it is put over and
   // its words both seen in one place: the transitions' ground_first)
-  let seen = @sf.EdgeWay::new(0.0)
-  seen.go(n, 1.0, publish_in_ms)
-  let gone = @sf.EdgeWay::new(0.0)
+  let seen = @motion.NodeWay::new(0.0)
+  seen.go_ms(n, 1.0, publish_in_ms)
+  let gone = @motion.NodeWay::new(0.0)
   n.reacts(fn() { publishing.leaving.get() }, fn(going) {
     if going {
-      gone.go(n, 1.0, @kit.pop_out_ms, ease=Leave)
+      gone.go_ms(n, 1.0, @kit.pop_out_ms, ease=Leave)
     }
   })
   // (how far in it is as `v` is drawn: its ground's share of it, and what is on it)

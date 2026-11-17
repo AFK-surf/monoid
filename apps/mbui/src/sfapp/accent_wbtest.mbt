@@ -81,8 +81,8 @@ test "主题色 自定义: a hue of one's own, its slider under the dots; a step
     // no slider till 自定义 is chosen
     assert_true(t.semantics().filter(fn(s) { s.role == Slider }).is_empty(), msg="\{w}")
     t.click(Radio, label="自定义")
-    t.frame()
-    t.frame()
+    // (the slider comes in under the dots on its way: looked at once that is over)
+    t.run_for(@ui.move_most_ms)
     let set = named(calls, "prefs.set")
     assert_eq(text(Some(set[set.length() - 1].params), "accent"), "custom:210")
     assert_eq(@sf.accent_key(), "custom:210")

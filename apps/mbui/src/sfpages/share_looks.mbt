@@ -19,7 +19,7 @@
 priv struct ShareLook {
   key : String
   group : String
-  draw : (Pen, Json?, Bool) -> Pen
+  draw : (Pen, () -> Json?, Bool) -> Pen
   art : String
 }
 
@@ -222,7 +222,7 @@ fn share_look_item(v : @view.View, src : Source, w : Workspace, look : ShareLook
 /// A look's small picture in `v`: the picture it draws (千恋＊万花's, its picture alone: senren_tile), laid out as wide as
 /// it is handed out (@sf.share_w_most) and drawn as wide as the tile, from its top (what is under the tile's foot cut);
 /// said by its name, not its words; made as the strip shows its set, its figures as they were then (too small to be
-/// read; the picture over it is made anew as they change). Its own files of the looks (its small picture:
+/// read: the picture over it follows them). Its own files of the looks (its small picture:
 /// look_tile_file) had on their own, how far in a spinner in its middle until they are here (2026-11-03 用户「每张独立
 /// 下载并提供进度」).
 fn look_tile_node(v : @view.View, src : Source, look : ShareLook, w : Workspace) -> Unit {
@@ -239,7 +239,9 @@ fn look_tile_node(v : @view.View, src : Source, look : ShareLook, w : Workspace)
       if look.art != "" {
         senren_tile(Pen::of(whole), look.art) |> ignore
       } else {
-        (look.draw)(Pen::of(whole), share_fleet(src, w), true) |> ignore
+        // (what the view says as the strip shows the set: too small to be read, it follows none of its changes)
+        let said = @signals.untracked(share_fleet(src, w))
+        (look.draw)(Pen::of(whole), fn() { said }, true) |> ignore
       }
     })
     |> ignore
@@ -278,10 +280,11 @@ let tile_waiting : @ui.Style = @sf.centred.then(@ui.style(w=Fixed(@sf.share_look
 fn look_box(c : Pen, flat : Bool, ground : Int64, inner : (Pen) -> Unit) -> Pen {
   c.box(style=(if flat { pic_box_flat } else { pic_box }).then(@ui.style(bg=Data(ground))), inner)
 }
+
 ///|
-/// Words in the code face.
-fn code_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
-  c.rich([@ui.span(words, mono=true)], style~) |> ignore
+/// Words in the code face, as `words` works them out (and as `style_by` chooses their style, laid out as `style`).
+fn code_words(c : Pen, words : () -> String, style : @ui.TextStyle, style_by? : () -> @ui.TextStyle) -> Unit {
+  c.rich_by(fn() { [@ui.span(words(), mono=true)] }, style~, style_by?)
 }
 
 ///|
@@ -290,6 +293,11 @@ fn span_stats(span : Json?) -> Array[(String, String)] {
   items(span, "stats").map(fn(x) { (text(Some(x), "label"), text(Some(x), "value")) })
 }
 
+///|
+/// `all` each with its place in it: a line kept by its place where nothing else names it.
+fn[T] placed(all : Array[T]) -> Array[(Int, T)] {
+  all.mapi(fn(i, x) { (i, x) })
+}
 
 // ── 大字报 ─────────────────────────────────────────────────────────────────
 
@@ -298,39 +306,61 @@ fn span_stats(span : Json?) -> Array[(String, String)] {
 /// leads the first kind's share over it, what it is of under it; then the chats at work now, large, and where; still.fail
 /// large at its foot (what is passed on says whose it is), its line beside the time. Nothing used: the chats at work
 /// are its number, the tasks across devices its line.
-fn poster_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let spent = items(fleet, "spent")
+fn poster_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let spent = fn() { items(fleet(), "spent") }
+  let used = fn() { spent().length() > 0 }
+  let first = fn() { spent().get(0) }
+  let models = fn() { items(first(), "models") }
+  let top = fn() { models().get(0) }
+  let tasks = fn() { text(fleet(), "tasksText") }
   look_box(c, flat, @sf.share_poster_ground, fn(c) {
     c.box(style=poster_inner, fn(c) {
       c.box(style=poster_hero, fn(c) {
-        if spent.length() > 0 {
-          let first = Some(spent[0])
-          let models = items(first, "models")
-          let top = models.get(0)
-          let used = text(top, "tokensText")
-          let scale = if used.length() > 4 { @sf.share_poster_number_less } else { @sf.share_poster_number_scale }
-          c.text(text(first, "lead"), style=poster_words) |> ignore
-          c.rich([@ui.span(used, scale~)], style=poster_number) |> ignore
-          c.text(text(top, "name") + " " + text(top, "of"), style=poster_words) |> ignore
-          // its other models, each its own tokens and cost (no kind adds its models' up)
-          for m in models[1:] {
-            c.text(text(Some(m), "name") + "  " + text(Some(m), "lineText"), style=poster_small) |> ignore
-          }
-        } else {
-          c.rich([@ui.span(count(fleet, "chats").to_string(), scale=@sf.share_poster_number_scale)], style=poster_number)
-          |> ignore
-          c.text(text(fleet, "chatsText"), style=poster_words) |> ignore
-        }
+        c.show_rich(used, fn() { [@ui.span(text(first(), "lead"))] }, style=poster_words)
+        // (the first model's tokens, or with nothing used the chats at work)
+        c.rich_by(
+          fn() {
+            if used() {
+              let words = text(top(), "tokensText")
+              let scale = if words.length() > 4 {
+                @sf.share_poster_number_less
+              } else {
+                @sf.share_poster_number_scale
+              }
+              [@ui.span(words, scale~)]
+            } else {
+              [@ui.span(count(fleet(), "chats").to_string(), scale=@sf.share_poster_number_scale)]
+            }
+          },
+          style=poster_number,
+        )
+        c.text_by(
+          fn() {
+            if used() {
+              text(top(), "name") + " " + text(top(), "of")
+            } else {
+              text(fleet(), "chatsText")
+            }
+          },
+          style=poster_words,
+        )
+        // its other models, each its own tokens and cost (no kind adds its models' up), each kept by its place
+        c.each_rich(
+          fn() { if used() { placed(models()[1:].to_owned()) } else { [] } },
+          fn(m) { m.0 },
+          fn(m) { [@ui.span(text(Some(m().1), "name") + "  " + text(Some(m().1), "lineText"))] },
+          style=poster_small,
+        )
       })
       |> ignore
       c.box(style=poster_more, fn(c) {
-        if spent.length() > 0 {
-          c.text(text(fleet, "chatsText"), style=poster_big) |> ignore
-          c.text(text(fleet, "where"), style=poster_small) |> ignore
-        } else if text(fleet, "tasksText") != "" {
-          c.text(text(fleet, "tasksText"), style=poster_big) |> ignore
-          c.text(text(fleet, "tasksPer"), style=poster_small) |> ignore
-        }
+        let more = fn() { used() || tasks() != "" }
+        c.show_rich(more, fn() { [@ui.span(if used() { text(fleet(), "chatsText") } else { tasks() })] }, style=poster_big)
+        c.show_rich(
+          more,
+          fn() { [@ui.span(text(fleet(), if used() { "where" } else { "tasksPer" }))] },
+          style=poster_small,
+        )
       })
       |> ignore
       // (the foot at the picture's foot, however tall what is over it)
@@ -338,9 +368,9 @@ fn poster_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       c.box(style=poster_foot, fn(c) {
         c.text("still.fail", style=poster_brand) |> ignore
         c.box(style=pic_head, fn(c) {
-          c.box(style=pic_grow, fn(c) { c.text(@sf.t("web-main.stations.shareTagline"), style=poster_small) |> ignore })
+          c.box(style=pic_grow, fn(c) { c.text_by(fn() { @sf.t("web-main.stations.shareTagline") }, style=poster_small) })
           |> ignore
-          c.text(text(fleet, "at"), style=poster_small) |> ignore
+          c.text_by(fn() { text(fleet(), "at") }, style=poster_small)
         })
         |> ignore
       })
@@ -353,14 +383,26 @@ fn poster_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
 // ── 小票 ───────────────────────────────────────────────────────────────────
 
 ///|
+/// A line of the receipt's kinds: kind `kind` (in the core's order) as `model` -1, else its model `model`.
+#derive(Eq)
+priv struct ReceiptLine {
+  kind : Int
+  model : Int
+  of : Json
+}
+
+///|
 /// 小票: a till's receipt of the agents' week, on its paper. Read down: still.fail and when, in its middle; each day a
 /// line, its chats archived at its end (today's date in the orange); the chats archived and the tokens read as its
 /// subtotals; each kind of account a line (its accounts), its models under it (each its tokens and cost); between
 /// double dashes the week's spend, large, its total; a barcode made of what it says, still.fail's line under it.
-fn receipt_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let spent = items(fleet, "spent")
-  let week = field(fleet, "week")
-  let stats = span_stats(week)
+fn receipt_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let spent = fn() { items(fleet(), "spent") }
+  let week = fn() { field(fleet(), "week") }
+  let stats = fn() { span_stats(week()) }
+  let days = fn() { items(week(), "days") }
+  let has_days = fn() { days().length() > 0 }
+  let total = fn() { stats().last() }
   look_box(c, flat, @sf.share_receipt_ground, fn(c) {
     c.box(style=receipt_head, fn(c) {
       c.rich(
@@ -368,138 +410,192 @@ fn receipt_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
         style=receipt_brand,
       )
       |> ignore
-      code_words(c, text(fleet, "at"), receipt_dim)
+      code_words(c, fn() { text(fleet(), "at") }, receipt_dim)
     })
     |> ignore
-    dashes(c)
-    let days = items(week, "days")
-    if days.length() > 0 {
-      c.box(style=receipt_items, fn(c) {
-        for d in days {
-          let d = Some(d)
-          c.box(style=pic_other, fn(c) {
-            code_words(c, text(d, "label"), if flag(d, "today") { receipt_today } else { receipt_code_line })
-            c.box(style=pic_grow, fn(_) {  }) |> ignore
-            code_words(c, text(d, "value"), receipt_value)
-          })
-          |> ignore
-        }
+    c.box(style=receipt_dashes, dashes) |> ignore
+    c.show(has_days, style=receipt_items, fn(c) {
+      c.each(fn() { placed(days()) }, fn(d) { d.0 }, style_of=fn(_) { pic_other }, fn(c, d) {
+        let d = fn() { Some(d().1) }
+        let today = fn() { flag(d(), "today") }
+        code_words(c, fn() { text(d(), "label") }, receipt_code_line, style_by=fn() {
+          if today() {
+            receipt_today
+          } else {
+            receipt_code_line
+          }
+        })
+        c.box(style=pic_grow, fn(_) {  }) |> ignore
+        code_words(c, fn() { text(d(), "value") }, receipt_value)
       })
-      |> ignore
-      dashes(c)
-    }
+    })
+    c.show(has_days, style=receipt_dashes, dashes)
     // the subtotals: the week's figures but its spend (its total)
-    if stats.length() > 1 {
-      c.box(style=receipt_items, fn(c) {
-        for x in stats[:stats.length() - 1] {
-          receipt_item(c, x.0, x.1, true)
-        }
-      })
-      |> ignore
-    }
-    if spent.length() > 0 {
-      c.box(style=receipt_items, fn(c) {
-        // each kind a line, its models under it, each its own tokens and cost
-        for k, q in spent {
-          let q = Some(q)
-          c.box(style=if k == 0 { receipt_kind_first } else { receipt_kind }, fn(c) {
-            c.text(text(q, "name") + " ×" + count(q, "accounts").to_string(), style=receipt_line) |> ignore
-          })
-          |> ignore
-          for m in items(q, "models") {
-            c.box(style=receipt_model, fn(c) { receipt_item(c, text(Some(m), "name"), text(Some(m), "lineText"), false) }) |> ignore
+    c.show(fn() { stats().length() > 1 }, style=receipt_items, fn(c) {
+      c.each(
+        fn() {
+          let s = stats()
+          placed(s[:s.length() - 1].to_owned())
+        },
+        fn(x) { x.0 },
+        style_of=fn(_) { pic_other },
+        fn(c, x) { receipt_item(c, fn() { x().1.0 }, fn() { x().1.1 }, true) },
+      )
+    })
+    c.show(fn() { spent().length() > 0 }, style=receipt_items, fn(c) {
+      // each kind a line, its models under it, each its own tokens and cost
+      let lines = fn() {
+        let out : Array[ReceiptLine] = []
+        for k, q in spent() {
+          out.push({ kind: k, model: -1, of: q })
+          for i, m in items(Some(q), "models") {
+            out.push({ kind: k, model: i, of: m })
           }
         }
+        out
+      }
+      c.each(
+        lines,
+        fn(l) { (l.kind, l.model) },
+        style_of=fn(l) {
+          if l.model >= 0 {
+            receipt_model
+          } else if l.kind == 0 {
+            receipt_kind_first
+          } else {
+            receipt_kind
+          }
+        },
+        fn(c, l) {
+          let of = fn() { Some(l().of) }
+          if @signals.untracked(l).model < 0 {
+            c.text_by(fn() { text(of(), "name") + " ×" + count(of(), "accounts").to_string() }, style=receipt_line)
+          } else {
+            c.box(style=pic_other, fn(c) {
+              receipt_item(c, fn() { text(of(), "name") }, fn() { text(of(), "lineText") }, false)
+            })
+            |> ignore
+          }
+        },
+      )
+    })
+    let has_total = fn() { total() is Some(_) }
+    let double = fn(c : Pen) {
+      c.box(style=receipt_dashes, dashes) |> ignore
+      c.box(style=receipt_dashes, dashes) |> ignore
+    }
+    c.show(has_total, style=receipt_double, double)
+    c.show(has_total, style=pic_other, fn(c) {
+      c.text_by(fn() { total().map(fn(t) { t.0 }).unwrap_or("") }, style=receipt_title)
+      c.box(style=pic_grow, fn(_) {  }) |> ignore
+      code_words(c, fn() { total().map(fn(t) { t.1 }).unwrap_or("") }, receipt_total)
+    })
+    c.show(has_total, style=receipt_double, double)
+    c.box(style=receipt_foot, fn(c) {
+      c.box(style=receipt_code, fn(c) {
+        barcode(c, fn() { text(fleet(), "at") + text(fleet(), "chatsText") + text(fleet(), "tasksText") })
       })
       |> ignore
-    }
-    match stats {
-      [.., (label, value)] => {
-        c.box(style=receipt_double, fn(c) {
-          dashes(c)
-          dashes(c)
-        })
-        |> ignore
-        c.box(style=pic_other, fn(c) {
-          c.text(label, style=receipt_title) |> ignore
-          c.box(style=pic_grow, fn(_) {  }) |> ignore
-          code_words(c, value, receipt_total)
-        })
-        |> ignore
-        c.box(style=receipt_double, fn(c) {
-          dashes(c)
-          dashes(c)
-        })
-        |> ignore
-      }
-      _ => ()
-    }
-    c.box(style=receipt_foot, fn(c) {
-      barcode(c, text(fleet, "at") + text(fleet, "chatsText") + text(fleet, "tasksText"))
-      c.text(@sf.t("web-main.stations.shareTagline"), style=receipt_tagline) |> ignore
+      c.text_by(fn() { @sf.t("web-main.stations.shareTagline") }, style=receipt_tagline)
     })
     |> ignore
   })
 }
 
 ///|
-/// An item of the receipt: what it is (`strong`: in the ink, else dimmer), its figure at the line's end.
-fn receipt_item(c : Pen, what : String, value : String, strong : Bool) -> Unit {
-  c.box(style=pic_other, fn(c) {
-    c.text(what, style=if strong { receipt_name } else { receipt_line }) |> ignore
-    c.box(style=pic_grow, fn(_) {  }) |> ignore
-    code_words(c, value, receipt_value)
-  })
-  |> ignore
+/// What an item of the receipt holds (`c`, its line: pic_other): what it is (`strong`: in the ink, else dimmer), its
+/// figure at the line's end.
+fn receipt_item(c : Pen, what : () -> String, value : () -> String, strong : Bool) -> Unit {
+  c.text_by(what, style=if strong { receipt_name } else { receipt_line })
+  c.box(style=pic_grow, fn(_) {  }) |> ignore
+  code_words(c, value, receipt_value)
 }
 
 ///|
-/// A torn line of dashes across the receipt.
+/// What a torn line of dashes across the receipt holds (`c`, its line: receipt_dashes).
 fn dashes(c : Pen) -> Unit {
-  c.box(style=receipt_dashes, fn(c) {
-    for _ in 0..<receipt_dash_count {
-      c.box(style=receipt_dash, fn(_) {  }) |> ignore
-    }
-  })
-  |> ignore
+  for _ in 0..<receipt_dash_count {
+    c.box(style=receipt_dash, fn(_) {  }) |> ignore
+  }
 }
 
 ///|
-/// A barcode of `words`: a bar for each of its characters, as wide as its code says (1 to 3), as far from the next.
-fn barcode(c : Pen, words : String) -> Unit {
-  c.box(style=receipt_code, fn(c) {
-    let mut n = 0
-    for ch in words {
-      if n >= receipt_code_most {
+/// A barcode of `words` (`c`, its row: receipt_code): a bar for each of its characters (receipt_code_most at most), as
+/// wide as its code says (1 to 3), as far from the next; each kept by its place, as wide as its character there now.
+fn barcode(c : Pen, words : () -> String) -> Unit {
+  let codes = fn() {
+    let out : Array[(Int, Int)] = []
+    for ch in words() {
+      if out.length() >= receipt_code_most {
         break
       }
-      let k = ch.to_int()
-      let w = (k % 3 + 1).to_double()
-      let gap = (k / 3 % 2 + 1).to_double()
-      c.box(style=receipt_bar.then(@ui.style(w=Fixed(w))), fn(_) {  }) |> ignore
-      c.box(style=@ui.style(w=Fixed(gap)), fn(_) {  }) |> ignore
-      n = n + 1
+      out.push((out.length(), ch.to_int()))
     }
-  })
-  |> ignore
+    out
+  }
+  c.each(codes, fn(x) { x.0 }, style_of=fn(x) {
+    let k = x.1
+    let w = (k % 3 + 1).to_double()
+    // (as far from the next as its code says: a point or two)
+    let gap : @ui.Space = if k / 3 % 2 == 0 { SPx } else { S0_5 }
+    receipt_bar.then(@ui.style(w=Fixed(w), mr=gap))
+  }, fn(_, _) {  })
 }
 
 // ── 终端 ───────────────────────────────────────────────────────────────────
+
+///|
+/// A line of the fetch: `id` what it is (a kind, a model, a figure), its key (`key`: "" none, the line going on the one
+/// before) and what it says.
+#derive(Eq)
+priv struct TermLine {
+  id : String
+  key : String
+  words : String
+}
 
 ///|
 /// 终端: still.fail fetched in a terminal, as a system's fetch says what it runs on. Its window's dots and title; the
 /// command; still.fail's mark large (its white face, the terminal being dark) beside who and when; a line a figure, its key in the code
 /// face in the orange: each kind's tokens, the chats at work, the devices, the tasks across devices, the week's chats
 /// archived, tokens and spend; the palette; the prompt again, its cursor.
-fn terminal_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let spent = items(fleet, "spent")
-  let stats = span_stats(field(fleet, "week"))
+fn terminal_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  // (its lines, each kept by what it is: a figure changed changes its words alone)
+  let lines = fn() {
+    let f = fleet()
+    let out : Array[TermLine] = []
+    for k, q in items(f, "spent") {
+      let q = Some(q)
+      // (its tokens and cost under it, as the tasks' average under them: on its line a long name was cut short)
+      out.push({
+        id: "kind \{k}",
+        key: if k == 0 { "accounts" } else { "" },
+        words: text(q, "name") + " ×" + count(q, "accounts").to_string(),
+      })
+      // its models under it, each its own tokens and cost
+      for i, m in items(q, "models") {
+        out.push({ id: "model \{k} \{i}", key: "", words: "  " + text(Some(m), "name") + " · " + text(Some(m), "lineText") })
+      }
+    }
+    out.push({ id: "chats", key: "chats", words: text(f, "chatsText") })
+    out.push({ id: "devices", key: "devices", words: text(f, "where") })
+    if text(f, "tasksText") != "" {
+      out.push({ id: "tasks", key: "tasks", words: text(f, "tasksText") })
+      out.push({ id: "tasksPer", key: "", words: text(f, "tasksPer") })
+    }
+    for i, x in span_stats(field(f, "week")) {
+      if i < term_week_keys.length() {
+        out.push({ id: "week \{i}", key: term_week_keys[i], words: x.1 })
+      }
+    }
+    out
+  }
   look_box(c, flat, @sf.share_terminal_ground, fn(c) {
     c.box(style=term_bar, fn(c) {
       for _ in 0..<3 {
         c.box(style=term_dot, fn(_) {  }) |> ignore
       }
-      c.box(style=pic_grow, fn(c) { code_words(c, "still.fail — zsh", term_title) }) |> ignore
+      c.box(style=pic_grow, fn(c) { code_words(c, fn() { "still.fail — zsh" }, term_title) }) |> ignore
     })
     |> ignore
     prompt(c, "still.fail fetch")
@@ -512,32 +608,16 @@ fn terminal_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
         )
         |> ignore
         c.box(style=term_rule, fn(_) {  }) |> ignore
-        code_words(c, text(fleet, "at"), term_dim)
+        code_words(c, fn() { text(fleet(), "at") }, term_dim)
       })
       |> ignore
     })
     |> ignore
     c.box(style=term_block, fn(c) {
-      for k, q in spent {
-        let q = Some(q)
-        // (its tokens and cost under it, as the tasks' average under them: on its line a long name was cut short)
-        term_key_line(c, if k == 0 { "accounts" } else { "" }, text(q, "name") + " ×" + count(q, "accounts").to_string(), "")
-        // its models under it, each its own tokens and cost
-        for m in items(q, "models") {
-          term_key_line(c, "", "  " + text(Some(m), "name") + " · " + text(Some(m), "lineText"), "")
-        }
-      }
-      term_key_line(c, "chats", text(fleet, "chatsText"), "")
-      term_key_line(c, "devices", text(fleet, "where"), "")
-      if text(fleet, "tasksText") != "" {
-        term_key_line(c, "tasks", text(fleet, "tasksText"), "")
-        term_key_line(c, "", text(fleet, "tasksPer"), "")
-      }
-      for i, x in stats {
-        if i < term_week_keys.length() {
-          term_key_line(c, term_week_keys[i], x.1, "")
-        }
-      }
+      c.each(lines, fn(l) { l.id }, style_of=fn(_) { term_key_row }, fn(c, l) {
+        c.box(style=term_key_box, fn(c) { code_words(c, fn() { l().key }, term_key) }) |> ignore
+        c.box(style=term_value_box, fn(c) { c.text_by(fn() { l().words }, style=term_value) }) |> ignore
+      })
     })
     |> ignore
     // (a drawing of the terminal's colours, its swatches edge to edge as a terminal's palette shows them: read out as
@@ -547,9 +627,9 @@ fn terminal_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
         c.box(style=term_swatch.then(@ui.style(bg=Data(ink))), fn(_) {  }) |> ignore
       }
     })
-    palette.says(Image, @sf.t("web-main.stations.sharePalette"))
+    palette.says(Image, fn() { @sf.t("web-main.stations.sharePalette") })
     c.box(style=term_prompt_row, fn(c) {
-      code_words(c, "~ $", term_prompt)
+      code_words(c, fn() { "~ $" }, term_prompt)
       c.box(style=term_cursor, fn(_) {  }) |> ignore
     })
     |> ignore
@@ -560,23 +640,6 @@ fn terminal_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
 /// The keys of the week's figures, in their order (the chats archived, the tokens read, what was spent).
 // kept across runs: a table, never written
 let term_week_keys : Array[String] = ["archived", "tokens", "spent"]
-
-///|
-/// A line of the fetch: its key in the orange in a column of its own ("" none: the line goes on the one before), what
-/// it is, and after it `more` in the ink's weight.
-fn term_key_line(c : Pen, key : String, words : String, more : String) -> Unit {
-  c.box(style=term_key_row, fn(c) {
-    c.box(style=term_key_box, fn(c) { code_words(c, key, term_key) }) |> ignore
-    c.box(style=term_value_box, fn(c) {
-      c.text(words, style=term_value) |> ignore
-      if more != "" {
-        code_words(c, more, term_more)
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
 
 ///|
 /// The prompt and what is typed after it.
@@ -870,17 +933,13 @@ let term_key_box : @ui.Style = @ui.style(w=@sf.share_terminal_key_w)
 let term_key : @ui.TextStyle = @ui.text_style(size=Sm, weight=Bold, color=Data(@sf.share_orange), wrap=false)
 
 ///|
-/// What it is, and its more after it, 8 apart, taking the rest of the line.
+/// What it is, taking the rest of the line.
 // kept across runs: a value (no field of it changes)
 let term_value_box : @ui.Style = @ui.css("row gap=S2 align=ACenter").then(@ui.style(w=@sf.grow))
 
 ///|
 // kept across runs: a value (no field of it changes)
 let term_value : @ui.TextStyle = @ui.text_style(size=Sm, color=Data(@sf.share_terminal_ink), w=Cut, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let term_more : @ui.TextStyle = @ui.text_style(size=Sm, weight=Bold, color=Data(@sf.share_terminal_ink), wrap=false)
 
 ///|
 /// The palette: its colours side by side, as wide as the line shares them, 16 high.

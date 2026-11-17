@@ -36,11 +36,11 @@ pub fn send_button_node(
     fn(v, b) {
       let side = theme().round.side
       // (able: whether it can go; lit: the hand on it while it can; each eased as a control answers, from its change)
-      let able = EdgeWay::new(if @signals.untracked(ready) { 1.0 } else { 0.0 })
-      v.reacts(ready, fn(on) { able.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
-      let lit = EdgeWay::new(0.0)
+      let able = @motion.NodeWay::new(if @signals.untracked(ready) { 1.0 } else { 0.0 })
+      v.reacts(ready, fn(on) { able.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let lit = @motion.NodeWay::new(0.0)
       v.reacts(fn() { ready() && (b.focus_shown() || b.hovered() || b.pressed()) }, fn(on) {
-        lit.go(v, if on { 1.0 } else { 0.0 }, dur_ms)
+        lit.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms)
       })
       v
       .focus_ring_theme()

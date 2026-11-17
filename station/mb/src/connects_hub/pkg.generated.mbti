@@ -1,0 +1,819 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/connects_hub"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/jsjson",
+  "station/session_chats",
+}
+
+// Values
+pub let alpn : String
+
+pub fn basename(String, String) -> String
+
+pub let bots_method : String
+
+pub let call_method : String
+
+pub fn canonical_json(@jsjson.JValue) -> String
+
+pub fn card_words(Speech, String, @jsjson.JValue, String) -> (String, Array[String])
+
+pub async fn cards_ended(Cards, @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub fn channel_key(String, String) -> String
+
+pub fn code_hash(String) -> String
+
+pub fn connect_of(String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn connects_part(PartDeps, Connects, KindOf) -> Part
+
+pub fn decision_body(String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn describe(@jsjson.JValue, String, Surface) -> @jsjson.JValue
+
+pub fn device_of(String, (String) -> String?) -> String?
+
+pub fn direct_id(String, String) -> String
+
+pub fn drop_undefined(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn ended_words(Speech, @jsjson.JValue, @jsjson.JValue, String?, String) -> String
+
+pub fn entries_of(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
+
+pub fn event_id(GroupEvent) -> String
+
+pub let event_method : String
+
+pub fn event_of(@jsjson.JValue?) -> GroupEvent?
+
+pub fn extname(String) -> String
+
+pub fn fields_of(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
+
+pub fn files_of(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn fingerprint(String, @jsjson.JValue?) -> String?
+
+pub fn from_entries(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn group_connects(@jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub fn group_credentials(@jsjson.JValue) -> String?
+
+pub fn group_refused(String, String) -> Error
+
+pub fn group_unreached(String) -> Error
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn hex(BytesView) -> String
+
+pub let holds_method : String
+
+pub fn image_size(Bytes) -> (Double, Double)?
+
+pub let internal_connect : String
+
+pub fn is_object(@jsjson.JValue?) -> Bool
+
+pub fn is_space_id(String) -> Bool
+
+pub fn is_topic_id(String) -> Bool
+
+pub fn is_undefined(@jsjson.JValue) -> Bool
+
+pub fn js_ordered(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn js_stringify(@jsjson.JValue) -> String
+
+pub fn js_text(@jsjson.JValue?) -> String
+
+pub fn js_upper(String) -> String
+
+pub fn known_in(@jsjson.JValue?) -> Known?
+
+pub fn known_of(String, String) -> Known
+
+pub let list_method : String
+
+pub let lobby : String
+
+pub fn local_of(Known, String) -> String
+
+pub fn lower_hex_of(String, Int32) -> Bool
+
+pub async fn make_connects(ConnectsOptions, Platform) -> Connects
+
+pub async fn make_group(GroupOptions) -> GroupParts
+
+pub let members_ms : Double
+
+pub fn mentions(String, String) -> Bool
+
+pub fn mime_of(String) -> String
+
+pub fn moon_order(String, String) -> Int32
+
+pub let moved_method : String
+
+pub fn names_file(String) -> String?
+
+pub fn nonempty_str(@jsjson.JValue?) -> String?
+
+pub fn not_there(Error) -> Bool
+
+pub let optional_calls : Array[String]
+
+pub fn person_key(String, String) -> String
+
+pub let protocol_version : Int32
+
+pub async fn read_remote(Fs, String) -> Array[(String, @jsjson.JValue)]
+
+pub let remote_file : String
+
+pub fn replace_first(String, String, String) -> String
+
+pub fn request_input(String) -> @jsjson.JValue raise @session_chats.Thrown
+
+pub fn request_percent_decode(String) -> String
+
+pub let route_method : String
+
+pub let routed : Array[String]
+
+pub let secret_alpn : String
+
+pub fn segment(String) -> String
+
+pub async fn show_ended(Cards, (String) -> Surface?, @jsjson.JValue, Log) -> Unit
+
+pub fn shown_identity(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn sign_event(Signer, String, GroupEvent) -> GroupEvent raise
+
+pub fn signed_text(GroupEvent) -> String
+
+pub fn spawn(async () -> Unit) -> Unit
+
+pub fn spawn_in(@effect.Scope, async () -> Unit) -> Unit
+
+pub fn stamped_of(Signer, @jsjson.JValue?) -> Stamped?
+
+pub let stillfail_surface : String
+
+pub fn stream_key(String, String) -> String
+
+pub fn stream_of(@jsjson.JValue) -> (String, String)
+
+pub let take_method : String
+
+pub fn text_of(BytesView) -> String
+
+pub fn thread_of(String, String) -> @jsjson.JValue
+
+pub fn thread_of_event(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn unanswered(Error) -> Bool
+
+pub fn undefined() -> @jsjson.JValue
+
+pub fn unhex(String) -> Bytes
+
+pub fn unsigned_of(GroupEvent) -> @jsjson.JValue
+
+pub fn utf8(String) -> Bytes
+
+pub fn verified(Signer, GroupEvent) -> Bool
+
+pub async fn write_line(MeshStream, @jsjson.JValue) -> Unit
+
+// Errors
+
+// Types and methods
+pub(all) struct Answer {
+  json : @jsjson.JValue
+  bytes : Bytes?
+}
+
+pub(all) struct Answered {
+  status : Int32
+  headers : Map[String, String]
+  body : Bytes
+}
+
+pub(all) enum Asked {
+  NoAsked
+  JsonAsked(@jsjson.JValue)
+  BytesAsked(Bytes)
+}
+
+pub struct Asker {
+  ask : async (String, @jsjson.JValue, Body) -> Answer
+}
+
+pub(all) enum Body {
+  NoBody
+  FileBody(String, Double, Double)
+  DataBody(Bytes)
+}
+
+pub struct Bus {
+  ask : async (String, @jsjson.JValue, Body) -> Answer
+  on : (String, async (String, @jsjson.JValue, String?, Bytes?) -> Answer) -> Unit
+  heard : (((String) -> Unit) -> Unit)?
+}
+
+pub struct CallAnswerer {
+  surface : async (Known, String?) -> Surface?
+  uploads : String
+  cleared : async () -> Unit
+  fs : Fs
+  uuid : () -> String
+}
+pub async fn CallAnswerer::answer(Self, @jsjson.JValue, Bytes?, String?) -> Answer
+
+pub struct Cards {
+  get_thread : async (Double) -> @jsjson.JValue
+  thread_sessions : async (Double) -> Array[@jsjson.JValue]
+  card_ended_by_message : async (Double, Double) -> @jsjson.JValue
+  card_replaced_by : async (Double, Double) -> @jsjson.JValue
+  closed_card : async (Double, Double) -> @jsjson.JValue
+}
+
+pub struct Clock {
+  now : () -> Double
+  sleep : async (Double) -> Unit
+}
+pub fn Clock::live() -> Self
+
+pub struct Config {
+  raw : () -> @jsjson.JValue
+  update_soon : async ((@jsjson.JValue) -> @jsjson.JValue) -> Unit
+  listen : (() -> Unit) -> () -> Unit
+  written : async () -> Unit
+}
+
+pub struct ConnectedSurface {
+  kind : String
+  connect : String?
+  book : NameBook?
+  mut me : @jsjson.JValue
+  names : Map[String, @jsjson.JValue]
+  lines : Map[String, StatusLine]
+  ping_ms : Double
+  stale_ms : Double
+  backoff_ms : Double
+  clock : Clock
+  on_heard : () -> Unit
+  mut stopped : Bool
+  scope : @effect.Scope
+  log : Log
+  mut identify : async () -> @jsjson.JValue
+  mut address : async () -> String
+  mut run_socket : async (String, async (@jsjson.JValue) -> Unit) -> Unit
+  mut look_up : async (String) -> @jsjson.JValue?
+  mut look_up_email : async (String) -> String?
+  mut status_line : (@jsjson.JValue) -> StatusLine
+  usable : (@jsjson.JValue) -> Unit raise
+  // private fields
+}
+pub async fn ConnectedSurface::base_call(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
+pub fn ConnectedSurface::base_get(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
+pub fn ConnectedSurface::bot_name(Self) -> String
+pub fn ConnectedSurface::bot_user_id(Self) -> String
+pub fn ConnectedSurface::changed(Self) -> Unit
+pub fn ConnectedSurface::forget(Self, String, Double) -> Bool
+pub fn ConnectedSurface::identity(Self) -> @jsjson.JValue
+pub async fn ConnectedSurface::kept(Self, String, Double, async () -> @jsjson.JValue) -> @jsjson.JValue
+pub fn ConnectedSurface::new(String, SurfaceOptions, usable? : (@jsjson.JValue) -> Unit raise) -> Self
+pub fn ConnectedSurface::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn ConnectedSurface::profile(Self, String) -> @jsjson.JValue?
+pub async fn ConnectedSurface::refresh_identity(Self) -> Unit
+pub fn ConnectedSurface::run(Self, async () -> Unit) -> Unit
+pub fn ConnectedSurface::set_status(Self, Bool, String?) -> Unit
+pub fn ConnectedSurface::socket(Self) -> @jsjson.JValue
+pub async fn ConnectedSurface::socket_to(Self, String, SocketHooks, headers? : Array[(String, String)]) -> Unit
+pub async fn ConnectedSurface::start(Self, async (@jsjson.JValue) -> Unit) -> Unit
+pub async fn ConnectedSurface::stop(Self) -> Unit
+pub async fn ConnectedSurface::user_email(Self, String) -> String?
+pub async fn ConnectedSurface::user_name(Self, String) -> String?
+pub async fn ConnectedSurface::user_of(Self, String) -> String?
+pub fn ConnectedSurface::working(Self, @jsjson.JValue, String?, String, String?) -> Unit
+pub fn ConnectedSurface::workspace(Self) -> String?
+
+pub struct Connection {
+  surface : Surface
+  start : async (async (@jsjson.JValue) -> Unit) -> Unit
+  stop : async () -> Unit
+  socket : () -> @jsjson.JValue
+  identity : () -> @jsjson.JValue
+  on_change : (() -> Unit) -> () -> Unit
+  refresh_identity : async () -> Unit
+}
+
+pub struct Connections {
+  // private fields
+}
+pub fn Connections::chat(Self, String) -> Connection?
+pub fn Connections::ids(Self) -> Array[String]
+pub fn Connections::new(String, async (@jsjson.JValue) -> Connection, async (String, @jsjson.JValue) -> Unit, (@jsjson.JValue) -> String?, Log) -> Self
+pub fn Connections::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn Connections::reconcile(Self, Array[@jsjson.JValue]) -> Unit
+pub async fn Connections::refresh_identity(Self, String) -> Unit
+pub fn Connections::state(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn Connections::stop_all(Self) -> Unit
+
+pub struct Connects {
+  connections : Connections
+  names : NameBook
+  // private fields
+}
+pub fn Connects::chat(Self, String) -> Connection?
+pub fn Connects::chats(Self, String) -> Surface?
+pub async fn Connects::close(Self) -> Unit
+pub fn Connects::connects(Self) -> Array[@jsjson.JValue]
+pub fn Connects::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn Connects::reconcile(Self) -> Unit
+pub async fn Connects::refresh_identity(Self, String) -> Unit
+pub fn Connects::state(Self, @jsjson.JValue) -> @jsjson.JValue?
+pub async fn Connects::stop_all(Self) -> Unit
+pub fn Connects::tell(Self) -> Unit
+
+pub struct ConnectsOptions {
+  data : String
+  store : ConnectsStore
+  config : Config
+  receive : async (String, @jsjson.JValue) -> Unit
+  bound : () -> Bool
+  in_workspace : ((String?) -> Bool)?
+  fs : Fs
+  clock : Clock
+  log : Log
+}
+
+pub struct ConnectsStore {
+  live_sessions : () -> Array[String]
+  notify : (String) -> Unit
+}
+
+pub struct Endpoints {
+  bind : async (@jsjson.JValue) -> MeshEndpoint
+}
+
+pub struct Fs {
+  sep : String
+  read_text : async (String) -> String
+  read_bytes : async (String) -> Bytes
+  size : async (String) -> Double
+  write_text : async (String, String) -> Unit
+  write_bytes : async (String, Bytes) -> Unit
+  append_text : async (String, String) -> Unit
+  rename : async (String, String) -> Unit
+  rm : async (String) -> Unit
+  mkdir : async (String) -> Unit
+  readdir : async (String) -> Array[String]
+  write_private : async (String, String) -> Unit
+}
+pub fn Fs::dirname(Self, String) -> String
+pub fn Fs::join(Self, Array[String]) -> String
+
+pub(all) struct GroupEvent {
+  space : String
+  author : String
+  device : String
+  dseq : Double
+  hlc : (Double, Double)
+  prev : String
+  topic : String
+  kind : String
+  body : @jsjson.JValue
+  sig : String
+}
+pub fn GroupEvent::to_j(Self) -> @jsjson.JValue
+
+pub struct GroupLink {
+  // private fields
+}
+pub async fn GroupLink::accepted(Self) -> MeshConn?
+pub async fn GroupLink::ask(Self, String, String, body? : Asked) -> Answered
+pub async fn GroupLink::close(Self) -> Unit
+pub async fn GroupLink::connect(Self, @jsjson.JValue) -> LetIn
+pub async fn GroupLink::device(Self) -> String
+pub fn GroupLink::drop(Self, String) -> Unit
+pub fn GroupLink::new(LinkOptions) -> Self
+pub fn GroupLink::open(Self) -> Bool
+pub async fn GroupLink::ping(Self) -> Unit
+pub async fn GroupLink::stream(Self, String, String) -> Streamed
+
+pub struct GroupOptions {
+  connects : ConnectsOptions
+  endpoints : () -> Endpoints
+  create : (async (@jsjson.JValue, NameBook, GroupThreads) -> Connection)?
+  public_key : (String) -> String?
+  speech : Speech
+  uuid : () -> String
+  signer : Signer
+}
+
+pub struct GroupParts {
+  connects : Connects
+  threads : GroupThreads
+  // private fields
+}
+pub async fn GroupParts::close(Self) -> Unit
+pub fn GroupParts::shown(Self, @jsjson.JValue) -> @jsjson.JValue
+
+pub struct GroupSurface {
+  base : ConnectedSurface
+  connect : String
+  server : String
+  device_id : String
+  // private fields
+}
+pub async fn GroupSurface::begin(Self, String, String) -> @jsjson.JValue
+pub fn GroupSurface::card_ended(Self, @jsjson.JValue, String) -> Unit
+pub fn GroupSurface::channel_name(Self, String) -> @jsjson.JValue
+pub fn GroupSurface::connection(Self) -> Connection
+pub async fn GroupSurface::device(Self) -> String
+pub async fn GroupSurface::download(Self, @jsjson.JValue) -> Bytes
+pub async fn GroupSurface::history(Self, @jsjson.JValue, String, Double) -> Array[@jsjson.JValue]
+pub fn GroupSurface::known_channel(Self, String) -> @jsjson.JValue
+pub fn GroupSurface::known_person(Self, String) -> @jsjson.JValue
+pub fn GroupSurface::mention(Self, String) -> String
+pub fn GroupSurface::new(GroupSurfaceOptions) -> Self raise
+pub async fn GroupSurface::people_in(Self, String) -> Array[@jsjson.JValue]
+pub fn GroupSurface::places(Self) -> Array[@jsjson.JValue]
+pub async fn GroupSurface::post(Self, @jsjson.JValue, String, Array[@jsjson.JValue], @jsjson.JValue) -> String
+pub async fn GroupSurface::quoted(Self, @jsjson.JValue, String) -> @jsjson.JValue?
+pub async fn GroupSurface::stop(Self) -> Unit
+pub async fn GroupSurface::take(Self, String, String, async (@jsjson.JValue) -> Unit) -> Unit
+
+pub struct GroupSurfaceOptions {
+  connect : String
+  server : String
+  relays : Array[String]
+  ips : Array[String]
+  key : String
+  code : String?
+  bot_name : String?
+  threads : GroupThreads
+  book : NameBook?
+  endpoints : Endpoints
+  clock : Clock
+  ping_ms : Double?
+  stale_ms : Double?
+  backoff_ms : Double?
+  on_heard : () -> Unit
+  log : Log
+  fs : Fs
+  speech : Speech
+  uuid : () -> String
+  signer : Signer
+}
+
+pub struct GroupThreads {
+  path : String
+  // private fields
+}
+pub fn GroupThreads::drop(Self, String) -> Unit
+pub async fn GroupThreads::flushed(Self) -> Unit
+pub fn GroupThreads::forget(Self, String, String) -> Unit
+pub fn GroupThreads::kept(Self) -> @jsjson.JValue
+pub fn GroupThreads::last(Self, String, String) -> Double
+pub async fn GroupThreads::open(String, Fs, Log) -> Self
+pub fn GroupThreads::said(Self, String, String, Double, String) -> Unit
+pub fn GroupThreads::space(Self, String, String) -> SpaceKept?
+pub fn GroupThreads::spaces(Self, String) -> Array[(String, SpaceKept)]
+pub fn GroupThreads::took(Self, String, String, Double, stream? : String?) -> Unit
+
+pub struct Hlc {
+  mut ms : Double
+  mut n : Double
+}
+pub fn Hlc::new() -> Self
+pub fn Hlc::next(Self, Double) -> (Double, Double)
+pub fn Hlc::saw(Self, Double, Double) -> Unit
+
+pub struct KindOf {
+  kind : String
+  shown : (Connects, @jsjson.JValue) -> @jsjson.JValue
+  taken : ((Connects) -> Unit)?
+}
+
+#derive(Eq, Show)
+pub(all) struct Known {
+  id : String
+  origin : String
+}
+pub fn Known::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct LetIn {
+  member_id : String
+  name : String
+  owner : Bool
+  joined : Bool
+}
+
+pub struct LineReader {
+  stream : MeshStream
+  // private fields
+}
+pub async fn LineReader::chunk(Self) -> Bytes?
+pub async fn LineReader::line(Self) -> @jsjson.JValue?
+pub fn LineReader::new(MeshStream, max_line? : Int32) -> Self
+pub async fn LineReader::rest(Self) -> Bytes
+
+pub struct LinkOptions {
+  endpoints : Endpoints
+  secret_key : String
+  server : String
+  relays : Array[String]
+  ips : Array[String]
+}
+
+pub struct Listeners {
+  // private fields
+}
+pub fn Listeners::add(Self, () -> Unit) -> () -> Unit
+pub fn Listeners::clear(Self) -> Unit
+pub fn Listeners::new() -> Self
+pub fn Listeners::tell(Self) -> Unit
+
+pub struct Log {
+  write : (String, String, String, @jsjson.JValue) -> Unit
+}
+pub fn Log::error(Self, String, String, @jsjson.JValue) -> Unit
+pub fn Log::info(Self, String, String, @jsjson.JValue) -> Unit
+pub fn Log::warn(Self, String, String, @jsjson.JValue) -> Unit
+
+pub struct MeshConn {
+  open_bi : async () -> MeshStream
+  close : (Int32, String) -> Unit
+  is_closed : () -> Bool
+  accept_bi : async () -> MeshStream?
+  remote_id : () -> String
+}
+
+pub struct MeshEndpoint {
+  id : () -> String
+  connect : async (@jsjson.JValue, String) -> MeshConn
+  accept : async () -> MeshConn?
+  close : async () -> Unit
+}
+
+pub struct MeshStream {
+  read : async () -> Bytes?
+  write : async (Bytes) -> Unit
+  finish : async () -> Unit
+  reset : async (Int32) -> Unit
+  stopped : async () -> Unit
+}
+
+pub struct NameBook {
+  path : String
+  // private fields
+}
+pub fn NameBook::channel(Self, String, async () -> @jsjson.JValue) -> @jsjson.JValue
+pub async fn NameBook::close(Self) -> Unit
+pub fn NameBook::on_learn(Self, () -> Unit) -> Unit
+pub async fn NameBook::open(String, Fs, Clock, Log, options? : NameBookOptions) -> Self
+pub fn NameBook::person(Self, String, async () -> @jsjson.JValue?, stale? : (@jsjson.JValue, Double) -> Bool) -> @jsjson.JValue?
+
+pub struct NameBookOptions {
+  save_after_ms : Double
+  learn_after_ms : Double
+}
+pub fn NameBookOptions::default() -> Self
+
+pub struct Part {
+  connects : Connects
+  // private fields
+}
+pub async fn Part::changed(Self) -> Unit
+pub fn Part::connection(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn Part::learn(Self, Double, Array[String]) -> Unit
+pub async fn Part::left(Self) -> Unit
+pub async fn Part::reconnect(Self, String) -> Unit
+pub fn Part::shown(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn Part::store_changed(Self, @jsjson.JValue) -> Unit
+pub async fn Part::taken(Self) -> Unit
+
+pub struct PartDeps {
+  cards : Cards
+  recent_people : async (String) -> String
+  overview_changed : () -> Unit
+  rows_changed : () -> Unit
+  log : Log
+}
+
+pub struct Platform {
+  kind : String
+  names : String
+  connects : (@jsjson.JValue) -> Array[@jsjson.JValue]
+  credentials : (@jsjson.JValue) -> String?
+  create : async (@jsjson.JValue, NameBook) -> Connection
+  seen : (@jsjson.JValue, @jsjson.JValue) -> ((@jsjson.JValue) -> @jsjson.JValue)?
+}
+
+pub struct PrivateFile {
+  path : String
+  // private fields
+}
+pub fn PrivateFile::new(String, async (String, String) -> Unit) -> Self
+pub async fn PrivateFile::write(Self, String) -> Unit
+pub fn PrivateFile::write_soon(Self, String, (Error) -> Unit) -> Unit
+pub async fn PrivateFile::written(Self) -> Unit
+
+pub struct RemoteConnects {
+  // private fields
+}
+pub fn RemoteConnects::connects(Self) -> Array[@jsjson.JValue]
+pub fn RemoteConnects::learn(Self, String, String, @jsjson.JValue) -> Unit
+pub fn RemoteConnects::moved(Self, String, String) -> Unit
+pub fn RemoteConnects::new(String, () -> String, Asker, (String) -> NameBook?, Fs, Log) -> Self
+pub async fn RemoteConnects::ready(Self) -> Unit
+pub fn RemoteConnects::surface(Self, String) -> RemoteSurface?
+pub async fn RemoteConnects::written(Self) -> Unit
+
+pub struct RemoteSurface {
+  id : String
+  known : Known
+  station : String
+  described : @jsjson.JValue
+  // private fields
+}
+pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log) -> Self
+pub fn RemoteSurface::surface(Self) -> Surface
+
+pub struct Signer {
+  public_key : (String) -> String?
+  sign : (String, Bytes) -> String?
+  verify : (String, Bytes, String) -> Bool
+}
+
+pub struct Socket {
+  events : @effect.Queue[SocketEvent]
+  send : (Bytes) -> Unit
+  ping : () -> Unit
+  terminate : () -> Unit
+}
+
+pub(all) enum SocketEvent {
+  Opened
+  Said(Bytes, Bool)
+  Pong
+  Pinged
+  Closed
+  Failed(String)
+  Refused(Int32, String)
+}
+
+pub struct SocketHooks {
+  opened : (Socket) -> Unit
+  message : (Socket, Bytes, Bool, Double, (String?) -> Unit) -> Unit
+  ping : (Socket) -> Unit
+}
+
+pub(all) struct SpaceKept {
+  aseq : Double
+  dseq : Double
+  prev : String
+}
+
+pub struct Speech {
+  words : @session_chats.Words
+  lang : @ref.Ref[String]
+}
+pub fn Speech::station_lang(Self) -> String
+pub fn Speech::tr(Self, String, String, args? : Array[(String, String)]) -> String
+
+pub struct SseLines {
+  // private fields
+}
+pub fn SseLines::feed(Self, Bytes) -> Array[(String, String, String?)]
+pub fn SseLines::new() -> Self
+
+pub(all) struct Stamped {
+  id : String
+  event : GroupEvent
+  aseq : Double
+  n : Double
+  at : Double
+}
+
+pub struct StatusLine {
+  show : async (StatusLine, String, Double) -> Bool
+  mut message_ts : String?
+  mut page : String?
+  // private fields
+}
+pub fn StatusLine::new((async () -> Unit) -> Unit, Clock, Double, async (Self, String, Double) -> Bool) -> Self
+pub fn StatusLine::say(Self, String, message_ts? : String?, page? : String?) -> Unit
+
+pub struct Streamed {
+  status : Int32
+  headers : Map[String, String]
+  next : async () -> Bytes?
+  cancel : () -> Unit
+}
+
+pub struct Surface {
+  has : (String) -> Bool
+  get : (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  remote : Bool
+}
+pub fn Surface::bot_user_id(Self) -> String
+pub fn Surface::get_opt(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
+
+pub struct SurfaceOptions {
+  connect : String?
+  book : NameBook?
+  ping_ms : Double
+  stale_ms : Double
+  backoff_ms : Double
+  clock : Clock
+  on_heard : () -> Unit
+  log : Log
+  open_socket : ((String, Array[(String, String)]) -> Socket)?
+}
+
+pub struct Turns {
+  // private fields
+}
+pub fn Turns::idle(Self) -> Bool
+pub fn Turns::new() -> Self
+pub async fn[X] Turns::run(Self, async () -> X) -> X
+pub fn Turns::run_soon(Self, async () -> Unit) -> Unit
+pub async fn Turns::settled(Self) -> Unit
+
+pub struct WorkspaceConnects {
+  remote : RemoteConnects
+  // private fields
+}
+pub async fn WorkspaceConnects::arrived(Self, Array[String]) -> Unit
+pub async fn WorkspaceConnects::described_for(Self, String) -> (String, @jsjson.JValue)?
+pub async fn WorkspaceConnects::held_by(Self, String?, String, @jsjson.JValue?) -> String?
+pub fn WorkspaceConnects::kind_mode(Self, String) -> @jsjson.JValue?
+pub fn WorkspaceConnects::learn_of(Self, Known, String, @jsjson.JValue) -> Unit
+pub async fn WorkspaceConnects::move_all(Self, String, String) -> Unit
+pub async fn WorkspaceConnects::move_route(Self, String, String, String, String?, @jsjson.JValue, String, async () -> @jsjson.JValue) -> (Int32, @jsjson.JValue)
+pub async fn WorkspaceConnects::move_to(Self, String, String, String?, lang? : String?, locals_to? : String?, awaiting? : Array[String]) -> Unit
+pub fn WorkspaceConnects::moved_away(Self, String) -> Array[@jsjson.JValue]
+pub fn WorkspaceConnects::named_in(Self, String) -> Array[@jsjson.JValue]
+pub async fn WorkspaceConnects::new(WorkspaceDeps) -> Self
+pub fn WorkspaceConnects::own_ids(Self) -> Array[String]
+pub fn WorkspaceConnects::own_in(Self, String) -> Array[String]
+pub fn WorkspaceConnects::own_kinds(Self, String) -> Array[@jsjson.JValue]
+pub async fn WorkspaceConnects::receive(Self, String, @jsjson.JValue) -> Unit
+pub async fn WorkspaceConnects::route(Self, String, String, String, String) -> Unit
+pub fn WorkspaceConnects::runs_on(Self, String) -> String?
+pub async fn WorkspaceConnects::settle_moving(Self, peer? : String?) -> Unit
+pub async fn WorkspaceConnects::take_held(Self, String) -> Unit
+
+pub struct WorkspaceDeps {
+  data : String
+  hub : WsHub
+  store : WsStore
+  config : Config
+  here : () -> String
+  home : () -> String?
+  stations : (String) -> Array[@jsjson.JValue]
+  bus : Bus
+  names : (String) -> NameBook?
+  fs : Fs
+  log : Log
+  speech : Speech
+  uuid : () -> String
+}
+
+pub struct WsHub {
+  chat_of : async (String) -> Surface?
+  config_connects : async () -> Array[@jsjson.JValue]
+  receive : async (String, @jsjson.JValue) -> Unit
+  moved_to : async (String, String, String) -> String?
+  quiet_in : async (String) -> Bool
+  surface : async (String) -> String
+  told_bots : async (String, Array[String]) -> Unit
+}
+
+pub struct WsStore {
+  drop_connect_thread_station : async (String, String, String) -> Unit
+  set_connect_thread_station : async (String, String, String, String) -> Unit
+  connect_thread_station : async (String, String, String) -> String?
+  drop_connect_threads : async (String) -> Unit
+  connect_threads : async (String) -> Array[@jsjson.JValue]
+  connect_local_threads : async (String) -> Array[@jsjson.JValue]
+  thread_at : async (String, String, String) -> @jsjson.JValue
+}
+
+// Type aliases
+
+// Traits

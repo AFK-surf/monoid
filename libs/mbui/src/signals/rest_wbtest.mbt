@@ -63,3 +63,81 @@ test "at rest: what it kept, changed meanwhile, is told nothing and worked out n
   wake()
   assert_eq(c.plain_told.val, 1)
 }
+
+///|
+/// A memo read by a watch made in one scope (its node): its input read of `res` (told as its last reader leaves, in
+/// `released`), by tenths; how many times its input was read and its value worked out.
+priv struct MemoCase {
+  owner : ReactiveNode
+  res : Signal[Int]
+  read : () -> Int
+  inputs : Ref[Int]
+  computes : Ref[Int]
+  released : Ref[Int]
+}
+
+///|
+fn memo_case() -> MemoCase {
+  let res = signal(1)
+  let released = Ref(0)
+  res.on_unwatched(fn() { released.val += 1 })
+  let inputs = Ref(0)
+  let computes = Ref(0)
+  let m = memo(
+    fn() {
+      inputs.val += 1
+      res.get() / 10
+    },
+    fn(k) {
+      computes.val += 1
+      k * 100
+    },
+  )
+  let owner : Ref[ReactiveNode?] = Ref(None)
+  let w : Ref[Watch?] = Ref(None)
+  effect_scope(fn() {
+    owner.val = active_sub()
+    let r = watch(fn() {  })
+    r.read(fn() { m.get() }) |> ignore
+    w.val = Some(r)
+  })
+  |> ignore
+  let r = w.val.unwrap()
+  { owner: owner.val.unwrap(), res, read: fn() { r.read(fn() { m.get() }) }, inputs, computes, released }
+}
+
+///|
+test "memo: what its input read changed but its input the same, worked out nothing again" {
+  let c = memo_case()
+  assert_eq((c.inputs.val, c.computes.val), (1, 1))
+  c.res.set(2)
+  assert_eq((c.read)(), 0)
+  assert_eq((c.inputs.val, c.computes.val), (2, 1))
+  c.res.set(12)
+  assert_eq((c.read)(), 100)
+  assert_eq((c.inputs.val, c.computes.val), (3, 2))
+}
+
+///|
+test "memo: at rest it lets go of what holds, and woken with nothing changed reads its input anew, worked out nothing again" {
+  let c = memo_case()
+  let wake = rest(c.owner)
+  // (what it read let go of: the resource told, nothing kept followed)
+  assert_eq((c.released.val, c.res.watched()), (1, false))
+  wake()
+  assert_eq((c.read)(), 0)
+  assert_eq((c.inputs.val, c.computes.val), (2, 1))
+  assert_true(c.res.watched())
+}
+
+///|
+test "memo: what it read changed while at rest is worked out once as it wakes, never its value kept from before" {
+  let c = memo_case()
+  let wake = rest(c.owner)
+  assert_eq(c.released.val, 1)
+  c.res.set(25)
+  assert_eq((c.inputs.val, c.computes.val), (1, 1))
+  wake()
+  assert_eq((c.read)(), 200)
+  assert_eq((c.inputs.val, c.computes.val), (2, 2))
+}

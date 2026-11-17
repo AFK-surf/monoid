@@ -59,7 +59,13 @@ pub fn parse_thread_address(value : String) -> (String, String)? {
       return Some((channel, ts))
     }
   }
-  if channel.length() == 16 && all_of(channel, c => digit(c) || (c >= 'a' && c <= 'f')) && ts == channel {
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  let hex = (c : Char) => digit(c) || (c >= 'a' && c <= 'f')
+  let space = channel.length() == 26 &&
+    (channel.has_prefix("d_") || channel.has_prefix("s_")) &&
+    all_of(cut(channel, 2), hex)
+  let topic = ts.length() == 18 && ts.has_prefix("t_") && all_of(cut(ts, 2), hex)
+  if space && (ts == channel || topic) {
     return Some((channel, ts))
   }
   guard ts.find(".") is Some(dot) else { return None }

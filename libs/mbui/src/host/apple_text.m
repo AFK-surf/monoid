@@ -22,6 +22,9 @@ typedef struct {
   // where the shaper put the cluster's glyph in its line, past where it starts on its own (a CJK bracket after
   // another, set half a width closer)
   double dx;
+  // (the frames' thread's) the quarter-pixel phases of it drawn here or asked to be drawn ahead (bit `sub`: glyph
+  // keys' bits 26..27, text.mbt glyph_col_sub), so each is asked of the queue once
+  uint8_t subs_queued;
 } glyph_entry;
 
 static NSMutableDictionary<NSString *, NSNumber *> *keys;
@@ -82,12 +85,17 @@ static int face_id(int style) {
   return face_descs[1].count ? 1 : 0;
 }
 
-// Digits all one width (style.mbt style_tabular), as UIFont's monospacedDigitSystemFont.
-static NSDictionary *tabular_figures(void) {
-  return @{
-    (__bridge id)kCTFontFeatureTypeIdentifierKey : @(kNumberSpacingType),
-    (__bridge id)kCTFontFeatureSelectorIdentifierKey : @(kMonospacedNumbersSelector),
-  };
+// Digits all one width (style.mbt style_tabular), as UIFont's monospacedDigitSystemFont: OpenType's 'tnum', which a
+// face loaded from its file (Inter) takes and the system's too; the AAT selector beside it, as the system's face was
+// set before (scripts/apple_text_test.m holds both faces' digits one width).
+static NSArray *tabular_figures(void) {
+  return @[
+    @{(__bridge id)kCTFontOpenTypeFeatureTag : @"tnum", (__bridge id)kCTFontOpenTypeFeatureValue : @1},
+    @{
+      (__bridge id)kCTFontFeatureTypeIdentifierKey : @(kNumberSpacingType),
+      (__bridge id)kCTFontFeatureSelectorIdentifierKey : @(kMonospacedNumbersSelector),
+    },
+  ];
 }
 
 // A CJK face's marks narrow among Latin letters (style.mbt style_proportional): its pwid, kern said with it (DirectWrite
@@ -127,7 +135,7 @@ static CTFontRef face_font(int face, double size, int weight, bool tabular, bool
     [fs addObject:@{(__bridge id)kCTFontOpenTypeFeatureTag : @"cv11", (__bridge id)kCTFontOpenTypeFeatureValue : @1}];
     [fs addObject:@{(__bridge id)kCTFontOpenTypeFeatureTag : @"ss01", (__bridge id)kCTFontOpenTypeFeatureValue : @1}];
   }
-  if (tabular) [fs addObject:tabular_figures()];
+  if (tabular) [fs addObjectsFromArray:tabular_figures()];
   if (proportional) [fs addObjectsFromArray:proportional_widths()];
   if (fs.count) {
     feat = CTFontDescriptorCreateCopyWithAttributes(at ? at : d,
@@ -271,7 +279,7 @@ static CTFontRef font_for(double size, int weight, int style) {
       if (style & (32 | 64)) {
         // digits all one width (style.mbt style_tabular); marks narrow (style_proportional)
         NSMutableArray *fs = [NSMutableArray new];
-        if (style & 32) [fs addObject:tabular_figures()];
+        if (style & 32) [fs addObjectsFromArray:tabular_figures()];
         if (style & 64) [fs addObjectsFromArray:proportional_widths()];
         CTFontDescriptorRef d = CTFontDescriptorCreateWithAttributes(
             (__bridge CFDictionaryRef)@{(__bridge id)kCTFontFeatureSettingsAttribute : fs});
@@ -354,7 +362,7 @@ static int intern_at(NSString *cluster, double size, int weight, int style, doub
     entries = realloc(entries, sizeof(glyph_entry) * cap_entries);
   }
   int id_ = n_entries++;
-  entries[id_] = (glyph_entry){size, weight, style, 0, 0, 0, 0, 0, dx};
+  entries[id_] = (glyph_entry){size, weight, style, 0, 0, 0, 0, 0, dx, 0};
   [texts addObject:cluster];
   keys[k] = @(id_);
   return id_;
@@ -537,24 +545,45 @@ int32_t mb_host_atlas_generation(void) { return generation; }
 // The side of the words' atlas, or of colour glyphs' (apple.h).
 int32_t mb_host_atlas_size(int32_t colour) { return colour ? MB_ATLAS_COLOR_SIDE : MB_ATLAS_SIDE; }
 
+// A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub), in device pixels: how far right
+// of the whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's, the same).
+#define SUB_COUNT 4
+#define SUB_ALL 0x0F
+static double sub_dx(int sub) {
+  switch (sub) {
+    case 1: return 0.25;
+    case 2: return -0.50;
+    case 3: return -0.25;
+    default: return 0.0;
+  }
+}
+
+// A glyph key's base (its cluster's entry) and its phase.
+static int key_base(int full_key) { return full_key >= 0 ? (full_key & 0x03FFFFFF) : full_key; }
+static int key_sub(int full_key) {
+  int sub = full_key >= 0 ? ((full_key >> 26) & 7) : 0;
+  return sub < SUB_COUNT ? sub : 0;
+}
+
 // A cluster's picture: drawn in white at `sc` pixels a point, a pixel of room round it (no pixels: nothing to draw),
-// on whichever thread draws it, from its font alone; where it is from the pen (b, points, on whole pixels), whether it
-// is drawn from a colour font, and where Core Text put its glyphs in its line on their own (iso: for a cluster set
-// closer, glyph_entry's dx; NAN none).
+// on whichever thread draws it, from its font alone; and where it is from the pen (b, points, on whole pixels), whether
+// it is drawn from a colour font. Its ink is drawn moved right of where it is on its own by `e_dx` points, past where
+// Core Text puts its glyphs in a line of it alone (a cluster the shaper set closer in its line: glyph_entry's dx), and
+// by `sub_px` device pixels (its phase: sub_dx), the bitmap's edges on whole pixels round the ink so moved: what is
+// moved is drawn so, never a pixel's rounding of the picture's place added to it (b's left is the bitmap's, a whole
+// pixel), so a glyph's ink lands within an eighth of a pixel of where it is laid out.
 @interface MBDrawn : NSObject
 @property(nonatomic) uint8_t *px;
 @property(nonatomic) int pw, ph;
 @property(nonatomic) CGRect b;
 @property(nonatomic) int color;
-@property(nonatomic) double iso;
 @end
 @implementation MBDrawn
 - (void)dealloc { free(_px); }
 @end
 
-static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL closer, double sc) {
+static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, double e_dx, double sub_px, double sc) {
   MBDrawn *d = [MBDrawn new];
-  d.iso = NAN;
   CTLineRef line = make_line(cluster, f, style);
   // is it drawn from a color font (emoji)? slanted, from a face with no italic?
   int color = 0, oblique = 0;
@@ -567,6 +596,23 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL clo
     if (traits & kCTFontTraitColorGlyphs) color = 1;
     if ((style & 1) && !color && !(traits & kCTFontTraitItalic)) oblique = 1;
   }
+  // (set closer in its line: moved by as much as its glyphs sit further right there than they do on their own, the
+  // leftmost of them)
+  double shift = 0;
+  if (e_dx != 0) {
+    double iso = NAN;
+    for (CFIndex r = 0; r < CFArrayGetCount(runs); r++) {
+      CTRunRef run = CFArrayGetValueAtIndex(runs, r);
+      CFIndex gc = CTRunGetGlyphCount(run);
+      CGPoint *pos = malloc(sizeof(CGPoint) * (gc > 0 ? gc : 1));
+      CTRunGetPositions(run, CFRangeMake(0, 0), pos);
+      for (CFIndex g = 0; g < gc; g++)
+        if (isnan(iso) || pos[g].x < iso) iso = pos[g].x;
+      free(pos);
+    }
+    shift = e_dx - (isnan(iso) ? 0 : iso);
+  }
+  shift += sub_px / sc;
   CGRect b = CTLineGetBoundsWithOptions(line, kCTLineBoundsUseGlyphPathBounds);
   if (color || b.size.width <= 0 || b.size.height <= 0) {
     CGFloat asc, desc;
@@ -583,9 +629,10 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL clo
   // The bitmap's edges on whole pixels from the baseline, a pixel of room
   // around: the baseline then falls on a pixel row of every glyph's bitmap,
   // so glyphs placed on the same rounded baseline line up (rounding each
-  // glyph's own fractional top made them wander up and down a pixel).
-  int x0 = (int)floor(b.origin.x * sc) - 1, y0 = (int)floor(b.origin.y * sc) - 1;
-  int x1 = (int)ceil((b.origin.x + b.size.width) * sc) + 1;
+  // glyph's own fractional top made them wander up and down a pixel). Across,
+  // round the ink where it is drawn, moved by `shift`.
+  int x0 = (int)floor((b.origin.x + shift) * sc) - 1, y0 = (int)floor(b.origin.y * sc) - 1;
+  int x1 = (int)ceil((b.origin.x + b.size.width + shift) * sc) + 1;
   int y1 = (int)ceil((b.origin.y + b.size.height) * sc) + 1;
   b = CGRectMake(x0 / sc, y0 / sc, (x1 - x0) / sc, (y1 - y0) / sc);
   int pw = x1 - x0, ph = y1 - y0;
@@ -596,12 +643,16 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL clo
   size_t bpr = (size_t)pw * 4;
   uint8_t *px = calloc(bpr * ph, 1);
   CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-  CGContextRef ctx = CGBitmapContextCreate(px, pw, ph, 8, bpr, cs, kCGImageAlphaPremultipliedLast);
+  CGContextRef ctx = CGBitmapContextCreate(px, pw, ph, 8, bpr, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
   CGContextScaleCTM(ctx, sc, sc);
   CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
   CGContextSetShouldSmoothFonts(ctx, false);
+  // (its glyphs at their own places: by default Core Text puts a glyph on the nearest half pixel, so a quarter
+  // pixel's phase drew as none or as half a pixel, scripts/apple_text_test.m)
+  CGContextSetShouldSubpixelPositionFonts(ctx, true);
+  CGContextSetShouldSubpixelQuantizeFonts(ctx, false);
   CGContextSetTextMatrix(ctx, oblique ? CGAffineTransformMake(1, 0, slant, 1, 0, 0) : CGAffineTransformIdentity);
-  CGContextSetTextPosition(ctx, -b.origin.x, -b.origin.y);
+  CGContextSetTextPosition(ctx, -b.origin.x + shift, -b.origin.y);
   CTLineDraw(line, ctx);
   if (!color) {
     // (drawn in white: its cover alone is kept, the words' atlas's byte a texel)
@@ -609,19 +660,6 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL clo
     for (size_t i = 0; i < (size_t)pw * ph; i++) a[i] = px[i * 4 + 3];
     free(px);
     px = a;
-  }
-  if (closer) {
-    double iso = NAN;
-    for (CFIndex r = 0; r < CFArrayGetCount(runs); r++) {
-      CTRunRef run = CFArrayGetValueAtIndex(runs, r);
-      CFIndex gc = CTRunGetGlyphCount(run);
-      CGPoint *pos = malloc(sizeof(CGPoint) * (gc > 0 ? gc : 1));
-      CTRunGetPositions(run, CFRangeMake(0, 0), pos);
-      for (CFIndex g = 0; g < gc; g++)
-        if (isnan(iso) || pos[g].x < iso) iso = pos[g].x;
-      free(pos);
-    }
-    d.iso = iso;
   }
   d.px = px;
   d.pw = pw;
@@ -634,48 +672,54 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, BOOL clo
   return d;
 }
 
-// the glyph drawn last (mb_host_glyph), its picture until it is put in its atlas (mb_host_glyph_put)
+// the glyph drawn last (mb_host_glyph), its picture until it is put in its atlas (mb_host_glyph_put): its key with its
+// phase
 static int held_key = -1;
 static MBDrawn *held;
 
-// The glyph of `key` from its picture (drawn at text_scale): its box, and the picture held for mb_host_glyph_put
-// (where it goes in its atlas is MoonBit's: hostapi's atlas.mbt).
-static void place(int key, MBDrawn *d) {
-  glyph_entry *e = &entries[key];
+// The glyph of `full_key` from its picture (drawn at text_scale): its box (in its cluster's entry), and the picture
+// held for mb_host_glyph_put (where it goes in its atlas is MoonBit's: hostapi's atlas.mbt). Its left is the bitmap's,
+// a whole pixel: where the shaper set it and its phase are in the picture (draw_cluster).
+static void place(int full_key, MBDrawn *d) {
+  glyph_entry *e = &entries[key_base(full_key)];
   held = nil;
   held_key = -1;
   e->w = e->h = 0;
   if (!d.px) return;
   held = d;
-  held_key = key;
+  held_key = full_key;
   double sc = text_scale;
   CGRect b = d.b;
   e->w = d.pw / sc;
   e->h = d.ph / sc;
   e->ox = b.origin.x;
-  // moved by as much as its glyphs sit further right in the line than they do on their own
-  if (e->dx != 0) e->ox += e->dx - (isnan(d.iso) ? 0 : d.iso);
   e->oy = -(b.origin.y + b.size.height);
   e->color = d.color;
 }
 
-// ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), drawn on a queue of their
-// own, as Android's MBText draws them on a thread of its own; each taken as it is first asked for, from what was
-// drawn ahead: waited for while the queue draws it, drawn here when the queue has not begun it ----
+// ---- drawing ahead: the glyphs a frame shaped and did not draw (text.mbt glyphs_ahead), and the phases of a glyph
+// first drawn on the frames' thread that it was not drawn at, drawn on a queue of their own, as Android's MBText draws
+// them on a thread of its own and win_text.cpp on threads of theirs; each phase taken as it is first asked for, from
+// what was drawn ahead: waited for while the queue draws it, drawn here when the queue has not begun it. So a word
+// moved across by less than a pixel finds the phases it comes to drawn (ui's view_rephase) ----
 
 enum { AHEAD_ASKED, AHEAD_DRAWING, AHEAD_DRAWN, AHEAD_GONE };
 
-// One glyph asked to be drawn ahead: what it is drawn from (set before the queue has it, not changed after); its state
-// and its picture under ahead_lock.
+// One glyph asked to be drawn ahead at some of its phases: what it is drawn from (set before the queue has it, not
+// changed after); its state, the phases still wanted and those drawn and not taken, and their pictures under
+// ahead_lock.
 @interface MBAhead : NSObject
 @property(nonatomic) int key;
 @property(nonatomic, copy) NSString *cluster;
 @property(nonatomic, strong) id font;  // a CTFontRef
 @property(nonatomic) int style;
-@property(nonatomic) BOOL closer;
+@property(nonatomic) double dx;
 @property(nonatomic) double scale;
 @property(nonatomic) int state;
-@property(nonatomic, strong) MBDrawn *drawn;
+@property(nonatomic) uint8_t want;
+@property(nonatomic) uint8_t have;
+// by phase: an MBDrawn, NSNull where none
+@property(nonatomic, strong) NSMutableArray *drawn;
 @end
 @implementation MBAhead
 @end
@@ -685,8 +729,8 @@ enum { AHEAD_ASKED, AHEAD_DRAWING, AHEAD_DRAWN, AHEAD_GONE };
 static pthread_mutex_t ahead_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ahead_drawn = PTHREAD_COND_INITIALIZER;
 static dispatch_queue_t ahead_q;
-// (the frames' thread's) what was asked for and not placed yet, by key, and in the order asked: the queue draws them
-// in that order
+// (the frames' thread's) what was asked for and not all taken yet, by key, and in the order asked: the queue draws
+// them in that order
 static NSMutableDictionary<NSNumber *, MBAhead *> *ahead_of;
 static NSMutableOrderedSet<MBAhead *> *ahead_order;
 
@@ -694,116 +738,185 @@ static void draw_ahead(MBAhead *a) {
   pthread_mutex_lock(&ahead_lock);
   BOOL go = a.state == AHEAD_ASKED;
   if (go) a.state = AHEAD_DRAWING;
+  uint8_t want = a.want;
   pthread_mutex_unlock(&ahead_lock);
   if (!go) return;
-  MBDrawn *d;
-  @autoreleasepool {
-    d = draw_cluster(a.cluster, (__bridge CTFontRef)a.font, a.style, a.closer, a.scale);
+  MBDrawn *d[SUB_COUNT] = {nil};
+  for (int s = 0; s < SUB_COUNT; s++) {
+    if (!(want & (1 << s))) continue;
+    @autoreleasepool {
+      d[s] = draw_cluster(a.cluster, (__bridge CTFontRef)a.font, a.style, a.dx, sub_dx(s), a.scale);
+    }
   }
   pthread_mutex_lock(&ahead_lock);
-  a.drawn = d;
+  for (int s = 0; s < SUB_COUNT; s++) {
+    if (d[s]) a.drawn[s] = d[s];
+  }
+  a.have = want;
   a.state = AHEAD_DRAWN;
   pthread_cond_broadcast(&ahead_drawn);
   pthread_mutex_unlock(&ahead_lock);
 }
 
+// `a` no longer asked for: out of what the frames' thread keeps (the queue, which may have it, passes over it or lets
+// it go once drawn).
+static void ahead_let_go(MBAhead *a) {
+  [ahead_of removeObjectForKey:@(a.key)];
+  [ahead_order removeObject:a];
+}
+
 // The oldest asked, let go if it is drawn (the queue draws about in the order asked: hardly any is when it is not);
-// false when not.
+// false when not. What of it was drawn and never taken may be asked again.
 static BOOL drop_oldest_drawn(void) {
   MBAhead *a = ahead_order.firstObject;
   if (!a) return NO;
   pthread_mutex_lock(&ahead_lock);
   BOOL drawn = a.state == AHEAD_DRAWN;
-  if (drawn) a.drawn = nil;
+  uint8_t left = a.have;
+  if (drawn) {
+    a.drawn = nil;
+    a.have = 0;
+  }
   pthread_mutex_unlock(&ahead_lock);
   if (!drawn) return NO;
-  [ahead_of removeObjectForKey:@(a.key)];
-  [ahead_order removeObjectAtIndex:0];
+  if (a.key >= 0 && a.key < n_entries) entries[a.key].subs_queued &= (uint8_t)~left;
+  ahead_let_go(a);
   return YES;
 }
 
-// Everything asked for let go: the faces changed, and what is drawn in them with it.
+// Everything asked for let go: the faces or the scale changed, and what is drawn in them with it.
 static void ahead_forget(void) {
+  for (int i = 0; i < n_entries; i++) entries[i].subs_queued = 0;
   if (!ahead_order.count) return;
   pthread_mutex_lock(&ahead_lock);
   for (MBAhead *a in ahead_order) {
     if (a.state == AHEAD_ASKED) a.state = AHEAD_GONE;
     a.drawn = nil;
+    a.have = 0;
   }
   pthread_mutex_unlock(&ahead_lock);
   [ahead_of removeAllObjects];
   [ahead_order removeAllObjects];
 }
 
+// Glyph `k` asked to be drawn ahead at the phases of `want` (none of it asked before: its entry's subs_queued); the
+// asked put in `asked` for the queue. False where it is not (asked already and not all taken, or too many asked).
+static BOOL ahead_ask(int k, uint8_t want, NSMutableArray<MBAhead *> *asked) {
+  if (k < 0 || k >= n_entries || want == 0 || ahead_of[@(k)]) return NO;
+  if (ahead_order.count >= AHEAD_MOST && !drop_oldest_drawn()) return NO;
+  glyph_entry *e = &entries[k];
+  e->subs_queued |= want;
+  MBAhead *a = [MBAhead new];
+  a.key = k;
+  a.cluster = texts[k];
+  a.font = (__bridge id)font_for(e->size, e->weight, e->style);
+  a.style = e->style;
+  a.dx = e->dx;
+  a.scale = text_scale;
+  a.state = AHEAD_ASKED;
+  a.want = want;
+  a.drawn = [NSMutableArray arrayWithObjects:NSNull.null, NSNull.null, NSNull.null, NSNull.null, nil];
+  ahead_of[@(k)] = a;
+  [ahead_order addObject:a];
+  [asked addObject:a];
+  return YES;
+}
+
+// What was asked handed to the queue: each batch after the one before, its glyphs over the cores there are (a page's
+// few hundred drawn in the time a frame or two takes, not one after another).
+static void ahead_go(NSMutableArray<MBAhead *> *asked) {
+  if (!asked.count) return;
+  dispatch_async(ahead_q, ^{
+    dispatch_apply(asked.count, DISPATCH_APPLY_AUTO, ^(size_t i) { draw_ahead(asked[i]); });
+  });
+}
+
+static void ahead_ensure(void) {
+  if (ahead_q) return;
+  ahead_q = dispatch_queue_create(
+      "mbui glyphs", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
+  ahead_of = [NSMutableDictionary new];
+  ahead_order = [NSMutableOrderedSet new];
+}
+
 void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
   @autoreleasepool {
-    if (!ahead_q) {
-      ahead_q = dispatch_queue_create(
-          "mbui glyphs", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
-      ahead_of = [NSMutableDictionary new];
-      ahead_order = [NSMutableOrderedSet new];
-    }
-    NSMutableArray<MBAhead *> *asked = nil;
+    ahead_ensure();
+    NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
     for (int32_t i = 0; i < n; i++) {
       int k = keys[i];
-      if (k < 0 || k >= n_entries || ahead_of[@(k)]) continue;
-      if (ahead_order.count >= AHEAD_MOST && !drop_oldest_drawn()) break;
-      glyph_entry *e = &entries[k];
-      MBAhead *a = [MBAhead new];
-      a.key = k;
-      a.cluster = texts[k];
-      a.font = (__bridge id)font_for(e->size, e->weight, e->style);
-      a.style = e->style;
-      a.closer = e->dx != 0;
-      a.scale = text_scale;
-      a.state = AHEAD_ASKED;
-      ahead_of[@(k)] = a;
-      [ahead_order addObject:a];
-      if (!asked) asked = [NSMutableArray new];
-      [asked addObject:a];
+      if (k < 0 || k >= n_entries) continue;
+      uint8_t want = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
+      if (want == 0 || ahead_of[@(k)]) continue;
+      if (!ahead_ask(k, want, asked) && ahead_order.count >= AHEAD_MOST) break;
     }
-    // (each batch after the one before, its glyphs over the cores there are: a page's few hundred drawn in the time
-    // a frame or two takes, not one after another)
-    if (asked) dispatch_async(ahead_q, ^{
-      dispatch_apply(asked.count, DISPATCH_APPLY_AUTO, ^(size_t i) { draw_ahead(asked[i]); });
-    });
+    ahead_go(asked);
   }
 }
 
-// What was drawn ahead of `key` at the scale of now, taken; nil when it was not (asked and not begun: no longer asked,
-// drawn here).
-static MBDrawn *drawn_ahead(int key) {
+// What was drawn ahead of glyph `key` at phase `sub` and the scale of now, taken; nil when it was not (asked and not
+// begun: that phase no longer asked, drawn here).
+static MBDrawn *drawn_ahead(int key, int sub) {
   MBAhead *a = ahead_of[@(key)];
   if (!a) return nil;
-  [ahead_of removeObjectForKey:@(key)];
-  [ahead_order removeObject:a];
+  uint8_t bit = (uint8_t)(1 << sub);
   pthread_mutex_lock(&ahead_lock);
-  // (left to the queue, which passes over it)
-  if (a.state == AHEAD_ASKED) a.state = AHEAD_GONE;
+  if (a.state == AHEAD_ASKED) {
+    // (left to the queue, which draws the rest, or passes over it where nothing is left)
+    a.want = (uint8_t)(a.want & ~bit);
+    BOOL none = a.want == 0;
+    if (none) a.state = AHEAD_GONE;
+    pthread_mutex_unlock(&ahead_lock);
+    if (none) ahead_let_go(a);
+    return nil;
+  }
+  if (a.state == AHEAD_DRAWING && !(a.want & bit)) {
+    pthread_mutex_unlock(&ahead_lock);
+    return nil;
+  }
   while (a.state == AHEAD_DRAWING) pthread_cond_wait(&ahead_drawn, &ahead_lock);
-  MBDrawn *d = a.state == AHEAD_DRAWN ? a.drawn : nil;
-  a.drawn = nil;
+  MBDrawn *d = nil;
+  if (a.state == AHEAD_DRAWN && (a.have & bit) && a.scale == text_scale) {
+    id got = a.drawn[sub];
+    if (got != NSNull.null) d = got;
+  }
+  if (a.drawn) a.drawn[sub] = NSNull.null;
+  a.have = (uint8_t)(a.have & ~bit);
+  BOOL done = a.state != AHEAD_DRAWN || a.have == 0 || a.scale != text_scale;
   pthread_mutex_unlock(&ahead_lock);
-  return d && a.scale == text_scale ? d : nil;
+  if (done) ahead_let_go(a);
+  return d;
 }
 
-static void rasterize(int key) {
-  MBDrawn *d = drawn_ahead(key);
+// Glyph `full_key` (its cluster's and its phase) drawn, from what was drawn ahead of it when there is, else here; the
+// phases of it not drawn or asked yet asked of the queue, for where the words are moved to next.
+static void rasterize(int full_key) {
+  int key = key_base(full_key), sub = key_sub(full_key);
+  glyph_entry *e = &entries[key];
+  MBDrawn *d = drawn_ahead(key, sub);
   if (!d) {
-    glyph_entry *e = &entries[key];
-    d = draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx != 0, text_scale);
+    d = draw_cluster(texts[key], font_for(e->size, e->weight, e->style), e->style, e->dx, sub_dx(sub), text_scale);
   }
-  place(key, d);
+  e->subs_queued |= (uint8_t)(1 << sub);
+  uint8_t rest = (uint8_t)(SUB_ALL & ~e->subs_queued);
+  if (rest && !ahead_of[@(key)]) {
+    ahead_ensure();
+    NSMutableArray<MBAhead *> *asked = [NSMutableArray new];
+    ahead_ask(key, rest, asked);
+    ahead_go(asked);
+  }
+  place(full_key, d);
 }
 
 void mb_host_glyph(int32_t key, double *out) {
   @autoreleasepool {
-    if (key < 0 || key >= n_entries) {
+    int base = key_base(key);
+    if (base < 0 || base >= n_entries) {
       for (int i = 0; i < 7; i++) out[i] = 0;
       return;
     }
     rasterize(key);
-    glyph_entry *e = &entries[key];
+    glyph_entry *e = &entries[base];
     out[0] = 0;
     out[1] = 0;
     out[2] = e->w;
@@ -863,7 +976,7 @@ void mb_host_ref_begin(double w, double h, double scale, int32_t bg) {
   int pw = (int)round(w * scale), ph = (int)round(h * scale);
   ref_px = calloc((size_t)pw * ph * 4, 1);
   CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-  ref_ctx = CGBitmapContextCreate(ref_px, pw, ph, 8, (size_t)pw * 4, cs, kCGImageAlphaPremultipliedLast);
+  ref_ctx = CGBitmapContextCreate(ref_px, pw, ph, 8, (size_t)pw * 4, cs, (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
   CGColorSpaceRelease(cs);
   CGContextSetRGBFillColor(ref_ctx, ((bg >> 16) & 255) / 255.0, ((bg >> 8) & 255) / 255.0, (bg & 255) / 255.0, 1);
   CGContextFillRect(ref_ctx, CGRectMake(0, 0, pw, ph));

@@ -9,8 +9,8 @@
 // (@ui.code_field_node), sent as it is complete, emptied for the next try where it is refused.
 
 ///|
-/// The page in `parent`: the shield, 等待批准, what it waits for, then the steps
-/// (pair_steps_node); `clear()` of its top is under a bar (@sf.waiting_page_node). A web page nobody can approve here
+/// The page in `parent`: the shield, 等待批准, what it waits for (who took its person out and whom to ask, where so),
+/// then the steps (pair_steps_node); `clear()` of its top is under a bar (@sf.waiting_page_node). A web page nobody can approve here
 /// (@settings.lock_needs_app): 请先安装客户端 and the core's words alone, nothing waited for and no trusted device to
 /// name. The node.
 pub fn lock_wait_node(
@@ -33,13 +33,26 @@ pub fn lock_wait_node(
     },
     fn() {
       match @settings.lock_needs_app(core, here.workspace) {
-        "" => @sf.t("web-pages.security.waitingLead", args=[("name", here.name)])
+        // (its person taken out of an upgraded workspace: by whom and when, and whom to ask, the core's `me.outText`;
+        // asked again by the steps once added back)
+        "" =>
+          match lock_out_text(core, here.workspace) {
+            "" => @sf.t("web-pages.security.waitingLead", args=[("name", here.name)])
+            out => out
+          }
         words => words
       }
     },
     fn(col) { pair_steps_node(col, core, fn() { here.workspace }) },
     clear~,
   )
+}
+
+///|
+/// Who took this device's person out of workspace `ws` and when, and whom to ask, as the core's `lock` says it now
+/// (`me.outText`), "" none.
+fn lock_out_text(core : Core, ws : String) -> String {
+  text(field((core.topic)("lock", { "workspace": Json::string(ws) }).get().value, "me"), "outText")
 }
 
 ///|

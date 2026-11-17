@@ -4,7 +4,7 @@
 // site and icon, its picture over them; a GitHub pull request or issue as GitHub says it: its state, where it is and
 // when it last changed, its title, who opened it and a few facts. Its pictures come beside (@sfbase.link_picture,
 // peek_pictures.mbt), asked as the value is read; a card naming some shows once they are here, as it shows while it is
-// read till then. A chat's as the workspace's list has it: its title,
+// read till then. A chat's as its whole row has it (`chatRow`), listed or not: its title,
 // state and when it was last active, where it is, and the last thing said. Asked for as the pointer comes onto the
 // link, so the card mostly opens with it there.
 
@@ -810,13 +810,10 @@ fn chat_named(src : Source, here : String, href : String) -> Named {
 fn chat_peek(c : @ui.Ctx, src : Source, here : String, href : String, id : Int, linked : LinkedChat?) -> Unit {
   let scope = "chat-peek/" + id.to_string()
   if c.hovered(id) {
-    // (and its chat's whole row, for when it was last active: asked as the pointer comes onto it, as the card opens)
+    // (and its chat's whole row: asked as the pointer comes onto it, as the card opens)
     match chat_named(src, here, href) {
-      Chat(station, key, _, _) =>
-        match peek_listed(src, here, station, key) {
-          Some(i) if !@sfbase.whole_already(src, i) => @sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(i.station, i.session)) |> ignore
-          _ => ()
-        }
+      Chat(station, key, _, _) if peek_ours(here, station) =>
+        @sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(station, key)) |> ignore
       _ => ()
     }
   }
@@ -832,12 +829,14 @@ fn chat_peek(c : @ui.Ctx, src : Source, here : String, href : String, id : Int, 
 }
 
 ///|
-/// The card (RefPreview), from the workspace's list: the chat's mark, its title (one line, 500) and when it was last
-/// active (muted, at the end); where it is when that is another station (its mark and name), and that the link is its
-/// agent's execution history; then the message the link names (message_said), else where it stands, or the last thing
-/// said in it (three lines at most). One archived
-/// (as its message says it: `linked`), its title and that it is; any other chat not in the list (another workspace's)
-/// says only that; bars while the list or the link is read.
+/// The card (RefPreview), of the chat as its whole row says it (the core's `chatRow`, by the link's station and key:
+/// one record of the device's, whether the workspace's list shows it or not: a chat another leads, one hidden, one
+/// far down the list): the chat's mark, its title (one line, 500) and when it was last active (muted, at the end);
+/// where it is when that is another station (its mark and name), and that the link is its agent's execution history;
+/// then the message the link names (message_said), else where it stands, or the last thing said in it (three lines at
+/// most). One archived (as its message says it: `linked`), its title and that it is; any other chat its station has
+/// not (archived, gone) or another workspace's says only that it is not in the list; bars while the link or its row is
+/// read.
 fn chat_card(c : @ui.Ctx, src : Source, scope : String, here : String, href : String, linked : LinkedChat?) -> Unit {
   match linked {
     Some(l) if l.archived => {
@@ -870,23 +869,21 @@ fn chat_card(c : @ui.Ctx, src : Source, scope : String, here : String, href : St
       return
     }
   }
-  guard @sfbase.chats_of(src, @sfbase.workspace_of(here), "all").0 is Some(_) else {
-    chat_card_sample(c)
-    return
-  }
-  guard peek_listed(src, here, station, key) is Some(listed) else {
-    c.text(@sf.t("web-main.chatRef.previewGone"), style=peek_note) |> ignore
-    return
-  }
-  // (when it was last active is its whole row's, asked as the pointer came onto the link: chat_peek)
-  let whole = if @sfbase.whole_already(src, listed) {
-    Some(listed)
+  let row = if peek_ours(here, station) {
+    peek_row(@sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(station, key)).get())
   } else {
-    @sfbase.whole_of_state(listed, @sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(listed.station, listed.session)).get())
+    Some(None)
   }
-  guard whole is Some(item) else {
-    chat_card_sample(c)
-    return
+  let item = match row {
+    None => {
+      chat_card_sample(c)
+      return
+    }
+    Some(None) => {
+      c.text(@sf.t("web-main.chatRef.previewGone"), style=peek_note) |> ignore
+      return
+    }
+    Some(Some(item)) => item
   }
   let message = match (seq, item.thread) {
     (Some(seq), Some(thread)) => Some(fn() { message_said(c, src, scope, item.station, thread, seq) })
@@ -896,18 +893,22 @@ fn chat_card(c : @ui.Ctx, src : Source, scope : String, here : String, href : St
 }
 
 ///|
-/// The list's row of the chat `key` (its id, or its session) of station `station`, in the list of the workspace of
-/// station `here`: None while the list is read, or where it lists none such.
-fn peek_listed(src : Source, here : String, station : String, key : String) -> ChatItem? {
-  guard @sfbase.chats_of(src, @sfbase.workspace_of(here), "all").0 is Some(view) else { return None }
-  for d in view.days {
-    for i in d.items {
-      if i.station == station && (i.id == key || i.session == key) {
-        return Some(i)
-      }
-    }
+/// Whether a card in a chat of station `here` reads the row of a chat of station `station`: one of its own workspace.
+/// Another workspace's is not asked of the core: its card says only that it is not in the list.
+fn peek_ours(here : String, station : String) -> Bool {
+  @sfbase.workspace_of(station) == @sfbase.workspace_of(here)
+}
+
+///|
+/// A linked chat as its whole row (`chatRow`, as `s` says it) gives it: None while not answered (its station's chats
+/// never listed yet); Some(None) where its station has no such chat unarchived (archived, being archived, gone) or the
+/// core could not say; the chat, whether the workspace's list shows it or not.
+fn peek_row(s : @sfbase.TopicState) -> ChatItem?? {
+  match (s.value, s.error) {
+    (Some(Object(_) as v), _) => Some(Some(@sfbase.chat_item(v)))
+    (Some(_), _) | (_, Some(_)) => Some(None)
+    _ => None
   }
-  None
 }
 
 ///|

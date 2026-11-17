@@ -75,6 +75,17 @@ let workspace_up_jobs_sql : String =
   #|WITH wanted AS (
   #|  SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=0 AND ws=?1
   #|  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+  #|    AND session<'remote:'
+  #|  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+  #|    AND session>='remote;'
+  #|  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+  #|    AND session>='remote:' AND session<'remote;' AND NOT (instr(substr(session,8),':')>1 AND instr(substr(substr(session,8),1,instr(substr(session,8),':')-1),'/')=0
+  #|    AND (instr(substr(substr(session,8),instr(substr(session,8),':')+1),':')>1 AND instr(substr(substr(substr(session,8),instr(substr(session,8),':')+1),1,instr(substr(substr(session,8),instr(substr(session,8),':')+1),':')-1),'/')=0
+  #|    AND length(substr(substr(session,8),instr(substr(session,8),':')+1))>instr(substr(substr(session,8),instr(substr(session,8),':')+1),':')))
+  #|  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws=''
+  #|    AND session>='remote:'||?1||':' AND session<'remote:'||?1||';' AND ?1<>'' AND instr(?1,':')=0 AND instr(?1,'/')=0
+  #|    AND (instr(substr(session,length(?1)+9),':')>1 AND instr(substr(substr(session,length(?1)+9),1,instr(substr(session,length(?1)+9),':')-1),'/')=0
+  #|    AND length(substr(session,length(?1)+9))>instr(substr(session,length(?1)+9),':'))
   #|  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=2 AND ws=''
   #|) SELECT j.* FROM wanted w CROSS JOIN session_up_job_rows u ON u.session=w.session
   #|  CROSS JOIN jobs j ON j.rowid=u.job_rowid
@@ -84,14 +95,20 @@ let workspace_up_jobs_sql : String =
 /// read/store.ts JOBS_UP_IN_WORKSPACE.
 let jobs_up_in_workspace_sql : String =
   #|SELECT j.* FROM jobs j LEFT JOIN sessions s ON s.key = j.session_key
-  #|  WHERE j.state = 'running' AND (s.ws = ?1 OR (?2 AND s.ws IS NULL)
+  #|  WHERE j.state = 'running' AND (s.ws = ?1 OR (s.ws IS NULL AND CASE WHEN s.key IS NULL AND substr(j.session_key,1,7) = 'remote:'
+  #|    AND (instr(substr(j.session_key,8),':')>1 AND instr(substr(substr(j.session_key,8),1,instr(substr(j.session_key,8),':')-1),'/')=0
+  #|    AND (instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':')>1 AND instr(substr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),1,instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':')-1),'/')=0
+  #|    AND length(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1))>instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':'))) THEN substr(j.session_key,8,instr(substr(j.session_key,8),':')-1) = ?1 ELSE ?2 END)
   #|  OR typeof(j.session_key) <> 'text' OR instr(CAST(j.session_key AS BLOB), x'00') > 0
   #|  OR j.session_key GLOB '*[^ -~]*'
   #|  OR (s.ws IS NOT NULL AND (typeof(s.ws) <> 'text' OR instr(CAST(s.ws AS BLOB), x'00') > 0
   #|    OR s.ws GLOB '*[^ -~]*')))
   #|  UNION ALL
   #|  SELECT j.* FROM jobs j LEFT JOIN sessions s ON s.key = j.session_key
-  #|  WHERE j.state = 'exited' AND j.port IS NOT NULL AND (s.ws = ?1 OR (?2 AND s.ws IS NULL)
+  #|  WHERE j.state = 'exited' AND j.port IS NOT NULL AND (s.ws = ?1 OR (s.ws IS NULL AND CASE WHEN s.key IS NULL AND substr(j.session_key,1,7) = 'remote:'
+  #|    AND (instr(substr(j.session_key,8),':')>1 AND instr(substr(substr(j.session_key,8),1,instr(substr(j.session_key,8),':')-1),'/')=0
+  #|    AND (instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':')>1 AND instr(substr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),1,instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':')-1),'/')=0
+  #|    AND length(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1))>instr(substr(substr(j.session_key,8),instr(substr(j.session_key,8),':')+1),':'))) THEN substr(j.session_key,8,instr(substr(j.session_key,8),':')-1) = ?1 ELSE ?2 END)
   #|  OR typeof(j.session_key) <> 'text' OR instr(CAST(j.session_key AS BLOB), x'00') > 0
   #|  OR j.session_key GLOB '*[^ -~]*'
   #|  OR (s.ws IS NOT NULL AND (typeof(s.ws) <> 'text' OR instr(CAST(s.ws AS BLOB), x'00') > 0
