@@ -181,6 +181,49 @@ test("a part partly kept of a file changed on the station: read whole again from
   t.core.close();
 });
 
+test("cached parts transferred to a web player advance once and finish, including a gap fetched from the station", async () => {
+  for (const gap of [false, true]) {
+    const offsets: number[] = [];
+    const taken: number[] = [];
+    const fetched: number[] = [];
+    const kept: number[] = [];
+    const progress: number[] = [];
+    const inner = { runner: { fork: (e: Effect.Effect<void>) => Effect.runFork(e) } } as unknown as Inner;
+    const result = await Effect.runPromise(keptFirst(
+      inner,
+      { offset: 10, length: 12, quiet: true },
+      22,
+      (at) => Effect.sync(() => {
+        assert.ok(offsets.length === 0 || at > offsets.at(-1)!, "a transferred cached part must not be read again");
+        offsets.push(at);
+        return gap && at === 14 ? null : { type: "video/mp4", bytes: bytesOf(4, at) };
+      }),
+      () => Effect.succeed(18),
+      (loaded) => progress.push(loaded),
+      (piece) => {
+        const received = structuredClone(piece, { transfer: [piece.buffer as ArrayBuffer] });
+        taken.push(...received);
+      },
+      (at, length, _before, take, said) => Effect.sync(() => {
+        fetched.push(at);
+        const head = { type: "video/mp4", total: 22 };
+        said(head);
+        take(bytesOf(length, at));
+        return head;
+      }),
+      (_head, _at, bytes) => Effect.sync(() => { kept.push(...bytes); }),
+      (head) => head.total === 22,
+    ));
+    assert.deepEqual(offsets, [10, 14, 18]);
+    assert.deepEqual(taken, [...bytesOf(12, 10)]);
+    assert.deepEqual(fetched, gap ? [14] : []);
+    assert.deepEqual(kept, gap ? [...bytesOf(4, 14)] : []);
+    assert.deepEqual(progress, gap ? [4, 12] : [4, 8, 12]);
+    assert.equal(result.type, "video/mp4");
+    assert.equal(result.bytes.length, 0, "streamed bytes are not sent again in the final answer");
+  }
+});
+
 test("a part read stopped short (let go of, or broken off) keeps what came of it", async () => {
   const kept: [number, number[]][] = [];
   const taken: number[][] = [];
@@ -471,8 +514,12 @@ test("a chat's video streamed to a page that takes its bytes away (the web's wor
   assert.equal(said.find((m) => m.error !== undefined)?.error, undefined, "no error");
   assert.ok(said.some((m) => m.ok !== undefined), "answered");
   // read again: from the device
-  call(t.core, ui, 2, "station.file.part", { station: ST, key: "k1", name: "film.mp4", offset: 8, length: 16, keep: true, size: 64 });
+  call(t.core, ui, 2, "station.file.part", { station: ST, key: "k1", name: "film.mp4", offset: 8, length: 16, stream: true, keep: true, size: 64 });
   await t.host.settle();
+  const replayed = t.host.takeEmitted().map(([, m]) => m as { id?: number; bytes?: Uint8Array; ok?: unknown; error?: unknown }).filter((m) => m.id === 2);
+  assert.deepEqual(replayed.flatMap((m) => (m.bytes ? [...m.bytes] : [])), [...film.subarray(8, 24)], "played from cache once");
+  assert.ok(replayed.some((m) => m.ok !== undefined), "cached stream answered");
+  assert.ok(replayed.every((m) => m.error === undefined), "cached stream has no error");
   assert.equal(asked(), 1, "kept as it was played");
   t.core.close();
 });

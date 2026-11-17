@@ -160,8 +160,9 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
         fromHere = true;
         type ??= here.type;
         out.push(here.bytes);
-        if (sink) sink(here.bytes);
+        // The web sink transfers the buffer: its length is zero after it is handed on.
         at += here.bytes.length;
+        if (sink) sink(here.bytes);
         heard?.(at - c.offset);
         continue;
       }
