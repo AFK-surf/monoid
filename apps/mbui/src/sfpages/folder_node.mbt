@@ -294,7 +294,7 @@ pub fn folder_view_node(
           if view() == "columns" {
             "columns"
           } else {
-            let (value, error) = drive_folder(src, at.station, root, at.path)
+            let (value, error) = b.folder(src, at)
             match (value, error) {
               (None, Some(_)) => "failed"
               (None, None) => "reading"

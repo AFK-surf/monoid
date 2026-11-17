@@ -137,8 +137,9 @@ pub fn Browse::follow(self : Browse, v : @view.View, src : Source) -> Unit {
     if held {
       return
     }
-    @sfbase.shown_read("browse/" + self.owner)
-    @sfbase.shown_read("browse/" + self.key)
+    // (what a press handed over is let go by what reads it, as it reads it (Browse::folder), never here: this follows the
+    // switch as it is told, in the frame's end before the switched way is made, which then read anew from nothing what
+    // the press had read: a column's folder drawn in its bones and then whole, 400 ms on, over a late core)
     if p.told != here {
       // (a name being changed lets go as another folder is shown)
       if p.told != "" {
@@ -148,6 +149,18 @@ pub fn Browse::follow(self : Browse, v : @view.View, src : Source) -> Unit {
       browse_send(src, self, { "act": "at" })
     }
   })
+}
+
+///|
+/// Folder `at`'s entries as its station said them and why it could not be read (drive_folder), read by a way of the
+/// place's as it is made or read anew: saying so where a press switched it and handed it what that press asked
+/// (browse_switch, sfbase's shown_read), let go once the frame that reads it is over, as every page switched in place
+/// does where it reads.
+pub fn Browse::folder(self : Browse, src : Source, at : DriveAt) -> (Json?, String?) {
+  let r = drive_folder(src, at.station, at.root.unwrap_or(""), at.path)
+  @sfbase.shown_read("browse/" + self.owner)
+  @sfbase.shown_read("browse/" + self.key)
+  r
 }
 
 ///|

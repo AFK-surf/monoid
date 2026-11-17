@@ -218,8 +218,7 @@ priv struct LineAt {
 /// A folder and, under each of its folders opened, that one's, in by a step each (TreeView, TreeFolder): its lines.
 fn tree_lines(s : Shown, at : DriveAt, depth : Int, out : Array[Line], empty : Bool) -> Unit {
   let src = s.src
-  let root = at.root.unwrap_or("")
-  let (value, error) = drive_folder(src, at.station, root, at.path)
+  let (value, error) = s.b.folder(src, at)
   match error {
     Some(e) => {
       out.push(Note(e, true, depth))
@@ -268,8 +267,7 @@ pub fn rows_view_node(
     if tree {
       tree_lines(s, at, 0, got, empty is Some(_))
     } else {
-      let root = at.root.unwrap_or("")
-      let (value, _) = drive_folder(src, at.station, root, at.path)
+      let (value, _) = s.b.folder(src, at)
       if value is Some(_) {
         match s.b.arranged(src, at.path) {
           Some(list) =>
@@ -617,7 +615,7 @@ fn column_node(
     // a press in it where there is no row: nothing chosen
     col.presses(Is(true)).on_press(s.clear) |> ignore
     let shows = fn() {
-      let (value, error) = drive_folder(src, at.station, root, at.path)
+      let (value, error) = s.b.folder(src, at)
       match (value, error) {
         (_, Some(_)) => 1
         (None, None) => 2
