@@ -1032,11 +1032,22 @@ async function main() {
     const made = (w: World) => new clones.Clones({ reposDir: () => join(w.data, "repos"), now: () => NOW, index: { repos: async () => w.clonesIndex }, run: (args: string[]) => { const [done, kill] = fakeGit(w, args); return { done, kill }; } });
     const ca = made(a);
     const changed = (tag: string) => () => tsWorld!.tell("clones.changed", tag);
+    // (the TypeScript's clones done with the disk: none it started under way but those that hang, and none's temporary
+    // folder left. Waited for as a fact, not a count of the loop's turns: its mkdir, rm and rename take as many as the
+    // disk does, and one left under way answered the next start as running where the program's was there, on CI)
+    const started = new Set<string>();
     const settle = async () => {
-      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      for (;;) {
+        const going = ["W1", "W2", null].flatMap((ws) => ca.list(ws)).filter((c: Json) => c.state === "cloning");
+        const temps = readdirSync(join(a.data, "repos")).filter((n) => n.startsWith(".cloning-")).map((n) => n.slice(".cloning-".length));
+        const done = going.every((c: Json) => c.url.includes("hang")) && temps.every((id) => !started.has(id) || going.some((c: Json) => c.id === id));
+        if (done) return;
+        await new Promise((r) => setImmediate(r));
+      }
     };
     const step = async (label: string, given: Json, ws: string | null) => {
       const x = await tsDo(a, () => ca.start(ws, given, "ann@x", changed(label)));
+      if ("value" in x && x.value?.state === "cloning") started.add(x.value.id);
       await settle();
       const y = await mbDo(b, "clonesStart", ws, given, "ann@x", label);
       if (!label.startsWith("hang")) await mbDo(b, "settle");
