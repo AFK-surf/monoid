@@ -2,7 +2,7 @@
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
 // the endpoint and every connection and loop it started.
 import { closePeerRelays } from "./peer-relays.ts";
-import { Cause, Effect, FiberSet, Layer, Option, Stream } from "effect";
+import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
@@ -255,11 +255,28 @@ export const MeshLive = Layer.effectDiscard(
         closing: STOPPING,
       });
     });
-    yield* Effect.forkScoped(Effect.scoped(run).pipe(Effect.tapCause((cause) => Effect.sync(() => {
-      if (!Cause.hasInterruptsOnly(cause)) log.error("mesh", "mesh stopped", { error: Cause.pretty(cause) });
-    }))));
+    yield* Effect.forkScoped(keptRunning(run));
   }),
 );
+
+/// How long a mesh that stopped waits before it starts again: a second, doubling to a minute.
+export const MESH_RESTART = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("1 minute")]); // timer: retry after a failure, with a backoff
+
+/// The mesh's run in a scope of its own, started again after `MESH_RESTART` whenever it stops on anything but the
+/// station's stopping: its endpoint, connections and loops let go, then all of them made again. One that stopped stayed
+/// stopped, the process alive and every device locked out until something restarted it: a station, 2026-11-15, its
+/// mesh's first write ("database is locked", the process before still writing as the machine came up again) failed
+/// at a handover, 37 hours with no device connected and no update heard of (its presence is the mesh's too).
+export function keptRunning<E, R>(run: Effect.Effect<void, E, R>, what = "mesh"): Effect.Effect<void, never, Exclude<R, Scope.Scope>> {
+  return Effect.scoped(run).pipe(
+    Effect.sandbox,
+    Effect.tapError((cause) => Effect.sync(() => {
+      if (!Cause.hasInterruptsOnly(cause)) log.error("mesh", `${what} stopped; starting it again`, { error: Cause.pretty(cause) });
+    })),
+    Effect.retry({ schedule: MESH_RESTART, while: (cause) => !Cause.hasInterruptsOnly(cause) }),
+    Effect.ignore,
+  );
+}
 
 /// Follows the saved network settings on a running endpoint: a congestion controller chosen applies to the connections
 /// made from then on. Gives what stops following.

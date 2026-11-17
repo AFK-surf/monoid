@@ -4,7 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
+import { Clock, Effect, Exit, Fiber, Layer, Scope, Stream, SubscriptionRef } from "effect";
+import { TestClock } from "effect/testing";
 import { MeshLive } from "../src/mesh/mesh.ts";
 import { Net } from "../src/jobs/load.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
@@ -15,7 +16,7 @@ import { memoryMesh } from "./memory-mesh.ts";
 import { StationParts } from "../src/parts.ts";
 import { settle } from "./hub-fakes.ts";
 
-function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cubic" | "bbr", scenario: { front?: boolean; failures?: number } = {}) {
+function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cubic" | "bbr", scenario: { front?: boolean; failures?: number; clock?: Clock.Clock } = {}) {
   const original = process.env.STILLFAIL_MESH_BIND_ADDR;
   const originalFront = process.env.STILLFAIL_MESH_FRONT;
   if (bindAddr === undefined) delete process.env.STILLFAIL_MESH_BIND_ADDR;
@@ -80,7 +81,7 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
     yield* Layer.build(MeshLive.pipe(Layer.provide(inputs)));
     built.resolve();
     yield* Effect.never;
-  })));
+  })).pipe(scenario.clock === undefined ? (e) => e : Effect.provideService(Clock.Clock, scenario.clock)));
   return { previous, exited, built, binding, accepting, running, mesh, station: () => station!, calls: () => calls, presence: () => presence, congestion: () => boundCongestion };
 }
 
@@ -211,3 +212,39 @@ for (const bindAddr of [undefined, "0.0.0.0:0", "[::]:0"]) {
     }
   });
 }
+
+test("a mesh that stops is started again after its backoff, not left stopped with the station running", async (t) => {
+  const lines: Line[] = [];
+  hearLines((l) => void (l.at === "mesh" && l.level === "ERROR" && lines.push(l)));
+  t.after(() => hearLines(null));
+  const scope = Effect.runSync(Scope.make());
+  t.after(() => Effect.runPromise(Scope.close(scope, Exit.void)));
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  // Its first start fails as one did on a station (2026-11-15: "database is locked" at a handover), the process alive.
+  const s = startup(t, undefined, undefined, { failures: 1, clock });
+  try {
+    await s.binding.promise;
+    await settle();
+    assert.equal(s.calls(), 1);
+    assert.deepEqual(lines.map((l) => l.message), ["mesh stopped; starting it again"]);
+    await Effect.runPromise(clock.adjust("999 millis"));
+    await settle();
+    assert.equal(s.calls(), 1);
+    await Effect.runPromise(clock.adjust("1 millis"));
+    await s.accepting.promise;
+    assert.equal(s.calls(), 2);
+  } finally { await Effect.runPromise(Fiber.interrupt(s.running)); }
+});
+
+test("a station stopped while its mesh waits to start again does not start it", async (t) => {
+  const scope = Effect.runSync(Scope.make());
+  t.after(() => Effect.runPromise(Scope.close(scope, Exit.void)));
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  const s = startup(t, undefined, undefined, { failures: 1, clock });
+  await s.binding.promise;
+  await settle();
+  await Effect.runPromise(Fiber.interrupt(s.running));
+  await Effect.runPromise(clock.adjust("1 minute"));
+  await settle();
+  assert.equal(s.calls(), 1);
+});
