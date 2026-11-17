@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.61 | 65.73 | 95.95 | 116.5 |
 | [cda493b2d](https://github.com/AFK-surf/monoid/commit/cda493b2d361e4bbfadd3c436b6952ae18f8313b) docs: changelog notes for the 16 squash commits me | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.61 | 65.73 | 95.95 | 116.5 |
 | [eb3f3a3a1](https://github.com/AFK-surf/monoid/commit/eb3f3a3a199d8006ff0068435567a00910c3bb6f) mbui: 分享图片层与全屏可视化改为节点（publish old-list 1 → 0、build | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.53 | 65.35 | 95.75 | 116.75 |
 | [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.53 | 65.35 | 95.75 | 116.75 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 2.46 | 3.45 | 14.67 | 35.88 | 57.43 | 31.47 | 65.03 | 99.99 | 122.71 |
 | [0a099ace6](https://github.com/AFK-surf/monoid/commit/0a099ace607d5db2a754447de3a40059a597756d) core-ts: drop only the silent stream's way and app | 2.46 | 3.45 | 14.67 | 35.88 | 57.4 | 31.47 | 65.01 | 100.07 | 120.32 |
-| [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 2.46 | 3.45 | 14.67 | 35.88 | 57.4 | 31.46 | 65.01 | 100.3 | 111.98 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
 | [cda493b2d](https://github.com/AFK-surf/monoid/commit/cda493b2d361e4bbfadd3c436b6952ae18f8313b) docs: changelog notes for the 16 squash commits me | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
 | [eb3f3a3a1](https://github.com/AFK-surf/monoid/commit/eb3f3a3a199d8006ff0068435567a00910c3bb6f) mbui: 分享图片层与全屏可视化改为节点（publish old-list 1 → 0、build | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
 | [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cb0eb0ffa](https://github.com/AFK-surf/monoid/commit/cb0eb0ffa85c5076b4186b9a1e3d1373dd5b38de) mbui app: each-lookup cleared to none; the board's | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [776ef5c39](https://github.com/AFK-surf/monoid/commit/776ef5c391241ece161a9d952fc8cf9ffef64bc4) mbui: 全部密钥, 连接, 更新日志 and 自动补全 run only the binding | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [0a099ace6](https://github.com/AFK-surf/monoid/commit/0a099ace607d5db2a754447de3a40059a597756d) core-ts: drop only the silent stream's way and app | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
-| [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
