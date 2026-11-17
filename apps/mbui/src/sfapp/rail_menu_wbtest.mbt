@@ -43,7 +43,7 @@ test "right clicking a workspace opens the rail's menu beside it and inside the 
         t.run_for(@ui.move_most_ms)
       }
       let held = t.audit()
-      let (x, y, w, h) = t.query(Button, label=name).unwrap().rect
+      let (x, y, w, h) = rail_workspace_shown(t, name)
       t.right_click(x + w / 2.0, y + h / 2.0)
       t.run_for(@kit.pop_ms)
       let (mx, my, mw, mh) = t.query(Menu).unwrap().rect
@@ -59,7 +59,7 @@ test "right clicking a workspace opens the rail's menu beside it and inside the 
 test "a workspace's menu in a short window scrolls to its last action" {
   let t = wide_tester([], h=220.0)
   t.host_says_finger(Some(false))
-  let (x, y, w, h) = t.query(Button, label="个人").unwrap().rect
+  let (x, y, w, h) = rail_workspace_shown(t, "个人")
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@kit.pop_ms)
   let (mx, my, mw, mh) = t.query(Menu).unwrap().rect
@@ -120,4 +120,21 @@ test "customizing the rail replaces its menu immediately, leaving the new panel 
   t.frame()
   t.tap_text("我参与的")
   assert_true(named(calls, "prefs.set").length() > 0, msg="the panel takes the press")
+}
+
+///|
+/// The button of the workspace `name`, its list (at the rail's foot, under the ＋, giving way and scrolling where the
+/// window is short) wheeled over its ＋ till the button shows whole over the settings' key.
+fn rail_workspace_shown(t : @ui.Tester, name : String) -> (Double, Double, Double, Double) {
+  let (ax, ay, aw, ah) = t.query(Button, label=@sf.t("web-main.rail.addWorkspace")).unwrap().rect
+  let gear = t.query(Button, label="设置").unwrap().rect.1
+  for _ in 0..<8 {
+    let (x, y, w, h) = t.query(Button, label=name).unwrap().rect
+    if y + h <= gear {
+      return (x, y, w, h)
+    }
+    t.wheel(ax + aw / 2.0, ay + ah / 2.0, 120.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  t.query(Button, label=name).unwrap().rect
 }

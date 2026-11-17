@@ -1262,6 +1262,10 @@ pub let said_paths : Map[String, Array[String]] = {
     "items.*.detail",
     "lines.*",
   ],
+  "terminalCard": [
+    "title",
+    "line",
+  ],
   "threads": [
     "*.channelName",
     "*.title",

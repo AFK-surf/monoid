@@ -36,6 +36,7 @@ pub fn reset() -> Unit {
   files_reset()
   station_pick_reset()
   screen_fix_mode.val = ""
+  screen_fix_by_screen.val = false
   screen_fix_heard.val = None
   screens_open.clear()
   screen_uis.clear()

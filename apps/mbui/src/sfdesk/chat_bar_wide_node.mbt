@@ -753,12 +753,12 @@ fn wide_bar_keys(
       o.box(fn(d) { @sf.style_node(d, fn() { if alarm() == "fail" { jobs_alarm_fail } else { jobs_alarm_restart } }) })
       |> ignore
     })
-    // the way to its station's screens, while it has any; marked while an agent drives one
+    // unified way to the station's remote screens, browser and workspace terminal; marked while an agent drives one
     k.show(
       fn() {
         own() &&
         (match view() {
-          Some(v) => v.screens.length() > 0
+          Some(v) => chat_has_remote(v)
           None => false
         })
       },
@@ -767,7 +767,7 @@ fn wide_bar_keys(
           let me : Ref[@view.View?] = Ref(None)
           let button = @sf.icon_button_node(sb, "monitor", fn() { @sf.t("web-pages.chat.screen") }, fn() {
             match (@signals.untracked(view), me.val) {
-              (Some(v), Some(at)) => chat_screens_open(r, v.screens, from=Node(at))
+              (Some(v), Some(at)) => chat_remote_open(src, r, v, from=Node(at))
               _ => ()
             }
           }, tips~, linked=ends.linked, shortcut="chat.screen")
@@ -782,7 +782,7 @@ fn wide_bar_keys(
           sb.show(driven, fn(o) {
             // (over the button, not after it: the old view's layer)
             o.over(Is(true)) |> ignore
-            @sf.style_node(o, fn() { jobs_alarm_room })
+            @sf.style_node(o, fn() { screen_driven_room })
             o.box(fn(d) { @sf.style_node(d, fn() { screen_driven_dot }) }) |> ignore
           })
         })

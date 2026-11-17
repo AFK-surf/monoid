@@ -693,7 +693,13 @@ pub fn long_jobs_read(v : @view.View, src : Source, workspace : () -> Workspace?
 pub fn long_stop(station : String, job : Json?) -> (String, Json, Array[(String, String)]) {
   match field(job, "stop") {
     Some(Object(_)) as stop => {
-      let on = [("station", station), ("screen", text(stop, "screen"))]
+      let on : Array[(String, String)] = [("station", station)]
+      if text(stop, "screen") != "" {
+        on.push(("screen", text(stop, "screen")))
+      }
+      if text(stop, "terminal") != "" {
+        on.push(("terminal", text(stop, "terminal")))
+      }
       if text(stop, "view") != "" {
         on.push(("view", text(stop, "view")))
       }

@@ -103,3 +103,18 @@ test "turn takes in the same turn what is answered while it runs" {
   assert_eq(t.turn(), None)
   assert_true(fiber.is_done())
 }
+
+///|
+test "natively a tab's claim is held at once, and taking it over or letting it go tells nothing more" {
+  let told : Array[TabState] = []
+  let claim = claim_tab("one", s => told.push(s))
+  assert_eq(told, [Held])
+  claim.take_over()
+  claim.release()
+  claim.release()
+  claim.take_over()
+  let other : Array[TabState] = []
+  ignore(claim_tab("one", s => other.push(s)))
+  assert_eq(told, [Held])
+  assert_eq(other, [Held])
+}

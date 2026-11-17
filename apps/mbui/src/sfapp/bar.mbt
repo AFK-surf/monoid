@@ -1296,6 +1296,8 @@ fn bar_place_add(src : Source, ws : Workspace, active : String?) -> ((@sf.Beside
         None => None
       }
     }
+    // (远程: none, each station's heading has its own ＋, sfpages' remote_station_head_node)
+    Some("remote") => None
     Some(a) => @settings.place_action(settings_core(src, ws), @settings.here_of(settings_core(src, ws), ws.id, ws.name), a)
     None => None
   }
@@ -1656,6 +1658,9 @@ fn bar_drawn(c : @ui.Ctx, src : Source, ws : Workspace, active : String?, shown 
   match field(chats.value, "trouble") {
     Some(Object(_)) => dots["stations"] = t.p.red
     _ => ()
+  }
+  if @sfpages.remote_agent_lit(src, ws.id) {
+    dots["remote"] = t.p.primary
   }
   // the stations at a glance in Station's place, and in words
   let (glyph, said) = stations_at_glance(src, ws.id)

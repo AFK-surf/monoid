@@ -1411,6 +1411,7 @@ fn app_tell(name : String, arg : String) -> Unit {
   match name {
     "mbui.page.title" => js_set_page_title(arg)
     "mbui.page.theme_color" => js_set_theme_color(arg)
+    "mbui.page.cjk_face" => js_set_cjk_face(arg)
     "mbui.page.history_push" => js_history_push(arg)
     "mbui.page.history_replace" => js_history_replace(arg)
     "mbui.page.history_back" => js_history_back()
@@ -1435,6 +1436,11 @@ extern "js" fn js_set_page_title(title : String) -> Unit =
 ///|
 extern "js" fn js_set_theme_color(color : String) -> Unit =
   #|(c) => { const H = globalThis.__mbhost; if (H && H.setThemeColor) H.setThemeColor(c) }
+
+///|
+/// `{"face", "step", "families"}` (@webpage.set_cjk_face) handed to the page's host: the face's CJK companion.
+extern "js" fn js_set_cjk_face(said : String) -> Unit =
+  #|(s) => { const H = globalThis.__mbhost; if (!H || !H.setCjkFace) return; const o = JSON.parse(s); H.setCjkFace(o.face, o.step, o.families) }
 
 ///|
 extern "js" fn js_history_location() -> String =

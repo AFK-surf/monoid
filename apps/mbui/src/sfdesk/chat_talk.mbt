@@ -175,7 +175,7 @@ fn chat_body_nodes(
   })
   .on_action("chat.screen", fn(_) {
     guard chat_view() is Some(cv) else { return false }
-    chat_screen_first(r, cv.screens)
+    chat_remote_first(r, cv.screens, cv.can_terminal())
     true
   })
   |> ignore

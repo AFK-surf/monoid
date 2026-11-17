@@ -29,6 +29,9 @@ D="$(cd "$(dirname "$0")" && pwd)"
 ROOT=$(cd "$D/.." && pwd)
 MOD=$(cd "${MBUI_APP_MOD:-$ROOT}" && pwd)
 cd "$MOD"
+# (the tools it runs, for an app of another module, built in its out/mbui-tools where mbui has none built: mbui left as
+# it is, scripts/mbc)
+[ -z "${MBUI_APP_MOD:-}" ] || export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$MOD/out/mbui-tools}
 PROJ=${MBUI_ANDROID:-$ROOT/android}
 APP_ID=${MBUI_APP_ID:-dev.mbui.demo}
 VARIANT=${VARIANT:-debug}

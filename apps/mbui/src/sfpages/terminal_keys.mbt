@@ -132,6 +132,30 @@ fn terminal_select_all_key(k : @ui.KeyIn) -> Bool {
 }
 
 ///|
+/// Font zoom shortcut (`⌘+`/`⌘=` -> Some(10), `⌘-` -> Some(-10), `⌘0` -> Some(0) reset; `Ctrl+Shift+=` / `Ctrl+-` /
+/// `Ctrl+0` when `Ctrl` is held without `Alt` on non-macOS).
+fn terminal_zoom_key(k : @ui.KeyIn) -> Int? {
+  match k {
+    Key(down=true, key~, code~, mods~) => {
+      guard (mods & @ui.key_in_alt) == 0 else { return None }
+      let has_cmd = (mods & @ui.key_in_meta) != 0 ||
+        (@ui.platform() != 0 && (mods & @ui.key_in_ctrl) != 0)
+      guard has_cmd else { return None }
+      if key == "+" || key == "=" || code == "Equal" || code == "NumpadAdd" {
+        Some(10)
+      } else if key == "-" || key == "_" || code == "Minus" || code == "NumpadSubtract" {
+        Some(-10)
+      } else if key == "0" || code == "Digit0" || code == "Numpad0" {
+        Some(0)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
 /// What pasting `words` sends the terminal: bracketed (`ESC [ 200 ~ … ESC [ 201 ~`, any bracketed-end inside `words`
 /// stripped so pasted text cannot break out of the bracket) where `bracketed` holds, else `words` as they are.
 fn terminal_pasted_of(words : String, bracketed : Bool) -> String {
