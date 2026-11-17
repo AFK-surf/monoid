@@ -1019,6 +1019,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
                 },
               ),
               ("speed", speed),
+              ("tui", jbool(i.get("tui") is Some(Bool(true)))),
               ("context", context),
               (
                 "title",
@@ -1566,6 +1567,11 @@ async fn Admin::session_action(
           raise Refused(400, "afresh is true, false or null")
         }
         change = jset(change, "afresh", a)
+      }
+      if jhas(i, "tui") {
+        let mode = i.get("tui").unwrap()
+        if !(mode is Bool(_)) { raise Refused(400, "tui must be a boolean") }
+        change = jset(change, "tui", mode)
       }
       if jhas(i, "speed") {
         change = jset(change, "speed", self.speed_asked(i.get("speed")))

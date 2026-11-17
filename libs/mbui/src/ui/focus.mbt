@@ -626,6 +626,7 @@ fn Ctx::focus_moved(self : Ctx, id : Int, visible? : Bool, returned? : Bool = fa
   }
   // (come to a field of the tree's: its caret blinking from this moment, tree_field_focus_came)
   if self.focus != was {
+    tree_field_focus_went(was)
     tree_field_focus_came(self)
   }
   // (what of the old views reads it told now, with the tree's, in a build too: what read it as it was before (a field

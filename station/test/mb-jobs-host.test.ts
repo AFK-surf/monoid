@@ -170,6 +170,21 @@ test("a link preview of a GitHub pull request, as its API says it", { skip }, as
   assert.deepEqual(preview, { kind: "github_pull_request", url: "https://github.com/o/r/pull/5", repository: "o/r", number: 5, title: "Fix", state: "open", author: { login: "u" }, additions: 3, deletions: 1, changedFiles: 2, updatedAt: Date.parse("2026-01-02T03:04:05Z"), checks: { passed: 1, failed: 0, pending: 1 } });
 });
 
+test("the MoonBit station shows the failed job and links to its step in this attempt", { skip }, async () => {
+  const url = "https://github.com/o/r/actions/runs/12345678901/attempts/1";
+  const path = "repos/o/r/actions/runs/12345678901/attempts/1";
+  const run = { run_number: 12, run_attempt: 1, name: "pipeline", display_title: "Ship", status: "completed", conclusion: "failure",
+    head_branch: "main", head_sha: "123456789", run_started_at: "2026-01-01T12:00:00Z", updated_at: "2026-01-01T12:12:00Z" };
+  const job = { id: 9876543210, name: "desktop", status: "completed", conclusion: "failure",
+    steps: [{ number: 3, name: "Sign", status: "completed", conclusion: "failure" }] };
+  const jobs = { total_count: 1, jobs: [job] };
+  const preview = await mb({ op: "links.preview", href: url, api: { [path]: run, [path + "/jobs?per_page=100&page=1"]: jobs } });
+  assert.equal(preview.state, "failure");
+  assert.deepEqual(preview.counts, { failed: 1 });
+  assert.deepEqual(preview.jobs, [{ name: "desktop", step: "Sign", url: "https://github.com/o/r/actions/runs/12345678901/job/9876543210#step:3:1" }]);
+  assert.equal(preview.finishedAt - preview.startedAt, 12 * 60000);
+});
+
 // ── the preview proxy and WebSocket, round-tripped through a real server ──
 
 test("the preview proxy passes a request and its answer, strips framing headers and rewrites a self-redirect", { skip }, async () => {

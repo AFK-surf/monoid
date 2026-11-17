@@ -348,3 +348,14 @@ test("frequent configurations keep Ultrafast distinct from Fast and Standard", (
   assert.deepEqual(combos.filter((x) => x.selected).map((x) => x.speed), ["ultrafast"]);
   assert.equal(combos.find((x) => x.speed === "ultrafast").speedText, "Ultrafast");
 });
+
+test("frequent Claude configurations offer TUI only on stations that run it", () => {
+  const option = { model: "claude-opus-5-5", name: "Opus", runtimes: ["claude"] };
+  const base = { model: option.model, runtime: "claude" };
+  const history = recordCombo(recordCombo([], base, 1), { ...base, tui: true }, 2);
+  const current = resolve([option], { ...base, tui: true });
+  const offered = frequentCombos(history, [option], current, null, false, undefined, true);
+  assert.deepEqual(offered.map((x) => x.tui === true), [true, false]);
+  assert.equal(offered[0].selected, true);
+  assert.deepEqual(frequentCombos(history, [option], current).map((x) => x.tui === true), [false]);
+});

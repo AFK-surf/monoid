@@ -16,11 +16,13 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { wall } from "../ops/fibers.ts";
 import { thumbnail } from "../drive/thumbs.ts";
+import { actionsRun, actionsRunOf, type RunPreview } from "./actions-run.ts";
 
 type Json = any;
 
 export type Person = { login: string; avatar?: string };
 export type LinkPreview =
+  | RunPreview
   | { kind: "page"; url: string; title: string; description?: string; site?: string; icon?: string; image?: string }
   | {
       kind: "github_pull_request";
@@ -69,21 +71,24 @@ const kept = new Map<string, { at: number; value: Promise<LinkPreview | null> }>
 export function linkPreview(href: string, now = wall.now()): Promise<LinkPreview | null> {
   const known = kept.get(href);
   if (known && now - known.at < KEEP_MS) return known.value;
-  const value = find(href).catch(() => null);
+  const url = URL.parse(href);
+  if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) return Promise.resolve(null);
+  const run = actionsRunOf(url);
+  const value = find(href, url, run).catch(() => null);
+  if (run) void value.then(() => {
+    if (kept.get(href)?.value === value) kept.delete(href);
+  });
   kept.delete(href);
   kept.set(href, { at: now, value });
   while (kept.size > KEPT) kept.delete(kept.keys().next().value!);
   return value;
 }
 
-async function find(href: string): Promise<LinkPreview | null> {
-  let url: URL;
-  try {
-    url = new URL(href);
-  } catch {
-    return null;
+async function find(href: string, url: URL, run: ReturnType<typeof actionsRunOf>): Promise<LinkPreview | null> {
+  if (run) {
+    const found = await actionsRun(url, run, githubApi).catch(() => null);
+    if (found) return found;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
   const gh = /^\/([\w.-]+)\/([\w.-]+)\/(pull|issues)\/(\d+)(?:[/?#]|$)/.exec(url.pathname);
   if (url.hostname === "github.com" && gh) {
     const found = await github(gh[1]!, gh[2]!, gh[3] === "pull", Number(gh[4]), href).catch(() => null);

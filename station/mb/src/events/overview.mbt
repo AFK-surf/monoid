@@ -738,6 +738,7 @@ pub fn overview(
                     ("connectRuntimeChange", Some(Bool(true))),
                     ("accountSubsets", Some(Bool(true))),
                     ("modelSpeeds", Some(Bool(true))),
+                    ("claudeTui", Some(Bool(true))),
                     ("modelMakers", Some(model_makers(catalog, profiles))),
                     (
                       "contextCaps",

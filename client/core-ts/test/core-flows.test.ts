@@ -1099,13 +1099,14 @@ test("an account's topic gives the app each station once when it has two copies"
 
 /// A core whose station has three profiles: p1 (unchecked) and p2 run Claude Code, p3 Codex (core/tests.rs
 /// `choosing_core`); `speed`: its session on Codex with `fast` as given, p3 offering `fast` as `profileFast`.
-async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds: boolean | readonly string[] = false, codexModel = "gpt-6-astra") {
+async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds: boolean | readonly string[] = false, codexModel = "gpt-6-astra", claudeTui = false) {
   const s = (key: string) => (speed ? { ...session(key), runtime: "codex", model: codexModel, profile: "p3", fast: sessionFast } : session(key));
   return started({
     ...base(),
     "GET /overview": {
       ...overview,
       sessionRuntimeChange: switchRuntime,
+      ...(claudeTui ? { claudeTui: true } : {}),
       ...(modelSpeeds ? { modelSpeeds: true } : {}),
       connectRuntimeChange: switchRuntime,
       ...(contexts ? { contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: { "claude-opus-5-5": 1_000_000 } } } : {}),
@@ -4142,6 +4143,39 @@ test("Ultrafast round trips through the picker, new chats and presets; older sta
       await ask(host, core, ui, 6, "pick.save", { station: "ws/st", of: "connect-new:preset", model: codexModel, runtime: "codex", speed: "ultrafast" });
       apply(host, values);
       assert.equal(v(values, 7).value.speed, "ultrafast");
+    }
+    core.close();
+  }
+});
+
+test("Claude run mode reaches existing chats, new chats and presets on stations that offer it", async () => {
+  for (const available of [true, false]) {
+    const { host, core } = await choosing(false, false, null, true, false, false, undefined, available);
+    const ui = core.connect();
+    const at = { station: "ws/st", of: "session:k1" };
+    subscribe(core, ui, 1, { topic: "pick", ...at });
+    subscribe(core, ui, 2, { topic: "newChat", scope: "ws" });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    assert.equal(v(values, 1).claudeModeAvailable === true, available);
+    if (available) {
+      await ask(host, core, ui, 3, "pick.save", { ...at, tui: true });
+      assert.equal(stationPosted(host, "/sessions/k1/settings").at(-1).tui, true);
+      await ask(host, core, ui, 4, "pick.save", { station: "ws/st", of: "new", model: "claude-opus-5-5", runtime: "claude", tui: true });
+      await ask(host, core, ui, 5, "newChat.create", { station: "ws/st" });
+      assert.equal(stationPosted(host, "/sessions").at(-1).tui, true);
+      const preset = { station: "ws/st", of: "connect-new:preset" };
+      subscribe(core, ui, 6, { topic: "pick", ...preset });
+      await host.settle();
+      await ask(host, core, ui, 7, "pick.save", { ...preset, model: "claude-opus-5-5", runtime: "claude", tui: true });
+      apply(host, values);
+      assert.equal(v(values, 6).value.tui, true);
+      await ask(host, core, ui, 8, "pick.save", { ...preset, tui: false });
+      apply(host, values);
+      assert.notEqual(v(values, 6).value.tui, true);
+    } else {
+      await assert.rejects(ask(host, core, ui, 3, "pick.save", { ...at, tui: true }), /station/i);
     }
     core.close();
   }

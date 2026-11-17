@@ -41,7 +41,7 @@ function shellEnv(): NodeJS.ProcessEnv {
 
 const metaOf = (v: any): TerminalMeta | null =>
   v !== null && typeof v === "object" && typeof v.by === "string" && typeof v.at === "number" && typeof v.cwd === "string" && typeof v.workspace === "string"
-    ? { by: v.by, at: v.at, cwd: v.cwd, workspace: v.workspace, ...(typeof v.chat === "string" ? { chat: v.chat } : {}) }
+    ? { by: v.by, ...(typeof v.byEmail === "string" ? { byEmail: v.byEmail } : {}), at: v.at, cwd: v.cwd, workspace: v.workspace, ...(typeof v.chat === "string" ? { chat: v.chat } : {}) }
     : null;
 
 export const TerminalsLive = Layer.effectDiscard(

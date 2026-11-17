@@ -499,10 +499,15 @@ function about(conn: Connection): Record<string, string> {
   }
 }
 
+/// The port a phone asks for first, even when a listener already holds it.
+export function usualPort(device: string): number {
+  const hash = createHash("sha256").update(device).digest();
+  return PORTS.start + (((hash[0] << 8) | hash[1]) % (PORTS.end - PORTS.start));
+}
+
 /// A port of the phone's own: its usual one if free, else any.
 export async function bind(device: string): Promise<net.Server> {
-  const hash = createHash("sha256").update(device).digest();
-  const usual = PORTS.start + (((hash[0] << 8) | hash[1]) % (PORTS.end - PORTS.start));
+  const usual = usualPort(device);
   // An offer from before (the station handed over to a new one) may hold it a moment yet: tried 5 times, each miss
   // waited 500 ms after.
   const usualOne = Effect.tryPromise(() => listenOn(usual)).pipe(

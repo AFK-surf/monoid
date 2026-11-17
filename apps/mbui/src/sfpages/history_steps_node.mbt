@@ -3201,9 +3201,17 @@ fn open_tool_reader(title : String, raw_copy : String, body : (@view.View) -> Un
   @sf.panel_nodes(
     if title != "" { title } else { "查看内容" },
     fn(p, _) {
-      p.box(fn(b) {
-        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(tool_reader_body) })
-        body(b)
+      // (what it holds scrolling in itself past the panel's share of the window, its title and foot where they are: a
+      // tall panel's body scrolls itself, panel_nodes' `tall`)
+      p.box(fn(room) {
+        room.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+          s.box(fn(b) {
+            @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(tool_reader_body) })
+            body(b)
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },

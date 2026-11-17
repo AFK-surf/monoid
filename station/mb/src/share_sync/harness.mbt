@@ -791,6 +791,7 @@ async fn World::case(self : World, op : String, c : Json) -> Json {
         for l in self.listeners.copy() {
           (l.1)()
         }
+        self.idle()
       }
       jnull()
     }

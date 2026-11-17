@@ -31,7 +31,7 @@ pub fn shell_of(os : String, shell : String?) -> (String, Array[String]) {
 pub fn meta_of(v : J?) -> TerminalMeta? {
   guard v is Some(Obj(_) | Arr(_)) else { return None }
   match (text(get(v, "by")), num(get(v, "at")), text(get(v, "cwd")), text(get(v, "workspace"))) {
-    (Some(by), Some(at), Some(cwd), Some(workspace)) => Some({ by, at, cwd, chat: text(get(v, "chat")), workspace })
+    (Some(by), Some(at), Some(cwd), Some(workspace)) => Some({ by, by_email: text(get(v, "byEmail")), at, cwd, chat: text(get(v, "chat")), workspace })
     _ => None
   }
 }

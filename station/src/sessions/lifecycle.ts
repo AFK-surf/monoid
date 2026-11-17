@@ -40,6 +40,7 @@ export type NewChat = {
   effort?: string | null;
   fast?: boolean | null;
   speed?: ModelSpeed | null;
+  tui?: boolean;
   /// The most context it runs with, in tokens (sessions/context-cap.ts); none: the model's whole window.
   context?: number | null;
   title?: string | null;
@@ -258,6 +259,7 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
     model: model ?? profile.model ?? null,
     effort,
     fast: FAST_RUNTIMES.includes(runtime) ? (options.speed ? options.speed !== "standard" : options.fast ?? null) : null,
+    tui: runtime === "claude" && options.tui === true,
     speed: options.speed ?? null,
     context: options.context ?? null,
     workspace,
@@ -321,10 +323,13 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
     if (repick || leftPool) hub.accounts.repick(key);
     else if (profile === null || (!fixed && speed === "ultrafast" && change.speed !== undefined)) hub.accounts.runOn(key, false, true);
   }
+  const tui = runtime === "claude" && (change.tui ?? row.tui ?? false);
+  const modeChanged = tui !== (row.tui ?? false);
+  if (modeChanged) hub.store.setSessionTui(key, tui);
   if (movedRuntime && speed !== null) hub.store.setSessionSpeed(key, speed);
   // Another most context is what its process starts with (Claude Code's settings, a Codex thread's config): only a new
   // one takes it.
-  await hub.changed(key, movedRuntime || recapped);
+  await hub.changed(key, movedRuntime || recapped || modeChanged);
   // Another runtime, model, effort or speed: said in its chat, before and after.
   const now = hub.store.getSession(key);
   if (now) {

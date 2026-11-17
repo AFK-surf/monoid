@@ -525,6 +525,7 @@
   "core-logic.notice.run.toLead": "换成",
   "core-logic.notice.run.was": "之前：{run}",
   "core-logic.format.connection.no_group": "未连接 Group",
+  "core-logic.choose.error.station_claude_tui": "请更新 station 后再使用 Claude TUI 模式。",
   "core-logic.choose.error.station_model_speeds": "请更新此 station 以使用 Ultrafast，或选择标准、Fast。",
   "core-logic.choose.error.ultrafast_unavailable": "请选用支持 Ultrafast 的 Codex 模型和符合条件的 ChatGPT 订阅，也可选择标准或 Fast。"
 }

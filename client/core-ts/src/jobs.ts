@@ -283,6 +283,7 @@ export function longTerminals(stations: HeldTerminals[], c: Clock): J[] {
       const where = [name, cwd || null, typing ? t("core-views.terminal.typing", { name: typing }) : null, chatTitle];
       out.push({
         id: `terminal:${id}`,
+        mine: mineOf(item),
         name: folderShort(cwd) || t("core-views.terminal.title"),
         state: "running",
         startedAt: at,

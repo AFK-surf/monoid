@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -155,12 +157,13 @@ test("its processes are read by the MoonBit program, with nothing read here to f
 describe("the Claude Code driver", { concurrency: true }, () => {
   test("a text-only request disables built-in and configured MCP tools", async () => {
     const d = driver();
-    const o = options({ textOnly: true });
+    const o = options({ textOnly: true, tui: true });
     const session = await d.open(o, listen().push);
     // Opening starts the runner; the fake writes its invocation when its process actually begins.
     await eventually(() => existsSync(o.dump) && readFileSync(o.dump, "utf8").endsWith("\n"));
     const started = JSON.parse(readFileSync(o.dump, "utf8").trim());
     const args = started.argv as string[];
+    assert.ok(args.includes("-p"));
     assert.equal(args[args.indexOf("--tools") + 1], "");
     assert.ok(args.includes("--strict-mcp-config"));
     assert.ok(args.includes("--no-session-persistence"));
@@ -644,6 +647,61 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(readFileSync(join(o3.profile.home, ".credentials.json"), "utf8"), o3.creds);
     await s3.dispose();
   });
+
+  for (const crashed of [false, true]) {
+    test(`a TUI turn is taken up ${crashed ? "after a crash" : "after handover"} and its next input reaches the same terminal`, async t => {
+      const first = driver();
+      const listed = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const mcp = createServer(async (req, res) => {
+        assert.equal(req.headers.authorization, "Bearer tok");
+        listed.resolve();
+        await release.promise;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools: [] } }));
+      });
+      await new Promise<void>(resolve => mcp.listen(0, "127.0.0.1", resolve));
+      t.after(() => { release.resolve(); mcp.close(); });
+      const o = options({ tui: true, mcpUrl: `http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp` });
+      const a = listen();
+      const session = await first.open(o, a.push);
+      await session.prompt("hold this turn");
+      await listed.promise;
+      assert.equal(existsSync(o.dump + ".prompt"), false);
+      release.resolve();
+      await eventually(() => existsSync(o.dump + ".prompt"));
+      assert.equal(await session.steer("later"), false);
+      const argv = JSON.parse(readFileSync(o.dump, "utf8")).argv;
+      assert.ok(!argv.includes("-p") && !argv.includes("--output-format"));
+      let snapshot: unknown = null;
+      if (!crashed) {
+        await first.freeze();
+        snapshot = session.snapshot();
+      }
+      first.detach();
+      await allLeft();
+      const b = listen();
+      const taken = await driver().adopt(o, snapshot, b.push);
+      assert.equal(taken.id(), session.id());
+      await taken.backgroundTools();
+      await b.until(ended(1));
+      assert.equal(outcome(b.events).kind, "completed");
+      await taken.prompt("中文\n/exit\n\x1b[201~");
+      await b.until(ended(2));
+      assert.match(readFileSync(o.dump + ".prompt", "utf8"), /中文\n\/exit\n\\u001b\[201~/);
+      await taken.prompt("rate limited");
+      await b.until(ended(3));
+      assert.equal(outcome(b.events, 2).kind, "failed");
+      await taken.compact?.();
+      await b.until(ended(4));
+      assert.ok(b.events.some(e => e.type === "compacted"));
+      await taken.prompt("hold this turn");
+      await taken.abort();
+      await b.until(ended(5));
+      assert.equal(outcome(b.events, 4).kind, "aborted");
+      await b.until(e => e.some(x => x.type === "closed"));
+      assert.equal(ends(b.events).length, 5);
+    });
+  }
 
   for (const crashed of [false, true]) {
     test(`a next driver takes the session up ${crashed ? "after a crash (no snapshot)" : "from its snapshot"}: the turn ends once, no live event twice`, async () => {

@@ -388,11 +388,66 @@ fn tree_field_focus(id : @view.NodeId) -> Unit {
 fn tree_field_focus_came(c : Ctx) -> Unit {
   guard tree_said_ids.get(c.focus) is Some(id) && tree_fields.get(id) is Some(tf) else { return }
   tf.st.blink0 = if c.in_frame() { c.clock } else { view_moment() }
+  match tree_field_focus_told.get(id) {
+    Some(f) => f(true)
+    None => ()
+  }
+}
+
+///|
+/// The focus gone from what `was` said had it (Ctx::focus_moved): where that was a field of the window's tree, told so
+/// (field_focus_told), in the change that moved it.
+fn tree_field_focus_went(was : Int) -> Unit {
+  guard tree_said_ids.get(was) is Some(id) && tree_fields.contains(id) else { return }
+  match tree_field_focus_told.get(id) {
+    Some(f) => f(false)
+    None => ()
+  }
+}
+
+///|
+/// What each field of the window's tree is told as the keyboard's focus comes to it (true) or leaves it (false), by
+/// its node (field_focus_told): beside its TreeField, said by few.
+// kept across runs: cleared by tree_field_gone (view_forget)
+let tree_field_focus_told : Map[@view.NodeId, (Bool) -> Unit] = Map([])
+
+///|
+/// Field `f` (what `field` made) told the keyboard's focus come to it (true) or gone from it (false), in the change
+/// that moved it (a press, a key, the app's Field::focus), so what that changes is of that cause (a composer opening as
+/// it takes the cursor: View::resizes).
+pub fn field_focus_told(f : @view.View, told : (Bool) -> Unit) -> Unit {
+  let id = f.id()
+  if tree_fields.contains(id) {
+    tree_field_focus_told[id] = told
+  }
+}
+
+///|
+/// Whether Enter gives field `f`'s words up and whether ⌘Enter (Ctrl+Enter elsewhere) does, as `by` says now,
+/// followed (in place of `field`'s `enter_sends` and `command_sends`: a setting changed while it is made).
+pub fn field_sends_by(f : @view.View, by : () -> (Bool, Bool)) -> Unit {
+  guard tree_fields.get(f.id()) is Some(tf) else { return }
+  // (said again as it changes: the next Enter goes by it)
+  f.reacts(by, fn(now) {
+    tf.st.enter_sends = now.0
+    tf.st.command_sends = now.1
+  })
+}
+
+///|
+/// Whether a field (a field of the window's tree, or an old view's editor) has the keyboard's focus, followed as
+/// Ctx::field_focused is: what reads it told as the focus comes to one or leaves it (what a composer's hint says with
+/// nothing focused, made as nodes).
+pub fn field_has_focus() -> Bool {
+  hand.focus_id.get() |> ignore
+  let c = g()
+  c.focus != 0 && c.editors.contains(c.focus)
 }
 
 ///|
 /// Field node `id` let go: its editor nobody's in the window.
 fn tree_field_gone(id : @view.NodeId) -> Unit {
+  tree_field_focus_told.remove(id)
   match tree_fields.get(id) {
     Some(tf) => {
       tree_fields.remove(id)
@@ -411,6 +466,7 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
         tf.st.tree_node = None
         // (what it told of the person's edits let go with it)
         tf.st.on_change = None
+        tf.st.on_edit = None
       }
       if tree_field_hovered.val == Some(id) {
         tree_field_hovered.val = None

@@ -19,7 +19,9 @@
 //
 // Sign-ins ( 登录态) go into the tab as they go into a chat's Chrome context (browsers.ts): a sign-in the vault grants
 // is its cookies set in the host's jar, taken out again as the grant ends; one kept is read from it; a card's sign-in
-// fills the tab's form (farview-form.ts). Farview has no authenticator: a sign-in's passkeys are not put in.
+// fills the tab's form (farview-form.ts). A sign-in's passkeys go into the profile's own authenticator (the host's: its
+// passkeys.json, which a page's navigator.credentials signs with) and come out with its cookies; a host from before
+// it had one (no PublicKeyCredential in its pages) is asked none of them, so nothing is sent that it would not read.
 // Not yet: the login pages a station opens of its own are Chrome's.
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -36,6 +38,7 @@ import { askTab } from "./farview-agent.ts";
 import { FARVIEW_RELEASES, type FarviewRelease, farviewCacheDir, farviewSources, farviewAsset, farviewTarget, unpackRelease, type Fetch } from "./farview-release.ts";
 import { FarviewForm } from "./farview-form.ts";
 import { FarviewScreen } from "./farview-screen.ts";
+import { type Passkey, passkeyOf, sitePasskeys } from "./passkeys.ts";
 import { type CookieParam, allCookies, ofSites } from "./signins.ts";
 import type { TabInfo } from "./tabs.ts";
 
@@ -100,7 +103,7 @@ const START_MS = 20_000;
 const END_MS = 5_000;
 const LOOK_MS = 100;
 
-type Host = HostFile & { started: number | null; dir: string; n: number; screen: FarviewScreen; unscreen: () => void };
+type Host = HostFile & { started: number | null; dir: string; n: number; screen: FarviewScreen; unscreen: () => void; authenticator?: boolean };
 
 /// A tab of a chat's Farview as the `browser` tool lists it: its id (as its screen's after `browser:`), and the port
 /// its agent drives it on.
@@ -484,17 +487,64 @@ export class FarviewTabs {
     if (cookies.length > 0) await this.#cookies(session, "set", JSON.stringify(cookies));
   }
 
-  /// The cookies of `sites` taken out of the chat's profile where its first tab runs (a sign-in's grant ended): them,
-  /// as they were.
-  async takeOut(session: string, sites: string[]): Promise<CookieParam[]> {
+  /// The cookies and passkeys of `sites` taken out of the chat's profile where its first tab runs (a sign-in's grant
+  /// ended): them, as they were.
+  async takeOut(session: string, sites: string[]): Promise<{ cookies: CookieParam[]; passkeys: Passkey[] }> {
     if (!this.#hosts.get(session)?.has(0)) {
       const found = await this.#find(session, 0, this.#tabDir(session, 0));
-      if (found === null) return [];
+      if (found === null) return { cookies: [], passkeys: [] };
     }
     const taken = (await this.cookies(session)).filter((c) => ofSites(c.domain, sites));
     // (Farview clears a host's cookies and its parent domains': each of theirs by its own, the site's among them)
     for (const domain of new Set(taken.map((c) => c.domain.replace(/^\./, "")))) await this.#cookies(session, "clear", domain);
-    return taken;
+    const passkeys = sitePasskeys(await this.passkeys(session), sites);
+    // (a site's passkeys cleared by the site: its own relying party and those under it, as sitePasskeys has them)
+    for (const site of sites) if (passkeys.some((p) => ofSites(p.rpId, [site]))) await this.#passkeys(session, "clear", site);
+    return { cookies: taken, passkeys };
+  }
+
+  /// Whether the host of `host` has an authenticator of its own (a page of it sees PublicKeyCredential), asked once a
+  /// host: one from before it had one would not read a passkeys ask.
+  async #authenticator(host: Host): Promise<boolean> {
+    if (host.authenticator === undefined) {
+      let has = false;
+      try {
+        const a = await askTab(host.agent, { kind: "eval", script: "typeof PublicKeyCredential === 'function' && typeof navigator.credentials.get === 'function'" });
+        has = a.kind === "value" && a.value === "true";
+      } catch {}
+      host.authenticator = has;
+    }
+    return host.authenticator;
+  }
+
+  /// The passkeys ask `verb` of the chat's first tab (its host started if it is not running); null where its host has
+  /// no authenticator.
+  async #passkeys(session: string, verb: "get" | "set" | "clear", arg: string): Promise<string | null> {
+    const host = await this.host(session);
+    if (!(await this.#authenticator(host))) return null;
+    const a = await askTab(host.agent, { kind: "passkeys", verb, arg });
+    if (a.kind !== "value") throw new Error("Farview's tab did not give its passkeys");
+    if (a.value.startsWith("error:")) throw new Error(`Farview: ${a.value}`);
+    return a.value;
+  }
+
+  /// The passkeys of the chat's profile, as its first tab has them (its host started if it is not running): none
+  /// where its host has no authenticator or does not answer.
+  async passkeys(session: string): Promise<Passkey[]> {
+    let read: unknown = [];
+    try {
+      read = JSON.parse((await this.#passkeys(session, "get", "")) ?? "[]");
+    } catch {}
+    return Array.isArray(read) ? read.map(passkeyOf).filter((p): p is Passkey => p !== null) : [];
+  }
+
+  /// `passkeys` put into the chat's profile (a sign-in granted): every tab of it signs with them. Where its host has no
+  /// authenticator they are not put in, and the log says so.
+  async putPasskeys(session: string, passkeys: Passkey[]): Promise<void> {
+    if (passkeys.length === 0) return;
+    if ((await this.#passkeys(session, "set", JSON.stringify(passkeys))) === null) {
+      log.warn("browser", "a sign-in's passkeys not put into a chat's Farview: its host has no authenticator", { session, passkeys: passkeys.length });
+    }
   }
 
   /// The sign-in form of the chat's tab `id` (its first where none is said), filled from a card.
@@ -552,7 +602,7 @@ export function farviewHowTo(config: FarviewConfig, tabs: FarviewTab[]): string 
     `For example: \`${run(first?.agent ?? 0)} go:https://example.com look\`.`,
     "More tabs: `browser` action open (with `url`) opens one and gives its port; action close (with `tab`) closes one. A page that opens a new window (a link to _blank, window.open) gets a tab of its own: action tabs shows it.",
     "There is no DevTools address: Playwright and chrome-devtools-mcp do not drive it.",
-    "Its tabs share one profile: cookies and storage are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome.",
+    "Its tabs share one profile: cookies, storage and passkeys are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome. A site's passkey sign-in (or its \"add a passkey\") is done by Farview's own authenticator with no prompt, as Chrome's is.",
     "A person can see and drive each tab from their app (the `screen` tool gives the link, by the tab's id); when they act on it, it is theirs: the agent is told \"the person took the tab back\" and waits until they say it is done.",
     "`browser` with engine chrome gives this chat Chrome instead (Farview's tabs end; its profile stays).",
   ].join("\n");

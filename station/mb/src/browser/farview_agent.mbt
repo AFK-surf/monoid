@@ -1,17 +1,18 @@
 // What the station itself asks of a chat's Farview tab on its agent port (src/browser/farview-agent.ts, 127.0.0.1), as
-// agent.exe does: a script's value, the cookies read, set or cleared, a step (a field typed, a click, a key) and what
-// the page says after it. Farview's wire (its src/proto): a message is a 4-byte big-endian length and a body, the body
+// agent.exe does: a script's value, the cookies and the passkeys read, set or cleared, a step (a field typed, a click,
+// a key) and what the page says after it. Farview's wire (its src/proto): a message is a 4-byte big-endian length and a body, the body
 // a kind and its fields, each integer a zigzag varint, each string its UTF-8 length and bytes. Used for the sign-ins
-// put into the tab and for filling its sign-in form, so nothing of them (a cookie, a password) is ever on a command
-// line.
+// put into the tab and for filling its sign-in form, so nothing of them (a cookie, a passkey's key, a password) is ever
+// on a command line.
 
 ///|
-/// What the station asks (`AgentAsk`): `look`, `eval` a script, `cookies` (get, set, clear) and `act` (a verb on a
-/// selector with text).
+/// What the station asks (`AgentAsk`): `look`, `eval` a script, `cookies` and `passkeys` (get, set, clear) and `act` (a
+/// verb on a selector with text).
 pub(all) enum AgentAsk {
   Look
   Eval(String)
   Cookies(String, String)
+  Passkeys(String, String)
   Act(String, String, String)
 }
 
@@ -55,6 +56,9 @@ let kind_value : Int = 33
 let kind_cookies : Int = 35
 
 ///|
+let kind_passkeys : Int = 42
+
+///|
 fn varint(out : @buffer.Buffer, v : Int) -> Unit {
   let mut u = ((v << 1) ^ (v >> 31)).reinterpret_as_uint()
   while u >= 0x80U {
@@ -83,6 +87,11 @@ pub fn encode_ask(a : AgentAsk) -> Bytes {
     }
     Cookies(verb, arg) => {
       varint(body, kind_cookies)
+      wire_str(body, verb)
+      wire_str(body, arg)
+    }
+    Passkeys(verb, arg) => {
+      varint(body, kind_passkeys)
       wire_str(body, verb)
       wire_str(body, arg)
     }

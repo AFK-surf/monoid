@@ -259,6 +259,9 @@ test("the browser tool gives Farview to the chats it is for and Chrome to the ot
 /// A made-up Farview host: listens on 127.0.0.1 (its client, agent and frame ports), writes host.json and what it was
 /// started with (said.json) where FV_STATE_DIR says, keeps its page there as Farview's does, and on a page of
 /// opener.test says to the first frame connection that opens that the page asked for a new tab (once, as a page asks).
+/// Its agent port answers a script's value (a page's PublicKeyCredential there, but on a page of old.test: a host from
+/// before its authenticator, which a passkeys ask ends), the cookies (none) and the profile's passkeys, each ask written
+/// down (asked.txt).
 const FAKE_HOST = `#!/usr/bin/env node
 const net = require("node:net");
 const fs = require("node:fs");
@@ -268,7 +271,33 @@ fs.writeFileSync(dir + "/url", url);
 const listen = (on) => new Promise((r) => { const s = net.createServer(on); s.listen(0, "127.0.0.1", () => r(s.address().port)); });
 (async () => {
   const port = await listen(() => {});
-  const agent = await listen((s) => s.on("error", () => {}));
+  const old = url.startsWith("https://old.test/");
+  const kept = [];
+  const of = (rp, d) => d === "" || rp === d || rp.endsWith("." + d);
+  const agent = await listen((s) => {
+    s.on("error", () => {});
+    let buf = Buffer.alloc(0);
+    s.on("data", (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 4 && buf.length >= 4 + buf.readUInt32BE(0)) {
+        const body = buf.subarray(4, 4 + buf.readUInt32BE(0));
+        buf = buf.subarray(4 + body.length);
+        let i = 0;
+        const int = () => { let shift = 0, u = 0; for (;;) { const c = body[i++]; u |= (c & 0x7f) << shift; shift += 7; if (c < 0x80) break; } u >>>= 0; return (u >>> 1) ^ -(u & 1); };
+        const str = () => { const k = int(); const v = body.subarray(i, i + k).toString("utf8"); i += k; return v; };
+        const kind = int();
+        const value = (v) => { const b = Buffer.from(v, "utf8"); const out = [66]; let n = b.length * 2; while (n >= 0x80) { out.push((n & 0x7f) | 0x80); n >>>= 7; } out.push(n); const msg = Buffer.concat([Buffer.from(out), b]); const head = Buffer.alloc(4); head.writeUInt32BE(msg.length); s.write(Buffer.concat([head, msg])); };
+        if (kind === 32) { str(); fs.appendFileSync(dir + "/asked.txt", "eval\\n"); value(old ? "false" : "true"); continue; }
+        const verb = str(), arg = str();
+        fs.appendFileSync(dir + "/asked.txt", (kind === 42 ? "passkeys " : "cookies ") + verb + "\\n");
+        if (kind === 42 && old) process.exit(3);
+        if (kind === 35) { value(verb === "get" ? "[]" : "ok"); continue; }
+        if (verb === "get") value(JSON.stringify(kept.filter((p) => of(p.rpId, arg))));
+        else if (verb === "set") { for (const p of JSON.parse(arg)) { const k = kept.findIndex((q) => q.credentialId === p.credentialId); if (k >= 0) kept[k] = p; else kept.push(p); } value("ok"); }
+        else { const left = kept.filter((p) => !of(p.rpId, arg)); kept.length = 0; kept.push(...left); value("ok"); }
+      }
+    });
+  });
   let asked = false;
   const frame = await listen((s) => {
     s.on("error", () => {});
@@ -411,10 +440,51 @@ test("a chat's tabs: one profile, each a host and a screen of its own, a page's 
   }
 });
 
+test("a sign-in's passkeys go into a chat's Farview profile and come out with its cookies; a host with no authenticator is asked none", { skip: process.platform === "win32" && "a made-up host is a script with a #! line" }, async () => {
+  const fv = await fakeFarview();
+  const tabs = fv.make();
+  const keys = [
+    { credentialId: "Y3JlZC1h", rpId: "github.com", privateKey: "cGs=", userHandle: "dQ==", signCount: 3 },
+    { credentialId: "Y3JlZC1i", rpId: "login.example.com", privateKey: "cGs=", signCount: 0 },
+  ];
+  const ids = (l: { credentialId: string }[]) => l.map((p) => p.credentialId).join(",");
+  try {
+    for (const [session, old] of [["chat:listed", false], ["chat:old", true]] as const) {
+      const tab0 = join(fv.root, "data", chatDir(session), "tabs", "0");
+      if (old) {
+        await tabs.choose(session, "farview");
+        await mkdir(tab0, { recursive: true });
+        await writeFile(join(tab0, "url"), "https://old.test/");
+      }
+      const before = await tabs.passkeys(session);
+      await tabs.putPasskeys(session, keys);
+      const after = await tabs.passkeys(session);
+      const { cookies, passkeys: taken } = await tabs.takeOut(session, ["github.com"]);
+      const left = await tabs.passkeys(session);
+      const got = `${ids(before)}|${ids(after)}|${cookies.length} ${ids(taken)}|${ids(left)}`;
+      const asked = (await readFile(join(tab0, "asked.txt"), "utf8")).trim().split("\n");
+      if (!old) {
+        assert.equal(got, "|Y3JlZC1h,Y3JlZC1i|0 Y3JlZC1h|Y3JlZC1i");
+        assert.deepEqual(asked, ["eval", "passkeys get", "passkeys set", "passkeys get", "cookies get", "passkeys get", "passkeys clear", "passkeys get"]);
+      } else {
+        // (asked once whether it has one, then nothing of passkeys: its host still runs)
+        assert.equal(got, "||0 |");
+        assert.deepEqual(asked, ["eval", "cookies get"]);
+        assert.equal(tabs.status(session).running, true);
+      }
+    }
+  } finally {
+    await tabs.closeOf("chat:listed").catch(() => {});
+    await tabs.closeOf("chat:old").catch(() => {});
+    await rm(fv.root, { recursive: true, force: true });
+  }
+});
+
 test("the station's asks of a Farview tab are its wire's messages, and its answers read", () => {
   // (Farview's src/proto: a 4-byte length, the kind, each string its length and UTF-8 bytes, zigzag varints)
   assert.deepEqual([...encodeAsk({ kind: "look" })], [0, 0, 0, 1, 38]);
   assert.deepEqual([...encodeAsk({ kind: "cookies", verb: "get", arg: "é" })], [0, 0, 0, 8, 70, 6, ...Buffer.from("get"), 4, 0xc3, 0xa9]);
+  assert.deepEqual([...encodeAsk({ kind: "passkeys", verb: "clear", arg: "a.test" })], [0, 0, 0, 14, 84, 10, ...Buffer.from("clear"), 12, ...Buffer.from("a.test")]);
   const body = (kind: number, ...strs: string[]) => {
     const out = [kind * 2];
     for (const s of strs) out.push(Buffer.byteLength(s) * 2, ...Buffer.from(s));

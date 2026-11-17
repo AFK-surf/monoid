@@ -79,3 +79,62 @@ test "flips: the words that fly in go only up and across to where they rest, nev
     }
   }
 }
+
+///|
+/// How opaque the words `w` are drawn now: 0 where none are drawn.
+fn cr_alpha(t : @view.Tree, w : String) -> Double {
+  match t.drawn().filter(fn(d) { d.words == w }) {
+    [d, ..] => d.alpha
+    _ => 0.0
+  }
+}
+
+///|
+/// A page's list as cr_case's, flips on, keys 70 and 71 coming by data, each a box of its words that flies in from the
+/// window's foot (`ms` long) over a line of its own that does not fly ("时k").
+fn cr_two() -> (@view.Tree, @signals.Signal[Array[Int]]) {
+  let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+        if k >= 70 {
+          b.box(fn(w) {
+            w.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+            w.flies_in(cr_flight(400.0), fn(to) { Some((0.0, 380.0, to.2, to.3)) }, up_late=0.12) |> ignore
+          })
+          |> ignore
+          b.box(fn(l) { l.height(Is(Some(20.0))).words(Is("时\{k}")) |> ignore }) |> ignore
+        } else {
+          b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  (tree, keys)
+}
+
+///|
+test "flips: two flown in close together, the first's whole once its own flight is done, not hidden under the second's, at every rate" {
+  let ms = 400.0
+  for rate in rc_rates {
+    let (t, keys) = cr_two()
+    // (the second 150 into the first's flight; looked at past the first's end, before the second's)
+    let looks = [rc_at + ms + 20.0, rc_at + ms + 60.0, rc_at + ms + 100.0, rc_at + 150.0 + ms + 100.0]
+    let seen = rc_walk(
+      t,
+      [(rc_at, fn() { keys.set(rc_ten_and([70])) }), (rc_at + 150.0, fn() { keys.set(rc_ten_and([70, 71])) })],
+      looks,
+      rate,
+      fn() { (cr_alpha(t, "行70"), cr_alpha(t, "时70")) },
+    )
+    for i, s in seen {
+      assert_true((s.0 - 1.0).abs() < 0.001, msg="at \{rate} a second, look \{i}: 行70 drawn at \{s.0}, its flight done")
+    }
+    assert_true((seen[3].1 - 1.0).abs() < 0.001, msg="at \{rate} a second: 时70 at \{seen[3].1} once both are done")
+  }
+}

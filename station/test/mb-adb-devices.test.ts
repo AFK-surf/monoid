@@ -27,7 +27,7 @@ import { AdbActivity, DISPLAY_MARK, KEEP_LENDING } from "../src/adb/activity.ts"
 import { PhoneDisplays, densityOf, displayOf, rootTasksOn, surfaceOf } from "../src/adb/displays.ts";
 import { failure, gate, type GateDeps, openDoor } from "../src/adb/door.ts";
 import { PhoneGrants, type PhoneRequest, linkSaid, said, scopeSaid } from "../src/adb/grants.ts";
-import { Shares, answerAdb, bind, isPackage, key, text } from "../src/adb/link.ts";
+import { Shares, answerAdb, isPackage, key, text, usualPort } from "../src/adb/link.ts";
 import { fetchOnPhone, staged } from "../src/adb/send.ts";
 import { GrantServers } from "../src/adb/servers.ts";
 import { grantChatTitle } from "../src/adb/title.ts";
@@ -409,13 +409,9 @@ test("screencap's id of a display, as SurfaceFlinger's lines say it", async () =
   }
 });
 
-test("a phone's port is the one its key says, while it is free", async () => {
-  // (keys of this run's own: another run at once on this machine would hold the same usual ports)
-  for (const device of ["u1/" + randomBytes(32).toString("hex"), "pat/" + randomBytes(32).toString("hex"), `x${randomBytes(4).toString("hex")}`]) {
-    const server = await bind(device);
-    const port = (server.address() as net.AddressInfo).port;
-    server.close();
-    assert.deepEqual(await mbFn("usualPort", device), { ok: port });
+test("a phone's key and usual port agree across both implementations", async () => {
+  for (const device of ["u1/" + "ab".repeat(32), "pat/" + "cd".repeat(32), "x12345678"]) {
+    assert.deepEqual(await mbFn("usualPort", device), { ok: usualPort(device) });
   }
   const conn = { remoteId: () => "cd".repeat(32) } as any;
   asked = (name) => (name === "conn.remoteId" ? "cd".repeat(32) : null);

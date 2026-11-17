@@ -166,19 +166,43 @@ pub fn accounts_shareable(core : Core, scope : String) -> Bool {
 }
 
 ///|
-/// The share of the subscriptions' allowances (accounts_share_open) in `l`, while `shown` says and the workspace has one
-/// to show: at a page's title's end, or (`bar`) in the bar its frame lends it, by the settings in a phone's top bar.
-fn accounts_share_node(
+/// Profile's header shares the available pictures. The accounts list opens its own picture directly.
+fn profile_share_node(
   l : @view.View,
   core : Core,
   here : () -> Here,
   shown : () -> Bool,
   tips : @sf.TipLayer?,
   bar? : Bool = false,
+  has_pools? : () -> Bool = fn() { false },
 ) -> Unit {
-  l.show(fn() { shown() && accounts_shareable(core, here().workspace) }, fn(s) {
-    let label = fn() { @sf.t("web-main.share.accounts") }
-    let press = fn() { accounts_share_open(core, fn() { @signals.untracked(here).workspace }) }
+  let scope = fn() { here().workspace }
+  let accounts = @signals.computed(fn(_) { accounts_shareable(core, scope()) })
+  l.show(fn() { shown() && (has_pools() || accounts.get()) }, fn(s) {
+    let label = fn() {
+      if !has_pools() {
+        @sf.t("web-main.share.accounts")
+      } else if accounts.get() {
+        @sf.t("web-main.chat.share")
+      } else {
+        @sf.t("web-main.share.pool")
+      }
+    }
+    let press = fn() {
+      let ws = @signals.untracked(scope)
+      let charts = fn() { pool_share_open(core, fn() { ws }) }
+      let subscriptions = fn() { accounts_share_open(core, fn() { ws }) }
+      if !has_pools() {
+        subscriptions()
+      } else if !accounts.get() {
+        charts()
+      } else {
+        @sf.menu([
+          Some(@sf.menu_item_of(@sf.t("web-main.share.pool"), charts, further=true)),
+          Some(@sf.menu_item_of(@sf.t("web-main.share.accounts"), subscriptions, further=true)),
+        ], from=Node(s), along=End, title=label())
+      }
+    }
     if bar {
       @sf.bar_icon_node(s, "share", label, press, tips?)
     } else {

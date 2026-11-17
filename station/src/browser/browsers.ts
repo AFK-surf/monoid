@@ -137,8 +137,14 @@ export class Browsers {
   /// The passkeys of a sign-in still granted put into `session`'s chat's context again (its cookies are there still), if
   /// the browser runs with it.
   async passkeysIn(session: string, d: { sites: string[]; cookies: string }): Promise<void> {
-    const ctx = this.#contexts.get(session);
     const passkeys = sitePasskeys(stateOf(d.cookies).passkeys, d.sites);
+    const fv = this.#fv(session);
+    if (fv !== null) {
+      // (its profile keeps them on disk: put in again only where its tab runs, no host started for it)
+      if (passkeys.length > 0 && fv.status(session).running) await fv.putPasskeys(session, passkeys);
+      return;
+    }
+    const ctx = this.#contexts.get(session);
     if (ctx === undefined || passkeys.length === 0 || !this.station.status().running) return;
     await (await this.station.passkeys()).put(ctx, passkeys);
   }
@@ -249,12 +255,12 @@ export class Browsers {
     }
   }
 
-  /// The sign-in to `sites` in `session`'s chat's context, or in the station's own (`station`), as the vault keeps it
-  /// (signins.ts `keptOf`): its cookies, and its passkeys (a chat's context only: the station's has no authenticator);
-  /// the browser started if it is not running.
+  /// The sign-in to `sites` in `session`'s chat's context (its Farview's profile where that is its browser), or in the
+  /// station's own (`station`), as the vault keeps it (signins.ts `keptOf`): its cookies, and its passkeys (a chat's
+  /// only: the station's has no authenticator); the browser started if it is not running.
   async cookies(session: string, sites: string[], station: boolean): Promise<string> {
     const fv = this.#fv(session);
-    if (fv !== null && !station) return keptOf({ cookies: siteCookies(await fv.cookies(session), sites), passkeys: [] });
+    if (fv !== null && !station) return keptOf({ cookies: siteCookies(await fv.cookies(session), sites), passkeys: sitePasskeys(await fv.passkeys(session), sites) });
     const ctx = station ? undefined : await this.context(session);
     const { cookies } = await this.station.send("Storage.getCookies", ctx ? { browserContextId: ctx } : {});
     const passkeys = ctx === undefined ? [] : await (await this.station.passkeys()).read(ctx, sites);
@@ -273,7 +279,8 @@ export class Browsers {
       this.#signedIn.set(session, [...(this.#signedIn.get(session) ?? []).filter((y) => y.request !== d.request), x]);
       this.#write();
       await fv.putCookies(session, cookies);
-      log.info("browser", "a sign-in put into a chat's Farview", { session, request: d.request, sites: d.sites, cookies: cookies.length });
+      await fv.putPasskeys(session, passkeys);
+      log.info("browser", "a sign-in put into a chat's Farview", { session, request: d.request, sites: d.sites, cookies: cookies.length, passkeys: passkeys.length });
       this.#arm(session, x);
       return;
     }
@@ -297,9 +304,9 @@ export class Browsers {
       this.#signedIn.set(session, (this.#signedIn.get(session) ?? []).filter((x) => x.until > now));
       this.#write();
       for (const x of ended) {
-        const cookies = await fv.takeOut(session, x.sites);
+        const { cookies, passkeys } = await fv.takeOut(session, x.sites);
         log.info("browser", "a sign-in taken out of a chat's Farview as its grant ended", { session, request: x.request, sites: x.sites });
-        if (cookies.length > 0) this.#takenOut(session, x.request, keptOf({ cookies, passkeys: [] }), x.workspace);
+        if (cookies.length > 0 || passkeys.length > 0) this.#takenOut(session, x.request, keptOf({ cookies, passkeys }), x.workspace);
       }
       return;
     }

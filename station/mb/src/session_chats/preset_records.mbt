@@ -183,6 +183,7 @@ pub fn model_of(v : J?) -> J? {
     Some(Bool(b)) => out.push(("fast", jb(b)))
     _ => ()
   }
+  if at(v, "tui") is Some(Bool(true)) { out.push(("tui", jb(true))) }
   match model_speed(at(v, "speed")) {
     Some(s) => out.push(("speed", js(s)))
     None => ()

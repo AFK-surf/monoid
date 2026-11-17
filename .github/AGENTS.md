@@ -25,8 +25,8 @@
   (any `ci-1` runner), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
   a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
-  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
-  `shell-apple` is missing (plan's `natives_mac_runner`: too long cold there, 228 and 323 s); the other Apple parts,
+  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh`,
+  `shell-apple` or `reader` is missing (cold builds there took 228, 323 and 223 s before packing); the other Apple parts,
   Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and Android's release stay on `Mini1` (`macos-ci`, `quick`), the
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
   were cut at five minutes, 2026-11-17), and

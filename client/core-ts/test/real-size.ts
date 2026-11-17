@@ -1632,6 +1632,7 @@ const noise = (n: number, seed: number) => {
 /// PEEK_IMAGE: itself up to 256 KB, the most), a text file's lines (PEEK_LINES of PEEK_LINE characters), a message of
 /// another chat a link names (the core sends its words whole: a page of them).
 export const PEEKS = {
+  run: "https://github.com/acme/app/actions/runs/44147606865",
   page: "https://www.anthropic.com/news/claude-opus-5-5",
   pull: "https://github.com/acme/app/pull/5244",
   picture: ".stillfail/uploads/bench-full.png",
@@ -1642,6 +1643,14 @@ function peeks(now: number): [Topic, unknown][] {
   const at = CHAT.station;
   const key = CHAT.keys[0];
   return [
+    [{ topic: "linkPreview", station: at, url: PEEKS.run }, {
+      kind: "github_actions_run", url: PEEKS.run, repository: "acme/app", number: 23849, title: "Build and publish the desktop app",
+      state: "in_progress", workflow: "pipeline", branch: "main", commit: "bc074d6", startedAt: now - 660000,
+      counts: { passed: 7, running: 16, skipped: 6 }, jobs: [
+        { name: "desktop-win", step: "Build, pack and sign the beta Windows app", url: PEEKS.run + "/job/123#step:2:1" },
+        { name: "check-linux", step: "Full check (ts)", url: PEEKS.run + "/job/456#step:3:1" },
+      ],
+    }],
     [{ topic: "linkPreview", station: at, url: PEEKS.page }, { kind: "page", url: PEEKS.page, title: "Introducing Claude Opus 5.5", description: "Our most capable model yet for coding, agents and long-running work, with a context window of a million tokens and better judgment about when to ask.", site: "Anthropic", icon: `data:image/png;base64,${noise(6 * 1024, 1)}`, image: `data:image/jpeg;base64,${noise(160 * 1024, 2)}` }],
     [{ topic: "filePeek", station: at, key, path: PEEKS.picture }, { path: `/Users/maple/.stillfail/sessions/chat/${key}/workspace/${PEEKS.picture}`, name: "bench-full.png", size: 256 * 1024, mtime: now - HOUR, type: "image/png", kind: "image", image: { type: "image/png", data: noise(256 * 1024, 3) } }],
     [{ topic: "filePeek", station: at, key, path: PEEKS.text }, { path: `/Users/maple/src/app/${PEEKS.text}`, name: "views.ts", size: 212_331, mtime: now - 2 * HOUR, type: "text/plain", kind: "text", lines: { start: 1, text: Array.from({ length: 12 }, (_, i) => `${"  ".repeat(i % 4)}${pick(LINES, i)}`.slice(0, 240) + (i % 3 === 0 ? "…" : "")) } }],
