@@ -74,8 +74,9 @@ test("a changed first member and a dirty summary retain workspace and archive be
     assert.throws(() => openJobs(reader, viewer, "en"), (error: any) => error.status === 503 && error.message.startsWith(JOB_NAME_FIRST_PENDING));
     prepare(s, thread);
     assert.equal(openJobs(reader, viewer, "en")[0]?.chat?.title, "Shared");
+    // (its own session archived and its chat not: the chat is put away whole, in the archive under its own title)
     s.db.prepare("UPDATE sessions SET archived_at=1 WHERE key='a'").run();
-    assert.notEqual(openJobs(reader, viewer, "en")[0]?.chat?.title, "Shared");
+    assert.deepEqual(openJobs(reader, viewer, "en")[0]?.chat, { id: "a", title: "Shared", archived: true });
   } finally { s.close(); }
 });
 
