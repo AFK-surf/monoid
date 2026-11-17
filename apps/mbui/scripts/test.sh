@@ -608,7 +608,9 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
+      # At the default rate the wide sweep was still running alongside the fourth group's pages after 150 s,
+      # and the group hit its five-minute limit. The first group finished in 148 s (44164320005).
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo 1 ;; *) echo 4 ;; esac ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
