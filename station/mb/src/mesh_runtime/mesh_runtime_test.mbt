@@ -1,0 +1,681 @@
+// The mesh's runtime on the test's clocks; station/test/mb-mesh-runtime.test.ts holds the same to the TypeScript.
+
+///|
+/// Runs `f` on a runtime of the test's, the clock moved on `ms` after it is set going.
+fn on_clock(ms : Int, f : async (@effect.Runtime) -> Unit) -> Array[String] {
+  let rt = @effect.Runtime::new()
+  let errors = []
+  ignore(rt.fork(() => f(rt) catch { e => errors.push(@mesh_runtime.message_of(e)) }))
+  ignore(rt.run_ready())
+  rt.advance(ms)
+  errors
+}
+
+///|
+fn o(fields : Array[(String, Json)]) -> Json {
+  let m : Map[String, Json] = Map([])
+  for f in fields {
+    m[f.0] = f.1
+  }
+  Json::object(m)
+}
+
+///|
+test "JavaScript's Number, String(n), trim and Math.round" {
+  let n = @mesh_runtime.js_number
+  assert_eq(n(""), 0.0)
+  assert_eq(n("  \u{a0}\u{2028}"), 0.0)
+  assert_eq(n("007"), 7.0)
+  assert_eq(n("0x1F"), 31.0)
+  assert_eq(n("0b101"), 5.0)
+  assert_eq(n("0o17"), 15.0)
+  assert_eq(n(" 1.5e3 "), 1500.0)
+  assert_eq(n(".5"), 0.5)
+  assert_eq(n("5."), 5.0)
+  assert_eq(n("-Infinity"), @double.neg_infinity)
+  assert_true(n("-0x1").is_nan())
+  assert_true(n("1e").is_nan())
+  assert_true(n("1_000").is_nan())
+  assert_true(n(".").is_nan())
+  assert_eq(@mesh_runtime.js_num(1.0e21), "1e+21")
+  assert_eq(@mesh_runtime.js_num(-0.25), "-0.25")
+  assert_eq(@mesh_runtime.js_round(-2.5), -2.0)
+  assert_eq(@mesh_runtime.js_round(2.5), 3.0)
+  assert_eq(@mesh_runtime.js_trim("\u{feff} a \u{3000}"), "a")
+  assert_eq(@mesh_runtime.to_uint32(-1.0), 4294967295.0)
+  assert_eq(@mesh_runtime.js_quote("a\"\u{0}"), "\"a\\\"\\u0000\"")
+}
+
+///|
+test "the network's settings, and the bind's DSCP (#6871): a number passed on, anything else refused" {
+  assert_eq(@mesh_runtime.congestion_of(None), "cubic")
+  assert_eq(@mesh_runtime.congestion_of(Some(o([("network", o([("congestion", "bbr")]))]))), "bbr")
+  assert_eq(@mesh_runtime.check_network(Some(Json::array([]))), Some("network: expected an object"))
+  assert_eq(@mesh_runtime.check_network(Some(o([("congestion", Json::null())]))), Some("network.congestion: expected cubic or bbr"))
+  assert_eq(@mesh_runtime.check_network(Some(Json::null())), None)
+  let options = o([("alpns", Json::array(["a"])), ("bindAddr", "1.2.3.4:5")])
+  let bound = @mesh_runtime.bind_station(options, None, Some("043"))
+  assert_eq(bound, o([("alpns", Json::array(["a"])), ("dscp", 43.0)]))
+  let bound = @mesh_runtime.bind_station(options, Some("0.0.0.0:7"), None)
+  assert_eq(bound, o([("alpns", Json::array(["a"])), ("bindAddr", "0.0.0.0:7")]))
+  // (what is 1 to 3 digits goes on to the bind, which takes only 1 to 63)
+  assert_eq(@mesh_runtime.bind_station(options, None, Some("999")).as_object().unwrap().get("dscp"), Some(Json::number(999.0)))
+  assert_false(@mesh_runtime.dscp_taken(Some(Json::number(999.0))))
+  assert_false(@mesh_runtime.dscp_taken(Some(Json::number(0.0))))
+  assert_true(@mesh_runtime.dscp_taken(Some(Json::number(63.0))))
+  assert_true(@mesh_runtime.dscp_taken(None))
+  for bad in ["", "4x", "1000", " 43", "-1", "1.5"] {
+    let words = (try {
+      ignore(@mesh_runtime.bind_station(options, None, Some(bad)))
+      ""
+    } catch {
+      e => @mesh_runtime.message_of(e)
+    })
+    assert_eq(words, "STILLFAIL_MESH_DSCP must be a DSCP, 1 to 63, not \{@mesh_runtime.js_quote(bad)}")
+  }
+}
+
+///|
+test "a running endpoint follows the config's congestion controller, a refusal said and left" {
+  let calls = []
+  let fails = Ref(false)
+  let f = @mesh_runtime.NetworkFollow::new(
+    None,
+    c => {
+      calls.push("set \{c}")
+      if fails.val {
+        raise Failure("no")
+      }
+    },
+    (level, words, _) => calls.push("\{level} \{words}"),
+  )
+  f.told(Some(o([("network", o([("congestion", "bbr")]))])))
+  f.told(Some(o([("network", o([("congestion", "bbr")]))])))
+  fails.val = true
+  f.told(None)
+  assert_eq(calls, [
+    "set bbr", "info congestion controller for new connections", "set cubic", "warn congestion controller not changed",
+    "info congestion controller for new connections",
+  ])
+}
+
+///|
+test "a station's LAN: its private addresses at its port, its neighbours, and whether it may reach them" {
+  let ifaces = @mesh_runtime.interfaces_of_json(
+    o([
+      ("lo0", Json::array([o([("address", "127.0.0.1"), ("netmask", "255.0.0.0"), ("family", "IPv4"), ("internal", true)])])),
+      ("en0", Json::array([o([("address", "192.168.1.23"), ("netmask", "255.255.255.0"), ("family", "IPv4"), ("internal", false)])])),
+      ("bridge100", Json::array([o([("address", "192.168.64.1"), ("netmask", "255.255.255.0"), ("family", "IPv4"), ("internal", false)])])),
+      ("utun4", Json::array([o([("address", "100.100.1.2"), ("netmask", "255.255.255.255"), ("family", "IPv4"), ("internal", false)])])),
+      ("en1", Json::array([o([("address", "10.0.0.1"), ("netmask", "255.255.255.0"), ("family", "IPv4"), ("internal", false)])])),
+    ]),
+  )
+  assert_eq(@mesh_runtime.lan_addrs(["[::]:7", "0.0.0.0:7777"], ifaces), ["192.168.1.23:7777", "10.0.0.1:7777"])
+  assert_eq(@mesh_runtime.lan_addrs(["10.0.0.1:9"], ifaces), ["10.0.0.1:9"])
+  assert_eq(@mesh_runtime.lan_addrs(["[::]:7"], ifaces), [])
+  assert_eq(@mesh_runtime.tailnet_addrs(["0.0.0.0:7777"], ifaces), ["100.100.1.2:7777"])
+  assert_eq(@mesh_runtime.lan_neighbours(ifaces), ["192.168.1.1", "10.0.0.2"])
+  assert_true(@mesh_runtime.private_v4("172.31.0.1"))
+  assert_true(@mesh_runtime.private_v4("10..0.1"))
+  assert_false(@mesh_runtime.private_v4("172.32.0.1"))
+  assert_true(@mesh_runtime.not_lan("ap1"))
+  assert_false(@mesh_runtime.not_lan("ap"))
+  let reach = []
+  let errors = on_clock(0, _ => {
+    reach.push(@mesh_runtime.lan_reach([], async fn(_) { None }))
+    reach.push(@mesh_runtime.lan_reach(["a", "b"], async fn(ip) { if ip == "a" { Some("EHOSTUNREACH") } else { None } }))
+    reach.push(@mesh_runtime.lan_reach(["a", "b"], async fn(_) { Some("EHOSTUNREACH") }))
+    reach.push(@mesh_runtime.lan_reach(["a"], async fn(_) { Some("ENETDOWN") }))
+  })
+  assert_eq(errors, [])
+  assert_eq(reach, [None, Some("granted"), Some("denied"), None])
+}
+
+///|
+test "a traceparent is read as W3C says, and a route keeps no ids" {
+  let t = "4bf92f3577b34da6a3ce929d0e0e4736"
+  let s = "00f067aa0ba902b7"
+  let p = @mesh_runtime.parse_parent(Some("00-\{t}-\{s}-01")).unwrap()
+  assert_true(p.sampled)
+  assert_eq(p.span, s)
+  assert_false(@mesh_runtime.parse_parent(Some(" 00-\{t.to_upper()}-\{s}-0A ")).unwrap().sampled)
+  assert_eq(@mesh_runtime.parse_parent(Some(" 00-\{t.to_upper()}-\{s}-0A ")).unwrap().trace, t)
+  for bad in ["", "ff-\{t}-\{s}-01", "00-\{t}-\{s}-1", "00-00000000000000000000000000000000-\{s}-01", "00-\{t}-\{s}"] {
+    assert_eq(@mesh_runtime.parse_parent(Some(bad)), None)
+  }
+  assert_eq(@mesh_runtime.route("/admin/api/threads/42/messages?limit=50"), "/admin/api/threads/:id/messages")
+  assert_eq(@mesh_runtime.route("/admin/api/sessions/slack:T1:C1/files?name=a.pdf"), "/admin/api/sessions/:id/files")
+  assert_eq(@mesh_runtime.route("/admin/api/workspaces/w1/members/m"), "/admin/api/workspaces/:id/members/:id")
+}
+
+///|
+test "spans are batched: sent once EXPORT_MS after the first, 500 a batch, dropped when they cannot go" {
+  let sent = []
+  let said = []
+  let hr = Ref(0L)
+  let rt = @effect.Runtime::new()
+  let traces = @mesh_runtime.Traces::new(true, rt, () => hr.val, (level, words, _) => said.push("\{level} \{words}"))
+  let failing = Ref(1)
+  traces.export_to(async fn(batch) {
+    if failing.val > 0 {
+      failing.val -= 1
+      raise Failure("down")
+    }
+    sent.push(batch.length())
+  })
+  let parent = @mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+  assert_true(traces.start(@mesh_runtime.parse_parent(Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00")), "x", 0L) is None)
+  for i in 0..<1200 {
+    let span = traces.start(parent, "00000000000000\{i % 10}\{i % 10}", 1000L).unwrap()
+    hr.val += 5L
+    traces.end(span, "GET /", [("http.response.status_code", Json::number(200.0))], false)
+  }
+  assert_eq(traces.spans.length(), 1200)
+  rt.advance(2999)
+  assert_eq(sent, [])
+  rt.advance(1)
+  assert_eq(sent, [500, 200])
+  assert_eq(said, ["warn traces dropped", "info traces sent", "info traces sent"])
+  assert_eq(traces.spans.length(), 0)
+  let span = traces.start(parent, "0000000000000001", 2L).unwrap()
+  assert_eq(@mesh_runtime.traceparent(span), "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000001-01")
+  traces.end(span, "x", [], true)
+  traces.close()
+  rt.advance(10_000)
+  assert_eq(sent, [500, 200])
+  inspect(
+    @mesh_runtime.attribute("n", Json::number(1.0e21)).stringify(),
+    content="{\"key\":\"n\",\"value\":{\"intValue\":\"1e+21\"}}",
+  )
+}
+
+///|
+test "a pacer lets two frames go before the round trip is known, then as many as the link takes" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val, start=Some(1_500_000.0))
+  p.set_ceiling(4_000_000.0)
+  assert_true(p.may())
+  p.sent(1.0, 10_000.0)
+  assert_true(p.may())
+  p.sent(2.0, 10_000.0)
+  assert_false(p.may())
+  now.val = 20.0
+  p.acked(2.0)
+  assert_eq(p.rtt(), Some(20.0))
+  assert_eq(p.unacked(), 0)
+  // never lowered yet: up by START_UP, to the ceiling at most
+  assert_eq(p.asked_rate(), Some(2_250_000.0))
+  // (20 kB taken in at once: over the least span, 100 ms)
+  assert_eq(p.through_rate(), 1_600_000.0)
+}
+
+///|
+test "a pacer's 帧率 slots its frames, a late one letting the next come sooner" {
+  let now = Ref(0.0)
+  let p = @mesh_runtime.Pacer::new(() => now.val, fps=Some(50.0))
+  assert_eq(p.wait(), 0.0)
+  p.sent(1.0, 1.0)
+  assert_eq(p.wait(), 10.0)
+  now.val = 9.5
+  assert_eq(p.wait(), 1.0)
+  now.val = 25.0
+  p.sent(2.0, 1.0)
+  assert_eq(p.wait(), 10.0)
+}
+
+///|
+test "a sizer asks the smaller picture once the link carries a quarter for DOWNSIZE_MS, and back" {
+  let now = Ref(0.0)
+  let z = @mesh_runtime.Sizer::new(() => now.val, { max_width: 1920.0, max_height: 1080.0 })
+  let own = @mesh_runtime.own_rate(1920.0, 1080.0)
+  assert_eq(z.step(own * 0.2, own * 0.2, 1920.0, 1080.0), None)
+  now.val = 3000.0
+  assert_eq(z.step(own * 0.2, own * 0.2, 1920.0, 1080.0), Some({ max_width: 1280.0, max_height: 720.0 }))
+  assert_true(z.is_low())
+  let small = @mesh_runtime.own_rate(1280.0, 720.0)
+  assert_eq(z.step(small, small, 1280.0, 720.0), None)
+  now.val = 6000.0
+  assert_eq(z.step(small, small, 1280.0, 720.0), Some({ max_width: 1920.0, max_height: 1080.0 }))
+  let whole = @mesh_runtime.Sizer::new(() => now.val, { max_width: 1920.0, max_height: 1080.0 }, quality=Some("original"))
+  assert_eq(whole.step(1.0, 1.0, 1920.0, 1080.0), None)
+}
+
+///|
+test "a still screen's picture goes again sharper, and a view's lateness is said once a second" {
+  let s = @mesh_runtime.Sharpener::new()
+  s.sent(0.0, Some(1_000_000.0))
+  assert_eq(s.left(100.0), 400.0)
+  assert_false(s.due(500.0, Some(1_100_000.0)))
+  assert_true(s.due(500.0, Some(1_100_001.0)))
+  assert_false(s.due(500.0, None))
+  let now = Ref(1000.0)
+  let l = @mesh_runtime.FrameLatency::new(() => now.val)
+  l.sent(990_000.0)
+  l.sent(995_000.0)
+  l.sent(-5.0)
+  now.val = 1010.0
+  l.acked(995_000.0, 4.0)
+  assert_eq(l.take(), Some((13.0, 5.0)))
+  assert_eq(l.take(), None)
+  now.val = 5000.0
+  assert_eq(l.take(), None)
+}
+
+///|
+test "the loop's stands are counted while something uses it, its tick stopped with the last" {
+  let now = Ref(0.0)
+  let tick : Ref[(() -> Unit)?] = Ref(None)
+  let stall = @mesh_runtime.LoopStall::new(() => now.val, (_, f) => {
+    tick.val = Some(f)
+    () => tick.val = None
+  })
+  let a = stall.use_()
+  let b = stall.use_()
+  now.val = 50.0
+  (tick.val.unwrap())()
+  assert_eq(stall.stalled(), 40.0)
+  now.val = 55.0
+  assert_eq(stall.stalled(), 40.0)
+  a()
+  a()
+  assert_true(tick.val is Some(_))
+  b()
+  assert_true(tick.val is None)
+}
+
+///|
+test "a view's frames, its clip and its look, as the wire has them" {
+  assert_eq(@mesh_runtime.frame(16, b"ab"), b"\x10\x00\x00\x00\x02ab")
+  assert_eq(@mesh_runtime.video_payload(true, 258.9, b"z"), b"\x01\x00\x00\x00\x00\x00\x00\x01\x02z")
+  assert_eq(@mesh_runtime.clip_payload(Text("é"), flags=Some(1)), b"\x01\x01\xc3\xa9")
+  assert_eq(@mesh_runtime.parse_clip(b"\x01\x01\xc3\xa9"), Some((Text("é"), true)))
+  assert_eq(@mesh_runtime.parse_clip(b"\x00\x02"), None)
+  assert_eq(@mesh_runtime.parse_clip(b"\x00\x09\x00"), None)
+  let look = @mesh_runtime.parse_look(
+    @utf8.encode("{\"region\":{\"x\":0.9,\"y\":-1,\"w\":0.001,\"h\":0.5},\"maxWidth\":99999}"),
+    { max_width: 1920.0, max_height: 1080.0 },
+  )
+  assert_eq(look, Some((Some({ x: 0.9, y: 0.0, w: 0.02, h: 0.5 }), { max_width: 8192.0, max_height: 1080.0 })))
+  assert_eq(@mesh_runtime.parse_look(b"[]", { max_width: 1.0, max_height: 2.0 }), Some((None, { max_width: 1.0, max_height: 2.0 })))
+  assert_eq(@mesh_runtime.parse_look(b"3", { max_width: 1.0, max_height: 2.0 }), None)
+  assert_eq(@mesh_runtime.parse_window_pick(o([("t", "window")])), Whole)
+  assert_eq(@mesh_runtime.parse_window_pick(o([("t", "window"), ("id", 0.0)])), NotOne)
+  assert_eq(
+    @mesh_runtime.parse_input(o([("t", "pointer"), ("kind", "down"), ("x", 2.0), ("y", 0.5), ("buttons", -1.0)])),
+    Some(o([("t", "pointer"), ("kind", "down"), ("x", 1.0), ("y", 0.5), ("buttons", 7.0)])),
+  )
+  assert_eq(@mesh_runtime.said_word(Some(Json::string("  i\u{0}Phone\u{200b} ")), 80), Some("iPhone"))
+  assert_eq(@mesh_runtime.said_word(Some(Json::string("\u{e0001}")), 80), None)
+  let a = @mesh_runtime.asked(o([("codecs", Json::array(["vp9", "jpeg", "h265"])), ("peek", true), ("control", true), ("fps", 60.0)]))
+  assert_eq(a.as_object().unwrap().get("codecs"), Some(Json::array(["h265", "jpeg"])))
+  assert_eq(a.as_object().unwrap().get("control"), Some(Json::boolean(false)))
+  assert_eq(a.as_object().unwrap().get("fps"), None)
+}
+
+///|
+test "frames come whole across a stream's pieces; one too large, or cut, fails" {
+  let said = []
+  let errors = on_clock(0, _ => {
+    let chunks = [b"\x10\x00", b"\x00\x00\x01a\x11", b"\x00\x00\x00\x00"]
+    let at = Ref(0)
+    let read = async fn() -> Bytes? {
+      if at.val < chunks.length() {
+        at.val += 1
+        Some(chunks[at.val - 1])
+      } else {
+        None
+      }
+    }
+    let f = @mesh_runtime.FrameIn::new(read)
+    while f.next() is Some((kind, payload)) {
+      said.push("\{kind}:\{payload.length()}")
+    }
+    let g = @mesh_runtime.FrameIn::new(async fn() { None }, carry=b"\x10\xff\xff\xff\xff")
+    ignore(g.next())
+  })
+  assert_eq(said, ["16:1", "17:0"])
+  assert_eq(errors, ["screen frame too large"])
+}
+
+///|
+test "the locks' tells: a head moved told its workspace's members, a person's log its person" {
+  let heads : Map[String, Json] = Map([("", o([("seq", 1.0), ("hash", "h")]))])
+  let cloud = []
+  let chain = []
+  let told = []
+  let stop = @mesh_runtime.tell_locks(
+    {
+      memberships: () => [("home", true), ("w", false)],
+      head: ws => heads.get(ws.unwrap_or("")),
+      force_word: _ => "",
+      listen_cloud: f => {
+        cloud.push(f)
+        () => cloud.clear()
+      },
+      listen_chains: f => {
+        chain.push(f)
+        () => chain.clear()
+      },
+      kept: g => if g == "p" { Some([o([("ws", "person:ada")])]) } else { None },
+    },
+    (event, data, of, to) => told.push("\{event} \{data.stringify()} \{of.replace_all(old="\u{0}", new="|")} \{to.stringify()}"),
+  )
+  cloud[0]()
+  heads["w"] = o([("seq", 2.0), ("hash", "x")])
+  heads[""] = o([("seq", 2.0), ("hash", "i")])
+  cloud[0]()
+  chain[0]("p")
+  chain[0]("q")
+  stop()
+  assert_eq(cloud.length(), 0)
+  assert_eq(told, [
+    "lock {\"workspace\":\"home\",\"head\":{\"seq\":2,\"hash\":\"i\"}} lock|home {\"workspace\":\"home\"}",
+    "lock {\"workspace\":\"w\",\"head\":{\"seq\":2,\"hash\":\"x\"}} lock|w {\"workspace\":\"w\"}",
+    "person {\"genesis\":\"p\",\"length\":1} person|p {\"subs\":[\"ada\"]}",
+  ])
+}
+
+///|
+test "a reply that went slowly is said with the ways it had, once taken in" {
+  let way = (relay : String?, selected : Bool, tx : Double, rtt : Double?) => {
+    let w : @mesh_runtime.WayPath = {
+      selected,
+      relay,
+      ip: Some("1.2.3.4:5"),
+      rtt_ms: rtt,
+      tx_packets: tx,
+      lost_packets: 1.0,
+      cwnd: None,
+      congestion_events: None,
+    }
+    w
+  }
+  let before = @mesh_runtime.sent_on([way(Some("r"), false, 2.0, None), way(Some("r"), true, 3.0, Some(9.5))])
+  assert_eq(before, [("r", 2.0), ("r#1", 3.0)])
+  let after = [way(Some("r"), false, 5.0, None), way(Some("r"), true, 10.0, Some(9.5)), way(None, false, 1.0, Some(0.2))]
+  assert_eq(@mesh_runtime.paths_of(after), "r ? 5/1, *r 10ms 10/1, 1.2.3.4:5 0ms 1/1")
+  assert_eq(@mesh_runtime.slow_line(before, Some(0), 9000.0, after, () => "r", 1.0, 1.0, "d"), None)
+  assert_eq(@mesh_runtime.slow_line(before, None, 4999.0, after, () => "r", 1.0, 1.0, "d"), None)
+  let line = @mesh_runtime.slow_line(before, None, 8000.0, after, () => "GET /x", 400_000.0, 3.0, "d").unwrap()
+  assert_eq(line.as_object().unwrap().get("ways"), Some(Json::string("r ? +3/1 cwnd=?, *r#1 10ms +7/1 cwnd=?, 1.2.3.4:5 0ms +1/1 cwnd=?")))
+  assert_eq(line.as_object().unwrap().get("bytesPerSecond"), Some(Json::number(50_000.0)))
+  assert_eq(line.as_object().unwrap().get("rtt"), Some(Json::number(10.0)))
+}
+
+///|
+test "the device tools: only a gateway's, of this station's workspace, each op answered once" {
+  let said = []
+  let d : @mesh_runtime.ToolsDeps = {
+    enabled: () => true,
+    workspace: () => Some("w"),
+    removed: () => false,
+    gateway_keys: () => ["g"],
+    run: async fn(op, _, _) { if op == "bad" { Err(("not_found", "no")) } else { Ok(Json::string(op)) } },
+    said: (_, words, _) => said.push(words),
+  }
+  assert_eq(@mesh_runtime.tools_refusal(d, "x"), Some("not a gateway of this station's control plane"))
+  let replies = []
+  let errors = on_clock(0, _ => {
+    let w = o([("workspace", "w")])
+    replies.push(@mesh_runtime.tools_answer(d, Some(o([("op", "a"), ("context", w)])), () => None).stringify())
+    replies.push(@mesh_runtime.tools_answer(d, Some(o([("op", "bad"), ("context", w)])), () => None).stringify())
+    replies.push(@mesh_runtime.tools_answer(d, Some(o([("op", "a")])), () => None).stringify())
+    replies.push(@mesh_runtime.tools_answer(d, None, () => None).stringify())
+    replies.push(@mesh_runtime.tools_answer(d, Some(o([("op", "a"), ("context", w)])), () => Some("station removed")).stringify())
+  })
+  assert_eq(errors, [])
+  assert_eq(replies, [
+    "{\"ok\":true,\"result\":\"a\"}", "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"no\"}}",
+    "{\"ok\":false,\"error\":{\"code\":\"forbidden\",\"message\":\"the request is for another workspace than this station's\"}}",
+    "{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"a request names its op\"}}",
+    "{\"ok\":false,\"error\":{\"code\":\"forbidden\",\"message\":\"station removed\"}}",
+  ])
+  assert_eq(said, ["device tool", "device tool"])
+  assert_eq(@mesh_runtime.tools_status([]), o([("state", "idle")]))
+  assert_eq(
+    @mesh_runtime.tools_status([o([("endedAt", 1.0), ("startedAt", 2.0), ("declared", "block"), ("need", "a key")])]),
+    o([("state", "need_human"), ("summary", "a key")]),
+  )
+  assert_eq(@mesh_runtime.encode_uri_component("a b/é"), "a%20b%2F%C3%A9")
+}
+
+///|
+test "a device's line over the mesh that never ends is answered once TOOLS_LINE_MS are up" {
+  let replies = []
+  let rt = @effect.Runtime::new()
+  let d : @mesh_runtime.ToolsDeps = {
+    enabled: () => true,
+    workspace: () => Some("w"),
+    removed: () => false,
+    gateway_keys: () => ["gateway"],
+    run: async fn(_, _, _) { Ok(Json::null()) },
+    said: (_, _, _) => (),
+  }
+  let (a, b) = @door.pair("gateway", "station", alpn=@mesh_runtime.tools_alpn)
+  ignore(rt.fork(() => @mesh_runtime.serve_tools(d, b, rt) catch { _ => () }))
+  ignore(rt.fork(() => {
+    let s = (a.open_bi)()
+    (s.write)(b"{\"op\":\"a\"")
+    replies.push(@door.Reader::new(s).line().unwrap().stringify())
+  } catch { _ => () }))
+  ignore(rt.run_ready())
+  rt.advance(@mesh_runtime.tools_line_ms - 1)
+  assert_eq(replies, [])
+  rt.advance(1)
+  assert_eq(replies, ["{\"ok\":false,\"error\":{\"code\":\"invalid_request\",\"message\":\"tools request timed out\"}}"])
+}
+
+///|
+test "a file's bytes are read as they are sent, opened at the first and closed after the last" {
+  let content = b"0123456789"
+  let log = []
+  let errors = on_clock(0, _ => {
+    let open = async fn() -> @mesh_runtime.FileReading {
+      log.push("open")
+      {
+        read_at: async fn(at, length) {
+          let from = at.to_int()
+          let to = if from + length > content.length() { content.length() } else { from + length }
+          log.push("read \{from} \{length}")
+          @door.own(content[from:to])
+        },
+        close: async fn() { log.push("close") },
+      }
+    }
+    let p = @mesh_runtime.file_bytes(open, 2L, 6L)
+    while (p.next)() is Some(b) {
+      log.push(@utf8.decode_lossy(b[:]))
+    }
+    ignore(@mesh_runtime.file_bytes(open, 3L, 3L))
+    let short = @mesh_runtime.file_bytes(open, 8L, 20L)
+    while (short.next)() is Some(_) {
+
+    }
+  })
+  assert_eq(errors, ["the file got shorter while it was sent"])
+  assert_eq(log, ["open", "read 2 4", "2345", "close", "open", "read 8 12", "read 10 10", "close"])
+  let more = on_clock(0, _ => {
+    ignore(@mesh_runtime.read_bytes(@mesh_runtime.one_bytes(b"abc"), 2))
+  })
+  assert_eq(more, ["more came than was asked for"])
+}
+
+///|
+test "the served programs are told a member as it changes, and the pieces of their streams together" {
+  let t = @mesh_runtime.ServedTold::new()
+  let ada = o([("email", "a@x"), ("name", "Ada")])
+  assert_eq(t.viewer(1, Some(ada), false, None).length(), 2)
+  assert_eq(t.viewer(1, Some(ada), false, None).length(), 0)
+  assert_eq(t.viewer(1, Some(ada), true, Some(9144.0)).length(), 1)
+  assert_eq(t.viewer_of(1), Some(ada))
+  assert_eq(t.again().length(), 2)
+  assert_eq(t.viewer(1, None, false, None).length(), 1)
+  assert_eq(t.viewer_of(1), None)
+  assert_eq(@mesh_runtime.served_again_after(5000.0), 0.0)
+  assert_eq(@mesh_runtime.served_again_after(4999.0), 1000.0)
+  let q = @mesh_runtime.PieceQueue::new()
+  q.piece(1, Some("a"))
+  q.piece(2, Some("a"))
+  q.piece(3, Some("b"))
+  q.piece(3, None)
+  q.piece(4, None)
+  assert_eq(q.drain().map(j => j.stringify()), [
+    "{\"pieces\":\"a\",\"to\":[1,2]}", "{\"chunk\":3,\"text\":\"b\"}", "{\"done\":3}", "{\"done\":4}",
+  ])
+  assert_eq(q.drain(), [])
+}
+
+///|
+test "a screen's id as its path has it, decoded as decodeURIComponent does" {
+  assert_eq(@mesh_runtime.decode_uri_component("browser%3At1"), Some("browser:t1"))
+  assert_eq(@mesh_runtime.decode_uri_component("%E4%BD%A0%F0%9F%98%80"), Some("你😀"))
+  assert_eq(@mesh_runtime.decode_uri_component("%E0%A4"), None)
+  assert_eq(@mesh_runtime.decode_uri_component("a%2"), None)
+  assert_eq(@mesh_runtime.decode_uri_component("%ED%A0%80"), None)
+  assert_eq(@mesh_runtime.decode_uri_component("%C0%80"), None)
+  assert_eq(@mesh_runtime.lang_of_core([("StillFail-Lang", " EN-us ")]), "en")
+  assert_eq(@mesh_runtime.lang_of_core([("stillfail-lang", "")]), "zh")
+  let tr = (lang : String, key : String, args : Json) => "\{lang}:\{key}:\{args.stringify()}"
+  assert_eq(@mesh_runtime.access_shown(Some(o([("capture", true), ("control", true)])), "en", tr), None)
+  assert_eq(
+    @mesh_runtime.access_shown(Some(o([("capture", true), ("control", false), ("asking", true)])), "en", tr),
+    Some(
+      o([
+        ("capture", true),
+        ("control", false),
+        (
+          "message",
+          "en:station.screen.controlOff:{\"app\":\"still.fail Helper\"} en:station.screen.asking:{\"app\":\"still.fail Helper\"}",
+        ),
+        ("asking", true),
+      ]),
+    ),
+  )
+}
+
+///|
+test "a view of a screen not there is refused, said in the asker's language" {
+  let written = []
+  let finished = Ref(false)
+  let stream : @door.Stream = {
+    read: async fn() -> Bytes? { None },
+    write: async fn(b) { written.push(@utf8.decode_lossy(b[:])) },
+    finish: async fn() { finished.val = true },
+    stopped: async fn() -> Int? { None },
+    reset: async fn(_) {  },
+  }
+  let hub : @mesh_runtime.ScreenHubPort = {
+    get: _ => None,
+    drive: (_, _, _, _) => (false, []),
+    join: (_, _) => () => (),
+    watch: _ => () => (),
+    when_stopping: _ => () => (),
+  }
+  let errors = on_clock(0, rt => @mesh_runtime.answer_screen(
+    hub,
+    stream,
+    b"",
+    o([("method", "post"), ("path", "/admin/api/screens/desktop/view"), ("headers", o([("stillfail-lang", "en")])), ("screen", o([]))]),
+    o([("role", "member")]),
+    () => true,
+    rt,
+    (lang, key, _) => "\{lang} \{key}",
+    (_, _, _, _) => (),
+  ))
+  assert_eq(errors, [])
+  assert_eq(written, [
+    "{\"status\":404,\"headers\":{\"content-type\":\"application/json\"}}\n", "{\"error\":\"en station.screen.notFound\"}",
+  ])
+  assert_true(finished.val)
+}
+
+///|
+test "a connection's streams come in the order its other end opened them" {
+  let steps = [
+    o([("give", Json::array([1.0, 1.0]))]),
+    o([("take", true)]),
+    o([("skip", 0.0)]),
+    o([("give", Json::array([3.0, 3.0]))]),
+    o([("give", Json::array([9.0]))]),
+    o([("skip", 2.0)]),
+    o([("take", true)]),
+    o([("take", true)]),
+    o([("end", true)]),
+    o([("give", Json::array([4.0, 4.0]))]),
+    o([("take", true)]),
+  ]
+  inspect(@mesh_runtime.incoming_steps_json(steps).stringify(), content="{\"taken\":[1,9,3,null],\"destroyed\":[4]}")
+  assert_eq(@mesh_runtime.bare("https://r///"), "https://r")
+}
+
+///|
+test "the served programs: started, a member told as it changes, one that ends started again as long as it ran" {
+  let rt = @effect.Runtime::new()
+  let posted : Array[Array[Json]] = []
+  let hooks : Array[((Json) -> Unit, (Int) -> Unit)] = []
+  let now = Ref(0.0)
+  let due : Array[(Double, () -> Unit)] = []
+  let w : @mesh_runtime.ServedWith = {
+    spawn: (_, _, said, exited) => {
+      let told = []
+      posted.push(told)
+      hooks.push((said, exited))
+      { post: m => told.push(m), terminate: async fn() {  } }
+    },
+    now: () => now.val,
+    after: (ms, f) => {
+      due.push((now.val + ms, f))
+      () => ()
+    },
+    wall: () => 5.0,
+    answer: async fn(_, _, _) { { status: 200, headers: o([]), body: b"" } },
+    built: (_, _) => (),
+    stream: None,
+    prepare: _ => (),
+    remove: async fn(_) {  },
+    set: () => Json::string("set"),
+    pid: 7,
+    sep: "/",
+    log: (_, _, _, _) => (),
+  }
+  let served = @mesh_runtime.Served::new("reader", "/d", w, rt)
+  let live = []
+  ignore(rt.fork(() => live.append(served.start())))
+  ignore(rt.run_ready())
+  assert_eq(posted.length(), 2)
+  (hooks[0].0)(o([("listening", "/d/run/serve-7-0.sock")]))
+  (hooks[1].0)(o([("listening", "/d/run/serve-7-1.sock")]))
+  ignore(rt.run_ready())
+  assert_eq(live, ["/d/run/serve-7-0.sock", "/d/run/serve-7-1.sock"])
+  served.viewer(1, Some(o([("email", "a@x")])))
+  served.viewer(1, Some(o([("email", "a@x")])))
+  assert_eq(posted[0].length(), 2)
+  // ended soon after it started: started again a second later
+  (hooks[0].1)(1)
+  assert_eq(posted.length(), 2)
+  now.val = 1000.0
+  for d in due {
+    if d.0 <= now.val {
+      (d.1)()
+    }
+  }
+  assert_eq(posted.length(), 3)
+  // ended having run long: at once
+  now.val = 10_000.0
+  (hooks[1].1)(1)
+  assert_eq(posted.length(), 4)
+}
+
+///|
+test "the front's streams' socket beside its own, by that path's separator: a Windows path's too" {
+  assert_eq(@mesh_runtime.streams_path_of("/d/run/front.sock", 7, 1), "/d/run/mesh-7-1.sock")
+  assert_eq(@mesh_runtime.streams_path_of("/front.sock", 7, 2), "/mesh-7-2.sock")
+  assert_eq(@mesh_runtime.streams_path_of("front.sock", 7, 3), "./mesh-7-3.sock")
+  assert_eq(
+    @mesh_runtime.streams_path_of("C:\\ProgramData\\stillfail\\run\\front.sock", 7, 4),
+    "C:\\ProgramData\\stillfail\\run\\mesh-7-4.sock",
+  )
+  assert_eq(@mesh_runtime.streams_path_of("C:\\front.sock", 7, 5), "C:\\mesh-7-5.sock")
+  assert_eq(@mesh_runtime.dirname("C:\\a\\b.sock"), "C:\\a")
+  assert_eq(@mesh_runtime.dirname("/a/b\\c.sock"), "/a/b")
+}

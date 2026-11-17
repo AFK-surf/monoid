@@ -53,6 +53,10 @@ fn rows_keys_app(
 
 ///|
 test "rows steady: a list's keys changed at once as a part in a row closes on its way, a row over it another height at once: the rows moved by that no step of theirs" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let first = @signals.signal(54.0)
   let part = @signals.signal(true)
   let swapped = @signals.signal(false)
@@ -73,6 +77,10 @@ test "rows steady: a list's keys changed at once as a part in a row closes on it
 
 ///|
 test "rows steady: the same with its keys as they were: the row over it stepping at once while a part under it closes on its way is caught" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let first = @signals.signal(54.0)
   let part = @signals.signal(true)
   let swapped = @signals.signal(false)
@@ -92,6 +100,10 @@ test "rows steady: the same with its keys as they were: the row over it stepping
 
 ///|
 test "rows steady: what covers a list's top grown at once, drawn over what it shows, moves none of its rows: no step of theirs; its head grown at once over its keys moves them all with it: none either" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let first = @signals.signal(40.0)
   let part = @signals.signal(false)
   let swapped = @signals.signal(false)

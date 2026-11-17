@@ -3,7 +3,8 @@
 // rule, the boxes (Ctx::named) and by how much:
 //
 // room: what shows whole and takes presses (its press said, Ctx::on_press; or Ctx::takes_presses) has room to be
-//   pressed `room_least()` across each way at least (by the native input: a finger's 44, a keyboard and mouse's 36).
+//   pressed `room_least()` across each way at least (by the native input: a finger's 44, a keyboard and mouse's 36;
+//   an app says its own, and from what width a window looks for no finger, by `set_press_rules`).
 //   A part of what holds it (a row's state line, its station's mark) is only pointed at (Ctx::box's `points`: a
 //   press on it is the row's, where in the row the pointer let go: Ctx::pointer, as its handler runs), no target of its own. Drawn smaller, a press
 //   reaches it from round it, by a finger or a pointer alike (Ctx's press_reach): its room is it grown so round its
@@ -29,9 +30,49 @@
 /// a pointer is fine; a finger on a screen made for one, as the touch Mac is to be, reached from round what is
 /// small, press_reach).
 pub fn room_least() -> Double {
+  let r = press_rules.val
   match native_pointing() {
-    Finger => 44.0
-    Mouse => 36.0
+    Finger => if large_screen() { r.mouse } else { r.finger }
+    Mouse => r.mouse
+  }
+}
+
+///|
+/// What an app says of the room its presses have, once as it starts (an app's own choice, not mbui's: 左子健 2026-11-17,
+/// 「点击区域检查应该要能在项目里配置尺寸」「这个项目的大屏模式不做触屏检查」): the least room across for a finger's press
+/// and for a keyboard and mouse's, and the width from which a window is a large screen's (`large_from`), where no
+/// finger is looked for: its rooms are the mouse's, and what shows only under the hand is no `hover:` fault. What it
+/// says holds for the checks (`Tester::room_faults`, `hover_only_faults`) and for how far round what is small a press
+/// reaches it alike (press_reach), so what passes is what a press does. mbui's own, unless said: 44, 36 and every
+/// window looked at for a finger.
+pub(all) struct PressRules {
+  finger : Double
+  mouse : Double
+  large_from : Double?
+}
+
+///|
+// kept across runs: what the program says once as it starts, before any frame
+let press_rules : Ref[PressRules] = Ref({ finger: 44.0, mouse: 36.0, large_from: None })
+
+///|
+/// The app's rules for its presses' room, said once as it starts (`PressRules`).
+pub fn set_press_rules(rules : PressRules) -> Unit {
+  press_rules.val = rules
+}
+
+///|
+/// The rules for presses' room as they stand (`PressRules`).
+pub fn press_rules_now() -> PressRules {
+  press_rules.val
+}
+
+///|
+/// Whether the window is a large screen's by the app's rules (`PressRules::large_from`): no finger looked for there.
+fn large_screen() -> Bool {
+  match press_rules.val.large_from {
+    Some(from) => g().width >= from
+    None => false
   }
 }
 
@@ -51,6 +92,10 @@ pub fn Tester::room_faults(self : Tester) -> Array[String] {
 /// way reaches as easily (see the file's head): one `hover:` line each; the frames after it as before.
 pub fn Tester::hover_only_faults(self : Tester) -> Array[String] {
   self.reads_own()
+  // (a large screen's, by the app's rules: no finger looked for, PressRules)
+  if large_screen() {
+    return []
+  }
   let c = g()
   let rest : Set[Int] = Set([])
   for i in c.press_targets() {

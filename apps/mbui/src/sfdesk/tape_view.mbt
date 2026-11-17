@@ -1296,7 +1296,7 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     }, fn(b) { side_bar_node(b, src, r, shown, true, tips) })
     let front = fn() {
       match shown().1 {
-        front if side_node_tab(front) => front
+        front if side_node_tab(front) => full_elsewhere(r, front)
         _ => ""
       }
     }
@@ -1305,7 +1305,10 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     // tab's nodes, 添加 in those corners too; a station's page its page's nodes; any other tab its old view)
     q.pick(at_once=true, front, fn(s, agent) {
       s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-      if agent == "" {
+      if agent == tab_full_mark {
+        // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
+        ()
+      } else if agent == "" {
         behind(
           s,
           fn(c) {
@@ -1323,14 +1326,26 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         .min_height(Is(Some(0.0)))
         |> ignore
       } else if @sfbase.view_tab_file(agent) is Some(_) {
-        side_view_node(s, src, r, agent)
+        tab_held_beside(s, r, agent)
+        side_view_node(s, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
       } else if tab_service(agent) is Some(job) {
+        tab_held_beside(s, r, agent)
         // (alone on the tape: its bar the panel's, its × closing the panel, in the panel's corners)
         let round = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
         let alone = @signals.untracked(fn() { shown().0.length() == 1 && !column_short.get() })
-        service_tab_node(s, src, r, job, if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None }, round, tips)
+        service_tab_node(
+          s,
+          src,
+          r,
+          job,
+          if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None },
+          full_of(r, agent),
+          round,
+          tips,
+        )
       } else if tab_file(agent) is Some((session, path, name)) {
-        file_tab_node(s, src, r, session, path, name, tips)
+        tab_held_beside(s, r, agent)
+        file_tab_node(s, src, r, session, path, name, full_of(r, agent), tips)
       } else if side_screen_tab(agent) is Some(_) {
         side_screen_node(s, src, r, agent, fn() { shown().0 }, true)
       } else if side_adb_tab(agent) is Some(station) {
@@ -1346,6 +1361,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
       } else if side_station_tab(agent) is Some(station) {
         // (as wide as the panel on the tape is laid out now)
         side_station_node(s, src, station, tips, fn() { tape_room_now().panel_w }, true)
+      } else if side_terminal_tab(agent) {
+        side_terminal_node(s, src, r, agent)
       } else if side_own_tab(agent) {
         side_own_node(s, src, r, agent, tips, fn() {
           @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
@@ -1439,7 +1456,7 @@ fn tape_edge_at(
   edge : @ui.Side,
   gap : (Double) -> Double,
   on : TapeEdgeOn,
-  made : (@view.View) -> @view.View,
+  made : (@view.View, @sf.EdgePull) -> @view.View,
 ) -> Unit {
   n
   .width(By(fn() {
@@ -1452,7 +1469,9 @@ fn tape_edge_at(
     (gap(tape_drawn_at(holder)) - before, tape_room_now().panel_top)
   }))
   |> ignore
-  let e = made(n)
+  // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go: @sf.EdgePull)
+  let pull = @sf.EdgePull::new()
+  let e = made(n, pull)
   e.box(fn(g) {
     g
     .over(Is(true))
@@ -1461,7 +1480,7 @@ fn tape_edge_at(
       (before + (bar_gap_now() - @sf.handle_w) / 2.0, 0.0, 0.0, 0.0)
     }))
     |> ignore
-    @sf.edge_look_node(g, @sf.edge_over, fn() { e.pointed() || on.held.get() }, fn() { on.held.get() })
+    @sf.edge_look_node(g, @sf.edge_over, fn() { e.pointed() || on.held.get() }, fn() { on.held.get() }, pull~)
     |> ignore
   })
   |> ignore
@@ -1480,7 +1499,7 @@ fn tape_side_edge(
   tips : @sf.TipLayer,
   on : TapeEdgeOn,
 ) -> Unit {
-  tape_edge_at(n, holder, Right, fn(t) { tape_col_at(t) - bar_gap_now() }, on, fn(n) {
+  tape_edge_at(n, holder, Right, fn(t) { tape_col_at(t) - bar_gap_now() }, on, fn(n, pull) {
     @sf.edge_node(
       n,
       fn() { @sf.t("web-pages.workspace.resizeSidebar") },
@@ -1511,6 +1530,7 @@ fn tape_side_edge(
       },
       tips~,
       side=Right,
+      pull~,
     )
   })
 }
@@ -1520,7 +1540,7 @@ fn tape_side_edge(
 /// panel's width, the page beside it showing what it leaves; the second of two presses, its own width again; a press
 /// where it lies over what shows of the page, the page brought over.
 fn tape_panel_edge(n : @view.View, holder : @view.View, tips : @sf.TipLayer, on : TapeEdgeOn) -> Unit {
-  tape_edge_at(n, holder, Left, fn(t) { tape_col_at(t) + tape_page_at(t) }, on, fn(n) {
+  tape_edge_at(n, holder, Left, fn(t) { tape_col_at(t) + tape_page_at(t) }, on, fn(n, pull) {
     @sf.edge_node(
       n,
       fn() { @sf.t("web-pages.chat.resizePanel") },
@@ -1546,6 +1566,7 @@ fn tape_panel_edge(n : @view.View, holder : @view.View, tips : @sf.TipLayer, on 
       },
       tips~,
       side=Left,
+      pull~,
     )
   })
 }

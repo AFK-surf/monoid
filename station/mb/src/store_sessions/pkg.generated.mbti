@@ -167,6 +167,7 @@ pub fn Store::record_process(Self, @json.Json, @json.Json, @json.Json, @json.Jso
 pub fn Store::record_usage(Self, @json.Json, @json.Json, String, Array[@json.Json], @json.Json) -> Int32 raise
 pub fn Store::record_usage_all(Self, Array[@json.Json]) -> Array[Int32] raise
 pub fn Store::recovery_waits(Self) -> @json.Json raise
+pub fn Store::refresh_chat_share_index(Self) -> Bool raise
 pub fn Store::remember_slack_stop(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
 pub fn Store::remote_queue_jobs(Self) -> Array[@json.Json] raise
 pub fn Store::retitled(Self, @json.Json) -> Unit

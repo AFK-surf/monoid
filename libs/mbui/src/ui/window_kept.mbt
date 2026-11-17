@@ -368,6 +368,7 @@ fn window_kept_ui_4() -> Array[WindowKept] {
     kept_ref(presented_share, fn() { 1.0 }),
     kept_ref(presented_ms, fn() { 0.0 }),
     kept_ref(inputs_since, fn() { false }),
+    kept_ref(press_moment, fn() { -1.0 }),
     kept_ref(inputs_taken, fn() { false }),
     kept_map(kept_nodes),
     kept_struct(fn() { let held = { ..nodes_run }; fn() { nodes_run.window_put(held) } }, fn() { nodes_run.window_put({

@@ -173,14 +173,24 @@ pub fn Way::get(self : Way, c : @ui.Ctx) -> Double {
 /// Where it is as node `n` draws it: at the moment `n` is drawn at while it goes (that clock followed), where it went
 /// once it is there (View::drawn_while: the clock followed no more). What a binding reads a way by.
 pub fn Way::shown_on(self : Way, n : @view.View) -> Double {
+  self.motion_on(n).0
+}
+
+///|
+/// Where it is as node `n` draws it and how fast it goes then (per second), as Way::shown_on reads it: while it goes,
+/// both at the moment `n` is drawn at (Spec::value_at's, in closed form: no frame before it asked, none compared);
+/// once it is there (its length out, never set out, or put there at once: with motion reduced, every way), where it
+/// went and still (0), the clock followed no more. What a look that bends with a way's speed reads it by (a knob
+/// stretched as it flies: velocity_capsule), never by two frames' places compared.
+pub fn Way::motion_on(self : Way, n : @view.View) -> (Double, Double) {
   self.said()
   let t = n.drawn_while(fn(at) { self.goes_at(at) })
   if t == @double.infinity {
-    self.target()
+    (self.target(), 0.0)
   } else {
     // (what it moves, if under a still pointer, worked out again as it ends, not as it goes)
     n.hand_at_end(self.end())
-    self.value_at(t)
+    self.at(t)
   }
 }
 

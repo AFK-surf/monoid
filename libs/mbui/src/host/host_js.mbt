@@ -24,8 +24,9 @@ extern "js" fn js_request_frame() -> Unit =
 extern "js" fn js_wake_after(ms : Double) -> Unit =
   #|(ms) => globalThis.__mbhost && globalThis.__mbhost.wakeAfter(ms)
 
+// (a host.js from before H.framesPaced draws the display's next frame, as a host with nothing for it does)
 extern "js" fn js_frames_paced(hz : Double) -> Unit =
-  #|(hz) => globalThis.__mbhost && globalThis.__mbhost.framesPaced && globalThis.__mbhost.framesPaced(hz)
+  #|(hz) => { const H = globalThis.__mbhost; if (!H) return; if (H.framesPaced) H.framesPaced(hz); else H.requestFrame() }
 
 extern "js" fn js_font_metrics(
   size : Double,
@@ -227,8 +228,8 @@ fn request_frame() -> Unit {
 }
 
 ///|
-/// The frame asked for what moves on by the clock needs only `hz` frames a second (@hostapi.frames_paced): a browser's
-/// host that says nothing of it draws the next animation frame.
+/// The frame asked for what moves on by the clock needs only `hz` frames a second (@hostapi.frames_paced): web/host.js
+/// H.framesPaced, the next animation frame.
 fn frames_paced(hz : Double) -> Unit {
   js_frames_paced(hz)
 }
@@ -1394,20 +1395,68 @@ fn set_site_name(name : String) -> Unit {
 }
 
 ///|
+/// What the app's own call `name` says (@hostapi.app_said): the page round the app's (`mbui.page.*`: mbui's webpage
+/// package) this host's own, the rest the app's.
 fn app_said(name : String) -> String {
-  js_app_said(name)
+  match name {
+    "mbui.page.location" => js_history_location()
+    _ => js_app_said(name)
+  }
 }
 
 ///|
+/// What the app asks of its own call `name` (@hostapi.app_tell): the page round the app's (`mbui.page.*`: mbui's
+/// webpage package) done here, the rest the app's.
 fn app_tell(name : String, arg : String) -> Unit {
-  js_app_tell(name, arg)
+  match name {
+    "mbui.page.title" => js_set_page_title(arg)
+    "mbui.page.theme_color" => js_set_theme_color(arg)
+    "mbui.page.cjk_face" => js_set_cjk_face(arg)
+    "mbui.page.history_push" => js_history_push(arg)
+    "mbui.page.history_replace" => js_history_replace(arg)
+    "mbui.page.history_back" => js_history_back()
+    _ => js_app_tell(name, arg)
+  }
 }
 
 ///|
-/// (the keys held are not read here)
+extern "js" fn js_mods_held() -> Int =
+  #|() => { const H = globalThis.__mbhost; return H && H.modsHeld ? H.modsHeld() : 0 }
+
+///|
+/// The keys held down (@hostapi.mods_held), as the window's last input said them: web/host.js H.modsHeld.
 fn mods_held() -> Int {
-  0
+  js_mods_held()
 }
+
+///|
+extern "js" fn js_set_page_title(title : String) -> Unit =
+  #|(t) => { const H = globalThis.__mbhost; if (H && H.setPageTitle) H.setPageTitle(t) }
+
+///|
+extern "js" fn js_set_theme_color(color : String) -> Unit =
+  #|(c) => { const H = globalThis.__mbhost; if (H && H.setThemeColor) H.setThemeColor(c) }
+
+///|
+/// `{"face", "step", "families"}` (@webpage.set_cjk_face) handed to the page's host: the face's CJK companion.
+extern "js" fn js_set_cjk_face(said : String) -> Unit =
+  #|(s) => { const H = globalThis.__mbhost; if (!H || !H.setCjkFace) return; const o = JSON.parse(s); H.setCjkFace(o.face, o.step, o.families) }
+
+///|
+extern "js" fn js_history_location() -> String =
+  #|() => { const H = globalThis.__mbhost; return H && H.historyLocation ? H.historyLocation() : '' }
+
+///|
+extern "js" fn js_history_push(to : String) -> Unit =
+  #|(t) => { const H = globalThis.__mbhost; if (H && H.historyPush) H.historyPush(t) }
+
+///|
+extern "js" fn js_history_replace(to : String) -> Unit =
+  #|(t) => { const H = globalThis.__mbhost; if (H && H.historyReplace) H.historyReplace(t) }
+
+///|
+extern "js" fn js_history_back() -> Unit =
+  #|() => { const H = globalThis.__mbhost; if (H && H.historyBack) H.historyBack() }
 
 ///|
 extern "js" fn js_word_at(text : String, off : Int) -> Double =

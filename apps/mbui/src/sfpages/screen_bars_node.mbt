@@ -8,7 +8,8 @@
 ///|
 /// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: round_button_box's), its name `label` read out and its tip;
 /// the ink at 10% under it while `lit` (the keyboard up, 控制, 全屏), the hover's under the hand; pressed, `press`. The
-/// node (what a panel it opens stands beside).
+/// node (what a panel it opens stands beside). In a pane's own bar (ScreenPage's `tab_pads`, 远程's), a bar's key: 32,
+/// its icon 16, its corner the window's where it stands there (sf's bar_keys_link), as a page's bar's keys.
 fn screen_round_node(
   parent : @view.View,
   pg : ScreenPage,
@@ -21,16 +22,30 @@ fn screen_round_node(
   let me : Ref[@view.View?] = Ref(None)
   @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
     me.val = Some(v)
+    let pane = pg.tab_pads is Some(_) && side == round_side
+    let side = if pane { round_bar_side } else { side }
     v
     .width(Is(Some(side)))
     .height(Is(Some(side)))
-    .radius(Is(side / 2.0))
+    .radius(
+      if pane {
+        By(fn() {
+          match @sf.bar_keys_link() {
+            Some(link) => link.radius(@ui.tree_corner_roots_now())
+            None => side / 2.0
+          }
+        })
+      } else {
+        Is(side / 2.0)
+      },
+    )
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } }))
     |> ignore
     @sf.hover_ground_node(v, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
-    @sf.icon_node(v, "", round_icon, By(fn() { @ui.tree_theme().color(Fg) }), name_now=icon) |> ignore
+    @sf.icon_node(v, "", if pane { round_bar_icon } else { round_icon }, By(fn() { @ui.tree_theme().color(Fg) }), name_now=icon)
+    |> ignore
     @sf.tip_node(pg.tips, v, label) |> ignore
   })
 }
@@ -238,6 +253,13 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         // (among a panel's tabs, the tab in front names it)
         screen_bar_words_node(m, pg, !pg.in_tab || pg.own_bar is Some(_))
         tabs_count_node(m, pg)
+        // (driving with a finger: the trackpad or the finger itself, a press away, lit while it is the trackpad)
+        m.show(at_once=true, fn() { @sf.soft_keyboard() && s.driving_now() && !s.simulator() }, fn(k) {
+          screen_round_node(k, pg, fn() { "trackpad" }, fn() {
+            @sf.t(if s.pad(s.src) { "web-pages.remote.touchPadShort" } else { "web-pages.remote.touchDirectShort" })
+          }, fn(_) { pad_chosen(s, u, !s.pad(s.src)) }, lit=fn() { s.pad(s.src) })
+          |> ignore
+        })
       }
     })
     bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
@@ -258,14 +280,25 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
   u.narrow_bar = true
-  p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) }, fn(slot) {
+  p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
     slot.box(fn(bar) {
-      @sf.style_node(bar, fn() {
-        match pg.own_bar {
-          Some(own) => own
-          None => if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar }
+      match (pg.own_bar, pg.tab_pads) {
+        (Some(own), _) => @sf.style_node(bar, fn() { own })
+        // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
+        // its empty part dragging the window)
+        (None, Some(pads)) => {
+          @sf.style_node(bar, fn() { screen_pane_bar })
+          bar
+          .padding(By(fn() {
+            let (start, end) = pads()
+            (start, 0.0, end, 1.0)
+          }))
+          .moves_window(By(@ui.window_inset_now))
+          |> ignore
         }
-      })
+        (None, None) =>
+          @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+      }
       bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
         m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
         if browser {
@@ -289,6 +322,19 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           })
         }
       })
+      // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
+      if pg.on_window is Some(handed) {
+        let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
+        bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
+          screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
+            match page() {
+              Some(p) => if @sfbase.open_window(p) { handed() }
+              None => ()
+            }
+          })
+          |> ignore
+        })
+      }
       bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
       if pg.own_bar is Some(_) {
         close_button_node(bar, pg)
@@ -356,6 +402,14 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         r.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "keycap", label: @sf.t("web-pages.screen.combos"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
           t.on_press(fn() { keys_open(s, u, Node(t), combos_only=true) }) |> ignore
+        })
+        // (whole window or a window of its own: another of the station's screens, its browser or a terminal of it, in
+        // its place)
+        r.show(at_once=true, fn() {
+          !pg.in_tab && s.open_said() && terminals_here() && @signals.untracked(fn() { (s.src.asks_terminals)() })
+        }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: "terminal", label: @sf.t("web-pages.remote.switchSession"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { station_sessions_open(pg, t) }) |> ignore
         })
         r.show(at_once=true, fn() { s.open_said() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "sliders", label: @sf.t("web-pages.screen.panel"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
@@ -622,6 +676,11 @@ fn foot_node(f : @view.View, pg : ScreenPage) -> Unit {
           }, fn(b) { keys_open(s, u, Node(b)) })
           // (a fixture's, asked as it is made)
           screen_asked(k, pg, ["keys"], fn(_) { keys_open(s, u, Node(k)) })
+        })
+        row.show(at_once=true, fn() { !(mouse_shown_now(s) && s.pad(s.src)) && s.driving_now() && !s.simulator() }, fn(m) {
+          m.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+          let words = fn() { @sf.t("web-pages.remote.touchPadShort") }
+          foot_action_node(m, pg, "trackpad", words, words, fn(_) { pad_chosen(s, u, true) }) |> ignore
         })
         row.show(at_once=true, fn() { mouse_shown_now(s) && s.pad(s.src) }, fn(m) {
           m.row(Is(true)).grow(Is(2.0)).basis(Is(Some(0.0))).gap(Is(@ui.Space::S1.px())) |> ignore
@@ -971,5 +1030,87 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
     })
     |> ignore
   })
+  |> ignore
+}
+
+///|
+/// The station's other screens, its browser and its terminals in a menu beside `from` (the viewer's bar's, whole window
+/// or a window of its own), each shown in this one's place as chosen; asks the station's `terminals` and `screens` only
+/// as it is pressed, the menu opened once both are answered.
+fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
+  let s = pg.s
+  let label = @sf.t("web-pages.remote.switchSession")
+  let scope = "screen-sw/" + s.station
+  let sub_t = @sfbase.hold(s.src, scope, "terminals", { "station": str(s.station) })
+  let sub_s = @sfbase.hold(s.src, scope, "screens", { "station": str(s.station) })
+  @sfbase.press_wait(
+    fn() { @sfbase.opens_answered(sub_t.get()) && @sfbase.opens_answered(sub_s.get()) },
+    fn() {
+      let tval = @signals.untracked(fn() { sub_t.get().value })
+      let sval = @signals.untracked(fn() { sub_s.get().value })
+      @sfbase.let_go(s.src, scope)
+      let go_page = fn(next : @sfbase.Page) {
+        if pg.lone {
+          @sfbase.lone_page_replace(next)
+        } else {
+          @sfbase.app.nav.replace(next)
+        }
+      }
+      let scs = items(sval, "screens")
+      let others = scs.filter(fn(sc) { text(Some(sc), "kind") != "browser" })
+      let user_ids = scs
+        .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+        .map(fn(sc) { text(Some(sc), "id") })
+      let can_browse = flag(sval, "browser") && flag(sval, "control")
+      let menu_items : Array[@sf.MenuItem?] = []
+      for sc in others {
+        let sid = text(Some(sc), "id")
+        let title = text(Some(sc), "title")
+        let here = sid == s.screen
+        let icon = if here { "check" } else if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
+        menu_items.push(Some(@sf.menu_item_of(title, icon~, fn() {
+          if !here {
+            go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
+          }
+        })))
+      }
+      if !user_ids.is_empty() || can_browse {
+        let in_browser = user_ids.contains(s.screen)
+        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
+          if !in_browser {
+            let target = match @settings.browser_tab_to_open(s.station, user_ids) {
+              Some(tid) => tid
+              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, @sfbase.answer_unread)
+            }
+            go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
+          }
+        })))
+      }
+      let open_terms = items(tval, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
+      if !open_terms.is_empty() || flag(tval, "open") {
+        if !menu_items.is_empty() {
+          menu_items.push(None)
+        }
+        for t in open_terms {
+          let tv = Some(t)
+          let tid = text(tv, "id")
+          let cwd = text(tv, "cwd")
+          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
+            go_page(Terminal({ station: s.station, terminal: tid, watch: !flag(tval, "open"), cwd }))
+          })))
+        }
+        if flag(tval, "open") {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="plus", fn() {
+            go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+          })))
+        }
+      }
+      if !menu_items.is_empty() {
+        @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End)
+      }
+    },
+    let_go=fn() { @sfbase.let_go(s.src, scope) },
+    most=@sf.open_hold_ms,
+  )
   |> ignore
 }

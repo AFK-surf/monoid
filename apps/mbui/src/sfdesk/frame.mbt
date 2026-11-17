@@ -213,6 +213,7 @@ fn wide_reset() -> Unit {
   wide.side_place = "chats"
   wide.side_key = ""
   board_frame_src.val = None
+  board_kept_chat.clear()
   room_held.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
@@ -1175,6 +1176,7 @@ fn side_group(src : Source, ws : String) -> String {
   let railed = rail_items(src, ws)
   match place {
     "files" => "files"
+    "remote" if railed.contains("remote") => "remote"
     "profiles" if railed.contains("profiles") => "profiles"
     "stations" if railed.contains("stations") => "stations"
     "chats" | "archive" => "chats"

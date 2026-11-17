@@ -10,6 +10,149 @@
 // arrows + ⌫ + ⏎); when the keyboard is up, the single-row accessory strip above the soft keyboard.
 
 ///|
+priv struct TermSess {
+  view : String
+  kept : Ref[@hostapi.Terminal?]
+  cur_size : Ref[(Int, Int)]
+  call_ref : Ref[Int?]
+  state : @signals.Signal[Json?]
+  drawn : @signals.Signal[Int]
+  modes_sig : @signals.Signal[Int]
+  out_queued : Ref[Bool]
+  mut src : Source
+  station : String
+  mut terminal_id : String
+  mut mounted : Int
+}
+
+///|
+fn TermSess::close(self : TermSess) -> Unit {
+  match self.call_ref.val {
+    Some(c) => (self.src.cancel)(c)
+    None => ()
+  }
+  self.call_ref.val = None
+  match self.kept.val {
+    Some(t) => t.close()
+    None => ()
+  }
+  self.kept.val = None
+}
+
+///|
+// kept across runs: active/preserved terminal sessions keyed by `station + "\n" + terminal_id` (reset in on_reset)
+let terminal_sessions : Map[String, TermSess] = Map([])
+
+///|
+fn term_sess_key(station : String, terminal_id : String) -> String {
+  station + "\n" + terminal_id
+}
+
+///|
+/// Release a preserved terminal session once its tab, page and standalone window are all gone.
+pub fn terminal_left(station : String, terminal : String) -> Unit {
+  if @sfbase.window_has_terminal(station, terminal) {
+    return
+  }
+  let key = term_sess_key(station, terminal)
+  match terminal_sessions.get(key) {
+    Some(sess) if sess.mounted <= 0 => {
+      sess.close()
+      terminal_sessions.remove(key)
+    }
+    _ => ()
+  }
+}
+
+///|
+/// Clean URL token extracted from `raw` (`https?://...` or `localhost:PORT` / `127.0.0.1:PORT` / `0.0.0.0:PORT`).
+fn normalize_term_url(token : String) -> String? {
+  let mut s = token.trim().to_owned()
+  while s.length() > 0 {
+    let last = s[s.length() - 1].to_int().unsafe_to_char()
+    if last is ('.' | ',' | ';' | ')' | ']' | '}' | '\'' | '"' | '>') {
+      s = s[:s.length() - 1].to_owned()
+    } else {
+      break
+    }
+  }
+  while s.length() > 0 {
+    let first = s[0].to_int().unsafe_to_char()
+    if first is ('(' | '[' | '{' | '\'' | '"' | '<') {
+      s = s[1:].to_owned()
+    } else {
+      break
+    }
+  }
+  if s.has_prefix("http://0.0.0.0:") {
+    return Some("http://127.0.0.1:" + s[15:].to_owned())
+  }
+  if s.has_prefix("http://") || s.has_prefix("https://") {
+    return if s.length() > 8 { Some(s) } else { None }
+  }
+  for host in ["localhost:", "127.0.0.1:", "0.0.0.0:", "[::1]:"] {
+    if s.has_prefix(host) && s.length() > host.length() {
+      let port_char = s[host.length()].to_int()
+      if port_char >= 48 && port_char <= 57 {
+        let mapped = if host == "0.0.0.0:" { "127.0.0.1:" + s[8:].to_owned() } else { s }
+        return Some("http://" + mapped)
+      }
+    }
+  }
+  None
+}
+
+///|
+fn find_url_in_line(line : String, col : Int) -> String? {
+  let chars = line.to_array()
+  let n = chars.length()
+  let mut i = 0
+  let mut fallback : String? = None
+  while i < n {
+    while i < n && (chars[i] == ' ' || chars[i] == '\t' || chars[i] == '\r') {
+      i += 1
+    }
+    let start = i
+    while i < n && chars[i] != ' ' && chars[i] != '\t' && chars[i] != '\r' {
+      i += 1
+    }
+    if i > start {
+      let tok = String::from_array(chars[start:i])
+      if normalize_term_url(tok) is Some(u) {
+        if col >= start && col <= i {
+          return Some(u)
+        }
+        if fallback is None {
+          fallback = Some(u)
+        }
+      }
+    }
+  }
+  fallback
+}
+
+///|
+fn terminal_url_at(t : @hostapi.Terminal?, row : Int, col : Int, has_sel : Bool) -> String? {
+  guard t is Some(term) else { return None }
+  if has_sel {
+    let sel = term.text(selection_only=true)
+    for line in sel.split("\n") {
+      if find_url_in_line(line.to_owned(), -1) is Some(u) {
+        return Some(u)
+      }
+    }
+  }
+  let all = term.text()
+  let lines = all.split("\n").collect()
+  if row >= 0 && row < lines.length() {
+    if find_url_in_line(lines[row].to_owned(), col) is Some(u) {
+      return Some(u)
+    }
+  }
+  None
+}
+
+///|
 // kept across runs: put back as a run begins (on_reset)
 let terminal_views : Ref[Int] = Ref(0)
 
@@ -20,6 +163,10 @@ let terminal_asked : Ref[String] = Ref("")
 ///|
 fn init {
   @ui.on_reset(fn() {
+    for _, sess in terminal_sessions {
+      sess.close()
+    }
+    terminal_sessions.clear()
     terminal_views.val = 0
     terminal_asked.val = ""
   })
@@ -59,6 +206,26 @@ let terminal_keys_narrow_h : Double = 402.0
 let terminal_keys_wide_h : Double = 110.0
 
 ///|
+let terminal_tab_bar_h : Double = 42.0
+
+///|
+/// How far in a bar's key (32) shows its icon (16): (32 - 16) / 2.
+// kept across runs: a value (no field of it changes)
+let terminal_key_icon_in : Double = 8.0
+
+///|
+// kept across runs: a style, read as it is
+let terminal_tab_bar_look : @ui.Style = @ui.css("row w=Full px=S2 py=S1 gap=S1_5 align=ACenter bg=Bg")
+
+///|
+// kept across runs: a style, read as it is
+let terminal_cwd_chip_look : @ui.Style = @ui.css("row px=S2_5 py=S1 gap=S1_5 align=ACenter radius=Full bg=Neutral hovered{bg=Hover}")
+
+///|
+// kept across runs: a style, read as it is
+let terminal_cwd_chip_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false, w=Cut)
+
+///|
 /// How far in from the screen's sides and top its cells start.
 let terminal_in : Double = 14.0
 
@@ -95,9 +262,7 @@ fn terminal_cells(
 }
 
 ///|
-/// Station `at.station`'s terminal `at.terminal` (`new`: one opened for this page, in `at.cwd` where said), looked at
-/// only where `at.watch`, in `v` (all of the window: the shell's), its bar's way back `back`'s words, `on_back` as it is
-/// pressed, under `top` (a phone's status bar).
+/// Station `at.station`'s terminal `at.terminal` in `v`, all of the window (terminal_pane_node, which says the rest).
 pub fn terminal_node(
   v : @view.View,
   src : Source,
@@ -107,11 +272,32 @@ pub fn terminal_node(
   top~ : () -> Double,
   width? : () -> Double,
 ) -> Unit {
-  terminal_views.val += 1
-  let view = "terminal-" + terminal_views.val.to_string()
+  terminal_pane_node(v, src, at, back~, on_back~, top~, width?)
+}
+
+///|
+/// Station `at.station`'s terminal `at.terminal` (`new`: one opened for this page, in `at.cwd` where said), looked at
+/// only where `at.watch`, in `v` (all of the window: the shell's), its bar's way back `back`'s words, `on_back` as it is
+/// pressed, under `top` (a phone's status bar).
+pub fn terminal_pane_node(
+  v : @view.View,
+  src : Source,
+  at : @sfbase.TerminalAt,
+  back~ : () -> String,
+  on_back~ : () -> Unit,
+  top~ : () -> Double,
+  width? : () -> Double,
+  in_tab? : Bool = false,
+  bar_pads? : () -> (Double, Double),
+  on_window? : () -> Unit,
+  tips? : @sf.TipLayer,
+  keep_open? : () -> Bool = fn() { false },
+  on_resolved? : (String, String) -> Unit = fn(_, _) {  },
+  on_switch_page? : (@sfbase.Page) -> Unit,
+) -> Unit {
   let asked = terminal_asked.val
   terminal_asked.val = ""
-  let wide = width is Some(_)
+  let wide = width is Some(_) || in_tab
   // (clear of the column of the system's bars down the window's trailing edge, an iPhone Duo's on its side: what it
   // shows and what is pressed in it, its grid's columns as wide as that leaves; its grounds on under it)
   let pane_w = fn() {
@@ -126,10 +312,80 @@ pub fn terminal_node(
   let fit80 : @signals.Signal[Bool] = @signals.signal(false)
   let kb_up : @signals.Signal[Bool] = @signals.signal(asked == "kb")
   let keys_open : @signals.Signal[Bool] = @signals.signal(asked == "keys")
-  let state : @signals.Signal[Json?] = @signals.signal(None)
-  let drawn : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
-  let modes_sig : @signals.Signal[Int] = @signals.signal(@hostapi.term_mode_viewport_active, same=fn(a, b) { a == b })
-  let out_queued : Ref[Bool] = Ref(false)
+  // Font zoom persisted per device (`prefs.terminalZoom`, 60..200, default 100) with optimistic local override
+  let local_zoom : @signals.Signal[Int?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let zoom_pct = fn() -> Int {
+    match local_zoom.get() {
+      Some(z) => z
+      None => {
+        let raw = text(src.topic("prefs", {}).get().value, "terminalZoom")
+        if raw == "" {
+          100
+        } else {
+          let mut parsed = 0
+          let mut ok = true
+          for ch in raw {
+            let d = ch.to_int() - 48
+            if d >= 0 && d <= 9 {
+              parsed = parsed * 10 + d
+            } else {
+              ok = false
+            }
+          }
+          if !ok || parsed == 0 { 100 } else if parsed < 60 { 60 } else if parsed > 200 { 200 } else { parsed }
+        }
+      }
+    }
+  }
+  let set_zoom = fn(next_raw : Int) {
+    let clamped = if next_raw < 60 { 60 } else if next_raw > 200 { 200 } else { next_raw }
+    local_zoom.set(Some(clamped))
+    let zval : Json = if clamped == 100 { Json::null() } else { Json::string(clamped.to_string()) }
+    (src.call)("prefs.set", Json::object({ "terminalZoom": zval }), @sfbase.answer_unread)
+  }
+  let step_zoom = fn(delta : Int) {
+    set_zoom(@signals.untracked(zoom_pct) + delta)
+  }
+  let is_new_ask = at.terminal == "new" || at.terminal.has_prefix("new#")
+  let existing_sess = if is_new_ask { None } else { terminal_sessions.get(term_sess_key(at.station, at.terminal)) }
+  let reused = match existing_sess {
+    Some(es) => es.call_ref.val is Some(_)
+    None => false
+  }
+  let sess : TermSess = match (existing_sess, reused) {
+    (Some(es), true) => {
+      es.src = src
+      es.mounted += 1
+      es
+    }
+    _ => {
+      terminal_views.val += 1
+      let fresh : TermSess = {
+        view: "terminal-" + terminal_views.val.to_string(),
+        kept: Ref(None),
+        cur_size: Ref((80, 24)),
+        call_ref: Ref(None),
+        state: @signals.signal(None),
+        drawn: @signals.signal(0, same=fn(a, b) { a == b }),
+        modes_sig: @signals.signal(@hostapi.term_mode_viewport_active, same=fn(a, b) { a == b }),
+        out_queued: Ref(false),
+        src,
+        station: at.station,
+        terminal_id: at.terminal,
+        mounted: 1,
+      }
+      terminal_sessions[term_sess_key(at.station, at.terminal)] = fresh
+      fresh
+    }
+  }
+  let view = sess.view
+  let state = sess.state
+  let drawn = sess.drawn
+  let modes_sig = sess.modes_sig
+  let out_queued = sess.out_queued
+  let cur_size = sess.cur_size
+  let kept = sess.kept
+  let call_ref = sess.call_ref
   let s = fn() { state.get() }
   let types = fn() { flag(s(), "types") }
   let typing = fn() { text(s(), "typing") }
@@ -140,6 +396,7 @@ pub fn terminal_node(
     }
   }
   let listed = src.topic("terminals", { "station": str(at.station) })
+  let screens_topic = src.topic("screens", { "station": str(at.station) })
   let may = fn() { flag(listed.get().value, "open") }
   let typing_here : @signals.Computed[Bool] = @signals.computed(fn(was) {
     match text(s(), "phase") {
@@ -152,12 +409,13 @@ pub fn terminal_node(
   let kb_shown = fn() { (v.keyboard_inset() > 0.0 || kb_up.get()) && typing_here.get() && !keys_open.get() }
   let deck_shown = fn() { (if wide { keys_open.get() } else { @sf.soft_keyboard() }) && typing_here.get() && !full.get() }
   let font_scale = fn() {
+    let user_z = zoom_pct().to_double() / 100.0
     if fit80.get() && base_cell > 0.0 {
       let avail = pane_w() - 2.0 * terminal_in
       let want = 80.0 * base_cell
-      if avail < want { dmax(0.68, avail / want) } else { 1.0 }
+      if avail < want { dmax(0.68, avail / want) } else { user_z }
     } else {
-      1.0
+      user_z
     }
   }
   let size_now = fn() { terminal_size * font_scale() }
@@ -165,6 +423,9 @@ pub fn terminal_node(
   let head_h = fn() {
     if full.get() {
       0.0
+    } else if in_tab {
+      let strip = if may() && !types() && !ended() { terminal_strip_h } else { 0.0 }
+      (if bar_pads is Some(_) { @sf.wide_bar_h } else { terminal_tab_bar_h }) + strip
     } else {
       let bar = top() + (if wide { @sf.viewer_bar_h } else { terminal_narrow_bar_h })
       let strip = if may() && !types() && !ended() { terminal_strip_h } else { 0.0 }
@@ -192,11 +453,21 @@ pub fn terminal_node(
     (c, r, px_cw, px_ch)
   }
   let (init_c, init_r, init_cw, init_ch) = @signals.untracked(dims_now)
-  let cur_size : Ref[(Int, Int)] = Ref((init_c, init_r))
-  let kept : Ref[@hostapi.Terminal?] = Ref(@hostapi.Terminal::open(init_c, init_r))
-  match kept.val {
-    Some(t) => t.resize(init_c, init_r, cell_w=init_cw, cell_h=init_ch)
-    None => ()
+  if !reused {
+    cur_size.val = (init_c, init_r)
+    kept.val = @hostapi.Terminal::open(init_c, init_r)
+    match kept.val {
+      Some(t) => t.resize(init_c, init_r, cell_w=init_cw, cell_h=init_ch)
+      None => ()
+    }
+  } else {
+    match kept.val {
+      Some(t) => {
+        t.resize(init_c, init_r, cell_w=init_cw, cell_h=init_ch)
+        cur_size.val = (init_c, init_r)
+      }
+      None => ()
+    }
   }
   let sync_modes = fn() -> Int {
     let m = match kept.val {
@@ -235,7 +506,6 @@ pub fn terminal_node(
       None => reopen_vt(c, r, px_cw, px_ch)
     }
   }
-  let call_ref : Ref[Int?] = Ref(None)
   let resize_cancel : Ref[() -> Unit] = Ref(fn() {  })
   let open_stream = fn(term_id : String, watch_mode : Bool, init_cwd : String) {
     (resize_cancel.val)()
@@ -248,14 +518,17 @@ pub fn terminal_node(
     let (c0, r0, cw0, ch0) = @signals.untracked(dims_now)
     reopen_vt(c0, r0, cw0, ch0)
     bump_drawn()
+    let actual_term = if @sfbase.terminal_is_new(term_id) { "new" } else { term_id }
+    let open_chat = @sfbase.terminal_open_chat(term_id)
     let params : Array[(String, Json)] = [
       ("station", str(at.station)),
-      ("terminal", str(term_id)),
+      ("terminal", str(actual_term)),
       ("view", str(view)),
       ("cols", Json::number(c0.to_double())),
       ("rows", Json::number(r0.to_double())),
       ("control", Json::boolean(!watch_mode)),
-      ..if init_cwd != "" && term_id == "new" { [("cwd", str(init_cwd))] } else { [] },
+      ..if init_cwd != "" && actual_term == "new" { [("cwd", str(init_cwd))] } else { [] },
+      ..if open_chat != "" { [("chat", str(open_chat))] } else { [] },
     ]
     call_ref.val = Some(
       (src.stream)("terminal.view", obj(params), None, fn(value, bytes) {
@@ -263,6 +536,17 @@ pub fn terminal_node(
           Object(o) if o.contains("state") => {
             let st = o.get("state")
             state.set(st)
+            let real_id = text(st, "id")
+            if real_id != "" && real_id != "new" && real_id != sess.terminal_id {
+              let old_k = term_sess_key(sess.station, sess.terminal_id)
+              let new_k = term_sess_key(sess.station, real_id)
+              if terminal_sessions.get(old_k) is Some(_) {
+                terminal_sessions.remove(old_k)
+              }
+              sess.terminal_id = real_id
+              terminal_sessions[new_k] = sess
+              on_resolved(real_id, text(st, "cwd"))
+            }
             if !flag(st, "types") {
               let sc = number(st, "cols").to_int()
               let sr = number(st, "rows").to_int()
@@ -310,35 +594,87 @@ pub fn terminal_node(
       }, @sfbase.answer_unread),
     )
   }
-  open_stream(at.terminal, at.watch, at.cwd)
+  if !reused {
+    open_stream(at.terminal, at.watch, at.cwd)
+  } else {
+    bump_drawn()
+  }
   let fling_cancel : Ref[() -> Unit] = Ref(fn() {  })
   v.owns(fn() {
     (resize_cancel.val)()
     resize_cancel.val = fn() {  }
     (fling_cancel.val)()
     fling_cancel.val = fn() {  }
-    match call_ref.val {
-      Some(c) => (src.cancel)(c)
-      None => ()
+    sess.mounted -= 1
+    if sess.mounted <= 0 {
+      let tid = sess.terminal_id
+      let still_on_top = match @sfbase.app.nav.top() {
+        Terminal(top_at) => top_at.station == at.station && top_at.terminal == tid
+        _ => false
+      }
+      if !keep_open() && !@sfbase.window_has_terminal(at.station, tid) && !still_on_top {
+        sess.close()
+        terminal_sessions.remove(term_sess_key(at.station, tid))
+      }
     }
-    call_ref.val = None
-    match kept.val {
-      Some(t) => t.close()
-      None => ()
-    }
-    kept.val = None
   })
   |> ignore
   let cwd = fn() {
     let said = text(s(), "cwd")
     if said == "" { at.cwd } else { said }
   }
+  let cur_terminal_id = fn() {
+    let said = text(s(), "id")
+    if said != "" { said } else { sess.terminal_id }
+  }
+  let switch_page = fn(next : @sfbase.Page) {
+    match on_switch_page {
+      Some(sw) => sw(next)
+      None =>
+        if @sfbase.lone_page.val is Some(_) {
+          @sfbase.lone_page_replace(next)
+        } else {
+          @sfbase.app.nav.replace(next)
+        }
+    }
+  }
   let go_terminal = fn(term_id : String, watch_mode : Bool, next_cwd : String) {
-    if term_id == at.terminal {
+    let cur = @signals.untracked(cur_terminal_id)
+    if term_id == cur && !@sfbase.terminal_is_new(term_id) {
       open_stream(term_id, watch_mode, next_cwd)
     } else {
-      @sfbase.app.nav.replace(Terminal({ station: at.station, terminal: term_id, watch: watch_mode, cwd: next_cwd }))
+      switch_page(Terminal({ station: at.station, terminal: term_id, watch: watch_mode, cwd: next_cwd }))
     }
+  }
+  let open_cwd_in_files = fn() {
+    let dir = @signals.untracked(cwd)
+    if dir != "" {
+      @sfbase.open_page(Drive({ station: at.station, root: Some(dir), path: "" }))
+    }
+  }
+  let copy_terminal_link = fn() {
+    let tid = @signals.untracked(cur_terminal_id)
+    guard tid != "" && !tid.has_prefix("new") else { return }
+    let card = src.topic("terminalCard", { "station": str(at.station), "terminal": str(tid) }).get().value
+    let rel = text(card, "link")
+    let path = if rel != "" {
+      rel
+    } else {
+      let parts = at.station.split("/").collect()
+      let ws = parts.get(0).unwrap_or("").to_owned()
+      let st = parts.get(1).unwrap_or("").to_owned()
+      "/w/" + ws + "/s/" + st + "/terminal/" + tid
+    }
+    let origin = @sfbase.cloud_origin()
+    @ui.clipboard_set(if origin != "" { origin + path } else { path })
+    @sfbase.toast_later(@sf.t("web-pages.remote.linkCopied"))
+  }
+  let open_url_in_station_browser = fn(url : String) {
+    let scs = items(@signals.untracked(fn() { screens_topic.get().value }), "screens")
+    let listed_ids = scs.filter(fn(sc) {
+      flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_")
+    }).map(fn(sc) { text(Some(sc), "id") })
+    @sfbase.open_remote_browser(src, at.station, listed_ids, url~)
   }
   let title = fn() {
     let shown = cwd()
@@ -435,6 +771,17 @@ pub fn terminal_node(
       }
       return
     }
+    match terminal_zoom_key(k) {
+      Some(0) => {
+        set_zoom(100)
+        return
+      }
+      Some(delta) => {
+        step_zoom(delta)
+        return
+      }
+      None => ()
+    }
     if terminal_select_all_key(k) {
       match kept.val {
         Some(t) => {
@@ -503,21 +850,55 @@ pub fn terminal_node(
       (fn_name, fn() { tap(fn_name, fn_name) })
     }),
   ]
-  // 控制中心 panel (session-level management: station's terminals switcher + 新建终端, 全屏, 只看, 复制屏幕文字/工作目录, 结束会话)
+  // 控制中心 panel (session-level management: station's remote sessions switcher + 新建终端, 字号, 在文件中打开, 复制链接, 新窗口, 全屏, 只看, 结束会话)
   let open_center_panel = fn(from : @sf.Anchor) {
     @sf.panel_nodes(
       @sf.t("web-pages.screen.panel"),
       fn(p, done) {
         let terms = fn() { items(listed.get().value, "terminals") }
-        p.show(fn() { terms().length() > 0 || may() }, fn(sec) {
-          @sf.panel_group_node(sec, fn() { @sf.t("web-pages.terminal.title") }, fn(g) {
+        let scs = fn() { items(screens_topic.get().value, "screens") }
+        let can_browser = fn() { flag(screens_topic.get().value, "browser") && flag(screens_topic.get().value, "control") }
+        let other_scs = fn() { scs().filter(fn(sc) { text(Some(sc), "kind") != "browser" }) }
+        let user_browser_ids = fn() {
+          scs().filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") }).map(fn(sc) { text(Some(sc), "id") })
+        }
+        p.show(fn() { terms().length() > 0 || may() || !other_scs().is_empty() || !user_browser_ids().is_empty() || can_browser() }, fn(sec) {
+          @sf.panel_group_node(sec, fn() { @sf.t("web-pages.remote.switchSession") }, fn(g) {
+            g.each(other_scs, fn(sc) { text(Some(sc), "id") }, fn(row, sc) {
+              let sv = fn() { Some(sc.get()) }
+              let sid = text(@signals.untracked(sv), "id")
+              let stitle = text(@signals.untracked(sv), "title")
+              let kind = text(@signals.untracked(sv), "kind")
+              @sf.panel_row_node(
+                row,
+                fn() { text(sv(), "title") },
+                fn() {
+                  done()
+                  switch_page(Screen({ station: at.station, screen: sid, title: stitle, until_gone: false }))
+                },
+                icon=fn() { if kind == "simulator" { "phone" } else { "monitor" } },
+              )
+            })
+            g.show(fn() { !user_browser_ids().is_empty() || can_browser() }, fn(br) {
+              @sf.panel_row_node(
+                br,
+                fn() { @sf.t("web-pages.remote.openBrowser") },
+                fn() {
+                  done()
+                  let ids = @signals.untracked(user_browser_ids)
+                  let target = match @settings.browser_tab_to_open(at.station, ids) {
+                    Some(id) => id
+                    None => @settings.new_browser_tab(src.call, at.station, ids, @sfbase.answer_unread)
+                  }
+                  switch_page(Screen({ station: at.station, screen: target, title: "", until_gone: false }))
+                },
+                icon=fn() { "web" },
+              )
+            })
             g.each(terms, fn(t) { text(Some(t), "id") }, fn(row, t) {
               let tv = fn() { Some(t.get()) }
               let tid = text(@signals.untracked(tv), "id")
-              let here = fn() {
-                let cur = text(s(), "id")
-                tid == (if cur == "" { at.terminal } else { cur })
-              }
+              let here = fn() { tid == cur_terminal_id() }
               @sf.panel_row_node(
                 row,
                 fn() { terminal_title(tv()) },
@@ -545,15 +926,83 @@ pub fn terminal_node(
           })
         })
         @sf.panel_group_node(p, fn() { "" }, fn(g) {
-          @sf.panel_row_node(
-            g,
-            fn() { @sf.t(if full.get() { "android-misc.screen.unfull" } else { "android-misc.screen.full" }) },
-            fn() {
-              full.set(!full.untracked())
-              done()
-            },
-            icon=fn() { if full.get() { "shrink" } else { "expand" } },
-          )
+          // Font zoom stepper row (- / 100% / +)
+          g.box(fn(zrow) {
+            zrow.row(Is(true)).padding(Is((12.0, 6.0, 8.0, 6.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+            zrow.box(fn(lbl) {
+              lbl.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(lbl, fn() { @sf.t("web-pages.remote.fontSize") + " · " + zoom_pct().to_string() + "%" }, fn() {
+                @ui.text_style(size=Body, color=Fg, wrap=false, w=Cut)
+              })
+              |> ignore
+            })
+            |> ignore
+            @sf.button_node(zrow, fn() { "−" }, fn() { step_zoom(-10) }, tone=Ghost) |> ignore
+            zrow.show(fn() { zoom_pct() != 100 }, fn(rst) {
+              @sf.button_node(rst, fn() { "100%" }, fn() { set_zoom(100) }, tone=Ghost) |> ignore
+            })
+            @sf.button_node(zrow, fn() { "+" }, fn() { step_zoom(10) }, tone=Ghost) |> ignore
+          })
+          |> ignore
+          g.show(fn() { cwd() != "" }, fn(fd) {
+            @sf.panel_row_node(
+              fd,
+              fn() { @sf.t("web-pages.remote.openInFiles") },
+              fn() {
+                done()
+                open_cwd_in_files()
+              },
+              icon=fn() { "folder" },
+              note=cwd,
+            )
+          })
+          g.show(fn() {
+            let tid = cur_terminal_id()
+            tid != "" && !tid.has_prefix("new")
+          }, fn(lk) {
+            @sf.panel_row_node(
+              lk,
+              fn() { @sf.t("web-pages.remote.copyLink") },
+              fn() {
+                copy_terminal_link()
+                done()
+              },
+              icon=fn() { "copy" },
+            )
+          })
+          g.show(fn() {
+            let tid = cur_terminal_id()
+            let pg : @sfbase.Page = Terminal({ station: at.station, terminal: tid, watch: at.watch, cwd: cwd() })
+            @sfbase.window_opens_for(pg)
+          }, fn(wn) {
+            @sf.panel_row_node(
+              wn,
+              fn() { @sf.t("web-pages.screen.window") },
+              fn() {
+                let tid = @signals.untracked(cur_terminal_id)
+                let pg : @sfbase.Page = Terminal({ station: at.station, terminal: tid, watch: at.watch, cwd: @signals.untracked(cwd) })
+                done()
+                if @sfbase.open_window(pg) {
+                  match on_window {
+                    Some(handed) => handed()
+                    None => on_back()
+                  }
+                }
+              },
+              icon=fn() { "external" },
+            )
+          })
+          if !in_tab {
+            @sf.panel_row_node(
+              g,
+              fn() { @sf.t(if full.get() { "android-misc.screen.unfull" } else { "android-misc.screen.full" }) },
+              fn() {
+                full.set(!full.untracked())
+                done()
+              },
+              icon=fn() { if full.get() { "shrink" } else { "expand" } },
+            )
+          }
           if !wide {
             g.show(fn() { types() && !ended() }, fn(kp) {
               @sf.panel_switch_row_node(kp, fn() { @sf.t("web-pages.screen.keysPanel") }, fn() { keys_open.get() }, fn(on) {
@@ -595,13 +1044,13 @@ pub fn terminal_node(
             icon=fn() { "copy" },
             note=cwd,
           )
-          g.show(fn() { may() && !ended() && text(s(), "id") != "" }, fn(e) {
+          g.show(fn() { may() && !ended() && cur_terminal_id() != "" && !cur_terminal_id().has_prefix("new") }, fn(e) {
             @sf.panel_rule_node(e)
             @sf.panel_row_node(
               e,
               fn() { @sf.t("web-pages.terminal.end") },
               fn() {
-                let id = text(@signals.untracked(s), "id")
+                let id = @signals.untracked(cur_terminal_id)
                 (src.call)("terminal.end", obj([("station", str(at.station)), ("terminal", str(id))]), @sfbase.answer_unread)
                 done()
               },
@@ -629,34 +1078,156 @@ pub fn terminal_node(
     o.box(fn(g) { g.width(By(fn() { Some(@sf.native_clear()) })).ground(Is(terminal_ground)) |> ignore }) |> ignore
   })
   |> ignore
-  // Top header bar (hidden in full screen)
+  // Top header bar (compact folder/tools strip in embedded tabs; full viewer header in standalone/full-window)
   v.show(fn() { !full.get() }, fn(hd) {
-    @sf.opened_head_node(
-      hd,
-      back,
-      title,
-      meta,
-      cwd,
-      top,
-      wide,
-      fn(m) { open_center_panel(Node(m)) },
-      on_back,
-      fn() {
-        if !may() || types() || ended() {
-          ""
-        } else if typing() != "" {
-          @sf.t("web-pages.screen.controlling", args=[("names", typing())])
-        } else {
-          @sf.t("web-pages.screen.look")
+    if in_tab {
+      // (the pane's own bar where it stands at the pane's top (bar_pads: 远程's): as high as a page's bar, its keys
+      // as far in from its ends as the pane says, the last concentric with the window's corner, its empty part
+      // dragging the window; else under a panel's tabs, compact)
+      let linked = if bar_pads is Some(_) { Some(@sf.bar_keys_link) } else { None }
+      hd.box(fn(bar) {
+        match bar_pads {
+          Some(pads) =>
+            bar
+            .row(Is(true))
+            .gap(Is(6.0))
+            .lines_up(Is(Some(Middle)))
+            .ground(By(fn() { @sf.theme().p.bg }))
+            .height(Is(Some(@sf.wide_bar_h)))
+            // (its folder's capsule, a ground of its own at its start, as far in as the last key's icon is seen from its
+            // end: what the bar holds seen as far in from both sides)
+            .padding(By(fn() {
+              let (s, e) = pads()
+              (dmax(s, e + terminal_key_icon_in), 0.0, e, 1.0)
+            }))
+            .moves_window(By(@ui.window_inset_now))
+            |> ignore
+          None => {
+            @sf.style_node(bar, fn() { terminal_tab_bar_look })
+            bar.height(Is(Some(terminal_tab_bar_h))) |> ignore
+          }
         }
-      },
-      fn() { if typing() != "" { @sf.t("android-misc.screen.takeOver") } else { @sf.t("web-pages.screen.control") } },
-      take,
-      keys_shown=fn() { types() && !ended() },
-      keys_on=fn() { keys_open.get() },
-      keys=fn(_) { keys_open.set(!keys_open.untracked()) },
-      paste=paste_clipboard,
-    )
+        bar.shrink(Is(0.0)) |> ignore
+        bar.box(fn(chip_slot) {
+          chip_slot.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).row(Is(true)) |> ignore
+          chip_slot.box(fn(chip) {
+            @sf.style_node(chip, fn() { terminal_cwd_chip_look }, in_row=true)
+            @sf.presses_node(chip, open_cwd_in_files)
+            chip
+            .min_width(Is(Some(0.0)))
+            .shrink(Is(1.0))
+            .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.remote.openInFiles") + ": " + cwd())) }))
+            |> ignore
+            @sf.icon_node(chip, "folder", 14.0, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
+            @sf.words_node(chip, fn() {
+              let c = cwd()
+              if c == "" { @sf.t("web-pages.terminal.title") } else { c }
+            }, fn() { terminal_cwd_chip_words })
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            .allow_ellipsis(Is(true))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        bar.show(fn() { types() && !ended() }, fn(ks) {
+          ks.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+          @sf.icon_button_node(ks, "keyboard", fn() { @sf.t("web-pages.screen.keysPanel") }, fn() {
+            keys_open.set(!keys_open.untracked())
+          }, tips?, linked?)
+          |> ignore
+          @sf.icon_button_node(ks, "clipboard", fn() { @sf.t("web-pages.screen.paste") }, paste_clipboard, tips?, linked?)
+          |> ignore
+        })
+        // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
+        if on_window is Some(handed) {
+          let page_now = fn() -> @sfbase.Page {
+            Terminal({ station: at.station, terminal: cur_terminal_id(), watch: at.watch, cwd: cwd() })
+          }
+          bar.show(fn() { @sfbase.window_opens_for(page_now()) }, fn(wb) {
+            wb.shrink(Is(0.0)) |> ignore
+            @sf.icon_button_node(
+              wb,
+              "external",
+              fn() { @sf.t("web-pages.chat.openInWindow") },
+              fn() {
+                if @sfbase.open_window(@signals.untracked(page_now)) {
+                  handed()
+                }
+              },
+              tips?,
+              linked?,
+            )
+            |> ignore
+          })
+        }
+        let more_btn = Ref(bar)
+        let mb = @sf.icon_button_node(
+          bar,
+          "more",
+          fn() { @sf.t("web-pages.screen.panel") },
+          fn() { open_center_panel(Node(more_btn.val)) },
+          tips?,
+          linked?,
+        )
+        more_btn.val = mb
+      })
+      |> ignore
+      hd.show(fn() { may() && !types() && !ended() }, fn(st_bar) {
+        st_bar
+        .row(Is(true))
+        .height(Is(Some(terminal_strip_h)))
+        .padding(Is((12.0, 6.0, 12.0, 6.0)))
+        .gap(Is(8.0))
+        .lines_up(Is(Some(Middle)))
+        .ground(By(fn() { @sf.theme().p.neutral_bg }))
+        |> ignore
+        st_bar.box(fn(tx) {
+          tx.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(tx, fn() {
+            if typing() != "" {
+              @sf.t("web-pages.screen.controlling", args=[("names", typing())])
+            } else {
+              @sf.t("web-pages.screen.look")
+            }
+          }, fn() { @ui.text_style(size=Caption, color=Muted, wrap=false, w=Cut) })
+          |> ignore
+        })
+        |> ignore
+        @sf.button_node(st_bar, fn() {
+          if typing() != "" { @sf.t("android-misc.screen.takeOver") } else { @sf.t("web-pages.screen.control") }
+        }, take, tone=Primary)
+        |> ignore
+      })
+    } else {
+      @sf.opened_head_node(
+        hd,
+        back,
+        title,
+        meta,
+        cwd,
+        top,
+        wide,
+        fn(m) { open_center_panel(Node(m)) },
+        on_back,
+        fn() {
+          if !may() || types() || ended() {
+            ""
+          } else if typing() != "" {
+            @sf.t("web-pages.screen.controlling", args=[("names", typing())])
+          } else {
+            @sf.t("web-pages.screen.look")
+          }
+        },
+        fn() { if typing() != "" { @sf.t("android-misc.screen.takeOver") } else { @sf.t("web-pages.screen.control") } },
+        take,
+        keys_shown=fn() { types() && !ended() },
+        keys_on=fn() { keys_open.get() },
+        keys=fn(_) { keys_open.set(!keys_open.untracked()) },
+        paste=paste_clipboard,
+      )
+    }
   })
   let held_press = fn(bit : Int) {
     if (kept_mods.untracked() & bit) != 0 {
@@ -973,6 +1544,7 @@ pub fn terminal_node(
           }
         }
       }
+      let pinch_rem : Ref[Double] = Ref(0.0)
       grid
       .grow(Is(1.0))
       .min_height(Is(Some(0.0)))
@@ -988,7 +1560,13 @@ pub fn terminal_node(
       )
       .on_wheel_moves(fn(w) {
         if (w.mods & @ui.wheel_mod_pinch) != 0 {
-          return false
+          pinch_rem.val -= w.dy
+          let steps = (pinch_rem.val / 12.0).trunc().to_int()
+          if steps != 0 {
+            pinch_rem.val -= steps.to_double() * 12.0
+            step_zoom(steps * 5)
+          }
+          return true
         }
         stop_fling()
         let modes = sync_modes()
@@ -1055,7 +1633,26 @@ pub fn terminal_node(
         }
         let has_sel = (modes & @hostapi.term_mode_has_selection) != 0
         let can_type = @signals.untracked(types) && !@signals.untracked(ended)
+        let (mcol, mrow, _, _, _, _, _, _) = cell_at(m.x, m.y)
+        let found_url = terminal_url_at(kept.val, mrow, mcol, has_sel)
         let menu_items : Array[@sf.MenuItem?] = []
+        match found_url {
+          Some(u) => {
+            menu_items.push(
+              Some(
+                @sf.menu_item_of(
+                  @sf.t("web-pages.remote.openInRemoteBrowser"),
+                  fn() {
+                    open_url_in_station_browser(u)
+                  },
+                  icon="web",
+                ),
+              ),
+            )
+            menu_items.push(None)
+          }
+          None => ()
+        }
         if has_sel {
           menu_items.push(
             Some(
@@ -1182,6 +1779,31 @@ pub fn terminal_node(
           .lines_up(Is(Some(End)))
           .lies_along(Is(End))
           |> ignore
+          fl.show(
+            fn() {
+              let _ = drawn.get()
+              @sf.soft_keyboard() &&
+              (modes_sig.get() & @hostapi.term_mode_has_selection) != 0 &&
+              terminal_url_at(kept.val, -1, -1, true) is Some(_)
+            },
+            fn(ob) {
+              @sf.button_node(
+                ob,
+                fn() { @sf.t("web-pages.remote.openInRemoteBrowser") },
+                fn() {
+                  match terminal_url_at(kept.val, -1, -1, true) {
+                    Some(u) => {
+                      clear_selection()
+                      open_url_in_station_browser(u)
+                    }
+                    None => ()
+                  }
+                },
+                tone=Plain,
+              )
+              |> ignore
+            },
+          )
           fl.show(
             fn() { @sf.soft_keyboard() && (modes_sig.get() & @hostapi.term_mode_has_selection) != 0 },
             fn(cp) {

@@ -58,15 +58,13 @@ let words_large_known : Map[String, Int] = {
 /// 2026-11-11): the old views' (a screen's timer, a chat's old
 /// parts), mended as each is made as nodes. None is left of search's lines (their
 /// lines as high as their words at least, @sf.touch_found), of a model's configuration's capsule (newchat-model), of a mark's letter (drawn at 1 as its mark is, @sf.mark_words_node), of a tag, a video's length or 用量's months (as
-/// high as their words' line, @sf.tag_node, box_at, a least), or of 智能体's card's spend (on its line of 26).
+/// high as their words' line, @sf.tag_node, box_at, a least), of 智能体's card's spend (on its line of 26), or of a checkbox's tick (drawn by its stroke, @sf.check_node's).
 let words_large_outgrown_known : Map[String, Int] = {
   let known = Map([])
   for k in [
     ("phone-en chat-image-coming", 2),
-    ("phone-en chat-publish", 4),
     ("phone-en chat-screens", 8),
     ("phone-zh chat-image-coming", 2),
-    ("phone-zh chat-publish", 4),
     ("phone-zh chat-screens", 8),
   ] {
     known[k.0] = k.1

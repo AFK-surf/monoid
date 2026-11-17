@@ -662,11 +662,12 @@ pub fn long_jobs_asked(ws : String) -> Map[String, Json] {
 }
 
 ///|
-/// How many services are left up long in the workspace (the `longJobs` topic).
+/// How many are left up long in the workspace (the `longJobs` topic): the viewer's own and the others' (`otherCount`),
+/// so that what shows them says all of it.
 pub fn long_jobs(src : Source, w : Workspace) -> Int {
-  items(src.topic("longJobs", long_jobs_asked(w.id)).get().value, "groups").fold(init=0, fn(n, g) {
-    n + items(Some(g), "jobs").length()
-  })
+  let value = src.topic("longJobs", long_jobs_asked(w.id)).get().value
+  items(value, "groups").fold(init=0, fn(n, g) { n + items(Some(g), "jobs").length() }) +
+  number(value, "otherCount").to_int()
 }
 
 ///|
@@ -692,7 +693,13 @@ pub fn long_jobs_read(v : @view.View, src : Source, workspace : () -> Workspace?
 pub fn long_stop(station : String, job : Json?) -> (String, Json, Array[(String, String)]) {
   match field(job, "stop") {
     Some(Object(_)) as stop => {
-      let on = [("station", station), ("screen", text(stop, "screen"))]
+      let on : Array[(String, String)] = [("station", station)]
+      if text(stop, "screen") != "" {
+        on.push(("screen", text(stop, "screen")))
+      }
+      if text(stop, "terminal") != "" {
+        on.push(("terminal", text(stop, "terminal")))
+      }
       if text(stop, "view") != "" {
         on.push(("view", text(stop, "view")))
       }

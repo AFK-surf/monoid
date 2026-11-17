@@ -26,6 +26,8 @@ fn media_tester(
   images : @sfbase.ChatImages,
   asks : Array[((Json) -> Unit, (Result[(Json, Bytes?), Json]) -> Unit)],
   platform? : Int = 0,
+  share? : MessageShare? = None,
+  h? : Double = 400.0,
 ) -> @ui.Tester {
   // (no viewer of a test before this one still open or flying back: its thumbnail hidden while it does, file_viewer_reset)
   @sfbase.file_viewer_reset()
@@ -52,11 +54,11 @@ fn media_tester(
       let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      message_files_node(col, src, tips, files_place(), fn() { [media_one()] }, fn() { false }, fn() { None }, fn() { "" })
+      message_files_node(col, src, tips, { ..files_place(), share: fn() { share } }, fn() { [media_one()] }, fn() { false }, fn() { None }, fn() { "" })
       @sf.presented_nodes(root)
     },
     w=430.0,
-    h=400.0,
+    h~,
     platform~,
     images=[("mem:media/pic.png", 800, 600)],
   )
@@ -171,3 +173,53 @@ test "a picture right clicked: its menu where, 下载 and 复制图片 once it i
     assert_true((media_drawn_w(t) - media_test_w).abs() < 0.01, msg="\{platform}: \{media_drawn_w(t)}")
   }
 }
+
+///|
+/// A message of a picture alone offered nothing of itself to a finger (no words to hold for the bar over them), nor its
+/// own to a right click on it (the picture's menu, the message's not in it) (2026-11-17).
+test "a picture of a message that offers itself, right clicked or held by a finger: its menu has the message's 复制消息链接 and 多选 after its own, a line between; of none, neither" {
+  for platform in [0, 2] {
+    for offers in [true, false] {
+      @sf.presenters_reset()
+      let images = @sfbase.ChatImages::new()
+      let asks = []
+      let went = Ref(0)
+      let share : MessageShare? = if offers {
+        Some({ key: fn() { "m:1" }, link: fn() { "https://app.still.fail/o/ws1/st1/s-c1?message=3" }, words: fn() { "" }, go: fn() { went.val += 1 } })
+      } else {
+        None
+      }
+      // (tall enough for all of the menu under the picture)
+      let t = media_tester(images, asks, platform~, share~, h=800.0)
+      (asks[0].1)(Ok((Json::object({}), Some(media_bytes()))))
+      t.run_for(@sf.reveal_ms + media_test_hair)
+      let (x, y) = (media_test_w / 2.0, media_test_h / 2.0)
+      if platform == 0 {
+        t.right_click(x, y)
+      } else {
+        t.press_at(x, y)
+        t.run_for(@ui.long_press_ms)
+        t.release(x, y)
+      }
+      t.run_for(@ui.move_most_ms)
+      let name = "platform \{platform}, offers \{offers}: \{Repr(t.words().map(fn(w) { w.0 }))}"
+      assert_true(t.find(@sf.t("web-main.preview.download")) is Some(_), msg=name)
+      assert_eq(t.find(@sf.t("web-main.chat.copyMessageLink")) is Some(_), offers, msg=name)
+      assert_eq(t.find(@sf.t("web-main.chat.selectMessages")) is Some(_), offers, msg=name)
+      // (its words' own copy, of none here: not offered)
+      assert_false(t.words().iter().any(fn(w) { w.0 == @sf.t("web-main.chat.copyMessage") }), msg=name)
+      // (under its own, a line between)
+      if offers {
+        let own = t.find(@sf.t("desktop.contextMenu.copyImage")).unwrap()
+        let link = t.find(@sf.t("web-main.chat.copyMessageLink")).unwrap()
+        assert_true(link.1 > own.1, msg=name)
+        t.tap_text(@sf.t("web-main.chat.selectMessages"))
+        t.run_for(@ui.move_most_ms)
+        assert_eq(went.val, 1, msg=name)
+      }
+      @sf.close_presented_of(@sf.last_presented())
+      t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+    }
+  }
+}
+

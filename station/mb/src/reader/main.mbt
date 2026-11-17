@@ -840,6 +840,12 @@ async fn search_program(host : @host.Host, db_path : String, data : String, sep 
 
 ///|
 fn main {
+  // The station itself (its commands, `run`, a hook's command): station_main's.
+  let argv = @host.args()
+  if @station_main.is_station(argv) {
+    @host.exit(@station_main.station_main(argv))
+    return
+  }
   let code = match (flag("--builder"), flag("--db"), flag("--data")) {
     (Some("archive-marks"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "archive mark", all(db => @marks.step(db))))
@@ -855,6 +861,8 @@ fn main {
         { "session": String(session), .. } => Some(@upjobs.step(db, session))
         _ => None
       }))
+    (Some("harness-station-main"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @station_main.harness(host))
     (Some("harness-mcp-tools"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mcp_tools.harness(host))
     (Some("harness-session-hub"), _, _) =>
@@ -1087,6 +1095,20 @@ fn main {
         }
         _ => None
       }))
+    (Some("harness-browser"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @browser.harness(host))
+    (Some("harness-screens"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @screens.harness(host))
+    (Some("harness-adb-devices"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
+    (Some("harness-terminals-logins"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @terminals_logins.harness(host))
+    (Some("harness-drive"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @drive.harness(host))
+    (Some("harness-updates"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @updates.harness(host))
+    (Some("harness-mesh-runtime"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_runtime.harness(host))
     (Some("said"), Some(db), _) => @host.run(shell_dir=beside(db, "shell"), host => said_builder(host, db))
     (Some("harness-api-routes"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @api_routes.harness(host))

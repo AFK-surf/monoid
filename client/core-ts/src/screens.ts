@@ -346,10 +346,12 @@ export function personShown(name: string): string {
 }
 
 /// What is said of each view open on a screen (the station's `views`), as the viewer reads it: on which device (its own
-/// name for itself, else its id's start), and what they may do of it. None from a station before views.
-function viewsOf(inner: Inner, v: unknown, control: boolean): J[] {
+/// name for itself, else its id's start), and what they may do of it, and whether it is the viewer's own (`mine`: their
+/// name or email, on another of their devices too; jobs.ts `longScreens`). None from a station before views.
+function viewsOf(inner: Inner, station: string, v: unknown, control: boolean): J[] {
   if (!Array.isArray(v)) return [];
   const me = inner.meshNow()?.deviceId() ?? null;
+  let own: string[] | undefined;
   const now = inner.host.nowMs();
   return v.flatMap((w) => {
     const id = get(w, "id");
@@ -365,6 +367,7 @@ function viewsOf(inner: Inner, v: unknown, control: boolean): J[] {
       ...(me !== null && (device === me || get(w, "self") === me) ? { here: true } : {}),
       ...(agent ? { agent: true } : {}),
       ...(control && !agent ? { may: true } : {}),
+      ...(!agent && (own ??= myNames(inner, station)).includes(name.toLowerCase()) ? { mine: true } : {}),
     }];
   });
 }
@@ -437,7 +440,7 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
     const by = get(s, "openedBy");
     const chat = typeof by === "string" && by !== "" ? chatOf(inner, station, by) : null;
     const controlledBy = names(get(s, "controlledBy"));
-    const views = viewsOf(inner, get(s, "views"), control);
+    const views = viewsOf(inner, station, get(s, "views"), control);
     const site = typeof get(s, "site") === "string" && get(s, "site") !== "" ? (get(s, "site") as string) : null;
     const item = {
       id, kind, title, width, height, viewers: names(get(s, "viewers")), controlledBy, ...(views.length > 0 ? { views } : {}), ...(get(s, "peek") === true ? { peek: true } : {}),
@@ -686,7 +689,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       }
       if (watching.length > 0) parts.push(t("core-views.screen.alsoOn", { names: listed(watching) }));
       // The viewer's own views on other devices hold an agent off as this one would: said, or nobody can tell why.
-      const views = viewsOf(inner, onViews ?? get(item, "views"), may);
+      const views = viewsOf(inner, station, onViews ?? get(item, "views"), may);
       const mineElsewhere = views.filter((v) => !v.here && !v.agent && mine.includes(v.name.toLowerCase())).map((v) => v.device);
       if (mineElsewhere.length > 0) parts.push(t("core-views.screen.elsewhere", { names: listed([...new Set<string>(mineElsewhere)]) }));
       const otherViews = views.filter((v) => !v.here && v.may);

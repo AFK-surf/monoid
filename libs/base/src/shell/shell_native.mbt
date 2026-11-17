@@ -190,3 +190,11 @@ pub fn run(dir : String, main : async (Shell) -> Unit, failed~ : (Error) -> Unit
     _ => 1
   }
 }
+
+///|
+/// A claim natively (tab.mbt): a process keeps its own directory, so nothing contends and it is `Held` at once. A
+/// take over has nothing to take, and a release nothing to let go of.
+fn tab_claim(_name : String, on_state : (TabState) -> Unit) -> TabClaim {
+  on_state(Held)
+  { take: () => (), let_go: () => () }
+}

@@ -1,5 +1,6 @@
 // SHA-256 (FIPS 180-4), of no dependency: what the key of an endpoint on one relay alone is made with (ways.mbt,
-// `pinned_key`), as the TypeScript mesh makes it (client/core-ts/src/mesh.ts `pinnedKey`).
+// `pinned_key`), as the TypeScript mesh makes it (client/core-ts/src/mesh.ts `pinnedKey`); and a program's own, so
+// that none on this library writes another.
 
 ///|
 let sha256_k : FixedArray[UInt] = [
@@ -19,7 +20,7 @@ fn rotr(x : UInt, n : Int) -> UInt {
 
 ///|
 /// The SHA-256 digest of `data`: 32 bytes.
-fn sha256(data : Bytes) -> Bytes {
+pub fn sha256(data : Bytes) -> Bytes {
   let h : FixedArray[UInt] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
   ]

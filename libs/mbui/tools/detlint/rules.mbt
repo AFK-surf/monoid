@@ -13,11 +13,13 @@ let rule_names : Array[String] = [
   "click-read", "key-read", "submitted-read", "part-place", "button-by-hand", "layout-told", "abort-unsaid", "empty-on-done", "panic-test", "read-before-run", "reset-by-hand",
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
   "each-lookup", "layout-drawn-while", "shader-int", "raw-hover-ground", "width-structure",
-  "reused-untracked-key", "manual-fade-way", "page-at-moment",
+  "reused-untracked-key", "manual-fade-way", "page-at-moment", "along-row-at-once", "headless-on-drag",
 ]
 
 ///|
 let rule_words : Map[String, String] = {
+  "along-row-at-once": "a structure said both along a row and at once (View::show, pick or each given along_row=true and at_once=true): along a row it makes its way, at once it makes none, so it is a fault as it is made (view's along_row.mbt), seen only where that part shows; say the one meant",
+  "headless-on-drag": "a dragging handler said on a headless component's node (@headless.button, toggle, disclosure, choice: chained on the node it gives back, or on the node its look or press is given): the pointer is the drag's from then and never reaches the component's on_press, so a press does nothing and nothing says why (headless.mbt's head); drag a node of its own beside or round it",
   "page-at-moment": "a page asks a moment of its own (View::at_moment) to put its coming and going or a switch of what it shows together by hand: what comes and goes, and one thing in another's place, is a structure's (View::show's `leave`, View::pick's `leave_of`), how it looks on the way @motion.presence's; a page's own timing (what is typed looked for that much later) says why on its line (det-ok). Counted so the ones left only fall",
   "scoped-computed": "a scoped computed made outside the parts said to keep one (@signals.computed_scoped; detlint.json `signals.scoped_ok`): it holds what it reads up whoever reads it (holds_up), so a part put by at rest (View::park) lets go of all it read and works it out whole again as it wakes; what a node works out is a plain @signals.computed(…, same=…), let go of with its last reader and resting with it. Only what is read with no reader at all (active_sub() is None: Scroll's at_foot_now) is scoped",
   "raw-effect": "a bare effect made outside the parts said to keep one (@signals.effect, effect_cleanup; detlint.json `signals.effect_ok`): it does not rest as what made it is put by (View::park), runs as soon as it is made, in the middle of making a view, and is let go of only by whoever keeps its stop: what a node answers is its own binding (By, View::reacts, show, pick, each, owns), what reaches outside a source's managed by the app's base",

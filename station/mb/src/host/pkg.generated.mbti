@@ -34,6 +34,8 @@ pub fn Host::say(Self, String) -> Unit
 pub fn Host::say_bytes(Self, Bytes) -> Unit
 pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)
 pub fn Host::shell_sync(Self, String, @json.Json) -> @json.Json raise @wire.ShellError
+pub fn Host::sys_done(Self, Int64) -> Unit
+pub fn Host::sys_listen(Self, (Bytes) -> Unit) -> Int64
 
 // Type aliases
 

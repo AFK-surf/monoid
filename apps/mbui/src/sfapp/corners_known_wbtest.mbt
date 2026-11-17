@@ -53,6 +53,10 @@ let corners_everywhere_known : Map[String, Int] = {
   known["desk-en settings-profile-account"] = 1
   known["desk-win-zh settings-profile-account"] = 3
   known["desk-win-en settings-profile-account"] = 3
+  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape, said
+  // twice (the bell's panel holds the rail drawn as it was pressed, rail_drawn, beside the rail itself).
+  known["desk-win-zh home-shared-bell"] = 2
+  known["desk-win-en home-shared-bell"] = 2
   known
 }
 
@@ -67,7 +71,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
@@ -84,7 +88,9 @@ let corners_tape_rail : Array[String] = [
   "archived", "history", "history-details", "drive",
   "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
-  "files-transfers", "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents",
+  "files-transfers", "files-tree", "place-stations", "place-profiles",
+  // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
+  "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
   "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
   // (a preset's dialog over 新对话 and its steps further in: the rail behind them, not the panel)
@@ -172,9 +178,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
   ("desk-en newchat-preset-new-browse", 2),
-  ("desk-en settings-stations-command", 1),
   ("desk-win-en newchat-preset-new-browse", 2),
-  ("desk-win-en settings-stations-command", 1),
   ("desk-win-zh newchat-preset-new-browse", 2),
   ("desk-zh newchat-preset-new-browse", 2),
   ("phone-en settings-connects", 2),
@@ -204,7 +208,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-en settings-new-connect-platform-group", 2),
   ("tablet-en settings-new-connect-group", 2),
   ("tablet-en settings-new-connect-scan", 2),
-  ("tablet-en settings-stations-command", 1),
   ("tablet-zh chat-outline-find", 1),
   ("tablet-zh chat-publish", 2),
   ("tablet-zh newchat-preset-new-browse", 2),
@@ -219,7 +222,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("touch-en chat-outline-find", 1),
   ("touch-en chat-publish", 2),
   ("touch-en newchat-preset-new-browse", 2),
-  ("touch-en settings-stations-command", 1),
   ("touch-zh chat-outline-find", 1),
   ("touch-zh chat-publish", 2),
   ("touch-zh newchat-preset-new-browse", 2),
@@ -233,7 +235,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-en settings-new-connect-platform-group", 2),
   ("wide-en settings-new-connect-group", 2),
   ("wide-en settings-new-connect-scan", 2),
-  ("wide-en settings-stations-command", 1),
   ("wide-win-en chat-publish", 2),
   ("wide-win-en newchat-preset-new-browse", 2),
   ("wide-win-en settings-connects", 2),
@@ -244,7 +245,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-en settings-new-connect-platform-group", 2),
   ("wide-win-en settings-new-connect-group", 2),
   ("wide-win-en settings-new-connect-scan", 2),
-  ("wide-win-en settings-stations-command", 1),
   ("wide-win-zh chat-publish", 2),
   ("wide-win-zh newchat-preset-new-browse", 2),
   ("wide-win-zh settings-connects", 2),

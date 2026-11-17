@@ -41,28 +41,34 @@ fn by_value_all(t : BytesView) -> Array[Bytes] {
   while p < n {
     let c = t[p]
     if (c == b's' || c == b'u' || c == b'e') && boundary(t, p) {
-      let j = tag_kw(t, p, kw_sue)
-      if j >= 0 && j < n && is_start(t[j]) {
-        let e = ident_end(t, j)
-        let mut l = e
-        let mut found = -1
-        while l > j {
-          if boundary(t, l) && !star_after(t, l) {
-            found = l
-            break
-          }
-          l -= 1
-        }
-        if found >= 0 {
-          out.push(t[j:found].to_owned())
-          p = found
-          continue
-        }
+      let r = by_value_at(t, p, out)
+      if r >= 0 {
+        p = r
+        continue
       }
     }
     p += 1
   }
   out
+}
+
+///|
+/// BY_VALUE matched at p (a word's start): the name pushed to `out`, where the search goes on; -1 when it does not
+fn by_value_at(t : BytesView, p : Int, out : Array[Bytes]) -> Int {
+  let n = t.length()
+  let j = tag_kw(t, p, kw_sue)
+  if j >= 0 && j < n && is_start(t[j]) {
+    let e = ident_end(t, j)
+    let mut l = e
+    while l > j {
+      if boundary(t, l) && !star_after(t, l) {
+        out.push(t[j:l].to_owned())
+        return l
+      }
+      l -= 1
+    }
+  }
+  -1
 }
 
 ///|
@@ -71,46 +77,14 @@ fn by_value_all(t : BytesView) -> Array[Bytes] {
 fn decl_vars(t : BytesView) -> Array[(Bytes, Bytes, Int)] {
   let out = []
   let n = t.length()
-  let follows = fn(z : Int) {
-    z < n &&
-    (t[z] == b';' || t[z] == b',' || t[z] == b')' || t[z] == b'=' || t[z] == b'[')
-  }
   let mut p = 0
   while p < n {
     let c = t[p]
     if (c == b's' || c == b'u') && boundary(t, p) {
-      let j = tag_kw(t, p, kw_su)
-      if j >= 0 && j < n && is_start(t[j]) {
-        let e1 = ident_end(t, j)
-        let q = lskip(t, e1)
-        let mut r = q
-        while r < n && t[r] == b'*' {
-          r += 1
-        }
-        let stars = r - q
-        let r2 = lskip(t, r)
-        let e2 = ident_at(t, r2)
-        if e2 >= 0 {
-          let z = lskip(t, e2)
-          if follows(z) {
-            out.push((t[r2:e2].to_owned(), t[j:e1].to_owned(), stars))
-            p = z
-            continue
-          }
-        }
-        // (the type's name shortened, its end taken for the variable's: as the regular expression backtracks)
-        let z = lskip(t, e1)
-        if follows(z) {
-          let mut l = e1 - 1
-          while l > j && !is_start(t[l]) {
-            l -= 1
-          }
-          if l > j {
-            out.push((t[l:e1].to_owned(), t[j:l].to_owned(), 0))
-            p = z
-            continue
-          }
-        }
+      let r = decl_var_at(t, p, out)
+      if r >= 0 {
+        p = r
+        continue
       }
     }
     p += 1
@@ -119,74 +93,136 @@ fn decl_vars(t : BytesView) -> Array[(Bytes, Bytes, Int)] {
 }
 
 ///|
-/// VAR_USE.finditer: (?<![A-Za-z0-9_$])(IDENT)(?![A-Za-z0-9_$])\s*(->|\[|\.)  as (name, op)
-fn var_uses(t : BytesView, f : (Bytes, Bytes) -> Unit) -> Unit {
+/// DECL_VAR matched at p (a word's start): the variable pushed to `out`, where the search goes on; -1 when it does
+/// not
+fn decl_var_at(t : BytesView, p : Int, out : Array[(Bytes, Bytes, Int)]) -> Int {
   let n = t.length()
-  let mut p = 0
-  while p < n {
-    let c = t[p]
-    if is_ident(c) {
-      let e = ident_end(t, p)
-      if is_start(c) && (p == 0 || !is_ident(t[p - 1])) {
-        let k = lskip(t, e)
-        if starts_at(t, k, b"->") {
-          f(t[p:e].to_owned(), b"->")
-          p = k + 2
-          continue
-        }
-        if k < n && (t[k] == b'[' || t[k] == b'.') {
-          f(t[p:e].to_owned(), if t[k] == b'[' { b"[" } else { b"." })
-          p = k + 1
-          continue
-        }
+  let follows = fn(z : Int) {
+    z < n &&
+    (t[z] == b';' || t[z] == b',' || t[z] == b')' || t[z] == b'=' || t[z] == b'[')
+  }
+  let j = tag_kw(t, p, kw_su)
+  if j >= 0 && j < n && is_start(t[j]) {
+    let e1 = ident_end(t, j)
+    let q = lskip(t, e1)
+    let mut r = q
+    while r < n && t[r] == b'*' {
+      r += 1
+    }
+    let stars = r - q
+    let r2 = lskip(t, r)
+    let e2 = ident_at(t, r2)
+    if e2 >= 0 {
+      let z = lskip(t, e2)
+      if follows(z) {
+        out.push((t[r2:e2].to_owned(), t[j:e1].to_owned(), stars))
+        return z
       }
-      p = e
-    } else {
-      p += 1
+    }
+    // (the type's name shortened, its end taken for the variable's: as the regular expression backtracks)
+    let z = lskip(t, e1)
+    if follows(z) {
+      let mut l = e1 - 1
+      while l > j && !is_start(t[l]) {
+        l -= 1
+      }
+      if l > j {
+        out.push((t[l:e1].to_owned(), t[j:l].to_owned(), 0))
+        return z
+      }
     }
   }
+  -1
 }
 
 ///|
-/// ACCESS.finditer, a member's member: (?<!…)(IDENT)(?!…)((?:\s*(?:->|\.)\s*IDENT(?!…))+), its steps (STEP) as
-/// (op, member)
-fn accesses(t : BytesView, f : (Bytes, Array[(Bytes, Bytes)]) -> Unit) -> Unit {
+/// VAR_USE ((?<![A-Za-z0-9_$])(IDENT)(?![A-Za-z0-9_$])\s*(->|\[|\.), op 0 ->, 1 [, 2 .) matched at p (an identifier
+/// t[p:e] starts there): told to f, where the search goes on; -1 when it does not
+fn var_use_at(t : BytesView, p : Int, e : Int, f : (Int, Int, Int) -> Unit) -> Int {
   let n = t.length()
-  let mut p = 0
-  while p < n {
-    let c = t[p]
-    if is_ident(c) {
-      let e = ident_end(t, p)
-      if is_start(c) && (p == 0 || !is_ident(t[p - 1])) {
-        let steps = []
-        let mut q = e
-        while true {
-          let k = lskip(t, q)
-          let (op, k2) = if starts_at(t, k, b"->") {
-            (b"->", k + 2)
-          } else if k < n && t[k] == b'.' {
-            (b".", k + 1)
-          } else {
-            break
-          }
-          let k3 = lskip(t, k2)
-          let e3 = ident_at(t, k3)
-          if e3 < 0 {
-            break
-          }
-          steps.push((op, t[k3:e3].to_owned()))
-          q = e3
-        }
-        if steps.length() > 0 {
-          f(t[p:e].to_owned(), steps)
-          p = q
-          continue
-        }
-      }
-      p = e
+  let k = lskip(t, e)
+  if starts_at(t, k, b"->") {
+    f(p, e, 0)
+    return k + 2
+  }
+  if k < n && (t[k] == b'[' || t[k] == b'.') {
+    f(p, e, if t[k] == b'[' { 1 } else { 2 })
+    return k + 1
+  }
+  -1
+}
+
+///|
+/// ACCESS, a member's member ((?<!…)(IDENT)(?!…)((?:\s*(?:->|\.)\s*IDENT(?!…))+)), matched at p (an identifier t[p:e]
+/// starts there): told to f with its steps (STEP) in `steps` as (op: 0 ->, 1 .; the member's start, its end) three
+/// by three (read before the next), where the search goes on; -1 when it does not
+fn access_at(
+  t : BytesView,
+  p : Int,
+  e : Int,
+  steps : Array[Int],
+  f : (Int, Int, Array[Int]) -> Unit,
+) -> Int {
+  let n = t.length()
+  steps.clear()
+  let mut q = e
+  while true {
+    let k = lskip(t, q)
+    let (op, k2) = if starts_at(t, k, b"->") {
+      (0, k + 2)
+    } else if k < n && t[k] == b'.' {
+      (1, k + 1)
     } else {
-      p += 1
+      break
     }
+    let k3 = lskip(t, k2)
+    let e3 = ident_at(t, k3)
+    if e3 < 0 {
+      break
+    }
+    steps.push(op)
+    steps.push(k3)
+    steps.push(e3)
+    q = e3
+  }
+  if steps.length() > 0 {
+    f(p, e, steps)
+    return q
+  }
+  -1
+}
+
+///|
+/// var_uses and accesses of one text in one pass over its identifiers (each goes on from where its own last match
+/// ended, as it does alone)
+fn member_uses(
+  t : BytesView,
+  var_f : (Int, Int, Int) -> Unit,
+  acc_f : (Int, Int, Array[Int]) -> Unit,
+) -> Unit {
+  let n = t.length()
+  let steps : Array[Int] = []
+  let mut pv = 0
+  let mut pa = 0
+  let mut q = 0
+  while q < n {
+    let c = t[q]
+    if !is_ident(c) {
+      q += 1
+      continue
+    }
+    let e = ident_end(t, q)
+    if is_start(c) {
+      if q >= pv {
+        let r = var_use_at(t, q, e, var_f)
+        pv = if r >= 0 { r } else { e }
+      }
+      if q >= pa {
+        let r = access_at(t, q, e, steps, acc_f)
+        pa = if r >= 0 { r } else { e }
+      }
+    }
+    q = e
   }
 }
 
@@ -316,37 +352,67 @@ fn member_after_bracket(t : BytesView) -> Bool {
 }
 
 ///|
-/// SIZEOF.findall: \bsizeof\s*\(\s*(?:struct|union)\s+(IDENT)\s*\)
-fn sizeof_all(t : BytesView) -> Array[Bytes] {
-  let out = []
-  let w = b"sizeof"
+/// SIZEOF (\bsizeof\s*\(\s*(?:struct|union)\s+(IDENT)\s*\)) matched at s (`sizeof` at a word's start): the type
+/// pushed to `out`, where the search goes on; -1 when it does not
+fn sizeof_at(t : BytesView, s : Int, out : Array[Bytes]) -> Int {
   let n = t.length()
-  let mut p = 0
-  while true {
-    let s = find(t, w, p)
-    if s < 0 {
-      break
-    }
-    if boundary(t, s) {
-      let k = lskip(t, s + 6)
-      if k < n && t[k] == b'(' {
-        let j = tag_kw(t, lskip(t, k + 1), kw_su)
-        if j >= 0 {
-          let e = ident_at(t, j)
-          if e >= 0 {
-            let r = lskip(t, e)
-            if r < n && t[r] == b')' {
-              out.push(t[j:e].to_owned())
-              p = r + 1
-              continue
-            }
-          }
+  let k = lskip(t, s + 6)
+  if k < n && t[k] == b'(' {
+    let j = tag_kw(t, lskip(t, k + 1), kw_su)
+    if j >= 0 {
+      let e = ident_at(t, j)
+      if e >= 0 {
+        let r = lskip(t, e)
+        if r < n && t[r] == b')' {
+          out.push(t[j:e].to_owned())
+          return r + 1
         }
       }
     }
-    p = s + 1
   }
-  out
+  -1
+}
+
+///|
+/// sizeof_all, by_value_all and decl_vars of one text in one pass over its words (each of the three goes on from
+/// where its own last match ended, as it does alone)
+fn struct_mentions(
+  t : BytesView,
+  sizes : Array[Bytes],
+  by_value : Array[Bytes],
+  vars : Array[(Bytes, Bytes, Int)],
+) -> Unit {
+  let n = t.length()
+  let mut ps = 0
+  let mut pb = 0
+  let mut pd = 0
+  let mut q = 0
+  while q < n {
+    let c = t[q]
+    if !is_word(c) {
+      q += 1
+      continue
+    }
+    // (a word's start: where \b is before s, u and e)
+    if c == b's' || c == b'u' || c == b'e' {
+      if c == b's' && q >= ps && starts_at(t, q, b"sizeof") {
+        let r = sizeof_at(t, q, sizes)
+        ps = if r >= 0 { r } else { q + 1 }
+      }
+      if q >= pb {
+        let r = by_value_at(t, q, by_value)
+        pb = if r >= 0 { r } else { q + 1 }
+      }
+      if c != b'e' && q >= pd {
+        let r = decl_var_at(t, q, vars)
+        pd = if r >= 0 { r } else { q + 1 }
+      }
+    }
+    q += 1
+    while q < n && is_word(t[q]) {
+      q += 1
+    }
+  }
 }
 
 ///|
@@ -753,42 +819,50 @@ fn collapse_space(t : BytesView) -> Bytes {
 ///|
 /// A function's text with its lines as moonc broke them joined (a directive and what ends in a // comment keep
 /// theirs): moonc breaks a line by its length, which its made-up names' lengths changed.
-fn flatten(t : Bytes) -> Bytes {
-  let out = Buffer(capacity=t.length())
+fn flatten(t : Bytes) -> BytesView {
+  // (no longer than the text and its last line's end: each line no longer than it was and its line break)
+  let n = t.length()
+  let out : FixedArray[Byte] = FixedArray::make(n + 1, b'\x00')
+  let mut w = 0
   let mut any = false
   let mut cur_open = false
-  let n = t.length()
-  let put_line_break = fn() {
-    if any {
-      out.write_byte(b'\n')
-    }
-    any = true
-  }
   let mut p = 0
   while p <= n {
     let e = eol(t, p)
-    let st = strip(sub(t, p, e))
+    // (the line stripped, as a view of it)
+    let mut a = p
+    while a < e && is_space(t[a]) {
+      a += 1
+    }
+    let mut z = e
+    while z > a && is_space(t[z - 1]) {
+      z -= 1
+    }
     p = e + 1
-    if st.length() == 0 {
+    if a == z {
       continue
     }
-    if st[0] == b'#' {
-      cur_open = false
-      put_line_break()
-      out.write_bytes(st)
-      continue
-    }
-    if cur_open {
-      out.write_byte(b' ')
+    let st = t[a:z]
+    let directive = st[0] == b'#'
+    if !directive && cur_open {
+      out[w] = b' '
+      w += 1
     } else {
-      put_line_break()
-      cur_open = true
+      // (a line of its own)
+      if any {
+        out[w] = b'\n'
+        w += 1
+      }
+      any = true
+      cur_open = !directive
     }
-    out.write_bytes(st)
-    if contains(st, b"//") || ends(st, b"\\") {
+    out.blit_from_bytesview(w, st)
+    w += st.length()
+    if !directive && (contains(st, b"//") || ends(st, b"\\")) {
       cur_open = false
     }
   }
-  out.write_byte(b'\n')
-  out.to_bytes()
+  out[w] = b'\n'
+  w += 1
+  made_text(out)[0:w]
 }

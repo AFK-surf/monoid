@@ -223,6 +223,10 @@ pub fn video_capsule_node(
     // (concentric with its corner as high as it is drawn: higher than said where its words' line is, box_at)
     style_node(foot, fn() { video_capsule_foot_at(corner, words_box_high(video_capsule_h, video_capsule_words, foot.words_scale())) })
     foot.box(fn(b) {
+      // (a mark over the picture, the capsule itself (its foot is all of the picture, to lay it in its corner): where the
+      // picture flies (View::shared), carried at its own size by its corner, gone halfway, as the old page's thumbnail
+      // drew it over its flight: View::flight_mark)
+      b.flight_mark() |> ignore
       // (as high as its words' line where the system's size of words draws it higher than the capsule: box_at)
       style_node(b, fn() { box_at(video_capsule_kept, video_capsule_box, video_capsule_h, video_capsule_words, b.words_scale()) })
       b.box(fn(row) {

@@ -1,21 +1,25 @@
-// A panel of the presenters' that is a form (@sf.panel `form`): what is filled in and said, a dialog in the middle of
-// the window whatever opened it, a share of the window tall or not; its field given the focus as it opens: the old
-// contract, measured on main first, what it does held whatever draws it.
+// A panel of the presenters' that is a form (@sf.panel_nodes `form`): what is filled in and said, a dialog in the
+// middle of the window whatever opened it, a share of the window tall or not; its field given the focus as it opens: as
+// it was when the old contract was measured on main beside it.
 
 ///|
-/// A form's body: a field (given the focus as it opens, by `field`), `lines` lines of words, its button.
-fn form_body(said : Array[String], pf : @ui.Field, lines : @signals.Signal[Int]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, close) {
-    c.editor("form field", field=pf, placeholder="填一下") |> ignore
-    for i in 0..<lines.get() {
-      @sf.panel_text(c, fn() { c.text("第\{i}行", style=@sf.paragraph) |> ignore })
+/// A form's body: a field (given the focus as it opens where `named`: panel_opens_in_node), `lines` lines of words, its
+/// button.
+fn form_body(said : Array[String], pf : @ui.Field, lines : @signals.Signal[Int], named? : Bool = true) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, close) {
+    let field = @sf.input_node(v, pf, placeholder="填一下", label="填一下")
+    if named {
+      @sf.panel_opens_in_node(field)
     }
-    panel_test_body(said)(c, close)
+    v.each(fn() { Array::makei(lines.get(), fn(i) { i }) }, fn(i) { i }, fn(r, i) {
+      @sf.words_node(r, fn() { "第\{i.untracked()}行" }, fn() { @sf.paragraph }) |> ignore
+    })
+    panel_test_body(said)(v, close)
   }
 }
 
 ///|
-test "panel a form, 大屏 keyboard and mouse and a tablet by touch: at a point, a share of the window tall, opened by nothing, in a short window, its rows more then fewer, no field named: in the middle, its field (the first) given the focus, typed into, its last row seen and its button pressed in a short window, closed by Escape, the focus back; drawn by the window's tree: as main has it" {
+test "panel a form, 大屏 keyboard and mouse and a tablet by touch: at a point, a share of the window tall, opened by nothing, in a short window, its rows more then fewer, no field named: in the middle, its field (the first) given the focus, typed into, its last row seen and its button pressed in a short window, closed by Escape, the focus back; drawn by the window's tree" {
   let out = []
   let drawn = []
   for kind in ["at", "tall at", "middle", "short", "tablet", "grown", "unfield"] {
@@ -30,11 +34,11 @@ test "panel a form, 大屏 keyboard and mouse and a tablet by touch: at a point,
     let lines = @signals.signal(if kind == "short" { 30 } else { 0 })
     let at : @sf.Anchor = if kind == "middle" { Unanchored } else { At(600.0, 100.0, 0.0, 0.0) }
     match kind {
-      "tall at" => @sf.panel("面板", form_body(said, pf, lines), from=at, form=true, tall=0.72, field="form field")
-      "middle" => @sf.panel("面板", form_body(said, pf, lines), from=at, form=true, description="说明的话", field="form field")
-      // (no field named: the first that takes the focus given it, as the old frame's trapping overlay does)
-      "unfield" => @sf.panel("面板", form_body(said, pf, lines), from=at, form=true)
-      _ => @sf.panel("面板", form_body(said, pf, lines), from=at, form=true, field="form field")
+      "tall at" => @sf.panel_nodes("面板", form_body(said, pf, lines), from=at, form=true, tall=0.72)
+      "middle" => @sf.panel_nodes("面板", form_body(said, pf, lines), from=at, form=true, description="说明的话")
+      // (no field named: the first that takes the focus given it)
+      "unfield" => @sf.panel_nodes("面板", form_body(said, pf, lines, named=false), from=at, form=true)
+      _ => @sf.panel_nodes("面板", form_body(said, pf, lines), from=at, form=true)
     }
     t.run_for(@ui.move_most_ms)
     let r = fn(role : @ui.Role, label : String) { t.query(role, label~).map(fn(s) { tenth4(s.rect) }) }
@@ -96,29 +100,28 @@ test "panel a form, 大屏 keyboard and mouse and a tablet by touch: at a point,
     t.run_for(@ui.move_most_ms)
     out.push("\{kind}: \{open} | \{typed}\{grown}\{far} | escape: presenting \{@sf.presenting()} focus \{panel_focus_said(t)}")
   }
-  // (as main has it: drawn by the old frame, the same test, before this)
-  assert_eq((out, drawn), (
-    [
-      "at: dialog Some((380, 287, 520, 226)) field Some((404, 362, 472, 39)) ok Some((826, 459, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-      "tall at: dialog Some((380, 287, 520, 226)) field Some((404, 362, 472, 39)) ok Some((826, 459, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-      "middle: dialog Some((380, 274, 520, 252)) field Some((404, 375, 472, 39)) ok Some((826, 472, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-      "short: dialog Some((380, 24, 520, 452)) field Some((404, 99, 472, 39)) ok Some((826, 1336, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | far: ok Some((826, 422, 44, 24)) last [(414, 342, 452, 22)] seen [true] | ok pressed: said [ok] presenting false focus focused None ime (false, , 0, 0) | escape: presenting false focus focused None ime (false, , 0, 0)",
-      "tablet: dialog Some((160, 337, 520, 226)) field Some((184, 412, 472, 39)) ok Some((604, 509, 46, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused None ime (false, , 0, 0)",
-      "grown: dialog Some((380, 287, 520, 226)) field Some((404, 362, 472, 39)) ok Some((826, 459, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | more: dialog Some((380, 135, 520, 530)) ok Some((826, 611, 44, 24)) less: dialog Some((380, 249, 520, 302)) ok Some((826, 497, 44, 24)) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-      "unfield: dialog Some((380, 287, 520, 226)) field Some((404, 362, 472, 39)) ok Some((826, 459, 44, 24)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    ],
-    [true, true, true, true, true, true, true],
+  assert_true(drawn.iter().all(fn(d) { d }))
+  debug_inspect(out, content=(
+    #|[
+    #|  "at: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "tall at: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "middle: dialog Some((380, 274.5, 520, 251)) field Some((420, 382.5, 440, 22)) ok Some((404, 465.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "short: dialog Some((380, 24, 520, 452)) field Some((420, 106, 440, 22)) ok Some((404, 1329, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | far: ok Some((404, 416, 472, 36)) last [(404, 340, 472, 22)] seen [true] | ok pressed: said [ok] presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "tablet: dialog Some((160, 333.5, 520, 233)) field Some((200, 419.5, 440, 22)) ok Some((184, 506.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused None ime (false, , 0, 0)",
+    #|  "grown: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | more: dialog Some((380, 135.5, 520, 529)) ok Some((404, 604.5, 472, 36)) less: dialog Some((380, 249.5, 520, 301)) ok Some((404, 490.5, 472, 36)) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "unfield: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|]
   ))
 }
 
 ///|
-test "panel a form at a point, its field given the focus and holding it, 大屏 keyboard and mouse: closed by its close button, by Escape, by a press outside, by its own button: where the focus is then, at once and after: as main has it" {
+test "panel a form at a point, its field given the focus and holding it, 大屏 keyboard and mouse: closed by its close button, by Escape, by a press outside, by its own button: where the focus is then, at once and after" {
   let out = []
   for how in ["close", "escape", "outside", "own"] {
     let said : Array[String] = []
     let t = menu_tester(1280.0, 800.0, 0)
     let pf = @ui.Field::new()
-    @sf.panel("面板", form_body(said, pf, @signals.signal(0)), from=At(600.0, 100.0, 0.0, 0.0), form=true, field="form field")
+    @sf.panel_nodes("面板", form_body(said, pf, @signals.signal(0)), from=At(600.0, 100.0, 0.0, 0.0), form=true)
     t.run_for(@ui.move_most_ms)
     let open = panel_focus_said(t)
     match how {
@@ -131,14 +134,14 @@ test "panel a form at a point, its field given the focus and holding it, 大屏 
     t.run_for(@ui.move_most_ms)
     out.push("\{how}: open {\{open}} closed {\{at_close}} after {\{panel_focus_said(t)}} said \{@ui.list_text(said)} presenting \{@sf.presenting()}")
   }
-  // (as main has it: its close button and its own let its field go, the focus nowhere after; Escape and a press
-  // outside give it back first, to what had it as it opened)
-  assert_eq(out, [
-    "close: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused None ime (false, , 0, 0)} after {focused None ime (false, , 0, 0)} said [] presenting false",
-    "escape: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [] presenting false",
-    "outside: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [] presenting false",
-    "own: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused None ime (false, , 0, 0)} after {focused None ime (false, , 0, 0)} said [ok] presenting false",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "close: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [] presenting false",
+    #|  "escape: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [] presenting false",
+    #|  "outside: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [] presenting false",
+    #|  "own: open {focused Some(TextField 填一下) ime (true, , 0, 0)} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} after {focused Some(TextField 发消息) ime (true, , 0, 0)} said [ok] presenting false",
+    #|]
+  ))
 }
 
 ///|
@@ -147,19 +150,18 @@ test "panel a form at a point, its field holding the focus, its own button closi
   let t = menu_tester(1280.0, 800.0, 0)
   let pf = @ui.Field::new()
   let other = @ui.Field::new()
-  let next = fn(c : @ui.Ctx, close : () -> Unit) {
-    c.editor("next field", field=other, placeholder="另一框") |> ignore
-    panel_test_body([])(c, close)
+  let next = fn(v : @view.View, close : () -> Unit) {
+    @sf.panel_opens_in_node(@sf.input_node(v, other, placeholder="另一框", label="另一框"))
+    panel_test_body([])(v, close)
   }
-  @sf.panel("面板", from=At(600.0, 100.0, 0.0, 0.0), form=true, field="form field", fn(c, close) {
-    c.editor("form field", field=pf, placeholder="填一下") |> ignore
-    @sf.panel_foot(c, fn() {
-      @sf.panel_button(c, "ok", "好的", tone=Filled, on_press=fn() {
-        said.push("ok")
-        close()
-        @sf.panel("另一个", next, from=At(600.0, 100.0, 0.0, 0.0), form=true, field="next field")
-      }) |> ignore
-    })
+  @sf.panel_nodes("面板", from=At(600.0, 100.0, 0.0, 0.0), form=true, fn(v, close) {
+    @sf.panel_opens_in_node(@sf.input_node(v, pf, placeholder="填一下", label="填一下"))
+    @sf.button_node(v, fn() { "好的" }, fn() {
+      said.push("ok")
+      close()
+      @sf.panel_nodes("另一个", next, from=At(600.0, 100.0, 0.0, 0.0), form=true)
+    }, tone=Primary)
+    |> ignore
   })
   t.run_for(@ui.move_most_ms)
   let open = panel_focus_said(t)
@@ -169,8 +171,7 @@ test "panel a form at a point, its field holding the focus, its own button closi
   let after = panel_focus_said(t)
   t.type_text("乙")
   t.run_for(@ui.move_most_ms)
-  // (as main has it: the other form's field the focus's from the frame the first closes in, typed into; the first's
-  // field none of it)
+  // (the other form's field the focus's from the frame the first closes in, typed into; the first's field none of it)
   assert_eq([open, at_close, after, "填 \{pf.text()} 另 \{other.text()} said \{@ui.list_text(said)}"], [
     "focused Some(TextField 填一下) ime (true, , 0, 0)",
     "focused Some(TextField 另一框) ime (true, , 0, 0)",

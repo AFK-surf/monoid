@@ -690,6 +690,21 @@ pub fn over_foot_reach(height : Double) -> @ui.Style {
 }
 
 ///|
+/// What stands first on a card, over such a row of capsules `height` high at its foot (a field the card is all but
+/// made of, its answer's buttons under it): out to the sides as they reach (foot_reach) and up as far, so that it is as
+/// far from the card's top corners as they are from its foot's, its own corner concentric with them (top_reach_corner).
+pub fn top_reach(height : Double) -> @ui.Style {
+  let out = room(card_foot_in(height) - card_pad)
+  @ui.style(ml=out, mr=out, mt=out)
+}
+
+///|
+/// The corner of what stands so (top_reach): the card's, concentric, as far in as the capsules at its foot.
+pub fn top_reach_corner(height : Double) -> Double {
+  @ui.concentric(card_corner, card_foot_in(height))
+}
+
+///|
 /// The ladder's steps and inset as a style's: a card's corner, a row's or a block's, a small block's; the inset; a
 /// list card's padding (list_pad) and its rows' words' room in them (a row's own, text_in: list_pad and that from the
 /// card's edge, 16, as a menu's words in its panel); what a card's corner keeps clear past its words (its corner less
@@ -794,10 +809,6 @@ pub let card_foot_out : @ui.Style = @ui.style(mb=room(card_corner - small_corner
 /// as far as a card's words from its edge, cards in it or none; a card's own words as far in from the card, not on the
 /// panel's line (the user, 2026-11-03: 卡片里的字跟面板的字不需要对齐; 有卡片也应该这样).
 pub let panel_words : Double = card_pad
-
-///|
-/// A command's box's corner: a block's on a card, its copy button corner_inset in from its corner.
-pub let command_box_corner : Double = row_corner
 
 ///|
 /// A button's height with keyboard and mouse (34, as everything pressed is: a row, a field; button_height): a capsule,

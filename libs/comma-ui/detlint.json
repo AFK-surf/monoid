@@ -116,7 +116,9 @@
     "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
-    "page-at-moment": {}
+    "page-at-moment": {},
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   },
   "excused": {
     "frame-request": {},
@@ -198,6 +200,8 @@
     "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
-    "page-at-moment": {}
+    "page-at-moment": {},
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   }
 }

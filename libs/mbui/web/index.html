@@ -3,10 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="">
 <title>MoonBit UI</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #F5F5F7; }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #F5F5F7;
+               overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  /* the app's own presses: no selecting, no callout, no browser gesture over it */
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block;
+       user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   /* receives the input method; sits at the caret, invisible */
   #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
          resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;

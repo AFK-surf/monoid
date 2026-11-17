@@ -272,12 +272,9 @@ fn outbox_unsent(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) ->
     if o.refused {
       // refused as it is (a file this station does not have): its words back in the composer, to be sent anew
       let draft = here.station + ":" + here.session
-      let words = o.text
       let id = o.id
       unsent_button(c, "unsent/edit/" + o.id, "edit", @sf.t("common.edit"), !locked && !busy, false, None, on_press=fn() {
-        let w = writing(src, draft)
-        writing_text(src, w, words)
-        outbox_call(src, here, "chat.discard", id)
+        outbox_edit(src, draft, o, fn() { outbox_call(src, here, "chat.discard", id) })
       })
     } else {
       let id = o.id

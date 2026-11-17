@@ -89,6 +89,14 @@ fn bar_extra_target(r : ChatRef) -> Double {
 }
 
 ///|
+/// Where chat `r`'s bar comes to end, its second row as it comes to show or not (a long title's, measured as the bar is
+/// laid out, after the list was made and put where it opens; opened or shut by a press): what the list put somewhere
+/// stands under. Read as it changes: its state made where the bar is not made yet.
+fn bar_foot_coming(r : ChatRef) -> Double {
+  bar_foot() + chat_bar_state(r).extra_target.get()
+}
+
+///|
 fn bar_extra_shown(v : @view.View, r : ChatRef) -> Double {
   match chat_bar_states.get(chat_bar_key(r)) {
     Some(s) => s.open_way.shown(v) * s.row2_h.get()
@@ -586,6 +594,56 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
       })
       |> ignore
     })
+  })
+  // the unified remote button (screens, browser, the chat's own terminal) on Small's chat bar, only while an agent
+  // drives one of its station's screens (marked so): the bar's keys are tight at 390 and the chat's own sheet (its
+  // Agent · Station card, sheets.mbt) always holds the same way in; 中屏 and 大屏's bar keeps it always
+  let driven = fn() {
+    match view() {
+      Some(v) => chat_screens_driven(v.screens)
+      None => false
+    }
+  }
+  e.show(driven, fn(k) {
+    k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
+    @sf.round_key_node(
+      k,
+      "monitor",
+      fn() { @sf.t("web-pages.chat.screen") },
+      fn() {
+        match @signals.untracked(view) {
+          Some(v) => chat_remote_open(src, r, v, from=Node(k), along=End)
+          None => ()
+        }
+      },
+      icon_size=20.0,
+    )
+    k.box(fn(d) {
+      d
+      .over(Is(true))
+      .lines_up(Is(Some(End)))
+      .padding(Is((0.0, 6.0, 6.0, 0.0)))
+      |> ignore
+      d.box(fn(ring) {
+        ring
+        .width(Is(Some(11.0)))
+        .height(Is(Some(11.0)))
+        .radius(Is(5.5))
+        .padding(Is((2.0, 2.0, 2.0, 2.0)))
+        .ground(By(fn() { @sf.theme().p.bg }))
+        |> ignore
+        ring.box(fn(dot) {
+          dot
+          .grow(Is(1.0))
+          .radius(Is(3.5))
+          .ground(By(fn() { @sf.theme().p.primary }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
   })
   // what it is (its info's sheet), then what is done with it ("…": the menu a row of the list has)
   e.box(fn(k) {

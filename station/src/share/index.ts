@@ -2004,17 +2004,24 @@ export class Sharing {
 
   // ── the overview ──
 
-  /// What the overview says of a profile's sharing (null: not shared).
-  profileView(p: Json): ShareView | null {
+  /// What the overview says of a profile's sharing (null: not shared). `workspace`: the viewer's; the stations it names
+  /// (`users`, `allow`) are this one and those of that workspace only, so a member never sees a station of a workspace of
+  /// this station's they are not in, which they could only show by its id (null: all of them).
+  profileView(p: Json, workspace: string | null = null): ShareView | null {
     if (!isObject(p?.share) || typeof p.share.id !== "string") return null;
     const id = p.share.id as string;
+    const me = this.me();
+    const rosters = workspace === null ? null : this.rosters();
+    const seen = (station: string) => rosters === null || station === me || rosters.get(station)?.includes(workspace!) === true;
     if (p.share.borrowed === true) {
+      // The allowance is the host's, naming the stations of each of its workspaces: only this one's and the viewer's.
       const host = String(p.share.host ?? "");
       const had = this.readState().borrowed[id];
-      return { id, role: "user", host, allow: had?.allow ?? null, reachable: !this.unreachable.has(host), pausable: true };
+      return { id, role: "user", host, allow: had?.allow?.filter(seen) ?? null, reachable: !this.unreachable.has(host), pausable: true };
     }
     const told = this.readState().hosted[id]?.told ?? {};
-    return { id, role: "host", host: this.me() ?? "", allow: Array.isArray(p.share.allow) ? p.share.allow : null, reachable: null, users: Object.entries(told).filter(([, v]) => v >= 0).map(([k]) => k) };
+    const users = Object.entries(told).filter(([k, v]) => v >= 0 && seen(k)).map(([k]) => k);
+    return { id, role: "host", host: me ?? "", allow: Array.isArray(p.share.allow) ? p.share.allow.filter(seen) : null, reachable: null, users };
   }
 
   /// What the memory page says of a skill's sharing (null: not shared): by its name in the agents' skills.
