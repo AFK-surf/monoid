@@ -56,6 +56,19 @@ const fresh = (prefix: string) => {
   return d;
 };
 
+/// What a test waits for of another process (the program, a client) fails `WAIT_MOST` on, saying what: never at the job's
+/// limit, its sockets left open and the test's whole log lost with it, as #7002's check-station (4) was, 228 s, 2026-11-17.
+const WAIT_MOST = 15_000;
+async function within<A>(what: string, p: Promise<A>): Promise<A> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(`not within ${WAIT_MOST / 1000} s: ${what}`)), WAIT_MOST)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /// The program, asked a line at a time.
 class Program {
   #child: ChildProcess;
@@ -72,10 +85,11 @@ class Program {
   }
   ask(op: string, fields: Json = {}): Promise<Json> {
     const id = ++this.#next;
-    return new Promise((resolve) => {
+    const what = `the program's ${op}${fields.verb ? ` (${fields.verb})` : fields.fn ? ` (${fields.fn})` : ""}`;
+    return within(what, new Promise<Json>((resolve) => {
       this.#waiting.set(id, resolve);
       this.#child.stdin!.write(`${JSON.stringify({ ...fields, id, op })}\n`);
-    });
+    })).finally(() => this.#waiting.delete(id));
   }
   /// Its stdin ended: it ends, and is waited for (nothing of this file's is left running: setup-env.mjs).
   close(): Promise<void> {
@@ -1523,19 +1537,6 @@ test("a connection's streams taken in the order its other end opened them, as In
 
 /// A front of the test's on a Unix socket, as the station's would answer (mb/src/front/mesh.mbt): every ask kept, the
 /// streams path normalised; what it answers and the connections and streams it gives, the test's.
-/// (What it waits for of the client, another process's, fails `WAIT_MOST` on, saying what: never at the job's limit, the
-/// test's whole log lost with it, as #7002's check-station (4) was, 228 s, 2026-11-17.)
-const WAIT_MOST = 15_000;
-async function within<A>(what: string, p: Promise<A>): Promise<A> {
-  let t: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(`not within ${WAIT_MOST / 1000} s: ${what}`)), WAIT_MOST)));
-  try {
-    return await Promise.race([p, late]);
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 class FakeFront {
   readonly path: string;
   asks: Json[] = [];
@@ -1688,10 +1689,15 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     sleeps.push({ ms, resolve });
     sleepAsked?.();
   }));
-  const wakeTs = async () => {
-    await within("the TypeScript client's sleep before it links again", (async () => {
+  // (the TypeScript client's next wait before it links again, begun: how long it is to be; let end by wakeTs)
+  const waitSleepTs = async () => {
+    await within("the TypeScript client's wait before it links again", (async () => {
       while (sleeps.length === 0) await new Promise<void>((r) => (sleepAsked = r));
     })());
+    return sleeps[0]!.ms;
+  };
+  const wakeTs = async () => {
+    await waitSleepTs();
     const s = sleeps.shift()!;
     s.resolve();
     return s.ms;
@@ -1704,7 +1710,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await mbFront.listen();
     const options = { secretKey: Buffer.alloc(32, 7), alpns: [Buffer.from("stillfail/station/2"), Buffer.from("aa")], relayUrls: ["https://r1/"], discovery: false, congestion: "bbr" as const, dscp: 43 };
     ep = await withFront({} as never, tsFront.path).bind(options);
-    const front = (verb: string, args: Json = {}, name = "ep") => within(`the MoonBit client's ${verb} (${name})`, mb().ask("front", { name, verb, args }).then(answered));
+    const front = (verb: string, args: Json = {}, name = "ep") => mb().ask("front", { name, verb, args }).then(answered);
     const mbBound = await front("bind", { socket: mbFront.path, options: { secretKey: hex(options.secretKey), alpns: options.alpns.map(hex), relayUrls: options.relayUrls, discovery: false, congestion: "bbr", dscp: 43 } });
     assert.deepEqual(mbBound, { id: ep.id(), sockets: ep.sockets() });
     const both = async (what: string, ts: () => Promise<unknown> | unknown, verb: string, args: Json = {}, name = "ep") => {
@@ -1746,7 +1752,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     const mbAccepted = front("accept", { as: "c1" });
     await tsFront.give(1);
     await mbFront.give(1);
-    const conn = (await within("the TypeScript client's accept", accepted))!;
+    const conn = (await within<Awaited<typeof accepted>>("the TypeScript client's accept", accepted))!;
     assert.deepEqual(await mbAccepted, { remote: conn.remoteId(), alpn: Buffer.from(conn.alpn()).toString("hex"), handed: (conn as { handed?: number }).handed ?? null });
     const opened = (f: FakeFront) => [f.opened(1, 1), f.opened(1, 0)];
     const [ts1, ts0] = opened(tsFront);
@@ -1756,7 +1762,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     const ts3 = tsFront.opened(1, 3);
     const mb3 = mbFront.opened(1, 3);
     const tsStreams: Stream[] = [];
-    for (let i = 0; i < 3; i++) tsStreams.push((await within(`the TypeScript client's acceptBi ${i}`, conn.acceptBi()))!);
+    for (let i = 0; i < 3; i++) tsStreams.push((await within<Awaited<ReturnType<typeof conn.acceptBi>>>(`the TypeScript client's acceptBi ${i}`, conn.acceptBi()))!);
     for (let i = 0; i < 3; i++) assert.equal(await front("acceptBi", { as: `s${i}` }, "c1"), true);
     // each read as the other end wrote it: the first taken is the one opened first
     for (const [f, ids] of [[tsFront, [ts0, ts1, ts3]], [mbFront, [mb0, mb1, mb3]]] as const) {
@@ -1777,7 +1783,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await both("finish", () => tsStreams[2]!.finish(), "finish", {}, "s2");
     await both("write after the finish", () => tsStreams[2]!.write(Buffer.from("x")), "write", { bytes: hex(Buffer.from("x")) }, "s2");
     // one this end opens; its stopping asked of the front
-    const own = await within("the TypeScript client's openBi", conn.openBi());
+    const own = await within<Awaited<ReturnType<typeof conn.openBi>>>("the TypeScript client's openBi", conn.openBi());
     await front("openBi", { as: "o1" }, "c1");
     await both("written on one opened here", () => own.write(Buffer.from("asked")), "write", { bytes: hex(Buffer.from("asked")) }, "o1");
     // (at the front before the reset below: a reset lets go of what was not sent yet, as a QUIC stream's does, and the
@@ -1806,11 +1812,24 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     // the front gone: linked again, the routes and disabled relays given again first
     await tsFront.drop();
     await mbFront.drop();
+    // (what the MoonBit client said, kept: "logs" gives each once)
+    const mbLogs: Json[] = [];
+    const takeMbLogs = async () => (mbLogs.push(...(await front("logs"))), mbLogs);
+    // (its try before the wait of `ms` failed: it says so as it begins that wait, nothing between)
+    const mbFailedBefore = (ms: number) => within(`the MoonBit client's try failed, its ${ms} ms wait begun`, (async () => {
+      while (!(await takeMbLogs()).some((l) => l.words === "the front not reached" && l.with?.again === `${ms} ms`)) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    })());
     assert.equal(await wakeTs(), 250);
     assert.equal(await front("wake"), 250);
     // (nothing listens yet: the next try waits twice as long)
     assert.equal(await wakeTs(), 500);
     assert.equal(await front("wake"), 500);
+    // (each 500 ms try failed before the front listens again: else the one slower to try links on it, and is never
+    // to wait the 1000 ms woken below; the MoonBit client did, its wake waited for good, #7026's check-station (4))
+    assert.equal(await waitSleepTs(), 1000);
+    await mbFailedBefore(1000);
     await tsFront.listen();
     await mbFront.listen();
     const before = { ts: tsFront.asks.length, mb: mbFront.asks.length };
@@ -1821,7 +1840,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await both("linked again", () => ep.linked!(), "linked");
     // (why the socket was not reached is the system's words: Node's and the shell's differ)
     const systems = (ls: Json[]) => ls.map((l) => (l.words === "the front not reached" ? { ...l, with: { ...l.with, error: "<the system's words>" } } : l));
-    assert.deepEqual(systems(await front("logs")), systems(said("mesh").map((l) => ({ ...l, at: "mesh" }))), "said of it");
+    assert.deepEqual(systems(await takeMbLogs()), systems(said("mesh").map((l) => ({ ...l, at: "mesh" }))), "said of it");
     await front("close");
   } finally {
     await ep?.close();
