@@ -899,6 +899,8 @@ fn main {
         { "thread": Number(_, ..), .. } => Some(@legacy.said_step(db))
         _ => None
       }))
+    (Some("harness-rigs-mode"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @rigs_mode.harness(host))
     (Some("session-counts"), Some(db), _) =>
       // (a backfill the station drives itself: each line, whatever it says, asks for the next batch)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session count", (db, _) => Some(@counts.step(db))))

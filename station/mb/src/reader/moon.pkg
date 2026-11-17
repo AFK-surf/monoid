@@ -35,6 +35,7 @@ import {
   "station/usagefill",
   "station/usagecount",
   "station/signin",
+  "station/rigs_mode",
   "station/vaultuses",
   "station/cloud_net",
   "station/locate",
