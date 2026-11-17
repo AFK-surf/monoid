@@ -51,6 +51,7 @@ chat_bar_node_wbtest.mbt 1 2 2 1
 chat_bar_select_wbtest.mbt 3 7 11 3
 chat_bar_wide_wbtest.mbt 38 116 173 58
 chat_card_answered_wbtest.mbt 3 6 10 4
+chat_drive_parity_wbtest.mbt 143 - - -
 chat_drop_wbtest.mbt 1 5 6 2
 chat_find_wbtest.mbt 17 70 118 36
 chat_images_told_wbtest.mbt 0 1 2 0
@@ -69,7 +70,7 @@ chat_nodes_place_within_wbtest.mbt 0 2 3 1
 chat_nodes_read_stays_band_wbtest.mbt 3 6 10 2
 chat_nodes_read_stays_before_wbtest.mbt 2 34 69 10
 chat_nodes_read_stays_before_wide_wbtest.mbt 29 48 94 18
-chat_nodes_read_stays_composer_file_wbtest.mbt 32 24 38 11
+chat_nodes_read_stays_composer_file_wbtest.mbt 90 24 38 11
 chat_nodes_read_stays_composer_wbtest.mbt 35 23 34 10
 chat_nodes_read_stays_rows_wbtest.mbt 3 8 12 4
 chat_nodes_read_stays_side_wbtest.mbt 4 14 19 5
@@ -318,7 +319,7 @@ place_wbtest.mbt 1 4 5 1
 places_ahead_seq_wbtest.mbt 1 4 6 1
 play_wbtest.mbt 0 0 1 0
 presets_others_wbtest.mbt 1 - - -
-presets_wbtest.mbt 27 74 75 19
+presets_wbtest.mbt 93 74 75 19
 press_waits_wbtest.mbt 3 9 27 5
 preview_close_corners_wbtest.mbt 0 0 0 0
 preview_flight_wbtest.mbt 0 0 1 0
