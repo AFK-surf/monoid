@@ -804,10 +804,102 @@ pub fn harness_case(c : Json) -> Json {
 pub async fn harness(host : @host.Host) -> Unit {
   while true {
     guard host.line() is Some(line) else { break }
-    let answer = match (try Some(@json.parse(line)) catch { _ => None }) {
+    let answer : Json = match (try Some(@json.parse(line)) catch { _ => None }) {
+      Some(c) if text_of(field(c, "op")) == Some("hostEntry") =>
+        try {
+          { "ok": host_entry_case(host, c) }
+        } catch {
+          e => { "error": Json::string(error_words_all(e)) }
+        }
       Some(c) => harness_case(c)
       None => { "error": "not JSON" }
     }
     host.say(answer.stringify())
+  }
+}
+
+///|
+/// A dial, a request and a WebSocket through the real shell (`host_dial_io`, `host_http`, `host_ws`): `origin`'s
+/// direct candidate and the case's entry raced as the transport races them, an HTTP request `over` the route that won
+/// and a WebSocket opened over it with `headers`, which sends `send` and is read until its first message.
+async fn host_entry_case(host : @host.Host, c : Json) -> Json {
+  let origin = text_of(field(c, "origin")).unwrap_or(cloud_origin)
+  let entry = match field(c, "entry") {
+    Some(Object(m)) =>
+      Some({
+        origin: cloud_origin,
+        host: text_of(m.get("host")).unwrap_or(""),
+        port: num(m.get("port")).to_int(),
+      })
+    _ => None
+  }
+  let got : @effect.Deferred[Result[TlsSocket, DialError]] = @effect.Deferred::new()
+  ignore(
+    dial_cloud(
+      host_dial_io(host, origin~),
+      origin,
+      entry,
+      num(field(c, "budget")).to_int(),
+      r => ignore(got.succeed(r)),
+    ),
+  )
+  let socket = match got.wait() {
+    Ok(s) => s
+    Err(e) =>
+      return {
+        "dialError": Json::string(e.message),
+        "errors": Json::array(e.errors.map(Json::string)),
+      }
+  }
+  let http = host_http(host)
+  let answer = (http.over)(
+    {
+      url: origin + text_of(field(c, "path")).unwrap_or("/"),
+      http_method: "GET",
+      headers: Headers::new(),
+      body: None,
+      timeout_ms: 10_000,
+    },
+    socket,
+  )
+  let headers = Headers::new()
+  for p in array_of(field(c, "headers")).unwrap_or([]) {
+    match p {
+      Array([String(k), String(v)]) => headers.set(k, v)
+      _ => ()
+    }
+  }
+  let heard : @effect.Queue[Json] = @effect.Queue::unbounded()
+  let ws = (host_ws(host).open)(
+    text_of(field(c, "ws")).unwrap_or(""),
+    headers,
+    Some(socket),
+    {
+      open: () => ignore(heard.try_offer({ "open": true })),
+      message: m => ignore(heard.try_offer({ "message": Json::string(m) })),
+      unexpected: status => ignore(heard.try_offer({ "unexpected": int_json(status.to_int64()) })),
+      error: e => ignore(heard.try_offer({ "error": Json::string(e) })),
+      close: (code, _) => ignore(heard.try_offer({ "close": int_json(code.to_int64()) })),
+    },
+  )
+  let told : Array[Json] = []
+  while true {
+    let e = heard.take()
+    told.push(e)
+    match e {
+      Object(m) if m.get("open") is Some(_) =>
+        (ws.send)(text_of(field(c, "send")).unwrap_or(""))
+      Object(m) if m.get("message") is Some(_) => {
+        (ws.close)()
+        break
+      }
+      Object(m) if m.get("close") is Some(_) => break
+      _ => ()
+    }
+  }
+  {
+    "won": { "host": Json::string(socket.host), "port": int_json(socket.port.to_int64()) },
+    "http": { "status": int_json(answer.status.to_int64()), "body": Json::string(answer.body) },
+    "ws": Json::array(told),
   }
 }

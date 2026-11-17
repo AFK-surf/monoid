@@ -63,7 +63,7 @@ pub async fn harness(@host.Host) -> Unit
 
 pub fn harness_case(@json.Json) -> @json.Json
 
-pub fn host_dial_io(@host.Host) -> DialIO
+pub fn host_dial_io(@host.Host, origin? : String) -> DialIO
 
 pub fn host_http(@host.Host) -> Http
 

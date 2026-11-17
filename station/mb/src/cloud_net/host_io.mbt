@@ -1,8 +1,12 @@
 // The network as the station's program has it: the shell's (`@host.Host::shell`, client/shell's `run`), on the
-// program's runtime. HTTP by `fetch`, a WebSocket by `ws.open`/`ws.next`/`ws.send`/`ws.close`, a file by `fs.put`; a
-// TLS connection to an entry's host and port that verifies the canonical origin's certificate by `tls.open` (and HTTP
-// on it by `fetch` with its `socket`, a WebSocket by `ws.open` with it), which the shell is to offer: until it does,
-// what asks it is told the shell's own refusal, and a dial goes on with the direct candidate alone.
+// program's runtime. HTTP by `fetch`, a WebSocket by `ws.open`/`ws.next`/`ws.send`/`ws.close`, a file by `fs.put`.
+// The shell offers no TLS socket of its own to hand on: an entry is said to `fetch` and `ws.open` themselves
+// (`"entry": {"host", "port"}`: the TCP to that host and port, TLS's server name, the certificate checked and HTTP's
+// Host the URL's own), each candidate of a dial a route (`TlsSocket`'s host and port: the origin's own for the direct
+// one, which the shell resolves as it would without one). A candidate is dialed by asking `<origin>/healthz` on its
+// route: any answer is its TLS made and verified, and the connection stays in the shell's pool of that route
+// (`entries`, kept idle 60 s), which the request `over` it then takes, as transport.ts' HTTP takes the dial's socket;
+// a WebSocket `over` it connects to the route that won anew (the shell's `ws.open` keeps no pool).
 
 ///|
 fn pairs_json(h : Headers) -> Json {
@@ -10,61 +14,54 @@ fn pairs_json(h : Headers) -> Json {
 }
 
 ///|
-/// The dial's IO on the shell: timers on `host`'s runtime, TLS by `tls.open`.
-pub fn host_dial_io(host : @host.Host) -> DialIO {
+/// The shell's entry for a route a dial made.
+fn entry_json(s : TlsSocket) -> Json {
+  { "host": Json::string(s.host), "port": Json::number(s.port.to_double()) }
+}
+
+///|
+/// The dial's IO on the shell: timers on `host`'s runtime, each candidate dialed by a `fetch` of `origin`'s
+/// `/healthz` with its route as the entry (still.fail's canonical origin unless a test says its own).
+pub fn host_dial_io(host : @host.Host, origin? : String = cloud_origin) -> DialIO {
   let timers = After::effect(host.rt)
   let next = Ref(0)
   {
     after: timers.after,
-    tls: (h, port, servername, events) => {
+    tls: (h, port, _servername, events) => {
       next.val += 1
       let id = next.val
-      let opened : Ref[Int?] = Ref(None)
       let gone = Ref(false)
+      let route = { id, host: h, port, destroy: () => () }
       let fiber = host.rt.fork(async fn() {
-        let (answer, _) = host.shell("tls.open", {
-          "host": Json::string(h),
-          "port": Json::number(port.to_double()),
-          "servername": Json::string(servername),
-          "alpn": ["http/1.1"],
-        }) catch {
-          e => {
-            (events.error)(error_words(e))
-            return
-          }
+        let answered = try {
+          ignore(
+            host.shell("fetch", {
+              "url": Json::string(origin + "/healthz"),
+              "method": "GET",
+              "headers": Json::array([]),
+              "entry": entry_json(route),
+            }),
+          )
+          None
+        } catch {
+          e => Some(error_words(e))
         }
-        match safe_int(field(answer, "id")) {
-          Some(n) =>
-            if gone.val {
-              ignore(host.shell("tls.close", { "id": int_json(n) })) catch {
-                _ => ()
-              }
-            } else {
-              opened.val = Some(n.to_int())
-              (events.secure)()
-            }
-          None => (events.error)("the shell gave no socket")
+        if gone.val {
+          return
+        }
+        match answered {
+          None => (events.secure)()
+          Some(words) => (events.error)(words)
         }
       })
       {
         id,
         host: h,
         port,
-        destroy: () => {
+        // (the shell's pool keeps the connection a route made; a pending dial is let go)
+        destroy: () => if !gone.val {
           gone.val = true
-          match opened.val {
-            Some(n) => {
-              opened.val = None
-              ignore(
-                host.rt.fork(async fn() {
-                  ignore(host.shell("tls.close", { "id": Json::number(n.to_double()) })) catch {
-                    _ => ()
-                  }
-                }),
-              )
-            }
-            None => fiber.interrupt()
-          }
+          fiber.interrupt()
         },
       }
     },
@@ -72,16 +69,16 @@ pub fn host_dial_io(host : @host.Host) -> DialIO {
 }
 
 ///|
-/// HTTP on the shell: by itself, or on a socket a dial made.
+/// HTTP on the shell: by itself, or on the route a dial made (its entry).
 pub fn host_http(host : @host.Host) -> Http {
-  let ask = async fn(req : HttpRequest, socket : Int?) -> HttpResponse {
+  let ask = async fn(req : HttpRequest, socket : TlsSocket?) -> HttpResponse {
     let args : Map[String, Json] = {
       "url": Json::string(req.url),
       "method": Json::string(req.http_method),
       "headers": pairs_json(req.headers),
     }
     match socket {
-      Some(s) => args["socket"] = Json::number(s.to_double())
+      Some(s) => args["entry"] = entry_json(s)
       None => ()
     }
     let call = async fn() {
@@ -101,11 +98,11 @@ pub fn host_http(host : @host.Host) -> Http {
       None => raise NetError("The operation was aborted due to timeout")
     }
   }
-  { fetch: req => ask(req, None), over: (req, socket) => ask(req, Some(socket.id)) }
+  { fetch: req => ask(req, None), over: (req, socket) => ask(req, Some(socket)) }
 }
 
 ///|
-/// A WebSocket on the shell: `ws.open` (with the signed headers, and the dial's socket where it went by an entry), its
+/// A WebSocket on the shell: `ws.open` (with the signed headers, and the dial's route as its entry where one made it), its
 /// frames read by `ws.next` on a fiber of its own.
 pub fn host_ws(host : @host.Host) -> WsIO {
   {
@@ -122,7 +119,7 @@ pub fn host_ws(host : @host.Host) -> WsIO {
           "headers": pairs_json(headers),
         }
         match over {
-          Some(s) => args["socket"] = Json::number(s.id.to_double())
+          Some(s) => args["entry"] = entry_json(s)
           None => ()
         }
         let (answer, _) = host.shell("ws.open", Json::object(args)) catch {

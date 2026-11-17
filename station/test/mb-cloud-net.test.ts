@@ -7,11 +7,14 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
+import { WebSocketServer } from "ws";
 import { sha256hex } from "../src/cloud/key.ts";
 import { Replaced, applyState, waysTeller } from "../src/cloud/presence.ts";
 import { PROVIDERS, providerOf, signedHeaders, specOf } from "../src/cloud/provider.ts";
@@ -546,6 +549,50 @@ async function sameFollow(name: string, kind: "ways" | "marks", c: { state: any;
   assert.deepEqual(ours, ts, name);
   mock.restoreAll();
 }
+
+test("through the shell's own entry: a dial raced, HTTP and a WebSocket over the route that won, Host the origin's", { skip }, async () => {
+  // The origin's direct candidate (cloud.invalid, a name that resolves nowhere: RFC 6761) fails, the entry (this
+  // server) wins; the request and the socket go to it by the shell's `"entry"`, their Host and URL still the origin's.
+  // (A name, as still.fail's origin is: reqwest resolves no IP address's URL, so the shell's entry takes names alone.)
+  const heard: string[] = [];
+  const server = createServer((req, res) => {
+    heard.push(`${req.method} ${req.url} ${req.headers.host}`);
+    res.end(req.url === "/v1/me" ? "me" : "ok");
+  });
+  const sockets = new WebSocketServer({ server });
+  sockets.on("connection", (ws, req) => {
+    heard.push(`upgrade ${req.url} ${req.headers.host} ${req.headers["x-stillfail-station"]}`);
+    ws.on("message", (m) => ws.send(`echo:${m}`));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (server.address() as AddressInfo).port;
+    const ours = await mb({
+      op: "hostEntry",
+      origin: "http://cloud.invalid",
+      entry: { host: "127.0.0.1", port },
+      budget: 10_000,
+      path: "/v1/me",
+      ws: "ws://cloud.invalid/v1/presence",
+      headers: [["x-stillfail-station", "s1"]],
+      send: "hi",
+    });
+    assert.deepEqual(ours, {
+      won: { host: "127.0.0.1", port },
+      http: { status: 200, body: "me" },
+      ws: [{ open: true }, { message: "echo:hi" }],
+    });
+    assert.deepEqual(heard, [
+      "GET /healthz cloud.invalid",
+      "GET /v1/me cloud.invalid",
+      "upgrade /v1/presence cloud.invalid s1",
+    ]);
+  } finally {
+    sockets.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("ways brought level: through a peer down, retried sooner at first, one from before left be, rigs too", { skip }, async () => {
   const mine = JSON.stringify({ [WS]: { relays: [{ url: "https://own.example" }], off: [], at: 50, station: A } });
