@@ -615,6 +615,8 @@ struct Inner {
     db: Arc<Mutex<DbHandle>>,
     tls: Arc<rustls::ClientConfig>,
     http: Mutex<reqwest::Client>,
+    /// A pool for each cloud entry requests go through (`entry`: station/AGENTS.md, Cloud TCP entries), by its host and port.
+    entries: Mutex<HashMap<(String, u16), reqwest::Client>>,
     /// Fetch calls still owned by the core. Their exchange is dropped when its caller stops waiting, even between
     /// response headers and the body. Registered before spawning, so an immediate cancellation cannot miss it.
     fetches: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<()>>>,
@@ -690,6 +692,10 @@ fn tls_config() -> rustls::ClientConfig {
 
 /// As the Rust core's native host had it: HTTP/2 pings and TCP keepalive find connections a sleep or a new network left dead.
 fn http_client(tls: &rustls::ClientConfig) -> reqwest::Client {
+    http_builder(tls).build().expect("reqwest client")
+}
+
+fn http_builder(tls: &rustls::ClientConfig) -> reqwest::ClientBuilder {
     use std::time::Duration;
     reqwest::Client::builder()
         .tls_backend_preconfigured(tls.clone())
@@ -700,8 +706,31 @@ fn http_client(tls: &rustls::ClientConfig) -> reqwest::Client {
         .http2_keep_alive_timeout(Duration::from_secs(5))
         .http2_keep_alive_while_idle(true)
         .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("reqwest client")
+}
+
+/// Every name resolved to a cloud entry (its host and port): the TCP goes there, while TLS (its server name, the
+/// certificate checked) and HTTP's Host stay the URL's own, as station/src/cloud/transport.ts dials one.
+struct EntryResolver {
+    host: String,
+    port: u16,
+}
+
+impl reqwest::dns::Resolve for EntryResolver {
+    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let (host, port) = (self.host.clone(), self.port);
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port)).await?.collect();
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// A request's cloud entry (`{"entry": {"host", "port"}}`), where it says one.
+fn entry_of(a: &Value) -> Result<Option<(String, u16)>, String> {
+    let Some(e) = a.get("entry").filter(|e| !e.is_null()) else { return Ok(None) };
+    let host = e.get("host").and_then(Value::as_str).filter(|h| !h.is_empty()).ok_or("an entry has a host")?;
+    let port = e.get("port").and_then(Value::as_u64).filter(|p| (1..=65535).contains(p)).ok_or("an entry has a port")?;
+    Ok(Some((host.to_string(), port as u16)))
 }
 
 fn http_error(error: reqwest::Error) -> String {
@@ -2548,7 +2577,21 @@ impl Inner {
 
     fn request(&self, a: &Value, body: Option<Vec<u8>>) -> Result<reqwest::RequestBuilder, String> {
         let method = reqwest::Method::from_bytes(str_of(a, "method")?.as_bytes()).map_err(err)?;
-        let mut builder = self.http.lock().unwrap().request(method, str_of(a, "url")?);
+        let client = match entry_of(a)? {
+            None => self.http.lock().unwrap().clone(),
+            Some((host, port)) => {
+                let mut entries = self.entries.lock().unwrap();
+                match entries.get(&(host.clone(), port)) {
+                    Some(c) => c.clone(),
+                    None => {
+                        let c = http_builder(&self.tls).dns_resolver(Arc::new(EntryResolver { host: host.clone(), port })).build().map_err(http_error)?;
+                        entries.insert((host, port), c.clone());
+                        c
+                    }
+                }
+            }
+        };
+        let mut builder = client.request(method, str_of(a, "url")?);
         for pair in a.get("headers").and_then(Value::as_array).into_iter().flatten() {
             if let (Some(k), Some(v)) = (pair.get(0).and_then(Value::as_str), pair.get(1).and_then(Value::as_str)) {
                 builder = builder.header(k, v);
@@ -2975,6 +3018,7 @@ impl Inner {
             "reset" => {
                 // Requests already on the old pool keep it until they end.
                 *self.http.lock().unwrap() = http_client(&self.tls);
+                self.entries.lock().unwrap().clear();
                 Ok(Answer::json(json!({})))
             }
             "iroh.bind" => self.bind(&a, bytes.unwrap_or_default()).await,
@@ -3575,7 +3619,23 @@ impl Inner {
         if !protocols.is_empty() {
             request.headers_mut().insert("sec-websocket-protocol", protocols.join(", ").parse().map_err(err)?);
         }
-        let (socket, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(Connector::Rustls(self.tls.clone()))).await.map_err(ws_error)?;
+        // `headers`: [[name, value]…] the request carries besides (a presence socket's `x-stillfail-*`).
+        for pair in a.get("headers").and_then(Value::as_array).into_iter().flatten() {
+            if let (Some(k), Some(v)) = (pair.get(0).and_then(Value::as_str), pair.get(1).and_then(Value::as_str)) {
+                let name = tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(k.as_bytes()).map_err(err)?;
+                request.headers_mut().append(name, v.parse().map_err(err)?);
+            }
+        }
+        let connector = Some(Connector::Rustls(self.tls.clone()));
+        // `entry`: the TCP to a cloud entry, TLS and the Host the URL's own (as `fetch`'s, `EntryResolver`).
+        let (socket, _) = match entry_of(a)? {
+            None => tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await.map_err(ws_error)?,
+            Some((host, port)) => {
+                let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(err)?;
+                stream.set_nodelay(true).map_err(err)?;
+                tokio_tungstenite::client_async_tls_with_config(request, stream, None, connector).await.map_err(ws_error)?
+            }
+        };
         let (incoming_tx, incoming) = tokio::sync::mpsc::unbounded_channel();
         let (outgoing, mut outgoing_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         // One task owns the socket: reading is also what answers the server's pings; what is to be sent goes between.
@@ -3707,6 +3767,10 @@ impl Inner {
                     return Ok(Value::Null);
                 }
                 let (_, conn) = sqls.get(&id).ok_or_else(|| format!("no database {id}"))?;
+                // Whether a transaction is open on it (node:sqlite's `isTransaction`: station/src/vault/schema-install.ts).
+                if op == "sql.inTransaction" {
+                    return Ok(json!(!conn.is_autocommit()));
+                }
                 let sql = str_of(a, "sql")?;
                 match op {
                     "sql.exec" => {
@@ -4264,6 +4328,11 @@ impl Inner {
             };
             return Ok(json!(ok));
         }
+        // The vault's primitives (station/src/vault/crypto.ts: its seal, an item's ciphertext, the recovery key), hex
+        // both ways, for the station's MoonBit (station/mb src/vault_crypto), which puts the formats together.
+        if let Some(value) = vault_crypto(op, a)? {
+            return Ok(value);
+        }
         // What the DHT lookup's socket and lookups went through since the last take, while the core records (`keep`;
         // false: none kept from now on): the record's `dht:` lines (client/core-ts mesh.ts, vendor/n0-mainline's `stillfail`).
         if op == "dht.said" {
@@ -4360,7 +4429,7 @@ impl Shell {
         let http = Mutex::new(http_client(&tls));
         let db = Arc::new(Mutex::new(DbHandle { path: dir.join("core.db"), conn: None }));
         let adb = adb::Adb::new(dir.clone());
-        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb });
+        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb });
         STATS.lock().unwrap().shells.push(Arc::downgrade(&inner));
         Ok(Shell { runtime, inner })
     }
@@ -4448,6 +4517,68 @@ pub unsafe extern "C" fn sf_shell_call(shell: *const Shell, id: u64, op: *const 
 ///
 /// # Safety
 /// As `sf_shell_call`; `out_len` is written.
+/// The vault's primitives (`crypto.*` in `sf_shell_call_sync`); None for an op not one of them. Every byte string is hex.
+/// - `crypto.sha256` {data} -> digest; `crypto.hmacSha256` {key, data} -> tag
+/// - `crypto.hkdfSha256` {ikm, salt, info, length} -> length bytes (at most 255 × 32)
+/// - `crypto.x25519Public` {priv} -> its public half; `crypto.x25519` {priv, pub} -> the shared secret, an error where it
+///   is all zeros (a low-order point), as node:crypto's diffieHellman refuses it
+/// - `crypto.chachaSeal` {key, nonce, aad, plain} -> ciphertext ‖ 16-byte tag; `crypto.chachaOpen` {key, nonce, aad,
+///   sealed} -> what it held, null where it does not open (ChaCha20-Poly1305, RFC 8439)
+fn vault_crypto(op: &str, a: &Value) -> Result<Option<Value>, String> {
+    use ring::{aead, digest, hkdf, hmac};
+    let bytes = |k: &str| -> Result<Vec<u8>, String> { hex::decode(str_of(a, k)?).map_err(|e| format!("{k}: {e}")) };
+    let fixed = |k: &str| -> Result<[u8; 32], String> { bytes(k)?.try_into().map_err(|_| format!("{k} is not 32 bytes")) };
+    let aead_key = |k: &[u8; 32]| aead::LessSafeKey::new(aead::UnboundKey::new(&aead::CHACHA20_POLY1305, k).expect("32 bytes"));
+    let nonce = || -> Result<aead::Nonce, String> {
+        aead::Nonce::try_assume_unique_for_key(&bytes("nonce")?).map_err(|_| "nonce is not 12 bytes".to_string())
+    };
+    Ok(Some(match op {
+        "crypto.sha256" => json!(hex::encode(digest::digest(&digest::SHA256, &bytes("data")?))),
+        "crypto.hmacSha256" => {
+            let key = hmac::Key::new(hmac::HMAC_SHA256, &bytes("key")?);
+            json!(hex::encode(hmac::sign(&key, &bytes("data")?)))
+        }
+        "crypto.hkdfSha256" => {
+            struct Len(usize);
+            impl hkdf::KeyType for Len {
+                fn len(&self) -> usize {
+                    self.0
+                }
+            }
+            let length = a.get("length").and_then(Value::as_u64).ok_or("length is a number")? as usize;
+            if length == 0 || length > 255 * 32 {
+                return Err("length is 1 to 8160".into());
+            }
+            let info = bytes("info")?;
+            let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &bytes("salt")?).extract(&bytes("ikm")?);
+            let mut out = vec![0u8; length];
+            prk.expand(&[&info], Len(length)).and_then(|okm| okm.fill(&mut out)).map_err(|_| "hkdf failed")?;
+            json!(hex::encode(out))
+        }
+        "crypto.x25519Public" => json!(hex::encode(curve25519_dalek::MontgomeryPoint::mul_base_clamped(fixed("priv")?).to_bytes())),
+        "crypto.x25519" => {
+            let shared = curve25519_dalek::MontgomeryPoint(fixed("pub")?).mul_clamped(fixed("priv")?).to_bytes();
+            if shared == [0u8; 32] {
+                return Err("the shared secret is zero (a low-order point)".into());
+            }
+            json!(hex::encode(shared))
+        }
+        "crypto.chachaSeal" => {
+            let mut io = bytes("plain")?;
+            aead_key(&fixed("key")?).seal_in_place_append_tag(nonce()?, aead::Aad::from(bytes("aad")?), &mut io).map_err(|_| "seal failed")?;
+            json!(hex::encode(io))
+        }
+        "crypto.chachaOpen" => {
+            let mut io = bytes("sealed")?;
+            match aead_key(&fixed("key")?).open_in_place(nonce()?, aead::Aad::from(bytes("aad")?), &mut io) {
+                Ok(plain) => json!(hex::encode(plain)),
+                Err(_) => Value::Null,
+            }
+        }
+        _ => return Ok(None),
+    }))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sf_shell_call_sync(shell: *const Shell, op: *const c_char, json: *const u8, json_len: usize, out_len: *mut usize) -> *mut u8 {
     // SAFETY: as documented.
@@ -4956,6 +5087,57 @@ mod tests {
         }
     }
 
+    /// A request through a cloud entry (`entry`): its TCP goes to the entry, its Host (and TLS, where it is https) stays the
+    /// URL's; a WebSocket's too, with the headers it is given.
+    #[test]
+    fn a_request_and_a_websocket_go_through_a_cloud_entry() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        let (listener, addr) = shell.runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            (listener, addr)
+        });
+        let entry = json!({ "host": "127.0.0.1", "port": addr.port() });
+        let served = shell.runtime.spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await.unwrap();
+            let (socket, _) = listener.accept().await.unwrap();
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let kept = heard.clone();
+            let mut ws = tokio_tungstenite::accept_hdr_async(socket, move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, res| {
+                for (k, v) in req.headers() {
+                    kept.lock().unwrap().push(format!("{k}: {}", v.to_str().unwrap()));
+                }
+                Ok(res)
+            })
+            .await
+            .unwrap();
+            ws.send(Message::text("hi")).await.unwrap();
+            let heard = heard.lock().unwrap().clone();
+            (String::from_utf8(request).unwrap().to_lowercase(), heard)
+        });
+        shell.call(95_001, "fetch".into(), serde_json::to_vec(&json!({ "url": "http://cloud.invalid/v1/me", "method": "GET", "headers": [], "entry": entry })).unwrap().as_slice(), None);
+        let (head, error, body) = answer(95_001);
+        assert_eq!(error, "");
+        assert_eq!(serde_json::from_str::<Value>(&head).unwrap()["status"], json!(200));
+        assert_eq!(body.unwrap(), b"ok");
+        shell.call(95_002, "ws.open".into(), serde_json::to_vec(&json!({ "url": "ws://cloud.invalid/v1/presence", "headers": [["x-stillfail-station", "s1"]], "entry": entry })).unwrap().as_slice(), None);
+        let (opened, error, _) = answer(95_002);
+        assert_eq!(error, "");
+        assert!(serde_json::from_str::<Value>(&opened).unwrap()["id"].is_u64());
+        let (request, heard) = shell.runtime.block_on(served).unwrap();
+        assert!(request.starts_with("get /v1/me http/1.1\r\n") && request.contains("host: cloud.invalid\r\n"), "{request}");
+        assert!(heard.contains(&"host: cloud.invalid".to_string()) && heard.contains(&"x-stillfail-station: s1".to_string()), "{heard:?}");
+        // an entry that is none is refused before anything is dialed
+        shell.call(95_003, "fetch".into(), serde_json::to_vec(&json!({ "url": "http://cloud.invalid/", "method": "GET", "headers": [], "entry": { "host": "", "port": 1 } })).unwrap().as_slice(), None);
+        assert_eq!(answer(95_003).1, "an entry has a host");
+    }
+
     /// A dial the core gave up (its opening ended: client/core-ts mesh.ts) is cancelled here as a fetch is: its
     /// handshake dropped, which closes it (what that stops, the Initial sent again for ten minutes, the station addon's
     /// `a_dial_given_up_sends_no_more` counts), and the endpoint closes at once.
@@ -5302,6 +5484,11 @@ mod tests {
         assert_eq!(rows["value"], json!([["a", 1, 1.5, "{\"x\":\"中\"}"], ["b", null, null, null]]));
         let bad = sync("sql.run", &format!(r#"{{"id":{id},"sql":"INSERT INTO t VALUES (?, 1, 1, 1)","params":["a"]}}"#));
         assert!(bad["error"].as_str().unwrap().contains("UNIQUE"));
+        assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(false));
+        assert_eq!(sync("sql.exec", &format!(r#"{{"id":{id},"sql":"BEGIN IMMEDIATE"}}"#))["value"], Value::Null);
+        assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(true));
+        assert_eq!(sync("sql.exec", &format!(r#"{{"id":{id},"sql":"COMMIT"}}"#))["value"], Value::Null);
+        assert_eq!(sync("sql.inTransaction", &format!(r#"{{"id":{id}}}"#))["value"], json!(false));
         assert_eq!(sync("sql.close", &format!(r#"{{"id":{id}}}"#))["value"], Value::Null);
         assert!(sync("sql.all", &format!(r#"{{"id":{id},"sql":"SELECT 1"}}"#))["error"].is_string());
         assert_eq!(sync("sql.delete", r#"{"name":"account-a"}"#)["value"], Value::Null);
@@ -5797,4 +5984,125 @@ mod tests {
         assert_eq!(run("zstd.check", json!({ "path": at("one.zst"), "frames": [[0, one.len(), 30]] })).unwrap()["size"], json!(30));
         assert!(run("zstd.segments", json!({ "path": at("none"), "out": at("x.zst"), "segment": 8 })).is_err());
     }
+
+    /// The vault's primitives put together as station/src/vault/crypto.ts does (its seal, an item's ciphertext, the
+    /// recovery key), on the vectors the station and the core are tested on.
+    #[test]
+    fn makes_the_vaults_vectors() {
+        let v: Value = serde_json::from_str(include_str!("../../../station/test/fixtures/vault-vectors.json")).unwrap();
+        let op = |op: &str, a: Value| -> Result<Value, String> { super::vault_crypto(op, &a).map(Option::unwrap) };
+        let h = |op_: &str, a: Value| -> Vec<u8> { hex::decode(op(op_, a).unwrap().as_str().unwrap()).unwrap() };
+        const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let b64url = |b: &[u8]| -> String {
+            let mut out = String::new();
+            for c in b.chunks(3) {
+                let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+                for i in 0..=c.len() {
+                    out.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
+                }
+            }
+            out
+        };
+        let unb64url = |s: &str| -> Vec<u8> {
+            let mut bits = 0u32;
+            let mut n = 0;
+            let mut out = vec![];
+            for ch in s.bytes() {
+                bits = bits << 6 | B64.iter().position(|&x| x == ch).unwrap() as u32;
+                n += 6;
+                if n >= 8 {
+                    n -= 8;
+                    out.push((bits >> n) as u8);
+                }
+            }
+            out
+        };
+        let s = |k: &Value| k.as_str().unwrap().to_string();
+        let public = |priv_: &str| format!("x25519:{}", hex::encode(h("crypto.x25519Public", json!({ "priv": priv_ }))));
+        // sealWith: eph's public half, then ChaCha20-Poly1305 under HKDF(shared, eph ‖ to, "stillfail-vault-seal/1"), a nonce of zeros
+        let seal_with = |to: &str, plain: &[u8], context: &str, eph: &str| -> String {
+            let to = to.strip_prefix("x25519:").unwrap();
+            let eph_pub = h("crypto.x25519Public", json!({ "priv": eph }));
+            let shared = h("crypto.x25519", json!({ "priv": eph, "pub": to }));
+            let key = h("crypto.hkdfSha256", json!({ "ikm": hex::encode(&shared), "salt": format!("{}{to}", hex::encode(&eph_pub)), "info": hex::encode("stillfail-vault-seal/1"), "length": 32 }));
+            let body = h("crypto.chachaSeal", json!({ "key": hex::encode(key), "nonce": "00".repeat(12), "aad": hex::encode(context), "plain": hex::encode(plain) }));
+            b64url(&[eph_pub, body].concat())
+        };
+        let open_seal = |priv_: &str, sealed: &str, context: &str| -> Value {
+            let b = unb64url(sealed);
+            let (eph_pub, body) = b.split_at(32);
+            let shared = h("crypto.x25519", json!({ "priv": priv_, "pub": hex::encode(eph_pub) }));
+            let me = h("crypto.x25519Public", json!({ "priv": priv_ }));
+            let key = h("crypto.hkdfSha256", json!({ "ikm": hex::encode(&shared), "salt": format!("{}{}", hex::encode(eph_pub), hex::encode(me)), "info": hex::encode("stillfail-vault-seal/1"), "length": 32 }));
+            op("crypto.chachaOpen", json!({ "key": hex::encode(key), "nonce": "00".repeat(12), "aad": hex::encode(context), "sealed": hex::encode(body) })).unwrap()
+        };
+        let recovery = |entropy: &str| -> String {
+            let p = h("crypto.hkdfSha256", json!({ "ikm": entropy, "salt": "", "info": hex::encode("stillfail-vault-recovery/1"), "length": 32 }));
+            hex::encode(p)
+        };
+        let ws = s(&v["ws"]);
+        let vault = s(&v["vault"]["id"]);
+        let key_ctx = format!("stillfail-vault-key/1\0{ws}\0{vault}\00");
+        let vault_key = hex::decode(s(&v["vaultKey"])).unwrap();
+        assert_eq!(public(&s(&v["box"]["priv"])), s(&v["box"]["pub"]));
+        assert_eq!(public(&s(&v["requestBox"]["priv"])), s(&v["requestBox"]["pub"]));
+        for r in v["recovery"].as_array().unwrap() {
+            assert_eq!(public(&recovery(&s(&r["entropy"]))), s(&r["pub"]));
+        }
+        assert_eq!(seal_with(&s(&v["box"]["pub"]), &vault_key, &key_ctx, &s(&v["eph"]["wrap"])), s(&v["vault"]["keys"][0]["wrapped"]));
+        assert_eq!(seal_with(&public(&recovery(&s(&v["recovery"][1]["entropy"]))), &vault_key, &key_ctx, &s(&v["eph"]["recovery"])), s(&v["vault"]["recovery"]));
+        let grant_ctx = format!("stillfail-vault-grant/1\0{ws}\0{}", s(&v["grant"]["request"]));
+        assert_eq!(seal_with(&s(&v["requestBox"]["pub"]), s(&v["plain"]).as_bytes(), &grant_ctx, &s(&v["eph"]["grant"])), s(&v["grant"]["secret"]));
+        // an item's ciphertext: its nonce, then ChaCha20-Poly1305 under the vault key with its context as additional data
+        let item_ctx = format!("stillfail-vault-item/1\0{ws}\0{vault}\0{}\00\00", s(&v["item"]["id"]));
+        let body = h("crypto.chachaSeal", json!({ "key": s(&v["vaultKey"]), "nonce": s(&v["nonce"]), "aad": hex::encode(&item_ctx), "plain": hex::encode(s(&v["plain"])) }));
+        assert_eq!(b64url(&[hex::decode(s(&v["nonce"])).unwrap(), body].concat()), s(&v["item"]["ct"]));
+        // opened under their contexts, and under no other
+        assert_eq!(open_seal(&s(&v["box"]["priv"]), &s(&v["vault"]["keys"][0]["wrapped"]), &key_ctx), json!(s(&v["vaultKey"])));
+        assert_eq!(open_seal(&s(&v["box"]["priv"]), &s(&v["vault"]["keys"][0]["wrapped"]), &key_ctx.replace("\00", "\01")), Value::Null);
+        assert_eq!(open_seal(&s(&v["requestBox"]["priv"]), &s(&v["grant"]["secret"]), &grant_ctx), json!(hex::encode(s(&v["plain"]))));
+        assert_eq!(open_seal(&s(&v["box"]["priv"]), &s(&v["grant"]["secret"]), &grant_ctx), Value::Null);
+        let ct = unb64url(&s(&v["item"]["ct"]));
+        let opened = |aad: &str| op("crypto.chachaOpen", json!({ "key": s(&v["vaultKey"]), "nonce": hex::encode(&ct[..12]), "aad": hex::encode(aad), "sealed": hex::encode(&ct[12..]) })).unwrap();
+        assert_eq!(opened(&item_ctx), json!(hex::encode(s(&v["plain"]))));
+        assert_eq!(opened(&item_ctx.replace("\00\00", "\01\00")), Value::Null);
+    }
+
+    /// Known answers: SHA-256 and HMAC-SHA256 (RFC 4231 case 2), HKDF-SHA256 (RFC 5869 case 1), X25519 (RFC 7748 §6.1),
+    /// ChaCha20-Poly1305 (RFC 8439 §2.8.2); and what each refuses.
+    #[test]
+    fn the_vaults_primitives_answer_as_their_specs() {
+        let op = |op: &str, a: Value| super::vault_crypto(op, &a).map(Option::unwrap);
+        assert_eq!(op("crypto.sha256", json!({ "data": hex::encode("abc") })).unwrap(), json!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+        assert_eq!(op("crypto.hmacSha256", json!({ "key": hex::encode("Jefe"), "data": hex::encode("what do ya want for nothing?") })).unwrap(), json!("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"));
+        assert_eq!(
+            op("crypto.hkdfSha256", json!({ "ikm": "0b".repeat(22), "salt": "000102030405060708090a0b0c", "info": "f0f1f2f3f4f5f6f7f8f9", "length": 42 })).unwrap(),
+            json!("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")
+        );
+        assert!(op("crypto.hkdfSha256", json!({ "ikm": "00", "salt": "", "info": "", "length": 0 })).is_err());
+        assert!(op("crypto.hkdfSha256", json!({ "ikm": "00", "salt": "", "info": "", "length": 8161 })).is_err());
+        let alice = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
+        let bob = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
+        assert_eq!(op("crypto.x25519Public", json!({ "priv": alice })).unwrap(), json!("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"));
+        let shared = json!("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+        assert_eq!(op("crypto.x25519", json!({ "priv": alice, "pub": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f" })).unwrap(), shared);
+        assert_eq!(op("crypto.x25519", json!({ "priv": bob, "pub": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a" })).unwrap(), shared);
+        assert!(op("crypto.x25519", json!({ "priv": alice, "pub": "00".repeat(32) })).is_err());
+        assert!(op("crypto.x25519", json!({ "priv": "00", "pub": "00".repeat(32) })).is_err());
+        let key = "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f";
+        let nonce = "070000004041424344454647";
+        let aad = "50515253c0c1c2c3c4c5c6c7";
+        let plain = hex::encode("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.");
+        let sealed = op("crypto.chachaSeal", json!({ "key": key, "nonce": nonce, "aad": aad, "plain": plain })).unwrap();
+        let sealed = sealed.as_str().unwrap();
+        assert!(sealed.starts_with("d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6"));
+        assert!(sealed.ends_with("1ae10b594f09e26a7e902ecbd0600691"));
+        assert_eq!(op("crypto.chachaOpen", json!({ "key": key, "nonce": nonce, "aad": aad, "sealed": sealed })).unwrap(), json!(plain));
+        assert_eq!(op("crypto.chachaOpen", json!({ "key": key, "nonce": nonce, "aad": "", "sealed": sealed })).unwrap(), Value::Null);
+        assert_eq!(op("crypto.chachaOpen", json!({ "key": key, "nonce": nonce, "aad": aad, "sealed": "00" })).unwrap(), Value::Null);
+        assert!(op("crypto.chachaSeal", json!({ "key": "00", "nonce": nonce, "aad": aad, "plain": "" })).is_err());
+        assert!(op("crypto.chachaSeal", json!({ "key": key, "nonce": "00", "aad": aad, "plain": "" })).is_err());
+        assert_eq!(super::vault_crypto("crypto.none", &json!({})).unwrap(), None);
+    }
+
 }

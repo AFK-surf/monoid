@@ -43,6 +43,10 @@ zstd = { version = "0.13", default-features = false }
 sha2 = "0.10"
 sha1 = "0.10"
 getrandom = "0.3"
+# The vault's seal and items (station/src/vault/crypto.ts, its formats): ChaCha20-Poly1305, HKDF-SHA256, HMAC-SHA256 and
+# SHA-256 by ring (rustls' provider here already), X25519 with a key given (ring makes only its own) by dalek's.
+ring = "0.17"
+curve25519-dalek = "4.1"
 # A screen view's sound asked as Opus (ScreenTap), decoded here into the PCM every host plays, one decoder for every
 # platform (the hosts' own differ, and Windows may have none). Pure Rust, a port of libopus 1.6: on the Mac's helper's
 # packets 20 µs a packet on an M5 Max and within 84 dB of AudioToolbox's own decode (opus-decoder 0.1.1, the same to

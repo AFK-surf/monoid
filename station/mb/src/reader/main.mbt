@@ -1111,6 +1111,8 @@ fn main {
       @host.run(shell_dir=beside(db, "shell"), host => usage_checker(host, db))
     (Some("cc-index"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => cc_builder(host, db))
+    (Some("harness-vault-crypto"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_crypto.harness(host))
     (Some("turn-counts"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => turn_builder(host, db))
     (Some("session-list"), Some(db), _) =>
