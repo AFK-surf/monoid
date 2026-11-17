@@ -425,12 +425,9 @@ pub fn chat_row_node(
                 |> ignore
               2 => {
                 // Across the whole screen the aside is in the second line, but its last part still uses the same
-                // column as the first line and the archive action.
-                e.margin(By(fn() {
-                  let inset = @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.row_corner
-                  (0.0, 0.0, -inset, 0.0)
-                })) |> ignore
-                row_aside_node(e, src, tips, item, lead, face_ground, stint)
+                // column as the first line and the archive action (set with its own style, no binding of its own)
+                let reach = fn() { @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.row_corner }
+                row_aside_node(e, src, tips, item, lead, face_ground, stint, reach~)
               }
               _ => ()
             }
