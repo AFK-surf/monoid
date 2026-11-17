@@ -59,10 +59,13 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // more are shown in its place: made with the chat's in its cold first frame, their bindings run again as the chat
   // opens again over Home; phone cold 750 made, 527 laid, 72 measured, 751 bindings before it, again 301 bindings, the
   // chat's own the same, at 60, 120, 24 and 7 too; again's others brought down to what is done now)
-  "phone cold": (1013, 29, 673, 79, 942),
-  "phone again": (324, 17, 239, 27, 320),
-  "wide cold": (2443, 483, 2011, 217, 2446),
-  "wide again": (882, 130, 881, 123, 1049),
+  // (bindings 1 more in each, 2026-11-17, once a message's picture is again the end that stays of its viewer's flight
+  // (View::shared) in place of #6722's hand-made bridge (note_thumb_node): how the flight draws it there, covering its
+  // box from where or contained, one binding (message_image_node); before it 942, 320, 2446, 1049)
+  "phone cold": (1013, 29, 673, 79, 943),
+  "phone again": (324, 17, 239, 27, 321),
+  "wide cold": (2443, 483, 2011, 217, 2447),
+  "wide again": (882, 130, 881, 123, 1050),
   "phone up": (564, 366, 617, 96, 0),
   "wide up": (697, 382, 909, 125, 0),
   "phone up frame": (140, 102, 125, 28, 0),
