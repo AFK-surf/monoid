@@ -12,6 +12,8 @@ pub fn history_replace(String) -> Unit
 
 pub fn location() -> String
 
+pub fn set_cjk_face(face? : Int, weight_step? : Int, families? : Array[String]) -> Unit
+
 pub fn set_theme_color(String) -> Unit
 
 pub fn set_title(String) -> Unit

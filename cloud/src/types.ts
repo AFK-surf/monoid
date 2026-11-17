@@ -3,8 +3,9 @@ export type Role = "owner" | "admin" | "member";
 
 export interface UserView { sub: string; email: string; name: string; picture: string }
 /** The signed-in account, as `/v1/me` has it: `beta` only when the admin let it into the test channel; `own_picture` only
- * when `picture` is one it put up for itself (PUT /v1/me/picture), not its sign-in's. */
-export interface MeView extends UserView { beta?: true; own_picture?: true }
+ * when `picture` is one it put up for itself (PUT /v1/me/picture), not its sign-in's; `console` only when asked on the
+ * console's host (ADMIN_ORIGIN), which serves no workspace's calls (index.ts CONSOLE_CALLS). */
+export interface MeView extends UserView { beta?: true; own_picture?: true; console?: true }
 /** `relays`: the workspace's own relays, used besides still.fail's (absent from a cloud from before them). `ways_off`: the
  * ways its devices do not go to its stations (relay URLs, `lan`, `tailnet`, `direct`), only when some are turned off. */
 export interface WorkspaceSummary { id: string; name: string; emoji?: string; icon?: string; role: Role; created_at: number; stations: number; members: number; relays?: string[]; ways_off?: string[] }
@@ -55,8 +56,14 @@ export type AccountEvent =
   | ({ type: "workspace"; id: string; lock?: { head: LockHead | null; locked: boolean }; requests?: true; rev?: [number, number] } & ViewTold)
   | { type: "release" }
   | { type: "relays" }
+  /** The operator's console's lists changed (`/v1/admin/users`, `/workspaces`, `/invite-codes`, `/feedback`): those read
+   * again. Told only to the accounts that opened the console in the last week (directory.ts `noteOperator`). */
+  | { type: "admin"; lists: AdminList[] }
   /** The team or someone of the chat replied on a bug report from a chat of the workspace: its replies read again (GET /v1/workspaces/<id>/feedback). */
   | { type: "feedback"; workspace: string };
+
+/** The operator's console's lists (AccountEvent `admin`). */
+export type AdminList = "users" | "workspaces" | "invite-codes" | "feedback";
 
 /** What a station's presence socket is told besides its state: a release is out (its feed, and its reporters' fixed
  * reports, read again); the models' catalog changed (read again). */

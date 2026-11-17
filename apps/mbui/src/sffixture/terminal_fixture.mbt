@@ -3,11 +3,16 @@
 // + syntax-highlighted TypeScript) within 42 columns so narrow phones hold every row cleanly without wrapping.
 
 ///|
-/// The `terminals` topic: ws1/st1's three in the terminals' own modes, another station's none; in any other mode not
-/// known (a station from before terminals, as a device's host keeps none yet: what the Mac's own run of a mode shows,
-/// screens_wbtest's text recorded there).
+/// The `terminals` topic: ws1/st1's three in the terminals' own modes (and 远程's Maple, ws1/st2, one), another station's
+/// none; in any other mode not known (a station from before terminals, as a device's host keeps none yet: what the
+/// Mac's own run of a mode shows, screens_wbtest's text recorded there).
 fn fixture_terminals(station : String, mode : String) -> Json {
-  if mode != "settings-station-terminals" && mode != "terminal" && !mode.has_prefix("terminal-") {
+  if mode != "settings-station-terminals" &&
+    mode != "terminal" &&
+    !mode.has_prefix("terminal-") &&
+    !mode.has_prefix("place-remote") &&
+    !mode.has_prefix("chat-remote") &&
+    mode != "chat-terminal-side" {
     return Json::object(Map([("terminals", Json::array([])), ("outdated", Json::boolean(false)), ("open", Json::boolean(false)), ("known", Json::boolean(false))]))
   }
   let some = station == "ws1/st1"
@@ -30,8 +35,19 @@ fn fixture_terminals(station : String, mode : String) -> Json {
       item("term-2", "左子健", "~/still.fail", "", []),
       item("term-3", "彭晓", "~", "", []),
     ]
+  } else if station == "ws1/st2" && mode.has_prefix("place-remote") {
+    // (远程's Maple, online beside Willow: one terminal open on it)
+    [item("term-m1", "左子健", "~/maple-worker", "", [])]
   } else {
     []
+  }
+  // (远程's ＋: a terminal made this run, listed after the station's own: fixture_terminal_view)
+  if mode.has_prefix("place-remote") {
+    for id in @settings.fixture_remote_made(station) {
+      if !id.has_prefix("browser:") {
+        terminals.push(item(id, "左子健", fixture_terminal_made_cwd, "", []))
+      }
+    }
   }
   Json::object(Map([("terminals", Json::array(terminals)), ("outdated", Json::boolean(false)), ("open", Json::boolean(true)), ("known", Json::boolean(true))]))
 }
@@ -83,10 +99,23 @@ let fixture_terminal_screen : String =
   "\u{1b}[32m~/still.fail/station\u{1b}[0m \u{1b}[36mmain\u{1b}[0m \u{1b}[32m❯\u{1b}[0m git status -sb"
 
 ///|
-/// `terminal.view`: who types (the view itself, unless it asked to look, or `term-1`'s someone else), then the screen.
-fn fixture_terminal_view(params : Json, on_value : (Json, Bytes?) -> Unit) -> Int {
+/// Where a terminal 远程's ＋ makes starts (place-remote modes), and its first screen: its prompt alone.
+let fixture_terminal_made_cwd : String = "~/still.fail/app"
+
+///|
+let fixture_terminal_made_screen : String = "\u{1b}[32m~/still.fail/app\u{1b}[0m \u{1b}[36mmain\u{1b}[0m \u{1b}[32m❯\u{1b}[0m "
+
+///|
+/// `terminal.view`: who types (the view itself, unless it asked to look, or `term-1`'s someone else), then the screen;
+/// in 远程's modes (`mode` place-remote) a `new` one is made on its station, listed from now on, and shows its prompt.
+fn fixture_terminal_view(params : Json, on_value : (Json, Bytes?) -> Unit, mode? : String = "") -> Int {
   let p = Some(params)
+  let made = mode.has_prefix("place-remote") && text(p, "terminal") == "new"
   let id = match text(p, "terminal") { "new" => "term-9"; t => t }
+  if made {
+    @settings.fixture_remote_made_said(text(p, "station"), id)
+  }
+  let fresh = mode.has_prefix("place-remote") && @settings.fixture_remote_made(text(p, "station")).contains(id)
   let others = id == "term-1"
   let ended = id == "term-ended"
   let types = !others && !ended && params is Object(o) && o.get("control") is Some(True)
@@ -99,11 +128,11 @@ fn fixture_terminal_view(params : Json, on_value : (Json, Bytes?) -> Unit) -> In
     ("looking", Json::array(if others { [Json::string("彭晓")] } else { [] })),
     ("cols", Json::number(if cols_req > 0.0 { cols_req } else { 80.0 })),
     ("rows", Json::number(if rows_req > 0.0 { rows_req } else { 24.0 })),
-    ("cwd", Json::string("~/still.fail/station")),
+    ("cwd", Json::string(if fresh { fixture_terminal_made_cwd } else { "~/still.fail/station" })),
   ])
   state["typing"] = if others { Json::string("左子健") } else if types { Json::string("Ann") } else { Json::null() }
   on_value(Json::object(Map([("state", Json::object(state))])), None)
-  on_value(Json::object(Map([("screen", Json::boolean(true))])), Some(@utf8.encode(fixture_terminal_screen)))
+  on_value(Json::object(Map([("screen", Json::boolean(true))])), Some(@utf8.encode(if fresh { fixture_terminal_made_screen } else { fixture_terminal_screen })))
   fix_stream_ids.val += 1
   fix_stream_ids.val
 }

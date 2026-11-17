@@ -185,7 +185,7 @@ fn chat_keys(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView
     true
   })
   c.on_action("chat.screen", fn() {
-    chat_screen_first(r, v.screens)
+    chat_remote_first(r, v.screens, v.can_terminal())
     true
   })
   c.on_action("composer.focus", fn() {
@@ -397,12 +397,12 @@ fn chat_bar_hand(
         []
       }
       let screens = view.screens
-      let screen = if screens.length() > 0 {
+      let screen = if chat_has_remote(view) {
         Some(
           (
             fn() {
               let (from, along) = beside("chat-screen")
-              chat_screens_open(r, screens, from~, along~)
+              chat_remote_open(src, r, view, from~, along~)
             },
             chat_screens_driven(screens),
           ),
@@ -481,6 +481,12 @@ fn people_stack(c : @ui.Ctx, src : Source, key : String, people : Array[Person],
 fn jobs_toggle() -> Unit {
   chat_own.jobs_open.set(!chat_own.jobs_open.untracked())
 }
+
+///|
+/// Where the screens' button's dot stands (screen_driven_dot): in its top right corner concentric with the button's
+/// (its 10 round: the dot's 5 and 5 in), as the corner rule has it.
+// kept across runs: a value (no field of it changes)
+let screen_driven_room : @ui.Style = @ui.css("w=S8 h=S8 pt=S1_25 pr=S1_25 align=AEnd")
 
 ///|
 /// The screens' button's dot while an agent drives one: as the services' (jobs_alarm_room), in the tone of an agent at

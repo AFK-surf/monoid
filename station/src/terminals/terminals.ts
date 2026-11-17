@@ -58,7 +58,9 @@ export type TerminalDeps = {
   home: string;
   /// A chat's folder, if it is one of this station's.
   chatDir(chat: string): string | undefined;
-  changed(): void;
+  changed(workspace: string): void;
+  /// Updates what is kept of an open terminal (e.g. its live folder after `cd`).
+  meta?(id: string, meta: TerminalMeta): void;
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone(id: string): void;
   newId(): string;
@@ -79,7 +81,8 @@ class Terminal {
   readonly link: TerminalLink;
   readonly by: string;
   readonly at: number;
-  readonly cwd: string;
+  cwd: string;
+  oscTail = "";
   readonly chat: string | undefined;
   readonly workspace: string;
   constructor(id: string, link: TerminalLink, by: string, at: number, cwd: string, chat: string | undefined, workspace: string) {
@@ -90,6 +93,10 @@ class Terminal {
     this.cwd = cwd;
     this.chat = chat;
     this.workspace = workspace;
+  }
+
+  meta(): TerminalMeta {
+    return { by: this.by, at: this.at, cwd: this.cwd, ...(this.chat ? { chat: this.chat } : {}), workspace: this.workspace };
   }
 
   shown(): TerminalShown {
@@ -132,15 +139,24 @@ export class Terminals {
 
   #add(t: Terminal) {
     this.#terminals.set(t.id, t);
+    t.link.listen((out) => {
+      const parsed = oscCwd(t.oscTail + out.bytes.toString("utf8"));
+      t.oscTail = parsed.tail;
+      if (parsed.cwd !== null && parsed.cwd !== t.cwd) {
+        t.cwd = parsed.cwd;
+        this.#deps.meta?.(t.id, t.meta());
+        this.#tellAll(t);
+      }
+    });
     t.link.ended((e) => {
       t.setEnded(e);
       log.info("terminal", "ended", { id: t.id, code: e?.code ?? null, signal: e?.signal ?? null });
       for (const v of t.views.values()) v.tell(this.#state(t, v));
       // Its views say how it ended; it leaves the list once none is left.
       if (t.views.size === 0) this.#drop(t);
-      this.#deps.changed();
+      this.#deps.changed(t.workspace);
     });
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   async open(o: Opening): Promise<Terminal> {
@@ -161,7 +177,7 @@ export class Terminals {
     const t = this.#terminals.get(id);
     if (t === undefined || t.workspace !== workspace) return false;
     log.info("terminal", "ended by a member", { id, by });
-    if (t.link.over) this.#drop(t), this.#deps.changed();
+    if (t.link.over) this.#drop(t), this.#deps.changed(t.workspace);
     else t.link.kill();
     return true;
   }
@@ -185,7 +201,7 @@ export class Terminals {
 
   #tellAll(t: Terminal) {
     for (const v of t.views.values()) v.tell(this.#state(t, v));
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   /// A view of a terminal, for as long as its stream lasts.
@@ -375,6 +391,43 @@ export function controlOf(payload: Buffer): { control: boolean; taken: boolean; 
   } catch {
     return null;
   }
+}
+
+const OSC_CWD = /\x1b\](?:7;file:\/\/[^/\x07\x1b]*(\/[^\x07\x1b]*)|9;9;([^\x07\x1b]+))(?:\x07|\x1b\\)/g;
+const OSC_MAX_TAIL = 2048;
+
+function decodeOscPath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/// Live working directory announced by the shell (`OSC 7` `file://host/path` or ConPTY `OSC 9;9;path`), plus any
+/// unfinished escape tail to prepend to the next output chunk.
+export function oscCwd(text: string): { cwd: string | null; tail: string } {
+  let cwd: string | null = null;
+  let consumed = 0;
+  for (const m of text.matchAll(OSC_CWD)) {
+    consumed = m.index + m[0].length;
+    if (m[1] !== undefined) {
+      let decoded = decodeOscPath(m[1]);
+      if (/^\/[A-Za-z]:[\\/]/.test(decoded)) decoded = decoded.slice(1);
+      if (decoded !== "" && decoded.length <= 4096) cwd = decoded;
+    } else if (m[2] !== undefined) {
+      const unquoted = m[2].startsWith('"') && m[2].endsWith('"') && m[2].length >= 2 ? m[2].slice(1, -1) : m[2];
+      if (unquoted !== "" && unquoted.length <= 4096) cwd = unquoted;
+    }
+  }
+  const rest = text.slice(consumed);
+  const esc = rest.lastIndexOf("\x1b");
+  if (esc < 0 || rest.length - esc > OSC_MAX_TAIL) return { cwd, tail: "" };
+  const candidate = rest.slice(esc);
+  if (candidate === "\x1b" || candidate === "\x1b]" || /^\x1b\](?:7(?:;[^\x07\x1b]*)?|9(?:;9(?:;[^\x07\x1b]*)?)?)?$/.test(candidate)) {
+    return { cwd, tail: candidate };
+  }
+  return { cwd, tail: "" };
 }
 
 /// Frames from a client, after what came with the head line (mesh/screens.ts FrameIn, with a terminal's bound).

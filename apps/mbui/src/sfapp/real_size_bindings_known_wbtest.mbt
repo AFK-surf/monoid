@@ -71,6 +71,10 @@
 let real_size_bindings_known : Map[String, Int] = {
   "wide place workspace/member": 17,
   "phone home chats/down": 53,
+  "phone place-remote screens/screen": 7,
+  "phone place-remote-tabs screens/screen": 7,
+  "wide place-remote screens/screen": 8,
+  "wide place-remote-tabs screens/screen": 8,
   "phone home chats/card": 3,
   "phone home chats/archived": 2,
   "phone chat chat compact/thing": 3,

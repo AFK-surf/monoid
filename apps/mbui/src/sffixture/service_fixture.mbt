@@ -70,6 +70,7 @@ pub fn fixture_stream(
   params : Json,
   on_value : (Json, Bytes?) -> Unit,
   done : (Result[Json, Json]) -> Unit,
+  mode? : String = "",
 ) -> Int {
   if name == "screen.view" {
     // a link's card's preview (screen_links.mbt: peek), or the viewer's (screen.mbt)
@@ -79,7 +80,7 @@ pub fn fixture_stream(
     return (@sfbase.screen_made_stream.val)(params, on_value, done)
   }
   if name == "terminal.view" {
-    return fixture_terminal_view(params, on_value)
+    return fixture_terminal_view(params, on_value, mode~)
   }
   if name == "farview.view" {
     return fixture_farview_view(on_value)

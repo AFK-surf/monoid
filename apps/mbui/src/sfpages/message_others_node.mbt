@@ -78,10 +78,14 @@ fn message_others_node(
               // the ⋯ of a row the pointer left is gone as it leaves, not still there beside the next's)
               room.show(fn() { @sf.hovered_in_node(row) || pointed_also() || open() }, at_once=true, fn(m) {
                 @sf.icon_button_node(m, "more", fn() { @sf.t("web-main.menu.more") }, fn() {
+                  // (the message lit while it shows, by its key: every piece of a long one, as its right click's)
+                  let k = @signals.untracked(s.key)
+                  @sfbase.message_more.set(k)
                   @sf.menu(
                     @sfbase.message_items(@signals.untracked(s.link), @signals.untracked(s.words), s.go),
                     from=Node(room),
                     along=End,
+                    gone=fn() { if @signals.untracked(fn() { @sfbase.message_more.get() }) == k { @sfbase.message_more.set("") } },
                   )
                 }, size=msg_share_side)
                 |> ignore
@@ -143,9 +147,8 @@ fn sent_elsewhere_node(
   side : () -> Double,
   top : () -> Double,
   s : () -> Elsewhere,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  message_row_frame_node(v, fn() { key }, side, top, over~, fn(m) { sent_elsewhere_body(m, src, here, key, s) })
+  message_row_frame_node(v, fn() { key }, side, top, fn(m) { sent_elsewhere_body(m, src, here, key, s) })
 }
 
 ///|

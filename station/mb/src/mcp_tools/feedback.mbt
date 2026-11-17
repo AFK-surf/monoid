@@ -40,6 +40,10 @@ pub fn report(c : Ctx, session : JV, args : JV, link : JV) -> JV raise Failed {
   if !(link is Null) {
     context.push(("link", link))
   }
+  let os = t("desktopPlatform")
+  if os == "macos" || os == "windows" {
+    context.push(("desktopPlatform", js(os)))
+  }
   let out = [
     ("key", js(key)),
     ("title", js(title)),

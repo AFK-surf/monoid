@@ -234,6 +234,11 @@ test("a profile is shared with the stations of every workspace it serves, whiche
   const id = h.config.raw().profiles[0].share.id;
   for (const s of [o, r1, r2]) assert.equal(s.config.raw().profiles.find((p: any) => p.share?.id === id)?.access.key, "sk-secret");
   assert.deepEqual(h.sharing.profileView(h.config.raw().profiles[0])!.users!.sort(), [O, R1, R2].sort());
+  // A member of one workspace is told of its stations alone, never one of another workspace by its id.
+  assert.deepEqual(h.sharing.profileView(h.config.raw().profiles[0], "W1")!.users, [O]);
+  assert.deepEqual(h.sharing.profileView(h.config.raw().profiles[0], "W2")!.users!.sort(), [R1, R2].sort());
+  const shared = h.config.raw().profiles[0];
+  assert.deepEqual(h.sharing.profileView({ ...shared, share: { ...shared.share, allow: [H, O, R1] } }, "W2")!.allow, [H, R1]);
   // Each copy serves the workspaces H shares it in, not the others its station is in: on R2, W2's chats, not its home W3's.
   const copy = (s: Station) => s.config.raw().profiles.find((p: any) => p.share?.id === id);
   assert.deepEqual(copy(r2).share.workspaces, ["W1", "W2"]);
@@ -248,6 +253,18 @@ test("a profile is shared with the stations of every workspace it serves, whiche
   assert.equal(r2.config.raw().profiles.length, 0);
   assert.deepEqual(h.sharing.profileView(h.config.raw().profiles[0])!.users, [O]);
   await assert.rejects(h.sharing.handle(R1, { method: "share.get", id }, "W2"), /not for this station/);
+});
+
+test("a copy's allowance, the host's naming the stations of each of its workspaces, is said to a viewer of the borrower's with this station and the viewer's workspace's only", async () => {
+  const { h, r2, every } = joinedWorkspaces();
+  await h.sharing.shareProfile("deepseek", true, [H, O, R1, R2]);
+  await settle(...every);
+  const id = h.config.raw().profiles[0].share.id;
+  const copy = r2.config.raw().profiles.find((p: any) => p.share?.id === id);
+  // R2 is in W2 (with H and R1) and its home W3 (alone); O is W1's, which R2 is not in.
+  assert.deepEqual(r2.sharing.profileView(copy, "W2")!.allow, [H, R1, R2]);
+  assert.deepEqual(r2.sharing.profileView(copy, "W3")!.allow, [R2]);
+  assert.deepEqual(r2.sharing.profileView(copy)!.allow, [H, O, R1, R2]);
 });
 
 test("stations chosen among one workspace's change only theirs: a choice in another does not undo it, and all of them allowed again is every station", async () => {

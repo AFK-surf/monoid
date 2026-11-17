@@ -533,6 +533,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_station_update(rich_chat(f.older))
           } else if f.mode == "chat-station-screen" || f.mode == "chat-station-screens" || f.mode == "chat-agent-screens" {
             with_chat_screens(rich_chat(f.older), f.mode != "chat-station-screen")
+          } else if f.mode == "chat-remote" || f.mode == "chat-terminal-side" {
+            with_chat_remote(rich_chat(f.older), f.mode == "chat-terminal-side", f.test_channel)
           } else if f.mode == "chat-cache-cold" {
             with_cache_cold(rich_chat(f.older))
           } else if f.mode == "chat-done" {
@@ -3251,6 +3253,34 @@ pub fn fixture_link_card(name : String, params : Map[String, Json]) -> Json? {
   if name == "adbCard" {
     return Some({ "title": "共享调试", "line": "未共享", "sharing": false, "lendable": true })
   }
+  if name == "terminalCard" {
+    let tid = match params.get("terminal") {
+      Some(String(t)) => t
+      _ => "term-2"
+    }
+    let cwd = if tid == "term-1" {
+      "~/still.fail/station"
+    } else if tid == "term-3" {
+      "~"
+    } else {
+      "~/still.fail"
+    }
+    let title = if tid == "term-1" {
+      "station"
+    } else if tid == "term-3" {
+      "~"
+    } else {
+      "still.fail"
+    }
+    return Some({
+      "title": Json::string(title),
+      "cwd": Json::string(cwd),
+      "line": Json::string(if tid == "term-1" { "左子健 正在输入 · " + cwd } else { "运行中 · " + cwd }),
+      "link": Json::string("/w/ws1/s/st1/terminal/" + tid),
+      "gone": Json::boolean(tid == "term-gone"),
+      "ended": Json::boolean(tid == "term-ended"),
+    })
+  }
   let screen = match params.get("screen") {
     Some(String(s)) => s
     _ => ""
@@ -3271,6 +3301,11 @@ pub fn fixture_link_card(name : String, params : Map[String, Json]) -> Json? {
     "desktop" => Some(card("desktop", "桌面", "Ana 正在查看", false, false, 3024, 1964))
     "browser:T1" => Some(card("browser", "发布清单 - localhost:5173", "林 正在查看", false, true, 1280, 800))
     "browser:T0" => Some(card("browser", "浏览器标签页", "此屏幕已不存在", true, false, 0, 0))
+    // (远程's own: the simulator and the tab of its own place-remote shows, each its own card as the station's)
+    "sim:iphone" => Some(card("simulator", "iPhone 17 Pro", "iOS 26 · 1206 × 2622", false, false, 1206, 2622))
+    "browser:u_mail" => Some(card("browser", "收件箱 - Proton Mail", "mail.proton.me", false, false, 1280, 800))
+    // (a tab 远程's ＋ made: blank)
+    _ if screen.has_prefix("browser:u_") => Some(card("browser", "新标签页", "空白标签页", false, false, 1280, 800))
     _ => Some(card("desktop", "桌面", "远程屏幕", false, false, 0, 0))
   }
 }
@@ -3369,6 +3404,26 @@ pub fn with_chat_screens(v : Json, more : Bool) -> Json {
       Json::object(o)
     }
     _ => v
+  }
+}
+
+///|
+pub fn with_chat_remote(v : Json, with_side_terminal : Bool, test_channel : Bool) -> Json {
+  match with_chat_screens(v, true) {
+    Object(m) => {
+      let o = m.copy()
+      o["canBrowser"] = Json::boolean(true)
+      // (a terminal only where its station is on the test channel: `terminal` is a station's beta feature)
+      if test_channel {
+        o["canTerminal"] = Json::boolean(true)
+      }
+      if with_side_terminal {
+        let tkey = "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]"
+        o["tabs"] = { "open": [Json::string(tkey), "s-c1"], "shown": Json::string(tkey) }
+      }
+      Json::object(o)
+    }
+    other => other
   }
 }
 
