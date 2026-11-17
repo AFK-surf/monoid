@@ -486,12 +486,34 @@ fn full_now(u : ScreenUi) -> Bool {
 }
 
 ///|
+/// Out of 全屏 (touch's): where it was asked beside its chat, the page of it put on top for it taken off, back to the
+/// panel.
+fn screen_unfull(u : ScreenUi) -> Unit {
+  let pop = u.full_from_tab
+  u.full_from_tab = false
+  u.full.set(false)
+  if pop && u.at is Some(at) && @sfbase.app.nav.top() == Screen(at) {
+    @sfbase.close_page(Screen(at)) |> ignore
+  }
+}
+
+///|
 /// 全屏 asked for, or let go of: on a phone the screen alone, turned sideways, its tools folded into one button; with
 /// keyboard and mouse the window made to fill the screen, the bar kept (as the web's page in its browser's full screen).
 fn full_asked(u : ScreenUi) -> Unit {
   screen_panels_close(u)
   if @sf.soft_keyboard() {
-    u.full.set(!u.full.untracked())
+    if u.full.untracked() {
+      screen_unfull(u)
+    } else if u.in_tab && u.at is Some(at) {
+      // beside its chat: the page of it on top over all of it, the whole window (the system's bars put away:
+      // screen_native_acts), not the panel's room alone
+      u.full_from_tab = true
+      u.full.set(true)
+      @sfbase.app.nav.push(Screen(at))
+    } else {
+      u.full.set(true)
+    }
   } else {
     let on = !@ui.full_screen()
     @hostapi.set_full_screen(on)

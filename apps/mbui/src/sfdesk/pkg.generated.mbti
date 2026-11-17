@@ -336,6 +336,8 @@ pub let side_panel_style : @ui.Style
 
 pub fn side_place() -> String
 
+pub fn side_screen_shown(@sfbase.Source, String, String) -> Bool
+
 pub fn side_slide_reset() -> Unit
 
 pub let side_tab_close : @ui.Style

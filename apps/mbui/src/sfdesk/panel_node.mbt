@@ -475,23 +475,52 @@ fn side_screen_page_node(q : @view.View, src : Source, r : ChatRef, tab : String
       }
     })
     |> ignore
-    s.pick(at_once=true, fn() {
-      let (ww, wh) = s.window()
-      screen_tab_alone(tabs()) && !column_short.get() && ww <= wh
-    }, fn(p, alone) {
-      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      @sfpages.screen_node(
-        p,
-        src,
-        at,
-        fn() { { back: None, top: 0.0, foot: 0.0, named: false } },
-        on_close=fn() { side_change(src, r, "close", Some(tab)) },
-        in_tab=true,
-        own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
-      )
+    // (the page on top over all of it showing the same screen, its 全屏 from here: the one viewer of it is that page's,
+    // this one made again as it goes)
+    s.show(at_once=true, fn() { !(app.nav.top() is Screen(top) && top.station == at.station && top.screen == at.screen) }, fn(b) {
+      b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      b.pick(at_once=true, fn() {
+        let (ww, wh) = b.window()
+        screen_tab_alone(tabs()) && !column_short.get() && ww <= wh
+      }, fn(p, alone) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.screen_node(
+          p,
+          src,
+          at,
+          fn() { { back: None, top: 0.0, foot: 0.0, named: false } },
+          on_close=fn() { side_change(src, r, "close", Some(tab)) },
+          in_tab=true,
+          own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
+        )
+        // on the tape, out of sight while another panel is in use at rest: let go of as a page under another is (its
+        // last frame kept, the stream and its hold on the screen given back), opened again as it comes over
+        if on_tape {
+          p.reacts(tape_side_hidden, fn(h) { @sfpages.screen_covered(src, at.station, at.screen, h) })
+          p.owns(fn() { @sfpages.screen_covered(src, at.station, at.screen, false) }) |> ignore
+        }
+      })
     })
   })
   |> ignore
+}
+
+///|
+/// Whether the side panel of the chat on the stack (the last there) shows `station`'s `screen` in front, drawn as its
+/// page (not a Farview tab): what lets that screen's view go as a page of it leaves the stack keeps it for the panel
+/// (sfapp's pages_left: its 全屏 from the panel, gone back to it).
+pub fn side_screen_shown(src : Source, station : String, screen : String) -> Bool {
+  let pages = app.nav.pages()
+  for i = pages.length() - 1; i >= 0; i = i - 1 {
+    match pages[i] {
+      Chat(r) | History(r, _, _) => {
+        let front = side_shown(src, r).1
+        return side_screen_tab(front) == Some((station, screen)) && !@sfpages.farview_native_screen(screen)
+      }
+      _ => ()
+    }
+  }
+  false
 }
 
 ///|

@@ -339,7 +339,11 @@ fn pages_left(src : Source) -> Unit {
         if !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
           @sfbase.let_go(src, @sfbase.drive_scope)
         }
-      Screen(at) => @sfpages.screen_left(src, at.station, at.screen)
+      // (shown still in its chat's side panel, its 全屏 from there gone back to it: kept for the panel)
+      Screen(at) =>
+        if !@sfdesk.side_screen_shown(src, at.station, at.screen) {
+          @sfpages.screen_left(src, at.station, at.screen)
+        }
       _ => ()
     }
   }

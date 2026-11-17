@@ -998,6 +998,53 @@ each("a_screen_an_agent_drives_opens_only_looking_and_is_taken_over_in_one_tap",
   core.close();
 });
 
+each("a_screen_opened_looking_as_an_agent_drove_it_drives_once_the_agent_lets_go_unless_its_person_chose_to_look", async (seed) => {
+  const driven = { ...SCREENS.screens[1], viewers: ["agent: Opus"], controlledBy: ["agent: Opus"] };
+  const answers = { ...base(), "GET /screens": { screens: [driven] } };
+  const { host, core, ui, views, push } = await viewing(seed, answers);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "browser:T1", view: "v" });
+  await host.settle();
+  assert.equal(views[0]!.ask.control, false, "opened only looking: the agent is not held off");
+  // (its stream saying nothing of who drives it: the station's list says it)
+  views[0]!.send(stateFrame({ control: false }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual([lastState(log, 1).control, lastState(log, 1).takeOver], [false, true]);
+  // The agent's hold let go (its view closed a minute after its last action), as the station's list says: driving, the
+  // stream opened again so; 接管 gone with it.
+  push("screens", { screens: [{ ...driven, viewers: ["a@x.com"], controlledBy: [] }] });
+  await host.settle();
+  assert.equal(views.length, 2, "opened again");
+  assert.equal(views[1]!.ask.control, true);
+  views[1]!.send(stateFrame({ control: true, viewers: ["a@x.com"], controlledBy: ["a@x.com"] }));
+  await host.settle();
+  said(host, log);
+  assert.deepEqual([lastState(log, 1).control, lastState(log, 1).takeOver, lastState(log, 1).line], [true, false, "控制"]);
+  // As the view's own stream says it, the list not yet told: the same.
+  push("screens", { screens: [driven] });
+  await host.settle();
+  call(core, ui, 2, "screen.view", { station: "ws/st", screen: "browser:T1", view: "w" });
+  await host.settle();
+  assert.equal(views[2]!.ask.control, false);
+  views[2]!.send(stateFrame({ control: false, viewers: ["a@x.com", "agent: Opus"], controlledBy: [] }));
+  await host.settle();
+  assert.equal(views.length, 4, "opened again as its stream says nobody drives it");
+  assert.equal(views[3]!.ask.control, true);
+  // Its person chose 只看: kept so as the agent lets go.
+  call(core, ui, 3, "screen.view", { station: "ws/st", screen: "browser:T1", view: "x" });
+  await host.settle();
+  const x = views.length - 1;
+  assert.equal(views[x]!.ask.control, false);
+  call(core, ui, 4, "screen.control", { view: "x", control: false });
+  push("screens", { screens: [{ ...driven, viewers: ["a@x.com"], controlledBy: [] }] });
+  await host.settle();
+  views[x]!.send(stateFrame({ control: false, viewers: ["a@x.com"], controlledBy: [] }));
+  await host.settle();
+  assert.equal(views.length, x + 1, "not opened again: its person asked to look");
+  core.close();
+});
+
 each("a_screen_only_the_viewers_own_views_drive_opens_driving", async (seed) => {
   // The app killed with the view open, twice: the station still names both views until it finds them gone.
   const answers = { ...base(), "GET /screens": { screens: [{ ...SCREENS.screens[1], viewers: ["a@x.com", "A@x.com"], controlledBy: ["a@x.com", "A@x.com"] }] } };

@@ -632,6 +632,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     let onViews: unknown = null;
     // Decided once the station's list is read (below) for a view opened with no `control` asked.
     let wanted = c.ask.control && may;
+    // Opened with no mode asked and none asked since (`control`), nor made to only look from elsewhere: it gave way to
+    // whoever drove it as it opened, and drives once nobody else does (an agent's hold let go).
+    let auto = c.auto;
     // What the station is asked for: as the view opened, its size, 画质 and 帧率 as last asked (`screen.bounds`), and which
     // device it is on (who is on the screen, for those who look).
     const client = deviceName(inner.data);
@@ -713,6 +716,14 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         },
       });
     };
+    // Given way as it opened, and nobody else drives it now: driving, the stream opened again so (else it only looked
+    // for good, 接管 gone with whoever drove it and every press of its person's taken by nothing).
+    const resume = () => {
+      if (!auto || wanted || !may || state.access?.control === false) return;
+      if (othersOf(driving ?? names(get(listedItem(), "controlledBy")), mine).length > 0) return;
+      wanted = true;
+      if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
+    };
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
@@ -773,6 +784,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         Queue.offerUnsafe(looks, undefined);
       },
       control: (on) => {
+        auto = false;
         const next = on && may;
         // Asked by its person: over having been made to only look (hub.ts `mayDrive`), then and when it opens again.
         if (next) bounds = { ...bounds, taken: true };
@@ -792,6 +804,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         if (reopen !== null) Deferred.doneUnsafe(reopen, Effect.void);
       },
       listed: () => {
+        resume();
         tell();
         if (relisted !== null) Deferred.doneUnsafe(relisted, Effect.void);
       },
@@ -837,7 +850,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // person) drives it, so a person who opens it to watch does not hold the agent off; else driving. The viewer's own
     // views are not someone else, however many the list names: another window of theirs, or one of an app killed with
     // the view open, which the station still holds until it finds the connection gone.
-    if (c.auto) wanted = may && names(get(listedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
+    if (auto) wanted = may && names(get(listedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
     tell();
 
     /// One stream (`ready`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
@@ -980,6 +993,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 // Made to only look from elsewhere (`screen.watchOnly`): it stays so when the view opens again.
                 if (s.control === false && control && !lacks) {
                   wanted = false;
+                  auto = false;
                   state.watchOnly = (state.watchOnly ?? 0) + 1;
                   // Taken by another (a person's 接管, an agent asked to): who, the viewer's own other device unnamed.
                   if (typeof s.takenBy === "string") {
@@ -1025,6 +1039,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (Array.isArray(s.viewers)) onIt = names(s.viewers);
                 if (Array.isArray(s.controlledBy)) driving = names(s.controlledBy);
                 if (Array.isArray(s.views)) onViews = s.views;
+                resume();
                 const ms = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 600_000;
                 if (isObject(s.latency) && ms(s.latency.frame) && ms(s.latency.before)) state.latency = { frame: Math.round(s.latency.frame), before: Math.round(s.latency.before) };
                 // What the station counts of the link lost (the pictures all go its way: what this device sends and loses is

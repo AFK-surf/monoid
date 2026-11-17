@@ -1945,3 +1945,32 @@ fn look_switch(r : ScreenRig) -> Unit raise {
   r.t.key(@ui.key_escape)
   r.t.run_for(@sf.later_ms)
 }
+
+///|
+test "beside its chat on its side with touch (an iPhone Duo's side panel): a browser's tab has its bar over the picture, ← → ⟳ and its whole address, the tabs' button after it" {
+  let r = screen_rig(w=951.0, h=669.0, platform=1, screen="browser:u_mail", screens=browser_screens(), in_tab=true)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "userTab": Json::boolean(true),
+      "title": Json::string("收件箱 - Proton Mail"),
+      "address": Json::string("https://mail.proton.me/u/0/inbox"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  // (sideways: the rail down its side)
+  assert_true(r.labelled(tr("android-misc.screen.full")) is Some(_))
+  assert_eq(address_of("browser:u_mail"), "https://mail.proton.me/u/0/inbox", msg="its whole address in its bar")
+  for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
+    assert_true(r.labelled(tr(label)) is Some(_), msg=label)
+  }
+  assert_true(r.labelled(tr("web-pages.screen.tabs") + " 2") is Some(_), msg="the person's pages folded into a button")
+  // (→ and ⟳ on its bar: 控制中心 offers them no second time)
+  assert_false(r.ui().narrow_bar)
+  assert_eq(r.t.audit(), [])
+  screen_done(r.t)
+}
