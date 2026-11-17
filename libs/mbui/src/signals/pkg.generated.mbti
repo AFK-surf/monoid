@@ -38,6 +38,15 @@ pub fn[T] computed_following((T?) -> T, Computed[Unit], same? : (T, T) -> Bool, 
 pub fn[T] computed_scoped((T?) -> T, same? : (T, T) -> Bool, untracked_read? : (() -> T?)?, loc~ : SourceLoc) -> Computed[T]
 
 #callsite(autofill(loc))
+pub fn[T : Eq] derived_signal((T?) -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> DerivedSignal[T]
+
+#callsite(autofill(loc))
+pub fn[T] derived_signal_by((T?) -> T, same~ : (T, T) -> Bool, loc~ : SourceLoc) -> DerivedSignal[T]
+
+#callsite(autofill(loc))
+pub fn[T] derived_signal_ref((T?) -> T, loc~ : SourceLoc) -> DerivedSignal[T]
+
+#callsite(autofill(loc))
 pub fn effect(() -> Unit, loc~ : SourceLoc) -> () -> Unit
 
 #callsite(autofill(loc))
@@ -51,6 +60,8 @@ pub fn end_batch() -> Unit
 
 pub fn end_batch_in_turn() -> Unit
 
+pub let fanout_limit : @ref.Ref[Int32]
+
 pub fn first_told(() -> Unit) -> Unit
 
 pub fn first_told_with((() -> Unit) -> Unit) -> Unit
@@ -63,6 +74,19 @@ pub fn last_set_at() -> String
 
 #callsite(autofill(loc))
 pub fn[K : Eq, V : Eq] memo(() -> K, (K) -> V, same_in? : (K, K) -> Bool, same? : (V, V) -> Bool, loc~ : SourceLoc) -> Computed[V]
+
+pub let on_fanout : @ref.Ref[((SourceLoc?, Int32) -> Unit)?]
+
+pub let on_untracked_read : @ref.Ref[((ReactiveNode) -> Unit)?]
+
+#callsite(autofill(loc))
+pub fn[T : Eq] optimistic(() -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> Optimistic[T]
+
+#callsite(autofill(loc))
+pub fn[T] optimistic_by(() -> T, same~ : (T, T) -> Bool, loc~ : SourceLoc) -> Optimistic[T]
+
+#callsite(autofill(loc))
+pub fn[T] optimistic_ref(() -> T, loc~ : SourceLoc) -> Optimistic[T]
 
 pub fn rest(ReactiveNode) -> () -> Unit
 
@@ -82,6 +106,8 @@ pub fn trigger(() -> Unit) -> Unit
 
 pub fn[T] untracked(() -> T) -> T
 
+pub fn untracked_depth() -> Int32
+
 pub fn watch(() -> Unit) -> Watch
 
 // Errors
@@ -92,10 +118,23 @@ pub fn[T] Computed::dispose(Self[T]) -> Unit
 pub fn[T] Computed::get(Self[T]) -> T
 pub fn[T] Computed::invalidate(Self[T]) -> Unit
 pub fn[T, U] Computed::lend(Self[T], Self[U]) -> Unit
+pub fn[T] Computed::made_at(Self[T]) -> SourceLoc
 pub fn[T] Computed::peek(Self[T]) -> T?
 pub fn[T, U] Computed::reading(Self[T], () -> U) -> U
 pub fn[T] Computed::untracked(Self[T]) -> T
 pub fn[T] Computed::watched(Self[T]) -> Bool
+
+pub struct DerivedSignal[T] {
+  // private fields
+}
+pub fn[T] DerivedSignal::dispose(Self[T]) -> Unit
+pub fn[T] DerivedSignal::get(Self[T]) -> T
+pub fn[T] DerivedSignal::made_at(Self[T]) -> SourceLoc
+pub fn[T] DerivedSignal::peek(Self[T]) -> T?
+#callsite(autofill(loc))
+pub fn[T] DerivedSignal::set(Self[T], T, loc~ : SourceLoc) -> Unit
+pub fn[T] DerivedSignal::untracked(Self[T]) -> T
+pub fn[T] DerivedSignal::watched(Self[T]) -> Bool
 
 pub struct Keyed[K] {
   // private fields
@@ -123,6 +162,18 @@ pub fn[K : Hash + Eq, V] KeyedList::reset(Self[K, V], Array[K], Map[K, V]) -> Un
 type Link
 
 type NodeKind
+
+pub struct Optimistic[T] {
+  // private fields
+}
+pub fn[T] Optimistic::clear(Self[T]) -> Unit
+pub fn[T] Optimistic::get(Self[T]) -> T
+pub fn[T] Optimistic::is_pending(Self[T]) -> Bool
+#callsite(autofill(loc))
+pub fn[T] Optimistic::push(Self[T], (T) -> T, loc~ : SourceLoc) -> () -> Unit
+#callsite(autofill(loc))
+pub fn[T] Optimistic::set_value(Self[T], T, loc~ : SourceLoc) -> () -> Unit
+pub fn[T] Optimistic::untracked(Self[T]) -> T
 
 pub struct ReactiveNode {
   // private fields
