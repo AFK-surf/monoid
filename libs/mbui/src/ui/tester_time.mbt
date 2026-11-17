@@ -777,11 +777,9 @@ pub fn Tester::notices(self : Tester) -> Array[Notice] {
 /// The notification whose title or words hold `text` tapped, as the system taps one: what it opens is given to the
 /// app (@ui.notice_opened), the frames that causes drawn. False when none holds it.
 pub fn Tester::tap_notice(self : Tester, text : String) -> Bool {
-  match self.fake.notices.search_by(fn(n) { n.title.contains(text) || n.body.contains(text) }) {
+  match self.fake.find_notice(text) {
     Some(k) => {
-      self.fake.notice_opened = self.fake.notices[k].opens
-      // (the system takes it away as it is tapped)
-      self.fake.notices.remove(k) |> ignore
+      self.fake.open_notice(k)
       self.draw()
       true
     }
