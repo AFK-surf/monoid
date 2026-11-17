@@ -146,6 +146,10 @@ yet and you can add one, add it.
   wheel's every notch is one; the glide after a fling is let go is a way: found at its end. A system's batch of a
   finger's samples (a frame's 2-4) is each taken at its moment but laid out once, at its last (`src/ui/touches.mbt`).
   What the clock, a frame's laying out or the hand itself tells is no change of it (`Tree::hits_bump`).
+  What reads a node as pointed at (`View::pointed`: a tip, a hover's look) makes it pointed at, whatever it takes of the
+  hand: one that takes no press is pointed at alone, as `View::points` says (`Node::points_alone`), what is pressed
+  there as it was (its ground hides what is under it from presses as ever, `Node::covers`). Hover is the reader's to declare, never tied to taking a press (the user, 2026-11-17: a tip on a
+  status mark showed never, as Android's `setTooltipText` and the web's `:hover` have it).
 - A row that leaves out what has not the room (`View::fits`) leaves before it cuts: what may leave goes first, then
   words cut short come down to their least, four of their size (flex's `cut_kept_ems`: a node's `View::cuts`; a box
   sized by what it holds keeps what its words keep), and only then does what is beside it give way. Such a row said
