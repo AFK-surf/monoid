@@ -16,12 +16,12 @@
 // - Devin keeps its sessions in a database of its own: the driver keeps the transcript itself (acp.ts KeptTranscript),
 //   which the history and the usage read.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { peerHttpBase } from "../tools/http.ts";
 import { rulesFolder as folderOf } from "./rules-folder.ts";
 import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from "./acp.ts";
-import type { Events } from "./own-process.ts";
+import type { Events, Replayed } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
 
@@ -42,9 +42,9 @@ const AUTH = "auth";
 
 /// The key the profile's sign-in left (`devin auth login` writes credentials.toml in its data directory), null when it
 /// has none.
-export function devinKey(home: string): string | null {
+export async function devinKey(home: string): Promise<string | null> {
   try {
-    const text = readFileSync(join(devinData(home), "devin", "credentials.toml"), "utf8");
+    const text = await readFile(join(devinData(home), "devin", "credentials.toml"), "utf8");
     const m = /^\s*windsurf_api_key\s*=\s*"([^"]+)"/m.exec(text);
     return m ? m[1]! : null;
   } catch {
@@ -68,7 +68,7 @@ export const devinRules = (instructions: string) =>
 /// The station's instructions as the rules of a folder of the session's own, beside its working directory, with the
 /// skills of its workspace (`skills`) linked in as .devin/skills: Devin reads a workspace directory it is given as a
 /// project's, without them being written into the person's project.
-export function rulesFolder(home: string, key: string, instructions: string, skills?: string): string {
+export function rulesFolder(home: string, key: string, instructions: string, skills?: string): Promise<string> {
   const rule = `---\ndescription: still.fail station\ntrigger: always_on\n---\n${devinRules(instructions)}\n`;
   return folderOf(devinHome(home), key, ".devin", { file: "stillfail.md", text: rule }, "Devin", skills);
 }
@@ -207,6 +207,7 @@ export function devinEnv(options: OpenOptions): Record<string, string> {
 }
 
 export class DevinDriver extends AcpDriver<DevinSession> {
+  protected readonly keepsTranscript = true;
   private readonly command: string;
 
   constructor(options: DevinDriverOptions) {
@@ -222,22 +223,22 @@ export class DevinDriver extends AcpDriver<DevinSession> {
     return new DevinSession(this, events, options);
   }
 
-  protected starting(options: OpenOptions): AcpStart {
+  protected async starting(options: OpenOptions): Promise<AcpStart> {
     const home = options.profile.home;
     const sessions = join(devinHome(home), SESSIONS);
-    mkdirSync(join(sessions, STORE), { recursive: true });
+    await mkdir(join(sessions, STORE), { recursive: true });
     // Not one the station kept.
-    if (options.resume !== undefined && !existsSync(join(sessions, `${options.resume}.jsonl`))) throw new Error(`no Devin session ${options.resume}`);
+    if (options.resume !== undefined && !(await access(join(sessions, `${options.resume}.jsonl`)).then(() => true, () => false))) throw new Error(`no Devin session ${options.resume}`);
     const config = join(devinHome(home), "config.json");
-    writeFileSync(config, `${JSON.stringify(CONFIG, null, 2)}\n`);
-    const rules = rulesFolder(home, options.key, options.instructions, options.skills);
+    await writeFile(config, `${JSON.stringify(CONFIG, null, 2)}\n`);
+    const rules = await rulesFolder(home, options.key, options.instructions, options.skills);
     const model = options.model ?? profileModel(options.profile);
     return { command: this.command, args: devinArgs(config, model, options.effort), env: devinEnv(options), opening: { additionalDirectories: [rules] } };
   }
 
   /// The profile's sign-in; custom variables bring their own (WINDSURF_API_KEY).
   protected async initialized(session: DevinSession, _answer: Json, options: OpenOptions) {
-    const key = devinKey(options.profile.home);
+    const key = await devinKey(options.profile.home);
     if (key !== null) await session.request(AUTH, "authenticate", { methodId: "devin-browser", _meta: { api_key: key } });
   }
 
@@ -250,7 +251,6 @@ export class DevinDriver extends AcpDriver<DevinSession> {
 type TurnUsage = { run: string; calls: number; lastCall: string; context: number; window: number };
 
 export class DevinSession extends AcpSession {
-  protected readonly steersByPrompt = true;
   /// The `model` config option's values (a family's variant each): what another model between turns is set to.
   private families: string[] = [];
   /// The running turn's call count and last call seen (each call's counts are said twice, the second time as its
@@ -261,10 +261,6 @@ export class DevinSession extends AcpSession {
     super(driver, events, new KeptTranscript("devin", join(devinHome(options.profile.home), SESSIONS)));
     const rawModel = options.model ?? profileModel(options.profile);
     this.model = rawModel !== undefined ? devinFusionBase(rawModel).model : null;
-  }
-
-  protected classify(text: string) {
-    return classifyFailure(text);
   }
 
   /// The model its config options say is current, and the values the `model` option takes.
@@ -296,11 +292,11 @@ export class DevinSession extends AcpSession {
 
   /// Each call's counts are said twice (the second time as its agent's): counted once, and written as it comes so a
   /// long turn's spend and context are live and survive a handover or crash.
-  protected updated(update: Json) {
+  protected updated(update: Json, owner: string | null) {
     if (update?.sessionUpdate !== "usage_update") return;
     const counts = callOf(update);
     const said = JSON.stringify(counts);
-    const run = this.owner !== null ? this.owner.slice(this.owner.indexOf(":") + 1) : uuid();
+    const run = owner !== null ? owner.slice(owner.indexOf(":") + 1) : uuid();
     const u = (this.usage ??= { run, calls: 0, lastCall: "", context: 0, window: 0 });
     if (said === u.lastCall) return;
     u.lastCall = said;
@@ -321,6 +317,21 @@ export class DevinSession extends AcpSession {
 
   protected ending() {
     this.usage = null;
+  }
+
+  /// After a crash: the running turn's calls as its transcript has them, the last written being where it goes on from.
+  /// What the station before wrote but had not acknowledged to the runner comes again, and without this was counted a
+  /// call of its own: written twice, the turn's spend with it (devin.test.ts' crash, 4 calls where there were 3).
+  replayed(replayed: Replayed, resume: string | undefined) {
+    super.replayed(replayed, resume);
+    if (!this.turn.busy) return;
+    const last = this.transcript?.lastOfTurn(this.sessionId, "usage");
+    if (!last || typeof last.run !== "string" || last.usage === undefined) return;
+    const [run, k] = last.run.split(":");
+    const calls = k === undefined ? 1 : Number(k);
+    if (!run || !Number.isSafeInteger(calls) || calls < (this.usage?.calls ?? 0)) return;
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    this.usage = { run, calls, lastCall: JSON.stringify(last.usage), context: n(last.context), window: n(last.window) };
   }
 
   protected override cutShort(said: string) {

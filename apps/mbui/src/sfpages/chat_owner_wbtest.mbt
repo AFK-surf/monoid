@@ -7,6 +7,7 @@ fn row_client_source(client : @core.Client) -> Source {
   {
     ..base,
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, params_for(name, params)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) {
       if name != "chat" { return (base.topic_read)(name, params) }
       let sub = client.follow_topic(name, params=params_for(name, params))

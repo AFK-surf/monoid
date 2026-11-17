@@ -1,6 +1,7 @@
 ///|
-/// A host whose glyphs are 100 pixels square, its atlas 1024 a side (four plots of 25 of them): each UTF-16 unit a
-/// cluster, keyed by its code. What it is asked to draw noted, and which glyph it was told to put where last.
+/// A host whose glyphs are 60 pixels square, its atlas 1024 a side (four plots of eight shelves of eight of them):
+/// each UTF-16 unit a cluster, keyed by its code. What it is asked to draw noted, and which glyph it was told to put
+/// where last.
 priv struct SquareHost {
   drawn : Array[Int]
   put : Map[(Int, Int), Int]
@@ -57,8 +58,8 @@ impl @hostapi.Host for SquareHost with atlas_size(_, colour) {
 }
 
 ///|
-/// A glyph's side in points: 100 pixels at the Tester's scale (1).
-let square_glyph : Double = 100.0
+/// A glyph's side in points: 60 pixels at the Tester's scale (1).
+let square_glyph : Double = 60.0
 
 ///|
 test "words scrolled through, more than the atlas holds: what stays on the screen is drawn once, every glyph from where it was put" {
@@ -70,7 +71,7 @@ test "words scrolled through, more than the atlas holds: what stays on the scree
     scale=1.0,
     live={ host, turn: fn() {  } },
   )
-  // "AB" on the screen all along, 30 words of its own beside it on each page: 360 glyphs in all, the atlas 100
+  // "AB" on the screen all along, 30 words of its own beside it on each page: 362 glyphs in all, the atlas 256
   for page in 0..<12 {
     let codes = ['A'.to_int(), 'B'.to_int()]
     codes.append(Array::makei(30, fn(i) { 0x4E00 + page * 30 + i }))
@@ -122,18 +123,19 @@ fn square_drawn_from(t : @ui.Tester, host : SquareHost) -> Array[Int] {
 }
 
 ///|
-test "a glyph of what is on the screen in every plot of a full atlas: a new word has its glyph by the next frame" {
+test "a glyph of what is on the screen on every shelf of a full atlas: a new word has its glyph by the next frame" {
   let host = SquareHost::{ drawn: [], put: {} }
-  let words = Ref(square_words(Array::makei(100, fn(i) { 0x4E00 + i })))
+  let words = Ref(square_words(Array::makei(256, fn(i) { 0x4E00 + i })))
   let t = @ui.Tester::new(
     fn(c) { c.text(words.val, wrap=false) |> ignore },
     w=4000.0,
     scale=1.0,
     live={ host, turn: fn() {  } },
   )
-  // the atlas full, its four plots of 25 each: then one glyph from each with a new one after them
+  // the atlas full, its 32 shelves of eight each: then one glyph from each with a new one after them
   t.draw()
-  let codes = [0x4E00, 0x4E00 + 25, 0x4E00 + 50, 0x4E00 + 75, 0x5E00]
+  let codes = Array::makei(32, fn(i) { 0x4E00 + i * 8 })
+  codes.push(0x5E00)
   words.val = square_words(codes)
   t.draw()
   t.draw()
@@ -149,7 +151,7 @@ test "a glyph of what is on the screen in every plot of a full atlas: a new word
 test "more on the screen than a whole atlas holds: started over once, not every frame" {
   let host = SquareHost::{ drawn: [], put: {} }
   let t = @ui.Tester::new(
-    fn(c) { c.text(square_words(Array::makei(101, fn(i) { 0x4E00 + i })), wrap=false) |> ignore },
+    fn(c) { c.text(square_words(Array::makei(257, fn(i) { 0x4E00 + i })), wrap=false) |> ignore },
     w=4000.0,
     scale=1.0,
     live={ host, turn: fn() {  } },
@@ -162,7 +164,40 @@ test "more on the screen than a whole atlas holds: started over once, not every 
   t.draw()
   t.draw()
   assert_eq(host.drawn.length(), drawn + 2)
-  assert_eq(square_drawn_from(t, host).length(), 100)
+  assert_eq(square_drawn_from(t, host).length(), 256)
+}
+
+///|
+test "words scrolled through, a glyph of each page kept on the screen: none drawn twice, the atlas never started over" {
+  // pages of 32 words of their own, the first of each staying on the screen under the next ones: glyphs of what is
+  // on the screen come to lie in every stretch of the atlas, as a screen of Chinese scrolled through does (were a plot
+  // emptied only whole, each holding two pages: past the eighth every plot had one on the screen, none could be
+  // emptied, and the atlas started over, drawing them all again)
+  let host = SquareHost::{ drawn: [], put: {} }
+  let words = Ref("")
+  let t = @ui.Tester::new(
+    fn(c) { c.text(words.val, wrap=false) |> ignore },
+    w=4000.0,
+    scale=1.0,
+    live={ host, turn: fn() {  } },
+  )
+  let stay : Array[Int] = []
+  for page in 0..<16 {
+    let codes = Array::makei(32, fn(i) { 0x4E00 + page * 32 + i })
+    codes.append(stay)
+    words.val = square_words(codes)
+    t.draw()
+    codes.sort()
+    assert_eq(square_drawn_from(t, host), codes)
+    stay.push(0x4E00 + page * 32)
+  }
+  // each drawn once, the first time it showed
+  let once : Map[Int, Bool] = Map([])
+  for k in host.drawn {
+    assert_true(!once.contains(k), msg="\{k} drawn again")
+    once[k] = true
+  }
+  assert_eq(host.drawn.length(), 16 * 32)
 }
 
 ///|

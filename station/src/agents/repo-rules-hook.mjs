@@ -1,9 +1,12 @@
-// A PostToolUse hook of Claude Code's and Codex's: the rules a repository keeps for agents (AGENTS.md, else CLAUDE.md,
-// in its root and in each directory down to the one a tool touched), told to the agent the first time it touches that
-// directory. Claude Code reads them itself only from its working directory up and, below it, when its Read tool opens
-// a file there (Codex never below it); a station session works in its workspace, its clones and worktrees below it,
-// and mostly through the shell, so it read a repository's rules only now and then (25 of 55 subagents on mbui,
-// 2026-11-08).
+// A PostToolUse hook of Claude Code's, Codex's and Antigravity CLI's: the rules a repository keeps for agents (AGENTS.md,
+// else CLAUDE.md, or .claude/CLAUDE.md at its root, in its root and in each directory down to the one a tool touched),
+// told to the agent the first time it touches that directory. Claude Code reads them itself only from its working
+// directory up and, below it, when its Read tool opens a file there; Antigravity CLI reads AGENTS.md (never CLAUDE.md)
+// only when its file tools open one; Codex never below where it started. A station session works in its workspace, its
+// clones and worktrees below it, and often through the shell, so it read a repository's rules only now and then (25 of
+// 55 subagents on mbui, 2026-11-08).
+// Antigravity CLI's PostToolUse takes only `{}` and injects context in PostInvocation (`injectSteps`), so PostToolUse
+// queues the rules touched and the PostInvocation right after it tells them.
 // After a compaction (Claude Code's SessionStart of "compact", Codex's PostCompact) it forgets what the session was
 // told: the summary keeps little of it, so the next tool to touch a directory tells its rules again. A rules file a
 // tool itself names (the agent editing it) is not told again for that change: the agent has just written it.
@@ -28,19 +31,30 @@ try {
 } catch {
   process.exit(0);
 }
-const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
-const tool = input.tool_input ?? {};
+const agy = typeof input?.hookEventName === "string";
+if (process.env.STILLFAIL_REPO_RULES === "0") {
+  if (agy) process.stdout.write("{}");
+  process.exit(0);
+}
+const event = agy ? input.hookEventName : input?.hook_event_name;
+const cwd = typeof input?.cwd === "string" ? input.cwd : process.cwd();
+const tool = (agy ? input?.toolCall?.args : input?.tool_input) ?? {};
 
 /// The paths the tool was given: its file or path, or what in a shell command reads as one.
 function paths() {
   const out = [];
-  for (const key of ["file_path", "path", "notebook_path"]) if (typeof tool[key] === "string") out.push(tool[key]);
-  if (typeof tool.command === "string") {
-    for (const word of tool.command.split(/[\s;&|()<>`'"=]+/)) {
-      if (word.includes("/") && !word.includes("://")) out.push(word.replace(/^[~]/, process.env.HOME ?? "~"));
-    }
+  for (const key of ["file_path", "path", "notebook_path", "Path", "TargetFile", "SearchPath", "DirectoryPath", "Cwd"]) {
+    if (typeof tool[key] === "string") out.push(tool[key]);
   }
-  if (out.length === 0 && typeof tool.command === "string") out.push(cwd);
+  const command = typeof tool.command === "string" ? tool.command : typeof tool.CommandLine === "string" ? tool.CommandLine : null;
+  if (command !== null) {
+    for (const word of command.split(/[\s;&|()<>`'"=]+/)) {
+      if ((word.includes("/") || (process.platform === "win32" && word.includes("\\"))) && !word.includes("://")) {
+        out.push(word.replace(/^[~]/, process.env.HOME ?? "~"));
+      }
+    }
+    if (out.length === 0) out.push(cwd);
+  }
   return out;
 }
 
@@ -73,17 +87,21 @@ function rulesFor(dir) {
   for (const d of chain) {
     const agents = join(d, "AGENTS.md");
     const claude = join(d, "CLAUDE.md");
+    const dotClaude = join(d, ".claude", "CLAUDE.md");
     if (existsSync(agents)) files.push(agents);
     else if (existsSync(claude)) files.push(claude);
+    else if (d === root && existsSync(dotClaude)) files.push(dotClaude);
   }
   return files;
 }
 
-const who = `${input.session_id ?? "none"}-${input.agent_id ?? "main"}`.replace(/[^\w.-]/g, "_");
+const sessionId = agy ? input.conversationId : input?.session_id;
+const who = `${agy ? "agy-" : ""}${sessionId ?? "none"}-${input?.agent_id ?? "main"}`.replace(/[^\w.-]/g, "_");
 const stateDir = join(tmpdir(), "stillfail-repo-rules");
 const stateFile = join(stateDir, `${who}.json`);
-if (input.hook_event_name === "SessionStart" || input.hook_event_name === "PostCompact") {
-  if (input.hook_event_name === "PostCompact" || input.source === "compact") rmSync(stateFile, { force: true });
+if (event === "SessionStart" || event === "PostCompact") {
+  if (event === "PostCompact" || input?.source === "compact") rmSync(stateFile, { force: true });
+  if (agy) process.stdout.write("{}");
   process.exit(0);
 }
 let seen = {};
@@ -117,6 +135,20 @@ for (const dir of dirs) {
   }
 }
 
+/// Antigravity CLI's PostToolUse returns `{}` and leaves telling what was queued to PostInvocation right after it.
+if (agy && event === "PostToolUse") {
+  if (line.length > 0) seen.waiting = line;
+  else delete seen.waiting;
+  if (JSON.stringify(seen) !== kept) {
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(stateFile, JSON.stringify(seen));
+    } catch {}
+  }
+  process.stdout.write("{}");
+  process.exit(0);
+}
+
 /// Where to cut `text` at `room` characters or fewer: before a heading, a list's item or a paragraph when one begins
 /// in the second half of the room, else at a line's end, else at the room.
 function cut(text, room) {
@@ -125,6 +157,7 @@ function cut(text, room) {
   return end > 0 ? end + 1 : room;
 }
 
+const scopeOf = (file) => (dirname(file).endsWith(`${sep}.claude`) ? dirname(dirname(file)) : dirname(file));
 const told = [];
 let room = MAX;
 while (line.length > 0) {
@@ -147,7 +180,7 @@ while (line.length > 0) {
   }
   /// How many lines of the file end at or before `to`.
   const lines = (to) => text.slice(0, to).split("\n").length - (to === 0 || text[to - 1] === "\n" ? 1 : 0);
-  const head = (which) => `Contents of ${next.file} (the repository's rules for agents working in ${dirname(next.file)}${sep}; follow them)${which}:\n\n`;
+  const head = (which) => `Contents of ${next.file} (the repository's rules for agents working in ${scopeOf(next.file)}${sep}; follow them)${which}:\n\n`;
   const last = head(next.at === 0 ? "" : `, lines ${lines(next.at) + 1} to ${lines(text.length)}, the last of it`);
   if (last.length + text.length - next.at <= room) {
     told.push(last + text.slice(next.at));
@@ -173,5 +206,14 @@ if (JSON.stringify(seen) !== kept) {
     writeFileSync(stateFile, JSON.stringify(seen));
   } catch {}
 }
-if (told.length === 0) process.exit(0);
-process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: told.join(BETWEEN) } }));
+if (told.length === 0) {
+  if (agy) process.stdout.write("{}");
+  process.exit(0);
+}
+process.stdout.write(
+  JSON.stringify(
+    agy
+      ? { injectSteps: [{ systemMessage: { systemMessage: told.join(BETWEEN) } }] }
+      : { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: told.join(BETWEEN) } },
+  ),
+);

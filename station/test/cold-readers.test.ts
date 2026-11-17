@@ -6,10 +6,10 @@ import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { transcriptPath } from "../src/read/transcript.ts";
+import { transcriptPath } from "./reference/transcript-paths.ts";
 import { packFile, restoreFile } from "../src/sessions/archive.ts";
-import { TranscriptTail } from "../src/sessions/live.ts";
-import { claudeFiles, readFrom } from "../src/usage/counter.ts";
+import { TranscriptTail } from "./reference/tail.ts";
+import { claudeFiles, readFrom } from "./usage-counter-reference.ts";
 
 const temp = () => realpathSync(mkdtempSync(join(tmpdir(), "cold-readers-")));
 

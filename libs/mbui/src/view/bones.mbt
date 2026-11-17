@@ -14,13 +14,7 @@
 /// pointer found again; out of them again, it answers as before. Its colour alone changed, it is drawn again, no more.
 pub fn View::bones(self : View, color : Live[Int64]) -> View {
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Bones.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Bones.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Bones.ord())
   let set = fn(k : Int64) {
     guard self.live() is Some(n) else { return }
     if n.bones == k {
@@ -51,7 +45,7 @@ pub fn View::bones(self : View, color : Live[Int64]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::Bones.ord()] = stop
+        n.prop_set(Prop::Bones.ord(), stop)
       })
   }
   self

@@ -133,7 +133,8 @@ fn Scroll::ease_drawn_end(
   let most = most.unwrap_or(self.most())
   let past = self.past_moved(tree.logic_said())
   let by = self.drawn_by(tree, at)
-  let drawn = fn(t : Double) { by(-dclamp(x0 + ease_come(total, v0, t, tau~), 0.0, most) + past) }
+  let top = @signals.untracked(fn() { self.top_now() })
+  let drawn = fn(t : Double) { by(-dclamp(x0 + ease_come(total, v0, t, tau~), top, most) + past) }
   let rest = drawn(bound)
   let mut t = bound.floor()
   while t > 0.0 && drawn(t) == rest {
@@ -444,7 +445,7 @@ fn Scroll::list_fling(
   same : Double,
   density : Double,
 ) -> Unit {
-  let bound = if speed > 0.0 { self.most() } else { 0.0 }
+  let bound = if speed > 0.0 { self.most() } else { @signals.untracked(fn() { self.top_now() }) }
   guard list_planned(t, x0, speed, way, same, density, bound) is Some(f) else { return }
   self.past.set(None)
   self.fling.set(Some(f))
@@ -516,7 +517,7 @@ fn Scroll::fling_grew(self : Scroll, f : Fling, w : ListWay, t : Double, d : Dou
   // (its foot where it is as laid out now, that layout not done yet: met by then, not a meeting but where it was
   // before what grew; then none yet, its foot where the layout puts it worked out then, Scroll::foot_moved)
   let bound = if f.v0 < 0.0 {
-    0.0
+    @signals.untracked(fn() { self.top_now() })
   } else if w.at({ ..f, x0: f.x0 + d }, t) < self.most() {
     self.most()
   } else {
@@ -559,7 +560,7 @@ fn Scroll::wheel_stops(self : Scroll, v : View, t : Double) -> Unit {
     // (met its end by now: at rest there, what it brought going on back, at rest as it said)
     Some({ hit: Some(p), .. }) if t >= f.end_t => {
       self.fling.set(None)
-      self.x.set(dclamp(f.end_x, 0.0, self.most()))
+      self.x.set(dclamp(f.end_x, @signals.untracked(fn() { self.top_now() }), self.most()))
       self.past.set(Some(p))
     }
     Some(w) => {
@@ -587,11 +588,11 @@ fn Scroll::notched(self : Scroll, v : View, t : Double, d : Double) -> Bool {
       } else {
         ease_state(n.total, n.v0, t - n.t0, tau=n.tau)
       }
-      (dclamp(n.x0 + came, 0.0, self.most()), n.total - came + d, speed)
+      (dclamp(n.x0 + came, @signals.untracked(fn() { self.top_now() }), self.most()), n.total - came + d, speed)
     }
     None => {
       let x = self.stopped(t)
-      if (d > 0.0 && x >= self.most()) || (d < 0.0 && x <= 0.0) {
+      if (d > 0.0 && x >= self.most()) || (d < 0.0 && x <= @signals.untracked(fn() { self.top_now() })) {
         return false
       }
       (x, d, 0.0)
@@ -668,11 +669,13 @@ fn Scroll::list_settles(self : Scroll, v : View, t : Double) -> Unit {
     self.fling.set(None)
     self.past.set(None)
     self.notch.set(None)
+    let top = @signals.untracked(fn() { self.top_now() })
     match (flung, notch) {
-      (Some(f), _) => self.x.set(dclamp(f.end_x, 0.0, self.most()))
-      (_, Some(n)) => self.x.set(dclamp(n.x0 + n.total, 0.0, self.most()))
+      (Some(f), _) => self.x.set(dclamp(f.end_x, top, self.most()))
+      (_, Some(n)) => self.x.set(dclamp(n.x0 + n.total, top, self.most()))
       _ => ()
     }
+    self.tuck_met(self.x.untracked())
   })
 }
 

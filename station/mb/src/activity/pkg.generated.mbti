@@ -1,0 +1,49 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/activity"
+
+import {
+  "station/sql",
+}
+
+// Values
+pub fn activity_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn awake_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn directory_install(@sql.Db) -> Unit raise
+
+pub fn directory_schema() -> String
+
+pub fn directory_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn key_part(String) -> String
+
+pub fn recovery_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn sandbox_disable(@sql.Db) -> Unit raise
+
+pub fn sandbox_enable(@sql.Db) -> Unit raise
+
+pub fn sandbox_name(String) -> String
+
+pub fn sandbox_schema() -> String
+
+pub fn sandbox_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn sha256_hex(Array[Int32]) -> String
+
+pub fn share_install(@sql.Db) -> Unit raise
+
+pub fn share_schema() -> String
+
+pub fn share_step(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn utf8(String) -> Array[Int32]
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

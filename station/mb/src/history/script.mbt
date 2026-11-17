@@ -1,4 +1,4 @@
-// Codex's code mode's scripts (station/src/read/transcript.ts `scriptCalls`): the `tools.<name>({…})` calls with a
+// Codex's code mode's scripts (station/test/reference/transcript.ts `scriptCalls`): the `tools.<name>({…})` calls with a
 // literal argument, read as data and never run, and whether the script is nothing else; by code points, as the
 // TypeScript (after the Rust) reads them, its quirks kept.
 

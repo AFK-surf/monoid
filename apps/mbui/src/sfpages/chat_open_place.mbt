@@ -11,7 +11,7 @@
 /// else where the core says it was left (`v.at`: the first message at or after it, its top `v.at_offset` under the
 /// window's top in the screen's pixels of `scale`, as kept; else at the list's top).
 fn chat_open_place(
-  rows : ChatBodyRows,
+  list : ChatBodyList,
   v : ChatView,
   kept : @sfbase.KeptPlace?,
   scale : Double,
@@ -19,7 +19,8 @@ fn chat_open_place(
   top : Double,
   lead : Double,
 ) -> (String, Double)? {
-  if rows.rows.contains("line") {
+  let rows = list.read()
+  if rows.get("line") is Some(_) {
     return Some(("line", @sfbase.kept_place_under(top + lead, cover)))
   }
   if kept is Some(p) && p.bottom >= 0.0 {
@@ -27,7 +28,7 @@ fn chat_open_place(
   }
   // (the first message's row that is one `want` takes, by its key)
   let said = fn(want : (Message) -> Bool) {
-    rows.keys.iter().find_first(fn(k) { rows.rows.get(k) is Some(row) && row.entry is Said(m) && want(m) })
+    rows.keys.iter().find_first(fn(k) { rows.get(k) is Some(row) && row.entry is Said(m) && want(m) })
   }
   if kept is Some(p) && said(fn(m) { m.seq == p.top }) is Some(k) {
     return Some((k, @sfbase.kept_place_under(p.offset, cover)))

@@ -1,0 +1,263 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/store_sessions"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn after_of(String, @json.Json) -> @json.Json
+
+pub fn chat_page(@sql.Db, String, @json.Json, @json.Json, Int32, Array[String]) -> Array[@json.Json] raise
+
+pub let chat_tables : Array[String]
+
+pub fn chat_threads(@sql.Db, Array[String], @json.Json, Int32) -> Array[@json.Json] raise
+
+pub fn handed_stations(@sql.Db) -> Array[@json.Json] raise
+
+pub fn handed_with_usage(@sql.Db, @json.Json, @json.Json, Int32) -> Array[@json.Json] raise
+
+pub let handover_page : Int32
+
+pub async fn harness(@host.Host, String) -> Unit
+
+pub fn has_usage(@sql.Db, @json.Json) -> Bool raise
+
+pub fn import_handed_usage(@sql.Db, @json.Json, Bool) -> @json.Json raise
+
+pub fn new_ctx(@json.Json) -> @json.Json
+
+pub fn put_usage(@sql.Db, Map[String, @json.Json]) -> Bool raise
+
+pub fn surface_here(String, @json.Json) -> String
+
+pub fn thread_of_ref(@sql.Db, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+
+pub fn thread_refs(@sql.Db, @json.Json, Array[@json.Json]) -> Array[@json.Json] raise
+
+// Errors
+pub(all) suberror StoreError {
+  StoreError(String, @json.Json)
+}
+
+// Types and methods
+pub struct SessionPage {
+  keys : Array[String]
+  // private fields
+}
+pub fn SessionPage::home_members(Self, String) -> Array[String]? raise
+pub fn SessionPage::ran_on(Self, String) -> Array[String] raise
+pub fn SessionPage::rows(Self) -> Array[@json.Json] raise
+pub fn SessionPage::session(Self, String) -> @json.Json raise
+
+pub struct Store {
+  db : @sql.Db
+  mut latest_note : Int64
+  // private fields
+}
+pub fn Store::add_job_notice(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::advance_usage_counter(Self, @json.Json) -> Unit raise
+pub fn Store::any_running(Self) -> Bool raise
+pub fn Store::archived_sessions(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::auto_title(Self, @json.Json) -> @json.Json raise
+pub fn Store::awake_jobs(Self) -> Array[@json.Json] raise
+pub fn Store::awake_wait(Self, Double, Double) -> @json.Json raise
+pub fn Store::begin_usage_counter_file(Self, @json.Json, @json.Json, @json.Json, Bool) -> @json.Json raise
+pub fn Store::binding(Self, @json.Json) -> @json.Json raise
+pub fn Store::chat_page(Self, String, @json.Json, @json.Json, Int32, Array[String]) -> Array[@json.Json] raise
+pub fn Store::chat_share(Self, @json.Json) -> @json.Json raise
+pub fn Store::chat_share_lapsed(Self, @json.Json, @json.Json) -> Bool raise
+pub fn Store::chat_shares(Self) -> @json.Json raise
+pub fn Store::chat_threads(Self, Array[String], @json.Json, Int32) -> Array[@json.Json] raise
+pub fn Store::chats_of_their_own(Self) -> Array[@json.Json] raise
+pub fn Store::clear_ended_jobs(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::codex_session_fast(Self, String) -> @json.Json raise
+pub fn Store::codex_session_speed(Self, String) -> @json.Json raise
+pub fn Store::compaction_points(Self, @json.Json) -> @json.Json raise
+pub fn Store::compactions_ready(Self) -> Bool raise
+pub fn Store::conversation_since(Self, String) -> @json.Json raise
+pub fn Store::declare_turn(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::delete_session(Self, String) -> Unit raise
+pub fn Store::delivered_there(Self, Array[String]) -> Unit raise
+pub fn Store::device_builds(Self) -> Array[@json.Json] raise
+pub fn Store::device_builds_since(Self, @json.Json) -> @json.Json raise
+pub fn Store::drop_connect_thread_station(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::drop_import(Self, @json.Json) -> Unit raise
+pub fn Store::efforts_used_by(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::end_cut_off(Self, @json.Json) -> Int32 raise
+pub fn Store::end_turn(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::failed_turns_near(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::first_text(Self, @json.Json) -> @json.Json raise
+pub fn Store::follow_profiles(Self, String, Map[String, String]) -> Bool raise
+pub fn Store::forget_import(Self, @json.Json) -> Unit raise
+pub fn Store::forget_process(Self, @json.Json) -> Unit raise
+pub fn Store::forget_profile_hours(Self, @json.Json) -> Unit raise
+pub fn Store::forget_wait(Self, @json.Json) -> Unit raise
+pub fn Store::get_job(Self, @json.Json) -> @json.Json raise
+pub fn Store::get_session(Self, String) -> @json.Json raise
+pub fn Store::gone_to(Self, Array[String], @json.Json, @json.Json) -> Unit raise
+pub fn Store::hand_off(Self, Array[String], @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::handed_chats(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::handed_to(Self, String) -> @json.Json raise
+pub fn Store::has_turns(Self, @json.Json) -> Bool raise
+pub fn Store::home_chat(Self, @json.Json) -> @json.Json raise
+pub fn Store::import_ctx(Self, @json.Json) -> @json.Json raise
+pub fn Store::import_rows(Self, @json.Json, String, Array[@json.Json], @json.Json?) -> Unit raise
+pub fn Store::insert_job(Self, @json.Json) -> Unit raise
+pub fn Store::insert_opened(Self, @json.Json) -> Unit raise
+pub fn Store::insert_session(Self, @json.Json) -> Unit raise
+pub fn Store::job_at_port(Self, @json.Json) -> @json.Json raise
+pub fn Store::job_by_token(Self, @json.Json) -> @json.Json raise
+pub fn Store::job_ended(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::job_notices(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::job_started(Self, @json.Json, @json.Json, Bool) -> Unit raise
+pub fn Store::jobs_mark_of(Self, Array[@json.Json]) -> @json.Json raise
+pub fn Store::jobs_running(Self) -> Array[@json.Json] raise
+pub fn Store::jobs_up(Self) -> Array[@json.Json] raise
+pub fn Store::jobs_up_of(Self, Array[@json.Json]) -> Array[@json.Json] raise
+pub fn Store::lapse_chat_shares(Self, Double) -> @json.Json raise
+pub fn Store::lapsed_share_workspaces(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_archived_session(Self) -> @json.Json raise
+pub fn Store::last_contexts(Self, String, Int32) -> Array[@json.Json] raise
+pub fn Store::last_read_at(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_turn(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_turns_of(Self, Array[String]) -> @json.Json raise
+pub fn Store::latest_turn(Self, @json.Json) -> @json.Json raise
+pub fn Store::list_bindings(Self) -> @json.Json raise
+pub fn Store::list_jobs(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::list_processes(Self) -> Array[@json.Json] raise
+pub fn Store::list_sessions(Self) -> Array[@json.Json] raise
+pub fn Store::list_turns(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::live_of(Self, Array[String]) -> Array[@json.Json] raise
+pub fn Store::live_sessions(Self) -> Array[@json.Json] raise
+pub fn Store::live_sessions_on(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::manually_archived(Self, @json.Json) -> Bool raise
+pub fn Store::mark_widget_models_told(Self, @json.Json, Array[@json.Json]) -> Unit raise
+pub fn Store::model_stars(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::models_used_by(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::next_archived_at(Self, @json.Json) -> @json.Json raise
+pub fn Store::not_gone(Self, Array[String], @json.Json) -> Array[String] raise
+pub fn Store::note_remote_run(Self, @json.Json, @json.Json, Double) -> Unit raise
+pub fn Store::notify(Self, String) -> Unit
+pub fn Store::now(Self) -> Int64
+pub fn Store::on_session_workspace_change(Self, () -> Unit) -> () -> Unit
+pub fn Store::open(@sql.Db, () -> Int64, Int64) -> Self raise
+pub fn Store::opened_by(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::opened_with(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::opener_of(Self, @json.Json) -> @json.Json raise
+pub fn Store::overview_session_counts(Self, @json.Json, Array[@json.Json]) -> @json.Json raise
+pub fn Store::people_said_after(Self, @json.Json, @json.Json, Double) -> @json.Json raise
+pub fn Store::post_after(Self, String, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::posts_after(Self, String, Array[@json.Json]) -> @json.Json raise
+pub fn Store::prepared_session_bound(Self, @json.Json) -> Bool raise
+pub fn Store::process_by_group(Self, @json.Json) -> @json.Json raise
+pub fn Store::profile_hours(Self, Double) -> @json.Json raise
+pub fn Store::profile_status(Self) -> @json.Json raise
+pub fn Store::put_device_build(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::put_model_stars(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::put_widget_state(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::ran_in(Self, String, @json.Json, @json.Json) -> Unit raise
+pub fn Store::ran_on(Self, String, @json.Json) -> @json.Json raise
+pub fn Store::ran_on_of(Self, Array[String]) -> Array[(String, Array[String])] raise
+pub fn Store::recently_compacted(Self, String) -> Bool raise
+pub fn Store::record_process(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::record_usage(Self, @json.Json, @json.Json, String, Array[@json.Json], @json.Json) -> Int32 raise
+pub fn Store::record_usage_all(Self, Array[@json.Json]) -> Array[Int32] raise
+pub fn Store::recovery_waits(Self) -> @json.Json raise
+pub fn Store::remember_slack_stop(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::remote_queue_jobs(Self) -> Array[@json.Json] raise
+pub fn Store::retitled(Self, @json.Json) -> Unit
+pub fn Store::running_job_sessions(Self, Array[@json.Json]) -> Array[@json.Json] raise
+pub fn Store::running_jobs(Self) -> @json.Json raise
+pub fn Store::running_jobs_at_least(Self, @json.Json, Double) -> Bool raise
+pub fn Store::running_sessions(Self) -> Array[@json.Json] raise
+pub fn Store::running_wait_job_ids(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::runtime_session_source(Self, String, String) -> @json.Json raise
+pub fn Store::runtime_session_sources(Self, String, @json.Json?) -> Array[@json.Json] raise
+pub fn Store::runtime_sessions(Self, String) -> Array[@json.Json] raise
+pub fn Store::saved_compact_context(Self, String) -> @json.Json raise
+pub fn Store::session_by_token(Self, String) -> @json.Json raise
+pub fn Store::session_counts(Self, @json.Json) -> @json.Json raise
+pub fn Store::session_has_up_job(Self, @json.Json) -> @json.Json raise
+pub fn Store::session_key_by_token(Self, String) -> @json.Json raise
+pub fn Store::session_keys(Self) -> Array[@json.Json] raise
+pub fn Store::session_of_runtime(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::session_page(Self, Array[String], Array[@json.Json]?) -> SessionPage
+pub fn Store::session_page_of_ws(Self, @json.Json, @json.Json, @json.Json, Int32) -> SessionPage raise
+pub fn Store::session_stats(Self, @json.Json) -> @json.Json raise
+pub fn Store::session_usage(Self, String) -> @json.Json raise
+pub fn Store::session_ws(Self, String) -> @json.Json raise
+pub fn Store::sessions_in_use(Self) -> Array[@json.Json] raise
+pub fn Store::sessions_of(Self, Array[String]) -> Array[@json.Json] raise
+pub fn Store::sessions_of_connect(Self, @json.Json, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::sessions_of_ws(Self, @json.Json, @json.Json, @json.Json, Int32) -> Array[@json.Json] raise
+pub fn Store::set_about(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_archived(Self, String, Bool, String) -> Unit raise
+pub fn Store::set_auto_title(Self, @json.Json, @json.Json, Bool) -> Unit raise
+pub fn Store::set_binding(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_chat_share(Self, @json.Json, Array[@json.Json], Bool, @json.Json) -> Unit raise
+pub fn Store::set_generated_title(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_moved_note(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_need(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_opened_state(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_profile_check(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_profile_quota(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_running(Self, String, Bool) -> Unit raise
+pub fn Store::set_runtime_session_id(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_session_afresh(Self, String, @json.Json?) -> Unit raise
+pub fn Store::set_session_context(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_session_context_before(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_session_fast(Self, String, @json.Json?) -> Unit raise
+pub fn Store::set_session_model(Self, String, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_session_profile(Self, String, @json.Json, Bool, @json.Json?) -> Unit raise
+pub fn Store::set_session_runtime(Self, String, @json.Json, @json.Json, Bool, @json.Json, @json.Json, @json.Json?, @json.Json, @json.Json?) -> Unit raise
+pub fn Store::set_session_speed(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_session_usage(Self, String, @json.Json, Bool) -> Unit raise
+pub fn Store::set_sessions_ws(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_slack_identity(Self, @json.Json, @json.Json, Bool) -> Unit raise
+pub fn Store::set_thread_hidden(Self, @json.Json, Bool, String) -> Unit raise
+pub fn Store::set_thread_title(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_title(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_told_notes(Self, @json.Json, @json.Json) -> Unit raise
+pub fn Store::set_transcript_length(Self, String, @json.Json) -> Unit raise
+pub fn Store::set_transcript_lengths(Self, Array[(String, @json.Json)]) -> Unit raise
+pub fn Store::set_wait_for(Self, @json.Json, @json.Json, Bool) -> Unit raise
+pub fn Store::show_chat(Self, Array[String], @json.Json) -> Unit raise
+pub fn Store::shown_there(Self, Array[String], @json.Json) -> Unit raise
+pub fn Store::slack_identities(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::slack_stop(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::start_turn(Self, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::start_turn_for(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> Unit raise
+pub fn Store::stats_of(Self, Array[String]) -> @json.Json raise
+pub fn Store::stillfail_homes(Self, Array[String]) -> Array[(String, Array[String])] raise
+pub fn Store::stop_wait(Self, @json.Json, Bool) -> Bool raise
+pub fn Store::subscribe(Self, (@json.Json) -> Unit) -> () -> Unit
+pub fn Store::title_revision(Self, @json.Json) -> Int32
+pub fn Store::told(Self, Array[@json.Json]) -> Unit
+pub fn Store::told_notes(Self, @json.Json) -> @json.Json raise
+pub fn Store::touch(Self, String) -> Unit raise
+pub fn Store::transcript_in_use(Self, @json.Json, @json.Json, @json.Json) -> Bool raise
+pub fn Store::untold_widget_models(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::up_job_ids(Self, @json.Json, Bool) -> Array[@json.Json] raise
+pub fn Store::usage_active_sessions(Self, @json.Json) -> Array[@json.Json] raise
+pub fn Store::usage_changed(Self, Array[@json.Json], @json.Json?, Bool) -> Unit
+pub fn Store::usage_counter(Self) -> @json.Json raise
+pub fn Store::usage_counter_file(Self, @json.Json) -> @json.Json raise
+pub fn Store::usage_file(Self, @json.Json) -> @json.Json raise
+pub fn Store::usage_files(Self) -> @json.Json raise
+pub fn Store::usage_groups(Self, Double, Double, Double) -> Array[@json.Json] raise
+pub fn Store::usage_of_session(Self, String) -> Array[@json.Json] raise
+pub fn Store::usage_since(Self) -> @json.Json raise
+pub fn Store::usage_threads(Self, Array[@json.Json]) -> Array[@json.Json] raise
+pub fn Store::usage_turns(Self, @json.Json, @json.Json, Double) -> Array[@json.Json] raise
+pub fn Store::used_chat_share(Self, @json.Json, Array[@json.Json]) -> Unit raise
+pub fn Store::waiting_for_people(Self, @json.Json, @json.Json) -> Array[@json.Json] raise
+pub fn Store::widget_state(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::work_of(Self, @json.Json) -> @json.Json raise
+
+// Type aliases
+
+// Traits

@@ -227,23 +227,3 @@ pub fn list_more(at : ListAt) -> @ui.Style {
 // kept across runs: a value (no field of it changes)
 // (pb: lit_apart's 2, the scale's S0_5)
 let side_more : @ui.Style = @ui.css("w=Full pb=S0_5")
-
-///|
-/// A heading over a part of a list (SidebarList.tsx NavSection; Sidebar.css.ts navHeading: the chats' days, the
-/// profiles' kinds, a sidebar's parts), its look the theme's chats' list's, in from the list's left as its rows are where
-/// the list stands (`at`).
-pub fn list_heading(c : @ui.Ctx, label : String, at : ListAt) -> Unit {
-  let l = theme().chat_list
-  c.box(style=l.heading.then(list_heading_in(at)), fn() { c.text(label, style=l.heading_words.then(in_lines)) |> ignore }) |> ignore
-}
-
-///|
-/// The room between two groups of a list where no heading stands over the second (the settings' groups in a sidebar):
-/// a heading's room over it (`heading`'s 14), so a group reads apart from the one over it as one under a heading does.
-pub fn list_apart(c : @ui.Ctx) -> Unit {
-  c.box(style=list_apart_room, fn() {  }) |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let list_apart_room : @ui.Style = @ui.css("w=Full h=S3_5")

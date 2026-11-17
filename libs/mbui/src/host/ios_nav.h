@@ -949,7 +949,7 @@ static BOOL had_hinge;
 // Whether the system lays out the app's tabs and actions itself in every pose (mb_host_nav_bar takes them, the app's
 // frame the same on both screens): an iPhone Duo's (a hinge), iOS 27.1 on.
 int32_t mb_host_nav_able(void) {
-  if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return 0;
+  if (the_controller.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return 0;
   if (![the_root isKindOfClass:MBTabs.class]) return 0;
   // (a hinge once seen where the view is, the inner screen's; or the system's bars down the side, the outer one's)
   if (the_controller.hinge >= 0) had_hinge = YES;
@@ -961,7 +961,7 @@ int32_t mb_host_nav_able(void) {
 }
 
 int32_t mb_host_nav_bar(moonbit_string_t spec) {
-  if (UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return 0;
+  if (the_controller.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return 0;
   if (@available(iOS 26.0, *)) {
     MBTabs *t = (MBTabs *)the_root;
     if (![t isKindOfClass:MBTabs.class]) return 0;

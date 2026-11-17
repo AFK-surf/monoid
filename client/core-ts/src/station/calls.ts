@@ -35,8 +35,9 @@ function keptBeside(kept: { type: string; bytes: string }): Beside {
   return new Beside({ type: kept.type, held: true }, fromBase64(kept.bytes) ?? new Uint8Array());
 }
 
-/// A whole file being read from its station, and those waiting for it: each told how far it has come.
-type Going = { done: Deferred.Deferred<Beside, CoreError>; heard: Set<Progress>; last: unknown };
+/// A whole file being read from its station, and those waiting for it: each told how far it has come. `waiting`: how
+/// many wait for it still.
+type Going = { done: Deferred.Deferred<Beside, CoreError>; heard: Set<Progress>; last: unknown; waiting: number };
 const goingOf = new WeakMap<Inner, Map<string, Going>>();
 
 /// `read` once for every asker of the same file at once: one asked again while it is coming (its preview closed and
@@ -50,7 +51,7 @@ function once(inner: Inner, key: string, progress: Progress, read: (progress: Pr
     const going = all;
     let g = going.get(key);
     if (g === undefined) {
-      const made: Going = { done: Deferred.makeUnsafe<Beside, CoreError>(), heard: new Set([progress]), last: undefined };
+      const made: Going = { done: Deferred.makeUnsafe<Beside, CoreError>(), heard: new Set([progress]), last: undefined, waiting: 0 };
       g = made;
       going.set(key, made);
       const tell: Progress = (value) => {
@@ -70,7 +71,14 @@ function once(inner: Inner, key: string, progress: Progress, read: (progress: Pr
       if (g.last !== undefined) progress(g.last);
     }
     const it = g;
-    return Effect.ensuring(Deferred.await(it.done), Effect.sync(() => it.heard.delete(progress)));
+    it.waiting++;
+    // (what goes beside an answer is the UI's, moved away on the web (its worker's toPage) as it is answered: each that
+    // wakes while others wait still takes a copy, the last the bytes read)
+    const mine = Effect.map(Deferred.await(it.done), (b) => (it.waiting > 1 ? new Beside(b.value, b.bytes.slice()) : b));
+    return Effect.ensuring(mine, Effect.sync(() => {
+      it.waiting--;
+      it.heard.delete(progress);
+    }));
   });
 }
 
@@ -160,8 +168,9 @@ export function keptFirst<H extends { type: string; total: number }, G extends H
         fromHere = true;
         type ??= here.type;
         out.push(here.bytes);
-        if (sink) sink(here.bytes);
+        // The web sink transfers the buffer: its length is zero after it is handed on.
         at += here.bytes.length;
+        if (sink) sink(here.bytes);
         heard?.(at - c.offset);
         continue;
       }
@@ -206,7 +215,8 @@ export function install(): void {
           if (a.session !== undefined) a.session = machineMeta(a.session, now, offset);
         }
         // What the clients show of it, put in here.
-        looks.answer(op.method, op.path, answer);
+        const now = inner.host.nowMs();
+        looks.answer(op.method, op.path, answer, now, inner.host.utcOffsetMin(now));
         if (op.method === "GET" && /^\/profiles\/[^/?]+\/fusion$/.test(op.path) && answer !== null && typeof answer === "object") {
           return { fusion: buildFusion((answer as { fusion?: unknown }).fusion) };
         }
@@ -330,7 +340,8 @@ export function install(): void {
         // kept once answered at that size.
         const [size, id] = [c.keep, chatKeptId(c.station, c.key, c.name)];
         const whole = Effect.map(read, ([type, bytes]) => {
-          if (bytes.length === size) inner.runner.fork(inner.driveKept.keep(id, "chat", 0, size, type, 0, bytes));
+          // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+          if (bytes.length === size) inner.runner.fork(inner.driveKept.keep(id, "chat", 0, size, type, 0, bytes.slice()));
           return new Beside({ type }, bytes);
         });
         return Effect.gen(function* () {
@@ -550,15 +561,26 @@ export function install(): void {
   // Each chat, called as the chats' list calls it, with the files of its sessions kept (`files`, the most lately read
   // first), the one keeping most first; those of no chat known apart (`loose`: its sessions' chats let go, or never
   // held here).
+  // It changes nothing and no page waits on it: asked with the page that shows it (the settings' first screen asks it
+  // ahead of its topics, apps/mbui/e2e/traces/settings-appearance.trace), it lets what came with it be taken (the JS
+  // loop's turn: a call's fiber runs as it is forked, ahead of the messages after it) and their first values go first
+  // (store.ts `turn`, `answered`), then counts what is not counted yet a station at a time, the JS loop's turn between (what
+  // comes in meanwhile is taken, the pages' values sent: `turn`). A call that changes something never waits so: it
+  // takes effect in the core at once (rule 5), whatever pages wait.
   handlers.cacheUsage = (inner) =>
     Effect.gen(function* () {
+      yield* inner.store.turn();
+      while (inner.data.countLogs()) yield* inner.store.turn();
       const drive = yield* inner.driveKept.usage();
       const kept = yield* inner.driveKept.chatFiles();
       const chats = inner.data.cacheUsage().map(({ view, ...chat }) => ({ ...chat, title: view === null ? null : format.chatTitle(view), files: [] as { bytes: number }[] }));
+      // (each session to the first chat of its station listing it, as the chats come: by its key, not a walk of them)
+      const bySession = new Map<string, (typeof chats)[number]>();
+      for (const chat of chats) for (const session of chat.sessions) if (!bySession.has(`${chat.station}\0${session}`)) bySession.set(`${chat.station}\0${session}`, chat);
       const loose: unknown[] = [];
       for (const f of kept) {
         const shown = { key: f.key, name: f.name, size: f.size, bytes: f.bytes, opened: f.used };
-        const chat = chats.find((x) => x.station === f.station && x.sessions.includes(f.key));
+        const chat = bySession.get(`${f.station}\0${f.key}`);
         if (chat !== undefined) chat.files.push(shown);
         else loose.push({ station: f.station, ...shown });
       }
@@ -570,7 +592,8 @@ export function install(): void {
   handlers.cacheClear = (inner, call) => {
     const c = call as Extract<Call, { kind: "cacheClear" }>;
     return Effect.gen(function* () {
-      const sessions = inner.data.cacheUsage().find((x) => x.station === c.station && x.thread === c.thread)?.sessions ?? [];
+      // (its sessions by its key: what it keeps is not counted for it)
+      const sessions = inner.data.threadSessions(c.station, c.thread);
       inner.data.forgetChat(c.station, c.thread);
       yield* inner.driveKept.forgetChat(c.station, sessions);
       return null;

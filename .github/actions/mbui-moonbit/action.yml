@@ -76,9 +76,40 @@ runs:
     # 65 s of its 185, a key restored that had neither from its sources, 2026-10-25, 40141156498.)
     - id: tools
       shell: bash
-      # (none in a checkout without mbui's tools: nothing kept)
+      # (none in a checkout without mbui's tools: nothing kept. On ci-1's self-hosted Linux runners, kept on local disk
+      # under ~/stillfail-ci/mbui-tools instead of five Actions cache round-trips per job)
       run: |
         [ -d libs/mbui/tools ] || exit 0
+        if [ "${{ runner.environment }}" = self-hosted ] && [ "${{ runner.os }}" = Linux ]; then
+          store="$HOME/stillfail-ci/mbui-tools"
+          mkdir -p "$store"
+          keep_tool() {
+            local name=$1 script=$2 out=$3 k dir tmp
+            k=$($script key)
+            dir="$store/$name-$k"
+            if [ ! -f "$dir/bin" ] || [ ! -f "$dir/src" ]; then
+              if [ "$name" = testexe ]; then bash "$script" path >/dev/null; else sh "$script" path >/dev/null; fi
+              if [ -f "$out" ] && [ -f "$out.src" ]; then
+                tmp="$store/.tmp-$name-$$"
+                rm -rf "$tmp" && mkdir -p "$tmp"
+                cp -a "$out" "$tmp/bin" && cp -a "$out.src" "$tmp/src"
+                mv -n "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp"
+              fi
+            fi
+            if [ -f "$dir/bin" ] && [ -f "$dir/src" ]; then
+              mkdir -p "$(dirname "$out")"
+              cp -a "$dir/bin" "$out" && cp -a "$dir/src" "$out.src"
+            fi
+          }
+          for t in mbc chk detlint apk; do
+            keep_tool "$t" "libs/mbui/scripts/$t" "libs/mbui/tools/_build/native/release/build/$t/$t.exe"
+          done
+          if [ -f apps/mbui/scripts/testexe ]; then
+            keep_tool testexe "apps/mbui/scripts/testexe" "apps/mbui/tools/_build/native/release/build/sftools/testexe/testexe.exe"
+          fi
+          find "$store" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+          exit 0
+        fi
         for t in mbc chk detlint apk; do echo "$t=$(sh libs/mbui/scripts/$t key)" >> "$GITHUB_OUTPUT"; done
         # (the app's: scripts/testexe, a test program's runs for scripts/test.sh)
         [ ! -f apps/mbui/scripts/testexe ] || echo "testexe=$(bash apps/mbui/scripts/testexe key)" >> "$GITHUB_OUTPUT"

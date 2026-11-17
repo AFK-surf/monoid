@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { RECENT_CHAT_LIST } from "../src/store/chat-list.ts";
-import { RecentChatPreparation } from "../src/store/chat-list-prepare.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "../src/store/chat-list-scope-build.ts";
-import { installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { RecentChatPreparation } from "./reference/chat-list/chat-list-prepare.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 test("new unrelated connections cannot keep an old workspace scan open", () => {

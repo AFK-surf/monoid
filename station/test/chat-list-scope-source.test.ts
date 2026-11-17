@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { FIRST_SCOPE_CONNECT, FIRST_SCOPE_HOME_THREADS, FIRST_SCOPE_MEMBER_THREADS, FIRST_SCOPE_OLD_SESSION, FIRST_SCOPE_SESSIONS,
   FIRST_SCOPE_SESSIONS_THROUGH, NEXT_SCOPE_CONNECT, NEXT_SCOPE_OLD_SESSION, recentScopeSessionThreadsStep, recentScopeSessionsStep,
   SCOPE_HOME_THREADS, SCOPE_MEMBER_THREADS, SCOPE_MEMBER_WITHOUT_HOME, SCOPE_SESSIONS, SCOPE_SESSIONS_THROUGH,
-  type RecentScopeSessionCursor, type RecentScopeThreadCursor } from "../src/store/chat-list-scope-source.ts";
+  type RecentScopeSessionCursor, type RecentScopeThreadCursor } from "./reference/chat-list/chat-list-scope-source.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a workspace's old sessions are sought by connection in bounded steps", () => {

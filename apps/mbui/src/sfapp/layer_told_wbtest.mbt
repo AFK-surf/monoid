@@ -44,8 +44,11 @@ let switcher_closed_seen : Array[(Bool, String)] = [
 ]
 
 ///|
-test "⌘K dismissed by Escape: closed as the key is taken, what was typed let go; the frame after closes nothing more, ⌘K again its own" {
-  let seen = switcher_dismissed(fn(t) { t.key_told(@ui.key_escape, 0, t.time()) })
+test "⌘K dismissed by Escape: the first clears what was typed (a Mac's search field), the second closes it as the key is taken; the frame after closes nothing more, ⌘K again its own" {
+  let seen = switcher_dismissed(fn(t) {
+    t.key_told(@ui.key_escape, 0, t.time())
+    t.key_told(@ui.key_escape, 0, t.time())
+  })
   assert_eq(seen, switcher_closed_seen)
 }
 
@@ -68,7 +71,7 @@ test "⌘K dismissed by a press outside its panel: closed as the press goes down
 }
 
 ///|
-test "⌘K in one kind's list, Escape: back to all of them, still open, as the key is taken; a second Escape closes it" {
+test "⌘K in one kind's list, words typed, Escape: what was typed cleared first, then back to all of them, still open, as the key is taken; a third Escape closes it" {
   let t = switcher_typed("签名")
   guard t.find_last("查看更多") is Some((x, y)) else { fail("no 查看更多: \{t.words().map(fn(w) { w.0 }).join("|")}") }
   t.tap(x, y)
@@ -76,15 +79,17 @@ test "⌘K in one kind's list, Escape: back to all of them, still open, as the k
   let kind = @sfpages.finder_kind()
   assert_true(kind != "", msg="one kind's list")
   let seen = []
+  for _ in 0..<2 {
+    t.key_told(@ui.key_escape, 0, t.time())
+    seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
+    t.draw()
+    seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
+  }
   t.key_told(@ui.key_escape, 0, t.time())
   seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
   t.draw()
   seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
-  t.key_told(@ui.key_escape, 0, t.time())
-  seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
-  t.draw()
-  seen.push((@sfdesk.switcher_open(), @sfpages.finder_kind()))
-  assert_eq(seen, [(true, ""), (true, ""), (false, ""), (false, "")])
+  assert_eq(seen, [(true, kind), (true, kind), (true, ""), (true, ""), (false, ""), (false, "")])
 }
 
 ///|

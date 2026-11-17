@@ -2,9 +2,9 @@
 // 2026-11-13: 「搬家主要考虑的场景是要废弃掉一个 station」「要允许用户选择目标迁移 station」; replica/AGENTS.md).
 //
 // On the station retired (`retire`): the other station is told it is coming (`retire.begin`), and what goes along with
-// the chats (their transcripts and their sessions' rooms, carry-worker.ts) is sent while its agents still work, what it
+// the chats (their transcripts and their sessions' rooms, carry.ts) is sent while its agents still work, what it
 // lacks of each session's list a bounded batch at a time (`retire.lacking`), its agent home's own files with them
-// (carry-worker.ts `homeFiles`). Then it is `sent`: all that goes along is there and the chats still work. A retirement
+// (carry.ts `gatherSoon`'s `agent`). Then it is `sent`: all that goes along is there and the chats still work. A retirement
 // a person started in the app's panel goes on from there at once (that panel said the chats would pause); one an agent
 // asked for (station_retire, retire-asks.ts) waits there until an owner or admin confirms the hand-over in the app
 // (the user, 2026-11-14: 「迁移最好能 agent 辅助，因为中途可能出问题，然后人应该只需要在关键节点点卡片来确认就行」).
@@ -13,10 +13,11 @@
 // meanwhile goes after it, the lists and their index, then the chats' copy (copies.ts `bringTo`), and the other station
 // is asked to take them (`retire.take`). It says when it took this one's place (`retire.took`, or `retire.failed`):
 // this station's chats there go out of sight here; retired from its home workspace, its accounts move there too
-// (share/index.ts `moveProfile`); its connects of the workspace move to it (connects/workspace.ts `moveAll`, what was
-// kept for it first), and it is done; it stays quiet there for good, and the app takes it out of the workspace.
+// (share/index.ts `moveProfile`), and it tells that station what became of each (`retire.accounts`); its connects of
+// the workspace move to it (connects/workspace.ts `moveAll`, what was kept of each after it), and it is done; it stays quiet there for good, and the app takes it out of the workspace.
 //
-// Where the hand-over fails in a way that does not go on by itself (the other station could not put the chats in, or
+// Where the hand-over fails in a way that does not go on by itself (the other station could not put the chats in: it
+// could not place what went along, a file of it is not there, its disk is about full, or the copy did not go in; or it
 // was not reached for a minute after they stopped, QUIET_UNREACHED_MS, before it was asked to take them), the chats are put back
 // to work here (`#fallBack`: as a cancel does for them, their jobs started again, what their platforms said meanwhile
 // taken here), the other station told to put in nothing of it by itself, and it rests at `sent`, why kept: what was
@@ -30,29 +31,29 @@
 // (mesh/bus.ts `askItself`). Then the jobs the chats had running are started again in their sessions, in the same
 // directories under this data directory, as after a restart of the station (jobs.ts `relaunch`: the lead, 2026-11-14,
 // after the owner's 「不能自动搬吗？」), each once, their agents told at once; the agent home merged into this one's
-// (agent-carry.ts); each moved chat's agent told once what came of it.
+// (agent-carry.ts); each moved chat's agent told once what came of it. The moved chats follow the retired station's
+// accounts to the ids they have here as it tells them (`retire.accounts`), and what wakes them waits for that.
 //
 // Each step is safe to run again where it stopped; where each side stands is kept in a file (`retiring.json`,
 // `taking/<origin>.json`, `drops-owed.json`) so that a restart goes on with it.
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, readFileSync, readdirSync } from "node:fs";
-import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { createInterface } from "node:readline";
-import { Worker } from "node:worker_threads";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
-import { fileBytes, oneBytes, stopBytes } from "../mesh/files.ts";
+import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { knownOf, localOf } from "../connects/remote.ts";
-import type { CarriedJob, CarriedSession, CarryIndex, Gathered } from "./carry-worker.ts";
+import { type CarriedJob, type CarriedSession, type CarryIndex, type Gathered, gatherSoon, placeSoon, previewSoon } from "./carry.ts";
 import { GEN, HASH, STATION, WORKSPACE } from "./format.ts";
 import { FolderPlace } from "./places.ts";
 import type { Ask } from "./peers.ts";
 import { type Outcome, moved, outcomeFile, readyFile, restoreDir } from "./restore.ts";
 import { mergeAgentHome } from "./agent-carry.ts";
+import { PACK_ENCODING, lackingIn, receiveFile, receivePack, sendGathered } from "./sending.ts";
 import { movedSaid } from "../jobs/jobs.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
 
@@ -75,6 +76,10 @@ export const HEADROOM = 1024 * 1024 * 1024;
 export const LACK_MOST = 2_000;
 /// The times a station taking another's chats starts again to put them in before it says it could not.
 export const RESTARTS_MOST = 2;
+/// How long a station that took another's chats waits for that one's accounts (`retire.accounts`) before it wakes the
+/// moved chats it would tell something (their jobs' words, the driver): woken before, they would go on on another
+/// account here, afresh, each saying so in its chat.
+export const ACCOUNTS_WAIT_MS = 2 * 60_000;
 
 /// Where this station stands in being retired from a workspace, as its settings show it.
 /// - `sending`: what goes along is sent while the chats still work (`done` of `total` bytes);
@@ -105,12 +110,16 @@ export type Retiring = { workspace: string; to: string; toName: string; by: stri
 /// take (`retire.take`, asked again as it starts again in `handing`); whether it waits at `sent` for a person
 /// (`wait`), who is told of it (`driver`, and what is still to be told them, `owed`), how many files went along and when
 /// they were all there (`sentAt`), whether the other is asked to put the copy in again even where it is the one it could
-/// not (`retake`: after a fallback), what came of the jobs there (`jobsThere`, as it says), the failure last told.
+/// not (`retake`: after a fallback), what came of the jobs there (`jobsThere`, as it says), the failure last told; the
+/// accounts moved there (each one's id here, `was`, and there) and whether that station was told so (`accountsTold`).
 type State = Omit<Retiring, "cancellable" | "retriable" | "home"> & {
   jobs: CarriedJob[]; take: Take | null; wait: boolean; driver: Driver | null; owed: string[]; files: number; sentAt: number | null;
-  retake: boolean; jobsThere: JobOutcome[] | null; toldError: string | null;
+  retake: boolean; jobsThere: JobOutcome[] | null; toldError: string | null; accountsMoved: AccountMoved[]; accountsTold: boolean;
 };
-type Take = { gen: string; carry: string; connects: Record<string, string>; bindings: Record<string, string>; driver?: Driver | null };
+/// An account moved to the station the chats went to: its id here, and there.
+type AccountMoved = { was: string; id: string };
+/// `accounts`: whether this station's accounts move there after it (retired from its home workspace).
+type Take = { gen: string; carry: string; connects: Record<string, string>; bindings: Record<string, string>; driver?: Driver | null; accounts?: boolean };
 /// What a station's disk and git are, as it says them (`retire.begin`, `retire.room`).
 type Room = { free: number | null; clones: boolean; git: boolean };
 
@@ -120,15 +129,21 @@ type Room = { free: number | null; clones: boolean; git: boolean };
 /// `took`: it is that station now, which is told so until it answers. `rooms`: the sessions' rooms put here that were
 /// not here before (removed where it is called off). `restarts`: the starts again asked for to put it in. Once it is that
 /// station: what came of its jobs (`jobs`, started again once), whether their agents and the driver were told
-/// (`jobsTold`), whether its agent home was merged (`home`); `driver`, as its take said.
+/// (`jobsTold`), whether its agent home was merged (`home`); `driver`, as its take said. `failedAt`: the step it failed
+/// at before the copy was brought (placing, gits), where it goes on as a person asks it again (null: the copy's
+/// restore). `accounts`: whether that station's accounts come after it (`retire.accounts`; null: a station from before).
 export type TakingStep = "coming" | "placing" | "gits" | "copy" | "restart" | "failed" | "took";
 export type Taking = {
   origin: string; name: string; workspace: string; gen: string; carry: string; connects: Record<string, string>; bindings: Record<string, string>;
   step: TakingStep; placed: number; missing: number; gits: number; gitsFailed: number; rooms: string[] | null; error: string | null; told: boolean; restarts: number;
-  driver: Driver | null; jobs: JobOutcome[] | null; jobsTold: boolean; home: boolean; driverTold: boolean;
+  driver: Driver | null; jobs: JobOutcome[] | null; jobsTold: boolean; home: boolean; driverTold: boolean; failedAt: TakingStep | null; accounts: boolean | null;
 };
 /// A retired station's chats taken here, kept after it was told (a few, the latest), for station_retire's status.
-export type Taken = { origin: string; name: string; workspace: string; at: number; chats: number; jobs: JobOutcome[] };
+/// `error`: what went wrong in taking them (what went along with them not here).
+export type Taken = { origin: string; name: string; workspace: string; at: number; chats: number; jobs: JobOutcome[]; error?: string | null };
+/// What a station that took another's chats tells them that wakes them (their jobs' words, the driver's), kept until that
+/// station's accounts came or ACCOUNTS_WAIT_MS after it took them (`accounts` false: none come; null: from before).
+type Wake = { origin: string; workspace: string; at: number; says: [string, string][]; driver: { session: string; text: string } | null; accounts: boolean | null };
 const TAKEN_KEPT = 10;
 /// A retirement called off while the station picked was not reached: it is told to drop what it was sent, until it
 /// answers or is no longer of the workspace. `keep`: a hand-over that failed, the chats back to work here: it keeps what
@@ -161,8 +176,11 @@ export type RetireDeps = {
   /// They are out of sight here (store `setSessionsWs` to sessions/hub.ts `retiredWs`): the other station took them.
   retired: (ws: string) => void;
   /// This station's own accounts (no copy borrowed, not the machine's login), and one moved to another station
-  /// (share/index.ts `moveProfile`, which refuses in words).
-  accounts: { own(): { id: string; name: string }[]; move(id: string, to: string): Promise<unknown> };
+  /// (share/index.ts `moveProfile`, which refuses in words): its id there.
+  accounts: { own(): { id: string; name: string }[]; move(id: string, to: string): Promise<{ id: string } | unknown> };
+  /// On the station that took them: the sessions of `keys` that ran on an account of `map` (its id on the station
+  /// retired) put on the id it has here (sessions/hub.ts `followAccounts`); how many.
+  followAccounts?: (keys: string[], map: Map<string, string>) => number;
   /// The ids of this station's connects of `ws` (config.json's), the sessions single-session ones are bound to, and each
   /// moved to `to`, what was kept for it first (connects/workspace.ts).
   connectsOf: (ws: string) => string[];
@@ -180,8 +198,8 @@ export type RetireDeps = {
   git?: (dir: string, args: string[]) => Promise<string>;
   /// The most hashes one `retire.lacking` asks of and takes (LACK_MOST unless a test says).
   lackMost?: number;
-  /// carry-worker.ts's gathering, placing and preview (in a thread of their own, a gathering stopped by `signal`, unless a
-  /// test says otherwise).
+  /// carry.ts's gathering, placing and preview (the MoonBit program's, a gathering stopped by `signal`, unless a test
+  /// says otherwise).
   work?: { gather: typeof gatherSoon; place: typeof placeSoon; preview?: typeof previewSoon };
   /// The jobs and services of `ws`'s chats up now (what `quiet` stops), and its connects as the app names them.
   jobsIn: (ws: string) => CarriedJob[];
@@ -220,6 +238,11 @@ const dropsFile = (data: string) => join(data, "replica", "drops-owed.json");
 const carryRoot = (data: string) => join(data, "replica", "carry");
 const takenFile = (data: string) => join(data, "replica", "taken.json");
 const scratchDir = (data: string) => join(data, "replica", "carrying");
+/// Of each retired station whose chats were taken here: the keys of its sessions, a line each, until its accounts came
+/// (`retire.accounts`), and what wakes them (`Wake`) until then.
+const tookDir = (data: string) => join(data, "replica", "took");
+const keysFile = (data: string, origin: string) => join(tookDir(data), `${origin}.keys`);
+const wakeFile = (data: string, origin: string) => join(tookDir(data), `${origin}.json`);
 
 function readJsonNow<T>(path: string): T | null {
   try {
@@ -240,13 +263,13 @@ async function writeJson(path: string, v: unknown): Promise<void> {
 
 const there = (path: string) => stat(path).then(() => true, () => false);
 
-const gitRun = (dir: string, args: string[]): Promise<string> =>
+export const gitRun = (dir: string, args: string[]): Promise<string> =>
   new Promise((resolve, reject) => {
     execFile("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 30 * 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } }, (e, out, err) =>
       e ? reject(new Error(String(err).trim() || e.message)) : resolve(String(out).trim()));
   });
 
-const gitHere = (): Promise<boolean> =>
+export const gitHere = (): Promise<boolean> =>
   new Promise((resolve) => execFile("git", ["--version"], { timeout: 30_000 }, (e) => resolve(e === null)));
 
 /// The bytes free where `data` is; a copy there a clone where the disk makes them (APFS: macOS).
@@ -255,25 +278,8 @@ const roomHere = (data: string) => async () => {
   return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), clones: platform.clonesFiles };
 };
 
-/// `carry-worker.ts`'s work in a thread of its own, ended at once where `signal` says (a cancel).
-function inThread<T>(asked: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-  const file = new URL(import.meta.url.endsWith(".ts") ? "./carry-worker.ts" : "./replica/carry-worker.js", import.meta.url);
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error("called off"));
-    const w = new Worker(file, { workerData: { carry: asked } });
-    const stop = () => {
-      void w.terminate();
-      reject(new Error("called off"));
-    };
-    signal?.addEventListener("abort", stop, { once: true });
-    const done = () => signal?.removeEventListener("abort", stop);
-    w.once("message", (m: { answer?: T; error?: string }) => (done(), m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T)));
-    w.once("error", (e) => (done(), reject(e)));
-  });
-}
-export const gatherSoon = (dataDir: string, db: string, ws: string, home: boolean, scratch: string, signal?: AbortSignal, agent: string | null = null) => inThread<Gathered>({ op: "gather", dataDir, db, ws, home, scratch, agent }, signal);
-export const placeSoon = (dataDir: string, index: string, from: string) => inThread<{ placed: number; missing: number; kept: number }>({ op: "place", dataDir, index, from });
-export const previewSoon = (dataDir: string, db: string, ws: string, home: boolean) => inThread<{ chats: number; archived: number; outside: number }>({ op: "preview", dataDir, db, ws, home });
+// (the gathering, placing and preview: carry.ts, the MoonBit program's)
+export { gatherSoon, placeSoon, previewSoon };
 
 /// What a retirement of a workspace would move, as the app shows it before a person retires the station (GET
 /// /retire/preview): found as the retirement finds it (the same predicates), nothing of it moved.
@@ -376,6 +382,10 @@ export class Retire {
   #dropAgain: (() => void) | null = null;
   #dropTries = 0;
   #telling: (() => void) | null = null;
+  /// What waits to wake the chats taken here of each retired station, its deadline, and the wakes under way.
+  readonly #wakes = new Map<string, Wake>();
+  readonly #wakeAt = new Map<string, () => void>();
+  readonly #waking = new Set<Promise<void>>();
 
   /// Where each side stood, read as the station starts, before it serves: what it is taking is known before its copies
   /// could hand over a copy it is taking (copies.ts `#handOver`), and a retired station's chats are quiet again before
@@ -403,6 +413,8 @@ export class Retire {
       st.retake ??= false;
       st.jobsThere ??= null;
       st.toldError ??= null;
+      st.accountsMoved ??= [];
+      st.accountsTold ??= false;
     }
     this.#drops = readJsonNow<DropOwed[]>(dropsFile(d.data)) ?? [];
     this.#tookHere = readJsonNow<Taken[]>(takenFile(d.data)) ?? [];
@@ -413,8 +425,16 @@ export class Retire {
     for (const name of names) {
       const t = readJsonNow<Taking>(join(takingDir(d.data), name));
       if (t !== null && STATION.test(t.origin)) {
-        this.#taking.set(t.origin, { ...t, bindings: t.bindings ?? {}, rooms: t.rooms ?? null, told: t.told ?? false, restarts: t.restarts ?? 0, driver: t.driver ?? null, jobs: t.jobs ?? null, jobsTold: t.jobsTold ?? false, home: t.home ?? false, driverTold: t.driverTold ?? false });
+        this.#taking.set(t.origin, { ...t, bindings: t.bindings ?? {}, rooms: t.rooms ?? null, told: t.told ?? false, restarts: t.restarts ?? 0, driver: t.driver ?? null, jobs: t.jobs ?? null, jobsTold: t.jobsTold ?? false, home: t.home ?? false, driverTold: t.driverTold ?? false, failedAt: t.failedAt ?? null, accounts: t.accounts ?? null });
       }
+    }
+    let woken: string[] = [];
+    try {
+      woken = readdirSync(tookDir(d.data)); // sync: read once, before the station serves
+    } catch {}
+    for (const name of woken) {
+      const w = name.endsWith(".json") ? readJsonNow<Wake>(join(tookDir(d.data), name)) : null;
+      if (w !== null && STATION.test(w.origin)) this.#wakes.set(w.origin, w);
     }
     const s = this.#state;
     if (s !== null && stopped(s.step)) void this.#quiet(s).catch((e) => log.warn("retire", "a retired station's chats not quiet yet", { error: (e as Error).message }));
@@ -449,6 +469,7 @@ export class Retire {
       } else if (t.step === "took") this.#tell(t);
       else if (t.step !== "coming") this.#take(t);
     }
+    for (const origin of [...this.#wakes.keys()]) this.#wakeSoon(origin);
     this.#dropSoon();
     const s = this.#state;
     if (s === null) return;
@@ -466,7 +487,8 @@ export class Retire {
     this.#telling?.();
     this.#dropAgain?.();
     this.#driverAgain?.();
-    for (const stop of [...this.#takeAgain.values(), ...this.#tellAgain.values()]) stop();
+    for (const stop of [...this.#takeAgain.values(), ...this.#tellAgain.values(), ...this.#wakeAt.values()]) stop();
+    this.#wakeAt.clear();
     // (the run under way ended between files, its gathering ended, as a cancel ends it: a gathering of a million files
     // goes on for minutes, and the process handing over to the next would wait for it. Each step is safe to run again,
     // and the next process goes on from where it stands)
@@ -475,13 +497,13 @@ export class Retire {
     await this.#running?.catch(() => {});
     await this.#dropping?.catch(() => {});
     await this.#driving?.catch(() => {});
-    await Promise.all([...this.#takingRuns.values(), ...this.#tellRuns.values()].map((p) => p.catch(() => {})));
+    await Promise.all([...this.#takingRuns.values(), ...this.#tellRuns.values(), ...this.#waking].map((p) => p.catch(() => {})));
   }
 
   /// What is under way here brought to rest: what a test waits for (it does not wait on a timer).
   async settle(): Promise<void> {
     for (;;) {
-      const going = [this.#running, this.#dropping, this.#driving, ...this.#takingRuns.values(), ...this.#tellRuns.values()].filter((p): p is Promise<void> => p !== null);
+      const going = [this.#running, this.#dropping, this.#driving, ...this.#takingRuns.values(), ...this.#tellRuns.values(), ...this.#waking].filter((p): p is Promise<void> => p !== null);
       if (going.length === 0) return;
       await Promise.all(going.map((p) => p.catch(() => {})));
     }
@@ -565,7 +587,7 @@ export class Retire {
     await writeJson(dropsFile(this.#d.data), this.#drops);
     this.#state = {
       workspace: ws, to, toName: target.name, by, at: this.#d.fibers.now(), step: "sending", done: 0, total: 0, error: null, reason: null, jobs: [], take: null, accountsLeft: [],
-      wait: opts.wait === true, driver: opts.driver ?? null, owed: [], files: 0, sentAt: null, retake: false, jobsThere: null, toldError: null,
+      wait: opts.wait === true, driver: opts.driver ?? null, owed: [], files: 0, sentAt: null, retake: false, jobsThere: null, toldError: null, accountsMoved: [], accountsTold: false,
     };
     await writeJson(retiringFile(this.#d.data), this.#state);
     this.#changed(true);
@@ -726,7 +748,7 @@ export class Retire {
       const gen = await this.#d.copies.bringTo(ws, s.to);
       const own = this.#d.connectsOf(ws);
       const used = await this.#used(db, ws, home);
-      s.take = { gen, carry, connects: connectsThere(own, used, here, s.to), bindings: this.#d.bindingsOf(own), driver: s.driver };
+      s.take = { gen, carry, connects: connectsThere(own, used, here, s.to), bindings: this.#d.bindingsOf(own), driver: s.driver, accounts: home };
       s.step = "handing";
       await this.#save();
       await rm(scratchDir(this.#d.data), { recursive: true, force: true });
@@ -758,13 +780,22 @@ export class Retire {
       for (const p of this.#d.accounts.own()) {
         if (s.accountsLeft.some((a) => a.id === p.id && a.error === "")) continue;
         try {
-          await this.#d.accounts.move(p.id, s.to);
+          const there = (await this.#d.accounts.move(p.id, s.to)) as Json;
           s.accountsLeft = s.accountsLeft.filter((a) => a.id !== p.id);
+          s.accountsMoved = [...s.accountsMoved.filter((a) => a.was !== p.id), { was: p.id, id: typeof there?.id === "string" ? there.id : p.id }];
         } catch (e) {
           log.warn("retire", "an account did not move with the retirement", { profile: p.id, error: (e as Error).message });
           s.accountsLeft = [...s.accountsLeft.filter((a) => a.id !== p.id), { id: p.id, name: p.name, error: (e as Error).message }];
         }
         await this.#save();
+      }
+      // (the station that took the chats told what became of each, once: their sessions there go on on the ids they
+      // have there, and what it tells them waits for this. One from before knows no such request)
+      if (!s.accountsTold) {
+        await this.#d.ask(s.to, { method: "retire.accounts", workspace: ws, origin: here, moved: s.accountsMoved, left: s.accountsLeft.map((a) => a.id) }).catch((e) => {
+          if (!(e instanceof Refused && /no such retire request/.test(e.message))) throw e;
+        });
+        s.accountsTold = true;
       }
       s.step = "connects";
       await this.#save();
@@ -806,7 +837,8 @@ export class Retire {
     // (one that moved there was told there, by the station that took them; a station from before tells nothing)
     if (d !== null && !(moved && answer?.driverTold === true)) {
       const jobs = s.jobsThere === null ? "" : ` ${jobWords(s.jobsThere)}`;
-      await this.#toDriver(s, `Retiring this station: ${s.toName || "the other station"} took its chats; they go on there.${jobs} Its ${s.step === "accounts" ? "accounts, then its connects" : "connects"} move next.`);
+      const lost = typeof answer?.lost === "string" && answer.lost !== "" ? ` But: ${answer.lost}.` : "";
+      await this.#toDriver(s, `Retiring this station: ${s.toName || "the other station"} took its chats; they go on there.${jobs}${lost} Its ${s.step === "accounts" ? "accounts, then its connects" : "connects"} move next.`);
     }
   }
 
@@ -949,71 +981,29 @@ export class Retire {
     }
   }
 
-  /// What the gathering `g` names that the other station lacks, sent: each session's list read as it streams, its hashes
-  /// asked of in batches (`retire.lacking`, LACK_MOST at most), then the list itself; the index last, its hash said back
-  /// (null: stopped). A file that changed since it was gathered is refused there: left for the next gathering while the
-  /// chats work, gathered again (the step tried again) once they are stopped (`strict`). The agent home's list is one more.
+  /// What the gathering `g` names that the other station lacks, sent (sending.ts `sendGathered`, by `retire.lacking`
+  /// and `retire.put`): the index last, its hash said back (null: stopped).
   async #send(s: State, g: Gathered, here: string, strict: boolean): Promise<string | null> {
-    const index = JSON.parse(await readFile(g.index, "utf8")) as CarryIndex;
-    s.total = index.bytes;
     s.done = 0;
-    this.#changed(true);
-    for (const session of [...index.sessions, ...(index.agent ? [index.agent] : [])]) {
-      let batch: { hash: string; path: string; size: number }[] = [];
-      const lines = createInterface({ input: createReadStream(session.at), crlfDelay: Infinity });
-      try {
-        for await (const line of lines) {
-          if (this.#stopping) return null;
-          if (line === "") continue;
-          const f = JSON.parse(line);
-          if (typeof f?.hash !== "string") continue;
-          batch.push({ hash: f.hash, path: f.path, size: f.size });
-          if (batch.length >= this.#lackMost) {
-            await this.#sendBatch(s, here, batch, strict);
-            batch = [];
-          }
-        }
-      } finally {
-        lines.close();
-      }
-      await this.#sendBatch(s, here, batch, strict);
-      if (strict) await this.#sendBatch(s, here, [{ hash: session.list, path: session.at, size: 0 }], true);
-    }
-    await this.#sendBatch(s, here, Object.entries(index.bundles).map(([hash, path]) => ({ hash, path, size: 0 })), strict);
-    if (this.#stopping || !strict) return null;
-    index.jobs = s.jobs;
-    const text = Buffer.from(JSON.stringify(index));
-    const hash = createHash("sha256").update(text).digest("hex");
-    await this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: hash }, oneBytes(text)));
-    return hash;
-  }
-
-  /// Of `batch`, what the other station lacks, sent.
-  async #sendBatch(s: State, here: string, batch: { hash: string; path: string; size: number }[], strict: boolean): Promise<void> {
-    if (batch.length === 0) return;
-    const asked = [...new Set(batch.map((f) => f.hash))];
-    const answer = await this.#d.ask(s.to, { method: "retire.lacking", workspace: s.workspace, origin: here, hashes: asked });
-    const lacking = new Set<string>(Array.isArray(answer?.lacking) ? answer.lacking : asked);
-    for (const f of batch) {
-      if (this.#stopping) return;
-      if (lacking.delete(f.hash)) {
-        let size = 0;
-        try {
-          size = (await stat(f.path)).size;
-        } catch {
-          continue;
-        }
-        try {
-          await this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: f.hash }, fileBytes(f.path, 0, size)));
-        } catch (e) {
-          if (!(e instanceof Refused && /changed/.test(e.message)) && !/got shorter/.test((e as Error).message)) throw e;
-          if (strict) throw new Error("a file changed as it was sent: gathered again");
-          continue;
-        }
-      }
-      s.done += f.size;
-      this.#changed(false);
-    }
+    return await sendGathered(g, {
+      lacking: (hashes) => this.#d.ask(s.to, { method: "retire.lacking", workspace: s.workspace, origin: here, hashes }),
+      put: (hash, bytes) => this.#d.ask(s.to, withBytes({ method: "retire.put", workspace: s.workspace, origin: here, name: hash }, bytes)),
+      // (where its `retire.lacking` says it takes packs; a pack of one names its file, as a file's request does)
+      putPack: (entries, bytes, strict) => this.#d.ask(s.to, withBytes({
+        method: "retire.put", workspace: s.workspace, origin: here, pack: PACK_ENCODING, strict, count: entries.length,
+        ...(entries.length === 1 ? { name: entries[0]!.hash } : {}),
+      }, bytes)),
+      most: this.#lackMost,
+      stopping: () => this.#stopping,
+      total: (bytes) => {
+        s.total = bytes;
+        this.#changed(true);
+      },
+      done: (bytes) => {
+        s.done += bytes;
+        this.#changed(false);
+      },
+    }, strict, s.jobs);
   }
 
   /// The other station says it took this one's place (`retire.took`): the accounts and connects next.
@@ -1301,11 +1291,20 @@ export class Retire {
             if (hashes.length > this.#lackMost || !hashes.every((h: unknown) => typeof h === "string" && HASH.test(h))) throw new Refused(`at most ${this.#lackMost} files' hashes`);
             const t = this.#taking.get(peer);
             if (t === undefined || t.workspace !== ws) throw new Refused("not begun: retire.begin first");
-            const files = join(this.#carried.dir(ws, peer), "files");
-            const held = await Promise.all(hashes.map((h: string) => there(join(files, h))));
-            return { lacking: hashes.filter((_: string, i: number) => !held[i]) };
+            return { lacking: await lackingIn(join(this.#carried.dir(ws, peer), "files"), hashes), pack: PACK_ENCODING };
           }
           case "retire.put": {
+            if (request.pack === PACK_ENCODING) {
+              const named = request.name === undefined ? undefined : String(request.name);
+              if (bytes === null || (named !== undefined && !HASH.test(named))) throw new Refused("not a pack");
+              const t = this.#taking.get(peer);
+              if (t === undefined || t.workspace !== ws) throw new Refused("not begun: retire.begin first");
+              await receivePack(join(this.#carried.dir(ws, peer), "files"), bytes as Bytes, {
+                strict: request.strict !== false, ...(named !== undefined ? { name: named } : {}),
+                ...(typeof request.count === "number" ? { count: request.count } : {}),
+              });
+              return { ok: true };
+            }
             const name = String(request.name ?? "");
             if (bytes === null || !HASH.test(name)) throw new Refused("not a file's hash");
             const t = this.#taking.get(peer);
@@ -1315,6 +1314,8 @@ export class Retire {
           }
           case "retire.take":
             return await this.#takeAsked(peer, ws, request);
+          case "retire.accounts":
+            return await this.#accountsCame(peer, ws, request);
           case "retire.drop":
             return request.keep === true ? await this.#keep(peer, ws) : await this.#drop(peer, ws);
         }
@@ -1345,7 +1346,7 @@ export class Retire {
     // where it is called off)
     const t: Taking = {
       origin, name: typeof request.name === "string" ? request.name : (was?.name ?? ""), workspace: ws, gen: "", carry: "", connects: {}, bindings: {}, step: "coming", placed: 0, missing: 0, gits: 0, gitsFailed: 0, rooms: was?.rooms ?? null, error: null, told: false, restarts: 0,
-      driver: null, jobs: null, jobsTold: false, home: false, driverTold: false,
+      driver: null, jobs: null, jobsTold: false, home: false, driverTold: false, failedAt: null, accounts: null,
     };
     if (was !== undefined && was.workspace !== ws) await rm(this.#carried.dir(was.workspace, origin), { recursive: true, force: true });
     this.#taking.set(origin, t);
@@ -1354,36 +1355,9 @@ export class Retire {
     return { ok: true };
   }
 
-  /// A file sent: written beside, its bytes' hash checked as they come, then put in place; one whose bytes are not what
-  /// its name says (it changed as it was read) refused.
+  /// A file sent, taken by its hash (sending.ts `receiveFile`).
   async #receive(ws: string, origin: string, hash: string, bytes: Bytes): Promise<void> {
-    const dir = join(this.#carried.dir(ws, origin), "files");
-    const path = join(dir, hash);
-    if (await there(path)) {
-      for await (const _ of bytes) void _;
-      return;
-    }
-    await mkdir(dir, { recursive: true });
-    const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-    const h = createHash("sha256");
-    const f = await open(tmp, "w");
-    try {
-      for await (const piece of bytes) {
-        h.update(piece);
-        for (let done = 0; done < piece.length; ) done += (await f.write(piece, done, piece.length - done)).bytesWritten;
-      }
-      await f.sync();
-    } catch (e) {
-      await f.close().catch(() => {});
-      await rm(tmp, { force: true });
-      throw e;
-    }
-    await f.close();
-    if (h.digest("hex") !== hash) {
-      await rm(tmp, { force: true });
-      throw new Refused("changed: its bytes are not what its name says");
-    }
-    await rename(tmp, path);
+    await receiveFile(join(this.#carried.dir(ws, origin), "files"), hash, bytes);
   }
 
   async #takeAsked(origin: string, ws: string, request: Json): Promise<Json> {
@@ -1395,6 +1369,16 @@ export class Retire {
     if (was === undefined || was.workspace !== ws) throw new Refused("not begun: retire.begin first");
     if (was.step === "took") return { ok: true, took: true };
     const same = was.gen === gen && was.carry === carry;
+    // (not begun where this station's disk is about full, as the station retired is told at once: its chats go back to
+    // work, rather than wait stopped for a placing that fills the disk; the same room the sending kept it)
+    if (!this.#takingRuns.has(origin) && (!same || was.step === "coming" || (was.step === "failed" && request.again === true))) {
+      const room = await this.#room().catch(() => ({ free: null }));
+      if (typeof room.free === "number" && room.free < HEADROOM) {
+        const failed = `${this.#hereName(ws)} has ${gb(room.free)} free, under the ${gb(HEADROOM)} it keeps free to put the chats in: free some room there, then hand over again`;
+        log.warn("retire", "a retired station's chats not taken: this station's disk is about full", { origin, free: room.free });
+        return { ok: true, failed };
+      }
+    }
     if (this.#takingRuns.has(origin)) {
       if (same) return { ok: true };
       throw new Refused("busy: this station is putting in another copy of that station's chats");
@@ -1407,6 +1391,7 @@ export class Retire {
     const d = request.driver;
     was.driver = d !== null && typeof d === "object" && typeof d.station === "string" && STATION.test(d.station) && typeof d.session === "string" && d.session !== "" ? { station: d.station, session: d.session } : null;
     if (typeof request.name === "string" && request.name !== "") was.name = request.name;
+    was.accounts = typeof request.accounts === "boolean" ? request.accounts : null;
     if (!same || was.step === "coming") {
       was.gen = gen;
       was.carry = carry;
@@ -1417,7 +1402,9 @@ export class Retire {
       // (asked again, by a person: what came of the last restart goes, and the copy is put in again)
       const o = this.#d.copies.restored();
       if (o !== null && o.origin === origin) await rm(outcomeFile(this.#d.data), { force: true });
-      was.step = "copy";
+      // (where it failed: one that failed placing places again)
+      was.step = was.failedAt ?? "copy";
+      was.failedAt = null;
       was.restarts = 0;
     }
     was.error = null;
@@ -1468,12 +1455,26 @@ export class Retire {
     if (this.#takingRuns.has(t.origin) || this.#closed) return;
     this.#takeAgain.get(t.origin)?.();
     this.#takeAgain.delete(t.origin);
-    const run = this.#taken(t).catch((e) => {
+    const run = this.#taken(t).catch(async (e) => {
       t.error = (e as Error).message;
       log.warn("retire", "a retired station's chats not taken yet", { origin: t.origin, step: t.step, error: t.error });
+      // (before the copy is brought for the restart nothing of it is put in: it failed, said to the station retired,
+      // whose chats go back to work, rather than tried again and again with its chats stopped. A process that stops
+      // meanwhile has not failed: the next goes on where it stood)
+      if (!this.#closed && this.#taking.get(t.origin) === t && (t.step === "placing" || t.step === "gits")) {
+        t.failedAt = t.step;
+        t.step = "failed";
+        t.told = false;
+        await this.#saveTaking(t).catch((x) => log.warn("retire", "where a take stands not written", { origin: t.origin, error: (x as Error).message }));
+        return;
+      }
       this.#changed(true);
       if (!this.#closed && this.#taking.get(t.origin) === t) this.#takeAgain.set(t.origin, this.#d.fibers.after(RETRY_MS, () => this.#take(t))); // timer: a retry after a failure
-    }).finally(() => this.#takingRuns.delete(t.origin));
+    }).finally(() => {
+      this.#takingRuns.delete(t.origin);
+      // (told once nothing runs for it: the station retired asks it to keep what it was sent, which a run refuses)
+      if (t.step === "failed" && !t.told && this.#taking.get(t.origin) === t) this.#tell(t);
+    });
     this.#takingRuns.set(t.origin, run);
   }
 
@@ -1498,6 +1499,11 @@ export class Retire {
       const placed = await this.#work.place(this.#d.data, indexPath, files);
       t.placed = placed.placed + placed.kept;
       t.missing = placed.missing;
+      // (every file the lists name is sent before the chats are asked to be taken, `#send`: one not here is lost)
+      if (placed.missing > 0) {
+        await this.#saveTaking(t);
+        throw new Error(`${placed.missing} file${placed.missing === 1 ? "" : "s"} that ${t.name || "the station retired"} sent ${placed.missing === 1 ? "is" : "are"} not here: hand over again, which sends ${placed.missing === 1 ? "it" : "them"} again`);
+      }
       t.step = "gits";
       await this.#saveTaking(t);
     }
@@ -1522,14 +1528,18 @@ export class Retire {
 
   /// This station took `t`'s station's place: its agent home merged into this one's, the jobs its chats had running
   /// started again (each once: what came of them kept before anything is told), the bindings set, each moved chat's
-  /// agent to be told, those whose jobs were started told at once, and the driver where it moved here; what was brought
-  /// for it gone; that station told so (`#tell`). Each part is kept done as it is, so a start again in the middle goes on
-  /// from there.
+  /// agent to be told, the keys of its sessions kept (`keysFile`) for its accounts to come (`retire.accounts`), what
+  /// wakes them (the words of the jobs, the driver's where it moved here) kept to be told once they came (`#wakeSoon`);
+  /// what was brought for it gone; that station told so (`#tell`). Each part is kept done as it is, so a start again in
+  /// the middle goes on from there.
   async #tookPlace(t: Taking): Promise<void> {
     const dir = this.#carried.dir(t.workspace, t.origin);
     const files = join(dir, "files");
     const index = await readFile(join(files, t.carry), "utf8").then((x) => JSON.parse(x) as CarryIndex, () => null);
     const at = this.#d.fibers.now();
+    // (gone from under it: the chats are in, but not what went along, and nothing here says what they had running)
+    const lost = index === null ? "what went along with the chats (their index) was not on this station as it took them: no job of theirs was started again here, and no chat was told it moved" : null;
+    if (lost !== null) log.warn("retire", "a retired station's chats taken here without what went along with them", { origin: t.origin, workspace: t.workspace });
     if (index !== null && !t.home) {
       const to = index.agent ? this.#d.agentHome?.(t.workspace) ?? null : null;
       if (to !== null && index.agent) {
@@ -1551,35 +1561,91 @@ export class Retire {
     const notes = index === null ? [] : index.sessions.map((s) => ({ session: s.key, text: movedNote(t.name, name, index, s, this.#d.data, this.#d.reposDir, t.jobs) }));
     this.#d.took({ bindings, notes });
     if (!t.jobsTold) {
-      // (each moved chat whose jobs were tried told at once, which wakes it, its moved note before it)
+      // (its sessions' keys, a line each: those whose accounts are told to come after them)
+      if (index !== null) {
+        await mkdir(tookDir(this.#d.data), { recursive: true });
+        await writeFile(keysFile(this.#d.data, t.origin), index.sessions.map((s) => `${s.key}\n`).join(""));
+      }
+      // (each moved chat whose jobs were tried to be told, which wakes it, its moved note before it, and the driver)
       const from = `This chat moved here from station ${t.name || t.origin.slice(0, 12)}`;
       const by = new Map<string, string[]>();
       for (const j of t.jobs ?? []) {
         if (j.old === true) continue;
         by.set(j.session, [...(by.get(j.session) ?? []), movedSaid(from, j, j.started ? null : (j.why ?? "not started"))]);
       }
-      for (const [session, said] of by) this.#d.jobs?.say(session, said.join("\n"));
       const d = t.driver;
+      let driver: Wake["driver"] = null;
       if (d !== null && d.station === t.origin && index?.sessions.some((s) => s.key === d.session) === true && this.#d.tell !== undefined) {
         const jobs = jobWords(t.jobs ?? []);
-        try {
-          this.#d.tell(d.session, `Retiring station ${t.name || t.origin.slice(0, 12)}: its chats were taken here, this chat with them (${index.sessions.length} chats); this station is that one too now.${jobs === "" ? "" : ` ${jobs}`} The retired station moves its accounts and connects here next and tells you what is left. Check that the chats go on here (see the stillfail-retire skill).`);
-          t.driverTold = true;
-        } catch (e) {
-          log.warn("retire", "who asked for the retirement not told here", { session: d.session, error: (e as Error).message });
-        }
+        driver = { session: d.session, text: `Retiring station ${t.name || t.origin.slice(0, 12)}: its chats were taken here, this chat with them (${index.sessions.length} chats); this station is that one too now.${jobs === "" ? "" : ` ${jobs}`} The retired station tells you what is left as it moves its accounts and connects here. Check that the chats go on here (see the stillfail-retire skill).` };
+        t.driverTold = true;
       }
+      const w: Wake = { origin: t.origin, workspace: t.workspace, at, says: [...by].map(([session, said]) => [session, said.join("\n")]), driver, accounts: t.accounts };
+      await writeJson(wakeFile(this.#d.data, t.origin), w);
+      this.#wakes.set(t.origin, w);
       t.jobsTold = true;
       await this.#saveTaking(t);
     }
     // (kept a while for station_retire's status here: what came of it)
-    this.#tookHere = [...this.#tookHere.filter((x) => x.origin !== t.origin), { origin: t.origin, name: t.name, workspace: t.workspace, at, chats: index?.sessions.length ?? 0, jobs: t.jobs ?? [] }].slice(-TAKEN_KEPT);
+    this.#tookHere = [...this.#tookHere.filter((x) => x.origin !== t.origin), { origin: t.origin, name: t.name, workspace: t.workspace, at, chats: index?.sessions.length ?? 0, jobs: t.jobs ?? [], error: lost }].slice(-TAKEN_KEPT);
     await writeJson(takenFile(this.#d.data), this.#tookHere);
     await rm(dir, { recursive: true, force: true });
     t.step = "took";
-    t.error = null;
+    t.error = lost;
     await this.#saveTaking(t);
+    this.#wakeSoon(t.origin);
     log.info("retire", "a retired station's chats went on here", { origin: t.origin, workspace: t.workspace });
+  }
+
+  /// What wakes the chats taken of `origin` told once its accounts came, or by ACCOUNTS_WAIT_MS after they were taken
+  /// (at once where none come).
+  #wakeSoon(origin: string): void {
+    const w = this.#wakes.get(origin);
+    if (w === undefined || this.#wakeAt.has(origin) || this.#closed) return;
+    const left = w.at + ACCOUNTS_WAIT_MS - this.#d.fibers.now();
+    if (w.accounts === false || left <= 0) return this.#wake(origin, w.accounts !== false);
+    this.#wakeAt.set(origin, this.#d.fibers.after(left, () => this.#wake(origin, true))); // timer: a deadline (the retired station's accounts not told)
+  }
+
+  /// The chats taken of `origin` told what waited for its accounts: their jobs' words, the driver's (`late`: the
+  /// accounts did not come by then, said to the driver).
+  #wake(origin: string, late: boolean): void {
+    const w = this.#wakes.get(origin);
+    this.#wakeAt.get(origin)?.();
+    this.#wakeAt.delete(origin);
+    if (w === undefined) return;
+    this.#wakes.delete(origin);
+    for (const [session, text] of w.says) this.#d.jobs?.say(session, text);
+    if (w.driver !== null) {
+      const text = late
+        ? `${w.driver.text} Its accounts have not come here yet (the retired station moves them after it hears its chats were taken): a chat that takes a turn before they do goes on on another account here, afresh. station_retire status on the retired station says where it stands.`
+        : w.driver.text;
+      try {
+        this.#d.tell?.(w.driver.session, text);
+      } catch (e) {
+        log.warn("retire", "who asked for the retirement not told here", { session: w.driver.session, error: (e as Error).message });
+      }
+    }
+    if (late) log.warn("retire", "a retired station's accounts not told here in time: its chats woken before they came", { origin });
+    const gone = rm(wakeFile(this.#d.data, origin), { force: true }).finally(() => this.#waking.delete(gone));
+    this.#waking.add(gone);
+  }
+
+  /// The station retired says what became of its accounts (`retire.accounts`): its chats taken here that ran on one
+  /// moved go on on the id it has here; what waited for them told.
+  async #accountsCame(origin: string, ws: string, request: Json): Promise<Json> {
+    if (!this.#d.copies.formerly().includes(origin)) throw new Refused("this station has not taken that station's chats");
+    const map = new Map<string, string>();
+    for (const m of Array.isArray(request.moved) ? request.moved : []) {
+      if (typeof m?.was === "string" && typeof m?.id === "string" && m.was !== "" && m.id !== "" && m.was !== m.id) map.set(m.was, m.id);
+    }
+    const keys = (await readFile(keysFile(this.#d.data, origin), "utf8").catch(() => "")).split("\n").filter((k) => k !== "");
+    const followed = map.size === 0 || keys.length === 0 ? 0 : (this.#d.followAccounts?.(keys, map) ?? 0);
+    const left = Array.isArray(request.left) ? request.left.filter((x: unknown) => typeof x === "string") : [];
+    log.info("retire", "a retired station's accounts came: its chats taken here follow them", { origin, workspace: ws, moved: [...map].map(([was, id]) => `${was}->${id}`), left, sessions: followed });
+    await rm(keysFile(this.#d.data, origin), { force: true });
+    this.#wake(origin, false);
+    return { ok: true };
   }
 
   /// The jobs `index` says its chats had running, started again here in their sessions, in the same directories under
@@ -1625,7 +1691,7 @@ export class Retire {
     this.#tellAgain.get(t.origin)?.();
     this.#tellAgain.delete(t.origin);
     const method = t.step === "took" ? "retire.took" : "retire.failed";
-    const run = this.#d.askItself(t.origin, { method, workspace: t.workspace, error: t.error, ...(t.step === "took" ? { jobs: t.jobs ?? [], driverTold: t.driverTold } : {}) })
+    const run = this.#d.askItself(t.origin, { method, workspace: t.workspace, error: t.error, ...(t.step === "took" ? { jobs: t.jobs ?? [], driverTold: t.driverTold, lost: t.error } : {}) })
       .then(async () => {
         if (t.step === "took") {
           // (it knows: nothing more is kept of it here)
@@ -1672,7 +1738,13 @@ export class Retire {
 /// to its commit, its branch taken where no branch of that name is here. Its files are left as they were put: what it
 /// changed shows as changed. One that cannot be made is left as its files, its bundle kept beside it
 /// (`<dir>.carried.bundle`: the only copy of its commits no remote has), counted.
-export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>): Promise<{ made: number; failed: number }> {
+/// `clone` false: a repository not in the cache already is not cloned: a chat handed over (handover.ts) has its
+/// repository moved before it by the repos module (move/repos.ts), and only adds its worktree.
+/// A linked worktree `rebuildGits` made: its directory, its repository, the branch and the ref it made there (none: there
+/// already). What a hand-over that fails takes out again (handover.ts), the repository itself staying.
+export type MadeGit = { dir: string; repo: string; branch: string | null; ref: string | null };
+
+export async function rebuildGits(dataDir: string, reposDir: string, carry: { dataDir: string; gits: CarryIndex["gits"] }, from: string, git: (dir: string, args: string[]) => Promise<string>, opts: { clone?: boolean; made?: (m: MadeGit) => Promise<void> } = {}): Promise<{ made: number; failed: number }> {
   let made = 0;
   let failed = 0;
   const repos = new Map<string, string>();
@@ -1689,6 +1761,7 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
         return dir;
       }
     }
+    if (opts.clone === false) throw new Error(`its repository (${remote}) is not on this station: move it first (station_move, module repos)`);
     const base = basename(remote).replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
     let name = base;
     for (let i = 2; await there(join(reposDir, name)); i++) name = `${base}-${i}`;
@@ -1713,11 +1786,21 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
         continue;
       }
       const repo = await repoOf(g.remote);
-      if (g.bundle !== null) await git(repo, ["fetch", "-q", join(from, g.bundle), `+HEAD:refs/carried/${g.head}`]);
-      if (await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await git(repo, ["fetch", "-q", "origin"]);
+      const ref = `refs/carried/${g.head}`;
+      const refBefore = g.bundle === null ? true : await git(repo, ["rev-parse", "-q", "--verify", ref]).then(() => true, () => false);
+      // (its remote fetched where the repository lacks what the worktree stands on: a bundle's prerequisites, its commit.
+      // A clone here before its remote went on, as the repos module moved it, lacks what was pushed since)
+      const fetchOrigin = () => git(repo, ["fetch", "-q", "--no-write-fetch-head", "origin"]);
+      const fromBundle = () => git(repo, ["fetch", "-q", join(from, g.bundle!), `+HEAD:${ref}`]);
+      if (g.bundle !== null) await fromBundle().catch(async () => (await fetchOrigin(), await fromBundle()));
+      if (await git(repo, ["cat-file", "-e", `${g.head}^{commit}`]).then(() => false, () => true)) await fetchOrigin();
       const beside = `${dir}.git-carrying`;
       await rm(beside, { recursive: true, force: true });
-      await git(repo, ["worktree", "add", "-q", "--no-checkout", "--detach", beside, g.head]);
+      // (forced twice: a worktree git keeps there, gone but locked, as an archived one or a run cut short left it, is
+      // git's to take over)
+      await git(repo, ["worktree", "add", "-f", "-f", "-q", "--no-checkout", "--detach", beside, g.head]);
+      // (said before it is in place, so that one cut between the two is taken out too)
+      await opts.made?.({ dir, repo, branch: null, ref: refBefore ? null : ref });
       await rename(join(beside, ".git"), join(dir, ".git"));
       await rm(beside, { recursive: true, force: true });
       await git(dir, ["worktree", "repair"]);
@@ -1725,7 +1808,10 @@ export async function rebuildGits(dataDir: string, reposDir: string, carry: { da
       if (g.branch !== null) {
         const at = await git(repo, ["rev-parse", "-q", "--verify", `refs/heads/${g.branch}`]).catch(() => null);
         // (a branch of that name here already is another's: the checkout stays at its commit, detached)
-        if (at === null) await git(dir, ["checkout", "-q", "-b", g.branch]);
+        if (at === null) {
+          await opts.made?.({ dir, repo, branch: g.branch, ref: refBefore ? null : ref });
+          await git(dir, ["checkout", "-q", "-b", g.branch]);
+        }
       }
       made++;
     } catch (e) {

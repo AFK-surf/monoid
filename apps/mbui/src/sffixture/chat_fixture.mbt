@@ -18,6 +18,21 @@ pub fn by_person(name : String) -> Json {
 }
 
 ///|
+/// Ana's face as the first row's chat names her among its people (its bytes the core's `picture`: none here, fixture.mbt
+/// shows no picture; a test that gives them, sfapp's page_pictures_wbtest).
+pub let ana_face : String = "https://example.com/faces/ana.png"
+
+///|
+/// Ana as the first row's chat names her among its people: with her face (ana_face).
+let ana_faced : Json = {
+  "id": "ana@example.com",
+  "name": "Ana",
+  "email": "ana@example.com",
+  "via": "cloud",
+  "shown": { "name": "Ana", "display": "Ana", "mine": false, "picture": ana_face },
+}
+
+///|
 /// When a message (an outgoing one, one said elsewhere) was said, as a chat says it (SaidAt).
 pub fn ago(s : String, full : String) -> Json {
   { "createdAt": { "ago": Json::string(s), "full": Json::string(full) } }
@@ -247,7 +262,7 @@ pub fn rich_chat(older : Int) -> Json {
     "me": { "email": "lin@example.com" },
     "thread": { "id": 7, "unread": 0 },
     "title": "整理发布清单",
-    "people": [me, ana],
+    "people": [me, ana_faced],
     "agents": [
       {
         "session": {
@@ -425,6 +440,11 @@ pub fn fixture_file_png(name : String) -> Bytes {
     "peek.png" => (160, 100, (0xFF, 0xFF, 0xFF), (0x5B, 0x7B, 0xB2))
     // a video's still (its poster: a frame of a screen recording, 16:9)
     "演示录屏.mp4" => (160, 90, (0x1E, 0x2A, 0x3A), (0x5B, 0x7B, 0xB2))
+    // a person's face (ana_face, as a test or a film gives it): small, as the core keeps one
+    "face.png" => (22, 22, (0xF2, 0xB0, 0x1E), (0xC2, 0x41, 0x6B))
+    // board-many's people's faces (board_face)
+    "face-z.png" => (16, 16, (0x5B, 0x7B, 0xB2), (0x2F, 0x8F, 0x5B))
+    "face-u.png" => (16, 16, (0xC2, 0x41, 0x6B), (0x8E, 0x5B, 0xB2))
     _ => (120, 80, (0x2F, 0x8F, 0x5B), (0xE8, 0xE4, 0xDC))
   }
   let rgba = FixedArray::make(w * h * 4, b'\x00')
@@ -451,7 +471,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
   }
   match name {
     "chat" =>
-      if f.mode == "chat-loading" {
+      if board_mode(f.mode) && session != "" && !session.has_prefix("new:") {
+        Some(fix_window_of(with_cards(f, with_sent(board_chat(f, session), session), session), session))
+      } else if f.mode == "chat-loading" {
         None
       } else if f.mode == "chat-long" {
         Some(kept_chat("long", fn() { long_chat(3000) }))
@@ -463,6 +485,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_overload_notice(rich_chat(f.older), f.mode == "chat-overload-after", f.step > 0)
           } else if f.mode == "chat-turn-failed" {
             with_failed_turn(rich_chat(f.older), f.step > 0)
+          } else if f.mode == "chat-turn-failed-repeated" {
+            // (重试 pressed: its agent at it (1), then failing again alike (2: one more folded))
+            with_failed_turn(rich_chat(f.older), f.step == 1, repeated=if f.step >= 2 { 12 } else { 11 })
           } else if f.mode == "chat-turn-limit" {
             with_limit_turn(rich_chat(f.older), f.step > 0)
           } else if f.mode == "chat-turn-unanswered" {
@@ -475,8 +500,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_md_message(rich_chat(f.older))
           } else if f.mode == "chat-viz" {
             with_viz_message(rich_chat(f.older))
-          } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" {
+          } else if f.mode == "chat-mbui" || f.mode == "chat-mbui-dark" || f.mode == "chat-view-side-mbui" || f.mode == "chat-preview-mbui" {
             with_mbui_viz_message(rich_chat(f.older))
+          } else if f.mode == "chat-view-side-memory-mbui" || f.mode == "chat-preview-memory-mbui" {
+            with_memory_mbui_viz_message(rich_chat(f.older))
           } else if f.mode == "chat-file-links" {
             with_file_links(rich_chat(f.older))
           } else if f.mode == "chat-table-images" {
@@ -512,6 +539,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_coming_screenshot(rich_chat(f.older))
           } else if f.mode == "chat-download" || f.mode == "chat-keeping" {
             with_download_message(rich_chat(f.older))
+          } else if f.mode == "chat-files-sent" {
+            with_sent_files(rich_chat(f.older))
           } else if f.mode == "chat-download-on" {
             with_reply_after(with_download_message(rich_chat(f.older)))
           } else {
@@ -1621,6 +1650,22 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-uploading-files: files other than pictures going up before it goes, no words with them, each one's card
+    // saying how much of it the station has (views.ts uploads)
+    "chat-uploading-files" =>
+      match outgoing_json("o-seed", { "text": "" }, "sending", "") {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("正在上传 2 个文件")
+          o["progress"] = Json::number(0.4)
+          o["uploads"] = [
+            { "name": "发布说明.pdf", "size": 245760, "sent": 98304 },
+            { "name": "build-logs.zip", "size": 1048576, "sent": 0 },
+          ]
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     _ => []
   }
 }
@@ -1631,7 +1676,8 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
 // 「…」 as how it went), let go at once (no longer asked). An option with 失败 in it fails. The modes chat-cards (the
 // card answered) and chat-answering (an option under way) open the first row's chat so (scripts/shots.sh cards);
 // chat-vault, with an agent asking to keep a password at its end, decided here as the core decides it; chat-vault-typed,
-// asking the person to type a token in instead; chat-vault-file, to pick a file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one
+// asking the person to type a token in instead; chat-vault-oauth, to sign in to Slack for one; chat-vault-file, to pick a
+// file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one
 // and say what it is.
 
 ///|
@@ -1660,7 +1706,7 @@ pub let fix_vault : Ref[String] = Ref("")
 ///|
 /// chat-vault's last post: an agent asking to keep a password (`typed`: a token the person types in; `file`: a file
 /// they pick), or `use_secret` for an already answered request to use a token; its card as the core says it.
-pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false) -> Json {
+pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false) -> Json {
   let ask : Map[String, Json] = if remove {
     { "name": "办公室 Mac 主机管理员登录", "reason": "这个密码在 Office-Host-2 上登不上，能用的那个已经另存了，留着会让别的 agent 拿它去试", "mode": "env", "hosts": [], "remove": true, "answer": "approve" }
   } else if describe {
@@ -1679,6 +1725,8 @@ pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false
     }
   } else if use_secret {
     { "name": "Axiom 查询 token", "reason": "查询中继连接日志，定位拨号失败的原因", "mode": "proxy", "hosts": ["api.axiom.co"], "howText": "代理 · 限 api.axiom.co", "command": "curl -s https://api.axiom.co/v1/datasets/_apl", "answer": "approve", "scope": "chat" }
+  } else if oauth {
+    { "name": "Slack · 星火工作室", "reason": "以你的身份搜索 Slack 里关于发布的讨论", "mode": "proxy", "hosts": ["slack.com"], "save": { "kind": "token", "typed": true, "oauth": "slack" }, "answer": "approve" }
   } else if file {
     { "name": "生产集群", "mode": "file", "save": { "kind": "file", "typed": true }, "answer": "approve" }
   } else if typed {
@@ -1693,7 +1741,7 @@ pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false
   if fix_vault.val != "" {
     ask["status"] = Json::string(fix_vault.val)
   }
-  msg(60, "agent", by_agent("Anthropic", "claude", "s-c1"), if remove { "申请删除密钥「办公室 Mac 主机管理员登录」" } else if describe { "申请修改密钥「127.0.0.1 登录态」的名称与说明" } else if use_secret { "申请使用 Axiom 查询 token 查询日志" } else if file { "请选择生产集群的 kubeconfig" } else if typed { "请填入 OpenCode Go 的 API key" } else { "要存入 测试服务登录 的密码" }, "刚刚", {
+  msg(60, "agent", by_agent("Anthropic", "claude", "s-c1"), if remove { "申请删除密钥「办公室 Mac 主机管理员登录」" } else if describe { "申请修改密钥「127.0.0.1 登录态」的名称与说明" } else if use_secret { "申请使用 Axiom 查询 token 查询日志" } else if oauth { "请用 Slack 授权，把你的 Slack 账号存入密钥库" } else if file { "请选择生产集群的 kubeconfig" } else if typed { "请填入 OpenCode Go 的 API key" } else { "要存入 测试服务登录 的密码" }, "刚刚", {
     "card": { "type": "options", "vault": "r-demo", "vaultAsk": Json::object(ask) },
     "createdAt": Json::number(1.0e9),
   })
@@ -1840,7 +1888,7 @@ pub fn ask_end_post() -> Json {
 pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   let seeded = f.mode == "chat-cards"
   let ask_end = f.mode == "chat-ask-end"
-  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
   // (chat-rig: an agent's request for the viewer's rig, waiting; -other: someone else's rig; -web: on a web page;
@@ -1914,7 +1962,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       }
       // chat-vault's request to keep a password, last
       if vault {
-        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove"))
+        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth"))
       }
       // chat-phone's request for the person's phone, last
       if phone {
@@ -2141,6 +2189,171 @@ pub let mbui_viz_answer : String =
   #|把内联 HTML 预览换成了原生 mbui 组件，零 WebView 开销，首帧直接算好高度：
   #|
   #|[发布与性能看板](release.mbui)
+
+///|
+pub fn with_memory_mbui_viz_message(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), memory_mbui_viz_answer, "1 分钟前", {
+          "attachments": [file("memory-schemes.mbui", 0, 0, 2400)],
+          "placed": ["memory-schemes.mbui"],
+          "md": [
+            ["p", [[0, 39]]],
+            ["p", [["a", [[42, 51]], { "href": "memory-schemes.mbui", "path": "memory-schemes.mbui" }]]],
+          ],
+          "ending": "all_done",
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+pub let memory_mbui_viz_answer : String =
+  #|整理了设置里「记忆」页的 3 种设计方案对比，可直接切换方案或展开规则行查看：
+  #|
+  #|[记忆页方案对比](memory-schemes.mbui)
+
+///|
+pub let fixture_viz_memory_mbui : String =
+  #|{
+  #|  "title": "设置 › 记忆",
+  #|  "subtitle": "点击切换 3 种方案预览（各行均可点击展开）",
+  #|  "state": { "scheme": "a" },
+  #|  "body": [
+  #|    {
+  #|      "type": "tabs",
+  #|      "id": "scheme_tabs",
+  #|      "state_key": "scheme",
+  #|      "active": "a",
+  #|      "items": [
+  #|        {
+  #|          "id": "a",
+  #|          "label": "方案 A：直接列规则（推荐）",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "subtitle": "每次对话都会读取",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "记忆和 skill 只写长期有效的规则和事实，不写进度、现状、交接段落" },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "row",
+  #|                  "gap": 6,
+  #|                  "children": [
+  #|                    { "type": "badge", "text": "ccvm", "tone": "blue" },
+  #|                    { "type": "text", "text": "本机 ccvm（4 核 8G、盘小）不编译、不跑测试，都用 station_task 到 Studio" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "row",
+  #|                  "gap": 6,
+  #|                  "children": [
+  #|                    { "type": "badge", "text": "Studio", "tone": "accent" },
+  #|                    { "type": "text", "text": "查 ~/.stillfail/repos/*.git 裸仓库先在 workspace 建 detached worktree" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "a_more_rules",
+  #|                  "title": "展开其余 17 条规则",
+  #|                  "subtitle": "点击原地展开全部 23 条",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "text", "text": "/tmp 各会话共用，大文件放自己的 workspace" },
+  #|                    { "type": "divider" },
+  #|                    { "type": "text", "text": "改项目代码、跑测试、出图前先读对应 SKILL.md 与 AGENTS.md" }
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            },
+  #|            {
+  #|              "type": "card",
+  #|              "title": "Skill",
+  #|              "subtitle": "处理对应事情时读取",
+  #|              "badge": "13 个",
+  #|              "children": [
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_rel",
+  #|                  "title": "发布流程",
+  #|                  "subtitle": "skills/release/SKILL.md · 构建、公证并发布桌面端与移动端安装包",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "code", "text": "scripts/release.sh --notarize --channel stable" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_bench",
+  #|                  "title": "性能基准",
+  #|                  "subtitle": "skills/instrbench/SKILL.md · 在 Studio 上对比改前改后的指令数与布局次数",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "code", "text": "bash apps/mbui/scripts/instrbench.sh compare" }
+  #|                  ]
+  #|                },
+  #|                { "type": "divider" },
+  #|                {
+  #|                  "type": "details",
+  #|                  "id": "sk_builtin",
+  #|                  "title": "内置 skill",
+  #|                  "subtitle": "10 个（默认收起）",
+  #|                  "open": false,
+  #|                  "body": [
+  #|                    { "type": "text", "text": "stillfail-chats · stillfail-jobs · stillfail-viz · stillfail-vault" }
+  #|                  ]
+  #|                }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        },
+  #|        {
+  #|          "id": "b",
+  #|          "label": "方案 B：通用 + 机器专属两行",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "通用规则（18 条）与各机器专属（5 条）拆为两行入口" }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        },
+  #|        {
+  #|          "id": "c",
+  #|          "label": "方案 C：单行入口",
+  #|          "body": [
+  #|            {
+  #|              "type": "card",
+  #|              "title": "全局记忆",
+  #|              "badge": "23 条",
+  #|              "children": [
+  #|                { "type": "text", "text": "只保留一行「全局记忆（23 条）」入口，点进去看全文" }
+  #|              ]
+  #|            }
+  #|          ]
+  #|        }
+  #|      ]
+  #|    }
+  #|  ]
+  #|}
 
 ///|
 /// MBUI_FIXTURE=chat-image-coming: a last message's two pictures still coming from their station (fixture.mbt's
@@ -2413,6 +2626,30 @@ pub let fixture_viz_mbui : String =
   #|        "note": "开启后由 Wasm 切换 10% 灰度验证"
   #|      },
   #|      {
+  #|        "type": "details",
+  #|        "id": "rules",
+  #|        "title": "展开其余 17 条规则",
+  #|        "open": false,
+  #|        "children": [
+  #|          {
+  #|            "type": "row",
+  #|            "gap": 8,
+  #|            "children": [
+  #|              { "type": "badge", "label": "通用", "tone": "accent" },
+  #|              { "type": "text", "text": "语言跟随用户最新消息；Slack 时间用 UTC+8；发图发全窗口截图" }
+  #|            ]
+  #|          },
+  #|          {
+  #|            "type": "row",
+  #|            "gap": 8,
+  #|            "children": [
+  #|              { "type": "badge", "label": "架构", "tone": "info" },
+  #|              { "type": "text", "text": "多端共用一套 TS core 接口，组件圆角与间距遵循 mbui 阶梯" }
+  #|            ]
+  #|          }
+  #|        ]
+  #|      },
+  #|      {
   #|        "type": "row",
   #|        "justify": "between",
   #|        "wrap": false,
@@ -2632,13 +2869,20 @@ fn with_overload_notice(v : Json, after : Bool, canceled : Bool) -> Json {
 
 ///|
 /// The chat `v` ending on a turn that lost its connection to the model's service ("chat-turn-failed"): its notice offers
-/// 重试 till it is pressed (`retried`: its agent goes on, the notice says it no more).
-fn with_failed_turn(v : Json, retried : Bool) -> Json {
+/// 重试 till it is pressed (`retried`: its agent goes on, the notice says it no more). `repeated`
+/// ("chat-turn-failed-repeated"): so many of them one after another, folded by the core into one (views.ts
+/// foldNotices: ×11, the last's seq and failure in words).
+fn with_failed_turn(v : Json, retried : Bool, repeated? : Int = 0) -> Json {
   match v {
     Object(m) => {
       let o = m.copy()
       let words = if @sf.language() == "en" { "Connection lost; reply to retry" } else { "与模型服务的连接中断，回复即可重试" }
       let notice : Map[String, Json] = { "failed": true, "words": Json::string(words) }
+      if repeated > 1 {
+        notice["count"] = Json::number(repeated.to_double())
+        notice["lastSeq"] = Json::number((7 + repeated).to_double())
+        notice["detail"] = Json::string("API Error: Connection error (request req_011CVa\{repeated}: read ECONNRESET)")
+      }
       if !retried {
         notice["againSession"] = "s-c1"
       }

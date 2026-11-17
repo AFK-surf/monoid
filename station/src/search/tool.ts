@@ -19,7 +19,7 @@ const KINDS = ["chat", "message", "history", "job", "skill", "memory", "profile"
 
 export type SearchDeps = {
   search: Search;
-  readSkill(workspace: string | undefined, name: string, file: string): string;
+  readSkill(workspace: string | undefined, name: string, file: string): Promise<string> | string;
   /// The workspace a session's chat is in (null: the station's home one) and whether that is the station's home one.
   workspaceOf(session: string): { workspace: string; home: boolean } | null;
   /// A chat's link (`…/o/<workspace>/<station>/<key>`), the one to give people.

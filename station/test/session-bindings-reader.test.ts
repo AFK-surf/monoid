@@ -8,6 +8,7 @@ import { SessionBindingsBuilder } from "../src/read/session-bindings-builder.ts"
 import { Readers } from "../src/read/pool.ts";
 import { installSessionBindingsIndex, sessionBindingsReady } from "../src/store/session-bindings-index.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "session-bindings-reader-"));
@@ -87,9 +88,8 @@ test("a session reader reports an incompatible binding index", async () => {
 test("a stopped binding worker retries its pending index", async () => {
   const f = fixture(), file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
   try {
-    const real = new URL("../src/read/session-bindings-worker.ts", import.meta.url).href;
-    writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-    const builder = new SessionBindingsBuilder(join(f.dir, "stillfail.db"), {}, pathToFileURL(file));
+    endsOnce(file, marker);
+    const builder = new SessionBindingsBuilder(join(f.dir, "stillfail.db"), {}, file);
     try {
       await builder.readyIndex();
       assert.ok(existsSync(marker));

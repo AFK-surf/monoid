@@ -8,10 +8,12 @@ import {
 // Values
 pub async fn serve_reads(@host.Host, Reader, String) -> Unit
 
-pub async fn serve_sessions(@host.Host) -> Unit
+pub async fn serve_sessions(@host.Host, String) -> Unit
 
 // Errors
 type Asked
+
+type FsError
 
 // Types and methods
 type Permit

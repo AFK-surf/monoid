@@ -57,6 +57,7 @@ pub fn ask_line_button_node(
 ) -> @view.View {
   let live = fn() { !disabled() }
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(b, _) {
+    b.focus_ring_theme() |> ignore
     style_node(b, fn() {
       let h = button_height()
       let out = option_type().pad_in - @ui.capsule_in(option_row_corner, h)
@@ -116,6 +117,7 @@ pub fn ask_history_trigger_node(
     fn() { words().map(fn(w) { w.text }).join("") + " · " + t("web-main.history.details") },
     open,
     fn(b, _) {
+      b.focus_ring_theme() |> ignore
       style_node(b, fn() { ask_history_line })
       let on = fn() { lit_node(b) || b.focus_shown() }
       let lit = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })

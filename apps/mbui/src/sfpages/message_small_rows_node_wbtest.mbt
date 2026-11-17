@@ -257,17 +257,17 @@ test "a row's room: its body in from the pane's sides, the room over it as said,
     made.val = Some(
       message_row_frame_node(
         v,
-        "line",
+        fn() { "line" },
         fn() { row_side(760.0) },
         fn() { top.get() },
         fn(m) { unread_line_node(m) |> ignore },
-        over=fn(_, key) { told.push(key) },
+        over=fn(_, key) { told.push(key()) },
       ),
     )
   })
   t.run_for(@ui.move_most_ms)
   assert_eq(told, ["line"])
-  assert_true(made.val is Some({ key: "line", .. }))
+  assert_true(made.val is Some(row) && (row.key)() == "line")
   let side = row_side(760.0)
   let rules = t.drawn_rects().filter(fn(r) { r.3 <= 1.0 && r.2 > 0.0 })
   assert_eq(rules.length(), 2)

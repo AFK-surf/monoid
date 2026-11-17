@@ -71,6 +71,7 @@ fn drop_reset() -> Unit {
   tree_drops.clear()
   files_on.clear()
   files_on_held.val = 0
+  files_on_tree_held.val = None
   dropping.words = None
   dropping.paths = None
 }
@@ -218,6 +219,7 @@ fn paths_let_go(x : Double, y : Double, paths : Array[DroppedPath], pick : Int) 
 priv struct TreeDrops {
   mut words : Field?
   mut paths : (Field, (Array[DroppedPath]) -> Unit, () -> Bool)?
+  mut files : FilesOn?
 }
 
 ///|
@@ -232,7 +234,7 @@ fn tree_drops_of(v : @view.View) -> TreeDrops {
   match tree_drops.get(id) {
     Some(d) => d
     None => {
-      let d : TreeDrops = { words: None, paths: None }
+      let d : TreeDrops = { words: None, paths: None, files: None }
       tree_drops[id] = d
       v.owns(fn() { tree_drops.remove(id) }) |> ignore
       d
@@ -307,6 +309,42 @@ pub fn paths_into(
 ) -> @view.View {
   tree_drops_of(v).paths = Some((field, take, takes))
   v
+}
+
+///|
+/// Files from outside over node `v` or what it holds (the innermost of what says so first), as the host says them, in
+/// its message, outside any build (Ctx::on_files' for the window's tree): `held` told where they are held over it, in
+/// the window (None: gone from over it: taken away, let go, or over another), `take` asked as they are let go on it (not
+/// on a field with their paths: those are the field's) whether it takes them there: `Some(f)` takes them, `f` given the
+/// pick their reading is, begun now; None leaves them to what holds it, then to an old view's. `v`.
+pub fn files_onto(
+  v : @view.View,
+  held~ : ((Double, Double)?) -> Unit,
+  take~ : (Double, Double) -> ((Pick) -> Unit)?,
+) -> @view.View {
+  tree_drops_of(v).files = Some({ held, take })
+  v
+}
+
+///|
+/// The node of the window's tree that takes files from outside (files_onto) they are held over now: told as they leave
+/// it.
+// kept across runs: as the host says where they are held; a run's start clears it (drop_reset)
+let files_on_tree_held : Ref[FilesOn?] = Ref(None)
+
+///|
+/// What of the window's tree takes files from outside at (x, y) (files_onto): the innermost of what is drawn there and
+/// what holds it that says so; None where none does, or the tree's there takes nothing now, or none of it is there.
+fn tree_files_at(x : Double, y : Double) -> (FilesOn?, Bool) {
+  match tree_drop_at(x, y) {
+    Some((_, Some(at))) =>
+      match tree_drops_on(at, fn(d) { d.files is Some(_) }) {
+        Some({ files: Some(f), .. }) => (Some(f), true)
+        _ => (None, true)
+      }
+    Some((_, None)) => (None, true)
+    None => (None, false)
+  }
 }
 
 ///|
@@ -459,7 +497,15 @@ fn init {
         let c = g()
         if tree_paths_at(c, x, y, paths, id) is Not {
           let on_field = !paths.is_empty() && c.editors.contains(hit_in(c.hit_ids, c.hit_rects, x, y))
-          match (if on_field { None } else { files_take_at(x, y) }) {
+          let take_tree = if on_field {
+            None
+          } else {
+            match tree_files_at(x, y) {
+              (Some(f), _) => (f.take)(x, y)
+              _ => None
+            }
+          }
+          match (if on_field { None } else if take_tree is Some(_) { take_tree } else { files_take_at(x, y) }) {
             Some(take) => take(Pick::waits([@hostapi.dropped_pick(id)], "files dropped"))
             // (taken by none as files: left to what takes them by their paths, else let go now)
             None =>
@@ -545,9 +591,23 @@ fn files_on_at(x : Double, y : Double) -> Array[Int] {
 /// Files from outside held over the window at `at` (None: taken away or let go): told to the box that takes them they
 /// are over (Ctx::on_files), and to the one they left.
 fn files_held_at(at : (Double, Double)?) -> Unit {
+  // (the window's tree's first: a node of it that takes them, where it is drawn over an old view's)
+  let (tree_on, tree_there) = match at {
+    Some((x, y)) => tree_files_at(x, y)
+    None => (None, false)
+  }
+  match files_on_tree_held.val {
+    Some(was) if !(tree_on is Some(now) && physical_equal(now, was)) => (was.held)(None)
+    _ => ()
+  }
+  files_on_tree_held.val = tree_on
+  match (tree_on, at) {
+    (Some(f), Some(p)) => (f.held)(Some(p))
+    _ => ()
+  }
   let id = match at {
-    Some((x, y)) => files_on_at(x, y).get(0).unwrap_or(0)
-    None => 0
+    Some((x, y)) if !tree_there => files_on_at(x, y).get(0).unwrap_or(0)
+    _ => 0
   }
   let was = files_on_held.val
   files_on_held.val = id

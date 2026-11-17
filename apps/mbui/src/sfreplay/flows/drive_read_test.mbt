@@ -21,10 +21,10 @@ test "17-drive-read" {
     f.see("下一章")
     f.see("第一章 雨后的车站")
     f.tap("目录")
-    f.run_to(fn() { @kit.sheet_rest("dv-reader-sheet") })
+    f.run_for(reader_sheet_ms)
     f.see("第三章 灯塔的钥匙")
     f.tap("第三章 灯塔的钥匙")
-    f.run_to(fn() { @kit.sheet_rest("dv-reader-sheet") })
+    f.run_for(reader_sheet_ms)
     f.gone("第四章 回程")
     // held still there: where it is told to the core
     f.run_for(@sf.reader_still_ms)
@@ -35,3 +35,8 @@ test "17-drive-read" {
     f.end()
   })
 }
+
+///|
+/// How long the reader's contents' sheet (sf's sheet_node, the window's tree's) takes to come or go at most: a way as far
+/// as the window is tall or its scrim's fade, whichever is longer.
+let reader_sheet_ms : Double = @kit.sheet_scrim_ms.max(@ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms

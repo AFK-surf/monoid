@@ -1,13 +1,13 @@
-// Adding a station (Settings.kt openAddStation, AddStationSteps, JoinStation, FirstStation; the narrow web's
+// Adding a station (Settings.kt openAddStation, AddStationSteps, JoinStation; the narrow web's
 // Stations.tsx): a new machine named, the command that installs still.fail there and joins it (`workspace.enroll`:
 // macOS's and Linux's, and Windows' in PowerShell) copied, and the wait for it to join; or, for whoever manages another
 // workspace too, a station of that one added here as it is (`station.join`). The workspace's owners and admins add
-// stations: Station's ＋, or its first one in the page itself while it has none. What the new machine will be is chosen
+// stations: Station's ＋, or 添加 station where its list has none yet (sfpages' stations_list.mbt). What the new machine will be is chosen
 // as it is named (2026-11-10): a whole station, or one that only runs tasks (a rig: `rig.add`, its command naming its
 // person's own lock), which any member adds, as theirs.
 
 ///|
-/// What the adding has come to: the sheet's (and the first station's, in its page) as they go on.
+/// What the adding has come to: the sheet's as it goes on.
 priv struct Adding {
   /// a station of another workspace (the choice's second side)
   existing : @signals.Signal[Bool]
@@ -283,23 +283,7 @@ fn add_station_foot(v : @view.View, core : Core, here : Here, manager : Bool, cl
     )
     |> ignore
   })
-  @sf.foot_place_node(v, fn() { !(now.joining)() && step() == 0 }, fn(p) {
-    let tasks = fn() { adding.tasks.get() }
-    let name = fn() { station_name_field().text().trim(chars=" \t\n").to_owned() }
-    @sf.button_node(
-      p,
-      fn() { tr("android-settings.station.make") },
-      fn() {
-        // (the keys and the keyboard let go of, as the field is done with)
-        p.focus_let_go()
-        make_station_command(core, here, @signals.untracked(tasks), @signals.untracked(name))
-      },
-      tone=Primary,
-      busy=fn() { add_making(core, here, tasks()) },
-      disabled=fn() { name() == "" },
-    )
-    |> ignore
-  })
+  @sf.foot_place_node(v, fn() { !(now.joining)() && step() == 0 }, fn(p) { make_command_node(p, core, here) })
   @sf.foot_place_node(v, fn() { !(now.joining)() && step() == 1 }, fn(p) {
     @sf.button_node(p, fn() { tr("common.done") }, fn() { close() }, tone=Primary) |> ignore
   })
@@ -316,6 +300,78 @@ fn add_station_foot(v : @view.View, core : Core, here : Here, manager : Bool, cl
     |> ignore
   })
 }
+
+///|
+/// 生成命令 in node `p`: the command for the machine named in the field made, pressed (disabled while none is named).
+fn make_command_node(p : @view.View, core : Core, here : Here) -> Unit {
+  let tasks = fn() { adding.tasks.get() }
+  let name = fn() { station_name_field().text().trim(chars=" \t\n").to_owned() }
+  @sf.button_node(
+    p,
+    fn() { tr("android-settings.station.make") },
+    fn() {
+      // (the keys and the keyboard let go of, as the field is done with)
+      p.focus_let_go()
+      make_station_command(core, here, @signals.untracked(tasks), @signals.untracked(name))
+    },
+    tone=Primary,
+    busy=fn() { add_making(core, here, tasks()) },
+    disabled=fn() { name() == "" },
+  )
+  |> ignore
+}
+
+///|
+/// Whether the viewer manages the workspace `here` names (an owner or an admin of it), not known while it is read.
+pub fn manages(core : Core, here : Here) -> Bool? {
+  manager_of(core, here)
+}
+
+///|
+/// A workspace's first station added on its page (FirstStation's, its managers'), in node `v`: this machine where it
+/// can be added here (添加这台 Mac), the name's field and 生成命令 under it, then the command and the wait as 添加
+/// station's steps have them; under it all a station of another workspace offered, while there is one, in 添加
+/// station's panel. Each time the page is made with no station, a new start (but while that panel is up).
+pub fn first_station_steps_node(v : @view.View, core : Core, here : Here) -> Unit {
+  if !@sf.presenting() && @signals.untracked(fn() { adding.known.get() }).length() > 0 {
+    adding_reset([], false)
+  }
+  let here_addable = local_station_addable_in(here.workspace, [])
+  let now = adding_now(core, here, true)
+  v.box(fn(col) {
+    @sf.style_node(col, fn() { first_steps_column })
+    if here_addable {
+      col.show(fn() { adding.made.get() is None }, fn(h) { add_this_machine_node(h, core, here, fn() {  }) })
+    }
+    add_station_steps_node(
+      col,
+      core,
+      here,
+      label=tr("android-settings.station.firstName"),
+      placeholder=tr("android-settings.station.firstPlaceholder"),
+    )
+    col.show(fn() { add_step(core, here) == 0 }, fn(r) {
+      @sf.style_node(r, fn() { first_make_line })
+      make_command_node(r, core, here)
+    })
+    col.show(now.offered, fn(l) {
+      @sf.tap_text_node(l, fn() { tr("web-pages.settings.stations.firstExisting") }, fn() {
+        open_add_station(core, here, [], existing=true)
+      }, size=14.0)
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The first station's steps, 12 apart, 8 under what is over them.
+// kept across runs: a value (no field of it changes)
+let first_steps_column : @ui.Style = @ui.css("w=Full pt=S2 gap=S3")
+
+///|
+/// 生成命令 at the end of its line, under the field.
+// kept across runs: a value (no field of it changes)
+let first_make_line : @ui.Style = @ui.css("row w=Full justify=JEnd")
 
 ///|
 /// The joinable stations to show (the core's `joinable`, with those joined from here kept where they were, in the order
@@ -496,17 +552,24 @@ fn make_station_command(core : Core, here : Here, tasks : Bool, name : String) -
 }
 
 ///|
-/// The steps in node `v` (add_station_steps', its buttons the panel's foot): the name's line, its field and why the
+/// The steps in node `v` (add_station_steps', its buttons the panel's foot): the name's line (`label`), its field
+/// (`placeholder` in it while it is empty) and why the
 /// command could not be made; joined, said in green; else the commands to run there (macOS's and Linux's, Windows'
 /// where the cloud gave it), each under its system's name and copied from here, and the wait.
-fn add_station_steps_node(v : @view.View, core : Core, here : Here) -> Unit {
+fn add_station_steps_node(
+  v : @view.View,
+  core : Core,
+  here : Here,
+  label? : String = tr("android-settings.station.name"),
+  placeholder? : String = tr("android-settings.station.namePlaceholder"),
+) -> Unit {
   let field = station_name_field()
   v.pick(fn() { add_step(core, here) }, fn(b, step) {
       @sf.style_node(b, fn() { steps_column })
       match step {
         0 => {
-          @sf.words_node(b, fn() { tr("android-settings.station.name") }, fn() { step_label_words }) |> ignore
-          @sf.input_node(b, field, placeholder=tr("android-settings.station.namePlaceholder")) |> ignore
+          @sf.words_node(b, fn() { label }, fn() { step_label_words }) |> ignore
+          @sf.input_node(b, field, placeholder~) |> ignore
           b.show(fn() { adding.error.get() != "" }, fn(e) {
             @sf.words_node(e, fn() { adding.error.get() }, fn() { add_error_words }) |> ignore
           })
@@ -686,60 +749,6 @@ fn station_name_field() -> @ui.Field {
 }
 
 ///|
-/// A station's name, then the commands that install still.fail on that machine and join it (one with still.fail too:
-/// macOS's and Linux's, Windows' where the cloud gave it), copied from here, and the wait for it (AddStationSteps);
-/// joined, said in green with 完成 (`done`). `label` and `placeholder`: the name's line, as the first station's page words it.
-fn add_station_steps(
-  c : @ui.Ctx,
-  core : Core,
-  here : Here,
-  done : () -> Unit,
-  buttons? : Bool = true,
-  label? : String = tr("android-settings.station.name"),
-  placeholder? : String = tr("android-settings.station.namePlaceholder"),
-) -> Unit {
-  let t = @sf.theme()
-  c.box(w=Fill(1.0), gap=10.0, fn() {
-    match (adding.made.get(), station_joined(core, here)) {
-      (None, _) => {
-        c.text(label, style=step_label_words) |> ignore
-        field_box(c, station_name_key(), placeholder) |> ignore
-        if adding.error.get() != "" {
-          c.text(adding.error.get(), style=add_error_words) |> ignore
-        }
-        if buttons {
-          c.box(dir=Row, w=Fill(1.0), pt=6.0, gap=8.0, justify=JEnd, fn() { add_station_buttons(c, core, here, done) })
-          |> ignore
-        }
-      }
-      (Some(_), Some(s)) => {
-        c.box(style=joined_line, radius=12.0, bg=@sf.alpha(t.p.green, 0.12), fn() {
-          @sf.icon(c, "check", size=16.0, color=t.p.green) |> ignore
-          c.text(fill("android-settings.station.joined", [("name", text(Some(s), "name"))]), style=joined_words, color=t.p.green)
-          |> ignore
-        })
-        |> ignore
-        if buttons {
-          c.box(dir=Row, w=Fill(1.0), justify=JEnd, fn() { add_station_buttons(c, core, here, done) }) |> ignore
-        }
-      }
-      (Some((install, windows)), None) => {
-        c.text(tr("android-settings.station.run"), style=step_run_words) |> ignore
-        c.text(tr("android-settings.station.runUnix"), style=step_label_words) |> ignore
-        command_box(c, core, install)
-        if windows != "" {
-          c.text(tr("android-settings.station.runWindows"), style=step_label_words) |> ignore
-          command_box(c, core, windows)
-        }
-        c.text(fill("android-settings.station.runNote", [("app", "still.fail")]), style=step_note_words) |> ignore
-        wait_line(c, tr("android-settings.station.waiting"))
-      }
-    }
-  })
-  |> ignore
-}
-
-///|
 /// The field a new station's name is typed in, this time 添加 station opened.
 fn station_name_key() -> String {
   "station-name/" + adding.serial.get().to_string()
@@ -761,134 +770,9 @@ fn station_joined(core : Core, here : Here) -> Json? {
 }
 
 ///|
-/// add_station_steps' buttons under the steps (the first station's page): 生成命令 from the name typed; joined, 完成
-/// (`done`); while it waits for the machine, none.
-fn add_station_buttons(c : @ui.Ctx, core : Core, here : Here, done : () -> Unit) -> Unit {
-  match add_step(core, here) {
-    0 => {
-      let tasks = adding.tasks.get()
-      let name = station_name_field().text().trim(chars=" \t\n").to_owned()
-      @sf.button(c, tr("android-settings.station.make"), key="add-make", tone=Primary, busy=add_making(core, here, tasks), disabled=name == "", on_press=fn() {
-        c.blur()
-        make_station_command(core, here, tasks, name)
-      })
-    }
-    1 =>
-      @sf.button(c, tr("common.done"), key="add-done", tone=Primary, on_press=fn() {
-        done()
-      })
-    _ => ()
-  }
-}
-
-///|
-/// A command to run elsewhere, with a button that copies it: on surface2 alone, no line round it (its ground sets it
-/// apart; the user, 2026-11-09), a block of the ladder's (round by its row corner), its words and its copy button the ladder's inset in from its start, top and end, as tall as two of
-/// its lines and its inset under them (so with one or two lines as far from its foot too), round by the ladder's next
-/// step there (mbui works it out). `reach`: in a card's foot corners, how it reaches past the card's words
-/// (block_across).
-fn command_box(c : @ui.Ctx, core : Core, words : String, reach? : @ui.Style) -> Unit {
-  let t = @sf.theme()
-  let id = c.id("command-copy")
-  c.on_press(id, fn() {
-    c.copy_text(words)
-    (core.say)(tr("common.copied"))
-  })
-  c.box(
-    style=reach.unwrap_or(@ui.style()),
-    dir=Row,
-    w=Fill(1.0),
-    pl=@sf.corner_inset,
-    pr=@sf.corner_inset,
-    pt=@sf.corner_inset,
-    pb=@sf.corner_inset,
-    gap=8.0,
-    radius=@sf.command_box_corner,
-    bg=t.p.card2,
-    fn() {
-      c.box(w=Fill(1.0), fn() { mono(c, words, size=12.0, line=command_line, wrap=true) }) |> ignore
-      c.box(
-        w=Px(command_copy),
-        h=Px(command_copy),
-        radius=@sf.small_corner,
-        bg=t.p.chip,
-        align=ACenter,
-        justify=JCenter,
-        id~,
-        fn() {
-          @sf.icon(c, "copy", size=16.0, color=t.p.text) |> ignore
-          @motion.ripple(c, id, @sf.small_corner)
-        },
-      )
-      |> ignore
-    },
-  )
-  |> ignore
-}
-
-///|
 /// A command's line, and its copy button: two of its lines high.
 let command_line : Double = 18.0
 
 ///|
 let command_copy : Double = command_line * 2.0
 
-///|
-/// A workspace with no station (FirstStation): what a station is, then, for its owners and admins, its first one added
-/// in the page (its name, the command, the wait), with a station of another workspace offered instead; anyone else is
-/// told to wait for them.
-fn first_station(c : @ui.Ctx, core : Core, here : Here) -> Unit {
-  let t = @sf.theme()
-  let w = workspace_view(core, here)
-  c.box(w=Fill(1.0), pad=30.0, gap=10.0, align=ACenter, fn() {
-    @sf.drawable(c, if t.dark { "illus_no_station_dark" } else { "illus_no_station" }, 240.0) |> ignore
-    c.text(tr("android-settings.station.first"), size=t.t.title, weight=600, color=t.p.text, center=true, w=Fill(1.0))
-    |> ignore
-    c.text(tr("android-settings.station.firstNote"), size=t.t.meta, color=t.p.muted, center=true, w=Fill(1.0), line=20.0)
-    |> ignore
-    c.box(w=Fill(1.0), pt=8.0, gap=12.0, fn() {
-      match w.value {
-        // not read yet, or could not be: in red then, no longer turning
-        None =>
-          wait_line(
-            c,
-            match w.error {
-              Some(e) => error_text(e)
-              None => tr("android-settings.workspace.reading")
-            },
-            error=w.error is Some(_),
-          )
-        Some(_) if !(text(w.value, "role") == "owner" || text(w.value, "role") == "admin") =>
-          c.box(w=Fill(1.0), padx=12.0, pady=10.0, radius=12.0, bg=@sf.alpha(warn, 0.12), fn() {
-            c.text(tr("android-settings.station.wait"), size=t.t.meta, color=t.p.text, w=Fill(1.0), line=19.5) |> ignore
-          })
-          |> ignore
-        Some(_) => {
-          // (the page's own steps: a new start each time the page has no station)
-          if !@sf.presenting() && adding.known.get().length() > 0 {
-            adding_reset([], false)
-          }
-          if local_station_addable_in(here.workspace, []) {
-            add_this_machine(c, core, here, fn() {  })
-          }
-          add_station_steps(
-            c,
-            core,
-            here,
-            label=tr("android-settings.station.firstName"),
-            placeholder=tr("android-settings.station.firstPlaceholder"),
-            fn() {  },
-          )
-          let joinable = (core.topic)("joinable", { "workspace": str(here.workspace) }).get().value
-          if flag(joinable, "offered") && items(joinable, "items").length() > 0 {
-            tap_text(c, "first-existing", tr("web-pages.settings.stations.firstExisting"), size=14.0, on_press=fn() {
-              open_add_station(core, here, [], existing=true)
-            })
-          }
-        }
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}

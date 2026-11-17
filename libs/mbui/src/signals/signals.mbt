@@ -3,9 +3,10 @@
 // MoonBit's: a signal and a computed are their node with `get` and `set` rather than functions bound to it, what
 // index.ts's node of their kind holds besides the graph's fields kept in their Signal and Computed and their update,
 // an effect's fn and a watch's in the node's `own` (system.mbt); an effect's cleanup is said by which of `effect` and `effect_cleanup` makes it;
-// nothing throws, so nothing is put back in a `finally`; and "the same value" is `same` (physical_equal without one:
-// index.ts's `!==`, but for strings, which it compares by their words: say `same=fn(a, b) { a == b }` where that
-// matters). Added for what keeps its own computeds: Computed::peek, Computed::dispose,
+// nothing throws, so nothing is put back in a `finally`; and "the same value" is `same`: by default the value
+// (same_value: `signal` and `computed` ask `T : Eq`), the object only where that is asked by name (`signal_ref`,
+// `computed_ref`: index.ts's `!==`), another said by `signal_by`, `computed_by`. A value made anew but equal is no
+// change, so nothing that follows it runs again for it (the owner, 2026-11-15: 性能差的代码难以被写出来). Added for what keeps its own computeds: Computed::peek, Computed::dispose,
 // Signal::watched, untracked; and for what holds what another computed builds after it ran: Computed::reading,
 // Computed::lend; Computed::invalidate.
 
@@ -57,6 +58,9 @@ priv struct Run {
   /// library's either
   mut computing : Int
   computed_afters : Array[() -> Unit]
+  /// the depth of getters (computing) whose effects are held by their computed, said so where it is made
+  /// (held_while_read): an effect made deeper is told (effect_in_computed)
+  mut held_at : Int
 }
 
 ///|
@@ -74,6 +78,7 @@ let run : Run = {
   draining: false,
   computing: 0,
   computed_afters: [],
+  held_at: 0,
 }
 
 ///|
@@ -81,11 +86,11 @@ let run : Run = {
 struct Signal[T](ReactiveNode, SignalState[T])
 
 ///|
-/// A signal's own: its value and the one set (pendingValue), what is the same as what (physical_equal without one).
+/// A signal's own: its value and the one set (pendingValue), what is the same as what.
 priv struct SignalState[T] {
   mut current : T
   mut pending : T
-  same : ((T, T) -> Bool)?
+  same : (T, T) -> Bool
 }
 
 ///|
@@ -97,7 +102,7 @@ struct Computed[T](ReactiveNode, ComputedState[T])
 priv struct ComputedState[T] {
   mut value : T?
   getter : (T?) -> T
-  same : ((T, T) -> Bool)?
+  same : (T, T) -> Bool
   /// A resource-bearing computed does not keep its dependencies after a one-off, untracked read.
   mut untracked_dispose : Bool
   /// What a graph reader follows alongside this computed; one-off reads do not acquire it.
@@ -109,12 +114,16 @@ priv struct ComputedState[T] {
 }
 
 ///|
-/// Whether `a` is `b` as `same` says, physical_equal (index.ts's `===`) without one.
-fn[T] same_as(same : ((T, T) -> Bool)?, a : T, b : T) -> Bool {
-  match same {
-    None => physical_equal(a, b)
-    Some(f) => f(a, b)
-  }
+/// The same value (what `signal` and `computed` take unless told another): the one object, or equal. A string, a
+/// tuple, an array or a record made anew with what the last held is the same, never told as a change.
+pub fn[T : Eq] same_value(a : T, b : T) -> Bool {
+  physical_equal(a, b) || a == b
+}
+
+///|
+/// The same object (index.ts's `===`): `signal_ref`'s and `computed_ref`'s, for what is told only by a new object.
+pub fn[T] same_ref(a : T, b : T) -> Bool {
+  physical_equal(a, b)
 }
 
 ///|
@@ -293,8 +302,21 @@ pub fn end_batch_in_turn() -> Unit {
 }
 
 ///|
-/// A signal holding `initial`.
-pub fn[T] signal(initial : T, same? : (T, T) -> Bool) -> Signal[T] {
+/// A signal holding `initial`, a value set the same as the last (same_value, or `same` said) told as no change.
+pub fn[T : Eq] signal(initial : T, same? : (T, T) -> Bool) -> Signal[T] {
+  signal_by(initial, same=same.unwrap_or(same_value))
+}
+
+///|
+/// A signal told only by a new object (same_ref): for what has no value to compare (a handle, a function, a Json
+/// tree the core gives anew only as it changes), said by name where it is made.
+pub fn[T] signal_ref(initial : T) -> Signal[T] {
+  signal_by(initial, same=same_ref)
+}
+
+///|
+/// A signal whose set is the same as the last as `same` says.
+pub fn[T] signal_by(initial : T, same~ : (T, T) -> Bool) -> Signal[T] {
   let state : SignalState[T] = { current: initial, pending: initial, same }
   Signal(
     ReactiveNode::new(
@@ -307,10 +329,25 @@ pub fn[T] signal(initial : T, same? : (T, T) -> Bool) -> Signal[T] {
 }
 
 ///|
-/// A computed: `getter` worked out (given what it made last) as it is read after what it read changed. `loc`: where it
-/// was made, said should it be read as its first value is worked out (Computed::get).
+/// A computed: `getter` worked out (given what it made last) as it is read after what it read changed, what follows it
+/// told only where it came to another value (same_value, or `same` said). `loc`: where it was made, said should it be
+/// read as its first value is worked out (Computed::get).
 #callsite(autofill(loc))
-pub fn[T] computed(getter : (T?) -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> Computed[T] {
+pub fn[T : Eq] computed(getter : (T?) -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> Computed[T] {
+  computed_by(getter, same=same.unwrap_or(same_value), loc~)
+}
+
+///|
+/// A computed told only by a new object (same_ref), said by name where it is made: see signal_ref.
+#callsite(autofill(loc))
+pub fn[T] computed_ref(getter : (T?) -> T, loc~ : SourceLoc) -> Computed[T] {
+  computed_by(getter, same=same_ref, loc~)
+}
+
+///|
+/// A computed whose value is the same as the last as `same` says.
+#callsite(autofill(loc))
+pub fn[T] computed_by(getter : (T?) -> T, same~ : (T, T) -> Bool, loc~ : SourceLoc) -> Computed[T] {
   let state : ComputedState[T] = {
     value: None,
     getter,
@@ -332,15 +369,40 @@ pub fn[T] computed(getter : (T?) -> T, same? : (T, T) -> Bool, loc~ : SourceLoc)
 
 ///|
 /// A computed which releases its dependencies after a one-off read outside the graph. When read by another signal,
-/// its dependencies stay until the last reader leaves, just as for any computed.
+/// its dependencies stay until the last reader leaves, just as for any computed. Only for what is read as nothing
+/// reads (`active_sub()` None, a one-off `get`): a node's own derived value is a plain `computed`, which rests as the
+/// node is parked and keeps what it read (`View::park`).
 #callsite(autofill(loc))
-pub fn[T] computed_scoped(
+pub fn[T : Eq] computed_scoped(
   getter : (T?) -> T,
   same? : (T, T) -> Bool,
   untracked_read? : (() -> T?)? = None,
   loc~ : SourceLoc,
 ) -> Computed[T] {
-  let c = computed(getter, same?, loc~)
+  computed_scoped_by(getter, same=same.unwrap_or(same_value), untracked_read~, loc~)
+}
+
+///|
+/// computed_scoped told only by a new object (same_ref): see signal_ref.
+#callsite(autofill(loc))
+pub fn[T] computed_scoped_ref(
+  getter : (T?) -> T,
+  untracked_read? : (() -> T?)? = None,
+  loc~ : SourceLoc,
+) -> Computed[T] {
+  computed_scoped_by(getter, same=same_ref, untracked_read~, loc~)
+}
+
+///|
+/// computed_scoped whose value is the same as the last as `same` says.
+#callsite(autofill(loc))
+pub fn[T] computed_scoped_by(
+  getter : (T?) -> T,
+  same~ : (T, T) -> Bool,
+  untracked_read? : (() -> T?)? = None,
+  loc~ : SourceLoc,
+) -> Computed[T] {
+  let c = computed_by(getter, same~, loc~)
   holds_up(c.0)
   c.1.untracked_dispose = true
   c.1.untracked_read = untracked_read
@@ -350,15 +412,47 @@ pub fn[T] computed_scoped(
 ///|
 /// A value whose graph readers also follow a shared resource. A one-off read acquires no resource and leaves no links.
 #callsite(autofill(loc))
-pub fn[T] computed_following(
+pub fn[T : Eq] computed_following(
   getter : (T?) -> T,
   dependency : Computed[Unit],
   same? : (T, T) -> Bool,
   loc~ : SourceLoc,
 ) -> Computed[T] {
-  let c = computed_scoped(getter, same?, loc~)
+  computed_following_by(getter, dependency, same=same.unwrap_or(same_value), loc~)
+}
+
+///|
+/// computed_following whose value is the same as the last as `same` says.
+#callsite(autofill(loc))
+pub fn[T] computed_following_by(
+  getter : (T?) -> T,
+  dependency : Computed[Unit],
+  same~ : (T, T) -> Bool,
+  loc~ : SourceLoc,
+) -> Computed[T] {
+  let c = computed_scoped_by(getter, same~, loc~)
   c.1.read_dependency = Some(dependency)
   c
+}
+
+///|
+/// What `start` makes (its effects) held while something reads the computed returned, as a resource is: made as its
+/// first reader comes (its getter runs), stopped as its last reader leaves (what the getter linked let go of,
+/// unwatched) or it is disposed, and made again as a reader comes back. The one way an effect is made in a getter
+/// (effect_in_computed): said so where it is made. Its value is nothing, never a change: what reads it only follows it
+/// (computed_following's dependency).
+#callsite(autofill(loc))
+pub fn held_while_read(start : () -> Unit, loc~ : SourceLoc) -> Computed[Unit] {
+  computed_by(
+    fn(_) {
+      let was = run.held_at
+      run.held_at = run.computing
+      start()
+      run.held_at = was
+    },
+    same=fn(_, _) { true },
+    loc~,
+  )
 }
 
 ///|
@@ -390,8 +484,21 @@ pub fn effect_cleanup(f : () -> (() -> Unit), loc~ : SourceLoc) -> () -> Unit {
 pub let effect_in_watch : Ref[((SourceLoc) -> Unit)?] = Ref(None)
 
 ///|
+/// Told as an effect is made while a computed's getter runs (`run.computing`): a getter says what a value is and does
+/// nothing; an effect made there follows on as the getter runs again (each run another) and is stopped by nothing
+/// that reads the value, nor rests as its node is parked (sfbase's compose, a draft's effect, till 2026-11-16). ui
+/// says it as a fault (frame_watch.mbt), told where it was made; None: nothing told.
+pub let effect_in_computed : Ref[((SourceLoc) -> Unit)?] = Ref(None)
+
+///|
 fn effect_of(f : () -> (() -> Unit)?, loc : SourceLoc) -> () -> Unit {
   let e = ReactiveNode::new(WATCHING | RECURSED_CHECK, EffectNode, own=EffectOwn(f))
+  if run.computing > run.held_at {
+    match effect_in_computed.val {
+      Some(told) => told(loc)
+      None => ()
+    }
+  }
   let parent = owner_now()
   match parent {
     Some(p) if p.kind is WatchNode =>
@@ -504,7 +611,7 @@ fn[T] update_computed(c : ReactiveNode, state : ComputedState[T]) -> Bool {
   finish_computed_read(c)
   computed_afters_due()
   match old_value {
-    Some(old) => !same_as(state.same, old, value)
+    Some(old) => !(state.same)(old, value)
     None => true
   }
 }
@@ -514,7 +621,7 @@ fn[T] update_signal(s : ReactiveNode, state : SignalState[T]) -> Bool {
   s.flags = MUTABLE
   let was = state.current
   state.current = state.pending
-  !same_as(state.same, was, state.current)
+  !(state.same)(was, state.current)
 }
 
 ///|
@@ -756,7 +863,7 @@ pub fn[T] Signal::get(self : Signal[T]) -> T {
 #callsite(autofill(loc))
 pub fn[T] Signal::set(self : Signal[T], value : T, loc~ : SourceLoc) -> Unit {
   let state = self.1
-  let changed = !same_as(state.same, state.pending, value)
+  let changed = !(state.same)(state.pending, value)
   state.pending = value
   if changed {
     // (set as a watch reads: where, for it to say what changed what it read as it read, Watch::set_as_read)

@@ -1,0 +1,12 @@
+import {
+  "station/mesh_door/door",
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+  "moonbitlang/core/encoding/base64",
+  "moonbitlang/core/encoding/utf8",
+}
+
+import {
+  "station/mesh_door/gate",
+} for "test"

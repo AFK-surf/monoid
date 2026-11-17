@@ -111,7 +111,7 @@ final class StreamLayer {
     private static MBView parentView;
     private static SurfaceControl parent;
 
-    // ---- the views (NativeViews: GL thread) ----
+    // ---- the views (NativeViews: the app's thread) ----
 
     /** View `vid` of stream `arg` opened: its stream's frames shown on its layer from now. */
     static boolean open(int vid, String arg) {
@@ -133,7 +133,7 @@ final class StreamLayer {
         Host.log("view " + vid + ": open stream " + sid + "'s layer");
         // (ready at once, told as the app has its ticket: after it opened it)
         MBView v = Host.view;
-        if (v != null) v.toGL(() -> Native.outside(Native.OUTSIDE_VIEW, vid, 1));
+        if (v != null) v.toApp(() -> Native.outside(Native.OUTSIDE_VIEW, vid, 1));
         return true;
     }
 
@@ -143,7 +143,7 @@ final class StreamLayer {
         }
     }
 
-    /** Where view `vid` shows (points, as NativeViews.place), as the app paints it (GL thread, in the frame). */
+    /** Where view `vid` shows (points, as NativeViews.place), as the app paints it (its thread, in the frame). */
     static void place(int vid, float x, float y, float w, float h, float cx0, float cy0, float cx1, float cy1, boolean shown) {
         MBView v = Host.view;
         float d = v != null ? v.density : 1;
@@ -261,7 +261,7 @@ final class StreamLayer {
         if (l.pointer != null) l.pointer.release();
     }
 
-    // ---- its pointer (GL thread) ----
+    // ---- its pointer (the app's thread) ----
 
     /** Stream `sid`'s pointer: picture `png` (empty: none), `w` × `h` points, its hot spot (`hx`, `hy`). */
     static void pointer(int sid, byte[] png, float w, float h, float hx, float hy) {
@@ -378,8 +378,8 @@ final class StreamLayer {
     }
 
     /**
-     * Transaction `t` applied: with the canvas's frame being drawn where it is one (`inFrame`, on the GL thread: the
-     * view's hole and its layer moved in one refresh, API 34), else now.
+     * Transaction `t` applied: with the next frame the surface swaps where it is one (`inFrame`, the app's thread as it
+     * makes the frame that moves it: the view's hole and its layer moved in one refresh, API 34), else now.
      */
     private static void commit(SurfaceControl.Transaction t, boolean inFrame) {
         MBView v = parentView;
@@ -433,7 +433,7 @@ final class StreamLayer {
 
     /**
      * What layer `l` shows now copied into its stream's texture (the app draws its last frame itself from now: faded,
-     * blurred), uploaded on the GL thread and a frame asked for.
+     * blurred), uploaded on the GL thread (MBView.toRender) and a frame asked for.
      */
     private static void grab(Layer l) {
         Surface s;
@@ -458,7 +458,7 @@ final class StreamLayer {
                     return;
                 }
                 MBView v = Host.view;
-                if (v != null) v.toGL(() -> Streams.grabbed(sid, b));
+                if (v != null) MBView.toRender(() -> Streams.grabbed(sid, b));
             }, Host.main);
         } catch (RuntimeException e) {
             Host.log("stream " + sid + ": its layer's picture not copied: " + e);
@@ -468,7 +468,7 @@ final class StreamLayer {
     // ---- what a stream says (Streams.Stream.say) ----
 
     /**
-     * Stream `s` said something, shown on its layer: the app told on the GL thread, between frames (Native.outside's
+     * Stream `s` said something, shown on its layer: the app told on its thread, between frames (Native.outside's
      * OUTSIDE_STREAMED: ui's streams_said), once until it has read what it said; it takes what changes nothing drawn
      * then (a frame shown on the layer), and asks for a frame only where something is left for one.
      */
@@ -476,7 +476,7 @@ final class StreamLayer {
         MBView v = Host.view;
         if (v == null) return;
         if (!owed.compareAndSet(false, true)) return;
-        v.queueEvent(() -> {
+        MBView.onApp(() -> {
             owed.set(false);
             Native.outside(Native.OUTSIDE_STREAMED, id, 0);
         });

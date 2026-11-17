@@ -98,6 +98,8 @@ pub(all) struct Emits {
   mut out_key : String
   /// the chat's messages as last taken (emit_take), each decided: the same version again holds none new
   mut taken : Array[Message]
+  /// the chat's messages' keys as last taken by key (emit_take_keyed): the same order again holds none new
+  mut taken_keys : Array[String]
   /// each message out of an avatar coming out (its seq's): its words' way in, 0 to 1 over emit_out_ms_most from the
   /// avatar landing on it (emit_out)
   out_at : Map[String, @motion.Anim]
@@ -143,6 +145,7 @@ pub fn emits_of(key : String) -> Emits {
         held_until: -1.0,
         out_key: "",
         taken: [],
+        taken_keys: [],
         out_at: {},
         said: @signals.signal(0),
       }
@@ -168,10 +171,61 @@ pub fn emit_take(c : @ui.Ctx, e : Emits, v : ChatView, showing : Map[String, Boo
   e.taken = v.messages
   let decided = e.decided.length()
   for m in v.messages {
-    let k = seq_s(m.seq)
-    if e.decided.contains(k) {
-      continue
+    emit_decide(c, e, m, showing)
+  }
+  if e.decided.length() != decided {
+    e.changed()
+  }
+}
+
+///|
+/// emit_take's of a chat's messages kept by key (ChatMessages): looked through only as a message comes, goes or moves,
+/// and then only those not decided at its ends (what came after the newest decided, the page before come over the
+/// first), not as a word comes into one.
+pub fn emit_take_keyed(c : @ui.Ctx, e : Emits, ms : ChatMessages, showing : Map[String, Bool]) -> Unit {
+  let keys = ms.peek_keys()
+  if physical_equal(keys, e.taken_keys) {
+    return
+  }
+  e.taken_keys = keys
+  let decided = e.decided.length()
+  let mut i = keys.length() - 1
+  while i >= 0 {
+    match ms.peek(keys[i]) {
+      Some(m) => {
+        if e.decided.contains(seq_s(m.seq)) {
+          break
+        }
+        emit_decide(c, e, m, showing)
+      }
+      None => ()
     }
+    i = i - 1
+  }
+  for j in 0..<i {
+    match ms.peek(keys[j]) {
+      Some(m) => {
+        if e.decided.contains(seq_s(m.seq)) {
+          break
+        }
+        emit_decide(c, e, m, showing)
+      }
+      None => ()
+    }
+  }
+  if e.decided.length() != decided {
+    e.changed()
+  }
+}
+
+///|
+/// Message `m` decided, where it is not yet: whether it waits its turn to come out of its agent's avatar (emit_take's).
+fn emit_decide(c : @ui.Ctx, e : Emits, m : Message, showing : Map[String, Bool]) -> Unit {
+  let k = seq_s(m.seq)
+  if e.decided.contains(k) {
+    return
+  }
+  {
     let agent = if m.author_kind == "agent" && !m.mine && !m.system { m.by.agent } else { "" }
     let goes = e.watched && m.said && agent != "" && showing.contains(agent)
     e.decided[k] = goes
@@ -184,9 +238,6 @@ pub fn emit_take(c : @ui.Ctx, e : Emits, v : ChatView, showing : Map[String, Boo
       // its agent's activity folds from now
       e.queue.push((m.seq, agent, pose_clock(c, Fold.ms(), None)))
     }
-  }
-  if e.decided.length() != decided {
-    e.changed()
   }
 }
 

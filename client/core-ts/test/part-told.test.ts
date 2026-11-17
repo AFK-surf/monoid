@@ -33,6 +33,8 @@ const CHANGE: Record<string, (o: J, n: number) => J> = {
   profiles: (o, n) => ({ ...o, profiles: o.profiles.map((p: J, i: number) => (i === 0 ? { ...p, name: `${p.name}·${n}` } : p)) }),
   profiled: (o, n) => ({ ...o, mesh: { ...o.mesh, name: `${o.mesh.name}·${n}` } }),
   software: (o, n) => ({ ...o, updates: o.updates.map((u: J) => (u.id === "station" ? { ...u, latest: `0.1.${9000 + n}` } : u)) }),
+  connects: (o, n) => ({ ...o, slackApps: [...o.slackApps, { appId: `A-TOLD-${n}` }] }),
+  settings: (o, n) => ({ ...o, archiving: { ...o.archiving, days: 100 + n } }),
 };
 
 const station = UP[0]!;

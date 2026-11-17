@@ -46,7 +46,7 @@ fn yield_run(
       )
       |> ignore
       match island.val {
-        Some(i) => yield_thumbs(e, i)
+        Some(i) => yield_thumbs(e, island=i)
         None => ()
       }
     })

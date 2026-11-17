@@ -52,3 +52,9 @@ test("an invalid explicit address fails instead of choosing an arbitrary port", 
   await assert.rejects(bindStation(loadMesh(), options(), { STILLFAIL_MESH_BIND_ADDR: "not-an-address" }));
   await assert.rejects(bindStation(loadMesh(), options(), { STILLFAIL_MESH_BIND_ADDR: "" }));
 });
+
+test("a DSCP out of range fails the bind instead of leaving the packets unmarked", async () => {
+  for (const dscp of ["0", "64", "255"]) {
+    await assert.rejects(bindStation(loadMesh(), options(), { STILLFAIL_MESH_DSCP: dscp }), /must be 1 to 63/);
+  }
+});

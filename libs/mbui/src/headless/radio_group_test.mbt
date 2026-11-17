@@ -148,3 +148,53 @@ test "a vertical tab list with dynamic each items: read out a TabList of Tab ite
   let after_down = (chosen.get(), t.focused().map(fn(s) { s.label }).unwrap_or(""))
   assert_eq((first_focus, after_space, after_down), ("概览", "t1", ("t2", "日志")))
 }
+
+///|
+test "a tab list with manual activation: ←/→, Home and End move the focus alone, Enter or Space chooses what has it" {
+  let chosen = @signals.signal("t1")
+  let told : Array[String] = []
+  let t = window(fn(root) {
+    @headless.radio_group(
+      root,
+      fn() { "面板" },
+      fn() { chosen.get() },
+      fn(k) {
+        told.push(k)
+        chosen.set(k)
+      },
+      kind=Tab,
+      manual=true,
+      fn(g, rg) {
+        g.row(Is(true)) |> ignore
+        for item in [("t1", "概览"), ("t2", "日志"), ("t3", "设置")] {
+          let (k, name) = item
+          rg.item(g, fn() { k }, fn() { name }, fn(v, s) {
+            v
+            .width(Is(Some(80.0)))
+            .height(Is(Some(32.0)))
+            .ground(By(fn() { if s.chosen() { c_pressed } else { c_rest } }))
+            |> ignore
+          })
+          |> ignore
+        }
+      },
+    )
+    |> ignore
+  })
+  let focus = fn() { t.focused().map(fn(s) { s.label }).unwrap_or("") }
+  t.tab()
+  let first = focus()
+  t.key(@ui.key_code_right)
+  let after_right = (chosen.get(), focus())
+  t.key(@ui.key_code_end)
+  let after_end = (chosen.get(), focus())
+  t.enter()
+  let after_enter = (chosen.get(), focus())
+  t.key(@ui.key_code_home)
+  t.key(@ui.key_space)
+  let after_space = (chosen.get(), focus())
+  assert_eq(
+    (first, after_right, after_end, after_enter, after_space, told),
+    ("概览", ("t1", "日志"), ("t1", "设置"), ("t3", "设置"), ("t1", "概览"), ["t3", "t1"]),
+  )
+}

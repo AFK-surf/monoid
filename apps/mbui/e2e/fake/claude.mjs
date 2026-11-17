@@ -24,6 +24,19 @@
 //   devtalk:<device>|<reason>|<line>            device_use the device (or asks for it, a card for its owner); where it
 //                                               is put on a port here, sends <line> there and chat_posts `devtalk:`
 //                                               and what came back, else what device_use answered
+// The move drill's (e2e/move.ts), each a turn ending all done with one chat_post:
+//   drill-remember:<word>                       `drill-remembered <word>` (the word is in its transcript, as it was said)
+//   drill-recall:<nonce>                        what it finds of its own past in its transcript (the file the real one
+//                                               would resume from): `drill-recall <nonce> secret=<the last remembered word, or
+//                                               none> lines=<its lines> resumed=<--resume given> session=<id> cwd=<its
+//                                               working directory> pid=<its pid>`
+//   drill-job:<tag>                             job_start a job that only waits (a shell's loop), `drill-job-<tag>` at its command line's end
+//   drill-move:<json>                           station_move with those arguments: `drill-move: <what it answered>`
+//   drill-note:<n>                              `drill-noted <n> cwd=<cwd>`
+//   drill-seed:<n>                              `drill-seeded <n>`
+//   drill-gate:<name>                           waits until $FAKE_DUMP.gate-<name> is there, then `drill-gated <name> pid=<pid>`
+// Every message a station hands it is noted, as it comes, in $FAKE_DUMP.turns (its time, pid, session, working
+// directory and first words): what the drill reads of which agent was woken, where, and by what.
 // What it writes of a turn goes to its transcript as the real claude's does (<config>/projects/<dir>/<session>.jsonl),
 // which is what the station reads an agent's execution history from.
 import fs from "node:fs";
@@ -105,6 +118,24 @@ async function turn(text) {
   const to = /thread="([^"]+)"/.exec(text)?.[1] ?? "";
   const line = (key) => text.slice(text.indexOf(key) + key.length).split("\n")[0];
   let said;
+  // The station's ask for a title once a turn ended and its chat has none (station/src/agents/instructions.ts
+  // nameUntitled): as the real one does, its title alone, then the state it ended with again. Left to still.fail's fake,
+  // it ended with no state, was nudged seven times, and its "stopped with no result" notice went into a Slack thread the
+  // move drill reads (part 4s, c4s-dda7).
+  const untitled = /The chat (\S+) still has no title, and nobody is at work in it now/.exec(text);
+  if (untitled) {
+    said = await post(untitled[1], { title: `drill ${sessionId.slice(0, 8)}` });
+    await tool("chat_state", { kind: "all_done", done: "did what the drill asked" });
+    message(said);
+    say({ type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, session_id: sessionId, result: said });
+    return;
+  }
+  if (/(^|\s)drill-[a-z]+:/.test(text)) {
+    said = await drill(text, to, line);
+    message(said);
+    say({ type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, session_id: sessionId, result: said });
+    return;
+  }
   if (text.includes("text-card:")) {
     const [question, placeholder] = line("text-card:").split("|");
     said = await post(to, { text: question, kind: "need_human", need: question, card: { type: "text", placeholder: placeholder ?? "" } });
@@ -228,13 +259,60 @@ async function turn(text) {
   say({ type: "result", subtype: "success", is_error: false, duration_ms: 1, num_turns: 1, session_id: sessionId, result: said });
 }
 
-const ours = (text) => /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:)/.test(text) || /Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text);
+// The move drill's words (above): what each posts.
+async function drill(text, to, line) {
+  const done = (words) => post(to, { text: words, kind: "all_done", done: "did what the drill asked" });
+  if (/(^|\s)drill-remember:/.test(text)) return done(`drill-remembered ${line("drill-remember:").trim()}`);
+  if (/(^|\s)drill-recall:/.test(text)) {
+    // (its own transcript, as the real one resumes from it: the words remembered, as they were said to it)
+    const lines = fs.existsSync(transcript) ? fs.readFileSync(transcript, "utf8").split("\n").filter((l) => l !== "") : [];
+    let secret = "none";
+    for (const l of lines) {
+      try {
+        const e = JSON.parse(l);
+        const c = typeof e.message?.content === "string" ? e.message.content : "";
+        const m = e.type === "user" ? /drill-remember:(\S+)/.exec(c) : null;
+        if (m) secret = m[1];
+      } catch {}
+    }
+    return done(`drill-recall ${line("drill-recall:").trim()} secret=${secret} lines=${lines.length} resumed=${args.includes("--resume")} session=${sessionId} cwd=${process.cwd()} pid=${process.pid}`);
+  }
+  if (/(^|\s)drill-job:/.test(text)) {
+    const tag = line("drill-job:").trim();
+    const started = await tool("job_start", { name: `drill-${tag}`, command: `while :; do sleep 3600; done; : drill-job-${tag}` });
+    record("assistant", [{ type: "text", text: started }]);
+    return done(`drill-job ${tag}: ${started}`);
+  }
+  if (/(^|\s)drill-move:/.test(text)) {
+    const answer = await tool("station_move", JSON.parse(line("drill-move:")));
+    record("assistant", [{ type: "text", text: answer }]);
+    return done(`drill-move: ${answer.slice(0, 6000)}`);
+  }
+  if (/(^|\s)drill-note:/.test(text)) return done(`drill-noted ${line("drill-note:").trim()} cwd=${process.cwd()}`);
+  if (/(^|\s)drill-seed:/.test(text)) return done(`drill-seeded ${line("drill-seed:").trim()}`);
+  if (/(^|\s)drill-gate:/.test(text)) {
+    const name = line("drill-gate:").trim();
+    const gate = `${process.env.FAKE_DUMP}.gate-${name}`;
+    // (until the drill makes the file: its directory's events, and a look as the watch begins)
+    await new Promise((resolve) => {
+      const w = fs.watch(path.dirname(gate), () => fs.existsSync(gate) && (w.close(), resolve()));
+      if (fs.existsSync(gate)) (w.close(), resolve());
+    });
+    return done(`drill-gated ${name} pid=${process.pid}`);
+  }
+  return done(`drill: no such word in ${text.slice(0, 200)}`);
+}
+
+const ours = (text) => /still has no title, and nobody is at work in it now/.test(text) || /(^|\s)(card:|text-card:|steps:|serve:|md:|secret:|rig:|rigtask:|devtalk:|drill-[a-z]+:)/.test(text) ||/Granted: 「[^」]*」, grant r_|\(r_[\w-]+\) was (refused|let go)/.test(text);
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   let msg = null;
   try {
     msg = JSON.parse(line);
   } catch {}
   const text = msg?.type === "user" ? (msg.message?.content ?? []).map((c) => c.text ?? "").join("") : "";
+  if (msg?.type === "user" && process.env.FAKE_DUMP) {
+    fs.appendFileSync(`${process.env.FAKE_DUMP}.turns`, JSON.stringify({ at: Date.now(), pid: process.pid, session: sessionId, resumed: args.includes("--resume"), cwd: process.cwd(), text: text.slice(0, 8000) }) + "\n");
+  }
   if (msg?.type === "user" && ours(text)) {
     turn(text).catch((e) => {
       fs.writeSync(2, `e2e fake claude: ${e?.stack ?? e}\n`);

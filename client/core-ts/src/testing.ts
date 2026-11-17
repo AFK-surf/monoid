@@ -331,16 +331,23 @@ export class FakeHost implements Host {
   /// as a web page has none.
   listen?: (port: number, host: string) => Effect.Effect<Pull<LoopbackRequest>, HostError, Scope.Scope>;
 
+  /// Each read a buffer of its own, as a browser's IndexedDB gives one (what the caller does with it touches nothing kept).
   storageGet(key: string): Effect.Effect<Uint8Array | null, HostError> {
-    return Effect.sync(() => this.storage.get(key) ?? null);
+    return Effect.sync(() => this.storage.get(key)?.slice() ?? null);
   }
   /// The files the app saved where the person keeps files, by where (savedRead).
   readonly saved = new Map<string, Uint8Array>();
   savedRead(at: string, start: number, end: number): Effect.Effect<Uint8Array | null, HostError> {
     return Effect.sync(() => this.saved.get(at)?.slice(start, end) ?? null);
   }
+  /// A copy kept, as IndexedDB clones what it is put; bytes whose buffer was moved away (emitted to a page, `emit`) are
+  /// refused as IndexedDB's put refuses them (a DataCloneError).
   storageSet(key: string, value: Uint8Array): Effect.Effect<void, HostError> {
-    return Effect.sync(() => void this.storage.set(key, value));
+    return Effect.suspend(() => {
+      if ((value.buffer as ArrayBuffer).detached) return Effect.fail(new HostError("detached buffer"));
+      this.storage.set(key, value.slice());
+      return Effect.void;
+    });
   }
   storageDelete(key: string): Effect.Effect<void, HostError> {
     return Effect.sync(() => void this.storage.delete(key));
@@ -461,10 +468,14 @@ export class FakeHost implements Host {
   }
 
   emit(client: ClientId, message: CoreMessage): void {
-    // Bytes beside the JSON (a screen view's frame) are kept as they came (a copy).
+    // Bytes beside the JSON (a screen view's frame, a file's) go as the web's worker sends them to its page
+    // (web/src/core/worker.ts `toPage`): bytes that are their whole buffer are moved there, that buffer left empty
+    // (detached) to whoever still holds it here; others copied.
     if ("bytes" in message && message.bytes !== undefined) {
       const { bytes, ...rest } = message;
-      this.emitted.push([client, { ...(JSON.parse(JSON.stringify(rest)) as object), bytes: bytes.slice() } as CoreMessage]);
+      const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer;
+      const moved = whole ? structuredClone(bytes, { transfer: [bytes.buffer] }) : bytes.slice();
+      this.emitted.push([client, { ...(JSON.parse(JSON.stringify(rest)) as object), bytes: moved } as CoreMessage]);
     } else this.emitted.push([client, JSON.parse(JSON.stringify(message)) as CoreMessage]);
   }
 }

@@ -9,6 +9,8 @@ bash "$D/core-cache-test.sh" || exit 1
 # what the desktops hand this machine's station's installer (src/host/station_install.h)
 mkdir -p "$A/out"
 cc -Wall -I "$A/src/host" -I "$MBUI_DIR/src/host" "$D/station_install_test.c" -o "$A/out/station_install_test" && "$A/out/station_install_test" || exit 1
+# what Windows' host and the app's uninstaller run to take it away: bin/stillfail.ps1's (src/host/station_uninstall.h)
+cc -Wall -I "$A/src/host" "$D/station_uninstall_test.c" -o "$A/out/station_uninstall_test" && (cd "$A" && out/station_uninstall_test) || exit 1
 "$MBUI_DIR/scripts/detlint" "$A" || exit 1
 # the web's files the app carries, as they are now (scripts/webassets.py)
 python3 "$D/webassets.py" --check || exit 1

@@ -28,17 +28,13 @@ pub fn file_card_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(card) {
     style_node(card, fn() {
-      let ground = if retry() || remove() {
+      if retry() || remove() {
         card_box.then(card_box_round).then(card_end_justified)
       } else {
         card_box.then(card_box_round)
       }
-      if hovered_node(card) {
-        ground.then(card_hot)
-      } else {
-        ground
-      }
     })
+    hover_ground_node(card)
     card.says(By(fn() { Some(@view.said(Group, label=name())) })) |> ignore
     // (its name whole by it while what it says shows cut short: file_card's tip)
     tip_node(tips, card, name, repeats=true) |> ignore
@@ -125,6 +121,7 @@ fn card_end_node(
   parent.box(made_for=loc, fn(room) {
     style_node(room, fn() { card_end_room }, in_row=true)
     @headless.button(room, label, fn(_) { press() }, fn(b, _) {
+      b.focus_ring_theme() |> ignore
       style_node(b, fn() { if lit_node(b) { card_button_hot } else { card_button_box } })
       icon_node(b, icon, if icon == "close" { card_close_icon } else { card_button_icon }, By(fn() {
         let p = theme().p

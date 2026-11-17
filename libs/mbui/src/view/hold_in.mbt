@@ -151,7 +151,7 @@ fn Tree::hold_in_due(self : Tree) -> Unit {
   guard self.hold_in is Some(h) else { return }
   self.hold_in_off = fn() {  }
   self.hold_in = None
-  self.laid_now()
+  self.laid_now(via=10) |> ignore
   guard self.alive_id(h.node) && self.nodes[h.node.at].hold_only is Some(_) else { return }
   // (what a finger held where it is holds as things are now: it, on it or in its room round it, Tree::hold_found; else
   // nothing of it its, what has the finger keeping it)

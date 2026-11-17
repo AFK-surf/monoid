@@ -29,7 +29,7 @@ test "26-history" {
     f.run_to(@sf.presented_rest)
     f.see("执行历史")
     f.see("文档目录看过了 083209")
-    f.tap("icon:chevron-right")
+    f.tap("共 2 项")
     // the group open, its room opened on its steps
     f.run_for(@ui.move_most_ms)
     f.see("列出 docs 目录")

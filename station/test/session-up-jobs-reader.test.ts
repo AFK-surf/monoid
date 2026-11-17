@@ -8,6 +8,7 @@ import { SessionUpJobsBuilder } from "../src/read/session-up-jobs-builder.ts";
 import { Readers } from "../src/read/pool.ts";
 import { installSessionUpJobs, sessionUpJobsReady } from "../src/store/session-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "session-up-jobs-"));
@@ -76,9 +77,8 @@ test("abandoned old-job preparation does not start after handover", async () => 
 test("a stopped old-job worker resumes its pending session", async () => {
   const f = fixture(), file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
   try {
-    const real = new URL("../src/read/session-up-jobs-worker.ts", import.meta.url).href;
-    writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-    const builder = new SessionUpJobsBuilder(join(f.dir, "stillfail.db"), {}, pathToFileURL(file));
+    endsOnce(file, marker);
+    const builder = new SessionUpJobsBuilder(join(f.dir, "stillfail.db"), {}, file);
     try {
       await builder.ready(["short"]);
       assert.ok(existsSync(marker));

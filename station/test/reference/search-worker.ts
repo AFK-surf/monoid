@@ -8,7 +8,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { openStore } from "../../src/read/store.ts";
+import { openStore } from "./store.ts";
 import { wall } from "../../src/ops/fibers.ts";
 import { type Asker, type Group, pickAsync, terms } from "../../src/search/match.ts";
 import { historyGroup, historyHits, profilesOf, stationDocSteps } from "./search-sources.ts";

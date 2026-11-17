@@ -154,9 +154,18 @@ fn page_name(page : @sfapp.Page) -> String {
 }
 
 ///|
+/// While Flow::open_page opens its page: what that page asks as it opens is the run's start's (`#env MBUI_OPEN_PAGE`:
+/// made before its first frame), no step of the script, so no `answered` line is written for it.
+// kept across runs: set and put back by Flow::open_page
+let page_opening : Ref[Bool] = Ref(false)
+
+///|
 /// The calls the step just taken made of the core (that the run answered), a scripted run's `answered NAME` each, in
 /// order: one line a call (drive.mbt, mbui#98: each line waits for an answer of its own, a file read twice two).
 fn emit_answered(names : Array[String]) -> Unit {
+  if page_opening.val {
+    return
+  }
   match script.val {
     Some(_) =>
       for n in names {

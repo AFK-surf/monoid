@@ -84,7 +84,7 @@ fn tile_node(
 ) -> Unit {
   slot.box(made_for=loc, fn(t) {
     style_node(t, fn() { tile_look })
-    t.ground(By(fn() { if lit_node(t) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    hover_ground_node(t)
     pressed_node(t, fn() { pick(id) }, By(fn() { @ui.tree_theme().corner(Lg) }), Button, fn() { name })
     t.box(fn(m) {
       style_node(m, fn() { tile_mark })
@@ -116,7 +116,7 @@ pub fn ways_node(
         r.each(ways, fn(w) { w.0 }, fn(card, w) {
           let id = @signals.untracked(fn() { w.get().0 })
           style_node(card, fn() { way_card }, in_row=true)
-          card.ground(By(fn() { @ui.tree_theme().color(if lit_node(card) { Hover } else { Card }) })) |> ignore
+          hover_ground_node(card)
           pressed_node(card, fn() { choose(id) }, By(fn() { @ui.tree_theme().corner(Xl3) }), Button, fn() { w.get().1 })
           words_node(card, fn() { w.get().1 }, fn() { desk_strong }) |> ignore
           words_node(card, fn() { w.get().2 }, fn() { desk_muted }) |> ignore

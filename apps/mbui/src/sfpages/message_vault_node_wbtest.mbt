@@ -122,6 +122,14 @@ fn vault_both(
 }
 
 ///|
+/// What head_drawn says, a line each, in order of the line.
+fn drawn_lines(drawn : String) -> Array[String] {
+  let lines = drawn.split("\n").map(fn(l) { l.to_owned() }).to_array()
+  lines.sort()
+  lines
+}
+
+///|
 /// The post `m` (as it changes) over `src` as the nodes draw it, `w` wide.
 fn vault_new(w : Double, src : Source, m : () -> Message) -> @ui.Tester {
   card_new(w, src, m, body=Some(fn(b, here, core) {
@@ -166,7 +174,9 @@ test "a vault item's approval under its post at 1.3, narrow, and under a mouse: 
     let (w, scale) = case
     let at = "in minutes at \{w}, \{scale}"
     let (was, now, t) = vault_both(vault_src(Some(topic)), vault_ask_post(), w, at, scale~)
-    assert_eq(now, was, msg=at)
+    // (each the same where it is drawn, in whichever order: the old view puts the line over its buttons by its foot's
+    // flow, after them in what it draws, the nodes before them)
+    assert_eq(drawn_lines(now), drawn_lines(was), msg=at)
     dec_audit(t, at)
     let (_, cy, _, ch) = t.query(Button, label="闲置 4319 分钟后失效").unwrap().rect
     let (_, ay, _, ah) = t.query(Button, label="允许").unwrap().rect
@@ -533,7 +543,7 @@ test "a vault item's request decided as its card shows: the card goes, the line 
 }
 
 ///|
-test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: not made as nodes yet, nothing in the words' place" {
+test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: its card, what is asked and the button that picks it" {
   let m = vault_card_post(vault_use())
   let t = card_new(390.0, vault_src(None), fn() { m }, body=Some(fn(b, here, _) { message_card_node(b, here, None, fn() { m }) }))
   t.run_for(@ui.move_most_ms)
@@ -544,7 +554,8 @@ test "a vault item's request where nothing is answered (no core): its card alone
   let f = vault_card_post(vault_keep("file", typed=true))
   let t = card_new(390.0, vault_src(None), fn() { f })
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("测试服务登录") is None)
+  assert_true(t.find("测试服务登录") is Some(_))
+  assert_true(t.find("选择文件") is Some(_))
 }
 
 ///|

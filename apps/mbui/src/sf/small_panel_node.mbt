@@ -51,10 +51,11 @@ pub fn panel_button_node(
 ) -> @view.View {
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, _) {
     style_node(v, fn() { if tone == Filled { panel_button_filled } else { panel_button_box } })
+    v.focus_ring_theme() |> ignore
     let hot = fn() { lit_node(v) }
     // (its hovered{bg=Hover}: the hover's ground where the hand is on it; Filled's own ground kept)
     if tone != Filled {
-      v.ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+      hover_ground_node(v)
     }
     let words = words_node(v, label, fn() {
       match tone {

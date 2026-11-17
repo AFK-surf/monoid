@@ -59,7 +59,8 @@ export async function harness(
     /** REVIEW_ACCOUNTS: who signs in with a password (password.ts). */
     reviewAccounts?: string;
     relayUrl?: string;
-    /** RELAY_URLS and RELAY_NAMES: relays beside it, and what they are called (the console's 中继 page). */
+    /** The cloud's list of relays beside its own (comma-separated) and what they (its own too) are called, put there by
+     * its operator as the harness starts (src/relay-registry.ts, the console's 中继 page). */
     relayUrls?: string;
     relayNames?: Record<string, string>;
     /** STATUS_PAGES: the pages the cron checks for still.fail/status; answered by `push` (they are outside). */
@@ -95,10 +96,12 @@ export async function harness(
     grantJwk?: JsonWebKey & { kid?: string };
     /** Signing in with an email: the codes sent are kept in `mails` (and handed to this, if it is one: false, or an
      * error code, and the binding throws as Cloudflare's would). */
-    mail?: true | ((message: MailMessage) => boolean | string);
+    mail?: true | ((message: MailMessage) => boolean | string | Promise<boolean | string>);
     /** An OpenID provider in Google's place (OIDC_ISSUER; its client a public one, without a secret),
      * its discovery, keys and token endpoint answered here; `codes` hold what it gave, as Google's do (their `sub` its). */
     oidc?: true;
+    /** OIDC_ROLE_CLAIM: the provider's claim of someone's role (given by a code's `claims`). */
+    oidcRoleClaim?: string;
     /** Cloudflare Access in front of the console's host (ACCESS_TEAM_DOMAIN, ACCESS_AUD): `accessToken` makes its tokens. */
     access?: true;
     /** Another cloud's releases its own bucket lacks some of (RELEASES_UPSTREAM, https://upstream.test/releases): its answer to each file asked there. */
@@ -133,7 +136,8 @@ export async function harness(
     alg: "RS256",
     use: "sig",
   };
-  const codes = new Map<string, { nonce: string; challenge: string; sub: string; invalid?: string }>();
+  /** What the provider gave for each code: `claims` more of its ID token's (the OpenID provider's). */
+  const codes = new Map<string, { nonce: string; challenge: string; sub: string; invalid?: string; claims?: Record<string, unknown> }>();
   const mails: MailMessage[] = [];
   const telemetryAccount = options.telemetry === "real"
     ? process.env.GCP_TELEMETRY!
@@ -195,7 +199,7 @@ export async function harness(
         BETA_ORIGIN: betaOrigin,
         GOOGLE_CLIENT_ID: options.noGoogle ? "" : "test-google-client",
         GOOGLE_CLIENT_SECRET: options.oidc ? "" : randomSecret(),
-        ...(options.oidc ? { OIDC_ISSUER: OIDC_ISSUER, OIDC_NAME: "Example SSO" } : {}),
+        ...(options.oidc ? { OIDC_ISSUER: OIDC_ISSUER, OIDC_NAME: "Example SSO", ...(options.oidcRoleClaim ? { OIDC_ROLE_CLAIM: options.oidcRoleClaim } : {}) } : {}),
         AUTH_SIGNING_KEY: signingKey,
         ADMIN_TOKEN: adminToken,
         FEEDBACK_TOKEN: feedbackToken,
@@ -204,8 +208,6 @@ export async function harness(
         ...(options.upstream ? { RELEASES_UPSTREAM: "https://upstream.test/releases" } : {}),
         GRANT_SIGNING_JWK: JSON.stringify(grantJwk),
         ...(options.relayUrl ? { RELAY_URL: options.relayUrl } : {}),
-        ...(options.relayUrls ? { RELAY_URLS: options.relayUrls } : {}),
-        ...(options.relayNames ? { RELAY_NAMES: options.relayNames } : {}),
         ...(options.statusPages ? { STATUS_PAGES: options.statusPages } : {}),
         ...(options.statusRepoId ? { STATUS_REPO_ID: options.statusRepoId } : {}),
         ...(options.vapid ? { VAPID_PUBLIC_KEY: options.vapid.publicKey, VAPID_PRIVATE_KEY: options.vapid.privateKey, VAPID_SUBJECT: "mailto:ops@example.test" } : {}),
@@ -245,7 +247,7 @@ export async function harness(
           codes.delete(body.get("code") ?? "");
           // (a public client: it sends no secret)
           if (!code || body.has("client_secret") || (await digest(body.get("code_verifier") ?? "")) !== code.challenge || body.get("redirect_uri") !== origin + "/v1/auth/google/callback") return new MFResponse(null, { status: 401 });
-          const idToken = await new SignJWT({ nonce: code.nonce, sub: code.sub, email: `${code.sub.replace(/\W/g, "")}@sso.example.test`, email_verified: true, name: `SSO ${code.sub}` })
+          const idToken = await new SignJWT({ nonce: code.nonce, sub: code.sub, email: `${code.sub.replace(/\W/g, "")}@sso.example.test`, email_verified: true, name: `SSO ${code.sub}`, ...code.claims })
             .setProtectedHeader({ alg: "RS256", kid: "test-google" })
             .setIssuedAt(now())
             .setExpirationTime(now() + 300)
@@ -290,7 +292,7 @@ export async function harness(
         }
         if (url.href === "https://mail.test/send" && options.mail) {
           const message = JSON.parse(await request.text()) as MailMessage;
-          const sent = options.mail === true ? true : options.mail(message);
+          const sent = options.mail === true ? true : await options.mail(message);
           if (sent !== true) return new MFResponse(sent || "E_INTERNAL_SERVER_ERROR", { status: 500 });
           mails.push(message);
           return new MFResponse(null, { status: 200 });
@@ -434,6 +436,13 @@ export async function harness(
       headers: { authorization: `Bearer ${tokens.access_token}`, ...(value === undefined ? {} : { "content-type": "application/json" }) },
       ...(value === undefined ? {} : { body: JSON.stringify(value) }),
     });
+  // The relays' list, as its operator puts it (ADMIN_TOKEN).
+  const listed = (options.relayUrls ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+  for (const url of [...Object.keys(options.relayNames ?? {}).filter((u) => !listed.includes(u)), ...listed]) {
+    if (!listed.includes(url) && url !== (options.relayUrl ?? origin)) continue;
+    const put = await fetch("/v1/admin/relays/put", { method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ url, name: options.relayNames?.[url] ?? "" }) });
+    if (put.status !== 200) throw new Error(`relay ${url} not put: ${put.status}`);
+  }
   return {
     mf,
     now,

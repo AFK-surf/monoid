@@ -36,7 +36,7 @@ let bench : Bench = {
   gpu: [],
   start: 0.0,
   speed: 0.0,
-  phases: [0.0, 0.0, 0.0],
+  phases: [0.0, 0.0, 0.0, 0.0],
   host: 0,
   held: false,
 }
@@ -51,7 +51,7 @@ priv struct Bench {
   gpu : Array[Double]
   mut start : Double
   mut speed : Double
-  // build, layout and paint time summed over the measured frames
+  // build, layout, paint and the window's tree's time summed over the measured frames
   phases : Array[Double]
   // the host's bench mode as the window opened (MBUI_BENCH), kept as it was (`mode` the framework's own bench's)
   mut host : Int
@@ -74,21 +74,21 @@ pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit) -
   // (the app's own bench, bench_app: the framework's does not run beside it)
   bench.mode = if bench.host == bench_app { 0 } else { bench.host }
   drive_init()
-  @hostapi.set_back(fn(k, x, p, e) { on_back(k, x, p, e) })
+  @hostapi.set_back(fn(k, x, p, e) { in_host_window(fn() { on_back(k, x, p, e) }) })
   @hostapi.set_window_key(fn(code, mods) {
     let taken = Ref(false)
-    view_event(fn() { taken.val = window_key_taken(code, mods) }, what="key")
+    in_host_window(fn() { view_event(fn() { taken.val = window_key_taken(code, mods) }, what="key") })
     if taken.val { 1 } else { 0 }
   })
   @hostapi.set_app_state(fn(s) { on_app_state(s) })
   outside_told.val = @hostapi.set_outside(fn(k, id, st) { on_outside(k, id, st) })
   @hostapi.run(
     title,
-    fn(w, h, s, t) { on_frame(w, h, s, t) },
-    fn(k, x, y, b) { host_pointer(k, x, y, b) },
-    fn(x, y, dx, dy, ph) { host_wheel(x, y, dx, dy, ph) },
-    fn(k, m) { on_key(k, m) },
-    fn(k, s, a, b) { on_text(k, s, a, b) },
+    fn(w, h, s, t) { in_host_window(fn() { on_frame(w, h, s, t) }) },
+    fn(k, x, y, b) { in_host_window(fn() { host_pointer(k, x, y, b) }) },
+    fn(x, y, dx, dy, ph) { in_host_window(fn() { host_wheel(x, y, dx, dy, ph) }) },
+    fn(k, m) { in_host_window(fn() { on_key(k, m) }) },
+    fn(k, s, a, b) { in_host_window(fn() { on_text(k, s, a, b) }) },
   )
 }
 
@@ -123,7 +123,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   settings_at_frame(w, h, scale)
   // (and the frame's moment as the host gave it, kept on a core trace: envrec.mbt)
   frame_begun_told(t)
-  let z = window_zoom_wanted.get()
+  let z = window_zoom_wanted.val.get()
   if z != window_zoom_drawn.val {
     let ratio = window_zoom_drawn.val / z
     view_point.val = view_point.val.map(fn(p) { (p.0 * ratio, p.1 * ratio) })
@@ -131,7 +131,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     view_words_rescaled()
   }
   window_zoom_drawn.val = z
-  tree_window_zoom.set(z)
+  tree_window_zoom.val.set(z)
   let (w, h, scale) = (w / z, h / z, scale * z)
   let c = g()
   let fed = inputs_since.val
@@ -139,6 +139,9 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   let taken = inputs_taken.val
   inputs_taken.val = false
   in_frame.val = true
+  // (the frame's logic's moment from its start, before view_frame says it again: what is told before it reads this
+  // frame's, not the last's, h_event_time)
+  view_logic_at.val = h_now()
   frame_running.val = true
   frame_moment.val = t
   frame_serial.val += 1
@@ -182,12 +185,15 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   let t4 = work_now()
   c.t_present = t4 - t3
   if bench.mode > 0 {
-    bench_step(c, t3 - t0, t4 - t3)
+    bench_step(c, t0 - tw, t3 - tw, t4 - t3)
   }
+  // (the window's tree's part of it, what frame_perf says of the frame beside the old view's, counted as the journal
+  // counts it: perf.mbt)
+  perf_tree_framed(t0 - tw)
   // (the frame into the window thread's journal, the interval it closes looked over: journal.mbt)
   journal_frame(c, tw, t0, t3, t4)
   slow_probe(c, t, t3 - t0, t4 - t3, tree=t0 - tw)
-  perf_log(c, t, t3 - t0, t4 - t3)
+  perf_log(c, t, t0 - tw, t3 - tw, t4 - t3)
   // (what the stacks the window's tree holds say of the frame, as it ends: built whole, painted alone or of its looks
   // alone, a page one of them has in the hand as the frame drew it (one in the hand moves with no clock read),
   // nav_view.mbt)
@@ -207,7 +213,10 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // meets it is as this frame left it, as for the next input). What a step gives the app asks for the frames after it
   // as an input does (input_came); what it waits for in time, a wake at that time, before what the frame asks for next
   // is said
+  let td = work_now()
   drive_frame(c)
+  // (what its steps handed the app took: the next frame's input, perf.mbt)
+  perf_input_taken(work_now() - td)
   // (a layout read back that moved: what was placed from it, placed again)
   if c.read_back_moved {
     c.wants_frame = true
@@ -823,13 +832,14 @@ fn frame_build(c : Ctx, w : Double, h : Double) -> Int {
 }
 
 ///|
-fn bench_step(c : Ctx, cpu : Double, present : Double) -> Unit {
+fn bench_step(c : Ctx, tree : Double, cpu : Double, present : Double) -> Unit {
   bench.frames = bench.frames + 1
   if bench.frames == 30 {
     bench.start = c.clock
     bench.speed = -23.0
   }
   if bench.frames > 30 {
+    bench.phases[3] = bench.phases[3] + tree
     bench.phases[0] = bench.phases[0] + c.t_build
     bench.phases[1] = bench.phases[1] + c.t_layout
     bench.phases[2] = bench.phases[2] + c.t_paint
@@ -873,7 +883,7 @@ fn bench_step(c : Ctx, cpu : Double, present : Double) -> Unit {
     h_log("BENCH slow_frames(>8ms)=\{slow} first_slow_at=\{first_slow}")
     let nd = n.to_double()
     h_log(
-      "BENCH build_avg=\{bench.phases[0] / nd} layout_avg=\{bench.phases[1] / nd} paint_avg=\{bench.phases[2] / nd} " +
+      "BENCH tree_avg=\{bench.phases[3] / nd} build_avg=\{bench.phases[0] / nd} layout_avg=\{bench.phases[1] / nd} paint_avg=\{bench.phases[2] / nd} " +
       "flex_sized=\{@flex.counters[0].to_double() / 630.0} flex_cached=\{@flex.counters[1].to_double() / 630.0} flex_measured=\{@flex.counters[2].to_double() / 630.0}",
     )
     h_log(
@@ -932,8 +942,9 @@ fn on_pointer(kind : Int, x : Double, y : Double, button : Int) -> Unit {
   if kind == 0 || kind == 2 || kind == 10 || kind == 12 {
     rows_steady_hand()
   }
-  // a touch screen's finger as the host has it, by the system's id for it (touches.mbt)
-  if kind >= 10 && kind <= 13 {
+  // a touch screen's finger as the host has it, by the system's id for it (touches.mbt); 14 a finger moved with more
+  // of the same batch of samples after it (touches.mbt: laid out once, at the batch's last)
+  if kind >= 10 && kind <= 14 {
     touch_in(kind - 10, button, x, y)
     return
   }
@@ -944,17 +955,41 @@ fn on_pointer(kind : Int, x : Double, y : Double, button : Int) -> Unit {
 
 ///|
 /// A pointer's event, with the keys held as it went down (0 for an event other than a press), and what it came from
-/// where the host says (`by`: 1 a finger, 0 a mouse or a pen; the hand of the moment from it on: pointing).
-fn pointer_in(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+/// where the host says (`by`: 1 a finger, 0 a mouse or a pen; the hand of the moment from it on: pointing). `more`: a
+/// move (1, 5) with more samples of the same batch after it (touches.mbt), taken at its moment but not laid out.
+fn pointer_in(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+) -> Unit {
   // (one event, at its own moment, the hand it came by so as of then: what was due before it sees the one before, what
   // takes it (the tree's nodes, what they take presses by bound to it, or the old view) this one: view_host.mbt)
+  // (a move of a batch after its first finds the tree as the batch's first did: brought to its moment by none of them
+  // but the last, after it is taken, view_pointed; nor as what takes it is found, view_pointer)
+  let moved = kind == 1 || kind == 5
+  let batched = moves_batched.val && moved
+  let more = more && moved
+  moves_batched.val = more
   view_event_said(fn() { pointing_said_by_host(by) }, fn() {
-    pointer_in_now(kind, x, y, button, mods, by~)
-  }, what="pointer", input=true)
+    pointer_in_now(kind, x, y, button, mods, by~, more~, batched~)
+  }, what="pointer", input=!batched)
 }
 
 ///|
-fn pointer_in_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+fn pointer_in_now(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+  batched? : Bool = false,
+) -> Unit {
   // (where the pointer, a mouse's or a finger's, last was: where a column's keys go, as an old view's list's did by
   // Ctx's px and py, @view's scroll_keys.mbt)
   if kind >= 0 && kind <= 2 {
@@ -965,7 +1000,7 @@ fn pointer_in_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, 
   }
   // (what the event does to the fields' selections, the old view's and the tree's: told each field's as the event
   // is taken, EditorState::typed_told)
-  pointed_edits(fn() { pointer_event_now(kind, x, y, button, mods, by~) })
+  pointed_edits(fn() { pointer_event_now(kind, x, y, button, mods, by~, more~, batched~) })
 }
 
 ///|
@@ -992,17 +1027,33 @@ fn pointed_edits(f : () -> Unit) -> Unit {
 }
 
 ///|
-fn pointer_event_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+fn pointer_event_now(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+  batched? : Bool = false,
+) -> Unit {
   let args = [kind.to_double(), x, y, button.to_double(), mods.to_double()]
-  if by >= 0 {
+  if by >= 0 || more {
     args.push(by.to_double())
   }
+  // (a move with more of its batch after it: said on the tape, given again so: inputrec.mbt)
+  if more {
+    args.push(1.0)
+  }
+  // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
+  // the samples before it did laid out with it, touches.mbt)
+  let pointed = fn() { if !more { view_pointed() } }
   // (where a mouse points, said before the event is taken; what it is over told once it is: view_host.mbt)
   view_point_said(kind, x, y)
   // (what the tree made once routes elsewhere than to the old view (a press on a node of its own, one outside the old
   // view's island) is no input of the old view's: taped alone, view_host.mbt)
-  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button) {
-    view_pointed()
+  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button, brings=!batched) {
+    pointed()
     input_taped("pointer", h_event_time(), args)
     // (a press the window's tree took is outside every layer of the old frame's: what it dismisses so, at its moment,
     // as one the old frame takes is: overlay.mbt)
@@ -1014,14 +1065,14 @@ fn pointer_event_now(kind : Int, x : Double, y : Double, button : Int, mods : In
     }
   } else {
     took_input("pointer", h_event_time(), args)
-    view_pointed()
+    pointed()
     old_pointer_now(kind, x, y, button, mods, h_event_time())
     // (a hold of the old view's it has not made its own, moved: what of the tree's holds it may take it over)
     if kind == 1 {
       view_old_moved(x, y)
       // (what the old view found under the pointer as it moved, by its own targets, told it again as the tree finds it
       // there: nothing of its where something of the tree's is pointed at over it, View::points)
-      view_pointed()
+      pointed()
     }
   }
   // (a finger or button down, wherever it went (a node of the tree's, the old view): a press of its own from here, a
@@ -2061,6 +2112,7 @@ fn wheel_taken() -> Unit {
 
 ///|
 fn on_key(code : Int, mods : Int) -> Unit {
+  let (code, mods) = cancel_key(code, mods)
   rows_steady_hand()
   // (one event, at its own moment: view_host.mbt)
   view_event(fn() {
@@ -2070,6 +2122,23 @@ fn on_key(code : Int, mods : Int) -> Unit {
     // (what a field of the window's tree gave up of its words by it, told at its moment: tree_field.mbt)
     tree_field_said()
   }, what="key")
+}
+
+///|
+/// A key as what is up takes it: ⌘. typed as a Mac's keys go, while a modal layer is up (the tree's or an old view's),
+/// is Escape, as AppKit's cancelOperation: a dialog's, a sheet's or a menu's cancel (the owner, 2026-11-16: 照苹果的来).
+/// With none up, ⌘. is the app's own keys' (a chat's stop).
+fn cancel_key(code : Int, mods : Int) -> (Int, Int) {
+  guard keys_system() == 0 && mods == mod_cmd && code == key_of_char('.') else { return (code, mods) }
+  let tree_modal = match view_app.val {
+    Some(t) => t.modal_top() is Some(_)
+    None => false
+  }
+  if tree_modal || g().last_layers.iter().any(fn(l) { l.modal }) {
+    (key_escape, 0)
+  } else {
+    (code, mods)
+  }
 }
 
 ///|

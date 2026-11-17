@@ -26,7 +26,7 @@ let history_forward : Array[Spot] = []
 /// taken back, forgotten): what reads whether there is one and goes back to it (history_back_step) follows it, as it
 /// becomes another entry.
 // kept across runs: said again as the entries change (history_reset among them)
-let history_said : @signals.Signal[Spot?] = @signals.signal(None, same=fn(a, b) {
+let history_said : @signals.Signal[Spot?] = @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (Some(x), Some(y)) => physical_equal(x, y)
     (None, None) => true

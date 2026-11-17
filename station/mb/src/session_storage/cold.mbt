@@ -1,0 +1,727 @@
+// Cold storage of archived sessions' files (station/src/sessions/cold.ts, the Rust station's hub.rs: archive_room,
+// clean_rebuildable, pack_archive, archive_history_files, restore_archive, archive_has_jobs, archive_is_cold): once an
+// archived session is idle, what a build makes again is removed from its own directory, and the rest of its workspace
+// and the transcripts its runtime keeps in station storage are packed (archive.mbt); they are restored before its
+// runtime starts again, or when it is shown again. Where a session's transcripts are is the live view's to say
+// (`live.locate`, or `fn.historyFound` where no locator is), a link followed outside the folders macOS protects
+// (`fn.realOutside`, ops/places.ts).
+
+///|
+let followed_ms : Double = 15.0 * 60000.0
+
+///|
+/// Said in the station's data once every transcript put away is in segments.
+let segmented_mark = "transcripts-segmented"
+
+///|
+/// The Rust station's copy of an archived session's transcript.
+let legacy_suffix = ".jsonl.zst"
+
+///|
+/// platform.paths.within (Unix's).
+fn Files::within(self : Files, path : String, dir : String) -> Bool {
+  dir == self.sep || path == dir || path.has_prefix(dir + self.sep)
+}
+
+///|
+/// ops/paths.ts `fileName`.
+fn Files::file_name(self : Files, path : String) -> String? {
+  let parts = []
+  for p in path.split(self.sep) {
+    if p != "" && p != "." {
+      parts.push(p.to_string())
+    }
+  }
+  match parts.last() {
+    None | Some("..") => None
+    Some(l) => Some(l)
+  }
+}
+
+///|
+/// footprint.ts `roomOfSoon`: the room of a session's workspace under the station's sessions directory.
+pub async fn Storage::room_of(self : Storage, workspace : String) -> String? {
+  let fs = self.fs
+  guard fs.realpath(fs.join([self.data_dir(), "sessions"])) is Some(sessions) else { return None }
+  let path = match fs.realpath(workspace) {
+    Some(p) => Some(p)
+    None =>
+      if fs.file_name(workspace) == Some("workspace") {
+        match fs.realpath(fs.dirname(workspace)) {
+          Some(parent) => Some(fs.join([parent, "workspace"]))
+          None => None
+        }
+      } else {
+        None
+      }
+  }
+  guard path is Some(path) else { return None }
+  if !fs.within(path, sessions) || path == sessions {
+    return None
+  }
+  let relative = cut(path, sessions.length()).split(fs.sep).filter(p => p != "").to_array()
+  if relative.length() != 3 || fs.file_name(path) != Some("workspace") {
+    return None
+  }
+  Some(fs.dirname(path))
+}
+
+///|
+/// Links followed off the station's thread, kept for 15 minutes (cold.ts `canonical`).
+async fn Storage::canonical_followed(self : Storage, path : String) -> String? {
+  let now = self.now()
+  match self.followed.get(path) {
+    Some((at, real)) if now - at < followed_ms => return real
+    _ => ()
+  }
+  let real = try {
+    as_str(Some(self.ask("fn.realOutside", [js(path)])))
+  } catch {
+    _ => return None
+  }
+  self.followed.remove(path)
+  self.followed[path] = (self.now(), real)
+  if self.followed.length() > 1024 {
+    match self.followed.keys().head() {
+      Some(k) => self.followed.remove(k)
+      None => ()
+    }
+  }
+  real
+}
+
+///|
+/// `path` as last followed, whatever its age; None (`undefined`) when it never was, and it is followed in the background.
+async fn Storage::followed_now(self : Storage, path : String) -> String?? {
+  let kept = self.followed.get(path)
+  let now = self.now()
+  match kept {
+    Some((at, _)) if now - at < followed_ms => ()
+    _ => self.going.push(self.fs.host.rt.fork(name="follow", async fn() { ignore(self.canonical_followed(path)) }))
+  }
+  match kept {
+    Some((_, real)) => Some(real)
+    None => None
+  }
+}
+
+///|
+/// Whether `path`, followed, is in `dir`; one not followed yet is taken to be.
+async fn Storage::in_room(self : Storage, path : String, dir : String) -> Bool {
+  match self.followed_now(path) {
+    None => true
+    Some(Some(real)) => self.fs.within(real, dir)
+    Some(None) => false
+  }
+}
+
+///|
+async fn Storage::find_room_of(self : Storage, workspace : String) -> Unit {
+  let room = self.room_of(workspace)
+  self.rooms.remove(workspace)
+  self.rooms[workspace] = room
+  if self.rooms.length() > 1024 {
+    match self.rooms.keys().head() {
+      Some(k) => self.rooms.remove(k)
+      None => ()
+    }
+  }
+}
+
+///|
+/// Its session's own directory found off the thread, and the directories of what is in use followed.
+async fn Storage::find_room(self : Storage, key : String) -> Unit {
+  match self.session(key) {
+    Some(row) => self.find_room_of(str(row, "workspace").unwrap_or(""))
+    None => ()
+  }
+  self.follow_in_use()
+}
+
+///|
+fn places_of(s : Json) -> Array[String] {
+  let w = str(s, "workspace").unwrap_or("")
+  [w, str(s, "cwd").unwrap_or(w)]
+}
+
+///|
+async fn Storage::follow_in_use(self : Storage) -> Unit {
+  let paths = []
+  for s in items(Some(self.ask("store.sessionsInUse", []))) {
+    for p in places_of(s) {
+      if !paths.contains(p) {
+        paths.push(p)
+      }
+    }
+  }
+  let jobs = try {
+    items(Some(self.ask("store.jobsUp", [])))
+  } catch {
+    _ => []
+  }
+  for j in jobs {
+    let c = str(j, "cwd").unwrap_or("")
+    if !paths.contains(c) {
+      paths.push(c)
+    }
+  }
+  for p in paths {
+    ignore(self.canonical_followed(p))
+  }
+}
+
+///|
+/// An archived session's own directory, while nothing needs it (cold.ts `archiveRoom`).
+pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
+  guard self.session(key) is Some(row) else { return None }
+  guard self.rooms.get(str(row, "workspace").unwrap_or("")) is Some(Some(dir)) else { return None }
+  if nullish(get(row, "archivedAt")) || get(row, "running") is Some(True) || self.ask("hub.processState", [js(key)]) == js("running") {
+    return None
+  }
+  for s in items(Some(self.ask("store.sessionsInUse", []))) {
+    if str(s, "key") == Some(key) {
+      continue
+    }
+    for p in places_of(s) {
+      if self.in_room(p, dir) {
+        return None
+      }
+    }
+  }
+  if self.has_jobs(key, dir) {
+    return None
+  }
+  Some(dir)
+}
+
+///|
+async fn Storage::has_jobs(self : Storage, key : String, dir : String) -> Bool {
+  let jobs = try {
+    items(Some(self.ask("store.jobsUp", [])))
+  } catch {
+    _ => return true
+  }
+  for job in jobs {
+    if str(job, "sessionKey") == Some(key) || self.in_room(str(job, "cwd").unwrap_or(""), dir) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// footprint.ts `decide`: how a directory is one a build or an install makes again ("named", "found"), or None.
+async fn Files::rebuildable(self : Files, dir : String) -> String? {
+  guard self.file_name(dir) is Some(name) else { return None }
+  let parent = self.dirname(dir)
+  let beside = async fn(files : Array[String]) {
+    for f in files {
+      if self.there(self.join([parent, f])) {
+        return true
+      }
+    }
+    false
+  }
+  match name {
+    "node_modules" | ".next" | ".turbo" | "__pycache__" => return Some("named")
+    "target" => if beside(["Cargo.toml"]) { return Some("named") }
+    ".gradle" => if beside(["settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts"]) { return Some("named") }
+    "build" => if beside(["build.gradle", "build.gradle.kts"]) { return Some("named") }
+    "_build" => if beside(["mix.exs"]) || self.moon_above(parent) { return Some("found") }
+    "deps" => if beside(["mix.exs"]) { return Some("found") }
+    ".mooncakes" => if beside(["moon.mod.json", "moon.work"]) { return Some("found") }
+    _ => ()
+  }
+  if self.is_dir(self.join([dir, "Build", "Products"])) && self.is_dir(self.join([dir, "Build", "Intermediates.noindex"])) {
+    return Some("found")
+  }
+  let tag = try self.read_range(self.join([dir, "CACHEDIR.TAG"]), 0.0, 512.0) catch {
+    _ => None
+  } noraise {
+    b => Some(@utf8.decode_lossy(b))
+  }
+  match tag {
+    Some(t) => {
+      let lines : Array[String] = t.split("\n").map(l => { let s = l.to_string(); if s.has_suffix("\r") { cut(s, 0, end=s.length() - 1) } else { s } }).to_array()
+      if lines.contains("Signature: 8a477f597d28d172789f06886806bc55") && lines.contains("# This file is a cache directory tag created by cargo.") {
+        if self.there(self.join([dir, ".rustc_info.json"])) {
+          return Some("found")
+        }
+        for profile in ["debug", "release"] {
+          for own in ["deps", ".fingerprint"] {
+            if self.is_dir(self.join([dir, profile, own])) {
+              return Some("found")
+            }
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  None
+}
+
+///|
+async fn Files::moon_above(self : Files, from : String) -> Bool {
+  let mut found = false
+  let mut p = from
+  for _ in 0..<8 {
+    for m in ["moon.mod.json", "moon.work", "moon.pkg.json"] {
+      if !self.there(self.join([p, m])) {
+        continue
+      }
+      if p == from {
+        return true
+      }
+      found = true
+    }
+    if self.there(self.join([p, ".git"])) {
+      return found
+    }
+    let up = self.dirname(p)
+    if up == p {
+      break
+    }
+    p = up
+  }
+  false
+}
+
+///|
+/// footprint.ts `safeToRemove`: a generated-looking directory, not tracked by git, and (found by what is in it) ignored.
+async fn Files::safe_to_remove(self : Files, path : String) -> Bool {
+  let kind = if self.lkind(path) is Some("dir") { self.rebuildable(path) } else { None }
+  guard kind is Some(kind) else { return false }
+  let parent = self.dirname(path)
+  let mut in_repo = false
+  let mut p = parent
+  while true {
+    if self.there(self.join([p, ".git"])) {
+      in_repo = true
+      break
+    }
+    if self.dirname(p) == p {
+      break
+    }
+    p = self.dirname(p)
+  }
+  if !in_repo {
+    return true
+  }
+  let git = async fn(args : Array[String]) -> (Bool, Int) {
+    let all = ["-C", parent, ..args]
+    match self.sh("proc.run", jo([("command", js("git")), ("args", ja(all.map(a => js(a)))), ("code", jb(true)), ("timeoutMs", ji(600000))])) {
+      Object(_) as v => (num(v, "code") == Some(0.0), str(v, "out").unwrap_or("").length())
+      _ => (false, 0)
+    }
+  }
+  let (ok, out) = git(["ls-files", "--", self.basename(path)])
+  if !ok || out > 0 {
+    return false
+  }
+  kind == "named" || git(["check-ignore", "-q", "--", "\{self.basename(path)}/"]).0
+}
+
+///|
+/// footprint.ts `measureRoom`: what can be made again in a chat's directory, each with its size.
+async fn Files::rebuild_of(self : Files, dir : String) -> Array[(String, Double)] {
+  let ask = jo([
+    ("path", js(dir)),
+    ("base", js(self.join([dir]))),
+    ("finding", jb(true)),
+    ("strict", jb(false)),
+    ("maxEntries", ji(500000)),
+    ("maxDurationMs", ji(60000)),
+  ])
+  let said = @footprint.answer(ask.stringify(), self.sep)
+  if str(said, "error") is Some(e) {
+    raise Thrown("Error", jo([("message", js(e)), ("code", get(said, "code").unwrap_or(Json::null()))]))
+  }
+  items(get(said, "rebuild")).filter_map(p => match p {
+    Array([String(path), Number(b, ..)]) => Some((path, b))
+    _ => None
+  })
+}
+
+///|
+async fn Storage::still_archived(self : Storage, key : String) -> Bool {
+  match self.session(key) {
+    Some(row) => !nullish(get(row, "archivedAt")) && !(get(row, "running") is Some(True))
+    None => false
+  }
+}
+
+///|
+/// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
+pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
+  self.find_room(key)
+  guard self.archive_room(key) is Some(dir) else { return 0.0 }
+  let mut freed = 0.0
+  for pair in self.fs.rebuild_of(dir) {
+    let (path, bytes) = pair
+    if !self.still_archived(key) || self.has_jobs(key, dir) {
+      break
+    }
+    if !self.fs.safe_to_remove(path) {
+      continue
+    }
+    try self.fs.remove_tree(path) catch {
+      e => self.log("warn", "hub", "not removed", jo([("path", js(path)), ("error", js(message_of(e)))]))
+    } noraise {
+      _ => freed += bytes
+    }
+  }
+  if freed > 0.0 {
+    self.log("info", "hub", "rebuildable files of an archived session cleaned", jo([("session", js(key)), ("freed", jn(freed))]))
+  }
+  freed
+}
+
+///|
+/// Where a session's transcripts are, as the live view finds them, else as its history finds them.
+async fn Storage::located(self : Storage, key : String, row : Json, sources : Array[Json]) -> Json {
+  if self.ask("hub.has", [js("locateAsync")]) is True {
+    self.ask("live.locate", [js(key)])
+  } else {
+    self.ask("fn.historyFound", [row, ja(sources)])
+  }
+}
+
+///|
+/// The files of an archived session's transcripts that cold storage puts away (cold.ts `historyFilesSoon`).
+pub async fn Storage::history_files(self : Storage, key : String, packing : Bool) -> Array[String] {
+  let fs = self.fs
+  guard self.session(key) is Some(row) else { raise failed("unknown session \{key}") }
+  let sources = items(Some(self.ask("store.runtimeSessionSources", [js(key)])))
+  if sources.length() == 0 {
+    return []
+  }
+  if packing {
+    for s in sources {
+      if self.ask("store.transcriptInUse", [get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)]) is True {
+        return []
+      }
+    }
+  }
+  let located = self.located(key, row, sources)
+  if nullish(Some(located)) {
+    return []
+  }
+  guard fs.realpath(self.data_dir()) is Some(root) else { raise fs_failed("ENOENT", "realpath", self.data_dir()) }
+  let files = []
+  let runtime0 = str(located, "runtime").unwrap_or("")
+  for each in items(get(located, "paths")) {
+    let (path, runtime) = match each {
+      String(p) => (p, runtime0)
+      e => (str(e, "path").unwrap_or(""), str(e, "runtime").unwrap_or(runtime0))
+    }
+    guard fs.realpath(fs.dirname(path)) is Some(parent) else { continue }
+    if !fs.within(parent, root) {
+      continue
+    }
+    files.push(fs.join([parent, fs.basename(path)]))
+    if runtime == "claude" {
+      let base = fs.basename(path)
+      let stem = if base.has_suffix(".jsonl") { cut(base, 0, end=base.length() - 6) } else { base }
+      fs.jsonl_files(fs.join([parent, stem]), files)
+    }
+  }
+  files
+}
+
+///|
+/// Whether an archived session's directory or transcripts are put away.
+pub async fn Storage::is_cold(self : Storage, key : String) -> Bool {
+  let fs = self.fs
+  let room = match self.session(key) {
+    Some(row) => self.room_of(str(row, "workspace").unwrap_or(""))
+    None => None
+  }
+  match room {
+    Some(r) =>
+      if fs.there(fs.join([r, "cold"])) || fs.there(fs.workspace_archive(r)) || fs.there(fs.join([r, "workspace-locks.json"])) {
+        return true
+      }
+    None => ()
+  }
+  let paths = try {
+    if self.ask("hub.has", [js("locateAsync")]) is True {
+      let l = self.ask("live.locate", [js(key)])
+      items(get(l, "paths")).map(p => match p {
+        String(s) => s
+        e => str(e, "path").unwrap_or("")
+      })
+    } else {
+      self.history_files(key, false)
+    }
+  } catch {
+    _ => return false
+  }
+  for path in paths {
+    if !fs.there(path) && fs.there(packed_path(path)) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+pub async fn Storage::cold_restore(self : Storage, key : String) -> Unit {
+  let fs = self.fs
+  guard self.session(key) is Some(row) else { raise failed("unknown session \{key}") }
+  guard self.room_of(str(row, "workspace").unwrap_or("")) is Some(room) else { return }
+  fs.with_lock(room, async fn() {
+    fs.restore_workspace(room)
+    for path in self.history_files(key, false) {
+      fs.restore_file(path)
+    }
+    fs.unlink(fs.join([room, "cold"])) catch { _ => () }
+  })
+}
+
+///|
+/// Archived long enough: its workspace keeps only the files sent in its chat (cold.ts `expire`).
+pub async fn Storage::cold_expire(self : Storage, key : String, before : Double) -> Unit {
+  let fs = self.fs
+  let due = async fn() {
+    let at = match self.session(key) {
+      Some(r) => num(r, "archivedAt")
+      None => None
+    }
+    match at {
+      Some(a) => a <= before && self.archive_room(key) is Some(_)
+      None => false
+    }
+  }
+  self.find_room(key)
+  let room = if due() { self.archive_room(key) } else { None }
+  guard room is Some(room) else { return }
+  fs.with_lock(room, async fn() {
+    if !due() || !fs.there(fs.join([room, "cold"])) || !fs.holds_more(room) {
+      return
+    }
+    fs.empty_workspace(room)
+    self.log("info", "hub", "workspace of a long-archived session emptied", jo([("session", js(key))]))
+  })
+}
+
+///|
+/// Whether an archived session's directory holds more than its chat's files.
+pub async fn Storage::cold_holds_more(self : Storage, key : String) -> Bool {
+  let room = match self.session(key) {
+    Some(row) => self.room_of(str(row, "workspace").unwrap_or(""))
+    None => None
+  }
+  match room {
+    Some(r) => self.fs.there(self.fs.join([r, "cold"])) && self.fs.holds_more(r)
+    None => false
+  }
+}
+
+///|
+pub async fn Storage::cold_pack(self : Storage, key : String) -> Unit {
+  let fs = self.fs
+  self.find_room(key)
+  guard self.archive_room(key) is Some(room) else { return }
+  let ready = async fn() { self.archive_room(key) is Some(_) }
+  fs.with_lock(room, async fn() {
+    if !ready() {
+      return
+    }
+    self.stop_strays(key, fs.join([room, "workspace"]))
+    if !ready() {
+      return
+    }
+    ignore(self.clean_rebuildable(key))
+    if !ready() {
+      return
+    }
+    fs.write_text(fs.join([room, "cold"]), "workspace and history may be compressed\n")
+    fs.pack_workspace_if(room, ready)
+    if !ready() {
+      return
+    }
+    ignore(self.pack_history(key, ready))
+  })
+}
+
+///|
+async fn Files::run_out(self : Files, command : String, args : Array[String]) -> String? {
+  as_str(Some(self.sh("proc.run", jo([("command", js(command)), ("args", ja(args.map(a => js(a)))), ("timeoutMs", ji(60000)), ("maxBytes", ji(16 << 20))]))))
+}
+
+///|
+/// What still runs in an archived session's workspace, its agent's and its jobs' processes gone, stopped.
+async fn Storage::stop_strays(self : Storage, key : String, workspace : String) -> Unit {
+  let fs = self.fs
+  if fs.sep == "\\" {
+    return
+  }
+  guard fs.run_out("id", ["-u"]) is Some(uid) else { return }
+  guard fs.run_out("ps", ["-U", js_trim(uid), "-o", "pid="]) is Some(out) else { return }
+  let me = @host.pid()
+  let station = try self.ask("hub.pid", []) catch {
+    _ => -1
+  } noraise {
+    v => match as_num(Some(v)) {
+      Some(p) => p.to_int()
+      None => -1
+    }
+  }
+  let pids = out.split("\n").filter_map(l => {
+    let n = digits_of(js_trim(l.to_string()))
+    if n > 1 && n != me && n != station { Some(n) } else { None }
+  }).to_array()
+  let real = fs.realpath(workspace).unwrap_or(workspace)
+  let cwds : Array[(Int, String)] = []
+  if pids.length() > 0 {
+    if fs.is_dir("/proc/self") {
+      for pid in pids {
+        match fs.readlink("/proc/\{pid}/cwd") {
+          Some(c) => cwds.push((pid, c))
+          None => ()
+        }
+      }
+    } else {
+      let said = fs.sh("proc.run", jo([("command", js("lsof")), ("args", ja(["-a", "-d", "cwd", "-p", pids.map(p => p.to_string()).join(","), "-Fpn"].map(a => js(a)))), ("code", jb(true)), ("timeoutMs", ji(60000)), ("maxBytes", ji(16 << 20))]))
+      let mut pid = -1
+      for line in str(said, "out").unwrap_or("").split("\n") {
+        let l = line.to_string()
+        if l.has_prefix("p") {
+          pid = digits_of(cut(l, 1))
+        } else if l.has_prefix("n") && pid >= 0 {
+          cwds.push((pid, cut(l, 1)))
+        }
+      }
+    }
+  }
+  let mut stopped = 0
+  for pair in cwds {
+    let (pid, cwd) = pair
+    if cwd != real && cwd != workspace && !fs.within(cwd, real) && !fs.within(cwd, workspace) {
+      continue
+    }
+    match fs.sh("proc.run", jo([("command", js("kill")), ("args", ja([js("-TERM"), js(pid.to_string())])), ("code", jb(true))])) {
+      Object(_) as v if num(v, "code") == Some(0.0) => stopped += 1
+      _ => ()
+    }
+  }
+  if stopped > 0 {
+    self.log("info", "hub", "what was left running in an archived session's workspace stopped", jo([("session", js(key)), ("n", ji(stopped))]))
+  }
+}
+
+///|
+fn Files::legacy_copy(self : Files, archive_dir : String, key : String) -> String {
+  self.join([archive_dir, "transcripts", "\{key}\{legacy_suffix}"])
+}
+
+///|
+/// Packs an archived session's transcripts in place, then lets go of the Rust station's copy of them once they all
+/// are: the copy's size, 0 without one.
+async fn Storage::pack_history(self : Storage, key : String, ready : async () -> Bool) -> Double {
+  let fs = self.fs
+  let files = self.history_files(key, true)
+  let sources = items(Some(self.ask("store.runtimeSessionSources", [js(key)])))
+  let unused = async fn() {
+    for s in sources {
+      if self.ask("store.transcriptInUse", [get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)]) is True {
+        return false
+      }
+    }
+    true
+  }
+  for path in files {
+    fs.pack_file_if(path, async fn() { ready() && unused() })
+  }
+  if files.length() == 0 {
+    return 0.0
+  }
+  for path in files {
+    if fs.there(path) || !fs.there(packed_path(path)) {
+      return 0.0
+    }
+  }
+  let copy = fs.legacy_copy(as_str(Some(self.ask("store.archiveDir", []))).unwrap_or(""), key)
+  guard fs.stat(copy) is Some(s) else { return 0.0 }
+  fs.unlink(copy)
+  s.size
+}
+
+///|
+/// What the Rust station's archiving left (`archive/transcripts/<key>.jsonl.zst`): each such session's transcripts
+/// packed now as archiving packs them, and the copy let go.
+pub async fn Storage::finish_legacy_copies(self : Storage) -> Unit {
+  let fs = self.fs
+  let dir = fs.join([as_str(Some(self.ask("store.archiveDir", []))).unwrap_or(""), "transcripts"])
+  guard fs.readdir(dir) is Some(names) else { return }
+  let mut freed = 0.0
+  let mut done = 0
+  for name in names {
+    if !name.has_suffix(legacy_suffix) {
+      continue
+    }
+    let key = cut(name, 0, end=name.length() - legacy_suffix.length())
+    self.find_room(key)
+    guard self.archive_room(key) is Some(room) else { continue }
+    let ready = async fn() { self.archive_room(key) is Some(_) }
+    fs.with_lock(room, async fn() {
+      if !ready() {
+        return
+      }
+      let size = self.pack_history(key, ready)
+      freed += size
+      if size > 0.0 {
+        done += 1
+      }
+    }) catch {
+      e => self.log("warn", "hub", "an archived session's transcripts not packed", jo([("session", js(key)), ("error", js(message_of(e)))]))
+    }
+  }
+  if done > 0 {
+    self.log("info", "hub", "the Rust station's transcript copies let go, the transcripts packed", jo([("sessions", ji(done)), ("freed", jn(freed))]))
+  }
+}
+
+///|
+/// Transcripts put away before they were in segments, put away again in segments; said so on disk once all are.
+pub async fn Storage::segment_histories(self : Storage) -> Unit {
+  let fs = self.fs
+  let said = fs.join([self.data_dir(), segmented_mark])
+  if fs.there(said) {
+    return
+  }
+  let mut done = 0
+  let mut failed_any = false
+  let through = self.ask("store.lastArchivedSession", [])
+  let mut after = Json::null()
+  while !nullish(Some(through)) {
+    let page = items(Some(self.ask("store.archivedSessions", [after, through])))
+    if page.length() == 0 {
+      break
+    }
+    for row in page {
+      let key = str(row, "key").unwrap_or("")
+      let files = self.history_files(key, false) catch { _ => [] }
+      for path in files {
+        try fs.segment_file(path) catch {
+          e => {
+            failed_any = true
+            self.log("warn", "hub", "a put-away transcript not put in segments", jo([("session", js(key)), ("error", js(message_of(e)))]))
+          }
+        } noraise {
+          true => done += 1
+          false => ()
+        }
+      }
+      @effect.pause()
+    }
+    after = page[page.length() - 1]
+  }
+  if done > 0 {
+    self.log("info", "hub", "put-away transcripts put in segments", jo([("n", ji(done))]))
+  }
+  if !failed_any {
+    fs.write_text(said, "") catch { _ => () }
+  }
+}

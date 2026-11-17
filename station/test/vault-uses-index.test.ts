@@ -184,7 +184,7 @@ test("vault backfill waits for a foreground writer, then serves the indexed page
     initializeUseIndex(db);
     Atomics.store(priority, 0, 1);
     initializeReboxIndex(db);
-    worker = new Worker(new URL("../src/vault/use-index-worker.ts", import.meta.url), { workerData: { path, priority: priority.buffer } });
+    worker = new Worker(new URL("./workers/use-index-worker.ts", import.meta.url), { workerData: { path, priority: priority.buffer } });
     const [notice] = await once(worker, "message") as [{ foreground?: boolean }];
     assert.equal(notice.foreground, true);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM vault_use_lookup").get() as { n: number }).n, 0);
@@ -218,7 +218,7 @@ test("a ready vault page can be read while a foreground write is pending", async
     assert.equal(backfillUseIndex(db, "w"), true);
     Atomics.store(priority, 0, 1);
     initializeReboxIndex(db);
-    worker = new Worker(new URL("../src/vault/use-index-worker.ts", import.meta.url), { workerData: { path, priority: priority.buffer } });
+    worker = new Worker(new URL("./workers/use-index-worker.ts", import.meta.url), { workerData: { path, priority: priority.buffer } });
     const messages = on(worker, "message");
     const next = async () => (await messages.next()).value![0] as { id?: number; foreground?: boolean; request?: number; bodies?: string[] };
     const blocked = async (id: number) => {

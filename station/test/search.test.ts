@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { after, test } from "node:test";
 import { Store, newMessage } from "../src/store/store.ts";
-import { openStore } from "../src/read/store.ts";
+import { openStore } from "./reference/store.ts";
 import { type Asker, excerpt, pick, terms } from "../src/search/match.ts";
 import { historyHits, profileDocs, profilesOf, stationDocSteps, stationDocs, threadDocs } from "./reference/search-sources.ts";
 
@@ -169,7 +169,7 @@ test("the station's search thread finds what the store has as it is asked; the i
   const t = chat(s.store, "k1", null);
   say(s.store, t, "1", "before the start");
   const search = new Search({ data: s.data });
-  search.start();
+  await search.start();
   try {
     assert.equal(existsSync(join(s.data, "search.db")), false);
     assert.deepEqual(kinds((await search.query("before", home, { kinds: ["message"] })).groups), { message: [`m:${t}:1`] });
@@ -209,7 +209,7 @@ test("an execution history is looked through as it is: newest first, numbered as
   // Another workspace's member sees none of it.
   assert.deepEqual((await look("deploy", other)).hits, []);
   // Numbered as the history page numbers them (GET /sessions/:key/timeline).
-  const { readTimeline } = await import("../src/read/transcript.ts");
+  const { readTimeline } = await import("./reference/transcript.ts");
   assert.equal(readTimeline("claude", file)[1]!.text, 'deploy 完了, "quoted" too');
   // Put away: read decompressed.
   writeFileSync(`${file}.zst`, zstdCompressSync(readFileSync(file)));

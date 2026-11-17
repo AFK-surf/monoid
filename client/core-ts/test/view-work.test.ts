@@ -70,27 +70,23 @@ const OVER_SHOWN: Over = {
 };
 /// The same with the workspace's chats three times.
 const OVER_CHATS: Over = {
-  "quota": ["shared", "equaled", "copied", "fitted"],
-  "message": ["reads", "shared", "copied", "fitted"],
-  "agent": ["shared", "copied", "fitted"],
-  "thing": ["reads", "shared", "copied", "fitted"],
-  "card": ["reads", "shared", "copied", "fitted"],
+  "quota": ["shared", "equaled"],
+  "message": ["reads", "shared", "copied"],
+  "agent": ["copied", "fitted"],
+  "thing": ["reads", "shared", "copied"],
+  "card": ["reads", "shared", "diffed"],
   // (grown's built and fitted joined as the rows that are the objects they were came to be taken by one comparison:
   // they were the whole window's before, alike at every size; now they are the rows the window grew by and the days
   // those went into, two with three times the chats where one is as the rig is)
   "grown": ["reads", "built", "fitted"],
   "down": ["shared", "equaled", "copied", "fitted"],
   "job": ["shared", "copied", "fitted"],
-  "usage": ["shared", "copied", "fitted"],
   "screen": ["shared", "equaled", "copied", "fitted"],
   "member": ["reads", "shared", "equaled"],
-  "session": ["shared", "equaled", "copied", "fitted"],
+  "session": ["shared", "equaled"],
   "decided": ["shared", "equaled"],
-  "updating": ["shared", "equaled", "copied", "fitted"],
-  "machine": ["shared", "equaled", "fitted"],
-  "login": ["shared"],
-  "archiving": ["shared"],
-  "off": ["shared"],
+  "updating": ["shared", "equaled"],
+  "machine": ["shared", "equaled"],
   "quota six pages": ["shared"],
   "message six pages": ["shared", "copied", "fitted"],
 };

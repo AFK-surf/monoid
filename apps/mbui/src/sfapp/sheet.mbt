@@ -1,7 +1,7 @@
-// The app's sheets, one at a time: each the library's panel
-// (@sf.panel, src/sf presenters.mbt), with a finger the phone's sheet, its share of the screen, a draggable one between
-// half (55%) and nearly all (94%); with a mouse beside what opened it. What it shows is its kind's (SheetKind), drawn
-// anew each frame by what the frame tells (sheet_contents).
+// The app's sheets, one at a time: each the library's panel of nodes (@sf.panel_nodes, src/sf presenters.mbt), with
+// a finger the phone's sheet, its share of the screen, a draggable one between half (55%) and nearly all (94%); with a
+// mouse beside what opened it, or in the middle of the window. What it shows is its kind's (SheetKind), made once as
+// nodes of the window's tree as it opens (sheet_body_node), each part bound to what it shows.
 
 ///|
 /// Which sheet: what it shows and how it sits.
@@ -39,15 +39,16 @@ priv struct SheetHost {
 let sheet_host : SheetHost = { kind: NoSheet, serial: 0 }
 
 ///|
-/// What each kind draws, as this frame has it (its source, its workspace): told by the frame before the library's
-/// host draws (sheet_contents).
-// kept across runs: told anew by each frame before it is read
-let sheet_drawer : Ref[(SheetKind) -> Unit] = Ref(fn(_) {  })
+/// The source the sheets show what they show of (the app's tree's: told as that is made, app_tree), read as a sheet's
+/// nodes are made.
+// kept across runs: told anew as each app's tree is made, before a sheet is
+let sheet_src : Ref[Source?] = Ref(None)
 
 ///|
-/// Opens `kind` (in place of one open), by what opened it: the library's panel (@sf.panel), as tall as its share of
-/// the window (a sheet with a finger, beside `from` or in the middle of the window with a mouse). What was typed lets
-/// go of the keyboard first.
+/// Opens `kind` (in place of one open), by what opened it: the library's panel of nodes (@sf.panel_nodes), as tall as
+/// its share of the window (a sheet with a finger, beside `from` or in the middle of the window with a mouse), what it
+/// shows made as it opens (sheet_body_node). What was typed lets go of the keyboard first. `title`: its title (the
+/// login's; the invitation's says its own as it changes, what is shared heads itself).
 fn raise_sheet(
   kind : SheetKind,
   from? : @sf.Anchor = Unanchored,
@@ -57,14 +58,24 @@ fn raise_sheet(
   let s = sheet_host
   s.kind = kind
   let (share, draggable) = sheet_spec(kind)
-  @sf.panel(
-    // (ShareSheet and InviteLink draw their own head; LoginLink gives its title)
+  // (its title as it is now: the invitation's as what it leads to is read; the others' as said, what is shared none)
+  let live = match kind {
+    InviteLink => fn() { (sheet_src.val.map_or("", invite_title), "", "") }
+    _ => fn() { (title, "", "") }
+  }
+  @sf.panel_nodes(
     title,
-    fn(_, _) { (sheet_drawer.val)(kind) },
+    fn(v, close) { sheet_body_node(v, kind, close) },
     from~,
     tall=share,
     grows=draggable,
+    // (the invitation in the middle of the window as tall as what it says, no taller; a sheet on 小屏 half the window)
+    hugs_centred=kind == InviteLink,
+    live~,
     w=if kind == ShareSheet { share_panel_w } else { @sf.panel_w },
+    // (what is shared in the app, on 中屏 and 大屏: 14% down the window, over its night, no close button, as ⌘K's panel
+    // (sfdesk switcher.mbt); a sheet on 小屏; over another app a dialog in its middle)
+    top_share=if kind == ShareSheet && !share_over.get() { share_panel_top_share } else { 0.0 },
     gone=fn() {
       if s.kind == kind {
         s.kind = NoSheet
@@ -72,6 +83,24 @@ fn raise_sheet(
     },
   )
   s.serial = @sf.last_presented()
+}
+
+///|
+/// What sheet `kind` shows in node `v` (its panel's body), of the app's source (sheet_src): what is shared, an
+/// invitation, a login of the workspace in view (made again as that changes).
+fn sheet_body_node(v : @view.View, kind : SheetKind, close : () -> Unit) -> Unit {
+  ignore(close)
+  guard sheet_src.val is Some(src) else { return }
+  match kind {
+    ShareSheet => share_sheet_node(v, src)
+    InviteLink => invite_node(v, src)
+    LoginLink =>
+      v.pick(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, id) {
+        guard id is Some(_) && @signals.untracked(fn() { workspace_in_view(src).0 }) is Some(w) else { return }
+        login_node(p, src, w)
+      })
+    NoSheet => ()
+  }
 }
 
 ///|
@@ -92,21 +121,20 @@ fn sheet_open() -> Bool {
 }
 
 ///|
-/// What the kinds draw this frame (call before the library's host, @sf.presented): `content` draws a kind's content in
-/// the room it is given (closed by lower_sheet).
-fn sheet_contents(content : (SheetKind) -> Unit) -> Unit {
-  sheet_drawer.val = content
-}
-
-// The grabber and a sheet's head (SheetHead) are decide.mbt's `sheet_grab`, `sheet_head`.
-
-///|
 /// What another app shares, its panel's width with a wide window.
 let share_panel_w : Double = 520.0
 
 ///|
-/// Whether the window is laid out Small, where what is presented is a sheet (as the library's presenters have it):
-/// what is shared shows in a sheet there, in its wide panel otherwise (share.mbt).
-fn sheet_small(c : @ui.Ctx) -> Bool {
-  @sf.layout(c.window_size().0) is Small
+/// How far down the window what is shared stands in the app (⌘K's panel's).
+let share_panel_top_share : Double = 0.14
+
+///|
+/// How what is shared is laid out where node `v` is made: as a sheet on 小屏 (a narrow look), as the wide panel in a
+/// dialog in the middle of the window on 中屏 and 大屏 (a wide one), as the presenters show the sheet there.
+fn share_look_of(v : @view.View) -> ShareLook {
+  if @sf.layout(v.window().0) is Small {
+    share_narrow
+  } else {
+    share_wide_look
+  }
 }

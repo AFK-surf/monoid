@@ -38,7 +38,7 @@
 // was said never reached, the job not started again (its test waited on it past CI's time).
 import { spawn, spawnSync } from "node:child_process";
 import {
-  closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync,
+  chmodSync, closeSync, existsSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync,
   renameSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync, writeSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -113,8 +113,8 @@ const within = (dir, path) => {
   return r === "" || (!r.startsWith("..") && !isAbsolute(r));
 };
 
-/// What a sync entry has here: path (absolute, on this side) → [kind, size, mtime ms, link?]; kind "f" a file, "l" a
-/// link kept as one. `root` says which links are kept.
+/// What a sync entry has here: path (absolute, on this side) → [kind, size, mtime ms, link?, exec?]; kind "f" a file
+/// (`exec`: its owner may run it), "l" a link kept as one. `root` says which links are kept.
 function scan(entry, base, root) {
   const out = new Map();
   // Links are told by where they lead, the data directory too (on macOS /tmp is /private/tmp).
@@ -154,15 +154,27 @@ function scan(entry, base, root) {
         return;
       }
       for (const name of names) if (!skip.has(name)) walk(join(path, name), depth + 1);
-    } else if (st.isFile() && st.size <= MAX_FILE) out.set(path, ["f", st.size, st.mtimeMs]);
+    } else if (st.isFile() && st.size <= MAX_FILE) out.set(path, ["f", st.size, st.mtimeMs, null, runnable(st)]);
   };
   walk(base, 0);
   return out;
 }
 
+const runnable = (st) => (st.mode & 0o100) !== 0;
+
+/// Gives a file the other side's executable bits (`exec` undefined: a bridge from before, which sends none).
+function setExec(path, exec) {
+  if (exec === undefined) return;
+  try {
+    const mode = statSync(path).mode & 0o7777;
+    const want = exec ? mode | ((mode & 0o444) >> 2) : mode & ~0o111;
+    if (want !== mode) chmodSync(path, want);
+  } catch {}
+}
+
 /// Writes a file copied from the other side, through links here (a link to the station's memory stays one), with the
-/// other side's time. `offset` (an "append" file): from there, what is beyond dropped.
-function place(path, bytes, mtimeMs, offset = null) {
+/// other side's time and executable bits. `offset` (an "append" file): from there, what is beyond dropped.
+function place(path, bytes, mtimeMs, offset = null, exec = undefined) {
   let target = path;
   try {
     target = realpathSync(path);
@@ -186,6 +198,7 @@ function place(path, bytes, mtimeMs, offset = null) {
       closeSync(fd);
     }
   }
+  setExec(target, exec);
   const t = new Date(mtimeMs);
   try {
     utimesSync(target, t, t);
@@ -280,20 +293,22 @@ function connect(spec) {
       const asked = [];
       const map = (path) => join(e.to, relative(e.path, path));
       const unmap = (path) => join(e.path, relative(e.to, path));
-      for (const [path, [kind, size, mtime, link]] of mine) {
+      for (const [path, [kind, size, mtime, link, exec]] of mine) {
         const other = there.get(map(path));
         if (kind === "l") {
           if (e.push !== false && (!other || other[0] !== "l" || other[3] !== link)) send(T.put, 0, packed({ path: map(path), link }));
           continue;
         }
-        const newer = !other ? "here" : e.mode === "append" ? (size > other[1] ? "here" : size < other[1] ? "there" : null) : seconds(mtime) > seconds(other[2]) ? "here" : seconds(mtime) < seconds(other[2]) ? "there" : size !== other[1] ? "here" : null;
+        let newer = !other ? "here" : e.mode === "append" ? (size > other[1] ? "here" : size < other[1] ? "there" : null) : seconds(mtime) > seconds(other[2]) ? "here" : seconds(mtime) < seconds(other[2]) ? "there" : size !== other[1] ? "here" : null;
+        // Only the executable bit changed (chmod keeps the mtime): this side's is the one meant.
+        if (newer === null && e.mode !== "append" && other[4] !== undefined && other[4] !== exec && e.push !== false) newer = "here";
         if (newer === "here" && e.push !== false) {
           if (pushed + size > MAX_PUSH) {
             process.stderr.write(`sandbox: over ${MAX_PUSH} bytes to copy there; ${path} and what follows left out\n`);
             continue;
           }
           try {
-            send(T.put, 0, packed({ path: map(path), mtime }, readFileSync(path)));
+            send(T.put, 0, packed({ path: map(path), mtime, exec }, readFileSync(path)));
             pushed += size;
           } catch {}
         } else if (newer === "there" && e.back !== false) asked.push(map(path));
@@ -312,7 +327,7 @@ function connect(spec) {
     const path = join(e.path, relative(e.to, header.path));
     try {
       if (header.link !== undefined) placeLink(path, header.link);
-      else place(path, bytes, header.mtime, header.offset ?? null);
+      else place(path, bytes, header.mtime, header.offset ?? null, header.exec);
     } catch (error) {
       process.stderr.write(`sandbox: ${path} not copied back: ${error.message}\n`);
     }
@@ -448,7 +463,7 @@ function remote() {
   const S = (p) => (P && p.startsWith(P) ? p.slice(P.length) : p);
   let sync = null;
   let root = null;
-  /// What was last copied either way, by path: [size, mtime s], so a change seen is the program's, not a copy.
+  /// What was last copied either way, by path: [size, mtime s, exec], so a change seen is the program's, not a copy.
   const known = new Map();
   const dirty = new Set();
   const sent = new Map();
@@ -479,7 +494,7 @@ function remote() {
     }
     if (!st.isFile() || st.size > MAX_FILE) return;
     const was = known.get(path);
-    if (was && was[0] === st.size && was[1] === seconds(st.mtimeMs)) return;
+    if (was && was[0] === st.size && was[1] === seconds(st.mtimeMs) && was[2] === runnable(st)) return;
     if (e.mode === "append") {
       const from = sent.get(path) ?? 0;
       if (st.size === from) return;
@@ -492,7 +507,7 @@ function remote() {
         closeSync(fd);
       }
       sent.set(path, st.size);
-      out(T.file, 0, packed({ path: S(path), mtime: st.mtimeMs, offset: start }, bytes));
+      out(T.file, 0, packed({ path: S(path), mtime: st.mtimeMs, offset: start, exec: runnable(st) }, bytes));
     } else {
       let bytes;
       try {
@@ -500,9 +515,9 @@ function remote() {
       } catch {
         return;
       }
-      out(T.file, 0, packed({ path: S(path), mtime: st.mtimeMs }, bytes));
+      out(T.file, 0, packed({ path: S(path), mtime: st.mtimeMs, exec: runnable(st) }, bytes));
     }
-    known.set(path, [st.size, seconds(st.mtimeMs)]);
+    known.set(path, [st.size, seconds(st.mtimeMs), runnable(st)]);
   };
   const flush = () => {
     flushing = null;
@@ -537,7 +552,7 @@ function remote() {
       for (const [path, v] of there) {
         listed[S(path)] = v[0] === "l" ? [v[0], v[1], v[2], S(v[3])] : v;
         if (v[0] === "f") {
-          known.set(path, [v[1], seconds(v[2])]);
+          known.set(path, [v[1], seconds(v[2]), v[4]]);
           if (e.mode === "append") sent.set(path, v[1]);
         }
       }
@@ -558,8 +573,8 @@ function remote() {
     try {
       if (header.link !== undefined) placeLink(header.path, header.link);
       else {
-        place(header.path, bytes, header.mtime);
-        known.set(header.path, [bytes.length, seconds(header.mtime)]);
+        place(header.path, bytes, header.mtime, null, header.exec);
+        known.set(header.path, [bytes.length, seconds(header.mtime), header.exec ?? runnable(statSync(header.path))]);
         if (entryOf(header.path)?.mode === "append") sent.set(header.path, bytes.length);
       }
     } catch (error) {

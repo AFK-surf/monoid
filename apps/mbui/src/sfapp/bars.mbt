@@ -28,26 +28,6 @@ fn top_bar_h() -> Double {
 }
 
 ///|
-/// `body` inside the bars: under the status bar and over the navigation bar (windowInsetsPadding(systemBars)), each
-/// where it is asked for, on `ground` (which goes on under the bars).
-fn within_bars(
-  c : @ui.Ctx,
-  body : () -> Unit,
-  top? : Bool = true,
-  foot? : Bool = true,
-  ground? : @ui.Style = bars_fill,
-) -> Unit {
-  let pt = if top { status_top() } else { 0.0 }
-  let pb = if foot { nav_foot() } else { 0.0 }
-  c.box(style=ground, fn() {
-    bar_room_box(c, pt)
-    c.box(style=bars_body, fn() { body() }) |> ignore
-    bar_room_box(c, pb)
-  })
-  |> ignore
-}
-
-///|
 /// A bar's room, `h` high (none when it is 0).
 fn bar_room_box(c : @ui.Ctx, h : Double) -> Unit {
   if h > 0.0 {
@@ -56,23 +36,16 @@ fn bar_room_box(c : @ui.Ctx, h : Double) -> Unit {
 }
 
 ///|
-/// What is inside the bars: all of the window.
-// kept across runs: a value (no field of it changes)
-let bars_fill : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// What is between them: the room they leave.
-// kept across runs: a value (no field of it changes)
-let bars_body : @ui.Style = @ui.style(w=Full, h=@sf.grow)
-
-///|
 /// The status bar's height: what a page's top bar is padded by.
 fn status_top() -> Double {
   let top = @ui.system_bars().top
+  // (whether the buttons are in its top row read first, as the frame began, followed: a node's binding that reads
+  // this (the viewers' room, viewer_host_of) is worked out again as it changes, whatever the width said then)
+  let inset = @ui.window_inset_now()
   // a desktop's window with its buttons in the app's top row (macOS: its title bar the app's; Windows: the app's
   // own buttons, @sf.window_keys), a phone's page in it: the buttons' band over the page, as a status bar is
-  if top == 0.0 && @sf.layout(@ui.current().window_size().0) is Small && @ui.window_inset() {
-    window_band()
+  if top == 0.0 && inset && @sf.layout(@ui.current().window_size().0) is Small {
+    window_band_now()
   } else {
     top
   }

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { disableSandboxIndex, enableSandboxIndex, sandboxIndexStep } from "../src/store/sandbox-index.ts";
+import { disableSandboxIndex, enableSandboxIndex, sandboxIndexStep } from "./reference/backfill/sandbox-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

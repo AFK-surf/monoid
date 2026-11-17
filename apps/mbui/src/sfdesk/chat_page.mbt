@@ -31,6 +31,55 @@ fn chat_page_reset() -> Unit {
   chat_bar_from.jobs_node = None
   chat_pops.info = 0
   chat_pops.jobs = 0
+  chat_jobs_wait.val = None
+  side_front_wait.val = None
+}
+
+///|
+/// A press waiting to open the chat's services' popover (jobs_pressed), while it waits.
+// kept across runs: put back by chat_page_reset
+let chat_jobs_wait : Ref[@sfbase.PressWait?] = Ref(None)
+
+///|
+/// The bar's summary of chat `r`'s services and jobs (whether it has any, none of them listed), which the bar holds,
+/// where the page reads it so (MBUI_SWR_VIEWS); None else.
+fn jobs_summary(src : Source, r : ChatRef) -> Json? {
+  if (src.swr_views)() {
+    src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
+  } else {
+    None
+  }
+}
+
+///|
+/// The chat's services' popover opened or closed by a press (its button, its keys). Opened, where the page asks so
+/// (MBUI_SWR_VIEWS), once what it lists is answered (sfbase's open_answered), the screen as it was meanwhile: never an
+/// empty list said to be none nor one growing as it comes; at once where the bar's summary says it has none, saying
+/// so; opened again, what was kept of it shows at once (@core.Client::show_kept). Pressed again while it waits, nothing
+/// opens.
+pub fn jobs_pressed(src : Source, r : ChatRef) -> Unit {
+  match chat_jobs_wait.val {
+    Some(w) if w.waiting() => {
+      chat_jobs_wait.val = None
+      w.give_up()
+      return
+    }
+    _ => chat_jobs_wait.val = None
+  }
+  if !(src.swr_views)() || src.read_only || chat_own.jobs_open.untracked() {
+    toggle_jobs_pop()
+    return
+  }
+  // (none said in so many words: a summary saying nothing of it is no word that it has none)
+  let none = match @signals.untracked(fn() { jobs_summary(src, r) }) {
+    Some(Object(m)) => m.get("hasJobs") is Some(False)
+    _ => false
+  }
+  let asks = if none { [] } else { [("chatJobs", chat_params(r))] }
+  let w = @sfbase.open_answered(src, asks, fn() { chat_own.jobs_open.set(true) })
+  if w.waiting() {
+    chat_jobs_wait.val = Some(w)
+  }
 }
 
 ///|
@@ -132,7 +181,7 @@ let chat_ground : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 /// (composer.focus), the page brought over first where the tape has it behind (tape_page_for_key). What it cannot do now passes the key on.
 fn chat_keys(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView, chat : Json?) -> Unit {
   c.on_action("chat.jobs", fn() {
-    toggle_jobs_pop()
+    jobs_pressed(src, r)
     true
   })
   c.on_action("chat.screen", fn() {
@@ -280,7 +329,7 @@ fn chat_bar_handed_node(v : @view.View, src : Source, r : ChatRef) -> Unit {
     @signals.untracked(fn() {
       guard @sfbase.workspace_in_view(src).0 is Some(w) else { return }
       nav_page_for(page)
-      chat_bar_hand(src, w, r, view_of_chat(src, r).0, src.topic("chat", chat_params(r)).get().value, fn(_) {
+      chat_bar_hand(src, w, r, @sfbase.chat_view_now(src, r), @sfbase.chat_head_json(src, r), fn(_) {
         bar_menu_from_node(v)
       })
     })
@@ -288,15 +337,16 @@ fn chat_bar_handed_node(v : @view.View, src : Source, r : ChatRef) -> Unit {
 }
 
 ///|
-/// What chat_bar_hand reads of chat `r` (`top` its page on top), as a value: changed, what it hands changes.
+/// What chat_bar_hand reads of chat `r` (`top` its page on top), as a value: changed, what it hands changes. Its head
+/// alone (sfbase's chat_view_now, chat_head_json): a word streamed into a message reads none of it again.
 fn chat_bar_said(
   src : Source,
   r : ChatRef,
   top : Bool,
 ) -> (Bool, (Bool, Bool, Bool), (String, Double?, Bool, Bool, Bool, String, String)?, (Json?, Json?, Json?)) {
   let whole = @sfbase.chat_whole_held(src, r)
-  let view = view_of_chat(src, r).0
-  let chat = src.topic("chat", chat_params(r)).get().value
+  let view = @sfbase.chat_view_now(src, r)
+  let chat = @sfbase.chat_head_json(src, r)
   let jobs = src.topic("chatJobs", chat_jobs_summary_params(r)).get().value
   (
     top,
@@ -486,7 +536,7 @@ fn chat_jobs_pop(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
         if id != "" {
           pick_job(id)
         }
-        side_change(src, r, "open", Some("jobs"))
+        side_tab_open(src, r, "jobs")
       }
       // (a service's own tab is not here yet: it opens in 任务 too)
       jobs_popover(c, src, r.station, src.topic("chatJobs", chat_params(r)).get().value, open, open)
@@ -720,14 +770,14 @@ fn chat_info(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView
         info_row(c, "info-pop/pulls", "list", @sf.t("web-main.things.pullsAll", args=[("n", pulls.length().to_string())]), "", on_press=fn() {
           chat_own.info_open.set(false)
           @sfpages.things_choose(r, "pulls")
-          side_change(src, r, "open", Some("things"))
+          side_tab_open(src, r, "things")
         })
       }
       // (sfpages things.mbt)
       if said > 0 {
         info_row(c, "info-pop/things", "photo", @sf.t("web-main.things.title"), said.to_string(), on_press=fn() {
           chat_own.info_open.set(false)
-          side_change(src, r, "open", Some("things"))
+          side_tab_open(src, r, "things")
         })
       }
       if files {

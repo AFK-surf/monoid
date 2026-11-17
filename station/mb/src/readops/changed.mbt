@@ -1,5 +1,5 @@
-// What of a list a client does not hold as it is (station/src/read/digest.ts `changedOf`, POST /changed/<list>): the
-// list as the client's runtimes see it (station/src/read/runtime-view.ts `runtimeList`), its ids in order, and the
+// What of a list a client does not hold as it is (station/test/reference/digest.ts `changedOf`, POST /changed/<list>): the
+// list as the client's runtimes see it (station/test/reference/runtime-view.ts `runtimeList`), its ids in order, and the
 // rows whose digest (the core's own, client/core-ts/src/digest.ts) is not what the client holds.
 
 ///|

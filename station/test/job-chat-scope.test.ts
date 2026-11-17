@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
-import { makeStore } from "../src/read/store.ts";
+import { openJobs } from "./reference/jobs.ts";
+import { makeStore } from "./reference/store.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member", workspace: "A", device: "dev", home: true } as const;

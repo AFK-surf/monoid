@@ -101,7 +101,8 @@ test "a chat whose agent made others: in its sheet (…) the card of 创建了 N
   t.click(Button, label="对话信息")
   t.run_for(@ui.move_most_ms)
   // (the user's phone, 2026-11-02: its card and the pull requests' under it touching, 0 between them)
-  let rows = t.semantics().filter(fn(s) { s.role == @ui.Role::Button && s.rect.2 > 200.0 })
+  // (its rows, a pull request's a link: it opens in the browser)
+  let rows = t.semantics().filter(fn(s) { (s.role == @ui.Role::Button || s.role == @ui.Role::Link) && s.rect.2 > 200.0 })
   let labels = rows.map(fn(s) { s.label }).join(" / ")
   let mut i = -1
   for k, s in rows {

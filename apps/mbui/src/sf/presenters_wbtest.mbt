@@ -300,6 +300,8 @@ test "a long pick with a finger at Small: the search in its sheet finds by the w
   assert_eq(presented_how, [AsSheet])
   t.tap_text("common.search")
   t.type_text("第12")
+  // (what is not found makes its way out: View::each's)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("第3项") is None)
   t.tap_text("第12项")
   assert_eq(chosen.val, "c12")
@@ -677,7 +679,7 @@ fn scrim_alpha(t : @ui.Tester, at : (Int, Double, Double)) -> Int64 {
 }
 
 ///|
-/// A menu (重命名, 归档, 固定, 分享…) whose 分享… opens a menu from the same place, 分享 (复制链接, 分享图片): each said as
+/// A menu (重命名, 归档, 固定, 分享) whose 分享 opens a menu from the same place, 分享 (复制链接, 分享图片): each said as
 /// it is chosen, `gone` and `level gone` as each is let go of with nothing chosen.
 fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
   fn(from) {
@@ -688,7 +690,7 @@ fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
         Some(menu_item_of("归档", fn() { said.push("archive") })),
         Some(menu_item_of("固定", fn() { said.push("pin") })),
         Some(
-          menu_item_of("分享…", fn() {
+          menu_item_of("分享", fn() {
             menu(
               [
                 Some(menu_item_of("复制链接", fn() { said.push("copy") })),
@@ -698,7 +700,7 @@ fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
               title="分享",
               gone=fn() { said.push("level gone") },
             )
-          }),
+          }, further=true),
         ),
       ],
       from=beside,
@@ -719,7 +721,7 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
   let (top0, _) = one_sheet(t)
   let dim = scrim_alpha(t, phone)
   assert_true(dim > 0L)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   // (the frame it was chosen in: the menu's sheet where it stood, the window as dim; nothing let go of)
   assert_eq(presented_how, [AsSheet])
   assert_true((one_sheet(t).0 - top0).abs() < 0.5, msg="\{Repr(one_sheet(t))} \{top0}")
@@ -755,12 +757,22 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
   assert_eq(said, ["level gone", "gone"])
   // chosen in the level: done, all of it closed, nothing let go of unsaid
   open_it(t)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   t.run_for(@ui.move_most_ms)
   t.tap_text("复制链接")
   assert_true(!presenting())
   t.run_for(@ui.move_most_ms)
   assert_eq(said, ["level gone", "gone", "copy"])
+  // gone back to from the level, the menu chosen in as ever: what it does done, all of it closed
+  open_it(t)
+  t.tap_text("分享")
+  t.run_for(@ui.move_most_ms)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("归档")
+  assert_true(!presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_eq(said, ["level gone", "gone", "copy", "level gone", "archive"])
 }
 
 ///|
@@ -768,7 +780,7 @@ test "a menu's item that opens a menu, with a mouse at Large: the next menu besi
   let said : Array[String] = []
   let t = presenting_tester(desk, menu_with_more(said))
   open_it(t)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   t.run_for(@kit.presence_in_ms)
   assert_eq(presented_how, [AsPopover])
   assert_true(t.find("复制链接") is Some(_))
@@ -1117,4 +1129,26 @@ test "a short pick with a mouse at Large: a menu of choices beside what opened i
   t.tap_text("第2项")
   assert_eq(chosen.val, "c2")
   assert_true(!presenting())
+}
+
+///|
+/// The thin lines drawn (rects 2 high at most and 60 wide at least) with the menu of `items` open by 打开 in window `at`.
+fn menu_rules_drawn(at : (Int, Double, Double), items : Array[MenuItem?]) -> Int {
+  let t = presenting_tester(at, fn(from) { menu(items, from=beside_of(from)) })
+  open_it(t)
+  t.drawn_rects().filter(fn(d) { d.3 <= 2.0 && d.2 >= 60.0 }).length()
+}
+
+///|
+test "a menu's lines: none at either end, never two together, whatever was given as None, as a sheet at Small and beside what opened it at Large" {
+  let a = fn() { Some(menu_item_of("一", fn() {  })) }
+  let b = fn() { Some(menu_item_of("二", fn() {  })) }
+  assert_eq(menu_clean_items([None, a(), None, None, b(), None]).map(fn(x) { x is Some(_) }), [true, false, true])
+  assert_eq(menu_clean_items([None, None]).length(), 0)
+  for at in [phone, desk] {
+    let none = menu_rules_drawn(at, [a(), b()])
+    let one = menu_rules_drawn(at, [a(), None, b()])
+    assert_eq(one, none + 1, msg="\{at.0}: a line between")
+    assert_eq(menu_rules_drawn(at, [None, a(), None, None, b(), None]), one, msg="\{at.0}: still one, none at the ends")
+  }
 }

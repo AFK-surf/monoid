@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { ops } from "../src/read/ops.ts";
-import { answersSince, dismissed, keptChats, makeStore, openStore, SEEN_OF, SHARES_OF } from "../src/read/store.ts";
-import { CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { ops } from "./reference/ops.ts";
+import { answersSince, dismissed, keptChats, makeStore, openStore, SEEN_OF, SHARES_OF } from "./reference/store.ts";
+import { CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
 import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 
 test("a scoped chat update reads marks and answers only for those chats", () => {

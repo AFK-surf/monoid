@@ -37,7 +37,9 @@ export function guestOrigins(env: Pick<Env, "GUESTS">): string[] {
 
 /**
  * `env` as it is for a request on `origin`: a guest's, its origins and Google client in this cloud's place (and this
- * cloud's own among the aliases, so what was made on it is still good); another's, as it is.
+ * cloud's own among the aliases, so what was made on it is still good), while `RELAY_URL` stays this cloud's own (a
+ * moved cloud's relay Worker does not forward, and the Directory's state frames put stations on this cloud's relay:
+ * devices asking on the guest's origin must be handed the same relay); another's, as it is.
  */
 export function asOrigin(env: Env, origin: string): Env {
   const guest = guestOf(env, origin);
@@ -47,6 +49,7 @@ export function asOrigin(env: Env, origin: string): Env {
     PUBLIC_ORIGIN: guest.origin,
     PUBLIC_ORIGIN_ALIASES: aliases.join(","),
     BETA_ORIGIN: guest.beta ?? "",
+    RELAY_URL: env.RELAY_URL || env.PUBLIC_ORIGIN,
     ...(guest.google_client_id && guest.google_client_secret ? { GOOGLE_CLIENT_ID: guest.google_client_id, GOOGLE_CLIENT_SECRET: guest.google_client_secret } : {}),
   };
   return Object.assign(Object.create(env) as Env, served);

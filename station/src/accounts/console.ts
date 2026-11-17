@@ -8,9 +8,9 @@
 //   (`CONSOLE_FILE`), never sent to another station but with the profile when it moves (share/index.ts);
 // - only the station the profile is on renews it, days before it runs out (accounts/index.ts); copies of a shared one
 //   get the new key as any edit.
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { writePrivate } from "../ops/files.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { Said } from "../ops/i18n.ts";
 
@@ -45,9 +45,9 @@ export class RenewRefused extends Said {
   }
 }
 
-export function readConsole(home: string): ConsoleLogin | null {
+export async function readConsole(home: string): Promise<ConsoleLogin | null> {
   try {
-    return consoleIn(readFileSync(join(home, CONSOLE_FILE), "utf8"));
+    return consoleIn(await readFile(join(home, CONSOLE_FILE), "utf8"));
   } catch {
     return null;
   }
@@ -65,7 +65,7 @@ export function consoleIn(file: string): ConsoleLogin | null {
   }
 }
 
-export const writeConsole = (home: string, login: ConsoleLogin) => writePrivate(join(home, CONSOLE_FILE), `${JSON.stringify(login, null, 2)}\n`);
+export const writeConsole = (home: string, login: ConsoleLogin): Promise<void> => writePrivateSoon(join(home, CONSOLE_FILE), `${JSON.stringify(login, null, 2)}\n`);
 
 /// An OAuth form posted (a device's code asked for, a token asked for or renewed): its status and its JSON (null for
 /// none). Kimi's sign-in (kimi.ts) posts its own the same way, with its own headers.

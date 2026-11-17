@@ -113,6 +113,8 @@ impl Drop for Terminal {
 #[test]
 fn its_program_is_on_a_terminal_of_the_size_asked() {
     let mut t = Terminal::start("size", "40x10", r#"[ -t 0 ] && [ -t 1 ] && echo tty; stty size; read line; echo "got:$line""#);
+    assert_eq!(t.info["cols"], json!(40));
+    assert_eq!(t.info["rows"], json!(10));
     t.until_out("tty");
     t.until_out("10 40");
     t.write(b"hello\n");
@@ -127,8 +129,24 @@ fn a_resize_reaches_its_program_and_its_screen() {
     t.send(json!({"op": "resize", "cols": 50, "rows": 20}));
     t.write(b"\n");
     t.until_out("20 50");
+    t.send(json!({"op": "screen"}));
+    let screen = t.until_reply("screen");
+    assert_eq!(screen["cols"], json!(50));
+    assert_eq!(screen["rows"], json!(20));
     t.write(b"\n");
     t.until_exit();
+}
+
+#[test]
+fn high_volume_pty_output_streams_cleanly_through_ring_buffer() {
+    // Emit > 400 KB (wrapping the 256 KB in-memory ring buffer) and verify lossless byte continuity.
+    let mut t = Terminal::start("ring", "80x24", r#"awk 'BEGIN { for (i = 0; i < 6000; i++) printf "line-%05d-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n", i; print "RING_DONE" }'"#);
+    t.until_out("RING_DONE");
+    t.until_exit();
+    let text = String::from_utf8_lossy(&t.out);
+    assert!(text.contains("line-00000-0123456789"));
+    assert!(text.contains("line-05999-0123456789"));
+    assert!(text.len() > 400_000, "expected >400 KB output, got {}", text.len());
 }
 
 #[test]

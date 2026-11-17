@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { historyRuntimeSources, makeStore, openStore, runtimeSessionSources } from "../src/read/store.ts";
+import { historyRuntimeSources, makeStore, openStore, runtimeSessionSources } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 test("history source pages preserve the old order and current source through concurrent changes", () => {

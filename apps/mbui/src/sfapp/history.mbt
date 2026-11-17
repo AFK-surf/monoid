@@ -70,13 +70,11 @@ let history_short : Map[String, Bool] = Map([])
 fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String, a : () -> Json?, tips : @sf.TipLayer) -> Unit {
   let s = fn() { field(a(), "session") }
   let (card_topic, card_params) = @sfpages.agent_card_ask(r.station, key)
-  // (what 详情 pressed asked, handed to it till it has read it: sfbase's shown_read)
+  // (what 详情 pressed asked, handed to it till it has read it: sfbase's shown_read, said as the last of what it asked
+  // is read, the stations' rows its station is named from, as the details are built: said as its card was read, the
+  // rows handed over were let go at that frame's end before the station's row read them, and asked again)
   let at = @sfpages.history_details_at(r.station, key)
-  let card = fn() {
-    let c = src.topic(card_topic, card_params).get().value
-    @sfbase.shown_read(at)
-    c
-  }
+  let card = fn() { src.topic(card_topic, card_params).get().value }
   let usage = fn() { @sfpages.history_usage(src, r.station, key) }
   let (host_topic, host_params) = @sfpages.history_host_ask(r.station)
   let host_held = @sfbase.hold(src, @sfbase.history_scope(r.station, key), host_topic, host_params)
@@ -163,7 +161,11 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
     })
     group(held, fn() { "Station" })
     rows(held, 6.0, fn(b) {
-      detail(b, fn() { tr("android-chat.history.detail.name") }, said(fn() { station_name_of(src, r) }))
+      detail(b, fn() { tr("android-chat.history.detail.name") }, said(fn() {
+        let name = station_name_of(src, r)
+        @sfbase.shown_read(at)
+        name
+      }))
       b.show(at_once=true, fn() { host() is Some(Object(_)) }, fn(x) {
         detail(x, fn() { tr("android-chat.history.detail.machine") }, said(fn() { text(host(), "identity") }))
       })

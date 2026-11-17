@@ -157,7 +157,7 @@ export type Call =
   | { kind: "feedbackDismiss"; workspace: string; id: string; reply: string }
   | { kind: "commandsFind"; query: string; offered: unknown[] }
   /// What a chat's relay picker shows (relay-pick.ts): the connects read, what was typed, all asked for, the bot picked.
-  | { kind: "relayView"; connects: RelayConnect[]; query: string; all: boolean; bot: string | null }
+  | { kind: "relayView"; connects: RelayConnect[]; query: string; all: boolean; bot: string | null; place: string | null }
   /// Who its note can mention now (relay-pick.ts): the people of the place picked, the note as written.
   | { kind: "relayMentions"; people: RelayPerson[]; note: string }
   /// A history step's call and what came back, read by what they are (tool-step.ts).
@@ -327,7 +327,7 @@ const S = "string" as const;
 const FILE_OPEN_PART = 4 * 1024 * 1024;
 
 /// The vault's calls (views/vault.ts).
-export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate"];
+export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate", "oauthBegin", "oauthComplete"];
 
 /// The workspace lock's calls (views/lock.ts).
 export const LOCK_CALLS = ["state", "open", "toggle", "dismiss", "pendingDismiss", "addStation", "joinStation", "renew", "removeDevice", "disable", "pair", "pairCode", "pairCancel", "handOver", "confirmSigner"];
@@ -943,8 +943,9 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["query", S, "default"],
         ["all", "bool", "opt"],
         ["bot", S, "opt"],
+        ["place", S, "opt"],
       ]);
-      return { kind: "relayView", connects: readConnects(p.connects), query: p.query as string, all: p.all === true, bot: p.bot as string | null };
+      return { kind: "relayView", connects: readConnects(p.connects), query: p.query as string, all: p.all === true, bot: p.bot as string | null, place: p.place as string | null };
     }
     case "chat.relayMentions": {
       const p = read(params, [

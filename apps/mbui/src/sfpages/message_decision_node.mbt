@@ -182,16 +182,30 @@ fn decision_rooms_node(
     rooms.pick(settled, leave=msg_part_leave_ms, fn(side, is_settled) {
       @sf.style_node(side, fn() { decision_rooms })
       if !is_settled {
+        // (what it shows as it was while open, held so as it leaves: the press settles the message, and what the open
+        // side reads of it (who decides, its options, whether it is asked, 忽略) is not read again till it is gone, so it
+        // fades whole where it was, never a part of it gone at the press's first frame)
+        let held_m : Ref[Message?] = Ref(None)
+        let open_m = fn() -> Message {
+          match held_m.val {
+            Some(h) if settled() => h
+            _ => {
+              let now = m()
+              held_m.val = Some(now)
+              now
+            }
+          }
+        }
         side.box(fn(s) {
           @sf.style_node(s, fn() { under_post_room })
           s.box(fn(b) {
             @sf.style_node(b, fn() { decision_box })
             // (who decides)
-            b.show(fn() { m().card is Some({ assignee_text: Some(_), .. }) }, fn(w) {
+            b.show(fn() { open_m().card is Some({ assignee_text: Some(_), .. }) }, fn(w) {
               @sf.words_node(
                 w,
                 fn() {
-                  match m().card {
+                  match open_m().card {
                     Some({ assignee_text: Some(a), .. }) => a
                     _ => ""
                   }
@@ -200,9 +214,9 @@ fn decision_rooms_node(
               )
               |> ignore
             })
-            let vault = fn() { m().card.map(fn(c) { c.vault }).unwrap_or("") }
-            b.show(fn() { vault() == "" && decision_choices(m()).length() > 0 && decision_thread(here) is Some(_) }, fn(o) {
-              decision_options_node(o, src, here, m)
+            let vault = fn() { open_m().card.map(fn(c) { c.vault }).unwrap_or("") }
+            b.show(fn() { vault() == "" && decision_choices(open_m()).length() > 0 && decision_thread(here) is Some(_) }, fn(o) {
+              decision_options_node(o, src, here, open_m)
             })
             // (an agent's request for a vault item: approved here, not answered in words; its buttons and what is typed
             // in for them as far apart as what is in decision_box)
@@ -212,7 +226,7 @@ fn decision_rooms_node(
                   @sf.style_node(a, fn() { vault_actions_room })
                   a.width_share(Is(1.0)) |> ignore
                   @settings.vault_actions_node(a, core, fn() { workspace_of(here.station) }, vault, fn() {
-                    mine_to_node(here, m().card.map(fn(c) { c.assignee }).unwrap_or(""))
+                    mine_to_node(here, open_m().card.map(fn(c) { c.assignee }).unwrap_or(""))
                   })
                 })
               None => ()
@@ -222,7 +236,7 @@ fn decision_rooms_node(
         })
         |> ignore
         // (忽略 under them, leaving with them)
-        ask_dismiss_node(side, src, here, fn() { m().seq }, fn() { m().asked }, fn() { false }, fn() { true }, true)
+        ask_dismiss_node(side, src, here, fn() { open_m().seq }, fn() { open_m().asked }, fn() { false }, fn() { true }, true)
       } else {
         // (in their place: how it went, where the core says it)
         side.show(fn() { outcome() is Some(_) }, fn(s) {
@@ -342,7 +356,7 @@ fn decision_options_node(v : @view.View, src : Source, here : MessageNodeHere, m
       // (its answer said in the chat, sent from here: the list goes to its end, as for words sent; one that closes the
       // card says nothing there)
       if !o.closes {
-        @sfbase.sent_here_told(here.station + "\u{1}" + here.session)
+        @sfbase.sent_here_told(here.station + "\u{1}" + here.session, flies=false)
       }
     },
   )

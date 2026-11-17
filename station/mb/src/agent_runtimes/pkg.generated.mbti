@@ -1,0 +1,676 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/agent_runtimes"
+
+import {
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn access_env(String, String, String, String?, Via) -> Fields
+
+pub fn access_kind(@jsjson.JValue) -> String
+
+pub let acp_init : String
+
+pub let acp_open : String
+
+pub fn acp_outcome_of(String, @jsjson.JValue) -> @jsjson.JValue
+
+pub let acp_prompt : String
+
+pub let acp_steer : String
+
+pub fn afresh(String, Array[String]) -> String
+
+pub fn agent_home_feedback(String, @jsjson.JValue?) -> Bool
+
+pub fn ago_words(Double) -> String
+
+pub fn agy_hook_command(String, String, String) -> String
+
+pub fn anthropic_root(String) -> String
+
+pub fn api_source(Via) -> (Source, Endpoints)?
+
+pub fn background_stopped(Array[@jsjson.JValue], Array[String]) -> String
+
+pub let background_stopped_waiting : String
+
+pub fn billed_per_use(@jsjson.JValue) -> Bool
+
+pub fn check_sandboxes(@jsjson.JValue?) -> String?
+
+pub fn claude_credentials_file(Fields, windows? : Bool) -> String
+
+pub fn claude_credentials_of(Bool, KeychainRead, String?) -> MachineToken?
+
+pub let claude_token_margin_ms : Double
+
+pub fn clean_endpoint(String) -> String?
+
+pub fn clean_env(Fields, Array[String]) -> Fields
+
+pub fn cleared(String, Array[String]) -> String
+
+pub fn codex_auth_file(Fields, windows? : Bool) -> String
+
+pub fn codex_home(Fields, windows? : Bool) -> String
+
+pub fn codex_overrides(String, String?, Via) -> Array[(String, String)]
+
+pub fn configured_home(String?, String, String) -> Result[String, String]
+
+pub let connection_lost : String
+
+pub fn continued_here(String) -> String
+
+pub fn credentials_path(Fields, Bool, String, String) -> Unit
+
+pub async fn cursor_find_sdk(@host.Host, String) -> String?
+
+pub fn cursor_home(String) -> String
+
+pub fn cursor_key_of(String?) -> String?
+
+pub fn cursor_rule(String) -> String
+
+pub let cursor_scrubbed : Array[String]
+
+pub let cursor_sdk_home : String
+
+pub let cursor_sdk_package : String
+
+pub fn cursor_sdk_prefix(String) -> String
+
+pub async fn cursor_sdk_version(@host.Host, String) -> String?
+
+pub let cursor_sessions : String
+
+pub async fn cursor_start(@host.Host, Options, Fields, String, String, String?, String) -> Start
+
+pub fn devin_args(String, String?, String?) -> Array[String]
+
+pub fn devin_call_of(@jsjson.JValue?) -> @jsjson.JValue
+
+pub fn devin_catalog(@jsjson.JValue?) -> @jsjson.JValue
+
+pub fn devin_config() -> @jsjson.JValue
+
+pub fn devin_data(String) -> String
+
+pub fn devin_env(Options, Fields) -> Fields
+
+pub fn devin_fusion_base(String) -> (String, String?)
+
+pub fn devin_home(String) -> String
+
+pub async fn devin_key(@host.Host, String) -> String?
+
+pub fn devin_key_of(String?) -> String?
+
+pub let devin_levels : Array[String]
+
+pub fn devin_rule(String) -> String
+
+pub fn devin_rules(String) -> String
+
+pub let devin_scrubbed : Array[String]
+
+pub let devin_sessions : String
+
+pub async fn devin_start(@host.Host, Options, Fields, String) -> Start
+
+pub let devin_store : String
+
+pub fn devin_variant(String, String?) -> String
+
+pub let dsh_key : String
+
+pub fn dsh_opened(@jsjson.JValue, String) -> Result[String, String]
+
+pub fn dsh_route(@jsjson.JValue) -> DshRoute?
+
+pub let dsh_scrubbed : Array[String]
+
+pub async fn dsh_session_dir(@host.Host, String, String) -> String?
+
+pub let dsh_sessions : String
+
+pub fn dsh_setup(DshRoute?, String?, String?, String, String, String, String, String, ModelFacts?) -> Result[@jsjson.JValue, String]
+
+pub async fn dsh_start(@host.Host, Options, Fields, String, String, ModelFacts?) -> Start
+
+pub fn endpoints(Source, String?, String?) -> Endpoints?
+
+pub async fn ensure_identity(@host.Host, String) -> Unit
+
+pub fn error_text(@jsjson.JValue) -> String
+
+pub fn expand_devin_fusion(@jsjson.JValue?) -> Array[String]
+
+pub fn expand_route(Fields, String) -> Fields
+
+pub fn fast_needs_credits(@jsjson.JValue) -> Bool
+
+pub let fast_runtimes : Array[String]
+
+pub fn find(String) -> Source?
+
+pub fn format_card_choices(Array[@jsjson.JValue], Array[(String, String)], Double) -> String
+
+pub fn format_history(Array[@jsjson.JValue], String, String, String, Array[(String, String)], cards? : Map[Double, HistoryCard]) -> String
+
+pub fn format_inbound(Array[@jsjson.JValue], Array[Double], Array[(String, String)], Array[(String, String)], posts? : Map[Int32, String], cards? : Map[Int32, CardChange], self_key? : String) -> String
+
+pub fn format_widget_models(Array[@jsjson.JValue]) -> String
+
+pub let go_on_after_auth : String
+
+pub let go_on_after_codex_update : String
+
+pub let go_on_after_failed : String
+
+pub let go_on_after_overloaded : String
+
+pub let go_on_after_refill : String
+
+pub let go_on_after_spent : String
+
+pub let go_on_after_unanswered : String
+
+pub fn grok_args(String?, String?) -> Array[String]
+
+pub fn grok_effort(String?) -> String?
+
+pub fn grok_env(Options, Fields) -> Fields
+
+pub fn grok_home(String) -> String
+
+pub async fn grok_keep_usage(@host.Host, String, String, String) -> Unit
+
+pub fn grok_rules(String) -> String
+
+pub let grok_scrubbed : Array[String]
+
+pub async fn grok_session_at(@host.Host, String, String) -> String?
+
+pub let grok_sessions : String
+
+pub async fn grok_start(@host.Host, Options, Fields, String) -> Start
+
+pub let grok_transcript : String
+
+pub let grok_usage : String
+
+pub fn grok_usage_line(@jsjson.JValue?, Double, @jsjson.JValue) -> String?
+
+pub fn group_of(String) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub async fn harness_case(@host.Host, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn hermes_catalog(@jsjson.JValue?, @jsjson.JValue) -> Array[String]
+
+pub async fn hermes_env(@host.Host, Options, Fields, String, String?) -> Fields
+
+pub fn hermes_header_home(String, String, String) -> Result[String, String]
+
+pub fn hermes_home(String) -> String
+
+pub let hermes_model_limit : Int32
+
+pub fn hermes_models_again(String, Double, Double, Bool) -> Bool
+
+pub fn hermes_models_options(@jsjson.JValue, String) -> Options
+
+pub fn hermes_new_home(Options, String) -> Result[String, String]
+
+pub async fn hermes_session_home(@host.Host, Options, String, String) -> String
+
+pub fn hermes_session_id(String) -> Bool
+
+pub let hermes_sessions : String
+
+pub async fn hermes_start(@host.Host, Options, Fields, String, String, String?) -> Start
+
+pub fn hermes_version_refusal(@jsjson.JValue?) -> String?
+
+pub fn hook_command(String, String, Array[String]) -> String
+
+pub fn hook_node(String, (String) -> Bool, String) -> String
+
+pub fn hosting_of(String) -> @jsjson.JValue
+
+pub fn identity_of(String) -> String
+
+pub fn idle_turn(String) -> Fields
+
+pub fn is_machine(@jsjson.JValue) -> Bool
+
+pub let kept_tail : Int32
+
+pub fn key_file(@jsjson.JValue) -> String?
+
+pub fn key_part(String) -> String
+
+pub fn keychain_item(String) -> String
+
+pub fn keychain_read_of((Int32, String)?) -> KeychainRead
+
+pub let keychain_stub : String
+
+pub let kimi_code : String
+
+pub fn kimi_signed_in(@jsjson.JValue) -> Bool
+
+pub let kimi_token_file : String
+
+pub fn last_of_turn(String, Bool, String) -> @jsjson.JValue?
+
+pub async fn last_of_turn_in(@host.Host, String, String, String) -> @jsjson.JValue?
+
+pub fn latest() -> Int32
+
+pub fn legacy(String) -> String?
+
+pub let line_most : Int32
+
+pub async fn link_codex_auth_soon(@host.Host, String, Fields) -> Unit
+
+pub fn login_of_keychain(Bool, String) -> String?
+
+pub fn long_chat(Double, Array[String]) -> String
+
+pub let long_chat_from : Int32
+
+pub let lost_exit : Int32
+
+pub async fn machine_claude_token(@host.Host, Fields, Bool, Double) -> Result[MachineToken, String]
+
+pub fn machine_claude_token_of(MachineToken?, Double) -> Result[MachineToken, String]
+
+pub fn mcp_servers(String, String) -> @jsjson.JValue
+
+pub let memory_most : Int32
+
+pub fn message_for_agent(@jsjson.JValue) -> String
+
+pub fn name_untitled(String) -> String
+
+pub let notes : Array[(Int32, String)]
+
+pub let nudge : String
+
+pub let opencode : String
+
+pub let opencode_small : String
+
+pub fn overgrown(Array[(String, String)]) -> String
+
+pub fn parse_claude_credentials(String) -> MachineToken?
+
+pub fn parse_thread_address(String) -> (String, String)?
+
+pub fn patch_text(@jsjson.JValue) -> String
+
+pub fn peer_http_base(String) -> String
+
+pub fn pi_home(String) -> String
+
+pub let pi_key : String
+
+pub fn pi_provider(PiRoute, String, String?, String, ModelFacts?) -> @jsjson.JValue
+
+pub fn pi_route(@jsjson.JValue) -> PiRoute?
+
+pub let pi_scrubbed : Array[String]
+
+pub fn pi_session_file(String, String) -> String
+
+pub let pi_sessions : String
+
+pub fn pi_setup(PiRoute?, String?, Options, String, String?, String, ModelFacts?) -> Result[(Array[String], @jsjson.JValue), String]
+
+pub async fn pi_start(@host.Host, Options, Fields, String, String, String, ModelFacts?) -> Start
+
+pub fn profile_env(@jsjson.JValue, String) -> Fields
+
+pub fn profile_fast(@jsjson.JValue) -> Bool
+
+pub fn profile_model(@jsjson.JValue) -> String?
+
+pub fn profile_runtimes(@jsjson.JValue) -> Array[String]
+
+pub fn profile_via(@jsjson.JValue) -> Via
+
+pub async fn read_claude_credentials(@host.Host, Fields, Bool) -> MachineToken?
+
+pub async fn read_claude_keychain(@host.Host, Map[String, String]) -> KeychainRead
+
+pub async fn read_memory(@host.Host, String) -> String
+
+pub async fn read_site_instructions(@host.Host, String?) -> String
+
+pub let resume_after_restart : String
+
+pub fn resume_lost(String, Array[String], terminal? : String?) -> String
+
+pub let rewritten : Int32
+
+pub fn rpc(String, String, @jsjson.JValue) -> String
+
+pub async fn rules_folder(@host.Host, String, String, String, String, String, skills? : String) -> String
+
+pub fn rules_folder_dir(String, String) -> String
+
+pub fn runtime_kind(@jsjson.JValue?) -> String?
+
+pub let runtime_kinds : Array[String]
+
+pub fn runtime_label(String) -> String
+
+pub fn runtimes_of(Endpoints) -> Array[String]
+
+pub fn sandbox_command(String, Sandbox, SandboxPlace, String, String, Array[Double], String, String, String) -> String
+
+pub fn sandbox_described(Sandbox) -> @jsjson.JValue
+
+pub fn sandbox_name(String) -> String
+
+pub fn sandbox_of(Sandbox, String) -> String
+
+pub let sandbox_prefix : String
+
+pub fn sandboxes_of(@jsjson.JValue?) -> Array[Sandbox]
+
+pub fn session_instructions(String, String?, String, String, String, site? : String, station? : String) -> String
+
+pub let site_instructions_max : Int32
+
+pub fn site_instructions_of(String?) -> String
+
+pub let skill_most : Int32
+
+pub let sources : Array[Source]
+
+pub fn split_devin_fusion(String) -> Fusion?
+
+pub fn ssh_to(String, String, identity? : String?) -> Array[String]
+
+pub fn stub_dir(String, Int32) -> String
+
+pub async fn stub_dir_soon(@host.Host, String, Int32, String) -> String
+
+pub async fn take_back(@host.Host, String, Bool) -> Unit
+
+pub async fn take_back_missing(@host.Host, String, Bool) -> Bool
+
+pub fn takes_fast(@jsjson.JValue) -> Bool
+
+pub fn thread_address(String, String) -> String
+
+pub let tools_lost : String
+
+pub let undecided : String
+
+pub fn untold(Double, String) -> String
+
+pub fn wait_over(Double) -> String
+
+// Errors
+type FsError
+
+// Types and methods
+pub struct Acp {
+  own : Own
+  flavor : String
+  mut model : String?
+  transcript : Kept?
+  mut opened : Bool
+  mut families : Array[@jsjson.JValue]
+  mut usage : DevinUsage?
+  windows : Fields
+  instructions : String
+  profile : @jsjson.JValue
+  new_home : String
+  mut available_models : Array[String]
+}
+pub fn Acp::abort(Self) -> Unit
+pub fn Acp::attached(Self) -> Unit
+pub fn Acp::began(Self, String) -> Unit
+pub fn Acp::begin(Self, Opening, (String) -> @jsjson.JValue?) -> String?
+pub fn Acp::busy(Self) -> Bool
+pub fn Acp::exited(Self, String, String) -> Unit
+pub fn Acp::handed(Self, @jsjson.JValue, String) -> Self
+pub fn Acp::heard(Self, String) -> Unit
+pub fn Acp::heard_hosted(Self, @jsjson.JValue?) -> Unit
+pub fn Acp::named(Self, String) -> String?
+pub fn Acp::new(String, String?, instructions? : String, profile? : @jsjson.JValue, new_home? : String, runner? : String) -> Self
+pub fn Acp::open(Self, @jsjson.JValue?) -> Unit
+pub fn Acp::prompt(Self, String) -> String?
+pub fn Acp::prompt_takeover(Self, String) -> Bool
+pub fn Acp::replayed(Self, @jsjson.JValue, String?, String, last_usage? : @jsjson.JValue?) -> Unit
+pub fn Acp::request(Self, String, String, @jsjson.JValue, String, then? : (Result[@jsjson.JValue, String]) -> Result[@jsjson.JValue, String]) -> Unit
+pub fn Acp::retune(Self, String?, String?) -> Bool
+pub fn Acp::snapshot(Self) -> @jsjson.JValue
+pub fn Acp::steer(Self, String) -> Bool?
+
+pub struct AgentHome {
+  mut running : Bool
+  mut again : Bool
+  mut queued : Bool
+  mut closed : Bool
+  mut rounds : Int32
+  trace : Array[String]
+}
+pub fn AgentHome::changed(Self) -> Unit
+pub fn AgentHome::close(Self) -> Unit
+pub fn AgentHome::ended(Self) -> Unit
+pub fn AgentHome::flush(Self) -> Unit
+pub fn AgentHome::new() -> Self
+
+pub struct Bridged {
+  own : Own
+  mut model : String?
+}
+pub fn Bridged::abort(Self) -> Unit
+pub fn Bridged::begin(Self, Start, (String) -> @jsjson.JValue?, no_tools? : String) -> String?
+pub fn Bridged::busy(Self) -> Bool
+pub fn Bridged::crashed(String, @jsjson.JValue, String?, String, String, model? : String?) -> Self
+pub fn Bridged::exited(Self, String, String) -> Unit
+pub fn Bridged::handed_over(String, @jsjson.JValue, String) -> Self
+pub fn Bridged::heard(Self, String) -> Unit
+pub fn Bridged::heard_hosted(Self, @jsjson.JValue?) -> Unit
+pub fn Bridged::new(String, String, Fields, @jsjson.JValue, String, model? : String?) -> Self
+pub fn Bridged::prompt(Self, String) -> String?
+pub fn Bridged::request(Self, String, String, @jsjson.JValue, String, then? : (Result[@jsjson.JValue, String]) -> Result[@jsjson.JValue, String]) -> Unit
+pub fn Bridged::retune(Self, String?) -> Bool
+pub fn Bridged::snapshot(Self) -> @jsjson.JValue
+pub fn Bridged::steer(Self, String) -> Bool?
+
+pub(all) struct CardChange {
+  ended_author : String
+  ended_ts : String
+  current_ts : String?
+  special : String?
+}
+
+pub(all) struct DevinUsage {
+  run : String
+  mut calls : Int32
+  mut last_call : String
+  mut context : Double
+  mut window : Double
+}
+
+pub(all) enum DshRoute {
+  Deepseek
+  Pi(PiRoute)
+}
+pub fn DshRoute::json(Self) -> @jsjson.JValue
+
+pub(all) struct Endpoints {
+  mut chat : String?
+  mut responses : String?
+  mut anthropic : String?
+  decision : String?
+}
+pub fn Endpoints::json(Self) -> @jsjson.JValue
+
+pub struct Fields {
+  keys : Array[String]
+  values : Map[String, @jsjson.JValue]
+}
+pub fn Fields::get(Self, String) -> @jsjson.JValue?
+pub fn Fields::json(Self) -> @jsjson.JValue
+pub fn Fields::new() -> Self
+pub fn Fields::set(Self, String, @jsjson.JValue) -> Unit
+
+pub(all) struct Fusion {
+  lead : String
+  effort : String?
+  side : String
+}
+
+pub(all) struct HistoryCard {
+  card : @jsjson.JValue?
+  pending : Bool
+  chose : (String, @jsjson.JValue)?
+}
+
+pub struct Kept {
+  own : Own
+  mut quiet : Bool
+}
+pub fn Kept::ended(Self, String, @jsjson.JValue) -> Unit
+pub fn Kept::keep(Self, String, @jsjson.JValue?) -> Unit
+
+pub(all) enum KeychainRead {
+  Found(String)
+  Missing
+  Unreadable
+}
+
+pub(all) struct MachineToken {
+  token : String
+  expires_at : Double
+  subscription_type : String?
+  rate_limit_tier : String?
+}
+pub fn MachineToken::json(Self) -> @jsjson.JValue
+
+pub(all) struct ModelFacts {
+  context : Double?
+  output : Double?
+  sees_images : Bool
+}
+
+pub(all) struct Opening {
+  options : Options
+  start : Start
+  probe : Bool
+  devin_key : String?
+}
+
+pub(all) struct Options {
+  key : String
+  profile : @jsjson.JValue
+  cwd : String
+  resume : String?
+  model : String?
+  effort : String?
+  instructions : String
+  skills : String?
+  mcp_token : String
+  mcp_url : String
+  route : String
+}
+pub fn Options::chosen_model(Self) -> String?
+pub fn Options::of(@jsjson.JValue) -> Self
+
+pub struct Own {
+  kind : String
+  mut session_id : String
+  mut turn : Fields
+  mut closed : Bool
+  mut live_state : @jsjson.JValue
+  mut tools_url : String?
+  mut tools_absent : Bool
+  runner : String
+  mut frozen : @jsjson.JValue?
+  waits : Map[String, Wait]
+  later : Array[() -> Unit]
+  uuids : Array[String]
+  mut now : Double
+  mut writing : Bool
+  trace : Array[@jsjson.JValue]
+}
+pub fn Own::new(String, String, Fields, @jsjson.JValue, String) -> Self
+pub fn Own::settle(Self) -> Unit
+pub fn Own::turn_now(Self) -> @jsjson.JValue
+pub fn Own::written(Self) -> Unit
+
+pub(all) struct PiRoute {
+  name : String
+  api : String
+  base_url : String
+  headers : Fields?
+}
+pub fn PiRoute::json(Self) -> @jsjson.JValue
+
+pub(all) struct Sandbox {
+  name : String
+  target : String
+  size : String?
+  identity : String?
+}
+pub fn Sandbox::json(Self) -> @jsjson.JValue
+
+pub(all) struct SandboxPlace {
+  sandbox : String
+  session : String
+  back : Array[String]
+}
+
+pub(all) struct Source {
+  id : String
+  name : String
+  chat : String?
+  responses : String?
+  anthropic : String?
+  decision : String?
+  endpoint_required : Bool
+  protocols : Array[String]
+  key_optional : Bool
+  auth : String
+  session_header : Bool
+}
+
+pub(all) struct Start {
+  command : String
+  args : Array[String]
+  env : Fields
+  files : Array[(String, String)]
+  open : @jsjson.JValue?
+  meta : @jsjson.JValue?
+  opening : @jsjson.JValue?
+  init_timeout : Double?
+}
+pub fn Start::json(Self) -> @jsjson.JValue
+
+type Taken
+
+pub(all) struct Via {
+  provider : String?
+  endpoint : String?
+  protocol : String?
+}
+
+type Wait
+
+// Type aliases
+pub using @jsjson {type JValue as J}
+
+// Traits

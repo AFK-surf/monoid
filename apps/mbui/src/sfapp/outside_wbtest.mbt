@@ -436,3 +436,258 @@ test "分享对话 on a sheet by touch: 分享并发送, drawn less tall than a 
     assert_eq(named(calls, "chat.outsideShare").length(), 1, msg="\{dy} from it: \{Repr((x, y, w, h))}")
   }
 }
+
+// Enter, not send pressed, over the fixture's core answering through the app's client as a device's core does (between
+// frames, a round trip: round_trip_again): what Enter asks of the core and what the core and the viewer answer go at
+// once, on a new chat and on a chat, a phone's window and a wide one, the frames' check of what was kept on and off
+// (Tester::check_looks: off, nothing built for the Tester's eyes alone does a device's work). Enter was read as the
+// composer was built, after what it asked was read there (outside.mbt then left the send to the composer's next build,
+// which its island, kept as it was, never came to): the words stuck in the field till something else built it.
+
+///|
+/// How late what is answered late (outside_round_trip's `late`: a station answering what the words refer to and
+/// sharing them) comes: a round trip to it, after all else the composer asked of the core has come.
+let outside_late_ms : Double = 300.0
+
+///|
+/// The app over the fixture's core (`new_chat`: its new chat, else its chat), answered through the app's client
+/// (round_trip_again, between frames), the calls `late` names (what the words refer to and their sharing unless said)
+/// `outside_late_ms` late, with keyboard
+/// and mouse in a phone's window or a wide one (`wide`), the chat's page made as nodes or not (`nodes`), what the client
+/// sent kept in `heard`, the frames' check of what was kept `looks`; at rest.
+fn outside_round_trip(
+  heard : Array[String],
+  new_chat~ : Bool,
+  wide~ : Bool,
+  looks~ : Bool,
+  nodes~ : Bool,
+  late? : Array[String] = ["chat.outsideRefs", "chat.outsideShare"],
+  late_ms? : Double = outside_late_ms,
+) -> @ui.Tester {
+  new_run()
+  // (the chat's page made as nodes, its composer an old view in its list's foot, where `nodes` says so: sfbase's
+  // chat_page_nodes)
+  if nodes {
+    @sfbase.chat_page_nodes.set(true)
+  }
+  let base = fixture(if new_chat { "home" } else { "chat" })
+  let station : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if late.contains(name) {
+        (base.call)(name, params, fn(r) { @ui.later_between_frames(late_ms, "late", fn() { done(r) }) })
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let src = round_trip_again(station, 0.0, heard=fn(h) { heard.push(h) })
+  if new_chat {
+    @sfbase.open_page(NewChat)
+  } else {
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  }
+  let (w, h) = if wide { (1280.0, 800.0) } else { (390.0, 844.0) }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=0)
+  t.check_looks(looks)
+  // (the old chat's page in a phone's window: the gap over a reply streamed in steps as it grows, as it does on main
+  // in every test that runs to its answer's end; that page made as nodes, and the wide frame, judged in full)
+  if !nodes && !wide {
+    t.motion_unjudged(true)
+  }
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// How many times the client called `name` of the core, in what it sent (`heard`'s `out` lines).
+fn outside_called(heard : Array[String], name : String) -> Int {
+  let mut n = 0
+  for h in heard {
+    guard h.has_prefix("out ") else { continue }
+    let j = @json.parse(h.exact_view(start=4).to_owned()) catch { _ => continue }
+    if j is Object(m) && m.get("call") is Some(String(c)) && c == name {
+      n += 1
+    }
+  }
+  n
+}
+
+///|
+/// Enter, as a device's host hands it on: told at its moment, the frames it asks for drawn as the host draws them (not
+/// Tester::enter's, which takes it as the test's own change, what is kept built anew for it).
+fn outside_key_enter(t : @ui.Tester) -> Unit {
+  t.key_told(@ui.key_code_enter, 0, t.time())
+  t.frames_owed()
+}
+
+///|
+/// Words `words` typed in the composer (its hint `hint`), the core's reading of them come, then Enter.
+fn outside_enter(t : @ui.Tester, hint : String, words : String) -> Unit {
+  t.tap_text(hint)
+  t.type_text(words)
+  t.run_for(@ui.frame_period_default * 2.0)
+  outside_key_enter(t)
+}
+
+///|
+/// Each screen (a phone's window, a wide one), the chat's page made as nodes or not, and each way the frames are
+/// checked: `f` given the Tester's every one.
+fn outside_each(f : (Bool, Bool, Bool, String) -> Unit raise) -> Unit raise {
+  for wide in [false, true] {
+    for nodes in [false, true] {
+      for looks in [false, true] {
+        f(wide, looks, nodes, "wide \{wide}, nodes \{nodes}, looks checked \{looks}")
+      }
+    }
+  }
+}
+
+///|
+/// On the frames' clock past the fixture's station taking what was sent, its agent answering it and its turn ending,
+/// the answer come out in full and what moved for it at rest.
+fn outside_to_rest(t : @ui.Tester) -> Unit {
+  t.run_for(fix_deliver_ms + fix_answer_ms + fix_turn_end_ms + emit_all_ms() + @ui.move_most_ms)
+}
+
+///|
+/// What the frames after Enter (or a yes) are given to come to: the station's answer, then two of a host's.
+let outside_enter_ms : Double = outside_late_ms + @ui.frame_period_default * 2.0
+
+///|
+test "Enter on a new chat, words referring to this workspace's chat: the core's round trip, then sent, the chat at once" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
+    outside_enter(t, "做任何事", "同一个工作区的 @[发布清单]")
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
+    assert_true(app.nav.top() is Chat(_), msg=at)
+    let (_, field, _, _) = t.ime()
+    assert_eq(field, "", msg=at)
+    t.run_for(@ui.frame_period_default * 2.0)
+    assert_eq(outside_called(heard, "chat.send"), 1, msg=at)
+    assert_true(t.find("分享对话") is None, msg=at)
+    outside_to_rest(t)
+    t.assert_idle()
+  })
+}
+
+///|
+test "Enter on a new chat, words referring to another workspace's chat: 分享对话 at once, Enter again shares and sends, the chat at once, nothing left of it" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
+    outside_enter(t, "做任何事", "按 @[季度路线图] 排一下")
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
+    run_to_outside_rest(t)
+    assert_true(t.find("分享对话") is Some(_), msg=at)
+    assert_true(app.nav.top() == NewChat, msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 0, msg=at)
+    outside_key_enter(t)
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideShare"), 1, msg=at)
+    assert_true(@sffixture.fix_xshared.contains("s-p1"), msg=at)
+    assert_true(app.nav.top() is Chat(_), msg=at)
+    t.run_for(@ui.frame_period_default * 2.0)
+    assert_eq(outside_called(heard, "chat.send"), 1, msg=at)
+    run_to_outside_rest(t)
+    assert_true(t.find("分享对话") is None, msg=at)
+    assert_true(!@sf.presented_drawn(), msg=at)
+    outside_to_rest(t)
+    t.assert_idle()
+  })
+}
+
+///|
+test "Enter on a chat, words referring to this workspace's chat: the core's round trip, then sent at once" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~)
+    outside_enter(t, "发消息", "同一个工作区的 @[发布清单]")
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 1, msg=at)
+    let (_, field, _, _) = t.ime()
+    assert_eq(field, "", msg=at)
+    assert_true(t.find("分享对话") is None, msg=at)
+    outside_to_rest(t)
+    t.assert_idle()
+  })
+}
+
+///|
+test "Enter on a chat, words referring to another workspace's chat: 分享对话 at once, Enter again shares and sends at once" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~)
+    outside_enter(t, "发消息", "先看 @[季度路线图] 再定")
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
+    run_to_outside_rest(t)
+    assert_true(t.find("分享对话") is Some(_), msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 0, msg=at)
+    outside_key_enter(t)
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideShare"), 1, msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 1, msg=at)
+    let (_, field, _, _) = t.ime()
+    assert_eq(field, "", msg=at)
+    run_to_outside_rest(t)
+    assert_true(t.find("分享对话") is None, msg=at)
+    assert_true(!@sf.presented_drawn(), msg=at)
+    outside_to_rest(t)
+    t.assert_idle()
+  })
+}
+
+///|
+/// How late the core answers what is asked of it where nothing is to wait for it: seconds, as a core busy with a
+/// workspace of thousands of chats was seen to be (2026-11-17: 「new chat 发消息任何时候都应该立即发出去」).
+let outside_busy_ms : Double = 3000.0
+
+///|
+test "Enter on a new chat, a chat of this workspace picked in the `@` menu: the chat and its send at once, the core not asked, however late it would answer" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~, late_ms=outside_busy_ms)
+    t.tap_text("做任何事")
+    t.type_text("看 @首页")
+    t.run_for(@ui.frame_period_default * 2.0)
+    t.tap_text("首页的列表改成按天分组")
+    // (the menu gone as the person goes on writing)
+    t.run_for(@ui.move_most_ms)
+    t.type_text(" 吧")
+    t.run_for(@ui.frame_period_default * 2.0)
+    outside_key_enter(t)
+    t.run_for(@ui.frame_period_default * 2.0)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 0, msg=at)
+    assert_true(app.nav.top() is Chat(_), msg=at)
+    let (_, field, _, _) = t.ime()
+    assert_eq(field, "", msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 1, msg=at)
+    outside_to_rest(t)
+    t.assert_idle()
+  })
+}
+
+///|
+test "Enter on a new chat, a chat of another workspace picked in the `@` menu: the core asked, 分享对话 once it answers, nothing sent before" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=true, wide~, looks~, nodes~)
+    t.tap_text("做任何事")
+    t.type_text("@路线")
+    t.run_for(@ui.frame_period_default * 2.0)
+    t.tap_text("季度路线图")
+    t.run_for(@ui.move_most_ms)
+    outside_key_enter(t)
+    t.run_for(outside_enter_ms)
+    assert_eq(outside_called(heard, "chat.outsideRefs"), 1, msg=at)
+    run_to_outside_rest(t)
+    assert_true(t.find("分享对话") is Some(_), msg=at)
+    assert_true(app.nav.top() == NewChat, msg=at)
+    assert_eq(outside_called(heard, "chat.send"), 0, msg=at)
+  })
+}

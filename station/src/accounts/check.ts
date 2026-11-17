@@ -12,8 +12,8 @@ import { checkAgentEnv } from "../ops/agent-env.ts";
 const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider"];
 const RUNTIMES: string[] = RUNTIME_KINDS;
 const MODES = ["multi-session", "single-session"];
-/// The connects the station has a part for (slack/, feishu/, comma/).
-const CONNECT_KINDS = ["slack", "feishu", "comma"];
+/// The connects the station has a part for (slack/, feishu/, comma/, group/).
+const CONNECT_KINDS = ["slack", "feishu", "comma", "group"];
 
 /// config.rs `id_ok`: a lowercase letter or digit, then those and dashes.
 export const idOk = (id: string) => /^[a-z0-9][a-z0-9-]*$/.test(id);

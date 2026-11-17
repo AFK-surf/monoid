@@ -293,10 +293,10 @@ export function shapeOf(topic: Topic): Ty | undefined {
   return TOPIC_SHAPES[topic.topic];
 }
 
-/// The shape of a list's items (`Vec<T>`, `Option<Vec<T>>`).
+/// The shape of a list's items (`Vec<T>`, `Option<Vec<T>>`), or of a map's values (`Map<T>`).
 export function itemOf(ty: Ty): Ty | undefined {
   if (typeof ty === "object" && "opt" in ty) return itemOf(ty.opt);
-  return typeof ty === "object" && "vec" in ty ? ty.vec : undefined;
+  return typeof ty === "object" && "vec" in ty ? ty.vec : typeof ty === "object" && "map" in ty ? ty.map : undefined;
 }
 
 /// The shape of a struct's field.
@@ -863,7 +863,7 @@ export function connect(c: J): J {
     modeSentence: single
       ? words.single.description + t(o.requireMention === false ? "web-pages.connect.everyMessageSentence" : "web-pages.connect.mentionOnlySentence")
       : way.description,
-    placeText: str(o.team) ?? (feishu ? (str(get(o.feishu, "domain")) === "lark" ? "Lark" : t("web-pages.connect.feishu.name")) : kind === "comma" ? "Comma" : "Slack"),
+    placeText: str(o.team) ?? (feishu ? (str(get(o.feishu, "domain")) === "lark" ? "Lark" : t("web-pages.connect.feishu.name")) : kind === "comma" ? "Comma" : kind === "group" ? t("web-pages.connect.group.name") : "Slack"),
     runtimeText: format.runtimeLabel(runtime),
     runText: `${format.runtimeLabel(runtime)} · ${label}`,
     modelName: bm ? model.name(bm) : null,
@@ -875,11 +875,13 @@ export function connect(c: J): J {
 /// and what waiting for an @ does there, on and off; a Feishu connect's in its groups' words, with its thread mode.
 export function modeWords(kind: string | null): J {
   const feishu = kind === "feishu";
+  // (a group connect's in its conversations' words: a private chat or a group is one thread)
+  const own = feishu || kind === "group" ? kind : null;
   const way = (m: string) => ({
-    label: t(feishu ? `web-main.mode.feishu.${m}.label` : `web-main.mode.${m}.label`),
-    description: t(feishu ? `web-main.mode.feishu.${m}.description` : `web-main.mode.${m}.description`),
+    label: t(own !== null ? `web-main.mode.${own}.${m}.label` : `web-main.mode.${m}.label`),
+    description: t(own !== null ? `web-main.mode.${own}.${m}.description` : `web-main.mode.${m}.description`),
   });
-  const k = (key: string) => (feishu ? `${key}.feishu` : key);
+  const k = (key: string) => (own !== null ? `${key}.${own}` : key);
   return { multi: way("multi"), ...(feishu ? { threads: way("threads") } : {}), single: way("single"), mentionOn: t(k("web-pages.connect.mentionOn")), mentionOff: t(k("web-pages.connect.mentionOff")) };
 }
 
@@ -1137,7 +1139,7 @@ function uses(p: J): [string[], [string, string | null] | null] {
   return [list, provider];
 }
 
-/// What a profile can do (`claude`, `codex`, `dsh`, `grok`, `cursor`, `devin`, `decision`), in words: Claude Code · DeepSeek Harness · 自动决策.
+/// What a profile can do (a runtime of `format.RUNTIMES`, or `decision`), in words: Claude Code · DeepSeek Harness · 自动决策.
 export function usesText(list: string[]): string {
   return list.map((u) => (u === "decision" ? t("core-views.present.uses.decision") : format.runtimeLabel(u))).join(" · ");
 }

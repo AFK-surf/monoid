@@ -134,6 +134,8 @@ pub fn fix_every_transfer(String, String, String) -> Unit
 
 pub fn fix_ext(String) -> String
 
+pub let fix_failed_again_ms : Double
+
 pub let fix_fetches : Array[(String, Json)]
 
 pub fn fix_fill_prefs_into(Map[String, Json]) -> Unit

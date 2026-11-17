@@ -346,3 +346,34 @@ int32_t mb_host_native_call(moonbit_string_t name, moonbit_string_t params) { re
 int32_t mb_host_native_state(int32_t id) { return -1; }
 moonbit_string_t mb_host_native_result(int32_t id) { return moonbit_make_string_raw(0); }
 void mb_host_native_end(int32_t id) {}
+
+// ---- the device slowed for its heat (@hostapi.thermal_throttled) ----
+
+// NSProcessInfo's thermal state serious or critical (the system slowing the CPU and GPU, Apple's own apps dropping
+// effects): glass drawn solid till it cools (src/ui/glass.mbt: its blur's copies and passes let go, apple_render.m then
+// drawing a frame straight into its drawable). Low Power Mode is not taken as it: a person's choice of battery, not the
+// device's heat, and macOS and iOS both say this one. Kept as the system tells it (its notification, on whatever thread
+// it posts from), a frame asked as it changes; read once as the first frame asks.
+static int thermal_now = -1;
+
+static int thermal_hot(void) {
+  NSProcessInfoThermalState t = [NSProcessInfo processInfo].thermalState;
+  return t == NSProcessInfoThermalStateSerious || t == NSProcessInfoThermalStateCritical;
+}
+
+int32_t mb_host_thermal_throttled(void) {
+  if (thermal_now < 0) {
+    thermal_now = thermal_hot();
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSProcessInfoThermalStateDidChangeNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification *n) {
+                                                    (void)n;
+                                                    int hot = thermal_hot();
+                                                    if (hot == thermal_now) return;
+                                                    thermal_now = hot;
+                                                    mb_host_request_frame();
+                                                  }];
+  }
+  return thermal_now;
+}

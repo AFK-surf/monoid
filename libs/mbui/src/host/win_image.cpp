@@ -171,19 +171,57 @@ static ID3D11ShaderResourceView *decode(IWICImagingFactory *wic, IWICBitmapDecod
     UINT stride = dw * 4;
     px = (uint8_t *)malloc((size_t)stride * dh);
     if (!px || FAILED(src->CopyPixels(NULL, stride, stride * dh, px))) goto done;
+    UINT mips = 1;
+    for (UINT m = dw > dh ? dw : dh; m > 1; m >>= 1) mips++;
+    D3D11_SUBRESOURCE_DATA inits[16] = {};
+    uint8_t *mip_bufs[16] = {};
+    if (mips > 16) mips = 16;
+    inits[0] = {px, stride, 0};
+    UINT mw = dw, mh = dh;
+    const uint8_t *prev = px;
+    for (UINT level = 1; level < mips; level++) {
+      UINT nw = mw > 1 ? (mw >> 1) : 1;
+      UINT nh = mh > 1 ? (mh >> 1) : 1;
+      uint8_t *dst = (uint8_t *)malloc((size_t)nw * nh * 4);
+      if (!dst) {
+        mips = level;
+        break;
+      }
+      mip_bufs[level] = dst;
+      for (UINT y = 0; y < nh; y++) {
+        UINT y0 = y * 2, y1 = y0 + 1 < mh ? y0 + 1 : y0;
+        const uint8_t *r0 = prev + (size_t)y0 * mw * 4;
+        const uint8_t *r1 = prev + (size_t)y1 * mw * 4;
+        uint8_t *out = dst + (size_t)y * nw * 4;
+        for (UINT x = 0; x < nw; x++) {
+          UINT x0 = x * 2, x1 = x0 + 1 < mw ? x0 + 1 : x0;
+          const uint8_t *p00 = r0 + x0 * 4, *p10 = r0 + x1 * 4;
+          const uint8_t *p01 = r1 + x0 * 4, *p11 = r1 + x1 * 4;
+          out[x * 4 + 0] = (uint8_t)((p00[0] + p10[0] + p01[0] + p11[0] + 2) >> 2);
+          out[x * 4 + 1] = (uint8_t)((p00[1] + p10[1] + p01[1] + p11[1] + 2) >> 2);
+          out[x * 4 + 2] = (uint8_t)((p00[2] + p10[2] + p01[2] + p11[2] + 2) >> 2);
+          out[x * 4 + 3] = (uint8_t)((p00[3] + p10[3] + p01[3] + p11[3] + 2) >> 2);
+        }
+      }
+      inits[level] = {dst, nw * 4, 0};
+      prev = dst;
+      mw = nw;
+      mh = nh;
+    }
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = dw;
     td.Height = dh;
-    td.MipLevels = td.ArraySize = 1;
+    td.MipLevels = mips;
+    td.ArraySize = 1;
     td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_IMMUTABLE;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA init = {px, stride, 0};
     ID3D11Device *dev = (ID3D11Device *)mb_render_device();
-    if (FAILED(dev->CreateTexture2D(&td, &init, &tex)) ||
+    if (FAILED(dev->CreateTexture2D(&td, inits, &tex)) ||
         FAILED(dev->CreateShaderResourceView(tex, NULL, &srv)))
       srv = NULL;
+    for (UINT level = 1; level < mips; level++) free(mip_bufs[level]);
     *w = (int)dw;
     *h = (int)dh;
   }
@@ -339,7 +377,7 @@ int32_t mb_host_image_pixels(int32_t id, moonbit_bytes_t out) {
     td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(dev->CreateTexture2D(&td, NULL, &staging))) {
-      dc->CopyResource(staging, res);
+      dc->CopySubresourceRegion(staging, 0, 0, 0, 0, res, 0, NULL);
       if (SUCCEEDED(dc->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
         for (int y = 0; y < im.h; y++) {
           const uint8_t *row = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;

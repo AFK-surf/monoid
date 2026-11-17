@@ -96,29 +96,3 @@ let ask_in_middle : @ui.TextStyle = @ui.text_style(center=true)
 pub fn ask_buttons(c : @ui.Ctx, body : () -> Unit) -> Unit {
   c.box(style=ask_foot.then(foot_reach(button_height())), flow_reverse=true, line_gap=ask_foot_lines(), fn() { card_foot_words(body) }) |> ignore
 }
-
-///|
-/// The buttons of a card alone in the middle of what it is over: across its foot, each its share (foot_fills), the
-/// first and the last concentric with its foot corners (foot_reach); nothing to one side.
-pub fn ask_buttons_across(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.box(style=ask_across.then(foot_reach(button_height())), flow=true, line_gap=ask_foot_lines(), fn() {
-    let was = foot_fills.val
-    foot_fills.val = true
-    body()
-    foot_fills.val = was
-  })
-  |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_across : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-/// `body` on the night (a player's picture, a stage): the buttons and an ask's words in it the night's.
-pub fn on_the_night(body : () -> Unit) -> Unit {
-  let was = on_night.val
-  on_night.val = true
-  body()
-  on_night.val = was
-}

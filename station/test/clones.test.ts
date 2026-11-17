@@ -63,7 +63,7 @@ test("a clone answers at once, runs git so that it asks nobody, and comes into t
   run!.end(true);
   await settle();
   assert.deepEqual(readdirSync(repos), ["app"]);
-  assert.equal(originOf(join(repos, "app")), "github.com/acme/app");
+  assert.equal(await originOf(join(repos, "app")), "github.com/acme/app");
   assert.deepEqual(clones.list("ws"), []);
   assert.equal(told(), 2);
   assert.deepEqual((await candidates(repos, [])).map((c) => [c.name, c.repo]), [["app", "github.com/acme/app"]]);
@@ -121,7 +121,7 @@ test("a clone whose name is taken goes in as its owner's", async () => {
   git.runs[0]!.end(true);
   await settle();
   assert.deepEqual(readdirSync(repos).sort(), ["acme-app", "app"]);
-  assert.equal(originOf(join(repos, "acme-app")), "github.com/acme/app");
+  assert.equal(await originOf(join(repos, "acme-app")), "github.com/acme/app");
   mkdirSync(join(repos, "other-app"));
   await clones.start(null, "https://gitlab.com/other/app.git", "a@x.com", changed);
   await settle();

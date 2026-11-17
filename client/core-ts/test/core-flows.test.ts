@@ -325,6 +325,41 @@ test("a failed turn's notice and its 重试 pass through the real core", async (
   }
 });
 
+test("failures said alike fold into one through the real core, its 重试 the last's", async () => {
+  const failed = {
+    id: "turn-3", kind: "input", outcome: "failed", declared: null, detail: "network: fetch failed",
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 1, endedAt: 2,
+  };
+  const agent = { ...session("k1", 1), lastTurn: failed };
+  const notice = (n: number) => ({ ...entry(n, `⚠️ 与模型服务的连接中断，回复即可重试\n\n\`\`\`\nrequest r${n}\n\`\`\``), authorKind: "ember", author: "ember" });
+  const { host, core } = await started({
+    ...base(),
+    "GET /sessions": [agent],
+    "GET /sessions/k1": { session: agent, threads: [], turns: [], jobs: [] },
+    "GET /threads": [threadView(7, 3)],
+    "GET /threads/7/entries?limit=50": { last: 3, entries: [notice(1), notice(2), notice(3)] },
+  });
+  try {
+    stationReplies(host, (req) => req.method === "POST" && req.url.endsWith("/sessions/k1/retry") ? { ok: true } : undefined);
+    const ui = core.connect();
+    const values = new Map();
+    subscribe(core, ui, 1, { topic: "chat", station: "ws/st", thread: 7, session: null });
+    await host.settle();
+    await host.settle();
+    apply(host, values);
+    const messages = v(values, 1).messages;
+    assert.equal(messages.length, 1);
+    assert.deepEqual([messages[0].seq, messages[0].notice.count, messages[0].notice.lastSeq, messages[0].notice.againSession, messages[0].notice.detail], [1, 3, 3, "k1", "request r3"]);
+    call(core, ui, 2, "session.retry", { station: "ws/st", key: "k1", thread: 7, seq: messages[0].notice.lastSeq });
+    await host.settle();
+    const sent = host.requests.find((req) => req.method === "POST" && req.url.endsWith("/sessions/k1/retry"));
+    assert.ok(sent);
+    assert.deepEqual(JSON.parse(new TextDecoder().decode(sent.body!)), { thread: 7, seq: 3 });
+  } finally {
+    core.close();
+  }
+});
+
 const header = (r: { headers: [string, string][] }, name: string) => r.headers.find(([k]) => k === name)?.[1];
 const exports = (host: FakeHost) => host.requests.filter((r) => r.url.endsWith("/v1/telemetry/traces"));
 const spansOf = (r: { body?: Uint8Array | null }) => JSON.parse(new TextDecoder().decode(r.body!)).resourceSpans[0].scopeSpans[0].spans as J[];
@@ -1064,13 +1099,14 @@ test("an account's topic gives the app each station once when it has two copies"
 
 /// A core whose station has three profiles: p1 (unchecked) and p2 run Claude Code, p3 Codex (core/tests.rs
 /// `choosing_core`); `speed`: its session on Codex with `fast` as given, p3 offering `fast` as `profileFast`.
-async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false) {
+async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds = false) {
   const s = (key: string) => (speed ? { ...session(key), runtime: "codex", model: "gpt-6-astra", profile: "p3", fast: sessionFast } : session(key));
   return started({
     ...base(),
     "GET /overview": {
       ...overview,
       sessionRuntimeChange: switchRuntime,
+      ...(modelSpeeds ? { modelSpeeds: true } : {}),
       connectRuntimeChange: switchRuntime,
       ...(contexts ? { contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: { "claude-opus-5-5": 1_000_000 } } } : {}),
       connects: [{ id: "c1", name: "c1", kind: "slack", mode: "multi-session", requireMention: true, enabled: true, bind: { runtime: "claude", model: "claude-opus-5-5" }, connection: { state: "connected" }, slack: { appToken: "", botToken: "" }, sessions: 0 }],
@@ -1088,6 +1124,27 @@ async function choosing(speed = false, profileFast = false, sessionFast: boolean
     "PUT /connects/c1": { ok: true },
   });
 }
+
+// The chat a new chat's page became is named by the key it was sent under (`new:…`) all along: what is named by its
+// session answers that key as the session its station made it under, once made (routing.ts OF_A_SESSION).
+test("a_new_chats_topics_named_by_its_key_answer_as_its_made_session", async () => {
+  const { host, core } = await choosing();
+  const ui = core.connect();
+  const local = core.inner.views.local;
+  const key = local.pendingNew("ws/st", {}, "new:made-key");
+  local.pendingQueue(key, { text: "你好" });
+  subscribe(core, ui, 1, { topic: "chatRow", station: "ws/st", session: key });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  assert.equal(v(values, 1)?.id, key);
+  local.pendingMade(key, "k2", 9);
+  core.inner.data.set({ topic: "chatRows", station: "ws/st" }, [{ id: "k2", session: "k2", thread: 9, title: "新对话", agents: [], last: null, unread: false, mine: true, lastActiveAt: 1, connect: null, origin: null, clientKey: key }]);
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual([v(values, 1)?.id, v(values, 1)?.session, v(values, 1)?.thread], ["k2", "k2", 9]);
+  core.close();
+});
 
 test("a disabled unchecked profile is checked only once it is enabled", async () => {
   const p = profile("p1", "claude", ["claude-opus-5-5"], false, 0, { enabled: false });
@@ -1842,6 +1899,35 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
   apply(host, values);
   assert.deepEqual(v(values, 1).items.map((i: J) => i.id), ["b"]);
   assert.equal(v(values, 1).items[0].station, "ws/st");
+  core.close();
+});
+
+// A chat an agent opened to lead itself (chat_create for me) is the agent's to manage: it shows in no list nor the `@`
+// menu, reached from its opener's info and found by a search (the user, 2026-11-17). One opened for its person is
+// theirs and listed as any other.
+test("a_chat_an_agent_leads_is_in_no_list_but_a_search_and_one_it_opened_for_its_person_is_listed", async () => {
+  const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
+  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
+  answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
+  const { host, core } = await started(answers);
+  const ui = core.connect();
+  subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
+  subscribe(core, ui, 2, { topic: "chatSearch", scope: "ws", query: "部署", limit: 8 });
+  subscribe(core, ui, 3, { topic: "chats", scope: "ws", hidden: true });
+  subscribe(core, ui, 4, { topic: "search", scope: "ws", query: "部署" });
+  subscribe(core, ui, 5, { topic: "search", scope: "ws", query: "" });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const listed = (n: number) => v(values, n).days.flatMap((d: J) => d.items.map((i: J) => i.id));
+  assert.deepEqual(listed(1), ["theirs", "lead"]);
+  assert.deepEqual(v(values, 2).items.map((i: J) => i.id), ["theirs", "lead"]);
+  assert.deepEqual(listed(3), []);
+  const found = (n: number) => JSON.stringify(v(values, n));
+  assert.ok(found(4).includes("部署 子任务"), "a search finds it");
+  assert.ok(!found(5).includes("部署 子任务"), "but nothing typed lists it");
+  // Still the device's: opened by its key, as its opener's info opens it.
+  assert.equal((core.inner.data.chat("ws/st", "part") as J)?.opener?.led, true);
   core.close();
 });
 
@@ -3413,6 +3499,48 @@ test("connect_wizard_offers_comma_where_its_station_has_it_and_adds_a_connect_of
   core.close();
 });
 
+test("connect_wizard_offers_group_where_its_station_has_it_and_adds_a_connect_of_its_server_relays_and_code", async () => {
+  const { host, core } = await choosing();
+  stationReplies(host, (req) => {
+    const path = req.url.replace("https://stillfail.test/admin/api", "");
+    if (path === "/group/connects") return { id: "claude" };
+    return undefined;
+  });
+  const ui = core.connect();
+  const topic = connectTopic("group");
+  const form = { station: "ws/st", form: "group" };
+  await ask(host, core, ui, 1, "connect.flow.open", form);
+  const flow = core.inner.forms.connects;
+  withFeishu(core, []);
+  assert.deepEqual(flow.value(topic).platforms, ["slack", "feishu"], "a station from before the group connect does not offer it");
+  const at = { topic: "overview", station: "ws/st" };
+  core.inner.data.set(at, { ...(structuredClone(core.inner.store.get(at)) as J), group: true });
+  assert.deepEqual(flow.value(topic).platforms, ["slack", "feishu", "group"]);
+  flow.go(topic, ui, "groupBind");
+  let view = flow.value(topic);
+  assert.deepEqual([view.step, view.platform, view.back, view.number, view.total], ["groupBind", "group", "platform", 2, 3]);
+  await ask(host, core, ui, 2, "pick.set", { station: "ws/st", of: "connect-new:group", model: "gpt-6-astra", runtime: "codex" });
+  await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "connect-new:group" });
+  flow.go(topic, ui, "groupForm");
+  const server = "ab".repeat(32);
+  flow.edit(topic, ui, { group: { server: "not-an-id", relays: "ftp://relay.test", code: "abc" } });
+  view = flow.value(topic);
+  assert.deepEqual([view.group.ready, !!view.group.serverError, !!view.group.relaysError, !!view.group.codeError], [false, true, true, true]);
+  assert.throws(() => flow.begin(topic, ui, "create", {}, false), "not with what is wrong");
+  flow.edit(topic, ui, { group: { server: server.toUpperCase(), relays: "https://r1.test\nhttps://r2.test", code: "abcd-efgh-jkmn-pqrs", botName: " Claude " } });
+  view = flow.value(topic);
+  assert.deepEqual([view.step, view.back, view.title, view.group.ready, view.group.serverError], ["groupForm", "groupBind", "加入 Group 服务器", true, null]);
+  const shaped = present.decorate(topic, structuredClone(view), { now: 0, offsetMin: 0 });
+  assert.ok("ok" in conform("ConnectFlowView", shaped), JSON.stringify(conform("ConnectFlowView", shaped)));
+  await ask(host, core, ui, 4, "connect.flow.create", form);
+  const sent = stationPosted(host, "/group/connects");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].group, { server, relays: ["https://r1.test", "https://r2.test"], code: "abcd-efgh-jkmn-pqrs", botName: "Claude" });
+  assert.deepEqual([sent[0].bind.runtime, sent[0].bind.model, sent[0].mode, sent[0].requireMention], ["codex", "gpt-6-astra", "multi-session", true]);
+  assert.equal(flow.value(topic).step, "done");
+  core.close();
+});
+
 test("connect_wizard_checks_a_feishu_app_of_ones_own_and_lets_go_of_a_bot_not_made", async () => {
   const { host, core } = await choosing();
   let verified = 0;
@@ -3969,4 +4097,41 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
   const { runnableOn } = await import("../src/views/models.ts");
   assert.equal(runnableOn(stationOv, { runtime: "agy", model: "gemini-4-carbon-high", profile: "ag1" }, 0).length, 1);
   core.close();
+});
+
+
+test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
+  for (const available of [true, false]) {
+    const { host, core } = await choosing(true, false, null, false, false, available);
+    const ui = core.connect();
+    subscribe(core, ui, 1, { topic: "pick", station: "ws/st", of: "session:k1" });
+    subscribe(core, ui, 9, { topic: "newChat", scope: "ws" });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    assert.equal(v(values, 1).ultrafastAvailable === true, available);
+    if (!available) {
+      await assert.rejects(ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" }), /station/);
+    } else {
+      await ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" });
+      assert.equal(stationPosted(host, "/sessions/k1/settings").at(-1).speed, "ultrafast");
+      await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "session:k1", fast: false });
+      const back = stationPosted(host, "/sessions/k1/settings").at(-1);
+      assert.equal(back.fast, false);
+      assert.equal(back.speed, undefined, "the old Fast switch clears the explicit tier");
+      await ask(host, core, ui, 4, "newChat.pick", { scope: "ws", station: "st", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      await ask(host, core, ui, 5, "newChat.create", { station: "ws/st" });
+      assert.equal(stationPosted(host, "/sessions").at(-1).speed, "ultrafast");
+      apply(host, values);
+      const frequent = (core.inner.store.get({ topic: "newChat", scope: "ws" }) as J).frequent;
+      assert.equal(frequent.length, 1);
+      assert.equal(frequent[0].speed, "ultrafast");
+      subscribe(core, ui, 7, { topic: "pick", station: "ws/st", of: "connect-new:preset" });
+      await host.settle();
+      await ask(host, core, ui, 6, "pick.save", { station: "ws/st", of: "connect-new:preset", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      apply(host, values);
+      assert.equal(v(values, 7).value.speed, "ultrafast");
+    }
+    core.close();
+  }
 });

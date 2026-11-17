@@ -400,7 +400,7 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   t.tree_frames_from_now()
   kept_go(t, "profiles", true)
   t.run_for(kept_switch_over_ms)
-  // (what 额度 made, an old view's place: let go of as it is left, never kept)
+  // (what 额度 made, a place made once as nodes since the profiles' list was: put by as it is left, kept)
   let away_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
   t.tree_frames_from_now()
   kept_go(t, "chats", true)
@@ -423,5 +423,29 @@ test "bar places kept: Home taken back over a core that answers late shows what 
   println("bar-kept late core: back to Home made \{made_all}, let go \{let_go_all} (额度 made \{away_made}), rows moving \{moving}; words \{rows_before} then \{seen}")
   assert_eq(seen, rows_before, msg="Home as it was left")
   assert_false(moving, msg="no row coming in as Home is taken back")
-  assert_eq((made_all, let_go_all), (0, away_made), msg="nothing of Home made again or let go, only 额度 let go")
+  // (but a node of Home's made while it was away, let go as it is back: bar_places_today's)
+  assert_eq((made_all, let_go_all), (0, 1), msg="nothing of Home made again or let go, 额度 put by")
+}
+
+///|
+test "bar places kept: a place's tab tapped while the ball is on its way from it: the ball turns back at the rate it went, its stretch not gone in a frame" {
+  // (taps on a frame's moment, as a device's input is taken: the ball's speed, which its stretch and height draw, was
+  // taken off in the frame after the second tap by a spring stiffer than the one that gave it, its height up 3.6 then
+  // 0.2 at 60 a second: sizes_steady's, as the bar's way is judged at 60 and 120)
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  bars_picked.set(Some(([kept_bar], 0)))
+  t.run_for(kept_switch_over_ms)
+  let (xs, y) = today_bar_at()
+  let connects = kept_bar.search("connects").unwrap()
+  t.tap(xs[connects], y)
+  t.run_for(kept_switch_over_ms)
+  t.tap(xs[0], y)
+  t.run_for(kept_tab_gap_ms)
+  t.tap(xs[connects], y)
+  t.run_for(kept_switch_over_ms)
+  to_bar_rest(t)
+  assert_eq(place_of(app.nav.top()), Some("connects"))
+  t.assert_idle()
 }

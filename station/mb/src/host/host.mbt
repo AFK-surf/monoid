@@ -102,7 +102,21 @@ pub fn Host::say(self : Host, text : String) -> Unit {
   } else {
     text
   }
-  ignore(out_ffi(@utf8.encode(line + "\n")))
+  // (a line of MBs and its end written one after the other: not copied again to end it)
+  if line.length() > 64 * 1024 {
+    ignore(out_ffi(@utf8.encode(line)))
+    ignore(out_ffi(b"\n"))
+  } else {
+    ignore(out_ffi(@utf8.encode(line + "\n")))
+  }
+}
+
+///|
+/// Writes a line already UTF-8 (`bytes`, none of its own ends in it) and its end: one of MBs not copied again.
+pub fn Host::say_bytes(self : Host, bytes : Bytes) -> Unit {
+  ignore(self)
+  ignore(out_ffi(bytes))
+  ignore(out_ffi(b"\n"))
 }
 
 ///|

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SessionBindingsBuilder } from "../src/read/session-bindings-builder.ts";
-import { installSessionBindingsIndex, sessionBindingsReady, sessionBindingsStep } from "../src/store/session-bindings-index.ts";
+import { installSessionBindingsIndex, sessionBindingsReady, sessionBindingsStep } from "./reference/backfill/session-bindings-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

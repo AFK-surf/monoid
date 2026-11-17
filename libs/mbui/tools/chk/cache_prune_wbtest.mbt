@@ -68,3 +68,103 @@ test "a branch's caches not read for 12 hours go, the default branch's and pull 
   assert_false(idle_branch_cache({ ..cache, ref_: "refs/pull/1/merge" }, "refs/heads/main", 1.0 + 24.0 * h))
   assert_false(idle_branch_cache({ ..cache, accessed: 0.0 }, "refs/heads/main", 1.0 + 24.0 * h))
 }
+
+///|
+test "a call of GitHub's API that fails twice is made a third time" {
+  let mut runs = 0
+  let mut pauses = 0
+  let mut asked = ""
+  let got = gh_lines_by(
+    "api repos/o/r/branches",
+    fn(cmd) {
+      runs += 1
+      asked = cmd
+      if runs < 3 {
+        None
+      } else {
+        Some("main\nfeat\n")
+      }
+    },
+    fn() { pauses += 1 },
+  )
+  assert_eq(got, Some(["main", "feat"]))
+  assert_eq(asked, "gh api repos/o/r/branches")
+  assert_eq(runs, 3)
+  assert_eq(pauses, 2)
+}
+
+///|
+test "a call of GitHub's API that fails three times is failed, so nothing is deleted" {
+  let mut runs = 0
+  let mut pauses = 0
+  let got = gh_lines_by(
+    "api repos/o/r/branches",
+    fn(_) {
+      runs += 1
+      None
+    },
+    fn() { pauses += 1 },
+  )
+  assert_eq(got, None)
+  assert_eq(runs, 3)
+  assert_eq(pauses, 2)
+}
+
+///|
+test "a delete answered 502 while the cache is still there is made again" {
+  let mut deletes = 0
+  let mut pauses = 0
+  let got = delete_cache_by(
+    fn() {
+      deletes += 1
+      if deletes == 1 {
+        "gh: Server Error (HTTP 502)\nexit=1"
+      } else {
+        "exit=0"
+      }
+    },
+    fn() { true },
+    fn() { pauses += 1 },
+  )
+  assert_eq(got, None)
+  assert_eq(deletes, 2)
+  assert_eq(pauses, 1)
+}
+
+///|
+test "a delete answered 502 three times while the cache is still there fails" {
+  let mut deletes = 0
+  let mut pauses = 0
+  let got = delete_cache_by(
+    fn() {
+      deletes += 1
+      "gh: Server Error (HTTP 502)\nexit=1"
+    },
+    fn() { true },
+    fn() { pauses += 1 },
+  )
+  assert_eq(got, Some("gh: Server Error (HTTP 502)\nexit=1"))
+  assert_eq(deletes, 3)
+  assert_eq(pauses, 2)
+}
+
+///|
+test "a delete answered 502 that was done all the same, or answered 404, is done" {
+  let mut deletes = 0
+  assert_eq(
+    delete_cache_by(
+      fn() {
+        deletes += 1
+        "gh: Server Error (HTTP 502)\nexit=1"
+      },
+      fn() { false },
+      fn() { () },
+    ),
+    None,
+  )
+  assert_eq(deletes, 1)
+  assert_eq(
+    delete_cache_by(fn() { "gh: Not Found (HTTP 404)\nexit=1" }, fn() { true }, fn() { () }),
+    None,
+  )
+}

@@ -1,9 +1,12 @@
 // What the operator's own machine asks of a self-hosted cloud, on a socket only it reaches (config.ts `setup`,
 // 127.0.0.1), each call with ADMIN_TOKEN:
-//   POST /v1/setup      { admin, workspace, station }: the admin's account (as a code sent to its email would sign it
-//                       in), its workspace of that name (made once), and, while the workspace has no station, an
-//                       enrollment for one named `station`: { cloud, relays, workspace, workspace_name, stations, enrollment? }. The
-//                       calls are the API's own, made as the admin, in a session ended once they are done.
+//   POST /v1/setup      { admin, workspace, station, open_to_sign_in? }: the admin's account (as a code sent to its email
+//                       would sign it in), its workspace of that name (made once), and, while the workspace has no
+//                       station, an enrollment for one named `station`: { cloud, relays, workspace, workspace_name,
+//                       stations, enrollment? }. The calls are the API's own, made as the admin, in a session ended once
+//                       they are done. `open_to_sign_in` (true or false; absent: as it was): whether whoever the OpenID
+//                       provider (OIDC_ISSUER) signs in joins the workspace, with the role it gives them (OIDC_ROLE_CLAIM; Directory
+//                       joinBySignIn).
 //   POST /v1/scheduled  what Cloudflare's cron does (wrangler.jsonc triggers): the API's scheduled handler, now.
 import type { Account } from "../src/account.ts";
 import type { Directory } from "../src/directory.ts";
@@ -18,11 +21,12 @@ export type SetupEnv = { PUBLIC_ORIGIN: string; ADMIN_TOKEN?: string | null; API
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
-async function setup(env: SetupEnv, input: { admin?: unknown; workspace?: unknown; station?: unknown }): Promise<Response> {
+async function setup(env: SetupEnv, input: { admin?: unknown; workspace?: unknown; station?: unknown; open_to_sign_in?: unknown }): Promise<Response> {
   const email = typeof input.admin === "string" ? input.admin.trim().toLowerCase() : "";
   const name = typeof input.workspace === "string" ? input.workspace : "";
   const station = typeof input.station === "string" ? input.station : "station";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name) return json({ error: "invalid_request" }, 400);
+  const open = input.open_to_sign_in;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name || (open !== undefined && typeof open !== "boolean")) return json({ error: "invalid_request" }, 400);
   // The account a code to that email signs in to (login.ts emailIdentity): one with the email, else its own.
   const own = `em-${(await digest(email)).slice(0, 32)}`;
   const found = await env.DIRECTORY.getByName("primary").accountFor(own, email);
@@ -43,6 +47,7 @@ async function setup(env: SetupEnv, input: { admin?: unknown; workspace?: unknow
   try {
     const me = (await call("GET", "/v1/me")) as { workspaces: WorkspaceSummary[]; relay_urls: string[] };
     const workspace = me.workspaces.find((w) => w.name === name && w.role === "owner") ?? ((await call("POST", "/v1/workspaces", { name })) as unknown as WorkspaceSummary);
+    if (typeof open === "boolean") await env.DIRECTORY.getByName("primary").openToSignIn(workspace.id, open);
     const stations = workspace.stations ?? 0;
     const enrollment = stations > 0 ? undefined : await call("POST", `/v1/workspaces/${workspace.id}/enrollments`, { name: station });
     return json({ cloud: env.PUBLIC_ORIGIN, relays: me.relay_urls, workspace: workspace.id, workspace_name: workspace.name, stations: typeof stations === "number" ? stations : 0, ...(enrollment ? { enrollment: { name: station, token: enrollment.token, expires_at: enrollment.expires_at, command: enrollment.command } } : {}) });

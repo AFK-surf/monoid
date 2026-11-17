@@ -29,3 +29,15 @@ pub fn foot_place_node(foot : @view.View, when : () -> Bool, make : (@view.View)
     make(place)
   })
 }
+
+///|
+/// A part of a panel's foot made by a structure (what a pick or a show makes, `part`), holding its buttons: a row of
+/// them, at a sheet's foot its share of the foot's width as a place's (foot_place_node's), so what it holds takes its
+/// share as a button standing in the foot itself would (a button_node in it as wide as it, two side by side each half).
+#callsite(autofill(loc))
+pub fn foot_part_node(part : @view.View, loc~ : SourceLoc) -> Unit {
+  part.made_for(loc).row(Is(true)) |> ignore
+  if part.lent(foot_fills_lent).unwrap_or(false) {
+    part.grow(Is(1.0)).basis(Is(Some(2.0 * button_padx))).keeps_held(Is(true)) |> ignore
+  }
+}

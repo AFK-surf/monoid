@@ -41,6 +41,9 @@ export type SearchSource = {
   whole(row: J): J;
   me(scope: string): J;
   clock(): present.Clock;
+  /// Whether the chat of `thread` on `station` is one it said went to another station (views/moved.ts): what it finds
+  /// of it is not shown, the station it went to finds it.
+  moved?(station: string, thread: number): boolean;
 };
 
 /// What each station is asked for a search (`kind`: that kind alone, more of it).
@@ -136,9 +139,10 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
       const k = str(get(group, "kind"));
       if (k === null || !wants(k)) continue;
       const hits = arr(get(group, "hits"));
-      if (get(group, "more") === true || hits.length > (kind ? ONE_KIND : SHOWN)) more.add(k);
+      if (get(group, "more") === true || hits.length > (kind ? ONE_KIND : k === "chat" ? CHATS_SHOWN : SHOWN)) more.add(k);
       for (const hit of hits) {
         const thread = num(hit.thread);
+        if (thread !== null && src.moved?.(s.address, thread) === true) continue;
         const row = thread === null ? undefined : rows.get(`${s.address}\u0001${thread}`);
         if (k === "chat") {
           const id = str(row?.id) ?? str(hit.chat);
@@ -229,7 +233,7 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
   return {
     ok: {
       items: shownItems,
-      chatsMore: items.length > shownItems.length,
+      chatsMore: items.length > shownItems.length || more.has("chat"),
       words,
       messages: messages.slice(0, limit),
       messagesMore: messages.length > limit || more.has("message"),

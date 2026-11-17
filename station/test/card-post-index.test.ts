@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { CARD_POST_ADD_CHANGED, cardPostsReady, cardPostsStep, installCardPosts } from "../src/store/card-post-index.ts";
+import { CARD_POST_ADD_CHANGED, cardPostsReady, cardPostsStep, installCardPosts } from "./reference/backfill/card-post-index.ts";
 
 const textCard = '{"type":"text"}';
 function beforeIndex(db: DatabaseSync): void {

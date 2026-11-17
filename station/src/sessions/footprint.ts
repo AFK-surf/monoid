@@ -1,30 +1,17 @@
 // Workspace file helpers for automatic cleanup of archived sessions.
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { lstat, readdir, realpath } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { access, lstat, open, realpath, stat } from "node:fs/promises";
+import { basename, dirname, join, normalize, sep } from "node:path";
+import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
+import { MbProcess, readerBinary } from "../read/mb-reader.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
 
-const canonical = (path: string): string | null => {
-  try {
-    return realpathSync(path);
-  } catch {
-    return null;
-  }
-};
-
 /// Where a session's own directory is: the one its workspace is in when the station made it (sessions/…/workspace),
-/// else none (a workspace that is a person's project is not the station's to measure or clean).
-export function roomOf(dataDir: string, workspace: string): string | null {
-  const sessions = canonical(join(dataDir, "sessions"));
-  if (sessions === null) return null;
-  return roomIn(sessions, canonical(workspace) ?? (fileName(workspace) === "workspace" ? beside(canonical(dirname(workspace))) : null));
-}
-
-/// `roomOf`, its paths followed off this thread.
+/// else none (a workspace that is a person's project is not the station's to measure or clean). Its paths followed off
+/// the main thread (the synchronous one of before is the tests', test/footprint-reference.ts `roomOf`).
 export async function roomOfSoon(dataDir: string, workspace: string): Promise<string | null> {
   const real = (path: string) => realpath(path).catch(() => null);
   const sessions = await real(join(dataDir, "sessions"));
@@ -33,10 +20,10 @@ export async function roomOfSoon(dataDir: string, workspace: string): Promise<st
 }
 
 /// A workspace not there (yet, or any more) as it would be in its directory `parent` (followed), if that is there.
-const beside = (parent: string | null) => (parent === null ? null : join(parent, "workspace"));
+export const beside = (parent: string | null) => (parent === null ? null : join(parent, "workspace"));
 
 /// The room of the workspace at `path` (followed) under the station's sessions directory (followed).
-function roomIn(sessions: string, path: string | null): string | null {
+export function roomIn(sessions: string, path: string | null): string | null {
   if (path === null || !within(path, sessions) || samePath(path, sessions)) return null;
   // Only the station layout sessions/<connect>/<session>/workspace, never an arbitrary nested project.
   const relative = segments(path.slice(sessions.length)).filter((p) => p !== "");
@@ -44,52 +31,138 @@ function roomIn(sessions: string, path: string | null): string | null {
   return dirname(path);
 }
 
-/// Whether a directory is one a build or an install makes again: node_modules, a Cargo target, a Gradle build and its
-/// cache, Next's and Turbo's caches, Python's bytecode.
-export function rebuildable(dir: string): boolean {
+/// What deciding whether a directory is rebuildable asks of the disk: whether a file (or anything) is there, whether a
+/// directory is, a file's first bytes (null: none). Asked off the main thread's loop (`rebuildableSoon`), or at once by
+/// the tests' references (test/footprint-reference.ts `rebuildableKind`).
+export type Probe = { there: string } | { dir: string } | { head: string };
+export type Answer = boolean | string | null;
+/// How a directory is known to be made again: by its name (and a file beside it), as since the start, or by what is in
+/// it or near it (`found`), which inside a checkout counts only where git ignores it (`safeToRemove`; the gathering, carry.mbt, as git lists a checkout).
+export type Rebuilt = "named" | "found";
+/// How far up a MoonBit manifest is looked for above a `_build` (to the checkout's top, never past it).
+const MANIFEST_UP = 8;
+/// What Cargo writes in its target directory's CACHEDIR.TAG (the standard's signature, then its own line).
+export const CARGO_TAG = ["Signature: 8a477f597d28d172789f06886806bc55", "# This file is a cache directory tag created by cargo."];
+
+export function* decide(dir: string): Generator<Probe, Rebuilt | null, Answer> {
   const name = fileName(dir);
-  if (name === null) return false;
-  const beside = (file: string) => existsSync(join(dirname(dir), file));
+  if (name === null) return null;
+  const parent = dirname(dir);
+  const beside = function* (...files: string[]): Generator<Probe, boolean, Answer> {
+    for (const f of files) if ((yield { there: join(parent, f) }) === true) return true;
+    return false;
+  };
   switch (name) {
     case "node_modules":
     case ".next":
     case ".turbo":
     case "__pycache__":
-      return true;
+      return "named";
     case "target":
-      return beside("Cargo.toml");
+      if (yield* beside("Cargo.toml")) return "named";
+      break;
     case ".gradle":
-      return beside("settings.gradle") || beside("settings.gradle.kts") || beside("build.gradle") || beside("build.gradle.kts");
+      if (yield* beside("settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts")) return "named";
+      break;
     case "build":
-      return beside("build.gradle") || beside("build.gradle.kts");
-    default:
-      return false;
+      if (yield* beside("build.gradle", "build.gradle.kts")) return "named";
+      break;
+    // Elixir's (beside mix.exs) and MoonBit's (`moon` builds into the module's or the work's `_build`, its packages in
+    // `.mooncakes`).
+    case "_build":
+      if ((yield* beside("mix.exs")) || (yield* moonAbove(parent))) return "found";
+      break;
+    case "deps":
+      if (yield* beside("mix.exs")) return "found";
+      break;
+    case ".mooncakes":
+      if (yield* beside("moon.mod.json", "moon.work")) return "found";
+      break;
+  }
+  // Of any name: Xcode's derived data (its products and intermediates), and a Cargo target directory elsewhere
+  // (CARGO_TARGET_DIR, --target-dir): its CACHEDIR.TAG says Cargo, and Cargo's own files are in it.
+  if ((yield { dir: join(dir, "Build", "Products") }) === true && (yield { dir: join(dir, "Build", "Intermediates.noindex") }) === true) return "found";
+  const tag = yield { head: join(dir, "CACHEDIR.TAG") };
+  if (typeof tag === "string" && CARGO_TAG.every((line) => tag.split(/\r?\n/).includes(line))) {
+    if ((yield { there: join(dir, ".rustc_info.json") }) === true) return "found";
+    for (const profile of ["debug", "release"]) for (const own of ["deps", ".fingerprint"]) if ((yield { dir: join(dir, profile, own) }) === true) return "found";
+  }
+  return null;
+}
+
+/// Whether a MoonBit manifest (moon.mod.json, moon.work, moon.pkg.json) is in `from` or above it within its checkout
+/// (up to the directory with `.git`, at most MANIFEST_UP up); outside a checkout only in `from` itself.
+function* moonAbove(from: string): Generator<Probe, boolean, Answer> {
+  let found = false;
+  for (let p = from, i = 0; i < MANIFEST_UP; i++) {
+    for (const m of ["moon.mod.json", "moon.work", "moon.pkg.json"]) {
+      if ((yield { there: join(p, m) }) !== true) continue;
+      if (p === from) return true;
+      found = true;
+    }
+    if ((yield { there: join(p, ".git") }) === true) return found;
+    const up = dirname(p);
+    if (up === p) break;
+    p = up;
+  }
+  return false;
+}
+
+/// The first bytes of a file a probe reads (a CACHEDIR.TAG is a few lines).
+export const HEAD_BYTES = 512;
+
+const answerSoon = async (p: Probe): Promise<Answer> => {
+  try {
+    if ("there" in p) return await access(p.there).then(() => true, () => false);
+    if ("dir" in p) return (await stat(p.dir)).isDirectory();
+    const f = await open(p.head, "r");
+    try {
+      const buf = Buffer.alloc(HEAD_BYTES);
+      return buf.subarray(0, (await f.read(buf, 0, HEAD_BYTES, 0)).bytesRead).toString("utf8");
+    } finally {
+      await f.close();
+    }
+  } catch {
+    return "head" in p ? null : false;
+  }
+};
+
+/// How a directory is one a build or an install makes again (null: it is not): node_modules, a Cargo target, a Gradle
+/// build and its cache, Next's and Turbo's caches, Python's bytecode by name; Elixir's and MoonBit's builds and
+/// dependencies, Xcode's derived data and a Cargo target of any name by what is in or beside them (`found`). Never by a
+/// bare name alone: what it is, is seen. Its looks at the disk off the thread (the synchronous one of before, and the
+/// gathering's by the listings, are the tests' references: test/footprint-reference.ts).
+export async function rebuildableSoon(dir: string): Promise<Rebuilt | null> {
+  const g = decide(dir);
+  for (let r = g.next(); ; ) {
+    if (r.done) return r.value;
+    r = g.next(await answerSoon(r.value));
   }
 }
 
-/// Even a generated-looking directory may contain tracked source. If Git cannot inspect a repository, keep it.
-/// Standalone generated directories (e.g. a screenshot script's node_modules) do not need a Git repository.
+/// Even a generated-looking directory may contain tracked source. If Git cannot inspect a repository, keep it. One known
+/// by what is in it (`found`) goes, inside a checkout, only where git ignores it: a project may name its own directory
+/// so. Standalone generated directories (e.g. a screenshot script's node_modules) do not need a Git repository.
 export async function safeToRemove(path: string): Promise<boolean> {
-  let isDir = false;
-  try {
-    isDir = lstatSync(path).isDirectory();
-  } catch {}
-  if (!isDir || !rebuildable(path)) return false;
+  const isDir = await lstat(path).then((s) => s.isDirectory(), () => false);
+  const kind = isDir ? await rebuildableSoon(path) : null;
+  if (kind === null) return false;
   const parent = dirname(path);
   let inRepo = false;
   for (let p = parent; ; p = dirname(p)) {
-    if (existsSync(join(p, ".git"))) {
+    if (await access(join(p, ".git")).then(() => true, () => false)) {
       inRepo = true;
       break;
     }
     if (dirname(p) === p) break;
   }
   if (!inRepo) return true;
-  return new Promise((resolve) => {
-    execFile("git", ["-C", parent, "ls-files", "--", basename(path)], { encoding: "buffer" }, (error, stdout) => {
-      resolve(error === null && stdout.length === 0);
-    });
+  const git = (args: string[]) => new Promise<{ ok: boolean; out: number }>((resolve) => {
+    execFile("git", ["-C", parent, ...args], { encoding: "buffer" }, (error, stdout) => resolve({ ok: error === null, out: stdout.length }));
   });
+  const tracked = await git(["ls-files", "--", basename(path)]);
+  if (!tracked.ok || tracked.out > 0) return false;
+  return kind === "named" || (await git(["check-ignore", "-q", "--", `${basename(path)}/`])).ok;
 }
 
 /// A chat's own directory (its session's workspace and what is beside it).
@@ -101,83 +174,75 @@ export type Room = {
 
 export const rebuildBytes = (room: Room) => room.rebuild.reduce((sum, [, b]) => sum + b, 0);
 
-/// Counts files once each however many links they have.
-class Seen {
-  private seen = new Set<string>();
-  private total = 0;
-  private readonly stopAfter: number | undefined;
-  constructor(stopAfter?: number) { this.stopAfter = stopAfter; }
-  bytes(meta: import("node:fs").BigIntStats): number {
-    if (meta.nlink > 1n) {
-      const id = `${meta.dev}:${meta.ino}`;
-      if (this.seen.has(id)) return 0;
-      this.seen.add(id);
-    }
-    const bytes = Number(meta.blocks) * 512;
-    this.total += bytes;
-    if (this.stopAfter !== undefined && this.total > this.stopAfter) throw new Enough(this.total);
-    return bytes;
-  }
-}
+/// How far a measure goes: the most entries it visits and how long it takes, shared by every walk in it (those of the
+/// rebuildable directories, `.git` and `uploads` too).
+export type MeasureBudget = { maxEntries?: number; maxDurationMs?: number };
+/// A workspace's size for its soft limit (measuredUpTo): enough for a warning, never minutes of the disk.
+export const MEASURE_UP_TO: Required<MeasureBudget> = { maxEntries: 100_000, maxDurationMs: 15_000 };
+/// A room measured for its cleanup (measureRoom, measured): what it finds past this is left for the next time.
+export const MEASURE_ROOM: Required<MeasureBudget> = { maxEntries: 500_000, maxDurationMs: 60_000 };
 
-/// Enough of a workspace was counted to know it exceeds its limit; more work is not needed for a warning.
-class Enough {
-  readonly bytes: number;
-  constructor(bytes: number) { this.bytes = bytes; }
-}
+/// What a measure found: its bytes, whether it reached everything (`reason`: why not, the walk's limit that cut it:
+/// entries, duration, depth), what it found to make again (with `finding`); `enough`: it stopped as it counted past
+/// `stopAfter`.
+type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true };
+type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
-/// The size of `path` and everything under it; links are not followed. With `found`, directories that can be made
-/// again are listed there (each counted whole, not looked into further).
-async function measure(path: string, seen: Seen, found: [string, number][] | null, signal?: AbortSignal, strict = false): Promise<number> {
-  signal?.throwIfAborted();
-  let meta;
-  try {
-    meta = await lstat(path, { bigint: true });
-  } catch (error) {
-    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return 0;
-  }
-  let bytes = seen.bytes(meta);
-  if (!meta.isDirectory()) return bytes;
-  let entries;
-  try {
-    entries = await readdir(path, { withFileTypes: true });
-  } catch (error) {
-    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return bytes;
-  }
-  for (const entry of entries) {
-    const child = join(path, entry.name);
-    // Never discover cleanup candidates in repository metadata or historical attachments.
-    if (found !== null && (entry.name === ".git" || entry.name === "uploads")) {
-      bytes += await measure(child, seen, null, signal, strict);
-      continue;
-    }
-    if (found !== null && entry.isDirectory() && rebuildable(child)) {
-      const size = await measure(child, seen, null, signal, strict);
-      found.push([child, size]);
-      bytes += size;
-    } else bytes += await measure(child, seen, found, signal, strict);
-  }
-  return bytes;
+/// The size of `path` and everything under it, on its file system, by the MoonBit program (`--builder footprint`,
+/// station/mb src/footprint), one process a measure under the system's background priority, so none of the walk's
+/// entries are the station's thread's or its heap's: links not followed (a link counted as itself), another file
+/// system mounted in it not gone into, at most 32 deep, each file once however many names it has, within `budget`
+/// (the walks of what it finds sharing it). With `finding`, directories that can be made again are listed (each
+/// counted whole, not looked into further for more); never in a `.git` or `uploads`. `strict`: an error of the file
+/// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
+/// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
+/// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
+function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const binary = readerBinary();
+    const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+    let settled = false;
+    const done = (f: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", stop);
+      f();
+    };
+    const stop = () => done(() => {
+      p.kill();
+      reject(signal!.reason);
+    });
+    signal?.addEventListener("abort", stop, { once: true });
+    // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
+    p.on("message", ({ size, ...m }: Omit<Measured, "bytes"> & { size: number; error?: string; code?: string }) => done(() => {
+      if (m.error === undefined) return resolve({ ...m, bytes: size });
+      reject(Object.assign(new Error(m.error), { code: m.code }));
+    }));
+    p.on("error", (e: Error) => done(() => reject(e)));
+    p.on("exit", (code: number) => done(() => reject(new Error(`the measure's program ended saying nothing (${code})`))));
+    p.postMessage({
+      path, base: normalize(path), ...ask,
+      maxEntries: budget.maxEntries ?? MEASURE_ROOM.maxEntries, maxDurationMs: Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs),
+    });
+  });
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).
-export async function measureRoom(dir: string): Promise<Room> {
-  const rebuild: [string, number][] = [];
-  const bytes = await measure(dir, new Seen(), rebuild);
-  return { bytes, rebuild };
+export async function measureRoom(dir: string, budget: MeasureBudget = MEASURE_ROOM): Promise<Room> {
+  const { bytes, rebuild } = await measure(dir, { finding: true, strict: false }, budget);
+  return { bytes, rebuild: rebuild ?? [] };
 }
 
 /// The size of a path, each file once.
-export const measured = (path: string, signal?: AbortSignal) => measure(path, new Seen(), null, signal);
+export const measured = async (path: string, signal?: AbortSignal, budget: MeasureBudget = MEASURE_ROOM) => (await measure(path, { finding: false, strict: false }, budget, signal)).bytes;
 
-/// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest.
-export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal): Promise<{ bytes: number; complete: boolean }> {
-  try {
-    return { bytes: await measure(path, new Seen(limit), null, signal, true), complete: true };
-  } catch (error) {
-    if (error instanceof Enough) return { bytes: error.bytes, complete: false };
-    throw error;
-  }
+/// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest. A
+/// workspace too large or too slow to walk within `budget` (MEASURE_UP_TO) is a lower bound too, `truncated`.
+export async function measuredUpTo(path: string, limit: number, signal?: AbortSignal, budget: MeasureBudget = MEASURE_UP_TO): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
+  const got = await measure(path, { finding: false, strict: true, stopAfter: limit }, budget, signal);
+  if (got.enough) return { bytes: got.bytes, complete: false };
+  if (got.complete) return { bytes: got.bytes, complete: true };
+  log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });
+  return { bytes: got.bytes, complete: false, truncated: true };
 }

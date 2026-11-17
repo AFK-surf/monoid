@@ -13,7 +13,8 @@ let rig_workspace : Workspace = { id: "ws1", name: "星火工作室", emoji: "",
 /// says (2 a phone's finger, 0 a Mac's mouse), `h` high: opened under settings, drawn alone while it is the stack's top
 /// (another of them opened from it, that one), back over it to settings, the presenters over it. `ready`: what the test
 /// sets before it is first drawn (the settings' own state: a station's part shown, a login marked); `host`, what the
-/// device's host says from the start, its Tester made (a performance record kept, newer builds asked for).
+/// device's host says from the start, its Tester made (a performance record kept, newer builds asked for). `width`: how
+/// wide the page is given to be as it changes (`w` by default).
 fn setting_tester(
   route : @settings.Route,
   w : Double,
@@ -24,6 +25,7 @@ fn setting_tester(
   ready? : () -> Unit = fn() {  },
   host? : (@ui.Tester) -> Unit = fn(_) {  },
   env? : Array[(String, String)] = [],
+  width? : () -> Double = fn() { w },
 ) -> @ui.Tester {
   @sfbase.reset()
   reset()
@@ -46,13 +48,7 @@ fn setting_tester(
       // (made once: the presenters around the tree's page, set_view_app's)
       guard !made else { return }
       @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        match app.nav.top() {
-          Setting(r) => setting_alone(c, src, r)
-          _ => ()
-        }
-        @sf.presented(c)
-      })
+      c.with_theme(@sf.ui_theme(), fn() { @sf.presented(c) })
     }),
     w~,
     h~,
@@ -72,7 +68,7 @@ fn setting_tester(
         root.pick(fn() { app.nav.top() }, fn(p, page) {
           @ui.words_picked(p)
           match page {
-            Setting(r) => setting_made(p, src, r, fn() { w })
+            Setting(r) => setting_made(p, src, r, width)
             _ => ()
           }
         })
@@ -121,6 +117,7 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     Notifications => notify_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     AutoPolicy(st) => policy_node(p, core, here, st, on_back=core.pop, frame~, width~)
     Appearance => appearance_node(p, core, on_back=core.pop, frame~, width~)
+    Experimental => experimental_node(p, core, on_back=core.pop, frame~, width~)
     LocalStation => local_station_node(p, core, on_back=core.pop, frame~, width~)
     Permissions => permissions_node(p, core, on_back=core.pop, frame~, width~)
     Security => security_node(p, core, here, on_back=core.pop, frame~, width~)
@@ -134,30 +131,19 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     Profile(a, id) => profile_node(p, core, here, a, id, on_back=core.pop, frame~, width~)
     NewProfile(a) => new_profile_node(p, core, src, here, a, on_back=core.pop, frame~, width~)
     Station(a) => station_node(p, core, src, here, a, on_back=core.pop, frame~, width~)
-    // (the pages opened from them not made once yet: their old view, hosted)
-    _ =>
-      @ui.old(p, fn(c) {
-        @sf.begin(c) |> ignore
-        c.with_theme(@sf.ui_theme(), fn() { setting_alone(c, src, route) })
-      })
-      .grow(Is(1.0))
-      |> ignore
-  }
-}
-
-///|
-/// The page of `route`, in the frame a page under another is given: back over it, no room kept for bars.
-fn setting_alone(c : @ui.Ctx, src : Source, route : @settings.Route) -> Unit {
-  let core = @sfbase.settings_core(src, rig_workspace)
-  let here = @settings.here_of(core, rig_workspace.id, rig_workspace.name)
-  @settings.frame(core, here)
-  let frame : PageFrame = { back: app.nav.under().map(@sfbase.back_label), top: 0.0, foot: 0.0, named: false }
-  match route {
-    Fonts => fonts_page(c, core, frame)
-    BarSettings => bars_page(c, core, frame)
-    Me => me_page(c, core, here, frame)
-    Vault => vault_page(c, core, here, frame)
-    VaultItem(v, item) => vault_item_page(c, core, here, frame, v, item)
+    Stations => stations_list_node(p, core, here, on_back=core.pop, frame~, width~)
+    Profiles(only) => profiles_list_node(p, core, here, only, on_back=core.pop, frame~, width~)
+    ProfileAccount(k) => profile_account_node(p, core, here, k, on_back=core.pop, frame~, width~)
+    Home => settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint=fn() { 0 }, bars=fn() { false })
+    Fonts => fonts_node(p, core, on_back=core.pop, frame~, width~)
+    BarSettings => bars_node(p, core, on_back=core.pop, frame~, width~)
+    Me => me_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
+    KeptFiles => @settings.kept_node(p, core, on_back=core.pop, frame~, width~)
+    KeptChat(s, thread) => @settings.kept_chat_node(p, core, s, thread, on_back=core.pop, frame~, width~)
+    RunSettings(s, key) => @settings.run_settings_node(p, core, s, key, on_back=core.pop, frame~, width~)
+    AdbShare(focus) => @settings.adb_node(p, core, focus, on_back=core.pop, frame~, width~)
+    Vault => vault_node(p, core, here, on_back=core.pop, frame~, width~)
+    VaultItem(v, item) => vault_item_node(p, core, here, v, item, on_back=core.pop, frame~, width~)
     _ => ()
   }
 }

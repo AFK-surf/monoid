@@ -239,27 +239,34 @@ fn history_actions_node(v : @view.View, src : Source, r : ChatRef, agent : () ->
 ///|
 /// A model's mark as the history's head has it (model_mark_big's, as nodes): its maker's mark on a tile with a
 /// hairline, `size` across, and its state's badge over the corner (solid accent waiting on someone, an accent ring at
-/// work, red failed) ringed in the page's ground.
+/// work, red failed) ringed in the page's ground (or `around`: what it stands on, a sheet's); `plain`: no tile, the
+/// maker's mark alone (an agent's card's head), as tall as that mark (`size` across still), its badge on its corner.
 fn model_mark_big_node(
   v : @view.View,
   maker : () -> String,
   runtime : () -> String,
   size : Double,
   state : () -> String,
+  around? : () -> Int64 = fn() { @sf.theme().p.bg },
+  plain? : Bool = false,
 ) -> Unit {
   let xs = size < 30.0
+  let glyph = size * (if xs { 0.6 } else { 0.56 })
+  // (no tile: as tall as the mark alone, so it stands on a line as its words do)
+  let tall = if plain { glyph } else { size }
   v.box(fn(m) {
     m
     .width(Is(Some(size)))
-    .height(Is(Some(size)))
+    .height(Is(Some(tall)))
     .radius(Is(if xs { 6.0 } else { @sf.small_corner }))
-    .ground(By(fn() { @sf.theme().p.card }))
-    .edge(By(fn() { (1.0, @sf.theme().p.line) }))
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
+    if !plain {
+      m.ground(By(fn() { @sf.theme().p.card })).edge(By(fn() { (1.0, @sf.theme().p.line) })) |> ignore
+    }
     m.pick(at_once=true, fn() { (maker(), runtime()) }, fn(i, mr) {
-      @sf.maker_mark_node(i, mr.0, mr.1, size * (if xs { 0.6 } else { 0.56 })) |> ignore
+      @sf.maker_mark_node(i, mr.0, mr.1, glyph) |> ignore
     })
     let b = if xs { 11.0 } else { 15.0 }
     let ring = if xs { 1.5 } else { 2.0 }
@@ -271,8 +278,8 @@ fn model_mark_big_node(
         .width(Is(Some(b)))
         .height(Is(Some(b)))
         .radius(Is(b / 2.0))
-        .offset(Is((size - b + 3.0, size - b + 3.0)))
-        .ground(By(fn() { @sf.theme().p.bg }))
+        .offset(Is((size - b + 3.0, tall - b + 3.0)))
+        .ground(By(around))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
         |> ignore

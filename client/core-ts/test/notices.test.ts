@@ -152,6 +152,12 @@ test("a_chat_of_mine_is_noticed_as_it_changes_and_not_for_how_it_was_at_first", 
   assert.deepEqual(kinds(notices), ["done", "block", "message", "failed"]);
   assert.equal(notices.value(null).items[3].body, "出错 · 无法启动 agent：没有 claude");
   assert.deepEqual(notices.value(null).items.map((i: J) => i.seq), [5, 7, 8, 9]);
+  // (gone wrong in a chat someone else started: told to them, not to the viewer)
+  const theirs = { ...row("failed", 10, true, ["ember", "ember"]), creator: { email: "other@x.y" } };
+  theirs.last.text = "⚠️ 又失败了";
+  rows.set("ws/st", [theirs]);
+  notices.look(stations);
+  assert.deepEqual(kinds(notices), ["done", "block", "message", "failed"]);
 });
 
 test("chats_not_mine_and_slack_threads_are_not_noticed", () => {

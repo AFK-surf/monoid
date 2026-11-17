@@ -61,21 +61,29 @@ export class Asks {
   /// The station a link names now (views.ts `stationNow`: one that took a lost one's place).
   readonly #now: (address: string) => string;
 
-  constructor(host: Host, brings: Brings, now: (address: string) => string = (a) => a) {
+  /// Where a chat a link names went to another station (data.ts chatNow).
+  readonly #chatNow: ChatNow;
+
+  constructor(host: Host, brings: Brings, now: (address: string) => string = (a) => a, chatNow: ChatNow = () => null) {
     this.#host = host;
     this.#brings = brings;
     this.#now = now;
+    this.#chatNow = chatNow;
   }
 
   run(ask: Ask, accounts: AccountSessions): Effect.Effect<unknown, CoreError> {
     switch (ask.kind) {
       case "linkParse":
-        return Effect.succeed(linkNow(linkTarget(ask.url, this.#host.cloudOrigin()), this.#now));
+        return Effect.succeed(linkNow(linkTarget(ask.url, this.#host.cloudOrigin()), this.#now, this.#chatNow));
       case "appUpdate":
         // (youdid.wtf's builds are its platform's beta feed; an app of its own on the test channel names its feed whole)
         return this.update(ask.platform, ask.version, ask.now, brand.testApp(), ask.keys);
       case "picture":
-        return Effect.map(this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes));
+        // (what goes beside the answer is the UI's, moved away on the web (its worker's toPage): `picture`'s bytes are
+        // shared by everyone asking and kept for the next (#pictures), so each answer is a copy of them)
+        return ask.kept
+          ? Effect.map(this.pictureKept(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes))
+          : Effect.map(this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes.slice()));
       case "buddies":
         return Effect.succeed(buddies());
       case "devSignIn":
@@ -180,6 +188,26 @@ export class Asks {
       }
       this.#pictureFailed.delete(url);
       return got.success;
+    });
+  }
+
+  /// A picture by its address as the device holds it, never waiting on the network: kept (or what stands in for it),
+  /// else none (no bytes, the kind ""), its fetch set off meanwhile as `picture` does it, so that the asking that follows
+  /// shares it. What the app's page opening waits for (apps/mbui's core_pictures.mbt: a page waits for a face the device
+  /// has, never for one the network is to bring).
+  pictureKept(url: string): Effect.Effect<[string, Uint8Array], CoreError> {
+    return Effect.gen({ self: this }, function* () {
+      if (!(url.startsWith("https://") || url.startsWith("http://"))) return yield* Effect.fail(CoreError.invalid(t("core-misc.ask.bad_picture_url")));
+      const kept = yield* this.#keptPicture(pictureName(url));
+      if (kept !== null) return kept;
+      const failed = this.#pictureFailed.get(url);
+      if (failed !== undefined && this.#host.nowMs() - failed[0] < PICTURE_RETRY_MS) {
+        const standing = yield* Effect.result(this.#standIn(url, failed[1]));
+        return standing._tag === "Success" ? standing.success : (["", new Uint8Array(0)] as [string, Uint8Array]);
+      }
+      // (not on the device: fetched as `picture` fetches it, once, whoever asks; answered none now)
+      if (!this.#pictures.has(url)) Effect.runFork(Effect.ignore(this.picture(url)));
+      return ["", new Uint8Array(0)] as [string, Uint8Array];
     });
   }
 
@@ -393,11 +421,40 @@ function messageOf(query: string): { message?: number } {
 }
 
 /// A link's target with its station as it is now (a lost one's link opens the station that took its place).
-export function linkNow(target: J, now: (address: string) => string): J {
+/// Where a chat a link names went to another station, as its stations said it (data.ts `chatNow`): its station there,
+/// its session and its thread there; null where it did not.
+export type ChatNow = (address: string, by: { session: string } | { thread: number }) => { station: string; session: string; thread: number | null } | null;
+
+/// The most stations a link is followed through (`linkNow`): each hop a station that took another's place or a chat
+/// handed on.
+const HOPS_MOST = 16;
+
+/// What a link opens where it is now: its station's, where another took its place (`now`); a chat's (`chat`, by its
+/// row's id, its session, or its thread; an item's session), where its station said it went to another (`chatNow`), and
+/// so on from there, any number of times; one that goes round is opened where it was named.
+export function linkNow(target: J, now: (address: string) => string, chatNow: ChatNow = () => null): J {
   if (target === null || typeof target !== "object" || typeof target.workspace !== "string" || typeof target.station !== "string") return target;
-  const address = now(`${target.workspace}/${target.station}`);
+  const ws = target.workspace;
+  const chat = target.opens === "chat" && typeof target.chat === "string" ? target.chat : target.opens === "item" && typeof target.session === "string" ? target.session : null;
+  let address = `${ws}/${target.station}`;
+  let named = chat;
+  const seen = new Set<string>();
+  for (let hops = 0; hops < HOPS_MOST; hops++) {
+    address = now(address);
+    if (seen.has(address)) return target;
+    seen.add(address);
+    if (named === null) break;
+    const there = chatNow(address, { session: named }) ?? (/^[0-9]+$/.test(named) ? chatNow(address, { thread: Number(named) }) : null);
+    if (there === null) break;
+    named = named === there.session || there.thread === null ? named : String(there.thread);
+    if (seen.has(there.station)) return target;
+    address = there.station;
+  }
   const station = address.slice(address.lastIndexOf("/") + 1);
-  return station === target.station ? target : { ...target, station };
+  if (station === target.station && named === chat) return target;
+  const moved = { ...target, station };
+  if (target.opens === "chat" && named !== null) moved.chat = named;
+  return moved;
 }
 
 /// What one of still.fail's own links opens in the app; null for any other link. A chat's page or an item, with

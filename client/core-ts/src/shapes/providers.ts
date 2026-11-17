@@ -408,17 +408,17 @@ export function endpoints(source: Source, endpoint: string | null | undefined, p
   return at;
 }
 
-export type Uses = { claude: boolean; codex: boolean; dsh: boolean; grok: boolean; agy: boolean; decision: boolean };
+export type Uses = { claude: boolean; codex: boolean; dsh: boolean; grok: boolean; agy: boolean; pi: boolean; decision: boolean };
 
-/// Claude Code speaks Anthropic's protocol, Codex the Responses API; DeepSeek Harness speaks all three, chat completions too;
-/// Grok Build runs on xAI's own API alone, the Antigravity CLI on a Gemini key alone (`source`: the provider's id).
+/// Claude Code speaks Anthropic's protocol, Codex the Responses API; DeepSeek Harness and Pi speak all three, chat completions
+/// too; Grok Build runs on xAI's own API alone, the Antigravity CLI on a Gemini key alone (`source`: the provider's id).
 export function uses(e: Endpoints, source?: string): Uses {
   const dsh = e.chat !== null || e.responses !== null || e.anthropic !== null;
   const grok = source === "xai" && e.responses !== null;
   const agy = source === "google" && e.chat !== null;
-  return { claude: e.anthropic !== null, codex: e.responses !== null, dsh, grok, agy, decision: e.chat !== null || e.decision !== null };
+  return { claude: e.anthropic !== null, codex: e.responses !== null, dsh, grok, agy, pi: dsh, decision: e.chat !== null || e.decision !== null };
 }
 
 export function runtimes(u: Uses): string[] {
-  return [u.claude ? "claude" : null, u.codex ? "codex" : null, u.dsh ? "dsh" : null, u.grok ? "grok" : null, u.agy ? "agy" : null].filter((r): r is string => r !== null);
+  return [u.claude ? "claude" : null, u.codex ? "codex" : null, u.dsh ? "dsh" : null, u.grok ? "grok" : null, u.agy ? "agy" : null, u.pi ? "pi" : null].filter((r): r is string => r !== null);
 }

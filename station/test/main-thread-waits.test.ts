@@ -5,7 +5,7 @@
 // takes now (STATEMENTS): a change may lower them, never raise them; its files and processes, where they are fixed at
 // their cause, none.
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
@@ -30,12 +30,12 @@ import { fingerprint, profileFilesRead } from "../src/sessions/decision.ts";
 import { LiveHub } from "../src/sessions/live.ts";
 import { sessionSeen } from "../src/api/seen.ts";
 import { autoArchive } from "../src/sessions/lifecycle.ts";
+import { toldResumeLost } from "../src/sessions/afresh.ts";
 import { iso } from "../src/read/transcript.ts";
-import { UsageCounter, claudeProject } from "../src/usage/counter.ts";
-import { usageTurns } from "../src/store/usage.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { claudeProject } from "./usage-counter-reference.ts";
 import { installCompactUsage } from "../src/store/usage-compact.ts";
 import { archiveLookOf } from "../src/store/store.ts";
-import { DatabaseSync } from "node:sqlite";
 
 type Counted = { files: number; processes: number; statements: number };
 
@@ -94,10 +94,10 @@ const STATEMENTS = {
   seenTold: 0,
   // 20 before: each tool call asked the session of its token.
   tokenResolved: 0,
-  // The counter's cursor, the sessions in one statement, their runtime sources (one each), and one transaction: BEGIN,
-  // for each call as a usage record is (5), COMMIT; the turns are a reader's. (Before: a transaction for each transcript,
-  // each session's row read again for its sources, the turns of each part (5 statements) here, and a usage record's 11.)
-  usageRead: 16,
+  // None: the MoonBit program reads the transcripts and writes what it found (usage/counter-mb.ts), only told here.
+  // (Before it, 16 here: the counter's cursor, the sessions, their runtime sources and one transaction of the calls; and
+  // before that a transaction for each transcript, the turns of each part here and a usage record's 11.)
+  usageRead: 0,
   // 53 before (3 sessions archived, one at work): every session shown and chat of its own, and of each idle one its
   // bindings, pin, chats, row, jobs, keeps and work, read here. Now the look is a reader's; here only the archiving of each
   // session it archives: BEGIN, its row and its chat out of the lists, COMMIT, its chats and row for what is told, its
@@ -106,6 +106,9 @@ const STATEMENTS = {
   // that all comes after one (sessions/mb-actor.ts): the same work, counted whole, in either.
   // 21 since the actor reads its last turn and ends its wait in the MoonBit program (actor_store.mbt).
   autoArchiveLook: 21,
+  // The session's thread list, its row and its runtime sessions (afresh.ts `toldResumeLost`): the machine's transcript
+  // is looked for by a walk off this thread (read/machine.ts `transcriptOf`), no file of it here.
+  resumeLost: 5,
 } as const;
 
 test("a transcript growing: read and told, its length gathered, written with the others' once LENGTHS_GATHER_MS is up", async () => {
@@ -158,7 +161,7 @@ test("a turn, a tool call and a usage record: no file, no process, their stateme
     const toolCall = await counted(() => r.call(key, "chat_history", { to }));
     assert.deepEqual(toolCall, { files: 0, processes: 0, statements: STATEMENTS.toolCall });
     // Compact usage installed, as the usage module installs it as the station starts (usage/module.ts).
-    installCompactUsage(r.store.db, () => r.store.now());
+    installCompactUsage(r.store.db);
     // A call of its recorded already: its context kept, as a session at work has it.
     r.store.recordUsage("/t.jsonl", { session: key, offset: 50, model: "opus" }, "claude", [[
       { id: "call-0", at: r.store.now(), model: "opus", subagent: false, fast: false, input: 10, cacheRead: 100, cacheWrite: 5, cacheWriteLong: 0, output: 20, calls: 1, context: 110, window: 200_000 },
@@ -385,12 +388,9 @@ test("the usage counter writes what it read of two sessions' transcripts in one 
   const time = testClock();
   await time.adjust(Date.parse("2026-11-10T08:00:00Z"));
   const store = Store.open(join(dir, "stillfail.db"), null, time.clock);
-  // The turns its calls were made in, a reader's (its own connection, as the station's readers have).
-  const reader = new DatabaseSync(join(dir, "stillfail.db"), { readOnly: true });
-  const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [{ home: join(dir, "homes/cc") }] }), clock: time.clock,
-    turns: async (session, from, until) => usageTurns(reader, session, from, until) });
+  const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [{ home: join(dir, "homes/cc") }] }), clock: time.clock });
   try {
-    installCompactUsage(store.db, () => store.now());
+    installCompactUsage(store.db);
     const now = store.now();
     const call = (id: string, at: number) => `${JSON.stringify({ type: "assistant", timestamp: iso(at), isSidechain: false, message: { id, model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 2 } } })}\n`;
     const paths: string[] = [];
@@ -410,7 +410,6 @@ test("the usage counter writes what it read of two sessions' transcripts in one 
     assert.deepEqual(read, { files: 0, processes: 0, statements: STATEMENTS.usageRead });
   } finally {
     await counter.stop();
-    reader.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
   }
@@ -435,7 +434,7 @@ test("the auto-archive's look is a reader's: here only the sessions it archives 
       keys.push(key);
     }
     await time.adjust(r.hub.config().autoArchiveMs + 60_000);
-    // What a reader read for the look (read/ops-sessions.ts `archiveLook`), as the station has it carried over.
+    // What a reader read for the look (test/reference/ops-sessions.ts `archiveLook`), as the station has it carried over.
     const { autoArchiveMs, slackArchiveMs } = r.hub.config();
     const read = JSON.parse(JSON.stringify(archiveLookOf(r.store.db, r.hub.now(), autoArchiveMs, slackArchiveMs)));
     // (what archiving each sets going counted too, wherever the actor that does it runs: sessions/mb-actor.ts)
@@ -446,6 +445,49 @@ test("the auto-archive's look is a reader's: here only the sessions it archives 
     assert.deepEqual(keys.map((key) => r.store.getSession(key)?.archivedAt !== null), [true, true, true, false], "the three done, not the one at work");
     // For each session archived, its archiving; nothing for the one that stays, nor for the look itself.
     assert.deepEqual(look, { files: 0, processes: 0, statements: STATEMENTS.autoArchiveLook });
+  } finally {
+    await r.close();
+  }
+});
+
+test("a session continued from a terminal whose resume was lost is told its transcript there, found off the main thread", async () => {
+  const r = new Rig();
+  const roots = { claude: join(r.dir, "machine/claude"), codex: join(r.dir, "machine/codex") };
+  r.roots = roots;
+  const put = (path: string, at: number) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify({ type: "user", cwd: "/w" })}\n`);
+    utimesSync(path, at, at);
+  };
+  try {
+    const m = message();
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    const claudeId = "0b7c2f6e-1111-4c2a-9d3e-aaaaaaaaaaaa";
+    const codexId = "0b7c2f6e-2222-4c2a-9d3e-bbbbbbbbbbbb";
+    // Claude Code's in one of several projects; Codex's in two rollouts, the later written the one told.
+    for (const p of ["-w-a", "-w-b", "-w-c"]) mkdirSync(join(roots.claude, p), { recursive: true });
+    put(join(roots.claude, "-w-b", `${claudeId}.jsonl`), 1_790_000_000);
+    put(join(roots.codex, "2026/11/01", `rollout-2026-11-01T10-00-00-${codexId}.jsonl`), 1_790_000_000);
+    put(join(roots.codex, "2026/11/02", `rollout-2026-11-02T10-00-00-${codexId}.jsonl`), 1_790_000_100);
+    put(join(roots.codex, "2026/11/03", `rollout-2026-11-03T10-00-00-${claudeId}.jsonl`), 1_790_000_200);
+    const as = (runtime: string, id: string) => {
+      r.store.db.prepare("DELETE FROM runtime_sessions WHERE session_key = ?").run(key);
+      r.store.db.prepare("UPDATE sessions SET runtime = ?, cwd = '/w', runtime_session_id = ? WHERE key = ?").run(runtime, id, key);
+    };
+    as("claude", claudeId);
+    let told = "";
+    const claude = await counted(async () => (told = await toldResumeLost(r.hub, key)));
+    assert.ok(told.includes(join(roots.claude, "-w-b", `${claudeId}.jsonl`)), told);
+    assert.deepEqual(claude, { files: 0, processes: 0, statements: STATEMENTS.resumeLost });
+    as("codex", codexId);
+    const codex = await counted(async () => (told = await toldResumeLost(r.hub, key)));
+    assert.ok(told.includes(join(roots.codex, "2026/11/02", `rollout-2026-11-02T10-00-00-${codexId}.jsonl`)), told);
+    assert.deepEqual(codex, { files: 0, processes: 0, statements: STATEMENTS.resumeLost });
+    // None on the machine: told without one.
+    as("claude", "0b7c2f6e-3333-4c2a-9d3e-cccccccccccc");
+    assert.ok(!(await toldResumeLost(r.hub, key)).includes(roots.claude));
   } finally {
     await r.close();
   }

@@ -4,7 +4,7 @@
 // own directories, the station's repositories and the agents' home, its links followed first. On macOS nothing in a
 // folder macOS protects is looked at (station/src/ops/places.ts `realOutside`, station/src/drive/fs.ts
 // `protectedPlace`). What only the station's process knows comes with the read (`env`: its HOME, its home directory,
-// whether macOS's folder permissions apply), and its words (`words`), and the time (`now`), which this clock is not.
+// whether macOS's folder permissions apply), and the time (`now`), which this clock is not.
 
 ///|
 /// sessions.ts `listed`: the files git has of each repository, by its directory, as last listed (kept a minute).
@@ -407,8 +407,8 @@ fn mime(env : Env, path : String) -> String {
 /// sessions.ts `sessionPlace`.
 pub fn session_place(db : @sql.Db, host : @host.Host, data : String, sep : String, ask : Json) -> Json raise {
   let args = ask.value("args").unwrap_or(Json::null())
-  let words = args.value("words").unwrap_or(Json::null())
-  let word = (k : String) => match words.value(k) { Some(String(s)) => s; _ => k }
+  // (refused by the key of its words: the client says them, core-ts station/requests.ts `httpError`)
+  let word = (k : String) => "station.files." + k
   let given = args.value("env").unwrap_or(Json::null())
   let env : Env = {
     host,

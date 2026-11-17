@@ -50,3 +50,33 @@ test "a page's list asked to bring a block with what it holds of a go-to's, that
   let plain = ls_brought(true, fn(p) { p.bring(15) })
   assert_true(plain == rc_none || plain >= ls_shows, msg="not asked: its top at \{plain}")
 }
+
+///|
+test "a page's list asked to bring what a block marks sought a line under its top: that line there, low in the block or high, in the one fill that measures it" {
+  // (900 down a block taller than what shows: the line marked 120 under the list's top)
+  let low = ls_brought(true, fn(p) { p.bring_sought(15, under=120.0) })
+  assert_true((low - 120.0).abs() < 1.0, msg="low: its top at \{low}")
+  // (100 down it: there too, not the block's top)
+  let high = ls_brought(false, fn(p) { p.bring_sought(15, under=120.0) })
+  assert_true((high - 120.0).abs() < 1.0, msg="high: its top at \{high}")
+  // (at the list's top, under nothing)
+  let top = ls_brought(true, fn(p) { p.bring_sought(15) })
+  assert_true(top.abs() < 1.0, msg="at the top: its top at \{top}")
+}
+
+///|
+test "a page's list asked to bring a block says it is asking till the layout that does it" {
+  let place : Ref[@view.ListPlace[Int]?] = Ref(None)
+  let asked = Ref(false)
+  let before = Ref(true)
+  ls_brought(true, fn(p) {
+    before.val = p.asking()
+    p.bring_sought(15)
+    asked.val = p.asking()
+    place.val = Some(p)
+  })
+  |> ignore
+  assert_true(!before.val, msg="asked nothing: not asking")
+  assert_true(asked.val, msg="asking once asked")
+  assert_true(!place.val.unwrap().asking(), msg="done in the layout after: asking no more")
+}

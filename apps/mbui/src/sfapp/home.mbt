@@ -63,10 +63,12 @@ fn nav_button(
 }
 
 ///|
-/// The filter's menu chosen on Home: a filter its list, 已归档 its page.
-fn home_filter_go(src : Source, w : Workspace, f : String) -> Unit {
+/// The filter's menu chosen on Home: a filter its list, 已归档 its page; on the board (`board`), as the board's menu has
+/// it (sfpages' board_filter_go).
+fn home_filter_go(src : Source, w : Workspace, f : String, board? : Bool = false) -> Unit {
   match f {
     "archive" => open_page(Archived)
+    _ if board => @sfpages.board_filter_go(src, w, f, fn() { open_page(Archived) })
     _ => @sfpages.set_filter(src, w, f)
   }
 }

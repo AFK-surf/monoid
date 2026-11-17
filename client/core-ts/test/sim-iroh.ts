@@ -784,7 +784,7 @@ export class SimNet {
   /// Dials whose handshake is still going: neither done nor given up (`SimEndpoint.connect`).
   dialing = 0;
   readonly #relays = new Map<string, { device: Leg; station: Leg }>();
-  /// Entries (cloud relays.ts RELAY_ENTRIES): a URL on one relay's machine taking what comes to it on to another relay.
+  /// Entries (cloud relays.ts `relay_entries`): a URL on one relay's machine taking what comes to it on to another relay.
   readonly #entries = new Map<string, string>();
   /// Where each endpoint went: by endpoint, then relay (the one an entry goes on to), the URLs it went there through.
   readonly #onto = new Map<SimEndpoint, Map<string, Set<string>>>();

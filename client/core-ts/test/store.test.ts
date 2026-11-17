@@ -375,6 +375,47 @@ test("an_invalidated_topic_is_computed_once_as_it_goes_out", async () => {
   assert.deepEqual(host.takeEmitted(), []);
 });
 
+test("a_topic_of_words_typed_let_go_of_is_made_again_only_as_it_is_asked_again", async () => {
+  // (each letter typed in the `@` menu a chatSearch of every chat, made again at every change of any while kept a
+  // minute: a new chat's send waited behind them, 2026-11-17)
+  const { host, store, source, pass } = setup();
+  const typed = (query: string): Topic => ({ topic: "chatSearch", scope: "ws", query, limit: 8, elsewhere: true });
+  const chats: Topic = { topic: "chats", scope: "ws", mine: false };
+  source.computed = { ok: { items: [] } };
+  for (const q of ["", "M", "Mo", "Mon"]) {
+    store.subscribe(1, 10 + q.length, typed(q));
+    await pass(COALESCE_MS * 2);
+    if (q !== "") store.unsubscribe(1, 10 + q.length - 1);
+  }
+  store.subscribe(1, 1, chats);
+  await pass(COALESCE_MS * 2);
+  source.take();
+  host.takeEmitted();
+  // a chat changed: what reads every chat is made again, the words shown and those let go of last too, but not those
+  // let go of before
+  for (const q of ["", "M", "Mo", "Mon"]) store.invalidate(typed(q));
+  store.invalidate(chats);
+  await pass(COALESCE_MS * 2);
+  assert.deepEqual(source.take().sort(), [`compute ${topicDebug(chats)}`, `compute ${topicDebug(typed("Mo"))}`, `compute ${topicDebug(typed("Mon"))}`].sort());
+  host.takeEmitted();
+  // asked again, it is made then, and what it is now goes out
+  source.computed = { ok: { items: ["found"] } };
+  store.subscribe(1, 20, typed("M"));
+  assert.deepEqual(host.takeEmitted(), [], "nothing out of date sent as it is asked again");
+  await pass(COALESCE_MS * 2);
+  assert.deepEqual(source.take(), [`compute ${topicDebug(typed("M"))}`]);
+  assert.deepEqual(host.takeEmitted(), [[1, value(20, { items: ["found"] })]]);
+  // one that reads no words is made again as it changes, let go of or not
+  const page: Topic = { topic: "overview", station: "ws/st" };
+  store.subscribe(1, 30, page);
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 30);
+  source.take();
+  store.invalidate(page);
+  await pass(COALESCE_MS * 2);
+  assert.deepEqual(source.take(), [`compute ${topicDebug(page)}`]);
+});
+
 test("topics_changed_together_go_out_together_in_order", async () => {
   const { host, store, pass } = setup();
   const session: Topic = { topic: "session", station: "ws/st", key: "k" };

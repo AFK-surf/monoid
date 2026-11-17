@@ -243,10 +243,11 @@ fn lines_shown() -> @ui.Tester {
 
 ///|
 /// Shapes (Ctx::shapes, scene.mbt's kind 11) in a window 160 by 160 at scale 2, on white (scripts/chk shapes reads its
-/// picture): a red square 60 across at (10, 10) with a hole 20 across in its middle, its outline going back (the
-/// nonzero rule); a blue one at (90, 10) with its middle's outline going the same way, filled by the even-odd rule (a
-/// hole too); a blue line from (10, 100) to (70, 100) and down to (70, 150), 6 wide; a red disc about (120, 125) of
-/// radius 25.
+/// picture): 14,000 segments in a small disc at (80, 80) first so the shapes checked after it stand past signed 16-bit
+/// `mediump int` texel indices (`(14000 / 6) * 15 = 35000 > 32767`) in `#version 300 es` fragment shaders; then a red
+/// square 60 across at (10, 10) with a hole 20 across in its middle, its outline going back (the nonzero rule); a blue
+/// one at (90, 10) with its middle's outline going the same way, filled by the even-odd rule (a hole too); a blue line
+/// from (10, 100) to (70, 100) and down to (70, 150), 6 wide; a red disc about (120, 125) of radius 25.
 fn shapes_shown() -> @ui.Tester {
   let red = 0xFF3B30FFL
   let blue = 0x1559C4FFL
@@ -257,22 +258,31 @@ fn shapes_shown() -> @ui.Tester {
       ([x, y, x + s, y, x + s, y + s, x, y + s], true)
     }
   }
+  let tiny = []
+  for k in 0..<500 {
+    let a = k.to_double() * 2.0 * 3.141592653589793 / 500.0
+    tiny.push(80.0 + 1.5 * @dmath.cos(a))
+    tiny.push(80.0 + 1.5 * @dmath.sin(a))
+  }
   let disc = []
   for k in 0..<64 {
     let a = k.to_double() * 2.0 * 3.141592653589793 / 64.0
     disc.push(120.0 + 25.0 * @dmath.cos(a))
     disc.push(125.0 + 25.0 * @dmath.sin(a))
   }
+  let all = []
+  for _ in 0..<28 {
+    all.push(@ui.shape_of([(tiny, true)], fill=blue))
+  }
+  all.push(@ui.shape_of([square(10.0, 10.0, 60.0, false), square(30.0, 30.0, 20.0, true)], fill=red))
+  all.push(@ui.shape_of([square(90.0, 10.0, 60.0, false), square(110.0, 30.0, 20.0, false)], fill=blue, even_odd=true))
+  all.push(@ui.shape_of([([10.0, 100.0, 70.0, 100.0, 70.0, 150.0], false)], stroke=blue, width=6.0))
+  all.push(@ui.shape_of([(disc, true)], fill=red))
   let t = @ui.Tester::new(
     fn(c) {
       c.box(w=Fill(1.0), h=Fill(1.0), bg=0xFFFFFFFFL, align=AStart, fn() {
         c.shapes(
-          [
-            @ui.shape_of([square(10.0, 10.0, 60.0, false), square(30.0, 30.0, 20.0, true)], fill=red),
-            @ui.shape_of([square(90.0, 10.0, 60.0, false), square(110.0, 30.0, 20.0, false)], fill=blue, even_odd=true),
-            @ui.shape_of([([10.0, 100.0, 70.0, 100.0, 70.0, 150.0], false)], stroke=blue, width=6.0),
-            @ui.shape_of([(disc, true)], fill=red),
-          ],
+          all,
           w=Px(160.0),
           h=Px(160.0),
         )
@@ -392,6 +402,22 @@ fn partial_shown(phase : Double) -> @ui.Tester {
           |> ignore
         })
         |> ignore
+        // (a drop of liquid glass over the red and blue, lit where the pointer is over it, that moving: what it reads
+        // round it, bent, spread and drawn into its lip, is within what its capture keeps)
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), pl=30.0, pt=14.0, align=AStart, fn() {
+            c.box(
+              w=Px(130.0),
+              h=Px(44.0),
+              radius=22.0,
+              glass=@ui.Glass::liquid(refraction=15.0, chroma=0.24, spot=Some((24.0 + phase * 160.0, 12.0))),
+              fn() {  },
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },
@@ -416,7 +442,8 @@ test "a spinner's two moments' draw lists printed when asked (MBUI_DL_PRINT=part
 ///|
 /// What the renderers draw in strips (src/host/bands.h), in a window 240 by 300 at scale 3: a card's shadow under its
 /// ground, a ground in nine pieces (its middle flat), a ring that is only a border, a ground in a rounded clip (whole),
-/// and a sheet of frosted glass whose shadow is only outside it. Drawn in strips and drawn whole (mbui-render with
+/// a sheet of frosted glass whose shadow is only outside it, and a drop of liquid glass over the blue ground and the
+/// red, lit where the pointer is (its samples crossing the strips' edges). Drawn in strips and drawn whole (mbui-render with
 /// MBUI_STRIPS=0), the same picture to the byte (scripts/render_offscreen.sh, render_check.sh, render_linux.sh,
 /// render_windows.sh).
 fn strips_shown() -> @ui.Tester {
@@ -450,6 +477,20 @@ fn strips_shown() -> @ui.Tester {
           |> ignore
         })
         |> ignore
+        c.layer(fn() {
+          c.box(w=Fill(1.0), h=Fill(1.0), pl=40.0, pt=150.0, align=AStart, fn() {
+            c.box(
+              w=Px(160.0),
+              h=Px(52.0),
+              radius=26.0,
+              glass=@ui.Glass::liquid(refraction=15.0, chroma=0.24, spot=Some((40.0, 10.0))),
+              fn() {  },
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },
@@ -475,4 +516,92 @@ test "what the renderers draw in strips: a shadow under a ground, one only outsi
   let t = strips_shown()
   let shadows = t.drawn_shadows()
   assert_eq(shadows.length(), 2)
+}
+
+///|
+/// Words the hosts' text is weighed by, side by side (scripts/render_words.sh): the same lines dark on a light ground
+/// and light on a dark one, each at the size and weight an app's sidebar, title, body, a message's head and a control
+/// sets them in (Han, Latin and the two mixed), in a window 720 by 380 at 1 (the script draws it at 1, 1.5 and 2).
+let words_lines : Array[(Double, Int, String)] = [
+  (17.0, 600, "整理发布清单"),
+  (13.0, 500, "整理发布清单 新建对话"),
+  (13.0, 400, "盯着 CI，绿了告诉我"),
+  (14.0, 400, "高度先按 90 估，滚动时再量"),
+  (14.0, 600, "Claude 30 分钟前"),
+  (13.0, 500, "Accept terms"),
+  (12.0, 400, "显示 Accept terms 日目显"),
+  (14.0, 400, "Ana slack a 0123456789"),
+  (20.0, 400, "同便高度 Rounded oval"),
+  (13.0, 400, "整理发布清单 新建对话"),
+]
+
+///|
+fn words_shown() -> @ui.Tester {
+  let column = fn(c : @ui.Ctx, bg : Int64, ink : Int64) {
+    c.box(w=Px(360.0), h=Fill(1.0), bg~, pl=16.0, pt=12.0, gap=8.0, align=AStart, fn() {
+      for l in words_lines {
+        let (size, weight, s) = l
+        c.text(s, size~, weight~, color=ink, wrap=false) |> ignore
+      }
+    })
+    |> ignore
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      c.box(dir=Row, w=Fill(1.0), h=Fill(1.0), fn() {
+        column(c, 0xFFFFFFFFL, 0x1C1C1EFFL)
+        column(c, 0x1C1C1EFFL, 0xF2F2F7FFL)
+      })
+      |> ignore
+    },
+    w=720.0,
+    h=380.0,
+    scale=1.0,
+  )
+  t.draw()
+  t
+}
+
+///|
+test "words' draw list printed when asked (MBUI_DL_PRINT=words: scripts/render_words.sh)" {
+  if node_env("MBUI_DL_PRINT") == "words" {
+    println("DLBEGIN")
+    println(words_named(words_shown().drawlist()))
+    println("DLEND")
+  }
+}
+
+///|
+/// The words' draw list with each line drawn whole, named by its words (a Tester's fake text names none): the first
+/// glyph of each line (its glyphs one after the other on one row) made the whole line's (cluster -1, as a word of a
+/// joining script is drawn), the rest of it left out, the light column's lines then the dark one's. So each host draws
+/// a line as its own text sets it, wherever the Tester's fake words fell.
+fn words_named(dl : String) -> String {
+  let named : Array[(Double, Int, String)] = [..words_lines, ..words_lines]
+  let out = StringBuilder()
+  let mut k = 0
+  let mut row = ""
+  for v in dl.split("\n") {
+    let line = v.to_owned()
+    let t = line.split(" ").map(fn(x) { x.to_owned() }).to_array()
+    if t.length() > 13 && t[0] == "i" && t[6] == "1" {
+      if t[2] != row && k < named.length() {
+        row = t[2]
+        t[13] = "\{k + 1}"
+        out.write_string(t.join(" ") + "\n")
+        k = k + 1
+      }
+    } else if t.length() > 0 && t[0] == "glyph" {
+      ()
+    } else if line != "" {
+      out.write_string(line + "\n")
+    }
+    if t.length() > 0 && t[0] == "clear" {
+      for j, g in named {
+        let (size, weight, s) = g
+        out.write_string("glyph \{j + 1} \{size} \{weight} 0 -1 \"\{s}\"\n")
+      }
+    }
+  }
+  out.to_string()
 }

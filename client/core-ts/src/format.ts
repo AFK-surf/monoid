@@ -196,7 +196,9 @@ export function windowMark(label: string): [string, number] {
 }
 
 /// When two windows share the same group suffix (5 小时 · Gemini and 每周 · Gemini), add the length mark so their chips
-/// do not both read "Gemini", and keep each group's windows together in the order the groups appear.
+/// do not both read "Gemini", and keep each group's windows together in the order the groups appear. On a multi-pool
+/// allowance (every window carrying a ` · ` suffix, such as Gemini, Claude / GPT and Pro's Argon week), single-window
+/// model groups carry their length mark and group order the same way (`Argon W` after the pools).
 export function windowMarks(labels: string[]): [string, number][] {
   const raw = labels.map(windowMark);
   const counts = new Map<string, number>();
@@ -205,9 +207,15 @@ export function windowMarks(labels: string[]): [string, number][] {
   for (const [m] of raw) {
     if ((counts.get(m) ?? 0) > 1 && !groups.has(m)) groups.set(m, groups.size);
   }
+  if (groups.size > 0 && labels.every((l) => l.includes(" · "))) {
+    groups.clear();
+    for (const [m] of raw) {
+      if (!groups.has(m)) groups.set(m, groups.size);
+    }
+  }
   return labels.map((label, i) => {
     const [m, order] = raw[i]!;
-    if ((counts.get(m) ?? 0) <= 1) return [m, order];
+    if (!groups.has(m)) return [m, order];
     const of = label.indexOf(" · ");
     if (of < 0) return [m, order];
     const [len] = windowMark(label.slice(0, of));
@@ -361,6 +369,9 @@ export function slackAppUrl(team: string, channel: string, ts: string, threadTs:
   return `slack://channel?team=${e(team)}&id=${e(channel)}&message=${e(ts)}${reply}`;
 }
 
+/// A Slack team's id (`T…`, an Enterprise Grid's `E…`), told apart from a connect's own id.
+const SLACK_TEAM = /^[TE][A-Z0-9]{6,}$/;
+
 /// A thread a history entry came from or went to: its name, where it is, and the way there (`app`: into Slack's app,
 /// at `message` when it is one of the thread's, else at its root).
 export function place(threads: unknown[], address: string, offsetMin: number, workspaces: Map<string, SlackWorkspace>, message: string | null = null): unknown {
@@ -381,9 +392,13 @@ export function place(threads: unknown[], address: string, offsetMin: number, wo
   const team = teamId !== null ? workspaces.get(teamId) : undefined;
   const teamName = team && team.name !== "" ? team.name : null;
   const named = teamName === null ? n : n.startsWith("#") ? `${teamName}${n}` : `${teamName} ${n}`;
-  const url = team?.url ? `${team.url.replace(/\/+$/, "")}/archives/${channel}/p${ts.replaceAll(".", "")}` : null;
-  // (a surface names its team once the station knows it: "slack:<connect id>" before, which no workspace is known by)
-  const app = team !== undefined ? slackAppUrl(teamId!, channel, message || ts, ts) : null;
+  // (a surface names its team once the station knows it: "slack:<connect id>" before, which no workspace is known by.
+  // A team this station has no connect of, as a thread of a connect lent by another station of the workspace, is still
+  // reached by its id: Slack's web client by the team's id, its app by the same)
+  const known = team !== undefined || (teamId !== null && SLACK_TEAM.test(teamId));
+  const url = team?.url ? `${team.url.replace(/\/+$/, "")}/archives/${channel}/p${ts.replaceAll(".", "")}`
+    : known ? `https://app.slack.com/client/${teamId}/${channel}/thread/${channel}-${ts}` : null;
+  const app = known ? slackAppUrl(teamId!, channel, message || ts, ts) : null;
   return { name: named, surface: "slack", session, url, ...(app !== null ? { app } : {}) };
 }
 
@@ -464,10 +479,10 @@ export function efforts(runtime: string): string[] {
 }
 
 /// The runtimes a chat can run on, in the order they are offered.
-export const RUNTIMES = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy"];
+export const RUNTIMES = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"];
 
 /// The runtimes by name, the same in every language.
-const RUNTIME_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", dsh: "DeepSeek Harness", grok: "Grok Build", cursor: "Cursor", devin: "Devin", hermes: "Hermes Agent", agy: "Antigravity CLI" };
+const RUNTIME_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", dsh: "DeepSeek Harness", grok: "Grok Build", cursor: "Cursor", devin: "Devin", hermes: "Hermes Agent", agy: "Antigravity CLI", pi: "Pi" };
 
 export function runtimeLabel(runtime: string): string {
   return RUNTIME_NAMES[runtime] ?? "Claude Code";
@@ -476,7 +491,7 @@ export function runtimeLabel(runtime: string): string {
 /// The runtimes by their short names (the app's accounts page's tags): said where how a model runs follows its name in
 /// a model control's panel, and only there; everywhere else, its control and its menu among them, the full name, where
 /// the short one is learned from (the user, 2026-11-10: 「agent runtime 可以用缩写，比如 CC，DSH」).
-const RUNTIME_SHORT: Record<string, string> = { claude: "CC", codex: "Codex", dsh: "DSH", grok: "GROK", cursor: "Cursor", devin: "Devin", hermes: "Hermes", agy: "AGY" };
+const RUNTIME_SHORT: Record<string, string> = { claude: "CC", codex: "Codex", dsh: "DSH", grok: "GROK", cursor: "Cursor", devin: "Devin", hermes: "Hermes", agy: "AGY", pi: "Pi" };
 
 export function runtimeShort(runtime: string): string {
   return RUNTIME_SHORT[runtime] ?? "CC";
@@ -496,7 +511,7 @@ export function connection(state: unknown, kind?: string | null): [string, strin
     case "disabled":
       return [said("core-logic.format.connection.disabled"), "offline"];
     default:
-      return [said(kind === "feishu" ? "core-logic.format.connection.no_feishu" : kind === "comma" ? "core-logic.format.connection.no_comma" : "core-logic.format.connection.no_slack"), "offline"];
+      return [said(kind === "feishu" ? "core-logic.format.connection.no_feishu" : kind === "comma" ? "core-logic.format.connection.no_comma" : kind === "group" ? "core-logic.format.connection.no_group" : "core-logic.format.connection.no_slack"), "offline"];
   }
 }
 

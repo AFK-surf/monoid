@@ -323,7 +323,7 @@ test "a chat's page made as nodes, 小屏 and 大屏: a quote with a comment sen
 }
 
 ///|
-test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an empty comment sent: in its card's tile in the frame before the press, at its place in the row, whole at full ink, in every frame after it" {
+test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an empty comment sent: in its card's tile in the frame before the press, one picture whole at full ink in every frame after it, growing from the tile's size to its own in the row, never back (quote_image_wbtest's flight)" {
   for screen in ss_screens {
     let name = "seen.png"
     let file : Json = { "name": Json::string(name), "path": Json::string("/w/uploads/" + name), "size": 120, "width": 1600, "height": 900, "owner": "s-c1" }
@@ -340,11 +340,13 @@ test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an e
     let rest = seen[seen.length() - 1]
     assert_true(rest.length() == 1 && rest[0].0 > 60.0, msg="\{screen.0}: at rest \{Repr(rest)}")
     assert_true(seen[0].length() == 1 && (seen[0][0].0 - 56.0).abs() < 0.5, msg="\{screen.0}: before the press \{Repr(seen[0])}")
+    // (it flies from its tile to its place, as the old page's does: no frame without it, none at part ink, none smaller
+    // than the frame before)
     for i in 1..<seen.length() {
       let s = seen[i]
       assert_true(
-        s.length() == 1 && (s[0].0 - rest[0].0).abs() < 0.01 && s[0].1 > 0.999,
-        msg="\{screen.0}, frame \{i}: \{Repr(s)}, \{Repr(rest)} at rest",
+        s.length() == 1 && s[0].0 >= seen[i - 1][0].0 - 0.01 && s[0].0 <= rest[0].0 + 0.01 && s[0].1 > 0.999,
+        msg="\{screen.0}, frame \{i}: \{Repr(s)} after \{Repr(seen[i - 1])}, \{Repr(rest)} at rest",
       )
     }
   }

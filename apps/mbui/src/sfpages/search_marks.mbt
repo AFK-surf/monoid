@@ -204,5 +204,5 @@ fn marker_scribble(w : Double, h : Double, seed : Int) -> Array[Double] {
 /// Yellow on the light theme, orange in the dark: translucent so the message's own ink stays legible (its words, links
 /// and code 4.5 to 1 and more on it).
 fn find_marker_ink(dark : Bool) -> Int64 {
-  if dark { 0xFF700047L } else { 0xFFCC00D9L }
+  @sf.find_marker_bg(dark)
 }

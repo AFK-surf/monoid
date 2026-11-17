@@ -4,6 +4,7 @@ package "mbui/halt"
 // Values
 pub fn said(String, SourceLoc) -> String
 
+#callsite(autofill(loc))
 pub fn[T] saying(String, loc~ : SourceLoc) -> T
 
 // Errors

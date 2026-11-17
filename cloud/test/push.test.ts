@@ -375,6 +375,28 @@ test("signing a session out takes its registrations; the account's other session
   }
 });
 
+test("a pruned idle session no longer receives push notifications", async () => {
+  const vapid = await vapidKeys();
+  const services = pushServices();
+  const h = await harness({ vapid, push: services.answer });
+  try {
+    const { station, bobTokens } = await workspace(h);
+    const phone = "https://push.example/expired-phone";
+    const ua = await browser();
+    assert.equal((await register(h, bobTokens, "POST", { kind: "web", endpoint: phone, keys: { p256dh: ua.p256dh, auth: ua.auth } })).status, 204);
+    const account = await h.object("ACCOUNTS", bobTokens.subject);
+    await account.expire(bobTokens.session_id, "idle");
+    // Signing in another device runs the production prune path, with no push registration from that new device.
+    await h.login("bob");
+    assert.equal((await h.as(bobTokens)("GET", "/v1/me")).status, 401);
+    assert.ok(!(await account.statistics()).account.some((s: { id: string }) => s.id === bobTokens.session_id));
+    assert.deepEqual(await (await notify(h, station, [notice(["bob@example.test"])])).json(), { sent: 0 });
+    assert.equal(services.to(phone).length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("iOS devices get an APNs alert signed with the team's key, a chat's replacing the last; a token APNs no longer has is dropped", async () => {
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   const key = { keyId: "KEY1234567", teamId: "TEAM123456", key: await exportPKCS8(privateKey) };

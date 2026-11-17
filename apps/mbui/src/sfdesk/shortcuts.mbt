@@ -1,53 +1,92 @@
 // ⌘/: every shortcut, by where it works, the way to
-// change them (快捷键, sfpages shortcuts.mbt) at its foot.
+// change them (快捷键, sfpages shortcuts.mbt) at its foot, a panel of the presenters' made as nodes.
 
 ///|
-/// ⌘/: every shortcut, by where it works (the core's keymap, then those of one place,
-/// not changed here), quiet words beside each; the way to change them at its foot (the desktop app's).
-pub fn keys_dialog(c : @ui.Ctx, src : Source) -> Unit {
-  let prefs = src.topic("prefs", {}).get().value
-  // (whether it is open: the shell's, kept across builds; its close button and 更改 let it go as they are pressed)
-  let shown = wide.keys_open
-  let footer : (() -> Unit)? = if @settings.keys_changeable(prefs) {
-    Some(fn() {
-      // (the shortcuts' own page in its place)
-      @sf.button(c, @sf.t("web-main.shortcuts.change"), key="keys-dialog/change", tone=Ghost, on_press=fn() {
-        shown.set(false)
-        open_settings_at(@settings.Route::Shortcuts)
-      }) |> ignore
-    })
-  } else {
-    None
-  }
-  let d = @sf.dialog(
-    c,
-    "keys-dialog",
-    shown.get(),
-    @sf.t("web-main.shortcuts.title"),
-    close_label=@sf.t("common.close"),
-    on_close=fn() { shown.set(false) },
-    footer?,
-    fn() {
-      c.box(style=keys_sheet, fn() {
-        for g in key_lines(prefs) {
-          c.box(style=keys_group, fn() {
-            c.box(style=keys_group_head, fn() { c.text(g.0, style=keys_group_title) |> ignore }) |> ignore
-            for k in g.1 {
-              c.box(style=keys_line, flow=true, line_gap=@ui.Space::px(S1), fn() {
-                c.text(k.0, style=keys_line_words) |> ignore
-                c.text(k.1, style=keys_line_keys) |> ignore
-              })
-              |> ignore
-            }
+/// ⌘/: every shortcut, by where it works (the core's keymap, then those of one place, not changed here), quiet words
+/// beside each; the way to change them at its foot (the desktop app's). A panel of the presenters' opened by nothing
+/// (in the middle of the window; on 小屏 a sheet from its foot), made as nodes, presented from host `v` as `open` (the
+/// shell's) comes to say so, said closed as it closes for anything else (its close button, Escape, back, a press outside,
+/// 更改), closed with `v` let go.
+pub fn keys_dialog_node(v : @view.View, src : Source, open : @signals.Signal[Bool]) -> Unit {
+  let mine = Ref(0)
+  v.reacts(fn() { open.get() }, fn(on) {
+    if !on {
+      if mine.val != 0 {
+        @sf.close_presented_of(mine.val)
+        mine.val = 0
+      }
+      return
+    }
+    guard !@sf.presented_open_of(mine.val) else { return }
+    let prefs = fn() { src.topic("prefs", {}).get().value }
+    @sf.panel_nodes(
+      @sf.t("web-main.shortcuts.title"),
+      fn(b, _) { keys_sheet_node(b, prefs) },
+      from=Unanchored,
+      // (the shortcuts' own page in its place: where this app can change them)
+      foot?=if @settings.keys_changeable(@signals.untracked(prefs)) {
+        Some(fn(f : @view.View, close : () -> Unit) {
+          @sf.button_node(f, fn() { @sf.t("web-main.shortcuts.change") }, tone=Ghost, fn() {
+            close()
+            open_settings_at(@settings.Route::Shortcuts)
           })
           |> ignore
-        }
+        })
+      } else {
+        None
+      },
+      gone=fn() { open.set(false) },
+    )
+    mine.val = @sf.last_presented()
+  })
+  // (closed by anything else (all that is presented closed): said closed then)
+  v.reacts(
+    fn() { @sf.presented_open_now(mine.val) },
+    fn(shown) {
+      if !shown && mine.val != 0 {
+        mine.val = 0
+        open.set(false)
+      }
+    },
+    at_start=false,
+  )
+  v.owns(fn() {
+    if mine.val != 0 && @sf.presented_open_of(mine.val) {
+      @sf.close_presented_of(mine.val)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// What ⌘/ shows in node `parent`: each place's shortcuts (key_lines, as `prefs` says them), its title over its lines,
+/// each what it does and its keys at the line's two ends, their feet together, the keys on a line of their own under it
+/// where the line has not the room for both.
+fn keys_sheet_node(parent : @view.View, prefs : () -> Json?) -> Unit {
+  parent.box(fn(sheet) {
+    @sf.style_node(sheet, fn() { keys_sheet })
+    // (by place, each line by its place in it: what is said in two places is two lines)
+    sheet.each(fn() { key_lines(prefs()).mapi(fn(i, g) { (i, g) }) }, fn(g) { g.0 }, at_once=true, fn(gv, g) {
+      @sf.style_node(gv, fn() { keys_group })
+      gv.box(fn(h) {
+        @sf.style_node(h, fn() { keys_group_head })
+        @sf.words_node(h, fn() { g.get().1.0 }, fn() { keys_group_title }) |> ignore
       })
       |> ignore
-    },
-  )
-  shown.set(d)
+      gv.each(fn() { g.get().1.1.mapi(fn(i, k) { (i, k) }) }, fn(k) { k.0 }, at_once=true, fn(line, k) {
+        @sf.style_node(line, fn() { keys_line })
+        line.wraps(Is(Some(keys_line_gap))) |> ignore
+        @sf.words_node(line, fn() { k.get().1.0 }, fn() { keys_line_words }) |> ignore
+        @sf.words_node(line, fn() { k.get().1.1 }, fn() { keys_line_keys }) |> ignore
+      })
+    })
+  })
+  |> ignore
 }
+
+///|
+/// How far apart a line's two lines are where its keys go under what it does (S1).
+let keys_line_gap : Double = 4.0
 
 ///|
 /// What ⌘/ lists, each place's shortcuts with their keys in words: worked out as it is drawn, not while it is closed.

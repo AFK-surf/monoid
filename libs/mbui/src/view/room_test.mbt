@@ -184,3 +184,46 @@ test "by_room: every word measured again as its room is laid out, its own box ma
   t.frame(400.0, 300.0) |> ignore
   assert_eq(t.root().words_redone(), redone + 1, msg="told once, after its layout, not a fault in it")
 }
+
+///|
+// A room grown down a column under a bar of its own height (a tab under a shell's bar): how tall it is given to be is
+// told it as its width is, what it makes by that laid out in the same layout, and told again as the window is made
+// taller, in that window's one layout.
+test "Room::height: how tall it is given to be under what is over it, as the window's height changes, in one layout" {
+  let given : Ref[Double?] = Ref(None)
+  let fill : Ref[@view.NodeId?] = Ref(None)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(col) {
+        col.grow(Is(1.0)) |> ignore
+        col.box(fn(bar) { bar.height(Is(Some(40.0))) |> ignore }) |> ignore
+        col.by_room(fn(held, room) {
+          held.box(fn(f) {
+            fill.val = Some(f.id())
+            f
+            .height(By(fn() {
+              given.val = room.height()
+              room.height()
+            }))
+            .ground(Is(0xFF0000FFL))
+            |> ignore
+          })
+          |> ignore
+        })
+        .grow(Is(1.0))
+        .min_height(Is(Some(0.0)))
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(300.0, 500.0) |> ignore
+  assert_eq(given.val, Some(460.0), msg="the window's 500 less the bar's 40")
+  assert_eq(t.drawn_of(fill.val.unwrap()).map(fn(d) { (d.y, d.h) }), Some((40.0, 460.0)), msg="laid out by it in that layout")
+  let computes = t.work().computes
+  t.frame(300.0, 700.0) |> ignore
+  assert_eq(t.work().computes - computes, 1, msg="one layout for the taller window")
+  assert_eq(given.val, Some(660.0))
+  assert_eq(t.drawn_of(fill.val.unwrap()).map(fn(d) { d.h }), Some(660.0))
+}

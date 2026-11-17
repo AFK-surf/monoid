@@ -95,6 +95,18 @@ pub fn Spec::delayed(self : Spec, delay : Double) -> Spec {
 }
 
 ///|
+/// How long it holds at its start before it goes (its delay, ms).
+pub fn Spec::delay(self : Spec) -> Double {
+  match self {
+    Spring(_, _, _, d) => d
+    Tween(_, _, d) => d
+    Moved(_, _, d) => d
+    Snap(d) => d
+    Motion(tr) => tr.delay
+  }
+}
+
+///|
 /// How long a Move takes from `from` to `to` (its delay not counted).
 fn moved_ms(per : Double, over : Double, from : Double, to : Double) -> Double {
   @ui.move_ms(if over >= 0.0 { over } else { (to - from).abs() * per })

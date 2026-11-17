@@ -241,6 +241,42 @@ test("the_relays_page_has_a_card_of_the_directorys_own_load_its_calls_an_hour_an
   assert.equal(relays({ relays: [] }, null, now, 480).relays.length, 0);
 });
 
+test("the_relays_page_keeps_the_clouds_list_each_relay_removable_but_its_own_with_how_it_came_its_ways_in_and_the_tokens_not_used", () => {
+  const now = NOW - (NOW % 3600);
+  const seen = { at: null, now: null, open: null, load1: null, today: { bytes: 0, frames: 0 }, day: {}, week: {} };
+  const answer = {
+    relays: [
+      { ...seen, url: "https://app.still.fail", name: "Cloudflare" },
+      { ...seen, url: "https://47.76.247.168", name: "香港" },
+      { ...seen, url: "https://tokyo.example:8445", name: "东京" },
+      { ...seen, url: "https://seoul.example", name: "首尔" },
+    ],
+    registry: {
+      own: "https://app.still.fail",
+      relays: [
+        { url: "https://47.76.247.168", name: "香港", target: null, added_at: now - 99, added_by: "config", enrolled: false },
+        { url: "https://39.105.157.122/", name: "北京", target: "https://47.76.247.168", added_at: now - 99, added_by: "config", enrolled: false },
+        { url: "https://tokyo.example:8445", name: "东京", target: null, added_at: now - 9, added_by: "token:ops@x.io", enrolled: true },
+        { url: "https://seoul.example", name: "", target: null, added_at: now - 9, added_by: "ops@x.io", enrolled: false },
+      ],
+      tokens: [{ name: "大阪", url: null, target: null, expires_at: now + 3 * 3600 }, { name: "首尔2", url: "https://seoul2.example", target: null, expires_at: now + 600 }],
+    },
+  };
+  const v = relays(answer, null, now, 480);
+  assert.equal(v.manage, true);
+  assert.deepEqual(v.relays.map((r: J) => [r.name, r.removable, r.how?.join(" · ")]), [
+    ["Cloudflare", false, "云自带的中继，不能删除"],
+    ["香港", true, "47.76.247.168 · 从部署配置导入 · 负载按来源 IP 认定"],
+    ["东京", true, "tokyo.example:8445 · 用令牌接入"],
+    ["首尔", true, "seoul.example · ops@x.io 添加 · 负载按来源 IP 认定"],
+  ]);
+  assert.deepEqual(v.relays[1].entries, [{ url: "https://39.105.157.122/", name: "北京", host: "39.105.157.122" }]);
+  assert.deepEqual(v.tokens.map((k: J) => [k.name, k.line]), [["大阪", "地址由 relay 接入时自报 · 3 小时后过期"], ["首尔2", "seoul2.example · 10 分钟后过期"]]);
+  // A still.fail cloud from before says nothing of its list: nothing to keep from here.
+  const before = relays({ relays: answer.relays }, null, now, 480);
+  assert.deepEqual([before.manage, before.tokens, before.relays.map((r: J) => r.removable)], [false, [], [false, false, false, false]]);
+});
+
 test("a_bug_making_a_view_is_thrown_for_the_store_to_report_and_a_core_error_is_the_views", () => {
   const view = (list: string, id?: string) => ({ topic: "adminItem", account: "a", list, ...(id ? { id } : {}) });
   // The page's own error (no such user) is the view's value.

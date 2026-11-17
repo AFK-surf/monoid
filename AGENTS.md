@@ -15,7 +15,7 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   on the device, the views. The UIs only render it. `client/shell` (Rust) is its IO in the native apps,
   `client/iroh-wasm` iroh for the browser, `client/i18n/catalog` the words of every part (zh and en, the same keys).
 - `apps/mbui/`: the app on every platform (Android, iOS, macOS, Windows, Linux, and the web), in MoonBit on mbui, the
-  UI framework at `libs/mbui`.
+  UI framework at `libs/mbui`. `libs/comma-ui`: Comma's design system as a component library on mbui, of its own.
 - `libs/base/`: the first of the base in MoonBit, of no program (the Rust shell's binding, the mesh's wire and its
   device side). Nothing here is built on it yet.
 - `web/`: the web's host of that app, a few pages of its own (Preact) and the design system `web/ui`.
@@ -46,6 +46,11 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   Chinese (`修复：…`, `新增：…`, `改进：…`); `Changelog-parts:` where they see it (`station`, `web`, `android`,
   `desktop`, `cloud`); `Fixes: FB-<n>` a bug report it fixes. The apps' changelog and each stable release's notes
   are written from these alone (`scripts/changelog.ts`); a change with nothing for people writes none.
+- A change to what is not yet everyone's (`client/core-ts/src/features.ts`) says so in that line: one people on stable
+  cannot have (a `beta` feature, a `betaOnly` experimental one) adds `Changelog-channel: beta`, kept out of the stable
+  release's notes; one of an experimental feature names where it is turned on (`新增：实验性功能「对话列表看板视图」中，…`).
+  The change that opens it to stable writes its line for stable then. A line already written otherwise is said again in
+  `docs/changelog-notes.json`.
 - `sh scripts/check.sh full origin/main..HEAD` checks what the range changed (the git hooks run its quick part);
   `STILLFAIL_CHECK_PART` narrows it. Run the part you changed before a PR; the whole of it is CI's.
 - A fix that cannot wait a day for the next stable release (a crash, data lost, people locked out, a release that does

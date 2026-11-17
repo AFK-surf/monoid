@@ -186,6 +186,15 @@ export class VaultStore {
     return row ? { value: JSON.parse(row.body) as Item, body: row.body } : null;
   }
 
+  /// What a move put here, taken back (move/vault.ts): an item, a vault with its items, no version kept.
+  forgetItem(ws: string, vault: string, id: string): void {
+    this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ? AND id = ?").run(ws, vault, id);
+  }
+  forgetVault(ws: string, id: string): void {
+    this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(ws, id);
+    this.#db.prepare("DELETE FROM vaults WHERE ws = ? AND id = ?").run(ws, id);
+  }
+
   putItem(i: Item): void {
     this.#db.prepare("INSERT INTO vault_items (ws, vault, id, version, body) VALUES (?, ?, ?, ?, ?) ON CONFLICT (ws, vault, id) DO UPDATE SET version = excluded.version, body = excluded.body").run(i.ws, i.vault, i.id, i.version, JSON.stringify(i));
   }

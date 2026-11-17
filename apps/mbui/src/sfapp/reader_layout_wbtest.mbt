@@ -115,7 +115,7 @@ test "小屏: the layout a sheet half the window tall, each of its words and con
 test "小屏: the layout's controls pressed where they are drawn: the size, a paper, the lines, the face, the indent; Escape lets the sheet go" {
   let t = layout_phone()
   let r = layout_reading()
-  assert_true(r.panel == @sf.ReaderPanel::Layout)
+  assert_true(r.panel.get() == @sf.ReaderPanel::Layout)
   let was = layout_style()
   // A+: a size more, said in its row
   let (x, y) = layout_middle(t, Button, "增大字号")
@@ -144,7 +144,7 @@ test "小屏: the layout's controls pressed where they are drawn: the size, a pa
   assert_false(layout_style().indent)
   // Escape: the panel closed at once, the sheet sinking away, then gone
   t.key(@ui.key_escape)
-  assert_true(r.panel == @sf.ReaderPanel::NoPanel)
+  assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
   t.run_for(sheet_way_ms(t))
   assert_true(t.find("背景") is None)
   t.assert_idle()
@@ -204,7 +204,7 @@ test "wide: the layout docked at the right under the bar, each of its words and 
 test "wide: the layout's controls pressed where they are drawn: the size, a paper, the margins dragged and stepped by the keys, the face, the indent; Esc closes it, then goes back; its close closes it" {
   let t = layout_wide()
   let r = layout_reading()
-  assert_true(r.panel == @sf.ReaderPanel::Layout)
+  assert_true(r.panel.get() == @sf.ReaderPanel::Layout)
   let was = layout_style()
   let (x, y) = layout_middle(t, Button, "减小字号")
   t.tap(x, y)
@@ -238,16 +238,16 @@ test "wide: the layout's controls pressed where they are drawn: the size, a pape
   assert_false(layout_style().indent)
   // Esc: closed at once; again: back to the folder
   t.key(@ui.key_escape)
-  assert_true(r.panel == @sf.ReaderPanel::NoPanel)
+  assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
   assert_true(t.find("背景") is None)
   // opened again, its close closes it
   t.tap(desk_tool_x(1), 22.0)
   t.run_for(@ui.move_most_ms)
-  assert_true(r.panel == @sf.ReaderPanel::Layout)
+  assert_true(r.panel.get() == @sf.ReaderPanel::Layout)
   let (x, y) = layout_middle(t, Button, "关闭")
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(r.panel == @sf.ReaderPanel::NoPanel)
+  assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
   assert_true(t.find("背景") is None)
   t.key(@ui.key_escape)
   assert_false(app.nav.top() is DriveRead(_))
@@ -315,8 +315,7 @@ test "wide: the layout of a chat's Markdown answers its controls, is under a lat
 test "小屏: the layout of a chat's Markdown answers its controls and closes" {
   let t = preview_tester("md", platform=2)
   t.run_for(@sf.reader_place_ms)
-  let (x, y, w, h) = t.get(Button, has="发布前要做的").rect
-  t.tap(x + w / 2.0, y + h / 2.0)
+  t.tap_text("发布前要做的")
   t.run_for(@ui.move_most_ms)
   let (x, y) = layout_middle(t, Button, "排版")
   t.tap(x, y)

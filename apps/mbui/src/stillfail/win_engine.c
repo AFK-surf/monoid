@@ -5,12 +5,14 @@
 #include "../host/win_station.c"
 #include "../host/station_calls.h"
 
+extern int sf_terminal_linked;
+
 // main.mbt asks it before it starts the core (core_engine.m has the same on Apple's systems): what keeps this file in the
-// link, and, here, where the engine is handed over.
+// link, and, here, where the engine is handed over (and terminal_ghostty.c's object pulled out of the package archive).
 int32_t mb_stillfail_core_linked(void) {
   use_hermes_engine();
   sf_app_calls_use();
-  return 1;
+  return sf_terminal_linked;
 }
 
 // What still.fail's own host is told (reports.mbt: crash reports, the bar's timing): only Android's takes it

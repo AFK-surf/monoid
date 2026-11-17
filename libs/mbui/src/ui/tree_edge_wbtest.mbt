@@ -202,3 +202,37 @@ test "a node with no ground of its own, only an edge, round what it holds, turne
   inst_owners.track = false
   assert_eq((about, own), ((120.0, 112.0), true), msg="\{ring}")
 }
+
+///|
+test "a ground lit only now and then (View::ground_lit): nothing drawn while it says none, drawn in its colour and shape once lit, as laid out again once it says none" {
+  let t = Tester::new(fn(_c) {  })
+  let lit = @signals.signal(false)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .offset(Is((0.0, 100.0)))
+      .width(Is(Some(300.0)))
+      .height(Is(Some(40.0)))
+      .ground_lit(
+        By(fn() {
+          if lit.get() {
+            (0x2050A0FFL, { dx: 0.0, dy: -10.0, dw: 0.0, dh: 30.0, corners: None })
+          } else {
+            (0L, @view.ground_as_laid)
+          }
+        }),
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let blue = fn() { t.drawn_rects().filter(fn(r) { r.4 == 0x2050A0FFL }) }
+  assert_eq(blue().length(), 0, msg="none said")
+  lit.set(true)
+  t.draw()
+  assert_eq(blue().map(fn(r) { (r.0, r.1, r.2, r.3) }), [(0.0, 90.0, 300.0, 70.0)], msg="lit")
+  lit.set(false)
+  t.draw()
+  assert_eq(blue().length(), 0, msg="none said again")
+}

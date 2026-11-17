@@ -69,7 +69,7 @@ test "an immediate layout is still at the event's time when the drawn clock is r
   t.frame(300.0, 300.0, now=50.0) |> ignore
   t.at(100.0)
   t.cause_at = 50.0
-  t.laid_now()
+  t.laid_now() |> ignore
   assert_eq(t.nodes[id.val.unwrap().at].lw, 30.0, msg="the event finds the layout at its own time")
   assert_eq(t.drawn_at(), 100.0, msg="the drawn clock was restored")
   t.cause_at = -1.0

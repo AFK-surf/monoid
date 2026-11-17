@@ -64,6 +64,10 @@ priv struct Config {
   reset_by_hand : Array[String]
   // what names an app built on this module (`app_words`: regular expressions), found outside comments (app-word)
   app_words : Array[String]
+  // where a scoped computed (`signals.scoped_ok`) and a bare effect (`signals.effect_ok`) may be made: the signals' own,
+  // the framework's parts that read with no reader, an app's sources (scoped-computed, raw-effect)
+  scoped_ok : Array[String]
+  effect_ok : Array[String]
 }
 
 ///|
@@ -124,6 +128,8 @@ fn Config::new(d : @rjson.Value) -> Config {
     run_reads: strs(sect(d, "run_first").get("reads"), []),
     reset_by_hand: strs(sect(d, "reset_by_hand").get("names"), []),
     app_words: strs(d.get("app_words"), []),
+    scoped_ok: strs(sect(d, "signals").get("scoped_ok"), []),
+    effect_ok: strs(sect(d, "signals").get("effect_ok"), []),
   }
 }
 
@@ -230,8 +236,8 @@ fn lint_mbt(
       }
     }
   }
-  // the frames' clock read followed by its own signal (`frame_clock.get()`), outside the tests and what paints
-  // (build-clock)
+  // the frames' clock read followed by its own signal (`frame_clock.get()`; the window's of the run in place,
+  // `frame_clock.val.get()`), outside the tests and what paints (build-clock)
   let paint_at = paint_flows(f, paint_args(f))
   let painting = fn(k : Int) { in_paint(f, k, paint_at, painted) }
   for k, tk in toks {
@@ -239,7 +245,15 @@ fn lint_mbt(
       tk.text == "frame_clock" &&
       k + 2 < toks.length() &&
       toks[k + 1].text == "." &&
-      toks[k + 2].text == "get" &&
+      (
+        toks[k + 2].text == "get" ||
+        (
+          k + 4 < toks.length() &&
+          toks[k + 2].text == "val" &&
+          toks[k + 3].text == "." &&
+          toks[k + 4].text == "get"
+        )
+      ) &&
       !f.in_test(k) &&
       !painting(k) {
       add("build-clock", k, f.line_text(k))
@@ -374,6 +388,21 @@ fn lint_mbt(
         toks[k + 1].text == "(" &&
         !f.in_test(k) {
         add("key-read", k, f.line_text(k))
+      }
+    }
+  }
+  // the words a field gave up read by a build (`res.submitted` of what Ctx::editor gave it: Enter taken the frame after
+  // it) outside mbui's ui and kit, which take keys, and outside the tests: what giving them up does is said by the
+  // editor's `on_submit`, done as Enter is taken, outside any build
+  if !f.rel.has_prefix("src/ui/") && !f.rel.has_prefix("src/kit/") {
+    for k, tk in toks {
+      if tk.kind == "ident" &&
+        tk.text == "submitted" &&
+        k > 0 &&
+        toks[k - 1].text == "." &&
+        !(k + 1 < toks.length() && toks[k + 1].text == "(") &&
+        !f.in_test(k) {
+        add("submitted-read", k, f.line_text(k))
       }
     }
   }

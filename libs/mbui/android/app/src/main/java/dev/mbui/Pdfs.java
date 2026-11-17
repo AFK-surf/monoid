@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * PDFs drawn by the system's PdfRenderer (src/host/host_native.mbt `pdf_*`), as still.fail's Android app draws them
  * : the bytes put in a file of the app's cache (the renderer reads a file), the pages' sizes
- * read as it opens, each page drawn on white off the GL thread, one at a time (the renderer opens one page at a time),
+ * read as it opens, each page drawn on white off the app's thread, one at a time (the renderer opens one page at a time),
  * and uploaded as an image of the host's table (Images.upload).
  */
 final class Pdfs {
@@ -111,7 +111,7 @@ final class Pdfs {
         }
         Bitmap bmp = b;
         int ow = pw, oh = ph;
-        Host.view.toGL(() -> Images.upload(image, bmp, ow, oh));
+        Images.toRender(() -> Images.upload(image, bmp, ow, oh));
     }
 
     static void close(int id) {

@@ -30,6 +30,13 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
   session("a2", { ws: null });
   session("s1", { connect: "team", ws: "w" });
   session("far", { ws: "x" });
+  // Chats of a hand-over (replica/handover.ts): one handed here from another station (`came_from`, its `from`), one
+  // handed from here to another (out of sight, `handed:`), one being handed here and not shown yet (`coming:`).
+  session("came", { ws: "w" });
+  session("gone", { ws: "handed:w" });
+  session("arriving", { ws: "coming:w" });
+  db.prepare("UPDATE sessions SET came_from = 'stB' WHERE key = 'came'").run();
+  db.prepare("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES ('gone', 'stC', 'w', NULL, 7, 1)").run();
   let ts = 0;
   const say = (t: number, kind: "person" | "agent", author: string, text: string) => {
     store.insertMessage({ ...newMessage(t, String(++ts), kind, author, text), at: 1000 + ts } as ReturnType<typeof newMessage>);
@@ -51,6 +58,12 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
   const far = store.openThread("ember", "CHAT", "f", "Far", null).id;
   store.joinThread(far, "far", "ember");
   say(far, "person", "z@x", "elsewhere");
+  const moved = ["came", "gone", "arriving"].map((key) => {
+    const t = store.openThread("ember", "CHAT", key, key, null).id;
+    store.joinThread(t, key, "ember");
+    say(t, "person", "p@x", `in ${key}`);
+    return t;
+  });
   db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared) VALUES ('t1','a1','input',10,20,'completed','all_done')").run();
   db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared,about_thread,about_n,about_ts) VALUES ('t2','a1','input',30,40,'completed','need_help',1,2,'2')").run();
   for (let i = 0; i < 55; i++)
@@ -68,9 +81,9 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     const out: unknown[] = [];
     for (const lang of ["zh", "en"] as const) {
       for (const viewer of [{ email: "p@x", workspace: "w", home: true }, { email: "q@x", workspace: "x", home: false }, { email: "z@x", workspace: "x" }]) {
-        for (const s of [null, "a1", "a2", "far", "nobody"]) out.push(await read(r, "threads", { viewer, session: s, lang }, lang));
-        for (const id of [String(chat), `+${slack}`, String(far), "abc", "99999999999999999999", "-1", "0099"]) out.push(await read(r, "thread", { id, viewer, lang }, lang));
-        for (const key of ["a1", "a2", "far", "nobody"])
+        for (const s of [null, "a1", "a2", "far", "came", "gone", "arriving", "nobody"]) out.push(await read(r, "threads", { viewer, session: s, lang }, lang));
+        for (const id of [String(chat), `+${slack}`, String(far), ...moved.map(String), "abc", "99999999999999999999", "-1", "0099"]) out.push(await read(r, "thread", { id, viewer, lang }, lang));
+        for (const key of ["a1", "a2", "far", "came", "gone", "arriving", "nobody"])
           for (const [turns, jobs] of [[undefined, undefined], ["2", "now"], ["abc", undefined], ["1234567", "now"]])
             out.push(await read(r, "session", { key, viewer, lang, turns, jobs }, lang));
       }
@@ -82,7 +95,7 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
     for (const sign of ["\"cc\":[", "\"channelName\":\"general\"", "\"xshare\":{", "\"name\":\"7\"", "\"name\":\"w3\"", "\"letters\":1", "\"lettersLast\":1", "\"unread\":2", "\"autoTitle\":\"Auto\"",
-      "\"home\":\"a1\"", "\"status\":404", "\"name\":\"Una\"", "\"jobs\":[", "\"turns\":[", "\"port\":9000", "\"name\":\"Pat\""])
+      "\"home\":\"a1\"", "\"status\":404", "\"name\":\"Una\"", "\"jobs\":[", "\"turns\":[", "\"port\":9000", "\"name\":\"Pat\"", "\"from\":\"stB\"", "in came"])
       assert.ok(said.includes(sign), sign);
   } finally {
     worker.close(); program.close();

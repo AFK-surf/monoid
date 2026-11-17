@@ -19,21 +19,41 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// Which chat page this device makes, as the person chose it in 外观 (试用新对话页: the prefs' `chatPage`, `nodes`
-/// the page made as nodes; none, the old), told `chat_page_nodes` as the kept choice changes, and as the app's tree is
-/// made, before any page of nodes: a chat page made after reads it (one already made stays as it was). Only a change
-/// of the choice writes it: none kept says nothing, so a run begins as `chat_page_nodes_at_start` (the reset) says.
+/// Experimental switches on this device (实验性功能: `chatPage`, `farviewNative`, `board`), told their signals as the
+/// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
+/// active board state and returns Home to the ordinary chat list.
 pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chosen = @settings.pref_from(prefs, "chatPage")
-  if chosen != chat_page_told.val {
-    chat_page_told.val = chosen
-    chat_page_nodes.set(chosen == "nodes")
+  let chat_page = @settings.feature_from(prefs, "chatPage")
+  if chat_page != chat_page_told.val {
+    chat_page_told.val = chat_page
+    chat_page_nodes.set(chat_page)
+  }
+  let fv = @settings.feature_from(prefs, "farviewNative")
+  if fv != farview_told.val {
+    farview_told.val = fv
+    farview_native.set(fv)
+  }
+  let bd = @settings.feature_from(prefs, "board")
+  if bd != board_told.val {
+    let was_on = board_told.val
+    board_told.val = bd
+    board_feature.set(bd)
+    if was_on && !bd {
+      board_transient_reset()
+      (board_listed.val)()
+    }
   }
 }
 
 ///|
-/// The chat page last told `chat_page_nodes` from the prefs (`chatPage`): none as a run begins.
-let chat_page_told : Ref[String] = Ref("")
+/// The experimental switches last told from `prefs`: none on as a run begins.
+let chat_page_told : Ref[Bool] = Ref(false)
+
+///|
+let farview_told : Ref[Bool] = Ref(false)
+
+///|
+let board_told : Ref[Bool] = Ref(false)
 
 ///|
 /// Light or dark, as this device is set (the prefs' `appearance`), or as the system is (@hostapi.system_dark)
@@ -325,7 +345,9 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
-  chat_page_told.val = ""
+  chat_page_told.val = false
+  farview_told.val = false
+  board_told.val = false
   attention.told = false
   attention.visible = false
   attention.focused = false

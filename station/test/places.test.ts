@@ -81,7 +81,7 @@ test("mount's list is read for the disks mounted, the machine's own volumes left
   assert.deepEqual(parseMounts(out), ["/Users/lin/OrbStack", "/Volumes/T7", "/Users/lin/mnt/share name"]);
 });
 
-test("a path is walked link by link and stops at a protected folder, never stepping into it", { skip: WINDOWS }, () => {
+test("a path is walked link by link and stops at a protected folder, never stepping into it", { skip: WINDOWS }, async () => {
   const h = home();
   // ~/Desktop is a folder nobody may list: a walk touching anything in it would fail.
   mkdirSync(join(h, "Desktop", "proj"), { recursive: true });
@@ -90,16 +90,16 @@ test("a path is walked link by link and stops at a protected folder, never stepp
   symlinkSync(join(h, "Desktop", "proj"), join(h, "work", "linked"));
   symlinkSync("../work/app", join(h, "work", "rel"));
   try {
-    assert.deepEqual(walk(join(h, "Desktop", "proj", "src"), locked(h)), { state: "protected", path: join(h, "Desktop", "proj", "src"), top: join(h, "Desktop"), helper: true });
+    assert.deepEqual(await walk(join(h, "Desktop", "proj", "src"), locked(h)), { state: "protected", path: join(h, "Desktop", "proj", "src"), top: join(h, "Desktop"), helper: true });
     // Through a link into it: where the link leads, the rest after it.
-    assert.deepEqual(walk(join(h, "work", "linked", "src"), locked(h)), { state: "protected", path: join(h, "Desktop", "proj", "src"), top: join(h, "Desktop"), helper: true });
-    assert.deepEqual(walk(join(h, "work", "rel"), locked(h)), { state: "ok", real: join(h, "work", "app") });
-    assert.deepEqual(walk(join(h, "work", "nope"), locked(h)), { state: "gone" });
+    assert.deepEqual(await walk(join(h, "work", "linked", "src"), locked(h)), { state: "protected", path: join(h, "Desktop", "proj", "src"), top: join(h, "Desktop"), helper: true });
+    assert.deepEqual(await walk(join(h, "work", "rel"), locked(h)), { state: "ok", real: join(h, "work", "app") });
+    assert.deepEqual(await walk(join(h, "work", "nope"), locked(h)), { state: "gone" });
     writeFileSync(join(h, "work", "file"), "x");
-    assert.deepEqual(walk(join(h, "work", "file"), locked(h)), { state: "not_a_directory" });
-    assert.deepEqual(follow(join(h, "work", "linked"), locked(h)).state, "protected");
+    assert.deepEqual(await walk(join(h, "work", "file"), locked(h)), { state: "not_a_directory" });
+    assert.deepEqual((await follow(join(h, "work", "linked"), locked(h))).state, "protected");
     // As realpath would say it, but not into the protected folder.
-    assert.equal(realOutside(join(h, "work", "rel"), h), join(h, "work", "app"));
+    assert.equal(await realOutside(join(h, "work", "rel"), h), join(h, "work", "app"));
   } finally {
     chmodSync(join(h, "Desktop"), 0o755);
     rmSync(h, { recursive: true });
@@ -122,6 +122,27 @@ test("a directory in a protected folder is asked of still.fail Helper, not looke
   // Off macOS nothing is protected: looked at directly, as before.
   const elsewhere = new Places({ mac: false, home: h, helper });
   await assert.rejects(elsewhere.directory(dir, { lang: "en" }), (e: any) => e.code === "gone");
+  assert.equal(helper.asked.length, 1);
+  rmSync(h, { recursive: true });
+});
+
+test("the station's own data, moved to a disk (its name a link into a folder macOS protects), is its own: looked at directly, nothing asked", { skip: WINDOWS }, async () => {
+  // (stillfail move: ~/.stillfail a link to /Volumes/<disk>/stillfail, here a protected folder of the test's home)
+  const h = home();
+  const disk = join(h, "Desktop", "stillfail");
+  mkdirSync(join(disk, "sessions", "chat", "c-1", "workspace"), { recursive: true });
+  writeFileSync(join(disk, "sessions", "chat", "c-1", "workspace", "a.txt"), "a");
+  const own = join(h, ".stillfail");
+  symlinkSync(disk, own);
+  const helper = fakeHelper(() => ({ dir: true, file: false, link: false, size: 0, mtime: 0 }));
+  const places = new Places({ mac: true, home: h, helper, own, probe: { command: "/nonexistent-never-run", args: () => [] } });
+  const workspace = join(own, "sessions", "chat", "c-1", "workspace");
+  assert.equal(await places.directory(workspace, { lang: "en" }), workspace);
+  assert.equal(places.protects(join(workspace, "a.txt")), false);
+  assert.equal(await places.file(join(workspace, "a.txt"), h, { lang: "en" }, 10), join(workspace, "a.txt"));
+  assert.deepEqual(helper.asked, [], "the helper never asked");
+  // what is in the protected folder by any other name is as before
+  assert.equal(await places.directory(join(h, "Desktop", "stillfail"), { lang: "en" }), join(h, "Desktop", "stillfail"));
   assert.equal(helper.asked.length, 1);
   rmSync(h, { recursive: true });
 });

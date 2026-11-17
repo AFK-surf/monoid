@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { activeJobUpgradeStep } from "../src/store/active-jobs-upgrade.ts";
+import { activeJobUpgradeStep } from "./reference/backfill/active-jobs-upgrade.ts";
 
 const binary = mbReaderBinary();
 

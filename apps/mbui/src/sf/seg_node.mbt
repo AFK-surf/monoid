@@ -701,3 +701,86 @@ pub fn segmented_node_height(look : Look) -> Double {
     Wide => segmented_h + 2.0 * segmented_pad
   }
 }
+
+///|
+/// A choice of a few ways, an icon each, among a bar's buttons (segmented's of icons in a bar: `bar` with `icons`), as
+/// nodes in `parent`, over mbui's headless radio group: as high as the bar's buttons, its track 2 round its options, each
+/// option square, the chosen one on the lifted thumb, which goes to the one chosen as that changes; its icons the ink
+/// where chosen or pointed at, else muted. `ways` are its options by key (each key's icon and what it is called, read
+/// out and its tip), as they are now; `chosen` the key chosen, `choose` told the one pressed (the one chosen again
+/// too: where the room has not what was chosen before, the one shown is chosen again). The node.
+#callsite(autofill(loc))
+pub fn seg_icons_node(
+  parent : @view.View,
+  ways : () -> Array[(String, String, String)],
+  chosen : () -> String,
+  choose : (String) -> Unit,
+  said? : String = "",
+  tips? : TipLayer,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let pad = segmented_bar_pad
+  let high = icon_button_side - 2.0 * pad
+  let at = fn() { ways().search_by(fn(w) { w.0 == chosen() }).unwrap_or(0) }
+  let way = @motion.Way::new(@signals.untracked(fn() { pad + at().to_double() * (high + segmented_gap) }))
+  @headless.radio_group(
+    made_for=loc,
+    parent,
+    fn() { said },
+    fn() { ways().get(at()).map(fn(w) { w.0 }).unwrap_or("") },
+    choose,
+    in_node=true,
+    fn(g, rg) {
+      g
+      .row(Is(true))
+      .padding(Is((pad, pad, pad, pad)))
+      .gap(Is(segmented_gap))
+      .radius(Is(high / 2.0 + pad))
+      .ground(By(fn() { alpha(theme().p.text, 0.06) }))
+      .shrink(Is(0.0))
+      |> ignore
+      let last = Ref(@signals.untracked(at))
+      g.reacts(at, fn(k) {
+        let x = pad + k.to_double() * (high + segmented_gap)
+        if k == last.val {
+          way.put(x)
+        } else {
+          way.go(x, @motion.move_spring, at=g.cause_at())
+        }
+        last.val = k
+      })
+      // the thumb, where its way has it as each frame draws it while it goes
+      g.box(fn(th) {
+        let x = fn() {
+          way.said()
+          way.value_at(th.drawn_while(fn(t) { way.goes_at(t) }))
+        }
+        th
+        .over(Is(true))
+        .offset(By(fn() { (x() - pad, 0.0) }))
+        .width(Is(Some(high)))
+        .height(Is(Some(high)))
+        .radius(Is(high / 2.0))
+        .ground(By(fn() { @ui.tree_theme().lifted }))
+        .edge(By(fn() { (0.5, theme().p.line) }))
+        .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+        |> ignore
+      })
+      |> ignore
+      g.each(ways, fn(w) { w.0 }, fn(slot, w) {
+        let key = w.untracked().0
+        let o = rg.item(slot, fn() { key }, fn() { w.get().2 }, fn(o, item) {
+          o.width(Is(Some(high))).height(Is(Some(high))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+          icon_node(o, "", 16.0, By(fn() { if item.chosen() || item.hovered() { theme().p.text } else { theme().p.muted } }), name_now=fn() {
+            w.get().1
+          })
+          |> ignore
+        })
+        match tips {
+          Some(layer) => tip_node(layer, o, fn() { w.get().2 }) |> ignore
+          None => ()
+        }
+      })
+    },
+  )
+}

@@ -608,11 +608,14 @@ extern "C" {
 
 // Whether something reads the widgets out through UI Automation (@hostapi.a11y_on): a reader that asked for this
 // window, while one listens (not merely one listening somewhere: the app makes its tree each frame only then)
-int32_t mb_host_a11y_on(void) { return asked && UiaClientsAreListening() ? 1 : 0; }
+// (the run's first window's: a window beside it makes no tree for them, its widgets not read out yet, as on the Mac)
+int32_t mb_host_a11y_on(void) { return asked && mb_app_wid() == 0 && UiaClientsAreListening() ? 1 : 0; }
 
 // What the widgets are now (@hostapi.a11y_tree: an update of them, a11y.mbt's head: the nodes that changed, each whole,
 // and the focus): kept, one in nothing that holds it gone with what it holds, the readers told what changed
 void mb_host_a11y_tree(moonbit_string_t s) {
+  // (a window beside the first's: not the first's widgets, kept for none)
+  if (mb_app_wid() != 0) return;
   const wchar_t *t = (const wchar_t *)s;
   size_t n = (size_t)Moonbit_array_length(s);
   bool full = false, head = false;

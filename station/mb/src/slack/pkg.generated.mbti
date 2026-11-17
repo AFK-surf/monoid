@@ -1,0 +1,495 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/slack"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/jsjson",
+  "station/session_chats",
+}
+
+// Values
+pub fn answer_files(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn answer_of(@jsjson.JValue?) -> (String, Bool)?
+
+pub fn answered_blocks(@session_chats.Words, CardWords, String, String, String) -> Array[@jsjson.JValue]
+
+pub fn api_base(String?) -> String
+
+pub async fn app_id_of(SlackClient, String) -> String
+
+pub fn apply_settings(@jsjson.JValue?, @jsjson.JValue?) -> @jsjson.JValue
+
+pub fn at(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn bot_scopes() -> Array[String]
+
+pub fn config_tokens(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn connect_name(SlackConnect) -> String
+
+pub fn create_app_url(String) -> String
+
+pub let default_app_name : String
+
+pub fn ended_blocks(String, String) -> Array[@jsjson.JValue]
+
+pub fn ended_words(@session_chats.Words, @jsjson.JValue?, @jsjson.JValue?, String?, String) -> String
+
+pub async fn exchange_install_code(SlackClient, String, String, String, String) -> (String, String?)
+
+pub fn field(@jsjson.JValue) -> String
+
+pub fn form_encoded(Array[(String, String)]) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn header(Array[(String, String)], String) -> String?
+
+pub fn host_clock(@host.Host) -> Clock
+
+pub fn host_log() -> (String, String, String, @jsjson.JValue) -> Unit
+
+pub fn host_net(@host.Host, Wall) -> Net
+
+pub fn host_read_file(@host.Host) -> async (String) -> Bytes
+
+pub fn host_ws(@host.Host) -> WsIO
+
+pub fn http_date(String) -> Double?
+
+pub async fn identity_of(SlackClient, String) -> BotIdentity
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn kept_config_token(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub let login_action : String
+
+pub fn login_blocks(@session_chats.Words, String, String, page? : @jsjson.JValue?, shown? : Bool) -> Array[@jsjson.JValue]
+
+pub fn login_code_of(@jsjson.JValue?) -> String?
+
+pub fn login_entered_blocks(@session_chats.Words, CardWords, String, String) -> Array[@jsjson.JValue]
+
+pub fn made_apps(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn markdown(String) -> @jsjson.JValue
+
+pub let markdown_chars : Int32
+
+pub fn mask_value(String) -> String
+
+pub let members_ms : Double
+
+pub fn message_files(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn message_of(Error) -> String
+
+pub fn message_text(@jsjson.JValue?) -> String
+
+pub let min_interval_ms : Int32
+
+pub fn model_label(@session_chats.Words, ModelChoice, String) -> String
+
+pub fn model_of(@jsjson.JValue?) -> ModelChoice?
+
+pub fn model_options(@session_chats.Words, Array[ModelChoice], String, String) -> Array[@jsjson.JValue]
+
+pub fn model_value(ModelChoice) -> String
+
+pub fn multipart(Array[(String, String)], FilePart, String) -> Bytes
+
+pub fn new_chat_blocks(@session_chats.Words, String, ModelChoice, String, String) -> (String, Array[@jsjson.JValue])
+
+pub let new_chat_command : String
+
+pub fn new_chat_view(@session_chats.Words, Array[ModelChoice], String, String, String) -> @jsjson.JValue
+
+pub let new_chat_view_id : String
+
+pub async fn owner_of_config_token(SlackClient, String) -> @jsjson.JValue?
+
+pub let people_ms : Double
+
+pub fn person_of(@jsjson.JValue?) -> @jsjson.JValue
+
+pub fn question_blocks(@session_chats.Words, String, @jsjson.JValue?, String) -> Array[@jsjson.JValue]
+
+pub async fn rotate_config_token(SlackClient, String) -> @jsjson.JValue
+
+pub let send_action : String
+
+pub fn settings_of(@jsjson.JValue?) -> @jsjson.JValue
+
+pub fn shape_of(@jsjson.JValue) -> @jsjson.JValue
+
+pub let slack_api : String
+
+pub fn slack_app_links(String, String?) -> @jsjson.JValue
+
+pub fn slack_connects(@jsjson.JValue?) -> Array[SlackConnect]
+
+pub fn slack_credentials(SlackConnect) -> String?
+
+pub fn slack_error(@session_chats.Words, Error, String) -> String
+
+pub let slack_groups : Array[SlackGroup]
+
+pub fn slack_manifest(String, description? : String?, redirect_url? : String?) -> @jsjson.JValue
+
+pub fn slack_overview(@jsjson.JValue?, String) -> @jsjson.JValue
+
+pub fn slack_seen(SlackConnect, BotIdentity) -> ((@jsjson.JValue) -> @jsjson.JValue)?
+
+pub fn slack_shown(@jsjson.JValue?) -> @jsjson.JValue
+
+pub fn slack_words(@session_chats.Words, String, String) -> SlackWords
+
+pub fn stands_block(@session_chats.Words, Stands, String) -> @jsjson.JValue
+
+pub fn stands_text(@session_chats.Words, Stands, String) -> String
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub fn submitted_chat(@jsjson.JValue?) -> Submitted?
+
+pub fn to_event(@jsjson.JValue?, String, String) -> @jsjson.JValue?
+
+pub fn upgraded(@jsjson.JValue) -> @jsjson.JValue?
+
+pub fn upsert_token(Array[@jsjson.JValue], @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub async fn verify_slack_tokens(@session_chats.Words, SlackClient, String, String, String) -> (@jsjson.JValue?, Array[String])
+
+pub fn with_command(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn with_socket_mode(@jsjson.JValue?, Bool) -> @jsjson.JValue
+
+pub fn with_stop_event(@jsjson.JValue?) -> @jsjson.JValue?
+
+// Errors
+pub(all) suberror SlackApiError {
+  SlackApiError(String, String, @jsjson.JValue?)
+}
+pub impl Show for SlackApiError
+
+pub(all) suberror SlackWords {
+  SlackWords(String, String)
+}
+pub impl Show for SlackWords
+
+pub(all) suberror Thrown {
+  Thrown(String, String)
+}
+pub impl Show for Thrown
+
+pub(all) suberror Unanswered {
+  Unanswered(String)
+}
+
+pub(all) suberror WsRefused {
+  WsRefused(Int32, String)
+}
+
+// Types and methods
+pub(all) struct BotIdentity {
+  team : String
+  team_id : String
+  url : String
+  bot_user_id : String
+  bot_name : String
+  bot_image : String?
+  bot_id : String
+}
+pub fn BotIdentity::to_j(Self) -> @jsjson.JValue
+
+pub(all) enum CardWords {
+  Markdown(String)
+  Blocks(Array[@jsjson.JValue])
+}
+
+pub struct Clock {
+  now : () -> Double
+  sleep : async (Int32) -> Unit
+  fork : (async () -> Unit) -> @effect.Fiber[Unit]
+}
+pub fn Clock::run(Self, async () -> Unit) -> Unit
+
+pub struct ConnectsView {
+  connects : () -> Array[SlackConnect]
+  state : (String) -> String?
+  chat : (String) -> (String?, String)?
+  bound : () -> Bool
+  in_workspace : (String?) -> Bool
+  raw : () -> @jsjson.JValue
+}
+
+pub struct FilePart {
+  bytes : Bytes
+  name : String
+  mime : String
+}
+
+pub struct HttpAnswer {
+  status : Int32
+  headers : Array[(String, String)]
+  body : Bytes
+  redirected : Bool
+}
+
+#derive(Eq)
+pub(all) struct ModelChoice {
+  runtime : String
+  model : String?
+}
+pub fn ModelChoice::of_j(@jsjson.JValue?) -> Self?
+pub fn ModelChoice::to_j(Self) -> @jsjson.JValue
+
+pub struct NameBook {
+  entries : Map[String, @jsjson.JValue]
+  pending : Map[String, Unit]
+  failed : Map[String, Double]
+  clock : Clock
+  learn_after_ms : Int32
+  save_after_ms : Int32
+  mut learning : Bool
+  mut saving : Bool
+  mut closed : Bool
+  mut listener : () -> Unit
+  saved : @ref.Ref[(@jsjson.JValue) -> Unit]
+}
+pub fn NameBook::channel(Self, String, async () -> String?) -> String?
+pub fn NameBook::close(Self) -> Unit
+pub fn NameBook::new(Clock, kept? : @jsjson.JValue, learn_after_ms? : Int32, save_after_ms? : Int32) -> Self
+pub fn NameBook::on_learn(Self, () -> Unit) -> Unit
+pub fn NameBook::person(Self, String, async () -> @jsjson.JValue?, stale? : (@jsjson.JValue, Double) -> Bool) -> @jsjson.JValue?
+pub fn NameBook::to_j(Self) -> @jsjson.JValue
+
+pub struct Net {
+  fetch : async (String, String, Array[(String, String)], Bytes?, Int32) -> HttpAnswer
+  now : () -> Double
+  sleep : async (Int32) -> Unit
+}
+
+pub struct SlackApps {
+  client : SlackClient
+  load : () -> Array[@jsjson.JValue]
+  save : async (@jsjson.JValue) -> Unit
+  words : @session_chats.Words
+  lang : @ref.Ref[String]
+  log : (String, String, String, @jsjson.JValue) -> Unit
+  owner : Map[String, String]
+  // private fields
+}
+pub fn SlackApps::configured(Self, String) -> Bool
+pub async fn SlackApps::create_app(Self, String, String, @jsjson.JValue) -> @jsjson.JValue
+pub async fn SlackApps::edit_manifest(Self, String, String, async (@jsjson.JValue) -> @jsjson.JValue?) -> Bool
+pub async fn SlackApps::exchange_install_code(Self, String, String, String, String) -> (String, String?)
+pub async fn SlackApps::export_manifest(Self, String, String) -> @jsjson.JValue
+pub fn SlackApps::new(SlackClient, () -> Array[@jsjson.JValue], async (@jsjson.JValue) -> Unit, @session_chats.Words, @ref.Ref[String], (String, String, String, @jsjson.JValue) -> Unit) -> Self
+pub async fn SlackApps::set_icon(Self, String, String, Bytes, String) -> Unit
+pub async fn SlackApps::update_manifest(Self, String, String, @jsjson.JValue) -> Bool
+pub async fn SlackApps::verify_tokens(Self, String, String, String) -> (@jsjson.JValue?, Array[String])
+
+pub struct SlackClient {
+  base : String
+  timeout_ms : Int32
+  net : Net
+  mut server_offset_lower : Double?
+  granted : Map[String, Array[String]]
+}
+pub async fn SlackClient::api(Self, String, Array[(String, String)], String) -> @jsjson.JValue
+pub async fn SlackClient::app(Self, String, String?, Array[(String, String)], file? : FilePart) -> @jsjson.JValue
+pub async fn SlackClient::download(Self, String, String, String) -> Bytes
+pub fn SlackClient::has_scope(Self, String, String) -> Bool
+pub fn SlackClient::local_time_upper(Self, String) -> Double?
+pub fn SlackClient::new(Net, base? : String, timeout_ms? : Int32) -> Self
+pub async fn SlackClient::upload(Self, String, Bytes, String) -> Unit
+
+pub(all) struct SlackConnect {
+  id : String
+  enabled : Bool
+  app_token : String
+  bot_token : String
+  app_id : String?
+  team : (String, String)?
+  bot_name : String?
+  bot_image : String?
+  owner : String?
+  workspace : String?
+}
+pub fn SlackConnect::to_j(Self) -> @jsjson.JValue
+
+pub struct SlackGroup {
+  id : String
+  label : String
+  description : String
+  scopes : Array[String]
+  events : Array[String]
+}
+pub fn SlackGroup::to_j(Self) -> @jsjson.JValue
+
+pub struct SlackSurface {
+  o : SurfaceOptions
+  app_token : String
+  bot_token : String
+  client : SlackClient
+  mut me : BotIdentity?
+  mut connected : Bool
+  mut last_error : String?
+  listeners : Array[() -> Unit]
+  names : Map[String, @jsjson.JValue]
+  by_email : Map[String, String]
+  lines : Map[String, ThreadStatus]
+  mut stopped : Bool
+  fibers : Array[@effect.Fiber[Unit]]
+  channels : Map[String, String?]
+  answered : Map[String, Unit]
+  questions : Map[String, (String, String)]
+  standing_count : Map[String, Int32]
+  // private fields
+}
+pub async fn SlackSurface::api(Self, String, @jsjson.JValue) -> @jsjson.JValue
+pub async fn SlackSurface::begin(Self, String, String) -> String
+pub fn SlackSurface::bot_name(Self) -> String
+pub fn SlackSurface::bot_user_id(Self) -> String
+pub async fn SlackSurface::card_ended(Self, String, String, String, String, @jsjson.JValue?, @jsjson.JValue?) -> Unit
+pub async fn SlackSurface::channel_name(Self, String) -> String?
+pub async fn SlackSurface::download(Self, @jsjson.JValue) -> Bytes
+pub async fn SlackSurface::edit(Self, String, String, String, String) -> Bool
+pub async fn SlackSurface::history(Self, String, String, String, Int32) -> Array[@jsjson.JValue]
+pub fn SlackSurface::identity(Self) -> BotIdentity?
+pub async fn SlackSurface::join(Self, String) -> Unit
+pub fn SlackSurface::joins(Self) -> Bool
+pub fn SlackSurface::known_channel(Self, String) -> String?
+pub fn SlackSurface::known_person(Self, String) -> @jsjson.JValue?
+pub fn SlackSurface::new(SurfaceOptions) -> Self raise
+pub fn SlackSurface::on_change(Self, () -> Unit) -> Unit
+pub async fn SlackSurface::open_places(Self) -> Array[@jsjson.JValue]
+pub async fn SlackSurface::people_in(Self, String) -> Array[@jsjson.JValue]
+pub fn SlackSurface::permalink(Self, String, String) -> String?
+pub async fn SlackSurface::places(Self) -> Array[@jsjson.JValue]
+pub fn SlackSurface::platform(Self) -> String
+pub async fn SlackSurface::post(Self, String, String, String, Array[@jsjson.JValue], card? : @jsjson.JValue?) -> String
+pub async fn SlackSurface::refresh_identity(Self) -> Unit
+pub async fn SlackSurface::shared_out(Self, String) -> Bool
+pub fn SlackSurface::socket(Self) -> (Bool, String?)
+pub fn SlackSurface::stands_at(Self, String, String, Stands?) -> Unit
+pub async fn SlackSurface::start(Self, async (@jsjson.JValue) -> Unit) -> Unit
+pub fn SlackSurface::stop(Self) -> Unit
+pub fn SlackSurface::thread_of(Self, String) -> (String, String)?
+pub async fn SlackSurface::user_email(Self, String) -> String?
+pub async fn SlackSurface::user_name(Self, String) -> String?
+pub async fn SlackSurface::user_of(Self, String) -> String?
+pub fn SlackSurface::working(Self, String, String, String?, String, page? : String?) -> Unit
+pub fn SlackSurface::workspace(Self) -> String?
+
+pub struct Stands {
+  kind : String
+  words : String?
+}
+pub fn Stands::of_j(@jsjson.JValue?) -> Self?
+
+pub struct Submitted {
+  channel : String
+  user : String
+  model : ModelChoice?
+  words : String
+}
+pub fn Submitted::to_j(Self) -> @jsjson.JValue
+
+pub struct SurfaceOptions {
+  app_token : String
+  bot_token : String
+  client : SlackClient
+  connect : String?
+  book : NameBook?
+  ping_ms : Int32
+  stale_ms : Int32
+  backoff_ms : Int32
+  clock : Clock
+  ws : WsIO
+  words : @session_chats.Words
+  lang : @ref.Ref[String]
+  log : (String, String, String, @jsjson.JValue) -> Unit
+  read_file : async (String) -> Bytes
+  on_heard : () -> Unit
+  on_working : async () -> Bool
+  models : () -> Array[ModelChoice]
+  models_first : ((String) -> Array[ModelChoice])?
+}
+pub fn SurfaceOptions::new(String, String, SlackClient, Clock, WsIO, @session_chats.Words, @ref.Ref[String], (String, String, String, @jsjson.JValue) -> Unit, async (String) -> Bytes, connect? : String?, book? : NameBook?, ping_ms? : Int32, stale_ms? : Int32, backoff_ms? : Int32, on_heard? : () -> Unit, on_working? : async () -> Bool, models? : () -> Array[ModelChoice], models_first? : ((String) -> Array[ModelChoice])?) -> Self
+
+pub struct ThreadStatus {
+  call : async (String, Array[(String, String)]) -> Unit
+  clock : Clock
+  log : (String, String, String, @jsjson.JValue) -> Unit
+  channel : String
+  thread_ts : String
+  interval : Int32
+  mut message_ts : String?
+  mut page : String?
+  mut shown : String
+  mut wanted : String
+  mut last_at : Double
+  mut timer : Bool
+  mut reaction_only : Bool
+  mut legacy : Bool
+  mut reacted : String?
+  // private fields
+}
+pub fn ThreadStatus::new(async (String, Array[(String, String)]) -> Unit, Clock, (String, String, String, @jsjson.JValue) -> Unit, String, String) -> Self
+pub fn ThreadStatus::say(Self, String, message_ts? : String?, page? : String?) -> Unit
+
+pub struct Upgrades {
+  view : ConnectsView
+  apps : SlackApps
+  client : SlackClient
+  log : (String, String, String, @jsjson.JValue) -> Unit
+  run : (async () -> Unit) -> Unit
+  attempted : Map[String, String]
+  completed : Map[String, String]
+  upgrading : Map[String, @effect.Deferred[Unit]]
+  mut closed : Bool
+}
+pub async fn Upgrades::close(Self) -> Unit
+pub fn Upgrades::new(ConnectsView, SlackApps, (String, String, String, @jsjson.JValue) -> Unit, (async () -> Unit) -> Unit) -> Self
+pub async fn Upgrades::on_working(Self, String) -> Bool
+pub fn Upgrades::upgrade_apps(Self) -> Unit
+
+pub struct Wall {
+  mut wall : Double
+  mut steady : Int64
+}
+pub fn Wall::new(Double) -> Self
+pub fn Wall::now(Self) -> Double
+pub fn Wall::told(Self, Double) -> Unit
+
+pub struct WsConn {
+  next : async () -> String?
+  send : (String) -> Unit
+  close : () -> Unit
+  ping : (() -> Unit)?
+}
+
+pub struct WsIO {
+  open : async (String) -> WsConn
+}
+
+// Type aliases
+pub type Call = async (String, Array[(String, String)]) -> Unit
+
+pub type Handler = async (@jsjson.JValue) -> Unit
+
+pub type Log = (String, String, String, @jsjson.JValue) -> Unit
+
+pub type Params = Array[(String, String)]
+
+pub using @session_chats {type Words}
+
+// Traits

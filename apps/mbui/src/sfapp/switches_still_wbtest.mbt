@@ -5,7 +5,8 @@
 // subscription 400 ms late: each switch found by its role and pressed in turn (a radio not chosen, a choice row not
 // chosen, a toggle, an opener's every choice not chosen, a switch, a checkbox, a tab of the page), and the screen
 // looked at on each frame till its answers have all come: each run of frames in which a named node moves, sizes
-// otherwise, comes or goes is one change. A press seen to change more than once is a row of `switches_known`
+// otherwise, comes or goes is one change, a frame in which one goes on moving by less than a point carrying it on (a way
+// that eases into its end is one change to its end, not one more where its last step is past a point's threshold). A press seen to change more than once is a row of `switches_known`
 // (switches_known_wbtest.mbt) with how many times: one more or fewer than its row, or a press with no row, fails its
 // test, saying the line to write. Run on main alone, after a merge, in three parts (mbui-check.yml's `switches`; it
 // is too long for a branch's pushes); its tests at a rate are none (a sweep: scripts/test.sh).
@@ -44,11 +45,17 @@ let switches_left_out : Map[String, String] = Map([])
 let switch_heard : Array[Int] = []
 
 ///|
-/// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id.
+/// A message between the client and the made-up core (round_trip_again's `heard`): one told the client kept by its id,
+/// but for the answer of a call whose answer nobody reads.
 fn switch_heard_of(m : String) -> Unit {
   guard m.has_prefix("in ") else { return }
   let j = @json.parse(m.unsafe_substring(start=3, end=m.length())) catch { _ => return }
   guard j is Object(o) && o.get("id") is Some(Number(n, ..)) else { return }
+  // (the answer of a call nobody reads (@core.Client::call: no on_done) runs nothing and builds nothing: no answer
+  // that changes what is seen, said or not)
+  if (o.contains("ok") || o.contains("error")) && @core.client.call_unread(n.to_int()) {
+    return
+  }
   switch_heard.push(n.to_int())
 }
 
@@ -108,8 +115,24 @@ fn switch_top() -> String {
 
 ///|
 /// The screens the switches are pressed on: corners_wbtest's, and those whose switches no corner mode shows (添加账号 with
-/// three stations up: #6030).
-let switches_modes : Array[String] = corner_modes + ["settings-new-profile-stations"]
+/// three stations up: #6030); of the card to share opened in each of its looks (share-card-<key>), four alone.
+let switches_modes : Array[String] = corner_modes.filter(fn(m) { !switches_share_left(m) }) +
+  ["settings-new-profile-stations"]
+
+///|
+/// Whether `mode` is the card to share opened in a look whose switches another mode presses already. Each of those modes
+/// is the same stage with the same strip under it (share_looks.mbt's share_looks_pick_node), but for which look is chosen
+/// and so which set is shown; each press is one of a choice row not chosen or the other set's tab, so its switches are
+/// that set's looks but one. still.fail's own: share-card (night chosen: poster, receipt and terminal pressed, and the
+/// tab to 千恋＊万花) and share-card-poster (night pressed); 千恋＊万花's: share-card-senren-adv (each of its other looks
+/// pressed, and the tab back to still.fail's own) and share-card-senren-affection (senren-adv pressed). So these four press
+/// every look of both sets and both tabs, on each screen size; the thirty-one others pressed them all again, some 45 s
+/// each of a part's five minutes on CI (2026-11-17: parts 1-4 from 130-173 s to 206-313 s). Every look is still drawn
+/// and swept at rest by corners_wbtest (corner_modes); share-card-dark, another theme, is kept.
+fn switches_share_left(mode : String) -> Bool {
+  let kept = ["poster", "senren-adv", "senren-affection"]
+  @sfpages.share_look_keys()[1:].iter().any(fn(k) { mode == "share-card-" + k && !kept.contains(k) })
+}
 
 ///|
 /// A switch's key on a screen: its kind, name and which of those of that kind and name it is.
@@ -132,9 +155,11 @@ fn switches_keyed(t : @ui.Tester) -> Array[(String, (String, @ui.Role, String))]
 }
 
 ///|
-/// The node of switch `sw` (its `nth` of its role and name), brought into the window where it is out of it (a wheel
-/// over the middle of the window towards it, a few times at most): None where it is not there or never comes in.
-fn switch_node(t : @ui.Tester, s : Screen, sw : (String, @ui.Role, String), nth : Int) -> @ui.SemNode? {
+/// Where to press switch `sw` (its `nth` of its role and name): the middle of what of it is seen, in the window and in
+/// what holds it that clips (Tester::seen_bounds_of: a strip scrolled sideways cuts the looks past its ends, whose
+/// middles a press would land beside, on whatever lies there); brought into it where it is out of it, by a wheel over
+/// the middle of where it would be seen, towards it, a few times at most: None where it is not there or never comes in.
+fn switch_node(t : @ui.Tester, s : Screen, sw : (String, @ui.Role, String), nth : Int) -> (Double, Double)? {
   let find = fn() {
     let all = t.all(sw.1, label=sw.2).filter(fn(n) { !n.disabled })
     if nth < all.length() {
@@ -146,18 +171,33 @@ fn switch_node(t : @ui.Tester, s : Screen, sw : (String, @ui.Role, String), nth 
   for tries = 0; tries < 12; tries = tries + 1 {
     guard find() is Some(n) else { return None }
     let (x, y, w, h) = n.rect
+    let (c0, c1, c2, c3) = t.seen_bounds_of(n)
+    // (where it may be seen: the window, cut by what holds it)
+    let (v0, v1, v2, v3) = (@cmp.maximum(c0, 0.0), @cmp.maximum(c1, 0.0), @cmp.minimum(c2, s.w), @cmp.minimum(c3, s.h))
+    let (x0, y0, x1, y1) = (@cmp.maximum(x, v0), @cmp.maximum(y, v1), @cmp.minimum(x + w, v2), @cmp.minimum(y + h, v3))
+    if w > 0.0 && h > 0.0 && x1 > x0 && y1 > y0 && v2 > v0 && v3 > v1 {
+      let (cx, cy) = (x + w / 2.0, y + h / 2.0)
+      // (its middle where that is seen; else the middle of what is)
+      if cx >= v0 && cx <= v2 && cy >= v1 && cy <= v3 {
+        return Some((cx, cy))
+      }
+      return Some(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+    }
     let cx = x + w / 2.0
     let cy = y + h / 2.0
-    if w > 0.0 && h > 0.0 && cx >= 0.0 && cy >= 0.0 && cx <= s.w && cy <= s.h {
-      return Some(n)
-    }
-    if cy >= 0.0 && cy <= s.h && (cx < 0.0 || cx > s.w) {
-      // (in the window's height, off it to a side: a strip that scrolls sideways, wheeled where it is)
-      let dx = if cx > s.w { @cmp.minimum(cx - s.w / 2.0, s.w * 0.8) } else { @cmp.maximum(cx - s.w / 2.0, -s.w * 0.8) }
-      t.wheel_with(s.w / 2.0, @cmp.minimum(@cmp.maximum(cy, 1.0), s.h - 1.0), dx, 0.0, 0)
+    // (wheeled over the middle of where it may be seen, the window's where nothing of that is in it)
+    let (mx, my, mw, mh) = if v2 > v0 && v3 > v1 {
+      ((v0 + v2) / 2.0, (v1 + v3) / 2.0, v2 - v0, v3 - v1)
     } else {
-      let dy = if cy > s.h { @cmp.minimum(cy - s.h / 2.0, s.h * 0.8) } else { @cmp.maximum(cy - s.h / 2.0, -s.h * 0.8) }
-      t.wheel(s.w / 2.0, s.h / 2.0, dy)
+      (s.w / 2.0, s.h / 2.0, s.w, s.h)
+    }
+    if cy >= v1 && cy <= v3 && (cx < v0 || cx > v2) {
+      // (in its height, off it to a side: a strip that scrolls sideways, wheeled where it is)
+      let dx = if cx > v2 { @cmp.minimum(cx - mx, mw * 0.8) } else { @cmp.maximum(cx - mx, -mw * 0.8) }
+      t.wheel_with(mx, my, dx, 0.0, 0)
+    } else {
+      let dy = if cy > v3 { @cmp.minimum(cy - my, mh * 0.8) } else { @cmp.maximum(cy - my, -mh * 0.8) }
+      t.wheel(mx, my, dy)
     }
     t.run_for(@ui.move_most_ms)
   }
@@ -312,16 +352,24 @@ fn switch_measure(
     }
     let here = switch_places(t)
     let what = []
+    // (a named node still on its way by less than a point this frame: what moves goes on, never a change apart)
+    let mut going = false
     for k, r in here {
       if skip.contains(k) {
         continue
       }
       match last.get(k) {
-        Some(was) =>
-          if (r.0 - was.0).abs() > 1.0 || (r.1 - was.1).abs() > 1.0 || (r.2 - was.2).abs() > 1.0 ||
-            (r.3 - was.3).abs() > 1.0 {
+        Some(was) => {
+          let step = @cmp.maximum(
+            @cmp.maximum((r.0 - was.0).abs(), (r.1 - was.1).abs()),
+            @cmp.maximum((r.2 - was.2).abs(), (r.3 - was.3).abs()),
+          )
+          if step > 1.0 {
             what.push("\{k} \{Repr(was)} -> \{Repr(r)}")
+          } else if step > 0.01 {
+            going = true
           }
+        }
         None => what.push("\{k} came \{Repr(r)}")
       }
     }
@@ -348,6 +396,8 @@ fn switch_measure(
           run_what.push(x)
         }
       }
+    } else if run_from >= 0.0 && going {
+      run_to = now
     } else if run_from >= 0.0 {
       changes.push({ from: run_from, to: run_to, bones: run_bones, what: run_what, running: run_running, why: run_why })
       run_from = -1.0
@@ -439,7 +489,7 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
         continue
       }
       let nth = now.filter(fn(k) { k.1.0 == sw.0 && k.1.2 == sw.2 }).search_by(fn(k) { k.0 == key }).unwrap_or(0)
-      guard switch_node(t, s, sw, nth) is Some(node) else {
+      guard switch_node(t, s, sw, nth) is Some((px, py)) else {
         println("SWITCHES_UNREACHED \{at}")
         continue
       }
@@ -447,9 +497,8 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
       println("SWITCHES_TRY \{at}")
       if sw.0 == "opener" {
         // (opened, its choices read, shut again; then each: opened again, the choice pressed, measured from there)
-        let (x, y, w, h) = node.rect
         let shut = switch_places(t)
-        t.tap(x + w / 2.0, y + h / 2.0)
+        t.tap(px, py)
         t.run_for(@ui.move_most_ms)
         let choices = switch_choices(t)
         let menu : Map[String, Bool] = Map([(own, true)])
@@ -470,13 +519,12 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
             println("SWITCHES_LEFT_OUT \{at2}: \{why}")
             continue
           }
-          guard switch_node(t, s, sw, nth) is Some(o) else {
+          guard switch_node(t, s, sw, nth) is Some((ox, oy)) else {
             println("SWITCHES_UNREACHED \{at2}")
             continue
           }
-          let (x, y, w, h) = o.rect
           println("SWITCHES_TRY \{at2}")
-          t.tap(x + w / 2.0, y + h / 2.0)
+          t.tap(ox, oy)
           t.run_for(@ui.move_most_ms)
           let item = t.semantics().iter().find_first(fn(n) { !n.hidden && n.role == MenuItemRadio && n.label == choice })
           guard item is Some(it) else {
@@ -500,9 +548,8 @@ fn switches_walk(mode : String, s : Screen, ms : Double, found : Map[String, Int
           break
         }
       } else {
-        let (x, y, w, h) = node.rect
         t.ways_set_out() |> ignore
-        let (from, changes) = switch_measure(t, fn() { t.tap(x + w / 2.0, y + h / 2.0) }, Map([(own, true)]), top, ms)
+        let (from, changes) = switch_measure(t, fn() { t.tap(px, py) }, Map([(own, true)]), top, ms)
         switch_leaks(at)
         if switch_top() != top {
           println("SWITCHES_LEFT \{at}")

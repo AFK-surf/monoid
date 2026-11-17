@@ -1,3 +1,4 @@
+import { chosenSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // A session's run changed (lifecycle.ts `configure`): how it ran and how it runs now, as its chat's notice keeps them
 // (rows.ts RunChange), and the notice's words where a chat shows no more than them (Slack, Feishu, an app from before).
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
@@ -9,7 +10,7 @@ import type { RunChange, RunShown, SessionRow } from "../store/rows.ts";
 export function runShown(row: SessionRow, named: (profile: string) => string | null): RunShown {
   const account = named(row.profile);
   return {
-    runtime: row.runtime, model: row.model, effort: row.effort, fast: row.fast, profile: row.profile, account,
+    runtime: row.runtime, model: row.model, effort: row.effort, fast: row.fast, ...(row.speed ? { speed: row.speed } : {}), profile: row.profile, account,
     pinned: row.profilePinned, context: row.context,
   };
 }
@@ -21,7 +22,7 @@ export const RUN_PARTS = ["runtime", "model", "effort", "fast"] as const;
 const WORD_PARTS = [...RUN_PARTS, "profile"] as const;
 
 export function runChanged(change: RunChange): boolean {
-  return RUN_PARTS.some((k) => change.was[k] !== change.now[k]);
+  return RUN_PARTS.some((k) => k === "fast" ? chosenSpeed(change.was) !== chosenSpeed(change.now) : change.was[k] !== change.now[k]);
 }
 
 /// The notice's words: what changed, before and after (Opus 5.5 · high → Sonnet 5.5 · medium), or another account
@@ -36,12 +37,12 @@ export function runChangeWords(change: RunChange, lang: Lang): string {
       case "effort":
         return r.effort ?? tr(lang, "station.notice.runDefaultEffort");
       case "fast":
-        return r.fast === true ? "Fast" : tr(lang, "station.notice.runStandard");
+        return chosenSpeed(r) === "ultrafast" ? "Ultrafast" : chosenSpeed(r) === "fast" ? "Fast" : tr(lang, "station.notice.runStandard");
       case "profile":
         return r.account ?? r.profile ?? "";
     }
   };
-  const differs = WORD_PARTS.filter((k) => change.was[k] !== change.now[k]);
+  const differs = WORD_PARTS.filter((k) => k === "fast" ? chosenSpeed(change.was) !== chosenSpeed(change.now) : change.was[k] !== change.now[k]);
   // The account named only where it alone changed: with another runtime or model it is the rest's.
   const changed = differs.length > 1 ? differs.filter((k) => k !== "profile") : differs;
   const side = (r: RunShown) => changed.map((k) => part(r, k)).join(" · ");

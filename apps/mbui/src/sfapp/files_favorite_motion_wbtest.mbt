@@ -14,10 +14,10 @@ test "the stations stay steady when a favorite is added or removed" {
     }
     app.nav.replace(Files)
     frames(@ui.move_most_ms)
-    @sfdesk.favorite_add(src, "ws1", { station: "ws1/st1", root: "/Users/lin/项目", path: "", name: "收藏一" })
+    @sfpages.favorite_add(src, "ws1", { station: "ws1/st1", root: "/Users/lin/项目", path: "", name: "收藏一" })
     frames(@ui.move_most_ms)
     assert_true(t.find("收藏一") is Some(_))
-    @sfdesk.favorite_add(src, "ws1", { station: "ws1/st1", root: "/Users/lin/设计稿", path: "", name: "收藏二" })
+    @sfpages.favorite_add(src, "ws1", { station: "ws1/st1", root: "/Users/lin/设计稿", path: "", name: "收藏二" })
     frames(@ui.move_most_ms)
     assert_true(t.find("收藏二") is Some(_))
     let (x, y) = t.find("收藏一").unwrap()

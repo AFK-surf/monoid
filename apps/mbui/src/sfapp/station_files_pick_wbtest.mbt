@@ -6,7 +6,7 @@
 
 ///|
 /// Willow's 文档 as the picker shows it, from its place.
-fn pick_docs() -> @sfdesk.PickAt {
+fn pick_docs() -> @sfpages.PickAt {
   { station: "ws1/st1", station_name: "Willow", root: fix_docs, root_name: "文档", path: "" }
 }
 
@@ -18,7 +18,7 @@ fn pick_open(
   key~ : String = "ws1/st1:s-c1",
   platform~ : Int = 2,
   wide~ : Bool = false,
-  at? : @sfdesk.PickAt,
+  at? : @sfpages.PickAt,
   ticked? : Array[Dragged] = [],
   src_of? : (Source) -> Source = fn(s) { s },
   rest? : Bool = true,
@@ -32,9 +32,9 @@ fn pick_open(
   }
   t.draw()
   t.run_for(@ui.move_most_ms)
-  @sfdesk.station_files_pick(src, key)
+  @sfpages.station_files_pick(src, key)
   match at {
-    Some(a) => @sfdesk.station_pick_set(a, ticked)
+    Some(a) => @sfpages.station_pick_set(a, ticked)
     None => ()
   }
   t.draw()

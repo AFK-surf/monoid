@@ -14,11 +14,11 @@
 // id as the connect moves. A Comma connect's Tasks run where the connect is (its protocol keeps them in its station's
 // store), as does a single-session connect's one session.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type Bytes, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, oneBytes, writeBytes } from "../mesh/files.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import type { ChatEvent, ChatMessage, ChatSurface, InboundFile, Member, Person, Place, ThreadRef } from "../sessions/chat.ts";
 import type { Connect, ConnectKind, ConnectMode } from "../sessions/config.ts";
@@ -37,6 +37,15 @@ export const CALL = "connect.call";
 export const TAKE = "connect.take";
 /// A connect moved: the station it runs on now, told to the workspace's others.
 export const MOVED = "connect.moved";
+/// Whether the station asked holds a connect (its entry in its config.json): asked by one that moved it there and did not
+/// hear it was taken (workspace.ts `settleMoving`).
+export const HOLDS = "connect.holds";
+/// One thread of a connect's: its chat runs on another station from now on, or on the connect's own again (a chat
+/// handed over, replica/handover.ts), told to the station the connect runs on.
+export const ROUTE = "connect.route";
+/// The bots of the connects a station runs, told to the workspace's other stations as they change (sessions/hub.ts
+/// `stationNotice`).
+export const BOTS = "connect.bots";
 /// The connects a station runs, as another of the workspace asks before one is added (one connect, one station).
 export const LIST = "connect.list";
 
@@ -217,7 +226,7 @@ export class RemoteSurface implements ChatSurface {
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
     const there: Attachment[] = [];
     for (const file of files) {
-      const size = statSync(file.path).size;
+      const size = (await stat(file.path)).size;
       const kept = await this.call("upload", [{ name: file.name, size }], fileBytes(file.path, 0, size));
       if (typeof kept?.path !== "string") throw new Error("the connect's station did not keep the file");
       there.push({ ...file, path: kept.path });
@@ -298,8 +307,9 @@ export class RemoteSurface implements ChatSurface {
 }
 
 /// How a station answers another's call of one of its connects' surfaces (`surface`: the connect's, null when it does not
-/// run here). Files a remote chat posts are kept in `uploads` until they are posted (or for the process's life at most).
-export function answerCall(surface: (connect: Known, workspace: string | undefined) => ChatSurface | undefined, uploads: string) {
+/// run here). Files a remote chat posts are kept in `uploads` until they are posted (or for the process's life at most);
+/// none is kept there before `cleared` (what a process before left there taken away).
+export function answerCall(surface: (connect: Known, workspace: string | undefined) => ChatSurface | undefined, uploads: string, cleared: Promise<void> = Promise.resolve()) {
   return async (_peer: string, request: Json, workspace?: string): Promise<Json> => {
     const op = typeof request?.op === "string" ? request.op : "";
     const known = knownIn(request?.connect);
@@ -311,7 +321,8 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
       const name = basename(String(args[0]?.name ?? "file")) || "file";
       if (bytes === null) throw new Error("no file came");
       const dir = join(uploads, randomUUID());
-      mkdirSync(dir, { recursive: true });
+      await cleared;
+      await mkdir(dir, { recursive: true });
       const path = join(dir, name);
       const file = await open(path, "w");
       try {
@@ -330,7 +341,7 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
       try {
         return { result: await chat.post(thread, String(message), kept, card) };
       } finally {
-        for (const f of kept) rmSync(join(f.path, ".."), { recursive: true, force: true });
+        await Promise.all(kept.map((f) => rm(join(f.path, ".."), { recursive: true, force: true }).catch(() => {})));
       }
     }
     if (op === "download") {
@@ -360,19 +371,43 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
 /// that is (<data>/remote-connects.json, kept so that a chat of one has its surface as the station starts, before the next
 /// event comes): by their ids here.
 export class RemoteConnects {
-  private readonly path: string;
+  private readonly file: PrivateFile;
   private readonly known = new Map<string, Remote>();
   private readonly surfaces = new Map<string, RemoteSurface>();
   private readonly ask: Ask;
   private readonly names: (kind: ConnectKind) => NameBook | null;
   private readonly here: () => string;
+  /// What was learned before the file was read: not taken from it.
+  private readonly told = new Set<string>();
+  private loaded = false;
+  private readonly loading: Promise<void>;
 
   constructor(data: string, here: () => string, ask: Ask, names: (kind: ConnectKind) => NameBook | null) {
-    this.path = join(data, REMOTE_FILE);
+    this.file = new PrivateFile(join(data, REMOTE_FILE));
     this.here = here;
     this.ask = ask;
     this.names = names;
-    for (const [id, r] of Object.entries(readRemote(data))) this.known.set(id, r);
+    this.loading = this.load(data);
+  }
+
+  private async load(data: string): Promise<void> {
+    const kept = await readRemote(data);
+    for (const [id, r] of Object.entries(kept)) if (!this.told.has(id)) this.known.set(id, r);
+    this.loaded = true;
+    // (what changed meanwhile, written now with what was kept)
+    if (this.told.size > 0) this.save();
+    this.told.clear();
+  }
+
+  /// Once what the file kept is known (the station waits for it before it serves: workspace.ts).
+  ready(): Promise<void> {
+    return this.loading;
+  }
+
+  /// Once what was changed is written down (or failed).
+  async written(): Promise<void> {
+    await this.loading;
+    await this.file.written();
   }
 
   /// What the connect's station (`station`) said of it now: kept, and its surface made again when that changed.
@@ -382,11 +417,13 @@ export class RemoteConnects {
     if (had !== undefined && JSON.stringify(had) === JSON.stringify(next)) return;
     this.known.set(id, next);
     this.surfaces.delete(id);
-    this.save();
+    this.save(id);
   }
 
   /// The connect runs on `station` now (moved there); none of this station's any more when that is this one.
   moved(id: string, station: string) {
+    // (one the file may keep: once it is read)
+    if (!this.loaded) return void this.loading.then(() => this.moved(id, station));
     const had = this.known.get(id);
     if (had === undefined) return;
     if (station === this.here()) this.known.delete(id);
@@ -411,10 +448,13 @@ export class RemoteConnects {
     return [...this.known].map(([id, r]) => connectOf(id, r.described));
   }
 
-  private save() {
-    const tmp = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.known)) + "\n");
-    renameSync(tmp, this.path);
+  /// Written off the station's thread; before the file was read, once it is (what it kept not lost).
+  private save(id?: string) {
+    if (!this.loaded) {
+      if (id !== undefined) this.told.add(id);
+      return;
+    }
+    this.file.write(JSON.stringify(Object.fromEntries(this.known)) + "\n").catch((error) => log.warn("connects", "the connects of other stations were not written", { error: (error as Error).message }));
   }
 }
 
@@ -423,9 +463,9 @@ export type Remote = { station: string; described: Described };
 
 
 /// The connects of other stations kept in `data`, by remote id; none when the file is not there or does not read.
-export function readRemote(data: string): Record<string, Remote> {
+export async function readRemote(data: string): Promise<Record<string, Remote>> {
   try {
-    const raw = JSON.parse(readFileSync(join(data, REMOTE_FILE), "utf8"));
+    const raw = JSON.parse(await readFile(join(data, REMOTE_FILE), "utf8"));
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
     return Object.fromEntries(Object.entries(raw).filter(([, r]: [string, any]) => typeof r?.station === "string" && typeof r?.described?.kind === "string")) as Record<string, Remote>;
   } catch {

@@ -262,6 +262,9 @@ pub fn station_glyph_node(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(v) {
     made.val = Some(v)
+    // (the counts, read again as what `g` reads changes, and what draws them woken only where they come out otherwise)
+    let counts = @signals.computed(fn(_) { g() }, same=fn(a, b) { a == b })
+    let g = fn() { counts.get() }
     let eye = fn() {
       let counts = g()
       let blinking = if counts.asleep { 0 } else { counts.working }
@@ -312,13 +315,6 @@ fn standard_at(t : Double) -> Double {
     }
   }
   bez(0.0, 1.0, (lo + hi) / 2.0)
-}
-
-///|
-/// A rounded frame `w` by `h` (its corner `r`) drawn as dashes `line` wide in `color` (CSS's `dashed`: a dash three of
-/// its widths, a gap two, spread to come round evenly), its line's middle on the frame; what stands by it is under.
-pub fn dashed_frame(c : @ui.Ctx, w : Double, h : Double, r : Double, line : Double, color : Int64) -> Int {
-  draw_drawable(c, "dashed/\{w}/\{h}/\{r}/\{line}/\{color}", dashed_vector(w, h, r, line, color), w + line, None)
 }
 
 ///|

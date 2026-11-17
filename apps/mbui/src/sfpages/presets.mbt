@@ -6,8 +6,8 @@
 // checked, someone else's picked among them with whose it is; 编辑 the one picked or, someone else's, 复制「X」为我的预设;
 // 新预设; 其他成员的预设, a level further in, asked of the core at that press). A preset is made or changed in a dialog
 // of nodes (what it is read of the core's `preset`): its folders
-// first (each a row with its ×; 添加目录 a step further in: the folders the stations found, searched by name, 浏览文件夹…
-// the folder picker a step further still, 从 Git 克隆… a repository cloned onto a station, its row 正在克隆… till it is
+// first (each a row with its ×; 添加目录 a step further in: the folders the stations found, searched by name, 浏览文件夹
+// the folder picker a step further still, 从 Git 克隆 a repository cloned onto a station, its row 正在克隆… till it is
 // there), its name (the first folder's till one is typed), what people want of its chats.
 
 ///|
@@ -327,6 +327,7 @@ fn dir_label(path : String) -> String {
 ///|
 /// A repository being cloned for a preset (`preset.clone`'s answer, kept by the dialog that asked): the station it is
 /// cloned onto, its id there, its repository and its name.
+#derive(Eq)
 priv struct PresetClone {
   station : String
   id : String
@@ -563,7 +564,9 @@ fn preset_dirs_node(
   e : PresetEditing,
   close : () -> Unit,
 ) -> Unit {
-  let keys = fn() {
+  // (its rows, each with what it is made of as it is made: by station, a station's head where it is said, its folders,
+  // its clones under way; 添加目录 last)
+  let rows = fn() {
     let dirs = e.dirs.get()
     let clones = e.clones.get()
     let order : Array[String] = []
@@ -579,86 +582,105 @@ fn preset_dirs_node(
       }
     }
     let headed = order.length() > 1 || order.iter().any(fn(s) { s != address })
-    let out : Array[String] = []
+    let out : Array[PresetDirsRow] = []
     for s in order {
       if headed {
-        out.push("h\n" + s)
+        // (the station's name as its first folder kept it, for a station the app no longer lists)
+        let mut saved = ""
+        for d in dirs {
+          if dir_station(Some(d), address) == s {
+            saved = text(Some(d), "stationName")
+            break
+          }
+        }
+        out.push(DirsHead(s, saved))
       }
       for d in dirs {
         if dir_station(Some(d), address) == s {
-          out.push("d\n" + dir_key(Some(d)))
+          out.push(DirsDir(dir_key(Some(d)), d))
         }
       }
       for k in clones {
         if k.station == s {
-          out.push("c\n" + k.id)
+          out.push(DirsClone(k))
         }
       }
     }
-    out.push("a")
+    out.push(DirsAdd)
     out
   }
   v.box(fn(list) {
-    list.each(keys, fn(k) { k }, fn(row, item) {
-      let k = item.untracked()
-      if k == "a" {
-        // (what the dialog opens on in the window's middle: its folders are what a preset is made of first, its name
-        // the first folder's until typed; Enter there adds one, and no input method is raised over the form by touch)
-        preset_action_row(
-          row,
-          "plus",
-          fn() { @sf.t("web-main.preset.add") },
-          fn() {
-            close()
-            preset_add_open(src, address, stations, e)
-          },
-          opens=true,
-        )
-      } else if k.has_prefix("h\n") {
-        let s = k.exact_view(start=2).to_owned()
-        let saved = @signals.untracked(fn() {
-          match e.dirs.get().iter().find_first(fn(d) { dir_station(Some(d), address) == s }) {
-            Some(d) => text(Some(d), "stationName")
-            None => ""
+    // (what the stations offer by folder once, while it has any: each folder's row reads its own, told only as that one
+    // changes)
+    let offered_by = list.keyed_by(
+      fn() { if e.dirs.get().is_empty() { [] } else { offered_dirs(src, address, stations) } },
+      fn(o) { dir_key(Some(o)) },
+    )
+    list.each(rows, PresetDirsRow::key, fn(row, item) {
+      match item.untracked() {
+        DirsAdd =>
+          // (what the dialog opens on in the window's middle: its folders are what a preset is made of first, its name
+          // the first folder's until typed; Enter there adds one, and no input method is raised over the form by touch)
+          preset_action_row(
+            row,
+            "plus",
+            fn() { @sf.t("web-main.preset.add") },
+            fn() {
+              close()
+              preset_add_open(src, address, stations, e)
+            },
+            opens=true,
+          )
+        DirsHead(s, saved) => @sf.panel_heading_node(row, fn() { preset_station_name(s, saved, stations) })
+        DirsDir(at, was) => {
+          // (what it shows as: as its station offers it, where it does)
+          let one = fn() {
+            match offered_by.get(at) {
+              Some(x) => Some(x)
+              None => Some(was)
+            }
           }
-        })
-        @sf.panel_heading_node(row, fn() { preset_station_name(s, saved, stations) })
-      } else if k.has_prefix("d\n") {
-        let at = k.exact_view(start=2).to_owned()
-        guard @signals.untracked(fn() { e.dirs.get().iter().find_first(fn(d) { dir_key(Some(d)) == at }) }) is Some(was) else {
-          return
+          let path = text(Some(was), "path")
+          preset_dir_row(
+            row,
+            fn() { if text(one(), "name") != "" { text(one(), "name") } else { dir_label(path) } },
+            fn() { text(one(), "repo") },
+            fn() { text(one(), "icon") },
+            fn() { dir_note(one(), false) },
+            end=fn(x) {
+              preset_drop_node(x, fn() {
+                e.dirs.set(e.dirs.untracked().filter(fn(d) { dir_key(Some(d)) != at }))
+              })
+            },
+          )
         }
-        // (what it shows as: as its station offers it, where it does)
-        let one = fn() {
-          let offered = offered_dirs(src, address, stations)
-          match offered.iter().find_first(fn(o) { dir_key(Some(o)) == at }) {
-            Some(x) => Some(x)
-            None => Some(was)
-          }
-        }
-        let path = text(Some(was), "path")
-        preset_dir_row(
-          row,
-          fn() { if text(one(), "name") != "" { text(one(), "name") } else { dir_label(path) } },
-          fn() { text(one(), "repo") },
-          fn() { text(one(), "icon") },
-          fn() { dir_note(one(), false) },
-          end=fn(x) {
-            preset_drop_node(x, fn() {
-              e.dirs.set(e.dirs.untracked().filter(fn(d) { dir_key(Some(d)) != at }))
-            })
-          },
-        )
-      } else {
-        let cid = k.exact_view(start=2).to_owned()
-        guard @signals.untracked(fn() { e.clones.get().iter().find_first(fn(x) { x.id == cid }) }) is Some(c) else {
-          return
-        }
-        preset_clone_row(row, src, c, e)
+        DirsClone(c) => preset_clone_row(row, src, c, e)
       }
     })
   })
   |> ignore
+}
+
+///|
+/// A row of a preset's folders (preset_dirs_node's), with what it is made of as it is made: a station's head (its
+/// address, its name as its first folder kept it), a folder (its key, as it was given), a clone under way, 添加目录.
+#derive(Eq)
+priv enum PresetDirsRow {
+  DirsHead(String, String)
+  DirsDir(String, Json)
+  DirsClone(PresetClone)
+  DirsAdd
+}
+
+///|
+/// A row's key, as the list's were: a head by its station, a folder by its key, a clone by its id.
+fn PresetDirsRow::key(self : PresetDirsRow) -> String {
+  match self {
+    DirsHead(s, _) => "h\n" + s
+    DirsDir(at, _) => "d\n" + at
+    DirsClone(k) => "c\n" + k.id
+    DirsAdd => "a"
+  }
 }
 
 ///|
@@ -783,10 +805,8 @@ fn preset_row(
     @sf.style_node(r, fn() { preset_row_at.then(@sf.panel_row_in_node(r)) })
     match press {
       Some(p) => {
-        r
-        .ground(By(fn() { if @sf.lit_node(r) { @sf.theme().p.hover } else { 0L } }))
-        .says(By(fn() { Some(@view.said(Button, label=title())) }))
-        |> ignore
+        @sf.hover_ground_node(r)
+        r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
         @sf.presses_node(r, p)
         if opens {
           @sf.panel_opens_on_node(r)
@@ -822,9 +842,12 @@ fn preset_row(
 
 ///|
 /// A row that does something in node `v`, as a folder's row stands: a neutral tile with `icon` in it where a folder's
-/// mark stands, its `words` on one line; pressed whole, `press`.
+/// mark stands, its `words` on one line, a chevron at its end (each asks more first: a step further in, a picker; the
+/// user, 2026-11-17: an icon, not words ending in …); pressed whole, `press`.
 fn preset_action_row(v : @view.View, icon : String, words : () -> String, press : () -> Unit, opens? : Bool = false) -> Unit {
-  preset_row(v, fn(l) { preset_action_tile(l, icon) }, words, fn() { "" }, press~, opens~)
+  preset_row(v, fn(l) { preset_action_tile(l, icon) }, words, fn() { "" }, press~, opens~, tail=fn(e) {
+    @sf.icon_node(e, "chevron-right", @sf.panel_end_icon, By(fn() { @sf.theme().p.subtle })) |> ignore
+  })
 }
 
 ///|
@@ -968,7 +991,7 @@ fn preset_foot(
 }
 
 ///|
-/// 添加目录, a step further in from the dialog: a line to find one by name, then 浏览文件夹… and 从 Git 克隆… first
+/// 添加目录, a step further in from the dialog: a line to find one by name, then 浏览文件夹 and 从 Git 克隆 first
 /// whatever is typed, then the folders the workspace's stations found and not in the preset yet, as they come (each
 /// station's said as it is; those read before shown meanwhile), by station, those their chats worked in first, each
 /// where it is and how many chats used it. One picked, back to the dialog with it among the folders.
@@ -1301,7 +1324,7 @@ fn repo_mark(c : @ui.Ctx, name : String, repo : String, icon : String, size : Do
 let preset_dir_mark : Double = 38.0
 
 ///|
-/// The icon in a neutral tile of a row that does something (浏览文件夹…, 从 Git 克隆…, 添加目录).
+/// The icon in a neutral tile of a row that does something (浏览文件夹, 从 Git 克隆, 添加目录).
 let preset_action_icon : Double = 20.0
 
 ///|
@@ -1576,9 +1599,9 @@ fn preset_capsule_pill(
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       .radius(Is(999.0))
-      .ground(By(fn() { if @sf.lit_node(btn) { @sf.theme().p.hover } else { 0L } }))
       .says(By(fn() { Some(@view.said(Button, label=words())) }))
       |> ignore
+      @sf.hover_ground_node(btn)
       @sf.presses_node(btn, fn() { on_open(btn) })
       lead(btn)
       @sf.words_node(btn, words, fn() { if has_value() { new_capsule_words } else { preset_capsule_quiet } })
@@ -1596,9 +1619,9 @@ fn preset_capsule_pill(
         x
         .shrink(Is(0.0))
         .radius(Is(999.0))
-        .ground(By(fn() { if @sf.lit_node(x) { @sf.theme().p.hover } else { 0L } }))
         .says(Is(Some(@view.said(Button, label=clear_label))))
         |> ignore
+        @sf.hover_ground_node(x)
         @sf.presses_node(x, on_clear)
         @sf.icon_node(x, "close", 13.0, By(fn() { @sf.theme().p.muted })) |> ignore
       })

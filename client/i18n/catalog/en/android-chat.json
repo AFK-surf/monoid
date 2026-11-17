@@ -132,6 +132,7 @@
   "android-chat.load.failed": "Failed",
   "android-chat.load.label": "Resources {percent}% · {finished}/{total}",
   "android-chat.load.label.failed": "Resources {percent}% · {finished}/{total} · {failed} failed",
+  "android-chat.load.name": "Resources",
   "android-chat.load.note": "Based on service requests so far · Updates as resources appear",
   "android-chat.load.waiting": "Waiting for requests",
   "android-chat.marks.arrow.where": "Arrow · from ({ax}, {ay}) to ({bx}, {by})",

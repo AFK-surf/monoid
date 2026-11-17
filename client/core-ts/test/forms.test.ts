@@ -280,6 +280,39 @@ test("deepseek_harness_is_offered_where_the_station_runs_it_on_any_endpoint", ()
   assert.equal(flows.value(topic).usesLine, "添加后可用于：自动决策");
 });
 
+test("pi_runs_on_every_key_deepseek_harness_does_and_its_own_variables_where_the_station_runs_it", () => {
+  const { s, flows, topic } = flow();
+  flows.change(topic, 1, "open", {});
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], consoleSignIn: true, updates: [{ id: "station" }, { id: "dsh" }, { id: "pi", name: "Pi", installed: true }] } });
+  let view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  const tiles = view.groups.flatMap((g: J) => g.providers);
+  assert.deepEqual(view.groups.find((g: J) => g.id === "local").providers.map((p: J) => p.id), ["env-claude", "env-codex", "env-dsh", "env-pi"]);
+  assert.equal(tiles.find((p: J) => p.id === "anthropic").usesText, "Claude Code · DeepSeek Harness · Pi");
+  assert.equal(tiles.find((p: J) => p.id === "opencode-go").usesText, "Claude Code · Codex · DeepSeek Harness · Pi · 自动决策");
+  // Pi takes no plan of its own: no tile of its own among the makers, nothing to sign in to.
+  assert.ok(!tiles.some((p: J) => p.id === "pi" || (p.hasPlan === true && p.runtime === "pi")));
+  flows.change(topic, 1, "edit", { provider: "deepseek", key: "k" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：DeepSeek Harness · Pi · 自动决策");
+  flows.change(topic, 1, "edit", { provider: "opencode-go" });
+  flows.change(topic, 1, "edit", { method: "plan" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：Claude Code · Codex · DeepSeek Harness · Pi");
+  flows.change(topic, 1, "edit", { provider: "env-pi" });
+  view = flows.value(topic);
+  assert.deepEqual([view.title, view.usesLine], ["连接 环境变量（Pi）", "添加后可用于：Pi"]);
+  assert.deepEqual(flows.begin(topic, 1), { runtime: "pi", access: { kind: "env" } });
+  flows.finish(topic, 1, null);
+  // A station that lists Pi but not DeepSeek Harness: a key runs Pi alone of the two.
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], updates: [{ id: "station" }, { id: "pi", name: "Pi", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "deepseek", key: "k" });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：Pi · 自动决策");
+  // A station from before it: not offered, and a key is said to be for what that station runs.
+  s.set(overview, { ok: { apiProviders: [{ id: "deepseek" }], updates: [{ id: "station" }, { id: "dsh" }] } });
+  assert.equal(flows.value(topic).usesLine, "添加后可用于：DeepSeek Harness · 自动决策");
+  assert.ok(!flows.value(topic).groups.flatMap((g: J) => g.providers).some((p: J) => p.id === "env-pi"));
+  assert.throws(() => flows.change(topic, 1, "edit", { provider: "env-pi" }));
+});
+
 test("supergrok_is_xais_plan_and_an_xai_key_runs_grok_build_where_the_station_runs_it", () => {
   const { s, flows, topic } = flow();
   flows.change(topic, 1, "open", {});
@@ -340,8 +373,17 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   // The plan (signed in with Google) or the key.
   flows.change(topic, 1, "edit", { provider: "google" });
   view = flows.value(topic);
-  assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["key", "API key"]]]);
+  // A person's plan, a company's (Gemini Enterprise: signed in with a work Google account), or the key.
+  assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["enterprise", "企业版 · Gemini Enterprise"], ["key", "API key"]]]);
   assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*账号可能被停用。$/);
+  assert.match(view.choices[1].hint, /^公司的 Google Workspace 或 Google Cloud 账号.*Google Cloud 项目.*账号可能被停用。$/);
+  flows.change(topic, 1, "edit", { method: "enterprise" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.deepEqual([view.step, view.signIn, view.usesLine], ["connect", { runtime: "agy", access: "agy-enterprise", provider: "Google" }, "添加后可用于：Antigravity CLI"]);
+  // Back: to the ways again.
+  flows.change(topic, 1, "edit", { back: true });
+  assert.deepEqual([flows.value(topic).step, flows.value(topic).choices.length], ["method", 3]);
   flows.change(topic, 1, "edit", { method: "plan" });
   view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
@@ -350,6 +392,12 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   flows.change(topic, 1, "edit", { key: "AIza-1" });
   assert.deepEqual(flows.begin(topic, 1), { access: { kind: "api-provider", key: "AIza-1", provider: "google" } });
   flows.finish(topic, 1, null);
+  // A station that runs it but takes no Google key: the two plans, no key; a company's not installed yet is installed first.
+  s.set(overview, { ok: { apiProviders: [], updates: [{ id: "station" }, { id: "dsh" }, { id: "agy", name: "Antigravity CLI", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.deepEqual([view.step, view.choices.map((c: J) => c.id)], ["method", ["plan", "enterprise"]]);
+  flows.change(topic, 1, "edit", { provider: "" });
   // A station that does not run it: no plan, the key straight to its form.
   s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "station" }, { id: "dsh" }] } });
   flows.change(topic, 1, "edit", { provider: "google" });

@@ -113,7 +113,8 @@ try {
     for (const line of readFileSync(`${process.env.E2E_WORK}/run/cloud.log`, "utf8").split("\n")) {
       const m = line.match(/REQ (\d\d:\d\d:\d\d\.\d+) \d+ \S+ (\S+) (\S+)/);
       if (!m || !tails.has(m[3]!)) continue;
-      const ago = at(now) - at(m[1]!);
+      // (the log says a time of day alone: a line of before midnight read after it is a day back, not in the future)
+      const ago = (at(now) - at(m[1]!) + 86_400_000) % 86_400_000;
       if (/^\/v1\/(me\/personal-lock|workspaces\/[^/]+\/(lock(\/.*)?|devices))$/.test(m[2]!)) {
         if (ago >= 0 && ago < 60_000) locks++;
         continue;

@@ -64,4 +64,21 @@ const simd = Buffer.from([
 ]);
 assert(WebAssembly.validate(simd));
 assert.throws(() => compactStart(simd), /unsupported Wasm instruction fd/);
-console.log('compact-test: branch paths, initial zeroes and loop-carried values preserved; unsupported instructions rejected');
+// Past V8's 50,000-local per-function cap, raw source fails V8 validation until compactStart folds non-overlapping slots.
+const overV8CapOps = [];
+for (let i = 0; i < 50_005; i++) overV8CapOps.push(0x41, 1, 0x21, ...u(i));
+overV8CapOps.push(0x20, ...u(0), 0x20, ...u(50_004), 0x6a, 0x24, 0, 0x0b);
+const overV8Cap = Buffer.from([
+  0, 97, 115, 109, 1, 0, 0, 0,
+  ...section(1, [2, 0x60, 0, 0, 0x60, 0, 1, 0x7f]),
+  ...section(3, [2, 0, 1]),
+  ...section(6, [1, 0x7f, 1, 0x41, 0, 0x0b]),
+  ...section(7, [1, ...str('result'), 0, 1]),
+  ...section(8, [0]),
+  ...section(10, [2, ...body([1, ...u(50_005), 0x7f, ...overV8CapOps]), ...body(getter)]),
+]);
+assert.equal(WebAssembly.validate(overV8Cap), false);
+const compactedOverCap = compactStart(overV8Cap);
+assert(WebAssembly.validate(compactedOverCap));
+assert.equal(new WebAssembly.Instance(new WebAssembly.Module(compactedOverCap)).exports.result(), 2);
+console.log('compact-test: branch paths, initial zeroes, >50k start locals and loop-carried values preserved; unsupported instructions rejected');

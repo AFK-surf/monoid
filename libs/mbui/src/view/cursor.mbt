@@ -74,13 +74,7 @@ pub fn View::cursor(self : View, shape : Live[Cursor?], loc~ : SourceLoc) -> Vie
     Some(s) => s.said[Prop::Cursor.ord()] = (Prop::Cursor, loc)
     None => ()
   }
-  match n.props.get(Prop::Cursor.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Cursor.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Cursor.ord())
   let set = fn(c : Cursor?) {
     guard self.live() is Some(n) else { return }
     if n.cursor != c {
@@ -95,7 +89,7 @@ pub fn View::cursor(self : View, shape : Live[Cursor?], loc~ : SourceLoc) -> Vie
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) }, draws=false)
-        n.props[Prop::Cursor.ord()] = stop
+        n.prop_set(Prop::Cursor.ord(), stop)
       })
   }
   self

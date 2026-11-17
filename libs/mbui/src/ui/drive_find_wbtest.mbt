@@ -121,3 +121,21 @@ test "img: a picture by its source, shapes by what they are called, as an old vi
   t.tap(rocket[0].0, rocket[0].1)
   assert_eq((found, pressed.val), ((1, 1, 1, 1, 2, 1, 0), 1))
 }
+
+///|
+test "words in pieces in a node far wider than they are: found at their own middle, not the node's, as an old view's rich text's words are" {
+  let t = Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .width(Is(Some(700.0)))
+      .words_runs(Is([@view.words_run("短短的一句。")]), ink=0x333333FFL, look={ size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let at = t.locate("短短的一句。")
+  // (six of them at 15 wide each, from the node's start: their middle well within their first 120, the node's at 350)
+  assert_true(at is [(x, _)] && x > 0.0 && x < 120.0, msg="found at \{Repr(at)}")
+}

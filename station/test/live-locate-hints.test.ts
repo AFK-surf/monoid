@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { Worker } from "node:worker_threads";
-import { rememberCodexRollout, transcriptLocationHints, transcriptPaths, transcriptSources, type TranscriptLocationHints } from "../src/read/transcript.ts";
+import { rememberCodexRollout, transcriptLocationHints, transcriptPaths, transcriptSources, type TranscriptLocationHints } from "./reference/transcript-paths.ts";
 
 test("a live locator in another thread keeps the process's transcript path hints", async () => {
   const data = mkdtempSync(join(tmpdir(), "live-hints-")), home = join(data, "home"), shared = join(data, "transcripts", "codex");

@@ -26,6 +26,7 @@ on:
       - "libs/mbui/goldens/render/controls.dl"
       - "libs/mbui/scripts/render_dl.sh"
       - "libs/mbui/scripts/render_windows.sh"
+      - "libs/mbui/scripts/render_words.sh"
       - ".github/workflows/mbui-render-windows.yml"
       - ".github/actions/mbui-warp/**"
       - ".github/actions/msvc/**"
@@ -96,6 +97,23 @@ jobs:
           path: libs/mbui/out/render/
       - name: Against the reference, on the machine it was made on
         run: scripts/render_windows.sh against
+      # Words for people to set beside the Mac's (scripts/render_words.sh), asked for by hand (the fonts fetched for it): nothing checked
+      - name: Words drawn at 1, 1.5 and 2 (scripts/render_words.sh)
+        if: always() && matrix.run == 'a' && github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          mkdir -p out/fonts
+          curl -fsSL -o out/fonts/inter.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf' || rm -f out/fonts/inter.ttf
+          curl -fsSL -o out/fonts/noto.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf' || rm -f out/fonts/noto.ttf
+          WORDS_FONTS="$PWD/out/fonts" scripts/render_words.sh windows
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.run == 'a' && github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        with:
+          name: words-windows
+          path: libs/mbui/out/words/*.png
+          if-no-files-found: warn
 
   # the two jobs' pictures (two machines of the kind, at once): the same to the byte
   same:

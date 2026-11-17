@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import { cardAt, LAST_MESSAGE_RECENT_EDIT, makeStore, pendingCard } from "../src/read/store.ts";
-import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
-import { installLegacyEdits, legacyEditStep } from "../src/store/legacy-edits-build.ts";
-import { addClientColumn } from "../src/store/schema.ts";
+import { cardAt, LAST_MESSAGE_RECENT_EDIT, makeStore, pendingCard } from "./reference/store.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
+import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
+import { addClientColumn, repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 
 const card = JSON.stringify({ type: "options", options: [{ label: "Pick" }] });
@@ -129,7 +129,7 @@ test("pending card readiness and an answer share one snapshot", () => {
     let changed = false;
     const observed = new Proxy(db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,2,'message','2.1','person','p','yes',2)").run(thread);
         }
@@ -149,6 +149,7 @@ test("review readers share old edit preparation after handover when one cancels"
   const dir = mkdtempSync(join(tmpdir(), "old-card-reader-")), path = join(dir, "stillfail.db");
   const { store, thread, short } = oldCard(150, path);
   const previous = Promise.withResolvers<void>(), readers = new Readers(dir, 1, undefined, 1, { previousGone: previous.promise });
+  readers.repairEdits = () => repairMergedEditLookup(store.db);
   try {
     const controller = new AbortController();
     const stopped = readers.read("reviewPendingCard", { thread }, "en", { signal: controller.signal });

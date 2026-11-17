@@ -93,7 +93,7 @@ fn ag_msg(kind : String, by? : String = "agent", files? : Array[String] = [], pl
 /// high.
 fn ag_new_row(w : Double, m : () -> Message, platform? : Int = 0, src? : Source, h? : Double = 320.0) -> @ui.Tester {
   said_new(w, platform~, src?, h~, fn(f, src, here) {
-    agent_said_node(f, src, here, "m:ts9", fn() { row_side((here.width)()) }, fn() { 0.0 }, m) |> ignore
+    agent_said_node(f, src, here, fn() { "m:ts9" }, fn() { row_side((here.width)()) }, fn() { 0.0 }, m) |> ignore
   })
 }
 
@@ -238,7 +238,7 @@ test "what an agent's post asks under it, in its row made once as nodes, is draw
       let was = ag_drawn(old)
       let src = dec_src(@signals.signal(None), [])
       let t = dec_new(w, fn() { dec_view() }, fn(f, here) {
-        agent_said_node(f, src, here, "m:ts8", fn() { row_side(w) }, fn() { 0.0 }, fn() { m }) |> ignore
+        agent_said_node(f, src, here, fn() { "m:ts8" }, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }) |> ignore
       })
       t.run_for(@ui.move_most_ms)
       assert_eq(ag_drawn(t), was, msg=at)

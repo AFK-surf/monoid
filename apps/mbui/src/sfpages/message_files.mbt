@@ -147,17 +147,15 @@ pub fn message_files(
       _ => dmin(card_across(c, src, here, a), room)
     }
   })
-  // (in a picture of the chat being shared, each with the room its ✕ hangs in past its top and right: publish.mbt)
-  let hung = if picturing.val is Some(_) { publish_file_hung() } else { 0.0 }
   let rows : Array[Array[Int]] = []
   let mut used = 0.0
   for i, w in widths {
-    if rows.length() == 0 || used + files_gap + w + hung > room {
+    if rows.length() == 0 || used + files_gap + w > room {
       rows.push([i])
-      used = w + hung
+      used = w
     } else {
       rows[rows.length() - 1].push(i)
-      used = used + files_gap + w + hung
+      used = used + files_gap + w
     }
   }
   let column = if mine { files_column_end } else { files_column }
@@ -169,12 +167,6 @@ pub fn message_files(
     _ => []
   }
   let file_keys = if flying_keys.length() > 0 { list.map(fn(a) { @sfbase.file_key(a) }) } else { [] }
-  // (the gap between rows the room the ✕ hangs in past the next's top on top of their own, out to the scale's next step)
-  let column = if hung > 0.0 {
-    column.then(@ui.style(pt=@sf.room_of(hung), gap=@sf.room_of(scale_up(files_gap + hung))))
-  } else {
-    column
-  }
   c.box(style=column, id=row, fn() {
     for r in rows {
       c.box(style=files_row, fn() {
@@ -193,7 +185,7 @@ pub fn message_files(
             "image" | "video" => Some(message_media(c, src, here.station, owner_of(here, a), a, said~))
             _ => None
           }
-          let item = c.box(style=@ui.style(w=Fixed(widths[i] + hung)), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
+          let item = c.box(style=@ui.style(w=Fixed(widths[i])), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
           let paint = media.map(fn(p) { fn(w, h, fit, radius) { media_content(c, p, w, h, fit, radius) } })
           match flight {
             Some(f) => flight_landing(
@@ -394,11 +386,7 @@ fn thumb_ratio(hash : String) -> Double? {
 ///|
 /// One of a message's files (FileItem), `w` wide.
 fn file_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w : Double, by~ : (String, String, String)?, landing_key? : String = "", media? : MediaPicture? = None, corner? : Double = @sf.message_file_corner, at? : String = "", said? : Bool = false) -> Unit {
-  match picturing.val {
-    // (in a picture of the chat being shared: to tick, publish.mbt)
-    Some((seq, taking)) => publish_file(c, src, here, seq, taking, a, w, by~)
-    None => file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
-  }
+  file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
 }
 
 ///|
@@ -477,7 +465,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   })
   let thumb = @sfbase.thumb_place(here.station + "/" + owner + "/" + a.path, here.station, here.session, at)
   let downloading = download_of(src, here.station, owner, stored_name(a.path))
-  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   // the picture covering the whole box; a letterboxed one's covering its own proportions centred in it, all it and
   // what it waits on take, the box's corners cutting it (imageBox.ts letterbox; any: its frame's, concentric with
   // what holds it where it is in a corner of that, a quote's card)
@@ -681,7 +669,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
       ),
     ]
   }
-  let more = [beside_option(here, a, at), download_option(src, here, a, owner)]
+  let more = file_options([beside_option(here, a, at), download_option(src, here, a, owner)])
   more.append(load)
   file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~)
   // (its name, which nothing over its picture says)
@@ -732,7 +720,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     over(marks)
   })
   // where it is and what it shows, for the preview to fly from and back into; hidden while the preview is its picture
-  // (what decides how its capsule looks said with it: what draws it in flight told as it changes)
+  // (what its capsule says with it: what draws it in flight told as it changes)
   note_thumb(
     c,
     thumb,
@@ -741,8 +729,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     picture=if still == "!" { "" } else { still },
     letterbox~,
     list=list_of(here),
-    over=fn(alpha) { over(alpha * marks) },
-    said="\{marks} \{@ui.some_text(coming)} \{a.duration} \{corner}",
+    over=Some({ duration: a.duration, coming, corner, seen: marks }),
   )
   c.look(b, @ui.look(alpha=thumb_shows(thumb)))
   // held by a finger for its menu: lifted over the menu's scrim (@sf.lift_over)
@@ -760,7 +747,7 @@ fn card_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, by~ 
   let failed = text(dl, "state") == "failed"
   let place = @sfbase.thumb_occurrence(here.station, here.session, at)
   let key = "msg-card/" + place + "/" + @sfbase.file_key(a)
-  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   let id = text(dl, "id")
   @sf.file_card(
     c,
@@ -1081,6 +1068,11 @@ let image_fill_waiting : @ui.Style = image_fill.then(@ui.css("bg=Neutral"))
 let letterbox_room : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
+/// letterbox_room waiting on its picture, nothing of it to show yet: the neutral ground (image_fill_waiting's).
+// kept across runs: a value (no field of it changes)
+let letterbox_room_waiting : @ui.Style = letterbox_room.then(@ui.css("bg=Neutral"))
+
+///|
 /// One that cannot be had (msgImageUnavailable): its mark over 无法预览, muted, in its middle.
 // kept across runs: a value (no field of it changes)
 let no_preview_box : @ui.Style = @ui.css("w=Full h=Full gap=S1_5 align=ACenter justify=JCenter")
@@ -1115,4 +1107,16 @@ fn list_of(here : MessageHere) -> String {
     Some(l) => l.rk
     None => ""
   }
+}
+
+///|
+/// A file's menu's own choices, those offered here (one not, None, is no line between them: @sf.menu's None is one).
+fn file_options(offered : Array[@sf.MenuItem?]) -> Array[@sf.MenuItem?] {
+  let out : Array[@sf.MenuItem?] = []
+  for x in offered {
+    if x is Some(_) {
+      out.push(x)
+    }
+  }
+  out
 }

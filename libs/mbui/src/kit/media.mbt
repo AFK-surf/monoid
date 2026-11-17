@@ -133,6 +133,10 @@ pub struct Media {
   priv mut subs_on : Bool
   priv mut subtitle : Bool
   priv mut cues : Array[@codec.Cue]
+  // (the subtitle told and its words shown or not, followed by what reads them: Media::subtitle, Media::cue_now)
+  priv subs_told : @signals.Signal[Int]
+  // (its view opened or let go of, followed by what reads it: Media::native, a player's nodes made before it opened)
+  priv view_told : @signals.Signal[Int]
   priv mut fill : Bool
   // (turned sideways or not, as it is told: what reads it follows it, a frame round the player laid out by it)
   priv sideways : @signals.Signal[Bool]
@@ -252,6 +256,8 @@ pub fn Media::new(
     subs_on: true,
     subtitle: false,
     cues: [],
+    subs_told: @signals.signal(0),
+    view_told: @signals.signal(0),
     fill: false,
     sideways: @signals.signal(false, same=fn(a, b) { a == b }),
     awake: true,
@@ -292,6 +298,7 @@ pub fn Media::open(self : Media, track : MediaTrack, start? : Double = 0.0, play
     n.play()
   }
   self.view = Some(n)
+  self.view_told.set(self.view_told.untracked() + 1)
   self.track = Some(track)
   self.start_at = start
   self.started = false
@@ -320,7 +327,10 @@ fn Media::close_view(self : Media) -> Unit {
     Some(n) => n.close()
     None => ()
   }
-  self.view = None
+  if self.view is Some(_) {
+    self.view = None
+    self.view_told.set(self.view_told.untracked() + 1)
+  }
 }
 
 ///|
@@ -335,6 +345,7 @@ pub fn Media::close(self : Media) -> Unit {
 pub fn Media::set_subtitle(self : Media, there : Bool, cues : Array[@codec.Cue]) -> Unit {
   self.subtitle = there
   self.cues = cues
+  self.subs_told.set(self.subs_told.untracked() + 1)
 }
 
 ///|
@@ -349,6 +360,8 @@ pub fn Media::status(self : Media) -> MediaStatus {
   match self.pinned {
     Some(s) => s
     None => {
+      // (followed as its view is opened or let go of, as its view's own signals are)
+      self.view_told.get() |> ignore
       let s = media_status(self.view)
       if self.decode_failed && self.view is Some(n) && n.state() == 2 {
         { ..s, state: -4 }
@@ -374,6 +387,7 @@ pub fn Media::track(self : Media) -> MediaTrack? {
 ///|
 /// Its native view, while one is open.
 pub fn Media::native(self : Media) -> @ui.NativeView? {
+  self.view_told.get() |> ignore
   self.view
 }
 
@@ -419,7 +433,20 @@ pub fn Media::speed(self : Media) -> Double {
 ///|
 /// Whether there is a subtitle beside it, and whether its words are shown.
 pub fn Media::subtitle(self : Media) -> (Bool, Bool) {
+  self.subs_told.get() |> ignore
   (self.subtitle, self.subs_on)
+}
+
+///|
+/// The subtitle's words where it is now, while they are shown ("" none): followed as it plays, as its subtitle is told
+/// and as its words are turned on or off (Media::frame's `said`, without a Ctx).
+pub fn Media::cue_now(self : Media) -> String {
+  self.subs_told.get() |> ignore
+  if self.subs_on {
+    @codec.cues_at(self.cues, self.status().position)
+  } else {
+    ""
+  }
 }
 
 ///|
@@ -496,7 +523,8 @@ pub fn Media::play_pause(self : Media) -> Unit {
   let s = self.status()
   match self.view {
     Some(n) =>
-      if s.playing {
+      // (at its end, whatever its host says of its playing as it gets there: from its start again, as it shows)
+      if s.playing && !s.ended {
         n.pause()
       } else {
         if s.ended {
@@ -613,6 +641,7 @@ pub fn Media::toggle_mute(self : Media) -> Unit {
 /// The subtitle's words shown, or not.
 pub fn Media::toggle_subtitle(self : Media) -> Unit {
   self.subs_on = !self.subs_on
+  self.subs_told.set(self.subs_told.untracked() + 1)
 }
 
 ///|
@@ -627,6 +656,52 @@ pub fn Media::toggle_sideways(self : Media) -> Unit {
   let on = !self.sideways.untracked()
   self.sideways.set(on)
   @hostapi.set_sideways(on)
+}
+
+///|
+/// How far short of the place it opens at a player said ready may stand and be taken as there: under it, it is sought
+/// once more (a whole second let one left 0.1 … 1 s in open again from its start).
+let media_start_slack_ms : Double = 100.0
+
+///|
+/// For a player shown by nodes of the window's tree (what Media::frame does of its own with no Ctx, told as how it
+/// stands changes, outside any tracking): ready once it is, the place it opens at sought once more where the player took
+/// none before it was ready. Whether it is ready.
+pub fn Media::take_ready(self : Media) -> Bool {
+  let s = self.status()
+  if s.state == 1 && !self.started {
+    self.started = true
+    let read = match self.view {
+      Some(n) => n.bytes().to_int()
+      None => 0
+    }
+    let name = match self.track {
+      Some(t) => t.name
+      None => ""
+    }
+    @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
+    if self.start_at > 0.0 && s.position < self.start_at - media_start_slack_ms {
+      self.seek(self.start_at)
+    }
+  }
+  self.started
+}
+
+///|
+/// Its decoder waited on long enough, for a player shown by nodes (media_decode_wait_ms after all its bytes came, as
+/// the node's clock has it): said unplayable from now on (Media::status's -4), as Media::frame says it.
+pub fn Media::decode_given_up(self : Media) -> Unit {
+  if self.pinned is None {
+    self.decode_failed = true
+  }
+}
+
+///|
+/// What it was told to wait before it says it waits (Media::new's `wait_ms`), how long a double tap's second tap may
+/// come after the first, how long a note is said, how long its controls take to come and to go: a node's own clock's
+/// for them.
+pub fn Media::times(self : Media) -> (Double, Double, Double, Double, Double) {
+  (self.wait_ms, self.double_tap_ms, self.note_ms, self.wake_ms, self.sleep_ms)
 }
 
 ///|
@@ -651,7 +726,7 @@ pub fn Media::frame(self : Media, c : @ui.Ctx) -> MediaFrame {
     }
     @ui.log("player: \{name} ready, \{s.duration.to_int()} ms long, \{read} bytes read")
     // the place it opens at, once more where the player took no seek before it was ready
-    if p.start_at > 0.0 && s.position < p.start_at - 1000.0 {
+    if p.start_at > 0.0 && s.position < p.start_at - media_start_slack_ms {
       p.seek_owed = true
     }
   }
@@ -758,7 +833,8 @@ pub fn Media::stage(self : Media, c : @ui.Ctx, id : Int, w : Double) -> Unit {
         self.seek_by(self.nudge_ms)
         self.note = Some(Ahead(self.nudge_ms))
       } else {
-        let was = self.status().playing
+        // (at its end, whatever its host says of its playing: played again, as play_pause does)
+        let was = self.status().playing && !self.status().ended
         self.play_pause()
         self.note = Some(if was { Paused } else { Played })
       }

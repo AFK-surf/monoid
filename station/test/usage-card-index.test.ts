@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { decisionCards, makeStore } from "../src/read/store.ts";
+import { decisionCards, makeStore } from "./reference/store.ts";
 import { cardOf } from "../src/store/rows.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 

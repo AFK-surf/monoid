@@ -75,6 +75,26 @@ async fn Actors::busy_of(self : Actors, a : Actor, agent : Agent?) -> Bool raise
 }
 
 ///|
+/// Whether `a`'s runtime session is still `agent` (none and none too). What runs beside the actor's queue can let it go
+/// while the actor waits on Node: a dispose (actor_run.mbt `called`), its turn's end (actors.mbt `on_event`); what
+/// was asked of the one let go of is not done to none, and what let it go goes on from there (a turn's end pumps).
+fn still(a : Actor, agent : Agent?) -> Bool {
+  match (a.agent, agent) {
+    (Some(now), Some(was)) => now.handle == was.handle && now.generation == was.generation
+    (None, None) => true
+    _ => false
+  }
+}
+
+///|
+/// `a`'s runtime session where Node says it is busy and it is still `a`'s once Node answered (`still`); none otherwise.
+async fn Actors::busy_agent(self : Actors, a : Actor) -> Agent? raise {
+  let agent = a.agent
+  guard self.busy_of(a, agent) && still(a, agent) else { return None }
+  agent
+}
+
+///|
 /// The station's words in its language (actor.ts `t`).
 async fn Actors::t(self : Actors, a : Actor, key : String, args? : Json = Json::null()) -> String raise {
   match self.rpc(a.key, "t", [jstr(key), args]) {

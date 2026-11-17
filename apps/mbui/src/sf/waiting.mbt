@@ -24,12 +24,6 @@ fn waited_long(c : @ui.Ctx, key : String) -> Bool {
 }
 
 ///|
-/// Forgets a wait, so the next one on `key` waits its 400ms again.
-pub fn done_waiting(c : @ui.Ctx, key : String) -> Unit {
-  @kit.after(c, "sf-wait/" + key, false, later_ms) |> ignore
-}
-
-///|
 /// What waits, node `node`, breathing (the placeholders, to 0.5: waiting.css.ts breathe; a service restarting, its dot
 /// to 0.35: Jobs.css.ts jobBreathe): whole to `low` and back in breath_ms, each way on CSS's ease-in-out, worked out as
 /// each frame is drawn, never built anew for it (Ctx::cycle_look); still and whole when what it waits on failed (the
@@ -407,24 +401,6 @@ pub fn waiting(
   })
   if reading && said != "" {
     c.semantics(w, Status, label=said)
-  }
-}
-
-///|
-/// A list with rows already, still waiting on some of it (WaitMore: a station not read yet, one that could not be):
-/// under its rows one more of them in its bones (`sample`) for what is still read, and each failure in red. Nothing
-/// once it waits on nothing.
-pub fn wait_more(c : @ui.Ctx, note : WaitNote?, sample : () -> Unit) -> Unit {
-  match note {
-    Some(n) => {
-      if n.reading {
-        bones(c, sample)
-      }
-      for f in n.failing {
-        wait_line(c, f, error=true)
-      }
-    }
-    None => ()
   }
 }
 

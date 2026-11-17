@@ -23,6 +23,7 @@ case "${1:-build}" in
       cp -p out/pictures/*.jpg $OUT/photos/
     fi
     cp $ROOT/web/index.html $ROOT/web/host.js $OUT/
+    if type app_build >/dev/null 2>&1; then app_build "$OUT"; fi
     T1=$(python3 -c 'import time;print(time.time())')
     echo "built in $(python3 -c "print(round($T1-$T0,2))") s"
     ls -la $OUT

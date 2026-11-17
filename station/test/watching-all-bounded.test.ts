@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeStore, WATCHING_ALL, watching } from "../src/read/store.ts";
+import { makeStore, WATCHING_ALL, watching } from "./reference/store.ts";
 import { JOBS_RUNNING, Store } from "../src/store/store.ts";
 
 test("the station-wide watching view does not read ordinary running jobs", () => {

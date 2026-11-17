@@ -111,7 +111,7 @@ test("segmenting old transcripts reads archived sessions in bounded pages", asyn
     for (let i = 0; i < 130; i++) add(`old-${String(i).padStart(3, "0")}`, DAY);
     for (let i = 0; i < 200; i++) r.store.insertSession({ key: `live-${i}`, connect: "cl", runtime: "claude", profile: "cc", workspace: r.dir, token: `live-${i}`, createdAt: DAY, lastActiveAt: DAY });
     const visited: string[] = [];
-    cold.historyFiles = (key) => {
+    cold.historyFilesSoon = async (key) => {
       visited.push(key);
       if (visited.length === 1) add("late", 2 * DAY);
       return [];

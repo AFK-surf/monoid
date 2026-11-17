@@ -2,10 +2,9 @@
 // notifications need its key; a per-chat guard is invalidated by old writers.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 
-const BATCH = 64;
-const VERSION = 1;
+export const VERSION = 1;
 const MARK = "archive_last_v1";
-const checked = new WeakMap<DatabaseSync, number>();
+export const checked = new WeakMap<DatabaseSync, number>();
 const nativeIndexes = new WeakMap<DatabaseSync, { version: number; ready: boolean }>();
 const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
 const statement = (db: DatabaseSync, sql: string): StatementSync => {
@@ -16,7 +15,7 @@ const statement = (db: DatabaseSync, sql: string): StatementSync => {
   return result;
 };
 const names = ["archive_last_insert", "archive_last_update", "archive_last_delete", "archive_last_thread_delete"];
-const schema = (db: DatabaseSync) => Number(statement(db, "PRAGMA schema_version").get()!.schema_version);
+export const schema = (db: DatabaseSync) => Number(statement(db, "PRAGMA schema_version").get()!.schema_version);
 const exists = (db: DatabaseSync, type: string, name: string) =>
   db.prepare("SELECT sql FROM sqlite_master WHERE type=? AND name=?").get(type, name) as { sql: string } | undefined;
 
@@ -93,10 +92,6 @@ export const ARCHIVE_LAST_TAIL = `WITH tail AS MATERIALIZED (
   SELECT (SELECT CAST(n AS TEXT) FROM last) AS n,(SELECT at FROM last) AS at,(SELECT COUNT(*) FROM tail) AS count`;
 export const ARCHIVE_LAST_GUARD = `SELECT CAST(g.before_n AS TEXT) AS n,g.at FROM archive_last_meta m CROSS JOIN archive_last_guard g
   WHERE m.id=1 AND g.thread=? AND g.epoch=m.epoch AND g.ready=1`;
-export const ARCHIVE_LAST_SLICE_FIRST = `SELECT CAST(e.n AS TEXT) AS n,CASE WHEN e.kind='message' THEN e.at END AS at
-  FROM entries e WHERE e.thread=? ORDER BY e.n DESC LIMIT ?`;
-export const ARCHIVE_LAST_SLICE_BEFORE = `SELECT CAST(e.n AS TEXT) AS n,CASE WHEN e.kind='message' THEN e.at END AS at
-  FROM entries e WHERE e.thread=?1 AND e.n<CAST(?2 AS INTEGER) ORDER BY e.n DESC LIMIT ?3`;
 export const ARCHIVE_LAST_SAID_KEY = `SELECT CAST(e.n AS TEXT) AS n,e.at FROM entries e INDEXED BY entries_said
   WHERE e.thread=? AND e.kind='message' AND e.letter IS NULL ORDER BY e.n DESC LIMIT 1`;
 export const ARCHIVE_LAST_LETTER_AFTER = `SELECT 1 FROM entries e INDEXED BY entries_letters
@@ -123,7 +118,7 @@ function nativeLastKey(db: DatabaseSync, thread: number, version: number): Last 
 
 /// Read one snapshot. Older workers stored only the time in a ready guard; it remains useful to auto-archive, but a
 /// notification needing the key must prepare that chat again. The key is kept as text until SQL compares it.
-function archiveLast(db: DatabaseSync, thread: number, needKey: boolean): Last {
+export function archiveLast(db: DatabaseSync, thread: number, needKey: boolean): Last {
   if (!installArchiveLast(db, false)) return { known: false, at: null, n: null };
   const version = checked.get(db)!;
   db.exec("SAVEPOINT archive_last_read");
@@ -158,43 +153,4 @@ function archiveLast(db: DatabaseSync, thread: number, needKey: boolean): Last {
 export function archiveLastRead(db: DatabaseSync, thread: number): { known: boolean; at: number | null } {
   const { known, at } = archiveLast(db, thread, false);
   return { known, at };
-}
-
-/// The same guarded answer for a reader that needs the complete message.
-export function archiveLastKey(db: DatabaseSync, thread: number): { known: boolean; n: string | null } {
-  const { known, n } = archiveLast(db, thread, true);
-  return { known, n };
-}
-
-/// Each transaction advances at most 64 source entries. Progress is shared between openers and rolls back with them.
-export function archiveLastStep(db: DatabaseSync, thread: number, limit = BATCH): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > BATCH) throw new RangeError("archive last batch must be 1–64");
-  if (!installArchiveLast(db)) return { done: false, visited: 0 };
-  const version = checked.get(db)!;
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (schema(db) !== version) { db.exec("COMMIT"); return { done: false, visited: 0 }; }
-    const meta = db.prepare("SELECT version,epoch FROM archive_last_meta WHERE id=1").get() as
-      { version: number; epoch: string } | undefined;
-    if (!meta) { db.exec("COMMIT"); checked.delete(db); return { done: false, visited: 0 }; }
-    if (meta.version !== VERSION) throw new Error("archive last metadata has an unsupported version");
-    const epoch = meta.epoch;
-    db.prepare(`INSERT INTO archive_last_guard(thread,epoch,before_n,at,ready) VALUES(?,?,NULL,NULL,0)
-      ON CONFLICT(thread) DO UPDATE SET epoch=excluded.epoch,before_n=NULL,at=NULL,ready=0
-        WHERE archive_last_guard.epoch!=excluded.epoch`).run(thread, epoch);
-    const state = db.prepare(`SELECT CAST(before_n AS TEXT) AS before_n,at,ready FROM archive_last_guard
-      WHERE thread=? AND epoch=?`).get(thread, epoch) as { before_n: string | null; at: number | null; ready: number };
-    // A ready guard from the earlier time-only worker has no key. Reuse its time for archive reads, but rescan it
-    // when a message is requested. Older workers ignore before_n on ready rows, so they can share the same guard.
-    if (state.ready && (state.before_n !== null || state.at === null)) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const rows = (state.before_n === null
-      ? db.prepare(ARCHIVE_LAST_SLICE_FIRST).all(thread, limit)
-      : db.prepare(ARCHIVE_LAST_SLICE_BEFORE).all(thread, state.before_n, limit)) as { n: string; at: number | null }[];
-    const last = rows.find((row) => row.at !== null);
-    const done = last !== undefined || rows.length < limit;
-    db.prepare(`UPDATE archive_last_guard SET before_n=CAST(? AS INTEGER),at=?,ready=? WHERE thread=? AND epoch=?`)
-      .run(last?.n ?? (done ? null : rows.at(-1)!.n), last?.at ?? null, done ? 1 : 0, thread, epoch);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
 }

@@ -106,3 +106,54 @@ test "a menu not modal at its opener's Right: Left (back toward it) closes it; m
     assert_eq((cancels.val, t.query(Menu) is None), if modal { (0, false) } else { (1, true) }, msg="modal \{modal}")
   }
 }
+
+///|
+/// How opaque the words `w` are drawn now (-1: not drawn).
+fn side_words_alpha(t : @ui.Tester, w : String) -> Double {
+  match t.words().filter(fn(x) { x.0 == w }) {
+    [x, ..] => x.5
+    [] => -1.0
+  }
+}
+
+///|
+test "a menu closed draws back into what opened it over pop_out_ms, nothing of it in the way from the moment it closes: a press under it is what it lands on's at once" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under)
+  assert_eq(side_words_alpha(t, "一"), 1.0)
+  t.key(@ui.key_escape)
+  // (closed: not read out, not modal, nothing of it pressed, though still drawn)
+  let (x, y) = side_button("下面")
+  t.tap(x, y)
+  assert_eq((cancels.val, under.val, t.query(Menu) is None), (1, 1, true))
+  t.run_for(@kit.pop_out_ms / 2.0)
+  let half = side_words_alpha(t, "一")
+  assert_true(half > 0.0 && half < 1.0, msg="drawn back: \{half}")
+  t.run_for(@kit.pop_out_ms / 2.0)
+  assert_eq(side_words_alpha(t, "一"), -1.0)
+}
+
+///|
+test "a menu closed half way in draws back from where it got to, never first whole: as faint as it was, fainter from there" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under)
+  t.key(@ui.key_escape)
+  t.run_for(@kit.pop_out_ms)
+  assert_eq(side_words_alpha(t, "一"), -1.0)
+  open.set(true)
+  t.draw()
+  t.run_for(@kit.pop_ms / 2.0)
+  let mid = side_words_alpha(t, "一")
+  assert_true(mid > 0.0 && mid < 1.0, msg="half way in: \{mid}")
+  t.key(@ui.key_escape)
+  t.draw()
+  let closing = side_words_alpha(t, "一")
+  assert_true(closing > 0.0 && closing <= mid, msg="as it closes: \{closing} after \{mid}")
+  t.run_for(@kit.pop_out_ms / 4.0)
+  let going = side_words_alpha(t, "一")
+  assert_true(going < closing || going == -1.0, msg="going: \{going} after \{closing}")
+  t.run_for(@kit.pop_out_ms)
+  assert_eq(side_words_alpha(t, "一"), -1.0)
+}

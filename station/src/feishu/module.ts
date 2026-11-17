@@ -17,6 +17,8 @@ export const FeishuLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const agents = yield* Agents;
     const feishu = yield* connectsPart(makeFeishu, { kind: "feishu", shown: (f, c) => f.shown(c), entry: feishuEntry });
+    // (the apps being made by a scan before a restart, known before the overview lists them)
+    yield* Effect.promise(() => feishu.registrations.ready());
     parts.overview("feishuRegistrations", (viewer) => feishu.registrations.of(viewer.email, viewer.workspace).map(shownRegistration));
     parts.routes(
       feishuRoutes({

@@ -6,6 +6,7 @@ fn lease_test_source(client : @core.Client) -> Source {
   {
     ..base,
     topic_key: @sfbase.wire_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) {
       let sub = client.follow_topic(name, params~)
       { value: sub.value, error: sub.error, version: sub.version }
@@ -85,6 +86,7 @@ test "an independent lease follows a wrapper outside its view source through han
   let wrapped : Source = {
     ..inner,
     topic_key: fn(_, p) { (inner.topic_key)("wire-chat", rewrite(p)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(_, p) {
       let value = (inner.topic_read)("wire-chat", rewrite(p))
       { ..value, value: value.value.map(fn(v) { { "text": Json::string("mapped:" + @sfbase.text(Some(v), "text")) } }) }
@@ -137,6 +139,7 @@ test "a lease keeps the projection and remapping of a wrapper inside its view so
   let wrapped : Source = {
     ..base,
     topic_key: fn(_, p) { (base.topic_key)("renamed", p) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(_, p) {
       let value = (base.topic_read)("renamed", p)
       { ..value, value: value.value.map(fn(v) { { "text": Json::string("inner:" + @sfbase.text(Some(v), "text")) } }) }

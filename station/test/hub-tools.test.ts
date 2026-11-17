@@ -15,17 +15,17 @@ import { sessionKey } from "../src/sessions/hub.ts";
 import { fromPeer, sender } from "../src/sessions/messages.ts";
 import { handedOf } from "../src/store/rows.ts";
 import { DecisionSessionsUnavailable } from "../src/store/legacy-decision-session.ts";
-import { CREATE, CREATE_PRESET, NOTICE, createForPeer, noticeForPeer } from "../src/sessions/opened.ts";
+import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, NOTICE, createForPeer, noticeForPeer } from "../src/sessions/opened.ts";
 import { presetCopyOf } from "../src/sessions/presets.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { forPeer } from "../src/sessions/others.ts";
-import { makeStore } from "../src/read/store.ts";
-import { chats, untitled } from "../src/read/views.ts";
+import { makeStore } from "./reference/store.ts";
+import { chats, untitled } from "./reference/views.ts";
 import { FETCHED, fileForPeer, putForPeer } from "../src/sessions/peer-files.ts";
 import { packWorkspaceIf } from "../src/sessions/archive.ts";
-import { roomOf } from "../src/sessions/footprint.ts";
+import { roomOf } from "./footprint-reference.ts";
 import { claudeProject } from "../src/read/transcript.ts";
-import { Refused } from "../src/sessions/neighbours.ts";
+import { Refused } from "../src/jobs/remote.ts";
 import { archive, newSession, say as sayIn } from "../src/sessions/lifecycle.ts";
 import { review, reviewUndecided, startReview } from "../src/sessions/review.ts";
 import { cleanTitle, nameChat } from "../src/sessions/titles.ts";
@@ -133,7 +133,7 @@ test("chat_leave stops a thread's messages reaching its agent until someone ment
 
 test("chat_leave refuses a still.fail chat", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, { runtime: "claude" as const, createdBy: "ada@x.com" });
+  const [key, thread] = await newSession(r.hub, { runtime: "claude" as const, createdBy: "ada@x.com" });
   assert.ok((await r.refused(key, "chat_leave", { to: `CHAT/${thread.threadTs}` })).includes("cannot be left"));
   await r.close();
 });
@@ -216,7 +216,7 @@ const web = (createdBy = "ada@x.com") => ({ runtime: "claude" as const, createdB
 
 test("a post carries a card, kept with it and checked", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "fix the spacing");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -282,9 +282,25 @@ test("a post carries a card, kept with it and checked", async () => {
   await r.close();
 });
 
+test("a post with a card still waiting that ends the turn with no state ends it need_human on that card", async () => {
+  const r = new Rig({ maxNudges: 2 });
+  const [key, thread] = await newSession(r.hub, web());
+  sayIn(r.hub, thread.id, "ada@x.com", "改一下");
+  await settle();
+  const s = r.claude.last();
+  await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "选一个？", card: { type: "options", options: [{ label: "A" }, { label: "B" }] } });
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 1, "not asked again");
+  const turn = r.store.lastTurn(key)!;
+  assert.equal(turn.ending, "need_help");
+  assert.equal((turn.about as { thread: number }).thread, thread.id);
+  await r.close();
+});
+
 test("answering a clarification cannot silently restore need_human", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "改一下");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -306,7 +322,7 @@ test("answering a clarification cannot silently restore need_human", async () =>
 test("a clarification tells the agent its card stopped waiting, and it cannot reuse that card as the wait", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -337,7 +353,7 @@ test("a clarification tells the agent its card stopped waiting, and it cannot re
 test("a newer card remains pending when an unread clarification ended the earlier card", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -366,7 +382,7 @@ test("a newer card remains pending when an unread clarification ended the earlie
 test("a card withdrawn before a message is not attributed to that message", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -385,7 +401,7 @@ test("a card withdrawn before a message is not attributed to that message", asyn
 test("a choice that closes a card is told to its agent once, before what it is next handed, as an earlier choice", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -426,7 +442,7 @@ test("a choice that closes a card is told to its agent once, before what it is n
 test("a choice that closes a card comes with a station notice too, and waits when the notice cannot be handed", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -450,7 +466,7 @@ test("a choice that closes a card comes with a station notice too, and waits whe
   }
 });
 
-test("a closed authorization card tells its agent how to reask the same request", async () => {
+test("an authorization card waits through what its person says meanwhile: its agent is told nothing ended it", async () => {
   for (const [extra, action] of [
     [{ vault: { request: "r_test" } }, 'secret_reask {request: "r_test"}'],
     [{ adb: { request: "p_test", reason: "check the screen" } }, 'phone_use {reason: "check the screen", reask: true}'],
@@ -458,14 +474,16 @@ test("a closed authorization card tells its agent how to reask the same request"
   ] as const) {
     const r = new Rig();
     try {
-      const [key, thread] = newSession(r.hub, web());
+      const [key, thread] = await newSession(r.hub, web());
       sayIn(r.hub, thread.id, "ada@x.com", "做这个");
       await settle();
       r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "agent", author: key, text: "需要授权", card: { type: "options", options: [{ label: "允许" }], ...extra } });
       sayIn(r.hub, thread.id, "ada@x.com", "为什么需要？");
       await settle();
+      // (settled only where it is decided, store/card-kinds.ts: no reask is needed, none is said)
       const prompt = r.claude.last().steers.at(-1)!;
-      assert.ok(prompt.includes("no longer pending") && prompt.includes(action), prompt);
+      assert.ok(!prompt.includes("no longer pending") && !prompt.includes(action), prompt);
+      assert.equal(r.store.pendingCard(thread.id)?.[0].text, "需要授权");
     } finally {
       await r.close();
     }
@@ -475,7 +493,7 @@ test("a closed authorization card tells its agent how to reask the same request"
 test("a message the agent had not read holds a card back; sent after it, the card is pending", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, web());
+    const [key, thread] = await newSession(r.hub, web());
     const to = `CHAT/${thread.threadTs}`;
     sayIn(r.hub, thread.id, "ada@x.com", "做这个");
     await settle();
@@ -497,7 +515,7 @@ test("a message the agent had not read holds a card back; sent after it, the car
 
 test("a state says which message it is about, the pending card by default", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "上线吧");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -555,7 +573,7 @@ test("options are refused where the chat shows no cards", async () => {
 
 test("a card is pending until a person writes, and a newer one replaces it", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web());
+  const [key, thread] = await newSession(r.hub, web());
   sayIn(r.hub, thread.id, "ada@x.com", "fix the spacing");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -659,7 +677,7 @@ test("a turn ends all_done, needing a decision or help, or waiting, and the word
 
 test("a login card names its login, and closes for everyone as the login ends", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   const kept = () => {
     const n = r.said(thread.id).at(-1)!.n;
@@ -689,7 +707,7 @@ test("a card waits for no account an agent runs on, unless that person wrote in 
     raw.profiles[0].name = "Model@Example.com";
     raw.profiles[1].email = "codex@example.com";
   });
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   r.store.insertMessage({ thread: thread.id, ts: r.hub.nextTs(), authorKind: "person", author: "person@example.com", text: "要不要修？" });
   const card = (assignee: string) => ({ type: "options", options: [{ label: "修" }], assignee });
@@ -713,7 +731,7 @@ test("a card waits for no account an agent runs on, unless that person wrote in 
 
 test("an agent can withdraw its own card without posting or finishing work", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const to = `CHAT/${thread.threadTs}`;
   await r.call(key, "chat_post", { to, text: "保留吗？", card: { type: "text" } });
   const first = r.said(thread.id).at(-1)!;
@@ -750,7 +768,7 @@ test("only explicit, valid option actions close silently; cards keep explicit as
 
 test("web posts deliver local file links, and refuse missing files before posting", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   const workspace = r.session(key).workspace;
   const source = join(workspace, "report.txt");
   writeFileSync(source, "original report");
@@ -796,7 +814,7 @@ test("files posted to Slack go into the thread; apps without files:write link to
 
 test("an agent can name a chat as soon as its topic is clear without posting a message", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "登录失败了，帮我排查");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -807,7 +825,7 @@ test("an agent can name a chat as soon as its topic is clear without posting a m
   assert.equal(r.store.getThread(thread.id)!.autoTitle, "登录 排查", "the first title appears even while the chat is open");
   assert.equal(r.said(thread.id).length, before, "titling alone does not add a message");
   assert.equal(await r.call(key, "chat_post", { to, title: "登录 排查" }), "The chat already has that title.");
-  const [other] = newSession(r.hub, web("other"));
+  const [other] = await newSession(r.hub, web("other"));
   assert.ok((await r.refused(other, "chat_post", { to, title: "别人的对话" })).includes("not a conversation of this session"));
   assert.ok((await r.refused(key, "chat_post", { to, title: " 。 " })).includes("title is empty"));
   assert.ok((await r.refused(key, "chat_post", { to, title: "登录", kind: "all_done", done: "完成" })).includes("only to and title"));
@@ -837,7 +855,7 @@ test("naming a Slack conversation alone does not send a Slack message", async ()
 
 test("an agent names its chat once, and again immediately when allowed even while open; never over people's name", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "帮我看下这个");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -898,7 +916,7 @@ test("a Slack agent names its list entry, with the same rename limits and a manu
 
 test("a chat that starts a watch may be renamed for it at once", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   sayIn(r.hub, thread.id, "local", "帮我盯着 CI");
   await settle();
   const to = `CHAT/${thread.threadTs}`;
@@ -912,7 +930,7 @@ test("a chat that starts a watch may be renamed for it at once", async () => {
 
 test("a watch permits renaming without reading its session's job history", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, web("local"));
+  const [key, thread] = await newSession(r.hub, web("local"));
   try {
     r.store.setAutoTitle(thread.id, "CI", false);
     const job = (id: string, state: string, watch: boolean) => ({ id, sessionKey: key, name: id, command: "true", cwd: "/", port: null,
@@ -992,7 +1010,7 @@ test("slack_api with save_files saves the files in its answer into the session's
 
 test("a still.fail chat calls slack_api as the station's Slack bot, chosen by name when several fit", async () => {
   const r = new Rig();
-  const [key] = newSession(r.hub, web());
+  const [key] = await newSession(r.hub, web());
   await settle();
   // Two Slack bots are bound to Claude here (cl and team): which one is the chat's to say.
   const refusal = await r.refused(key, "slack_api", { method: "chat.postMessage", params: { channel: "C5", text: "hi" } });
@@ -1249,7 +1267,7 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   const linkA = `https://ember.test/o/ws/st/${keyA.replaceAll(":", "%3A")}`;
   writeFileSync(join(r.session(keyA).workspace, "notes.txt"), "the plan");
   const sessions = r.store.listSessions().length;
-  const said = await r.call(keyA, "chat_create", { key: "android", text: "build the android app", title: "安卓构建", files: ["notes.txt"] });
+  const said = await r.call(keyA, "chat_create", { for: "me", key: "android", text: "build the android app", title: "安卓构建", files: ["notes.txt"] });
   assert.equal(r.store.listSessions().length, sessions + 1);
   const opened = r.store.openedBy(keyA);
   assert.equal(opened.length, 1);
@@ -1263,7 +1281,7 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   assert.equal(thread.createdBy, r.thread("C1", a.threadTs).createdBy);
   // Its first message: the opener's, headed as its opening, with the file; handed to its agent.
   const [first] = r.said(thread.id);
-  const [before, after] = tr(stationLang(), "station.session.openedBy", { from: "\u0000" }).split("\u0000");
+  const [before, after] = tr(stationLang(), "station.session.ledBy", { from: "\u0000" }).split("\u0000");
   assert.deepEqual([first!.authorKind, first!.author], ["agent", keyA]);
   assert.ok(first!.text.startsWith(`${before}[`) && first!.text.endsWith(`](${linkA})${after}\n\nbuild the android app`), first!.text);
   assert.deepEqual(first!.attachments.map((f) => f.name), ["notes.txt"]);
@@ -1277,20 +1295,20 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   // Its row in the list leads back to the chat that opened it, named as that chat was then; the opener's row says
   // nothing of it, and archiving the opener leaves it as it was.
   const listed = () => new Map(chats(makeStore(r.store.db, r.dir), LIST_VIEWER, false).map((x: any) => [x.id, x]));
-  assert.deepEqual(listed().get(child).opener, { session: keyA, title: sender(r.hub, keyA)[0] });
+  assert.deepEqual(listed().get(child).opener, { session: keyA, title: sender(r.hub, keyA)[0], led: true });
   assert.equal(listed().get(keyA).opener, undefined);
   // the opener's row lists the chats it opened
-  assert.deepEqual(listed().get(keyA).opened, [{ session: child, title: "安卓构建" }]);
+  assert.deepEqual(listed().get(keyA).opened, [{ session: child, title: "安卓构建", led: true, active: true }]);
   r.store.setArchived(keyA, true, "manual");
   assert.deepEqual(listed().get(child).opener?.session, keyA);
   r.store.setArchived(keyA, false, "manual");
   // The same key again: that chat, nothing new.
-  const again = await r.call(keyA, "chat_create", { key: "android", text: "build the android app" });
+  const again = await r.call(keyA, "chat_create", { for: "me", key: "android", text: "build the android app" });
   assert.ok(again.includes("already opened"), again);
   assert.equal(r.store.listSessions().length, sessions + 1);
   assert.equal(r.said(thread.id).length, 1);
   // It opens none itself.
-  assert.ok((await r.refused(child, "chat_create", { key: "more", text: "and more" })).includes("opens none"));
+  assert.ok((await r.refused(child, "chat_create", { for: "me", key: "more", text: "and more" })).includes("opens none"));
   // Its turn ends all_done: the opener is told, with its done.
   await r.call(child, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "built", kind: "all_done", done: "安卓包已经构建好，apk 在 uploads 里" });
   runtimeOf(r, child).complete();
@@ -1307,15 +1325,61 @@ test("an agent can open more than eight unfinished chats without duplicating a k
   await r.accept(a);
   await settle();
   const keyA = sessionKey("cl", "C1", a.threadTs);
-  for (let i = 0; i < 12; i++) await r.call(keyA, "chat_create", { key: `part-${i}`, text: `part ${i}` });
+  for (let i = 0; i < 12; i++) await r.call(keyA, "chat_create", { for: "me", key: `part-${i}`, text: `part ${i}` });
   const opened = r.store.openedBy(keyA);
   assert.equal(opened.length, 12);
   assert.equal(new Set(opened.map((o) => o.child)).size, 12);
   assert.ok(opened.every((o) => o.state !== "all_done"));
-  const again = await r.call(keyA, "chat_create", { key: "part-0", text: "part 0" });
+  const again = await r.call(keyA, "chat_create", { for: "me", key: "part-0", text: "part 0" });
   assert.ok(again.includes("already opened"), again);
   assert.equal(r.store.openedBy(keyA).length, 12);
   assert.ok((await r.refused(keyA, "chat_create", { text: "no key" })).includes("key is required"));
+  await r.close();
+});
+
+test("chat_create says whose the chat is: one led reports and asks its leader, one opened for the person is theirs", async () => {
+  const r = new Rig({ link: true });
+  const a = say("<@UBOT> lead the perf work");
+  await r.accept(a);
+  await settle();
+  const keyA = sessionKey("cl", "C1", a.threadTs);
+  // Neither said: refused, saying both.
+  const why = await r.refused(keyA, "chat_create", { key: "x", text: "x" });
+  assert.ok(why.includes("for is required") && why.includes("person"), why);
+  const listed = () => new Map(chats(makeStore(r.store.db, r.dir), LIST_VIEWER, false).map((x: any) => [x.id, x]));
+  const opening = (key: string) => tr(stationLang(), key, { from: "\u0000" }).split("\u0000")[0]!;
+
+  // Led: headed so, its row's opener says so (the core keeps its asks out of every person's 待处理), the leader told
+  // of a need as its own to decide, with what to check.
+  const ledSaid = await r.call(keyA, "chat_create", { for: "me", key: "led", text: "profile the chat page" });
+  await settle();
+  assert.ok(ledSaid.includes("goal ledger"), ledSaid);
+  const led = r.store.openedBy(keyA)[0]!.child;
+  assert.equal(r.store.openerOf(led)!.led, true);
+  const ledThread = r.store.homeChat(led)!;
+  assert.ok(r.said(ledThread.id)[0]!.text.startsWith(opening("station.session.ledBy")), r.said(ledThread.id)[0]!.text);
+  assert.equal(listed().get(led).opener.led, true);
+  await r.call(led, "chat_post", { to: `CHAT/${ledThread.threadTs}`, text: "要不要放弃这一项？", kind: "need_human", need: "这一项没有收益，是否放弃" });
+  runtimeOf(r, led).complete();
+  await settle();
+  const told = [...runtimeOf(r, keyA).steers, ...runtimeOf(r, keyA).prompts.slice(1)].join("\n");
+  assert.ok(matches(told, ["chat you lead", "asks you", "是否放弃", "no person was asked", "stillfail-leading"]), told);
+
+  // For the person: headed so, theirs (no led in its row), the opener told nothing of its turns, and it opens chats.
+  const forSaid = await r.call(keyA, "chat_create", { for: "person", key: "theirs", text: "a chat of its own for this" });
+  await settle();
+  assert.ok(forSaid.includes("your person's chat"), forSaid);
+  const theirs = r.store.openedBy(keyA)[1]!.child;
+  assert.equal(r.store.openerOf(theirs)!.led, false);
+  const theirThread = r.store.homeChat(theirs)!;
+  assert.ok(r.said(theirThread.id)[0]!.text.startsWith(opening("station.session.openedForYou")), r.said(theirThread.id)[0]!.text);
+  assert.equal(listed().get(theirs).opener.led, undefined);
+  const before = [...runtimeOf(r, keyA).steers, ...runtimeOf(r, keyA).prompts].length;
+  await r.call(theirs, "chat_post", { to: `CHAT/${theirThread.threadTs}`, text: "done", kind: "all_done", done: "做完了，见 PR 1" });
+  runtimeOf(r, theirs).complete();
+  await settle();
+  assert.equal([...runtimeOf(r, keyA).steers, ...runtimeOf(r, keyA).prompts].length, before);
+  assert.ok((await r.call(theirs, "chat_create", { for: "me", key: "sub", text: "a part" })).includes("Opened"));
   await r.close();
 });
 
@@ -1327,13 +1391,13 @@ test("opening a chat again checks its author through the reader", async () => {
     await r.accept(a);
     await settle();
     const parent = sessionKey("cl", "C1", a.threadTs);
-    await r.call(parent, "chat_create", { key: "once", text: "first" });
+    await r.call(parent, "chat_create", { for: "me", key: "once", text: "first" });
     const child = r.store.openedBy(parent)[0]!.child;
     const thread = r.store.homeChat(child)!;
     const reads: unknown[] = [];
     r.hub.openedChatSaid = async (...args) => { reads.push(args); return true; };
     r.store.messagesBefore = () => { throw new Error("station message lookup used"); };
-    assert.match(await r.call(parent, "chat_create", { key: "once", text: "first" }), /already opened/);
+    assert.match(await r.call(parent, "chat_create", { for: "me", key: "once", text: "first" }), /already opened/);
     assert.deepEqual(reads, [[thread.id, parent, true]]);
     r.store.messagesBefore = original;
     assert.equal(r.said(thread.id).length, 1);
@@ -1354,10 +1418,10 @@ test("concurrent opens with the same key send the first message once while the r
       if (++reads === 1) { entered.resolve(); await release.promise; }
       return found;
     };
-    const first = r.call(parent, "chat_create", { key: "once", text: "first" });
+    const first = r.call(parent, "chat_create", { for: "me", key: "once", text: "first" });
     void first.catch(() => {});
     await entered.promise;
-    const second = r.call(parent, "chat_create", { key: "once", text: "first" });
+    const second = r.call(parent, "chat_create", { for: "me", key: "once", text: "first" });
     void second.catch(() => {});
     await new Promise<void>((resolve) => setImmediate(resolve));
     release.resolve();
@@ -1380,8 +1444,8 @@ test("a failed first-message check leaves the same chat key available for retry"
       if (++reads === 1) throw new Error("reader stopped");
       return false;
     };
-    await assert.rejects(r.call(parent, "chat_create", { key: "once", text: "first" }), /reader stopped/);
-    assert.match(await r.call(parent, "chat_create", { key: "once", text: "first" }), /already opened/);
+    await assert.rejects(r.call(parent, "chat_create", { for: "me", key: "once", text: "first" }), /reader stopped/);
+    assert.match(await r.call(parent, "chat_create", { for: "me", key: "once", text: "first" }), /already opened/);
     const opened = r.store.openedBy(parent);
     assert.equal(opened.length, 1);
     assert.equal(r.said(r.store.homeChat(opened[0]!.child)!.id).length, 1);
@@ -1431,38 +1495,38 @@ test("an agent opens a chat on another station: made there once per key, its fir
   });
   writeFileSync(join(near.session(keyA).workspace, "plan.txt"), "run them all");
   // Nothing used there yet, and two runtimes to choose from: not opened, the agent is told which to ask about.
-  const which = await near.refused(keyA, "chat_create", { key: "tests", station: "orchard", text: "run the tests" });
+  const which = await near.refused(keyA, "chat_create", { for: "me", key: "tests", station: "orchard", text: "run the tests" });
   assert.ok(which.includes("no one model is clearly the most used") && which.includes("claude's default") && which.includes("codex's default"), which);
   assert.equal(far.store.listSessions().length, 0);
   asked.length = 0;
-  const said = await near.call(keyA, "chat_create", { key: "tests", station: "orchard", runtime: "claude", text: "run the tests", title: "跑测试", files: ["plan.txt"] });
+  const said = await near.call(keyA, "chat_create", { for: "me", key: "tests", station: "orchard", runtime: "claude", text: "run the tests", title: "跑测试", files: ["plan.txt"] });
   assert.deepEqual(asked, [CREATE, "session.put", "session.message"]);
   assert.ok(said.includes("station far"), said);
   const [child] = far.store.listSessions().map((s) => s.key);
   assert.ok(child !== undefined && far.store.openerOf(child)!.parent === keyA);
   // Its row there leads back to the opener on this station, named as it was called.
   const row = chats(makeStore(far.store.db, far.dir), LIST_VIEWER, false).find((x: any) => x.id === child);
-  assert.deepEqual(row.opener, { station: "near", session: keyA, title: sender(near.hub, keyA)[0] });
+  assert.deepEqual(row.opener, { station: "near", session: keyA, title: sender(near.hub, keyA)[0], led: true });
   // and the opener's here, the chat there it opened
   const opener = chats(makeStore(near.store.db, near.dir), LIST_VIEWER, false).find((x: any) => x.id === keyA);
-  assert.deepEqual(opener.opened, [{ station: "far", session: child, title: "跑测试" }]);
+  assert.deepEqual(opener.opened, [{ station: "far", session: child, title: "跑测试", led: true, active: true }]);
   assert.deepEqual(near.store.openedBy(keyA).map((o) => [o.childStation, o.child]), [["far", child]]);
   const thread = far.store.homeChat(child!)!;
   assert.equal(thread.title, "跑测试");
   assert.equal(thread.createdBy, near.thread("C1", a.threadTs).createdBy);
   const [first] = far.said(thread.id);
   assert.equal(first!.author, `near/${keyA}`);
-  const opening = tr(stationLang(), "station.session.openedBy", { from: "\u0000" }).split("\u0000")[0]!;
+  const opening = tr(stationLang(), "station.session.ledBy", { from: "\u0000" }).split("\u0000")[0]!;
   assert.ok(first!.text.startsWith(`${opening}[`) && first!.text.includes(`](https://ember.test/o/ws/st/${keyA.replaceAll(":", "%3A")})`) && first!.text.endsWith("run the tests"), first!.text);
   assert.deepEqual(first!.attachments.map((f) => f.name), ["plan.txt"]);
   // Again with the key: the same chat, and its first message is not sent twice.
   asked.length = 0;
   near.store.db.prepare("DELETE FROM opened_chats").run();
-  await near.call(keyA, "chat_create", { key: "tests", station: "far", text: "run the tests" });
+  await near.call(keyA, "chat_create", { for: "me", key: "tests", station: "far", text: "run the tests" });
   assert.deepEqual(asked, [CREATE]);
   assert.equal(far.store.listSessions().length, 1);
   assert.equal(far.said(thread.id).length, 1);
-  // Its turn ends needing a person: the opener there is told.
+  // Its turn ends needing someone: the opener there, which leads it, is told it asks it.
   // Its turn there has begun (what was set going there is done) before its agent answers in it.
   await settle();
   await far.call(child!, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "which device?", kind: "need_human", need: "选一台测试机" });
@@ -1470,7 +1534,7 @@ test("an agent opens a chat on another station: made there once per key, its fir
   runtimeOf(far, child!).complete();
   await settle();
   const told = [...runtimeOf(near, keyA).steers, ...runtimeOf(near, keyA).prompts.slice(1)].join("\n");
-  assert.ok(matches(told, ["跑测试", "needs a person", "选一台测试机"]), told);
+  assert.ok(matches(told, ["跑测试", "asks you", "选一台测试机", "no person was asked"]), told);
   assert.equal(near.store.openedBy(keyA)[0]!.state, "need_human");
   // Only the station a chat was opened on tells of it.
   assert.throws(() => noticeForPeer(near.hub, "elsewhere", { session: child, to: keyA, state: "all_done" }), /opened no chat/);
@@ -1487,15 +1551,15 @@ test("an agent opens a chat on another station: made there once per key, its fir
   assert.ok(last.authorKind === "ember" && last.text.includes("peer unavailable"), last.text);
   // A station that cannot be reached: not opened, and it says how to go on.
   farDown = true;
-  const down = await near.refused(keyA, "chat_create", { key: "again", station: "far", text: "x" });
+  const down = await near.refused(keyA, "chat_create", { for: "me", key: "again", station: "far", text: "x" });
   assert.ok(down.includes("same key"), down);
   // One from before chats can be opened there says so.
   near.hub.onPeer(async (_station, request) => {
     if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
     throw new Refused("remote tasks are not enabled for this source station");
   });
-  assert.ok((await near.refused(keyA, "chat_create", { key: "old", station: "far", text: "x" })).includes("not updated yet"));
-  assert.ok((await near.refused(keyA, "chat_create", { key: "nowhere", station: "mars", text: "x" })).includes("orchard"));
+  assert.ok((await near.refused(keyA, "chat_create", { for: "me", key: "old", station: "far", text: "x" })).includes("not updated yet"));
+  assert.ok((await near.refused(keyA, "chat_create", { for: "me", key: "nowhere", station: "mars", text: "x" })).includes("orchard"));
   await near.close();
   await far.close();
 });
@@ -1517,49 +1581,85 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
     if (request.method === CREATE || request.method === CREATE_PRESET) return createForPeer(far.hub, "st", request);
     return fromPeer(far.hub, "st", request);
   });
-  const review = near.hub.presets.add(null, { name: "Review", dirs: [], instructions: "Read every line.", model: { model: "opus", runtime: "claude" } }, "local");
-  near.hub.presets.add(null, { name: "Loose", dirs: [], instructions: "" }, "local");
-  near.hub.presets.add(null, { name: "Far", dirs: [], instructions: "On orchard.", station: "ws/far" }, "local");
+  const review = await near.hub.presets.add(null, { name: "Review", dirs: [], instructions: "Read every line.", model: { model: "opus", runtime: "claude" } }, "local");
+  await near.hub.presets.add(null, { name: "Loose", dirs: [], instructions: "" }, "local");
+  await near.hub.presets.add(null, { name: "Far", dirs: [], instructions: "On orchard.", station: "ws/far" }, "local");
 
   // One that names its model runs it as it says; nothing of it can be given beside it.
-  const said = await near.call(keyA, "chat_create", { key: "review", text: "review the PR", preset: "review" });
+  const said = await near.call(keyA, "chat_create", { for: "me", key: "review", text: "review the PR", preset: "review" });
   const child = near.store.openedBy(keyA)[0]!.child;
   assert.ok(said.includes("this station"), said);
   assert.deepEqual([near.session(child).runtime, near.session(child).model], ["claude", "opus"]);
-  assert.equal(presetCopyOf(near.session(child).workspace)?.id, review.id);
-  for (const beside of [{ model: "sonnet" }, { runtime: "claude" }, { effort: "high" }, { fast: true }, { context: 200_000 }]) {
-    const why = await near.refused(keyA, "chat_create", { key: "beside", text: "x", preset: review.id, ...beside });
-    assert.ok(why.includes("leave runtime, model, effort, fast and context out"), why);
+  assert.equal((await presetCopyOf(near.session(child).workspace))?.id, review.id);
+  for (const beside of [{ model: "sonnet" }, { runtime: "claude" }, { effort: "high" }, { fast: true }, { speed: "ultrafast" }, { context: 200_000 }]) {
+    const why = await near.refused(keyA, "chat_create", { for: "me", key: "beside", text: "x", preset: review.id, ...beside });
+    assert.ok(why.includes("leave runtime, model, effort, fast, speed and context out"), why);
   }
   // One that names no model is chosen as without one, and kept with the chat.
-  await near.call(keyA, "chat_create", { key: "loose", text: "x", preset: "Loose", model: "sonnet" });
+  await near.call(keyA, "chat_create", { for: "me", key: "loose", text: "x", preset: "Loose", model: "sonnet" });
   const loose = near.store.openedBy(keyA).find((o) => o.key === "loose")!.child;
-  assert.deepEqual([near.session(loose).model, presetCopyOf(near.session(loose).workspace)?.name], ["sonnet", "Loose"]);
+  assert.deepEqual([near.session(loose).model, (await presetCopyOf(near.session(loose).workspace))?.name], ["sonnet", "Loose"]);
   // None named: no preset, whatever the opener's chat has.
-  await near.call(keyA, "chat_create", { key: "none", text: "x", model: "sonnet" });
+  await near.call(keyA, "chat_create", { for: "me", key: "none", text: "x", model: "sonnet" });
   const none = near.store.openedBy(keyA).find((o) => o.key === "none")!.child;
-  assert.equal(presetCopyOf(near.session(none).workspace), null);
+  assert.equal(await presetCopyOf(near.session(none).workspace), null);
   // An unknown one: told those there are.
-  const unknown = await near.refused(keyA, "chat_create", { key: "u", text: "x", preset: "Nope" });
+  const unknown = await near.refused(keyA, "chat_create", { for: "me", key: "u", text: "x", preset: "Nope" });
   assert.ok(unknown.includes("Review, Loose, Far"), unknown);
 
   // One that names a station opens there with station left out, its copy taken by that station; on another, refused.
   asked.length = 0;
-  await near.call(keyA, "chat_create", { key: "far", text: "x", preset: "Far", runtime: "claude" });
+  await near.call(keyA, "chat_create", { for: "me", key: "far", text: "x", preset: "Far", runtime: "claude" });
   assert.equal(asked[0], CREATE_PRESET);
   const there = far.store.listSessions().map((s) => s.key);
   assert.equal(there.length, 1);
-  const copy = presetCopyOf(far.session(there[0]!).workspace);
+  const copy = await presetCopyOf(far.session(there[0]!).workspace);
   assert.deepEqual([copy?.name, copy?.instructions], ["Far", "On orchard."]);
-  const elsewhere = await near.refused(keyA, "chat_create", { key: "far2", text: "x", preset: "Far", station: "cedar" });
+  const elsewhere = await near.refused(keyA, "chat_create", { for: "me", key: "far2", text: "x", preset: "Far", station: "cedar" });
   assert.ok(elsewhere.includes("only on station far"), elsewhere);
   // A station from before presets reached chat_create: refused, nothing opened there without the preset.
   near.hub.onPeer(async (_station, request) => {
     if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
     throw new Refused("remote tasks are not enabled for this source station");
   });
-  const old = await near.refused(keyA, "chat_create", { key: "old", text: "x", preset: "Far" });
+  const old = await near.refused(keyA, "chat_create", { for: "me", key: "old", text: "x", preset: "Far" });
   assert.ok(old.includes("not updated yet") && old.includes("with a preset"), old);
+  await near.close();
+  await far.close();
+});
+
+test("a chat opened on another station keeps its explicit speed, including a preset's, or refuses an older station", async () => {
+  const near = new Rig({ link: true });
+  const far = new Rig({ link: true });
+  far.edit((raw) => Object.assign(raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6-astra"] }));
+  const a = say("<@UBOT> review it");
+  await near.accept(a);
+  await settle();
+  const key = sessionKey("cl", "C1", a.threadTs);
+  const asked: string[] = [];
+  near.hub.onPeer(async (_station, request) => {
+    if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
+    asked.push(request.method);
+    if (request.method === CREATE_SPEED || request.method === CREATE_PRESET_SPEED) return createForPeer(far.hub, "st", request);
+    return fromPeer(far.hub, "st", request);
+  });
+  const preset = await near.hub.presets.add(null, { name: "Quick review", dirs: [], instructions: "Review it.", model: { model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" } }, "local");
+  for (const [k, choice, method] of [
+    ["explicit", { runtime: "codex", model: "gpt-6-astra", speed: "ultrafast" }, CREATE_SPEED],
+    ["preset", { preset: preset.id }, CREATE_PRESET_SPEED],
+  ] as const) {
+    asked.length = 0;
+    await near.call(key, "chat_create", { for: "me", key: k, station: "far", text: "review it", ...choice });
+    assert.equal(asked[0], method);
+    const child = near.store.openedBy(key).find((o) => o.key === k)!.child;
+    assert.equal(far.session(child).speed, "ultrafast");
+  }
+  near.hub.onPeer(async (_station, request) => {
+    if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
+    throw new Refused("remote tasks are not enabled for this source station");
+  });
+  assert.match(await near.refused(key, "chat_create", { for: "me", key: "old", station: "far", text: "review it", preset: preset.id }), /not updated yet.*requested speed/);
+  assert.equal(far.store.listSessions().length, 2);
   await near.close();
   await far.close();
 });
@@ -1596,15 +1696,15 @@ test("a chat opened on another station without a model runs what its starter use
   used("u5", "claude", "deepseek-v4.1-flash", now - 90 * 86_400_000);
   used("u6", "claude", "deepseek-v4.1-flash", now - 90 * 86_400_000);
   far.store.db.prepare("UPDATE sessions SET created_by = 'someone else', created_at = ? WHERE key IN ('u4', 'u5')").run(now);
-  await near.call(keyA, "chat_create", { key: "login", station: "orchard", text: "run the login" });
+  await near.call(keyA, "chat_create", { for: "me", key: "login", station: "orchard", text: "run the login" });
   const child = far.store.openedWith("near", keyA, "login", "")!.child;
   assert.deepEqual([far.session(child).runtime, far.session(child).model], ["codex", "gpt-6-astra"]);
   // Close to it (3 to 2, the chat just opened counting too): asked.
   used("u7", "claude", "deepseek-v4.1-flash", now - 3600_000);
-  const which = await near.refused(keyA, "chat_create", { key: "login-2", station: "orchard", text: "run the login" });
+  const which = await near.refused(keyA, "chat_create", { for: "me", key: "login-2", station: "orchard", text: "run the login" });
   assert.ok(which.includes("gpt-6-astra (runtime codex, 3 chats") && which.includes("deepseek-v4.1-flash (runtime claude, 2 chats"), which);
   // A runtime named: its model there.
-  await near.call(keyA, "chat_create", { key: "login-3", station: "orchard", runtime: "claude", text: "run the login" });
+  await near.call(keyA, "chat_create", { for: "me", key: "login-3", station: "orchard", runtime: "claude", text: "run the login" });
   const third = far.store.openedWith("near", keyA, "login-3", "")!.child;
   assert.deepEqual([far.session(third).runtime, far.session(third).model], ["claude", "deepseek-v4.1-flash"]);
   await near.close();
@@ -1849,7 +1949,7 @@ test("station_* reach the transport, pretty-printed; adb_devices and feedback_se
   const one = await adbTools(() => [{ serial: "127.0.0.1:37123", adb: "connected" }])[0]!.run("s", {});
   assert.ok(one.includes("127.0.0.1:37123") && one.includes("adb -s <serial>") && one.includes("phone_use") && !one.includes("http"));
   const r = new Rig();
-  const [key] = newSession(r.hub, web("local"));
+  const [key] = await newSession(r.hub, web("local"));
   const sent: Json[] = [];
   const feedback = feedbackTools(r.store, () => "https://x/o/1", () => async (report) => (sent.push(report), { number: 7 }))[0]!;
   assert.equal(await feedback.run(key, { to: "CHAT/1.1", title: "chat_post fails", body: "it said 500", area: "station", reporter: "Ada" }), "Sent to the still.fail team as FB-7.");
@@ -1888,7 +1988,7 @@ test("a chat is headed as the chat list calls it: its name, the agent's, else �
   const keyA = sessionKey("cl", "C1", a.threadTs);
   // A Slack thread: by the first line said in it.
   assert.equal(sender(r.hub, keyA)[0], "ship it");
-  await r.call(keyA, "chat_create", { key: "android", text: "看 [一起排查](https://x/o/1) 要排队", title: "安卓构建" });
+  await r.call(keyA, "chat_create", { for: "me", key: "android", text: "看 [一起排查](https://x/o/1) 要排队", title: "安卓构建" });
   const child = r.store.openedBy(keyA)[0]!.child;
   const thread = r.store.homeChat(child)!;
   assert.equal(sender(r.hub, child)[0], "安卓构建");
@@ -1941,7 +2041,7 @@ test("a chat an agent opens told no effort runs the one its starter uses most wi
   await settle();
   const keyA = sessionKey("cl", "C1", a.threadTs);
   // Never named one: the model's own.
-  await r.call(keyA, "chat_create", { key: "first", text: "first" });
+  await r.call(keyA, "chat_create", { for: "me", key: "first", text: "first" });
   const first = r.session(r.store.openedBy(keyA)[0]!.child);
   assert.equal(first.effort ?? null, null);
   // Their chats on that runtime and model ran at high, more than at low: high.
@@ -1949,17 +2049,17 @@ test("a chat an agent opens told no effort runs the one its starter uses most wi
     for (const k of keys) r.store.db.prepare("UPDATE sessions SET runtime = ?, model = ?, effort = ? WHERE key = ?").run(first.runtime, first.model ?? null, effort, k);
   };
   ran("high", [keyA, first.key]);
-  await r.call(keyA, "chat_create", { key: "second", text: "second" });
+  await r.call(keyA, "chat_create", { for: "me", key: "second", text: "second" });
   const second = r.session(r.store.openedBy(keyA)[1]!.child);
   assert.equal(second.effort, "high");
   // One named stays as named.
-  await r.call(keyA, "chat_create", { key: "third", text: "third", effort: "low" });
+  await r.call(keyA, "chat_create", { for: "me", key: "third", text: "third", effort: "low" });
   assert.equal(r.session(r.store.openedBy(keyA)[2]!.child).effort, "low");
   // One no profile here runs any longer: the model's own, not refused.
   ran("no-such-effort", [keyA, first.key, second.key]);
   r.store.setOpenedState("", first.key, "all_done");
   r.store.setOpenedState("", second.key, "all_done");
-  await r.call(keyA, "chat_create", { key: "fourth", text: "fourth" });
+  await r.call(keyA, "chat_create", { for: "me", key: "fourth", text: "fourth" });
   assert.equal(r.session(r.store.openedBy(keyA)[3]!.child).effort ?? null, null);
   await r.close();
 });

@@ -1,0 +1,254 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/vault_crypto"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "stillfail/rules/vault",
+}
+
+// Values
+pub let about_most : Int32
+
+pub fn account_of(@json.Json) -> String?
+
+pub fn allows(@json.Json?, @json.Json?) -> Bool
+
+pub fn b64(BytesView) -> String
+
+pub fn b64url(BytesView) -> String
+
+pub fn box_bytes(String) -> Bytes?
+
+pub fn box_public(Crypto, BytesView) -> String raise Refused
+
+pub fn browser_listing_ok(@json.Json) -> String?
+
+pub fn cert_ok(Crypto, @vault.LockView, @json.Json?, ever? : Bool) -> String?
+
+pub fn decrypt(Crypto, BytesView, String, String) -> Bytes raise Refused
+
+pub fn encrypt_with(Crypto, BytesView, BytesView, String, BytesView) -> String raise Refused
+
+pub fn fields_of(String) -> Array[String]
+
+pub let file_most : Int32
+
+pub fn file_ok(@json.Json) -> String?
+
+pub fn grant_context(String, String) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn hex(BytesView) -> String
+
+pub fn hex_of_length(String, Int32) -> Bool
+
+pub fn host_allowed(String, Array[String]) -> Bool
+
+pub fn install_schema(Db, String, String, rows? : Array[String]) -> Unit raise
+
+pub fn item_context(String, String, String, Int64, Int64) -> String
+
+pub fn item_ok(Crypto, @vault.LockView, @json.Json, @json.Json?, @json.Json, copy? : Bool) -> String?
+
+pub fn item_supersedes(@json.Json, @json.Json) -> Bool
+
+pub fn js_number(Double) -> String
+
+pub fn js_string(@json.Json?) -> String
+
+pub fn key_context(String, String, Int64) -> String
+
+pub let kinds : Array[String]
+
+pub fn lock_view(@json.Json) -> @vault.LockView
+
+pub let modes : Array[String]
+
+pub fn new_box_pair(Crypto) -> (String, Bytes) raise Refused
+
+pub fn open_seal(Crypto, BytesView, String, String) -> Bytes raise Refused
+
+pub fn parse_js(String) -> @json.Json raise
+
+pub let plain_id : String
+
+pub fn plain_ok(@json.Json?, @json.Json, String) -> String?
+
+pub fn quote(StringBuilder, String) -> Unit
+
+pub fn recovery_pair(Crypto, BytesView) -> (String, Bytes) raise Refused
+
+pub fn save_context(String, String) -> String
+
+pub let scopes : Array[String]
+
+pub fn seal(Crypto, String, BytesView, String) -> String raise Refused
+
+pub fn seal_with(Crypto, String, BytesView, String, BytesView) -> String raise Refused
+
+pub fn shown(@json.Json) -> @json.Json
+
+pub fn sig_over(Crypto, @json.Json?, BytesView) -> Bool
+
+pub fn sign_ed25519(Crypto, @json.Json, String, BytesView) -> @json.Json raise
+
+pub fn signed_bytes(Crypto, @json.Json, String) -> Bytes raise
+
+pub fn signed_ok(Crypto, @json.Json, String) -> Bool
+
+pub fn signer_of(@vault.LockView, String) -> (String, String)?
+
+pub fn stringify(@json.Json) -> String
+
+pub let tag_box : String
+
+pub let tag_deny : String
+
+pub let tag_grant : String
+
+pub let tag_item : String
+
+pub let tag_vault : String
+
+pub fn text_of_bytes(BytesView) -> String
+
+pub fn unb64(String) -> Bytes
+
+pub fn unhex(String) -> Bytes
+
+pub fn utf8(String) -> Bytes
+
+pub fn value_of(@json.Json) -> String?
+
+pub fn vault_ok(Crypto, @vault.LockView, @json.Json?, @json.Json, copy? : Bool) -> String?
+
+pub fn vault_supersedes(@json.Json, @json.Json) -> Bool
+
+// Errors
+pub suberror DbError {
+  DbError(String)
+}
+pub impl Show for DbError
+
+pub suberror Refused {
+  Refused(String)
+}
+pub impl Show for Refused
+
+pub suberror UnaccountedSchema {
+  UnaccountedSchema(String)
+}
+pub impl Show for UnaccountedSchema
+
+// Types and methods
+pub(all) struct Crypto {
+  ask : (String, @json.Json) -> Result[@json.Json, String]
+}
+pub fn Crypto::chacha_open(Self, BytesView, BytesView, BytesView, BytesView) -> Bytes? raise Refused
+pub fn Crypto::chacha_seal(Self, BytesView, BytesView, BytesView, BytesView) -> Bytes raise Refused
+pub fn Crypto::hkdf(Self, BytesView, BytesView, BytesView, Int32) -> Bytes raise Refused
+pub fn Crypto::of_host(@host.Host) -> Self
+pub fn Crypto::random(Self, Int32) -> Bytes raise Refused
+pub fn Crypto::sha256(Self, BytesView) -> Bytes raise Refused
+pub fn Crypto::verify(Self, String, BytesView, BytesView, BytesView) -> Bool
+pub fn Crypto::x25519(Self, BytesView, BytesView) -> Bytes raise Refused
+pub fn Crypto::x25519_public(Self, BytesView) -> Bytes raise Refused
+
+pub(all) enum Current {
+  Gone
+  Is(Double, Double?)
+  Unknown
+}
+
+pub(all) struct Db {
+  ask : (String, @json.Json) -> Result[@json.Json, String]
+  id : Int32
+}
+pub fn Db::all(Self, String, Array[@json.Json]) -> Array[Array[@json.Json]] raise DbError
+pub fn Db::attach(Crypto, String, wait? : Int32) -> Self raise DbError
+pub fn Db::close(Self) -> Unit
+pub fn Db::exec(Self, String) -> Unit raise DbError
+pub fn Db::get(Self, String, Array[@json.Json]) -> Array[@json.Json]? raise DbError
+pub fn Db::in_transaction(Self) -> Bool raise DbError
+pub fn Db::run(Self, String, Array[@json.Json]) -> Int32 raise DbError
+
+pub(all) struct Held {
+  mut request : @json.Json
+  mut grant : @json.Json
+  mut secret : @json.Json
+  mut uses : Double
+  mut until : Double?
+}
+pub fn Held::from_json(@json.Json) -> Self?
+pub fn Held::to_json(Self) -> @json.Json
+
+pub struct Keeper {
+  // private fields
+}
+pub fn Keeper::accept(Self, @vault.LockView, @json.Json, @json.Json, @json.Json, @json.Json) -> String?
+pub fn Keeper::active(Self, String, String) -> Bool
+pub fn Keeper::carried(Self) -> @json.Json
+pub fn Keeper::carry(Self, @json.Json) -> Unit
+pub fn Keeper::discard_box(Self, String) -> Unit
+pub fn Keeper::drop(Self, String) -> Unit
+pub fn Keeper::end(Self, String) -> Unit
+pub fn Keeper::has_grant(Self, String) -> Bool
+pub fn Keeper::held(Self, String) -> Array[Held]
+pub fn Keeper::hold(Self, @json.Json, @json.Json, @json.Json) -> String?
+pub fn Keeper::holds(Self, String) -> Bool
+pub fn Keeper::new(Crypto, () -> Double, (Double, () -> Unit) -> () -> Unit, d? : KeeperDeps) -> Self
+pub fn Keeper::open(Self, String) -> String raise Refused
+pub fn Keeper::prepare_accept(Self, @vault.LockView, @json.Json, @json.Json, @json.Json, @json.Json) -> Prepared
+pub fn Keeper::renew(Self, String, String) -> Unit
+pub fn Keeper::restore(Self, Held) -> Unit
+pub fn[T] Keeper::rollback_on_error(Self, String, () -> T raise) -> T raise
+pub fn Keeper::spend(Self, String) -> Bool
+pub fn Keeper::usable(Self, String, String) -> Result[Held, String]
+pub fn Keeper::waiting(Self, String) -> Bool
+
+pub(all) struct KeeperDeps {
+  ended : (String) -> Bool
+  kept : Kept?
+}
+pub fn KeeperDeps::none() -> Self
+
+pub(all) struct Kept {
+  save : (Held) -> Unit
+  forget : (Held) -> Unit
+  spend_once : (Held) -> Bool?
+  spend_again : (Held) -> Bool?
+  renew : (Held, Double) -> Renewed
+  current : (Held) -> Current
+  expire : (Held, Double) -> Bool?
+}
+
+pub struct PlainStore {
+  db : Db
+}
+pub fn PlainStore::first_items(Self, String, String, Int32) -> Array[(String, @json.Json)] raise DbError
+pub fn PlainStore::forget(Self, String, String) -> Unit raise DbError
+pub fn PlainStore::item(Self, String, String) -> @json.Json? raise DbError
+pub fn PlainStore::item_snapshot(Self, String, String) -> (@json.Json, String)? raise DbError
+pub fn PlainStore::items(Self, String, String) -> Array[@json.Json] raise DbError
+pub fn PlainStore::items_after(Self, String, String, String) -> Array[@json.Json] raise DbError
+pub fn PlainStore::lasts(Self, String, String) -> (@json.Json, @json.Json)? raise DbError
+pub fn PlainStore::new(Db) -> Self raise DbError
+pub fn PlainStore::put(Self, @json.Json) -> Unit raise DbError
+pub fn PlainStore::set_lasts(Self, String, String, @json.Json?, @json.Json?) -> String? raise DbError
+
+pub(all) enum Prepared {
+  Refusal(String)
+  Ready(() -> String?)
+}
+
+pub(all) enum Renewed {
+  NotRenewed
+  RenewedTo(Double)
+  RenewUnknown
+}
+
+// Type aliases
+
+// Traits

@@ -107,13 +107,13 @@ let legacy_asked_during_sql : String =
   #|)
 
 ///|
-/// store/legacy-closed-cards.ts CLOSED_CARDS_INDEXED.
+/// station/test/reference/backfill/legacy-closed-cards.ts CLOSED_CARDS_INDEXED.
 let closed_cards_indexed_sql : String =
   #|SELECT thread,n,viewer,at,rowid AS ordering
   #|  FROM closed_cards INDEXED BY closed_cards_thread_at WHERE thread=? AND at>=?
 
 ///|
-/// store/legacy-closed-cards.ts LEGACY_CLOSED_CARDS.
+/// station/test/reference/backfill/legacy-closed-cards.ts LEGACY_CLOSED_CARDS.
 let legacy_closed_cards_sql : String =
   #|SELECT c.thread,c.n,c.viewer,c.at,c.rowid AS ordering
   #|  FROM legacy_closed_cards k INDEXED BY legacy_closed_by_time CROSS JOIN closed_cards c ON c.rowid=k.source_rowid
@@ -208,17 +208,12 @@ let answer_next_person_sql : String =
   #|  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND n > ? ORDER BY n LIMIT 1
 
 ///|
-/// store/card-post-index.ts CARD_POST_BEFORE.
-let card_post_before_sql : String =
-  #|SELECT MAX(n) AS n FROM card_posts WHERE thread=? AND n<?
-
-///|
-/// store/card-post-index.ts CARD_POST_NEXT.
+/// station/test/reference/backfill/card-post-index.ts CARD_POST_NEXT.
 let card_post_next_sql : String =
   #|SELECT n FROM card_posts WHERE thread=? AND n>=? ORDER BY n LIMIT 1
 
 ///|
-/// store/card-post-index.ts CARD_POST_SAMPLE.
+/// station/test/reference/backfill/card-post-index.ts CARD_POST_SAMPLE.
 let card_post_sample_sql : String =
   #|SELECT n FROM card_posts WHERE thread=? ORDER BY n LIMIT 65
 
@@ -259,14 +254,32 @@ let shares_of_sql : String =
 ///|
 /// read/store.ts OPENERS_OF.
 let openers_of_sql : String =
-  #|SELECT o.child, o.parent_station, o.parent, o.opener_title, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))
+  #|SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))
 
 ///|
 /// read/store.ts OPENED_OF.
 let opened_of_sql : String =
-  #|SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid
+  #|SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid
 
 ///|
 /// read/store.ts SHOWN_SESSIONS.
 let shown_sessions_sql : String =
   #|SELECT * FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC
+
+///|
+/// store/card-kinds.ts WAITS_ON_JOB.
+let waits_on_job_sql : String =
+  #|SELECT 1 AS x FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND session_key = ?1 AND watch = 0 LIMIT 1
+
+///|
+/// store/card-kinds.ts WAITS_ON_LED.
+let waits_on_led_sql : String =
+  #|SELECT 1 AS x FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child
+  #|  WHERE o.parent_station = '' AND o.parent = ?1 AND o.led = 1 AND c.archived_at IS NULL
+  #|  AND (o.state IS NULL OR o.state NOT IN ('all_done', 'stopped')) LIMIT 1
+
+///|
+/// store/card-kinds.ts ASKER_BEFORE.
+let asker_before_sql : String =
+  #|SELECT author FROM entries INDEXED BY entries_people_by_n WHERE thread = ?1 AND n < ?2
+  #|  AND author_kind = 'person' AND kind = 'message' ORDER BY n DESC LIMIT 1

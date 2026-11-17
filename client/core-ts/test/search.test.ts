@@ -162,6 +162,24 @@ test("what_a_search_finds_says_where_it_opens_as_every_client_has_a_page_for_it"
   assert.equal(openOf({ ...at, kind: "file", chat: "a" }), null);
 });
 
+test("files_found_at_the_top_of_a_disk_keep_the_root_and_the_file_to_open", () => {
+  const station = "ws/st";
+  for (const root of ["/", "C:\\", "D:/"]) {
+    const file = (name: string, fileKind: string, more: J = {}) => openOf({ kind: "file", station, path: `${root}${name}`, fileKind, ...more });
+    assert.deepEqual([
+      file("notes.md", "markdown"),
+      file("clip.mp4", "video"),
+      file("photo.png", "image"),
+      file("", "folder", { dir: true }),
+    ], [
+      { to: "files", station, root, path: "notes.md", how: "read" },
+      { to: "files", station, root, path: "clip.mp4", how: "play" },
+      { to: "files", station, root, path: "" },
+      { to: "files", station, root, path: "" },
+    ], root);
+  }
+});
+
 test("a_search_typed_on_asks_its_stations_for_the_last_words_alone_and_again_only_for_them", async () => {
   const replies: Record<string, unknown> = { ...base(), ...chatsOf([row("a", 7, "部署页")]) };
   for (const q of ["u", "up", "upd"]) for (const tail of ["", "&again=1"]) replies[`GET /search?q=${q}&limit=6${tail}`] = { building: false, groups: [] };

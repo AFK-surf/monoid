@@ -10,6 +10,11 @@ export class InvalidJsonFile extends Error {
 
 export function readJsonFile(path: string): any {
   const text = readFileSync(path, "utf8");
+  return parseJsonText(path, text);
+}
+
+/// The text of the file at `path` as JSON, refused as `readJsonFile` refuses it: for a file read off the main thread.
+export function parseJsonText(path: string, text: string): any {
   try {
     return JSON.parse(text);
   } catch (error) {

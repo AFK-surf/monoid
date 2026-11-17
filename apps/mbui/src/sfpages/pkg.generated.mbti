@@ -17,8 +17,6 @@ import {
 // Values
 pub fn about_node(@view.View, @settings.Core, on_back~ : () -> Unit, frame~ : () -> @sf.PageFrame, said? : (@sf.PageSaid) -> Unit, width? : () -> Double) -> Unit
 
-pub let acc_delete_words : @ui.TextStyle
-
 pub let acc_narrow_foot : @ui.Style
 
 pub let add_profile_start : Map[String, Array[(String, @json.Json)]]
@@ -60,8 +58,6 @@ pub let attach_w : Double
 pub let bar_foot : Double
 
 pub fn bars_page(@ui.Ctx, @settings.Core, @sf.PageFrame) -> Unit
-
-pub fn block_waiting(@ui.Ctx, () -> Unit, error? : String, wait? : @json.Json?) -> Unit
 
 pub let body_size : Double
 
@@ -149,8 +145,6 @@ pub fn decision_options(@ui.Ctx, @sfbase.Source, MessageHere, @sfbase.Message, D
 
 pub fn decisions_node(@view.View, @settings.Core, () -> @settings.Here, on_back~ : () -> Unit, frame~ : () -> @sf.PageFrame, said? : (@sf.PageSaid) -> Unit, width? : () -> Double, tips? : @sf.TipLayer) -> Unit
 
-pub fn desk_column(@ui.Ctx) -> Double
-
 pub let desk_dialogs : @ref.Ref[Int32]
 
 pub let desk_note : @ui.TextStyle
@@ -227,8 +221,6 @@ pub fn finder_typed(String) -> Unit
 
 pub let finding : Finding
 
-pub fn finger_ripple(@ui.Ctx, Int32) -> Unit
-
 pub let flashing_now : @ref.Ref[(String, Double)]
 
 pub fn fonts_page(@ui.Ctx, @settings.Core, @sf.PageFrame) -> Unit
@@ -277,15 +269,11 @@ pub fn image_reveal(@ui.Ctx, String, Double, Double, @ui.Fit, String, radius? : 
 
 pub fn invitations_waiting(@sfbase.Source) -> Array[(@json.Json?, @json.Json)]
 
-pub fn invite_dot(@ui.Ctx, String) -> Unit
-
 pub fn invite_error_key(String) -> String?
 
 pub fn invited_you(@json.Json) -> String
 
 pub fn join_dialog(@settings.Core, String, String, String) -> Unit
-
-pub fn json_sign(@json.Json?) -> String
 
 pub let kind_mark : Double
 
@@ -439,21 +427,9 @@ pub fn person_avatar(@ui.Ctx, @sfbase.Source, String, String, String) -> Unit
 
 pub fn person_words(@ui.Ctx, String, String, found? : Array[String], peek? : ((String, String, Int32) -> Unit)?, chat_title? : (String) -> String?, runs? : @json.Json?) -> Unit
 
-pub let pf_card_foot : @ui.Style
-
-pub let pf_head : @ui.Style
-
-pub let pf_identity : @ui.Style
-
-pub let pf_mark : @ui.Style
-
-pub let pf_name : @ui.TextStyle
-
 pub let pf_name_line : @ui.Style
 
 pub let pf_spin : Double
-
-pub let pf_sub : @ui.TextStyle
 
 pub fn pick_files(@sfbase.Writing) -> Unit
 
@@ -555,8 +531,6 @@ pub fn said_step(Array[Double], Double, Bool, Int32) -> Double?
 
 pub fn sample_chat(Int32) -> @sfbase.ChatItem
 
-pub fn sample_stations() -> Array[@json.Json]
-
 pub fn screen_covered(@sfbase.Source, String, String, Bool) -> Unit
 
 pub fn screen_fix_others(Array[String]) -> Unit
@@ -592,8 +566,6 @@ pub fn search_page_node(@view.View, @sfbase.Source, () -> @sfbase.Workspace?, ()
 pub fn search_start_now() -> Unit
 
 pub fn search_summon(@ui.Ctx, Array[Offered], Bool) -> Unit
-
-pub fn sec_section(@ui.Ctx, @sf.Look, String, count~ : Int32, () -> Unit) -> Unit
 
 pub fn security_open_node(@view.View, @settings.Core, () -> @settings.Here, on_back~ : () -> Unit, frame~ : () -> @sf.PageFrame, said? : (@sf.PageSaid) -> Unit, width? : () -> Double) -> Unit
 

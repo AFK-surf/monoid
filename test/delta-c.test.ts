@@ -34,7 +34,9 @@ const built = compile();
 const skip = built ? false : "no C compiler (cc) here: update_delta.h not tested";
 
 function run(...args: string[]) {
-  const r = spawnSync(built!.exe, args, { encoding: "utf8", env: { ...process.env, ASAN_OPTIONS: "abort_on_error=0:exitcode=99" } });
+  // (a malloc that cannot be had answers NULL, as on a device, which the applier refuses: a header flipped to say an old
+  // blob of 64 GB was a sanitizer's abort on Linux's runner, where the Mac's gave the memory, and nothing else)
+  const r = spawnSync(built!.exe, args, { encoding: "utf8", env: { ...process.env, ASAN_OPTIONS: "abort_on_error=0:exitcode=99:allocator_may_return_null=1" } });
   // a refusal is 1 with its reason; anything else (a signal, a sanitizer's report) is the applier's fault
   assert.ok(r.status === 0 || r.status === 1, `exit ${r.status} signal ${r.signal}: ${r.stderr}`);
   assert.doesNotMatch(r.stderr, /Sanitizer|runtime error/, r.stderr);

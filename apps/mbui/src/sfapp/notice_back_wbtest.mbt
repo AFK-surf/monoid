@@ -316,7 +316,8 @@ test "phone: mid-slide, pages, overlays, and menu return to Home on back" {
   t5.tap(bx + bw / 2.0, by + bh / 2.0)
   t5.run_for(@ui.move_most_ms)
   t5.frame()
-  let (rx, ry, rw, rh) = t5.rect_of("整理发布清单").unwrap()
+  // (the panel's row, by what it is: Home's list under the sheet names the same chat)
+  let (rx, ry, rw, rh) = t5.get(Button, label="整理发布清单").rect
   t5.tap(rx + rw / 2.0, ry + rh / 2.0)
   t5.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is Chat(_), msg="attention opened chat")

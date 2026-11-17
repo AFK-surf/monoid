@@ -781,7 +781,8 @@ fn said_limit(v : Json?) -> Int {
 
 ///|
 /// GET /machine-sessions/:runtime/:id: one of them to look at before going on with it, with the latest `limit` of
-/// what was said.
+/// what was said. Asked `found: true` (POST /machine-sessions, going on with it: api/routes/hub.ts), only the session
+/// with where its transcript is (`path`), none of what was said read.
 pub fn machine_session(db : @sql.Db, host : @host.Host, sep : String, args : Json) -> Json raise {
   let runtime = match args.value("runtime") {
     Some(String(r)) => r
@@ -799,6 +800,13 @@ pub fn machine_session(db : @sql.Db, host : @host.Host, sep : String, args : Jso
   guard find_session(host, sep, roots_of(args), runtime, id) is Some(found) else {
     let en = args.value("lang") is Some(String("en"))
     raise Refused(404, if en { "No such local session: \{id}" } else { "本机没有这个会话：\{id}" })
+  }
+  if args.value("found") is Some(True) {
+    let session = shown_machine(found)
+    if session is Object(fields) {
+      fields["path"] = Json::string(found.path)
+    }
+    return { "session": session }
   }
   let said = conversation(host, runtime, found.path)
   found.session = session_of_runtime(db, runtime, found.id)

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { autoArchive, startAutoArchiveTimer } from "../src/sessions/lifecycle.ts";
-import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "../src/store/archive-mark-index.ts";
+import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "./reference/backfill/archive-mark-index.ts";
 import { Rig } from "./hub-fakes.ts";
 
 test("automatic archive does not read marks belonging only to other viewers' chats", async () => {

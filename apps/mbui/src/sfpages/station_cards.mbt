@@ -3,13 +3,6 @@
 // PastRow; their css.ts), all of it as the core says it.
 
 ///|
-/// A machine's CPU, memory and disk (MeterDials): each what is left large over its cells, filled as far as is used,
-/// its name and its total under them.
-fn meter_dials(c : @ui.Ctx, meters : Array[Json], details? : Array[String] = [], columns? : Int = 0) -> Unit {
-  @sf.dials(c, meters.map(meter_dial), details~, columns~)
-}
-
-///|
 /// A meter as its dial: what is left large, filled as far as is used, its name and its total under (each its short
 /// words too).
 fn meter_dial(m : Json) -> @sf.Dial {
@@ -27,17 +20,6 @@ fn meter_dial(m : Json) -> @sf.Dial {
 }
 
 ///|
-/// The machine's dials, including each GPU. Narrow pages keep three figures to a row; wide pages use their width.
-fn station_resource_dials(c : @ui.Ctx, meters : Array[Json], gpus : Array[Json]) -> Unit {
-  if gpus.is_empty() {
-    meter_dials(c, meters)
-    return
-  }
-  let (all, models) = station_dials_of(meters, gpus)
-  meter_dials(c, all, details=models, columns=3)
-}
-
-///|
 /// The machine's meters and its GPUs as one row of dials, and what is said under each (a GPU's model; "" none).
 fn station_dials_of(meters : Array[Json], gpus : Array[Json]) -> (Array[Json], Array[String]) {
   let all = meters.copy()
@@ -48,7 +30,7 @@ fn station_dials_of(meters : Array[Json], gpus : Array[Json]) -> (Array[Json], A
 }
 
 ///|
-/// The machine's dials (station_resource_dials', as nodes), as `host` says them now.
+/// The machine's dials, as `host` says them now.
 fn station_dials_node(p : @view.View, host : () -> Json?) -> Unit {
   p.pick(fn() { items(host(), "gpus").length() > 0 }, fn(d, gpus) {
     if gpus {
@@ -69,50 +51,6 @@ fn quota_dials_of(windows : Array[Json]) -> Array[@sf.Dial] {
     let left = count(wv, "left")
     { number: left.to_string(), unit: "%", fill: left, level: text(wv, "level"), label: text(wv, "label"), note: text(wv, "refills"), label_short: "", note_short: "" }
   })
-}
-
-///|
-/// This device's connection to it (Net, flush): how it goes and packets lost over its round trip; beside them ↑ over ↓,
-/// the speed each way and what went that way since it opened (under them where the line has not the room: no figure
-/// cut short, nothing over another). The figures in the words' ink, one off in its level's.
-fn station_net(c : @ui.Ctx, net : Json?) -> Unit {
-  c.box(style=nt_row, flow=true, line_gap=nt_lines, fn() {
-    c.box(style=nt_part, fn() {
-      c.box(style=nt_line, fn() {
-        c.text(text(net, "path"), style=nt_words_cut) |> ignore
-        match field(net, "loss") {
-          Some(Object(_)) as f => figure(c, f)
-          _ => ()
-        }
-      })
-      |> ignore
-      match field(net, "rtt") {
-        Some(Object(_)) as f =>
-          c.box(style=nt_line, fn() {
-            c.text("·", style=nt_words) |> ignore
-            let words = @sf.t("web-pages.stations.latency", args=[("latency", "\u{0}")])
-            let parts = words.split("\u{0}").map(fn(p) { p.to_owned() }).collect()
-            c.text(parts.get(0).unwrap_or(""), style=nt_words) |> ignore
-            figure(c, f)
-            c.text(parts.get(1).unwrap_or(""), style=nt_words_cut) |> ignore
-          })
-          |> ignore
-        _ => ()
-      }
-    })
-    |> ignore
-    c.box(style=nt_rates, fn() {
-      for way in [("↑", "up"), ("↓", "down")] {
-        c.box(style=nt_rate, fn() {
-          c.text(way.0, style=nt_words) |> ignore
-          c.text(text(net, way.1), style=nt_figure) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -186,26 +124,6 @@ pub fn figure(c : @ui.Ctx, f : Json?) -> Unit {
 }
 
 ///|
-/// The rest of a machine (HostDetails), a quiet row each: its label beside it, quieter.
-fn host_details(c : @ui.Ctx, rows : Array[(String, String)]) -> Unit {
-  c.box(style=hd_grid, fn() {
-    c.box(style=hd_labels, fn() {
-      for r in rows {
-        c.text(r.0, style=hd_label) |> ignore
-      }
-    })
-    |> ignore
-    c.box(style=hd_values, fn() {
-      for r in rows {
-        c.text(r.1, style=hd_value) |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// What is asked of a station's software (useSoftware): updating one, checking, its channel, updating by itself; what
 /// went wrong with it, by station ("" nothing).
 // kept across runs: said as an update fails or is asked again; station_cards_reset empties it
@@ -232,192 +150,6 @@ fn software_call(core : Core, station : String, name : String, params : Array[(S
           error_text(e)
         }
     }
-  })
-}
-
-///|
-/// A station's software (SoftwareList): a row each (its mark, name and version as the core says it, why it cannot be
-/// updated from here under it; what is newer and updating it at its end), the station's own switches (its channel,
-/// updating by itself) under its version for its managers; then when it was last checked, with checking again.
-fn software_list(c : @ui.Ctx, core : Core, station : String, updates : Array[Json], manager : Bool, beta : Bool) -> Unit {
-  if updates.length() == 0 {
-    return
-  }
-  let batch = is_doing(core, ["software.updateAll"], [("station", station)])
-  for u in updates {
-    let v = Some(u)
-    let id = text(v, "id")
-    let busy = batch || is_doing(core, ["software.update"], [("station", station), ("id", id)])
-    software_row(c, core, station, v, manager, busy, beta)
-  }
-  // (in lines: checking again after when it was last checked, under it where the line has not the room; why it failed
-  // a line of its own)
-  c.box(style=sw_foot, flow=true, line_gap=4.0, fn() {
-    let checked = match field(Some(updates[0]), "checkedAt") {
-      Some(Number(n, ..)) => Some(n)
-      _ => None
-    }
-    c.text(
-      match checked {
-        None => @sf.t("web-main.versions.checkingVersions")
-        Some(n) => @sf.t("web-main.versions.lastChecked", args=[("time", @settings.short_date_time(n))])
-      },
-      style=sw_foot_words,
-    )
-    |> ignore
-    match software_failed.get(station) {
-      Some(f) => c.text(f, style=sw_failed_line) |> ignore
-      None => ()
-    }
-    if checked is Some(_) {
-      let checking = is_doing(core, ["software.check"], [("station", station)])
-      let cid = c.id("software-check/" + station)
-      if !checking {
-        c.on_press(cid, fn() {
-          software_call(core, station, "software.check", [])
-        })
-      }
-      c.box(style=sw_check, id=cid, fn() {
-        c.text(
-          if checking {
-            @sf.t("web-main.versions.checking")
-          } else {
-            @sf.t("web-main.versions.check")
-          },
-          style=if c.hovered(cid) && !checking { sw_check_lit } else { sw_check_words },
-        )
-        |> ignore
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// One piece of software (SoftwareRow).
-fn software_row(c : @ui.Ctx, core : Core, station : String, v : Json?, manager : Bool, busy : Bool, beta : Bool) -> Unit {
-  let id = text(v, "id")
-  let state = text(v, "state")
-  let installed = flag(v, "installed")
-  let latest = text(v, "latest")
-  let button = fn(label : String, primary : Bool) {
-    if manager && flag(v, "updatable") {
-      @sf.button(c, label, key="software/" + station + "/" + id, tone=if primary { Primary } else { Plain }, disabled=busy, on_press=fn() {
-        software_call(core, station, "software.update", [("id", str(id))])
-      }) |> ignore
-    }
-  }
-  let repair = fn(label : String) {
-    if manager && flag(v, "repairable") {
-      @sf.button(c, label, key="software/" + station + "/" + id, tone=Primary, disabled=busy, on_press=fn() {
-        software_call(core, station, "software.update", [("id", str(id)), ("repair", Json::boolean(true))])
-      }) |> ignore
-    }
-  }
-  let own = id == "station"
-  let switches = own && manager && ((beta && has(v, "channel")) || has(v, "auto"))
-  @sf.item_row(c, fn() {
-    c.box(style=sw_mark, fn() {
-      if own {
-        @sf.drawable(c, if @sf.theme().dark { "stillfail_mark_dark" } else { "stillfail_mark" }, sw_glyph) |> ignore
-      } else {
-        @sf.maker_mark(c, "", id, sw_glyph) |> ignore
-      }
-    })
-    |> ignore
-    // its name and what is newer with updating it on its first line; its version, what an update says, why it cannot
-    // be updated and its own switches under them, as wide as its words (lines of their own)
-    @sf.row_lines(c, spaced=true, fn() {
-      c.box(style=sw_name_line.then(sw_name_grow), fn() {
-        c.text(text(v, "name"), style=sw_name) |> ignore
-        if text(v, "channel") == "beta" && !switches {
-          c.box(style=sw_beta, fn() { c.text(@sf.t("web-main.versions.beta"), style=sw_beta_words) |> ignore }) |> ignore
-        }
-      })
-      |> ignore
-      c.box(style=sw_rest, fn() {
-        if state == "updating" {
-          match field(v, "percent") {
-            Some(Number(p, ..)) => @sf.progress(c, "software/" + station + "/" + id, Some(p / 100.0), w=Px(sw_progress_w))
-            _ => ()
-          }
-        } else if state == "failed" {
-          c.text(text(v, "failedText"), style=sw_failed) |> ignore
-          if flag(v, "repairable") {
-            repair(@sf.t("common.retry"))
-          } else {
-            button(@sf.t("common.retry"), false)
-          }
-        } else if flag(v, "repairable") {
-          repair(@sf.t("web-main.versions.repairNpm"))
-        } else if !installed {
-          button(@sf.t("web-main.versions.install"), false)
-        } else if flag(v, "newer") && latest != "" {
-          c.text(latest, style=sw_newer) |> ignore
-          button(@sf.t("web-main.versions.update"), true)
-        } else if flag(v, "downgrade") && latest != "" {
-          c.text(latest, style=sw_newer) |> ignore
-          button(@sf.t("web-main.versions.backToStable"), false)
-        }
-      })
-      |> ignore
-    }, fn() {
-      let vid = c.id("software-version/" + station + "/" + id)
-      c.box(id=vid, style=sw_version_box, fn() { c.text(text(v, "shownText"), style=sw_version) |> ignore }) |> ignore
-      if text(v, "tipText") != "" {
-        @sf.tip(c, "software-tip/" + station + "/" + id, vid, text(v, "tipText"))
-      }
-      // (what an update under way or done says: on a line of its own, not beside its name)
-      if software_said(v) != "" {
-        c.text(software_said(v), style=sw_note) |> ignore
-      }
-      if text(v, "note") != "" {
-        c.text(text(v, "note"), style=sw_note) |> ignore
-      }
-      if state == "failed" && text(v, "message") != "" {
-        c.text(text(v, "message"), style=sw_note) |> ignore
-      }
-      // the station's own: which releases it takes, and whether it takes them by itself
-      if switches {
-        c.box(style=sw_switches, fn() {
-          if beta && has(v, "channel") {
-            let busy_ch = is_doing(core, ["software.channel"], [("station", station)])
-            // 
-            let line = c.id("software-beta-line/" + station)
-            c.box(style=sw_switch_line, id=line, taps=false, points=true, fn() {
-              c.text(@sf.t("web-main.versions.beta"), style=sw_switch_word) |> ignore
-              let on = text(v, "channel") == "beta"
-              let now = @sf.switch(c, "software-beta/" + station, on, label=@sf.t("web-main.versions.betaStation"), small=true, busy=busy_ch, disabled=busy)
-              if now != on {
-                software_call(core, station, "software.channel", [("channel", str(if now { "beta" } else { "stable" }))])
-              }
-            })
-            |> ignore
-            @sf.tip(c, "software-beta-tip/" + station, line, @sf.t("web-main.versions.betaNote"))
-          }
-          if has(v, "auto") {
-            let busy_auto = is_doing(core, ["software.auto"], [("station", station)])
-            let line = c.id("software-auto-line/" + station)
-            c.box(style=sw_switch_line, id=line, taps=false, points=true, fn() {
-              c.text(@sf.t("web-main.versions.auto"), style=sw_switch_word) |> ignore
-              let on = flag(v, "auto")
-              let now = @sf.switch(c, "software-auto/" + station, on, label=@sf.t("web-main.versions.auto"), small=true, busy=busy_auto, disabled=busy)
-              if now != on {
-                software_call(core, station, "software.auto", [("on", Json::boolean(now))])
-              }
-            })
-            |> ignore
-            @sf.tip(c, "software-auto-tip/" + station, line, @sf.t(if flag(v, "idleOnly") {
-              "web-main.versions.autoIdleTip"
-            } else {
-              "web-main.versions.autoTip"
-            }))
-          }
-        })
-        |> ignore
-      }
-    })
   })
 }
 

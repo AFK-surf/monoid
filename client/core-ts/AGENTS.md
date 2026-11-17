@@ -72,6 +72,13 @@ the statements that read most. What the sync writes is held the same way: each c
 of each setting, from its run to the core at rest, alone (a core started anew, nothing asked) and held (everything the
 app asks held), reads at most twice what it writes (text bound to statements that write) and sends, or 8 KB, growing
 no faster; `OVER_WRITE` and `GROWS_WRITE` there, which only fall. A new cause is measured by being in `CAUSES`.
+A page of the settings opened first in a run, Home shown (the owner, 2026-11-16: 「设置页面第一次点进去会卡挺久」), is
+held the same way by `test/cold-open.test.ts`: it decorates and reads no station's whole overview (what each page reads
+of one is a column of `station_part`, schema.ts PART_COLUMNS) and runs as many statements with five times the chats'
+logs; what each chat keeps (`cache.usage`) is read of counts triggers keep (`log_bytes`, schema.ts ensureLogBytes),
+never summed of the rows, and so are the files kept (`part_bytes`, drive-kept.ts ensurePartBytes, never `part`), and
+that call, which changes nothing, lets the first values of the page it is asked with go first (store.ts `turn`); a call
+that changes something never waits so (rule 5).
 What the views, the store and what goes out walk in memory is held the same way (`test/view-work.test.ts`): work.ts
 `walked` counts reads tracked, values made again, `share`'s and `equal`'s walks, keyed lists' diffs and the items put
 together, copied and fitted as they go out, each to the topic made or sent then, past the items found the same objects
@@ -117,6 +124,23 @@ there; `scripts/whole-lists.ts` refuses a whole list read, and its `WHOLE` says 
 A column a read needs is derived as the record is written (SQLite's of its JSON, schema.ts `CHAT_COLUMNS`, held to the
 JS's rule by list-rows.test.ts; the core's, `state` and `watched`, Derive: one algorithm each), and for rows an older core wrote (their `made` not `CHAT_MADE`) at the next open: every host opens its
 database alone (`locking_mode EXCLUSIVE`), so nothing an older core wrote is read before that.
+
+## A chat on another station now
+
+A chat handed to another station of its workspace (station/src/replica/handover.ts) is shown once, where it is, and
+goes on there with nothing said (`src/views/moved.ts` says how). Where it went is kept by the station it left and its
+session (account.ts `putMoved`, table `moved`) and read by `Data.chatNow`; a row of a station that said its chat went
+is never written (account.ts `#movedAway`), nor one the station it went to says came from it (its session's `from`,
+`#came`), so every read of `chat` sees one row a chat and no read filters. One session key on two stations with
+neither said is two chats (a platform thread's key is its connect's, each station's own: the lead, 2026-11-14).
+What names a chat on the station it left (a call's params, a link, a page's topic, a draft) is aimed through
+`chatNow` where it is read, never by rewriting what the UI holds: a page open on it keeps its topics and its thread id,
+each shown of its copy there (core/routing.ts `#movedTo`, one place for every topic a chat's page holds).
+`#came` is one rule whichever of the row and its summary's `from` comes first (`#summaryCame`), and takes the chat
+by its thread there once its row names it. A log held of a station that said its chat went is never asked of that
+station (its catch-up as a stream comes back aimed by `chatNow`: it would answer 404); and being told a chat is on a
+station (the one it left saying so, a `409 moved`, its row there come from another, it back) lets go of what was kept
+of it there as not there and reads again what a page holds of it (station/sync.ts `chatHere`).
 
 ## What is shared is never written
 

@@ -3,13 +3,13 @@ import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { LiveHub, type LiveMessage, type Locate } from "../src/sessions/live.ts";
+import { LiveHub, type LiveMessage, type Located } from "../src/sessions/live.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
 const line = (text: string, id: string) => `${JSON.stringify({ type: "assistant", timestamp: "2026-09-26T00:00:00Z", message: { id, content: [{ type: "text", text }] } })}\n`;
 const deferred = () => {
-  let resolve!: (at: ReturnType<Locate>) => void;
-  const promise = new Promise<ReturnType<Locate>>((done) => { resolve = done; });
+  let resolve!: (at: Located) => void;
+  const promise = new Promise<Located>((done) => { resolve = done; });
   return { promise, resolve };
 };
 const texts = (got: LiveMessage[]) => got.flatMap((m) => m.type === "timeline" ? m.entries.map((e) => e.text) : []);

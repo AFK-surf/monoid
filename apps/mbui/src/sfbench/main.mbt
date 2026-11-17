@@ -24,7 +24,7 @@ fn main {
     return
   }
   let dark = @film.arg("MBUI_DARK") == "1"
-  // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页), as a person who turned it on has it
+  // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (实验性功能's 试用新对话页), as a person who turned it on has it
   let chat_nodes = @film.arg("MBUI_CHAT_PAGE") == "nodes"
   // (the app made as sffix makes it, at the Tester's first frame: the code face it carries given then, to the
   // Tester's text, which is this Mac's)

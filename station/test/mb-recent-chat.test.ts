@@ -9,10 +9,10 @@ import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { RecentChatBuilder } from "../src/read/recent-chat-builder.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { readPreparedRecentHome } from "../src/store/chat-list-home-overlap.ts";
-import { readGlobalRecentChatIndex } from "../src/store/chat-list-index.ts";
-import { RecentChatPreparation, type RecentChatScope } from "../src/store/chat-list-prepare.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { readPreparedRecentHome } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { readGlobalRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
+import { RecentChatPreparation, type RecentChatScope } from "./reference/chat-list/chat-list-prepare.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
@@ -174,7 +174,7 @@ test("the builder prepares a requested scope behind a pending write, and gives t
   const f = station(4);
   const priority = new SharedArrayBuffer(8), flags = new Int32Array(priority);
   Atomics.add(flags, 0, 1);
-  const builder = new RecentChatBuilder(f.path, { priority }, undefined, binary);
+  const builder = new RecentChatBuilder(f.path, { priority }, binary!);
   try {
     const ready = builder.readyScope({ ws: "A", home: "A" });
     let settled = false;

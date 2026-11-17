@@ -137,7 +137,7 @@ test "on a host whose pictures show on their own layer, the station's pointer is
   assert_true(st.layered())
   // not drawn over the frame: on the picture's layer, in the station's shape, where it points
   assert_true(drawn_pointer(r) is None)
-  let (arrow, _) = @sf.pointer_png(r.t.ctx(), shape="default")
+  let (arrow, _) = @sf.pointer_png_at(r.t.ctx().scale, shape="default")
   assert_eq(pointer_told(r, st), ["pointer \{arrow} 20x20 hot=1,1", "pointer at 0.5 0.5"])
   // the station's pointer moves: a value the core takes as it comes (screen_value_quiet), the host told at once,
   // nothing built for it
@@ -155,7 +155,7 @@ test "on a host whose pictures show on their own layer, the station's pointer is
   let text = r.cursor_moved(0.25, 0.75, shape="text")
   assert_false(screen_value_quiet(text))
   r.say(text)
-  let (ibeam, _) = @sf.pointer_png(r.t.ctx(), shape="text")
+  let (ibeam, _) = @sf.pointer_png_at(r.t.ctx().scale, shape="text")
   assert_eq(pointer_told(r, st).last(), Some("pointer \{ibeam} 20x20 hot=10,10"))
   // anything else of the state changed with it: not quiet, built
   guard r.sess().state is Some(Object(m)) else { @halt.saying("no state") }

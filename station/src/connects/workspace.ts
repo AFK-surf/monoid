@@ -3,30 +3,30 @@
 // moved to another station by hand (POST /connects/:id/move); on the station a chat runs on, the events taken and the
 // connect's surface asked; on every one, whether a connect being added runs on another station already.
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Effect, Layer } from "effect";
 import type { Route } from "../api/admin.ts";
 import { error, input, ok, Refused, segment } from "../api/request.ts";
-import type { Inbox } from "../mesh/bus.ts";
+import { type Inbox, Refused as Declined } from "../mesh/bus.ts";
 import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
-import type { ChatEvent } from "../sessions/chat.ts";
+import { type ChatEvent, markNotice } from "../sessions/chat.ts";
 import type { ConnectKind } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
 import type { NameBook } from "./names.ts";
-import { CALL, EVENT, LIST, MOVED, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
+import { BOTS, CALL, EVENT, HOLDS, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
 
 type Json = any;
 
 /// What a connect's secret is known by across the workspace without being said: its platform's token (Slack's bot
-/// token, a Comma line's token) or its app (Feishu's), hashed. Null: one that has none yet.
+/// token, a Comma line's token, a group connect's key) or its app (Feishu's), hashed. Null: one that has none yet.
 export function fingerprint(kind: string, own: Json): string | null {
-  const secret = kind === "feishu" ? own?.appId : kind === "comma" ? own?.token : own?.botToken;
+  const secret = kind === "feishu" ? own?.appId : kind === "comma" ? own?.token : kind === "group" ? own?.key : own?.botToken;
   return typeof secret === "string" && secret !== "" ? createHash("sha256").update(`${kind}\n${secret}`).digest("hex") : null;
 }
 
@@ -34,13 +34,13 @@ export type WorkspaceConnectsDeps = {
   data: string;
   hub: () => Hub;
   store: StoreT;
-  config: { raw(): Json; update(f: (raw: Json) => void): void };
+  config: { raw(): Json; updateSoon(f: (raw: Json) => void): Promise<unknown> };
   /// This station's id, and its home workspace.
   here: () => string;
   home: () => string | null;
   /// The stations of one of this station's workspaces (the cloud's roster: `{id, name}`); none of any other.
   stations: (ws: string) => Json[];
-  bus: { ask(station: string, request: Json): Promise<Json>; on(method: string, inbox: Inbox): void };
+  bus: { ask(station: string, request: Json): Promise<Json>; on(method: string, inbox: Inbox): void; heard?(f: (peer: string) => void): void };
   /// Each platform's names book.
   names: (kind: ConnectKind) => NameBook | null;
 };
@@ -50,6 +50,7 @@ export class WorkspaceConnects {
   private readonly d: WorkspaceConnectsDeps;
   /// The files a chat of another station posts, until they are posted.
   private readonly uploads: string;
+  readonly #uploadsCleared: Promise<void>;
   /// One event at a time per thread: a conversation's first message is handed on before its next is looked at.
   private readonly gates = new Map<string, Promise<void>>();
   /// What a platform says of a workspace whose chats this station hands to another (hub `quiet`), acknowledged and kept
@@ -63,8 +64,32 @@ export class WorkspaceConnects {
     this.d = d;
     this.uploads = join(d.data, "run", "connect-uploads");
     this.heldFile = join(d.data, "replica", "held-events.jsonl");
-    rmSync(this.uploads, { recursive: true, force: true });
+    // What a process before left of the files remote chats posted, taken away off the thread; the first upload waits for it.
+    this.#uploadsCleared = rm(this.uploads, { recursive: true, force: true }).catch(() => {});
+    try {
+      const kept = JSON.parse(readFileSync(join(d.data, "replica", "awaiting.json"), "utf8")) as Record<string, string[]>; // sync: read once, before the station serves
+      for (const [id, keys] of Object.entries(kept)) if (Array.isArray(keys) && keys.length > 0) this.awaiting.set(id, new Set(keys));
+    } catch {}
     this.remote = new RemoteConnects(d.data, d.here, (station, request) => d.bus.ask(station, request), d.names);
+    // (the moves under way as this station stopped: settled as it starts and as the station each went to is heard from)
+    try {
+      for (const name of readdirSync(this.movingDir())) { // sync: read once, before the station serves
+        try {
+          const m = JSON.parse(readFileSync(join(this.movingDir(), name), "utf8")) as Moving; // sync: read once, before the station serves
+          if (typeof m?.id === "string" && typeof m.to === "string") this.moving.set(m.id, m);
+        } catch {}
+      }
+    } catch {}
+    d.bus.on(HOLDS, async (peer, request, workspace) => {
+      const known = knownIn(request?.connect);
+      if (known === null || typeof workspace !== "string" || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
+      return { holds: this.entryOf(localOf(known, d.here())) !== undefined };
+    });
+    // (a request heard: nothing asked of anyone unless a move of this station's is under way with that one)
+    d.bus.heard?.((peer) => {
+      if (this.moving.size > 0) void this.settleMoving(peer);
+    });
+    void this.settleMoving();
     d.bus.on(EVENT, (peer, request, workspace) => this.taken(peer, request, workspace));
     d.bus.on(MOVED, async (_peer, request) => {
       const known = knownIn(request?.connect);
@@ -78,7 +103,7 @@ export class WorkspaceConnects {
         const id = localOf(known, d.here());
         const entry = this.entryOf(id);
         return entry !== undefined && this.workspaceOf(entry) === workspace ? this.own(id) : undefined;
-      }, this.uploads),
+      }, this.uploads, this.#uploadsCleared),
     );
     // Whether one of this station's connects of that workspace has that secret.
     d.bus.on(LIST, async (_peer, request, workspace) => {
@@ -86,6 +111,59 @@ export class WorkspaceConnects {
       return { has: this.entries().some((c) => this.workspaceOf(c) === workspace && fingerprint(kindOf(c), c?.[kindOf(c)]) === print) };
     });
     d.bus.on(TAKE, (peer, request, workspace) => this.take(peer, request, workspace));
+    // (the bots of another station's connects, told as they change: its notices are no person's message here)
+    d.bus.on(BOTS, async (peer, request, workspace) => {
+      if (typeof workspace !== "string" || !this.inWorkspace(workspace, peer)) throw new Error("not a station of this workspace");
+      const bots = Array.isArray(request?.bots) ? request.bots.filter((b: unknown): b is string => typeof b === "string" && b !== "").slice(0, 200) : [];
+      d.hub().toldBots.set(peer, new Set(bots));
+      return { ok: true };
+    });
+    // (one thread's chat runs on another station from now on, or here again: replica/handover.ts)
+    d.bus.on(ROUTE, async (peer, request, workspace) => {
+      const known = knownIn(request?.connect);
+      const id = known === null ? "" : localOf(known, d.here());
+      const entry = this.entryOf(id);
+      if (known === null || entry === undefined || typeof workspace !== "string" || this.workspaceOf(entry) !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
+      if (typeof request?.channel !== "string" || typeof request?.threadTs !== "string") throw new Error("no such thread");
+      this.routeHere(id, request.channel, request.threadTs, typeof request.station === "string" ? request.station : null);
+      return { ok: true };
+    });
+  }
+
+  /// A thread of a connect of this station's: its chat runs on `station` from now on (null, or this one: here).
+  private routeHere(id: string, channel: string, threadTs: string, station: string | null): void {
+    if (station === null || station === this.d.here()) this.d.store.dropConnectThreadStation(id, channel, threadTs);
+    else this.d.store.setConnectThreadStation(id, channel, threadTs, station);
+  }
+
+  /// A thread of connect `id` (as this station names it): its chat runs on `station` from now on, said where the connect
+  /// runs (here, or asked of the station it runs on, `connect.route`). Not a routed kind: refused.
+  async route(id: string, channel: string, threadTs: string, station: string): Promise<void> {
+    const entry = this.entryOf(id);
+    if (entry !== undefined) {
+      if (!ROUTED.includes(kindOf(entry) as never) || entry.mode === "single-session") throw new Error("that connect's chats run only where it runs");
+      return this.routeHere(id, channel, threadTs, station);
+    }
+    const remote = this.remote.surface(id);
+    if (remote === undefined) throw new Error(`connect ${id} is not known here`);
+    await this.d.bus.ask(remote.station, { method: ROUTE, workspace: remote.described.workspace, connect: knownOf(id, this.d.here()), channel, threadTs, station });
+  }
+
+  /// Connect `id` as this station knows it: where it runs and what it says of itself (null: not known here), so that a
+  /// station a chat of it is handed to posts through it before it heard any of its events (`learnOf`).
+  describedFor(id: string): { station: string; described: Described } | null {
+    const own = this.described(id);
+    if (own !== null) return { station: this.d.here(), described: own };
+    const remote = this.remote.surface(id);
+    return remote === undefined ? null : { station: remote.station, described: remote.described };
+  }
+
+  /// What another station said of a connect a chat handed here goes through (`describedFor`): learnt, unless it is one
+  /// of this station's own.
+  learnOf(known: Known, station: string, described: Described): void {
+    const id = localOf(known, this.d.here());
+    if (this.entryOf(id) !== undefined) return;
+    this.remote.learn(id, station, described);
   }
 
   private entries(): Json[] {
@@ -119,15 +197,31 @@ export class WorkspaceConnects {
 
   // ── on the station a chat runs on ────────────────────────────────────────────────────────────────────────────
 
-  /// An event of a connect of another station's for a chat here.
+  /// An event of a connect of another station's for a chat here; or one kept on a station retired for one of its
+  /// connects that moved here since (`kept`), taken as this station's connect's own (`moveAll`).
   private async taken(peer: string, request: Json, workspace: string | undefined): Promise<Json> {
     const known = knownIn(request?.connect);
+    if (request?.kept === true) {
+      const id = known === null ? "" : localOf(known, this.d.here());
+      const entry = this.entryOf(id);
+      if (known === null || typeof workspace !== "string" || entry === undefined || this.workspaceOf(entry) !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
+      await this.receive(id, request.event as ChatEvent);
+      return { ok: true };
+    }
     const d: Described | undefined = request?.described;
     if (known === null || typeof d?.kind !== "string" || typeof workspace !== "string" || d.workspace !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
     const id = localOf(known, this.d.here());
     if (this.entryOf(id) !== undefined) throw new Error("that connect runs on this station");
     this.remote.learn(id, peer, d);
     const event = request.event as ChatEvent;
+    // (its chat was handed from here to another station, and the connect's station not told yet, or the event already
+    // on its way: it goes on there, as the connect's station would send it)
+    const thread = threadOfEvent(event);
+    const moved = this.d.hub().movedTo(id, thread.channel, thread.threadTs);
+    if (moved !== null && moved !== this.d.here()) {
+      await this.d.bus.ask(moved, { method: EVENT, workspace, connect: known, described: d, event });
+      return { ok: true };
+    }
     await this.d.hub().receive(id, event);
     // Its people and channel named here as there (the pages read them from this station's names book).
     if (event.type === "message") {
@@ -148,19 +242,189 @@ export class WorkspaceConnects {
     return turn;
   }
 
+  /// The connects of this station's being handed to another (`move`), from the moment that one is asked to take it: where
+  /// it went once taken (null: it was not, and is this station's still). Its socket here closes as config.json loses it,
+  /// a few ms after the other's opened (the drill: 1 to 6 ms both open); what Slack gives this one meanwhile, or as the
+  /// hand-off goes on, waits for it and goes to the holder (`receive`), never handled here, nor twice: Slack gives each
+  /// event to one socket of an app, and acknowledges it once the holder took it.
+  private readonly handing = new Map<string, { to: Promise<string | null>; ws: string }>();
+
+  /// The moves of a connect of this station's under way, kept from before it asks the other to take it until it heard
+  /// either way (`replica/connects-moving/`): a station that stopped between, or did not hear the other's answer, asks
+  /// it whether it holds the connect as it starts and as it is heard from (`settleMoving`): it does, the move ends here
+  /// as it would have (this one's entry dropped, its threads its); it does not, it never moved. So one of the two holds
+  /// it, never both nor neither, once both are up and have heard each other.
+  private readonly moving = new Map<string, Moving>();
+  /// Those whose move is asking the other now (settled by its answer, not by `settleMoving`).
+  private readonly asking = new Set<string>();
+  private movingDir(): string {
+    return join(this.d.data, "replica", "connects-moving");
+  }
+  private movingFile(id: string): string {
+    return join(this.movingDir(), `${createHash("sha256").update(id).digest("hex").slice(0, 32)}.json`);
+  }
+  private async keepMoving(m: Moving): Promise<void> {
+    this.moving.set(m.id, m);
+    await mkdir(this.movingDir(), { recursive: true });
+    await writeFile(`${this.movingFile(m.id)}.tmp`, JSON.stringify(m));
+    await rename(`${this.movingFile(m.id)}.tmp`, this.movingFile(m.id));
+  }
+  private async doneMoving(id: string): Promise<void> {
+    this.moving.delete(id);
+    await rm(this.movingFile(id), { force: true });
+  }
+  #settling: Promise<void> = Promise.resolve();
+
+  /// The moves under way (of those to `peer`, where given), settled by asking each station whether it holds the connect.
+  settleMoving(peer?: string): Promise<void> {
+    const turn = this.#settling.then(async () => {
+      for (const m of [...this.moving.values()]) {
+        if ((peer !== undefined && m.to !== peer) || this.asking.has(m.id)) continue;
+        let holds: boolean;
+        try {
+          holds = (await this.d.bus.ask(m.to, { method: HOLDS, workspace: m.ws, connect: knownOf(m.id, this.d.here()) }))?.holds === true;
+        } catch (e) {
+          log.info("connects", "a connect's move under way not settled yet: the station it went to not heard", { connect: m.id, to: m.to, error: (e as Error).message });
+          continue;
+        }
+        if (holds && this.entryOf(m.id) !== undefined) await this.handedOff(m.id, m.to, m.ws, m.localsTo);
+        else if (holds) await this.doneMoving(m.id);
+        else {
+          this.handing.delete(m.id);
+          await this.doneMoving(m.id);
+        }
+        log.info("connects", "a connect's move under way settled", { connect: m.id, to: m.to, there: holds });
+      }
+    });
+    this.#settling = turn.catch(() => {});
+    return turn;
+  }
+
+  /// What ends a connect's move here once the other took it: its entry dropped, its threads the other's, the chats here
+  /// going on through it there, the other stations told; what its socket here still gives goes there (`receive`).
+  private async handedOff(id: string, to: string, ws: string, localsTo: string): Promise<void> {
+    const d = this.described(id);
+    const known = knownOf(id, this.d.here());
+    this.handing.set(id, { to: Promise.resolve(to), ws });
+    await this.d.config.updateSoon((raw) => {
+      raw.connects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: Json) => c?.id !== id);
+    });
+    this.d.store.dropConnectThreads(id);
+    // The chats here go on through it there.
+    if (d !== null && localsTo === this.d.here()) this.remote.learn(id, to, d);
+    for (const p of this.d.stations(ws)) {
+      if (typeof p?.id !== "string" || p.id === this.d.here() || p.id === to) continue;
+      void this.d.bus.ask(p.id, { method: MOVED, workspace: ws, connect: known, station: to }).catch(() => {});
+    }
+    await this.doneMoving(id);
+  }
+
   private async forward(station: string, id: string, ws: string, event: ChatEvent) {
     const d = this.described(id);
     if (d === null) throw new Error("the connect is not connected");
     await this.d.bus.ask(station, { method: EVENT, workspace: ws, connect: knownOf(id, this.d.here()), described: d, event });
   }
 
+  /// Of each connect moved here that is not routed, the chats of it still on their way here (`move`'s `awaiting`),
+  /// kept on disk with what its platform said meanwhile (`awaitingFile`), read as the station starts.
+  private readonly awaiting = new Map<string, Set<string>>();
+  private awaitingFile(id: string): string {
+    return join(this.d.data, "replica", "awaiting", `${createHash("sha256").update(id).digest("hex").slice(0, 32)}.jsonl`);
+  }
+  private awaitingTurn: Promise<void> = Promise.resolve();
+  private inAwaiting(f: () => Promise<void>): Promise<void> {
+    const turn = this.awaitingTurn.then(f);
+    this.awaitingTurn = turn.catch(() => {});
+    return turn;
+  }
+
+  /// Connect `id` keeps what it says for chats `keys` until each is here.
+  private await(id: string, keys: string[]): Promise<void> {
+    return this.inAwaiting(async () => {
+      this.awaiting.set(id, new Set([...(this.awaiting.get(id) ?? []), ...keys]));
+      await this.saveAwaiting();
+    });
+  }
+
+  private keepFor(id: string, event: ChatEvent): Promise<void> {
+    return this.inAwaiting(async () => {
+      if (!this.awaiting.has(id)) return void (await this.d.hub().receive(id, event));
+      const file = this.awaitingFile(id);
+      await mkdir(dirname(file), { recursive: true });
+      await appendFile(file, `${JSON.stringify(event)}\n`);
+    });
+  }
+
+  /// Chats `keys` are here now (replica/handover.ts as it shows them): a connect waiting for no more of its chats takes
+  /// what it kept, in order, as it came.
+  arrived(keys: string[]): Promise<void> {
+    return this.inAwaiting(async () => {
+      for (const [id, waiting] of [...this.awaiting]) {
+        for (const k of keys) waiting.delete(k);
+        if (waiting.size > 0) continue;
+        this.awaiting.delete(id);
+        await this.saveAwaiting();
+        const file = this.awaitingFile(id);
+        const lines = (await readFile(file, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
+        await rm(file, { force: true });
+        for (const line of lines) {
+          try {
+            await this.d.hub().receive(id, JSON.parse(line) as ChatEvent);
+          } catch (e) {
+            log.warn("connects", "an event kept for a chat on its way not taken", { connect: id, error: (e as Error).message });
+          }
+        }
+      }
+      await this.saveAwaiting();
+    });
+  }
+
+  private async saveAwaiting(): Promise<void> {
+    const path = join(this.d.data, "replica", "awaiting.json");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(`${path}.tmp`, JSON.stringify(Object.fromEntries([...this.awaiting].map(([k, v]) => [k, [...v]]))));
+    await rename(`${path}.tmp`, path);
+  }
+
+  /// The bots of this station's connects as last told to the workspace's other stations, by workspace.
+  private readonly botsTold = new Map<string, string>();
+
+  /// This station's connects' bots of `ws` told to its other stations where they changed since they were last told
+  /// (as an event of one comes: its bot is known by then), never asked for.
+  private tellBots(ws: string): void {
+    const bots = [...new Set(this.entries().filter((c) => this.workspaceOf(c) === ws).map((c) => this.own(c.id)?.botUserId() ?? "").filter((b) => b !== ""))].sort();
+    const said = JSON.stringify(bots);
+    if (this.botsTold.get(ws) === said) return;
+    this.botsTold.set(ws, said);
+    for (const p of this.d.stations(ws)) {
+      if (typeof p?.id !== "string" || p.id === this.d.here()) continue;
+      void this.d.bus.ask(p.id, { method: BOTS, workspace: ws, bots }).catch(() => this.botsTold.delete(ws));
+    }
+  }
+
   /// What a connect's platform says: to the station a chat of its thread runs on, or a new conversation's to the
   /// station the connect starts them on; the rest to the hub here.
   async receive(id: string, event: ChatEvent): Promise<void> {
+    // (a connect being handed to another station, or handed: what its socket here still gives goes there, handled only
+    // by the station that holds it; the hand-off failed, it is this one's still)
+    const handed = this.handing.get(id);
+    if (handed !== undefined) {
+      const to = await handed.to;
+      // (only while it is not this station's: one of that id here again, added anew by a person, is this one's)
+      if (to !== null && (this.entryOf(id) === undefined || this.asking.has(id))) return void (await this.d.bus.ask(to, { method: EVENT, workspace: handed.ws, connect: knownOf(id, this.d.here()), kept: true, event }));
+      if (to !== null && this.handing.get(id) === handed) this.handing.delete(id);
+    }
     const hub = this.d.hub();
+    {
+      const entry = this.entryOf(id);
+      const ws = entry === undefined ? null : this.workspaceOf(entry);
+      if (ws !== null) this.tellBots(ws);
+    }
     const connect = hub.config().connects.find((c) => c.id === id);
     const entry = this.entryOf(id);
     const ws = entry === undefined ? null : this.workspaceOf(entry);
+    // (a connect that is not routed whose chats are still on their way here: kept for them, in order)
+    if (this.awaiting.has(id)) return this.keepFor(id, event);
     if (connect === undefined || ws === null || !ROUTED.includes(connect.kind)) return hub.receive(id, event);
     if (connect.mode === "single-session") return hub.quietIn(ws) ? this.hold(id, ws, event) : hub.receive(id, event);
     const thread = threadOfEvent(event);
@@ -172,7 +436,7 @@ export class WorkspaceConnects {
         } catch (e) {
           log.warn("connects", "an event of a chat on another station did not get there", { connect: id, station: there, error: (e as Error).message });
           if (event.type === "message") {
-            await this.own(id)?.post(thread, `⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`, []).catch(() => {});
+            await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
           }
         }
         return;
@@ -214,37 +478,75 @@ export class WorkspaceConnects {
   ownIn(ws: string): string[] {
     return this.entries().filter((c) => this.workspaceOf(c) === ws && typeof c?.id === "string").map((c) => c.id as string);
   }
+  /// `ownIn`'s with their kind and mode (move/connects.ts).
+  ownKinds(ws: string): { id: string; name: string; kind: string; mode: string }[] {
+    return this.namedIn(ws).map((c) => ({ ...c, mode: this.entryOf(c.id)?.mode === "single-session" ? "single-session" : "multi-session" }));
+  }
+  /// The connects of `ws` added on this station that run on another one now (moved there).
+  movedAway(ws: string): { id: string; name: string; kind: string; mode: string }[] {
+    return this.remote.connects().filter((c) => c.workspace === ws && !c.id.includes("@")).map((c) => ({ id: c.id, name: c.id, kind: c.kind, mode: c.mode }));
+  }
+  /// The ids of every connect of this station's.
+  ownIds(): string[] {
+    return this.entries().filter((c) => typeof c?.id === "string").map((c) => c.id as string);
+  }
+  /// How connect `id` (as this station names it) goes, its own or another station's (null: not known here).
+  kindOf(id: string): { kind: string; mode: string } | null {
+    const entry = this.entryOf(id);
+    if (entry !== undefined) return { kind: kindOf(entry), mode: entry.mode === "single-session" ? "single-session" : "multi-session" };
+    const remote = this.remote.surface(id);
+    return remote === undefined ? null : { kind: remote.described.kind, mode: remote.described.mode };
+  }
+  /// The station connect `id` runs on (null: this one, or not known).
+  runsOn(id: string): string | null {
+    if (this.entryOf(id) !== undefined) return null;
+    return this.remote.surface(id)?.station ?? null;
+  }
   /// `ownIn`'s, as the app names them: each one's name (its id where it has none) and kind.
   namedIn(ws: string): { id: string; name: string; kind: string }[] {
     return this.entries().filter((c) => this.workspaceOf(c) === ws && typeof c?.id === "string").map((c) => ({ id: c.id as string, name: typeof c.name === "string" && c.name !== "" ? c.name : (c.id as string), kind: kindOf(c) }));
   }
-    async moveAll(ws: string, to: string): Promise<void> {
-    // (what was kept for it first, in order; from then on each event goes there as it comes, until its connect moved)
+  /// Each connect is there before what was kept of it goes there, in order, as that station's own connect's (`kept`): a
+  /// chat it starts a turn in calls it there (2026-11-14: forwarded before it moved, each such turn failed, the connect
+  /// not yet on the station). From then on each event goes there as it comes. One that came on its new socket meanwhile
+  /// is in its thread's log by its ts. What did not go stays kept, and goes as this is done again.
+  async moveAll(ws: string, to: string): Promise<void> {
     await this.inHeld(async () => {
-      const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
-      const rest: string[] = [];
-      for (let i = 0; i < lines.length; i++) {
-        let e: Json;
-        try {
-          e = JSON.parse(lines[i]!);
-        } catch {
-          continue;
-        }
-        if (e?.ws !== ws) {
-          rest.push(lines[i]!);
-          continue;
-        }
-        try {
-          await this.forward(to, e.id, ws, e.event as ChatEvent);
-        } catch (error) {
-          await this.writeHeld([...rest, ...lines.slice(i)]);
-          throw error;
-        }
+      // (those kept of a connect moved before this was cut first)
+      const own = new Set(this.ownIn(ws));
+      await this.sendKept(ws, to, (id) => !own.has(id));
+      for (const id of own) {
+        await this.move(id, to, null, stationLang(), to);
+        await this.sendKept(ws, to, (c) => c === id);
       }
-      await this.writeHeld(rest);
       this.heldTo.set(ws, to);
     });
-    for (const id of this.ownIn(ws)) await this.move(id, to, null, stationLang(), to);
+  }
+
+  /// What was kept of `ws`'s connects that `which` names sent to `to`, where they run now, in order; the rest stays kept.
+  private async sendKept(ws: string, to: string, which: (id: string) => boolean): Promise<void> {
+    const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
+    if (lines.length === 0) return;
+    const rest: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      let e: Json;
+      try {
+        e = JSON.parse(lines[i]!);
+      } catch {
+        continue;
+      }
+      if (e?.ws !== ws || typeof e.id !== "string" || !which(e.id)) {
+        rest.push(lines[i]!);
+        continue;
+      }
+      try {
+        await this.d.bus.ask(to, { method: EVENT, workspace: ws, connect: knownOf(e.id, this.d.here()), kept: true, event: e.event });
+      } catch (error) {
+        await this.writeHeld([...rest, ...lines.slice(i)]);
+        throw error;
+      }
+    }
+    await this.writeHeld(rest);
   }
 
   /// What was kept of `ws`'s platforms while its chats were quiet, taken here after all, in order, as it would have been
@@ -278,11 +580,12 @@ export class WorkspaceConnects {
     return turn;
   }
 
-  /// An event of `ws`'s, whose chats here go to another station: kept, or, once what was kept went there, sent there.
+  /// An event of `ws`'s, whose chats here go to another station: kept, or, once its connects and what was kept went
+  /// there, sent there as its connect's there.
   private hold(id: string, ws: string, event: ChatEvent): Promise<void> {
     return this.inHeld(async () => {
       const to = this.heldTo.get(ws);
-      if (to !== undefined) return this.forward(to, id, ws, event);
+      if (to !== undefined) return void (await this.d.bus.ask(to, { method: EVENT, workspace: ws, connect: knownOf(id, this.d.here()), kept: true, event }));
       await mkdir(dirname(this.heldFile), { recursive: true });
       await appendFile(this.heldFile, `${JSON.stringify({ id, ws, event })}\n`);
     });
@@ -300,9 +603,11 @@ export class WorkspaceConnects {
     if (known === null || entry === null || typeof entry !== "object" || typeof workspace !== "string" || entry.workspace !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
     const id = localOf(known, this.d.here());
     if (this.entryOf(id) !== undefined) throw new Error("that connect runs on this station already");
+    // (one handed from here before, back: this station's again)
+    this.handing.delete(id);
     // (one of its home workspace says none, as one added here would)
     const { workspace: _, ...rest } = entry;
-    this.d.config.update((raw) => {
+    await this.d.config.updateSoon((raw) => {
       const connects = Array.isArray(raw.connects) ? raw.connects : (raw.connects = []);
       connects.push({ ...rest, id, ...(workspace !== this.d.home() ? { workspace } : {}) });
     });
@@ -311,6 +616,9 @@ export class WorkspaceConnects {
       this.d.store.setConnectThreadStation(id, t.channel, t.threadTs, t.station);
     }
     this.remote.moved(id, this.d.here());
+    // (its chats still on their way here: what it says meanwhile is kept for them, delivered once they are here)
+    const awaiting = Array.isArray(request?.awaiting) ? request.awaiting.filter((k: unknown): k is string => typeof k === "string") : [];
+    if (awaiting.length > 0) await this.await(id, awaiting);
     log.info("connects", "a connect moved here", { connect: id, from: peer });
     return { ok: true };
   }
@@ -319,28 +627,44 @@ export class WorkspaceConnects {
   /// station takes its config.json entry and its threads' stations (this one's, for the chats here, which go on here),
   /// then it is gone from here, and the workspace's other stations are told.
   /// `localsTo`: whose the chats here count as there (this station's, or, as it is retired, the one they went to).
-  async move(id: string, to: string, viewer: string | null, lang = stationLang(), localsTo = this.d.here()): Promise<void> {
+  /// `awaiting`: the chats of it (a connect that is not routed) still here, to come there after it: what its platform
+  /// says meanwhile is kept there for them (`arrived`).
+  async move(id: string, to: string, viewer: string | null, lang = stationLang(), localsTo = this.d.here(), awaiting: string[] = []): Promise<void> {
     const entry = this.entryOf(id);
     const ws = entry === undefined ? null : this.workspaceOf(entry);
     if (entry === undefined || ws === null || (viewer !== null && this.d.home() !== null && ws !== viewer)) throw new Refused(404, `unknown connect ${id}`);
     if (to === this.d.here() || !this.inWorkspace(ws, to)) throw new Refused(400, tr(lang, "station.connect.moveWhere"));
-    const d = this.described(id);
     const known = knownOf(id, this.d.here());
-    const threads = [...this.d.store.connectThreads(id), ...this.d.store.connectLocalThreads(id).map((t) => ({ ...t, station: localsTo }))].filter((t) => t.station !== to);
-    await this.d.bus.ask(to, { method: TAKE, workspace: ws, connect: known, entry: { ...entry, workspace: ws }, threads });
-    this.d.config.update((raw) => {
-      raw.connects = (Array.isArray(raw.connects) ? raw.connects : []).filter((c: Json) => c?.id !== id);
-    });
-    this.d.store.dropConnectThreads(id);
-    // The chats here go on through it there.
-    if (d !== null && localsTo === this.d.here()) this.remote.learn(id, to, d);
-    for (const p of this.d.stations(ws)) {
-      if (typeof p?.id !== "string" || p.id === this.d.here() || p.id === to) continue;
-      void this.d.bus.ask(p.id, { method: MOVED, workspace: ws, connect: known, station: to }).catch(() => {});
+    // (a thread routed elsewhere already, a chat of it handed from here to another station, goes on there)
+    const routed = this.d.store.connectThreads(id);
+    const seen = new Set(routed.map((t) => `${t.channel}\0${t.threadTs}`));
+    const threads = [...routed, ...this.d.store.connectLocalThreads(id).filter((t) => !seen.has(`${t.channel}\0${t.threadTs}`)).map((t) => ({ ...t, station: localsTo }))].filter((t) => t.station !== to);
+    // (kept before it is asked: a stop from here on is settled by asking it, as this station starts; settled by its
+    // answer meanwhile, not by a settling that asks it first)
+    this.asking.add(id);
+    const taken = Promise.withResolvers<string | null>();
+    this.handing.set(id, { to: taken.promise, ws });
+    try {
+      await this.keepMoving({ id, to, ws, localsTo });
+      await this.d.bus.ask(to, { method: TAKE, workspace: ws, connect: known, entry: { ...entry, workspace: ws }, threads, ...(awaiting.length > 0 ? { awaiting } : {}) });
+    } catch (e) {
+      this.handing.delete(id);
+      this.asking.delete(id);
+      taken.resolve(null);
+      // (refused there: it did not take it; no answer: it may have, asked as it is heard from, the record kept)
+      if (e instanceof Declined) await this.doneMoving(id);
+      else void this.settleMoving(to);
+      throw e;
     }
+    taken.resolve(to);
+    this.asking.delete(id);
+    await this.handedOff(id, to, ws, localsTo);
     log.info("connects", "connect moved to another station", { connect: id, to });
   }
 }
+
+/// A connect's move under way, as kept (`moving`).
+type Moving = { id: string; to: string; ws: string; localsTo: string };
 
 const kindOf = (c: Json): string => (typeof c?.kind === "string" ? c.kind : "slack");
 
@@ -361,10 +685,13 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
       stations: (ws) => cloud.membership(ws)?.peers ?? [],
       names: (kind) => agents.nameBooks.get(kind) ?? null,
     });
+    // (the connects of other stations its chats run on, known before the hub asks for them)
+    yield* Effect.promise(() => connects.remote.ready());
     agents.surfaces((id) => connects.remote.surface(id));
     agents.connects(() => connects.remote.connects());
     agents.route((id, event) => connects.receive(id, event));
     agents.connectHeld((ws, kind, own) => connects.heldBy(ws, kind, own));
+    agents.workspaceConnects = connects;
     agents.retireConnects = { of: (ws) => connects.ownIn(ws), named: (ws) => connects.namedIn(ws), move: (ws, to) => connects.moveAll(ws, to), takeHeld: (ws) => connects.takeHeld(ws) };
     const routes: Route[] = [
       {

@@ -1,0 +1,29 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/sql"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/wire",
+}
+
+// Values
+pub fn busy(Error) -> Bool
+
+// Errors
+
+// Types and methods
+pub struct Db {
+  // private fields
+}
+pub fn Db::all(Self, String, Array[@json.Json]) -> Array[Map[String, @json.Json]] raise @wire.ShellError
+pub fn Db::attach(@host.Host, String, wait~ : Int32) -> Self raise @wire.ShellError
+pub fn Db::close(Self) -> Unit
+pub fn Db::create(@host.Host, String, wait~ : Int32) -> Self raise @wire.ShellError
+pub fn Db::exec(Self, String) -> Unit raise @wire.ShellError
+pub fn Db::known(Self, String, () -> @json.Json raise) -> @json.Json raise
+pub fn Db::run(Self, String, Array[@json.Json]) -> Int32 raise @wire.ShellError
+
+// Type aliases
+
+// Traits

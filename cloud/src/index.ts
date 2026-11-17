@@ -16,7 +16,7 @@ import { asOrigin, forward, served } from "./guests";
 import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
-import { adminApi, api, blockAccount, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
+import { adminApi, api, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
 import { noted, parseTraceparent, recordCall, relayToTelemetry, takeNotes, unverifiedNotes } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
@@ -254,6 +254,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return reply({ error: "invalid_request" }, 400);
     }
   }
+  // The cloud's list of relays with ADMIN_TOKEN, for scripts (api.ts relayAdmin; the console's own are adminApi's).
+  if (path.startsWith("/v1/admin/relays/") && request.method === "POST") {
+    const supplied = bearerToken(request);
+    if (!env.ADMIN_TOKEN || env.ADMIN_TOKEN.length < 43 || !supplied || (await digest(supplied)) !== (await digest(env.ADMIN_TOKEN))) return denied();
+    // (a list asked with no body)
+    const body: Record<string, unknown> = await readJson(request).catch(() => ({}));
+    return (await relayAdmin(env, "admin-token", path, request.method, body)) ?? notFound();
+  }
   // The console's bug reports for the team's feedback monitor: FEEDBACK_TOKEN reads them, marks their status and replies
   // to them, and nothing else. A status marked or a reply with another token is the console's admin's, signed in (adminApi).
   if (path === "/v1/admin/feedback/list" && request.method === "POST") {
@@ -310,6 +318,6 @@ const assetLinks = () => (cloudProduct().id === "stillfail" ? ["fail.still.andro
 
 /** The relays probed (probes.ts), each probe's result a `relay probe` line of that relay in Cloud Logging. */
 async function probeAndSay(env: Env): Promise<void> {
-  const found = await probeRelays(relayUrls(env), (input, init) => fetch(input, init), (ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const found = await probeRelays(relayUrls(await env.DIRECTORY.getByName("primary").relaysNow()), (input, init) => fetch(input, init), (ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   for (const [relay, lines] of found) await relayToTelemetry(env, relay, null, lines.map((fields) => ({ what: "relay probe", fields })));
 }

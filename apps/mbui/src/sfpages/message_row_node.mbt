@@ -12,9 +12,17 @@
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_field")
 priv struct MessageRowNode {
-  key : String
+  key : () -> String
   node : @view.View
   menu_on : () -> Bool
+}
+
+///|
+/// What the words node `v` holds are of, said whole (@ui.picked_of's: quoted by it, all of them taken by 全选,
+/// chat_quote_node), as its row's key `of` is now: a block put by and taken for another row (View::scrolls_window's
+/// `reused`) that row's.
+fn picked_of_by(v : @view.View, of : () -> String) -> Unit {
+  v.reacts(of, fn(k) { @ui.picked_of(v, k, whole=true) |> ignore })
 }
 
 ///|
@@ -34,18 +42,21 @@ fn row_top_kind(room : Double) -> Int {
 /// A row's room in `parent` (row_box's, but its bands): `top` over it (as that changes: none, joined_gap, list_gap),
 /// in from the pane's sides by `side` each (as the list's width gives it: row_side's; the trailing side the system's
 /// inset beside its bars, native_row_inset's), its body made by `body` in the column's middle, as wide as is left.
-/// `over`, told the row's outermost node and `key` once as it is made, before what it holds: what is laid over it (the
-/// bands) hung there, under its words.
+/// `over`, told the row's own node (all of it, the room over it too) and `key` once as it is made, before what it holds:
+/// what is laid under all of it (its band, chat_row_band_node) hung there, drawn first. Its key as it is now: a block
+/// put by and taken for another row (View::scrolls_window's `reused`) that row's.
 fn message_row_frame_node(
   parent : @view.View,
-  key : String,
+  key : () -> String,
   side : () -> Double,
   top : () -> Double,
   body : (@view.View) -> Unit,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let node = parent.box(fn(root) {
-    @sf.style_node(root, fn() { row_column })
+    // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never
+    // changes)
+    root.fills_across(Is(true)) |> ignore
     over(root, key)
     // (the room over it, as the row before it says: one kind of room in the other's place as that changes (none, a
     // joined one's, the gap between messages), the row's own structure, its way the column's; the list's way of it with
@@ -53,19 +64,21 @@ fn message_row_frame_node(
     // list's gap for the wide's is what the window or the system's bars did, no motion of the row's (sf/motion.mbt).
     // Picked by the room itself, a list narrowed under chat_narrow_w by the bars the system took made its way from
     // the wide gap to the narrow, laid out none till its end, then stepped there: chat_pops_wbtest's 中屏 beside them)
-    root.pick(fn() { row_top_kind(top()) }, fn(gap, _) { gap.height(By(fn() { Some(top()) })) |> ignore })
-    root.box(fn(line) {
-      @sf.style_node(line, fn() { row_line })
-      line.box(fn(s) { s.width(By(fn() { Some(side()) })) |> ignore }) |> ignore
-      line.box(fn(m) {
-        @sf.style_node(m, fn() { row_middle }, in_row=true)
-        body(m)
-      })
+    // (the room laid out anew at another width as the page's column sets off on its way to it (a side panel sliding in
+    // or out: sfbase's column_sets_off), its height going on its list's way from that moment, what is under it in the
+    // row with it, never a step of the gap's in the frame it sets off)
+    root.pick(fn() { row_top_kind(top()) }, fn(gap, _) {
+      gap.height(By(fn() { Some(top()) })) |> ignore
+      @sfbase.column_set_off_each(gap, fn() { if gap.alive() { gap.resizes() |> ignore } })
+    })
+    // (its middle, as wide as the list less its sides, those its padding: the old row's line and its middle
+    // (row_line, row_middle) one node, no box of room either side)
+    root.box(fn(m) {
+      m
+      .fills_across(Is(true))
+      .padding(By(fn() { (side(), 0.0, if @sf.native_side() { native_row_inset() } else { side() }, 0.0) }))
       |> ignore
-      line.box(fn(s) {
-        s.width(By(fn() { Some(if @sf.native_side() { native_row_inset() } else { side() }) })) |> ignore
-      })
-      |> ignore
+      body(m)
     })
     |> ignore
   })

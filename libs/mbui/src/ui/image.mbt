@@ -1003,3 +1003,44 @@ fn Fit::cover_from(self : Fit) -> (Double, Double) {
     _ => (0.5, 0.5)
   }
 }
+
+///|
+/// A decode of the image at `src` at `px` on its long side asked for ahead of what draws it (a page waiting to come in
+/// with it: what it waits for is read by image_decoding), where none of it is asked for yet and its bytes are here: as a
+/// build asks one, at the window's clock, once what reads it now is over (@signals.after_computing), so what the host
+/// says of it at once is told outside that read. Followed, as image_decoding is.
+pub fn image_decode_ahead(src : String, px : Double) -> Unit {
+  image_decodes_read(src)
+  if image_cache.get(src) is Some(list) && !list.is_empty() {
+    return
+  }
+  if src.has_prefix("mem:") && !image_data.contains(src) {
+    return
+  }
+  guard !images_ahead.contains(src) else { return }
+  images_ahead[src] = true
+  @signals.after_computing(fn() {
+    images_ahead.remove(src)
+    image_entry_for(src, px, g().frame_no, g().clock) |> ignore
+  })
+}
+
+///|
+/// The images whose decode image_decode_ahead asked for, till it is asked of the host.
+// kept across runs: each taken off as its decode is asked, within the read that put it there
+let images_ahead : Map[String, Bool] = Map([])
+
+///|
+/// Whether a decode of the image at `src` has been asked for (a build drew it) and none of it is ready yet, nor has one
+/// failed: what waits for a picture a build asked for reads it so (image_any_ready's other side), followed as the host's
+/// word on its decodes comes. False of one no build asked for: nothing is coming of it to wait for.
+pub fn image_decoding(src : String) -> Bool {
+  image_decodes_read(src)
+  if images_ahead.contains(src) {
+    return true
+  }
+  match image_cache.get(src) {
+    Some(list) => list.iter().any(fn(e) { e.state == 0 }) && !list.iter().any(fn(e) { e.state != 0 })
+    None => false
+  }
+}

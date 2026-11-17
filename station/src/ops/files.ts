@@ -1,5 +1,5 @@
 // Files the station keeps: where its data directory is, and writing them whole (a reader never sees half a file).
-import { closeSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { mkdir, open, opendir, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,7 +28,7 @@ export const mcpPortFile = (data: string) => join(data, "run", "mcp.json");
 
 export function rememberedMcpPort(data: string): number | undefined {
   try {
-    const port = JSON.parse(readFileSync(mcpPortFile(data), "utf8")).port;
+    const port = JSON.parse(readFileSync(mcpPortFile(data), "utf8")).port; // sync: read once, before the station serves
     return Number.isInteger(port) && port > 0 && port < 65536 ? port : undefined;
   } catch {
     return undefined;
@@ -67,7 +67,8 @@ export function flag(args: string[], name: string): string | undefined {
 }
 
 /// Written beside and renamed into place, synced, readable by its owner only. Beside under this process's own name:
-/// another process writing the same file at once (`enroll` while the station runs) has its own.
+/// another process writing the same file at once (`enroll` while the station runs) has its own. On the caller's thread:
+/// a lock's state and key are written whole before what follows them goes on (one step that must not be split).
 export function writePrivate(path: string, data: string | Uint8Array) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
@@ -132,22 +133,12 @@ export class PrivateFile {
 /// Seconds, as the cloud and the files say them: the machine's time.
 export const nowSecs = () => Math.floor(wall.now() / 1000);
 
-/// Whether `dir` is there but the station may not list it (EPERM, EACCES; it may still stat it). On macOS a folder the
-/// system's privacy protection keeps (Documents, Desktop, Downloads, removable and network volumes) answers EPERM to a
-/// process nobody gave access to, and a station launchd runs is never asked: an agent started there exits at once,
-/// saying nothing of why.
-export function unreadableDir(dir: string): boolean {
-  try {
-    opendirSync(dir).closeSync();
-    return false;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === "EPERM" || code === "EACCES";
-  }
-}
-
-/// `unreadableDir` off the main thread: opening a folder can wait for as long as what it is on does not answer (a
-/// network file system whose server is gone: OrbStack's when its machine is stopped), and the station's thread with it.
+/// Whether `dir` is there but the station may not list it (EPERM, EACCES; it may still stat it), looked at off the main
+/// thread. On macOS a folder the system's privacy protection keeps (Documents, Desktop, Downloads, removable and network
+/// volumes) answers EPERM to a process nobody gave access to, and a station launchd runs is never asked: an agent
+/// started there exits at once, saying nothing of why. Opening a folder can wait for as long as what it is on does not
+/// answer (a network file system whose server is gone: OrbStack's when its machine is stopped), and the station's
+/// thread with it, were it on it.
 export async function unreadableDirAsync(dir: string): Promise<boolean> {
   try {
     await (await opendir(dir)).close();
@@ -158,7 +149,7 @@ export async function unreadableDirAsync(dir: string): Promise<boolean> {
   }
 }
 
-/// What to tell when an agent's directory is unreadable (`unreadableDir`): on macOS, who to give access to and where.
+/// What to tell when an agent's directory is unreadable (`unreadableDirAsync`): on macOS, who to give access to and where.
 /// The desktop app runs its station with --with-parent and is the one macOS asks about; an installed station is its
 /// stillfail-station.
 export function unreadableDirMessage(lang: Lang, dir: string, argv = process.argv): string {

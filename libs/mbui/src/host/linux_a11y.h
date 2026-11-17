@@ -121,7 +121,7 @@ static GObject *a11y_obj(int nid);
 
 // the accessible of node `nid` (the canvas for 0), a reference of its own (as GtkAccessible's getters give one)
 static GtkAccessible *a11y_ref(int nid) {
-  if (nid == 0) return area ? GTK_ACCESSIBLE(g_object_ref(area)) : NULL;
+  if (nid == 0) return win_slots[0].area ? GTK_ACCESSIBLE(g_object_ref(win_slots[0].area)) : NULL;
   GObject *o = a11y_obj(nid);
   return o ? GTK_ACCESSIBLE(g_object_ref(o)) : NULL;
 }
@@ -143,7 +143,7 @@ static GtkAccessible *a11y_kid_after(int nid, int after) {
 
 static GtkATContext *a11y_obj_context(GtkAccessible *self) {
   MBA11yObj *o = (MBA11yObj *)self;
-  if (!o->ctx && area) o->ctx = gtk_at_context_create(o->role, self, gtk_widget_get_display(area));
+  if (!o->ctx && win_slots[0].area) o->ctx = gtk_at_context_create(o->role, self, gtk_widget_get_display(win_slots[0].area));
   return o->ctx ? g_object_ref(o->ctx) : NULL;
 }
 
@@ -283,6 +283,8 @@ static void a11y_status_changed(GDBusProxy *p, GVariant *changed, GStrv gone, gp
 }
 
 int32_t mb_host_a11y_on(void) {
+  // (the run's first window's: a window beside it makes no tree for them, its widgets not read out yet, as on the Mac)
+  if (win_active != 0) return 0;
   if (getenv("MBUI_A11Y_SELFCHECK")) return 1;
   if (!a11y_status_asked) {
     a11y_status_asked = TRUE;
@@ -316,9 +318,9 @@ static void a11y_walk(GtkAccessible *a, int depth, int *press) {
 
 static gboolean a11y_selfcheck(gpointer data) {
   (void)data;
-  if (!area) return G_SOURCE_REMOVE;
+  if (!win_slots[0].area) return G_SOURCE_REMOVE;
   int press = 0;
-  a11y_walk(GTK_ACCESSIBLE(area), 0, &press);
+  a11y_walk(GTK_ACCESSIBLE(win_slots[0].area), 0, &press);
   printf("A11Y walked\n");
   fflush(stdout);
   // (the button pressed as a reader would ask it, were there a way for one: what it is asked comes to the app as on
@@ -334,6 +336,8 @@ static gboolean a11y_selfcheck(gpointer data) {
 // What the widgets are now (@hostapi.a11y_tree): an update of them (a11y.mbt's head: the nodes that changed, each whole,
 // and the focus), kept; one in nothing that holds it gone with what it holds; each told set on its accessible
 void mb_host_a11y_tree(moonbit_string_t s) {
+  // (a window beside the first's: not the first's widgets, kept for none)
+  if (win_active != 0) return;
   char *all = utf8(s);
   gchar **lines = g_strsplit(all, "\n", -1);
   g_free(all);

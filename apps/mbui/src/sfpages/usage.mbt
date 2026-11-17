@@ -260,7 +260,7 @@ let ug_label_on : @ui.TextStyle = ug_label.then(@ui.text_style(weight=Medium, co
 
 ///|
 // kept across runs: a value (no field of it changes)
-let ug_row_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false, w=@sf.grow)
+let ug_row_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false, w=Cut)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -269,7 +269,13 @@ let ug_row_title_lit : @ui.TextStyle = ug_row_title.then(@ui.text_style(color=Ac
 ///|
 /// What it is (who it was for, its model, where), cut short where its line has not the room.
 // kept across runs: a value (no field of it changes)
-let ug_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=@sf.grow)
+let ug_row_sub : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
+
+///|
+/// A row's line under its title (usage_rank_row_node's): ug_row_sub across the row's width, on as many lines as it
+/// takes, never cut short.
+// kept across runs: a value (no field of it changes)
+let ug_row_sub_lines : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)

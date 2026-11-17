@@ -106,7 +106,14 @@ test "a long chat and activity time both have room on their row" {
 ///|
 test "a long completion message can be read in the history" {
   let t = screen_in("history", corner_windows[0], "zh", said=true)
-  whole_long_words(t, "标记为做完了：截图已更新")
+  let summary = t.lines_of("标记为做完了：截图已更新")
+  assert_eq(summary.length(), 1, msg="\{Repr(summary)}")
+  assert_true(summary[0].has_suffix("…"), msg="\{Repr(summary)}")
+  t.tap_text("标记为做完了：截图已更新")
+  t.run_for(@ui.move_most_ms)
+  let drawn = t.words().filter(fn(w) { w.5 > 0.5 && w.0.contains("标记为做完了：截图已更新") })
+  assert_eq(drawn.length(), 2, msg="\{Repr(drawn)}")
+  assert_true(drawn[1].2 > drawn[0].2 + 18.0 && drawn[1].4 >= 60.0 && drawn[1].0.contains("wide"), msg="\{Repr(drawn)}")
 }
 
 ///|

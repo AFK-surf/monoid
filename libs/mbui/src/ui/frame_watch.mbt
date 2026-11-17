@@ -94,7 +94,7 @@ fn watch_told_at() -> Unit {
 ///|
 /// The frames' clock, as each frame begins (on_frame): what reads it followed (Ctx::now) is built again each frame.
 // kept across runs: set as each frame begins
-let frame_clock : @signals.Signal[Double] = @signals.signal(0.0)
+let frame_clock : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0))
 
 ///|
 /// What came from outside that is no signal yet, counted (outside_came): what reads it (each frame's build) is built
@@ -302,7 +302,7 @@ fn paint_watch_of() -> @signals.Watch {
 fn clock_read(loc : SourceLoc) -> Unit {
   if @signals.active_sub() is Some(_) {
     clock_read_by(loc.to_string(), None)
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
 }
 
@@ -312,7 +312,7 @@ fn clock_read(loc : SourceLoc) -> Unit {
 fn clock_read_here(who? : Mover) -> Unit {
   if @signals.active_sub() is Some(_) {
     clock_read_by("a motion, the host's clock or its state (Ctx::shows_motion, @hostapi.polled)", who)
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
 }
 
@@ -408,11 +408,17 @@ fn init {
 /// An effect made as the frame's watch reads (a build, an after_build, a Ctx::tell: frame_body under frame_watch_of's
 /// read) is that watch's, let go as it reads the next frame, whatever owner is set: a fault (@signals.effect_in_watch).
 /// (What is handed on as the frame begins, the messages left for it and the window's runtime's timers and fibers, runs
-/// outside that reading: take_messages, fx_frame_start.)
+/// outside that reading: take_messages, fx_frame_start.) So is one made as a computed's getter runs
+/// (@signals.effect_in_computed).
 fn init {
   @signals.effect_in_watch.val = Some(fn(loc) {
     @view.fault(
       "an effect made as a frame is read (a build, an after_build, a Ctx::tell) is let go as the next frame is read: make it in a handler, or in @signals.untracked with its owner set (@signals.set_owner); made at \{loc}",
+    )
+  })
+  @signals.effect_in_computed.val = Some(fn(loc) {
+    @view.fault(
+      "an effect made as a computed's getter runs is made again each time it runs and stopped by nothing that reads it: a getter only works out its value; follow what changes where the value is read (a watch, View::reacts, a binding), or make the effect where its owner is made; made at \{loc}",
     )
   })
 }
@@ -435,7 +441,7 @@ fn Ctx::now_before(self : Ctx, end : Double, loc~ : SourceLoc) -> Double {
 pub fn Ctx::now_of(self : Ctx, who : Mover, loc~ : SourceLoc) -> Double {
   if @signals.active_sub() is Some(_) {
     clock_read_by(loc.to_string(), Some(who))
-    frame_clock.get() |> ignore
+    frame_clock.val.get() |> ignore
   }
   self.clock
 }
@@ -1002,7 +1008,7 @@ fn frame_drawn(c : Ctx, w : Double, h : Double, scale : Double, t : Double) -> D
   hand_arrive(c)
   // (what reads the clock and the host's settings read so: what read them is stale where they changed; what a part or
   // a list's row kept read of the frame and of a moment, told: kept_part.mbt's KeptClock)
-  frame_clock.set(t)
+  frame_clock.val.set(t)
   frame_settings_arrive(w, h, scale)
   clock_frame_start(t)
   // (the hand's discrete events since the frame before: what reads them takes them as it is built, and a frame that

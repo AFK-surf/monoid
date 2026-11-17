@@ -2,7 +2,10 @@
 # This machine's station as the Linux app says it (src/host/linux_station.c, through scripts/linux_station_test.c), in a
 # home of the run's own: one started by hand said so, with its release, its data and its workspace, and stopped from
 # here; the installer's systemd service said as what runs it, and a machine that only runs tasks taken out of its
-# workspace said so. On Linux, with GTK 4's development files and MoonBit (MOON_HOME) for its runtime.
+# workspace said so; that service stopped for good (disabled), started again (enabled), and the station taken away
+# (卸载本机 Station: its service, its launcher, its link and its release gone, its data kept and said so). systemctl is
+# a stand-in of the run's, saying what it was asked: nothing of this machine's own. On Linux, with GTK 4's development
+# files and MoonBit (MOON_HOME) for its runtime.
 set -eu
 D="$(cd "$(dirname "$0")" && pwd)"
 A="$D/.."
@@ -44,4 +47,56 @@ case "$read" in *'"runner":"service"'*'"service":{"kind":"systemd","name":"still
   *) echo "station (linux): its service not said"; exit 1 ;; esac
 case "$read" in *'"workspace":{"id":"ws1","station":"st1","removed":true,"rig":true}'*) ;;
   *) echo "station (linux): a rig taken out of its workspace not said"; exit 1 ;; esac
-echo "station (linux): one started by hand said and stopped; the service's said as running it"
+
+# its service stopped from here for good, started again, then taken away; systemctl the run's, saying what it is asked
+mkdir -p "$O/bin"
+printf '#!/bin/sh\necho "systemctl $*" >> "%s/said"\n' "$S" > "$O/bin/systemctl" && chmod +x "$O/bin/systemctl"
+run() { HOME=$S XDG_CONFIG_HOME=$S/.config PATH="$O/bin:$PATH" "$O/linux_station_test" "$1" | grep -a "STATIONCHECK after"; }
+said() { cat "$S/said" 2> /dev/null; }
+after=$(run stop); echo "$after"
+case "$(said)" in *"systemctl --user disable --now stillfail-station.service"*) ;; *) echo "station (linux): stopped, not disabled: $(said)"; exit 1 ;; esac
+: > "$S/.stillfail/uninstalled"
+after=$(run start); echo "$after"
+case "$(said)" in *"systemctl --user enable --now stillfail-station.service"*) ;; *) echo "station (linux): started, not enabled: $(said)"; exit 1 ;; esac
+[ ! -e "$S/.stillfail/uninstalled" ] || { echo "station (linux): started, still said taken away"; exit 1; }
+after=$(run restart); echo "$after"
+case "$(said)" in *"systemctl --user enable stillfail-station.service"*"systemctl --user restart stillfail-station.service"*) ;;
+  *) echo "station (linux): restarted, not enabled first: $(said)"; exit 1 ;; esac
+
+# taken away: a launcher's stand-in running this data (its pid as the station says it), the installer's link to the
+# release, its Node, its run, beside its data
+sh -c 'trap "kill \$!; exit" TERM; tail -f /dev/null & wait' stillfail-station run --data "$S/.stillfail" & ST=$!
+printf '{"pid":%d,"version":"0.1.4321"}' $ST > "$S/.stillfail/run/station.json"
+mkdir -p "$S/.stillfail/app/bin" "$S/.stillfail/node/v24" "$S/.stillfail/app.old" "$S/.local/bin"
+: > "$S/.stillfail/app/bin/stillfail" && ln -sf "$S/.stillfail/app/bin/stillfail" "$S/.local/bin/stillfail"
+: > "$S/said"
+after=$(run uninstall) || { kill $ST 2> /dev/null; exit 1; }
+echo "$after"
+for want in '"runner":"none"' '"uninstalled":true'; do
+  case "$after" in *"$want"*) ;; *) kill $ST 2> /dev/null; echo "station (linux): taken away, not said: $want"; exit 1 ;; esac
+done
+case "$after" in *'"service"'*|*'"installed"'*|*'"failed"'*) kill $ST 2> /dev/null; echo "station (linux): taken away, said otherwise"; exit 1 ;; esac
+case "$(said)" in *"systemctl --user disable --now stillfail-station.service"*"systemctl --user daemon-reload"*) ;;
+  *) kill $ST 2> /dev/null; echo "station (linux): its service not taken away: $(said)"; exit 1 ;; esac
+# (ended: gone, or this script's child not reaped yet)
+case "$(ps -o stat= -p $ST 2> /dev/null)" in ""|Z*) wait $ST 2> /dev/null || true ;; *) kill $ST; echo "station (linux): taken away, its launcher still running"; exit 1 ;; esac
+for gone in .config/systemd/user/stillfail-station.service .local/bin/stillfail .stillfail/app .stillfail/app.old .stillfail/node .stillfail/run; do
+  [ ! -e "$S/$gone" ] && [ ! -L "$S/$gone" ] || { echo "station (linux): taken away, $gone still there"; exit 1; }
+done
+[ -f "$S/.stillfail/mesh/cloud.json" ] || { echo "station (linux): taken away, its data with it"; exit 1; }
+
+# taken away where only its unit is left (its data removed by hand), in WSL: done, the unit and Windows' keeper of it
+# gone, nothing said taken away where there is no data to say it in (cmd.exe and wslpath the run's, a drive C: in $O/c)
+rm -rf "$S/.stillfail" && mkdir -p "$S/.config/systemd/user" && : > "$S/.config/systemd/user/stillfail-station.service"
+K="$O/c/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"
+mkdir -p "$K" && : > "$K/stillfail-station-Ubuntu.vbs" && : > "$K/stillfail-station-Debian.vbs"
+printf '#!/bin/sh\nprintf "C:\\\\Users\\\\kim\\\\AppData\\\\Roaming\\r\\n"\n' > "$O/bin/cmd.exe"
+printf '#!/bin/sh\necho "%s/c/Roaming"\n' "$O" > "$O/bin/wslpath"
+chmod +x "$O/bin/cmd.exe" "$O/bin/wslpath"
+: > "$S/said"
+after=$(WSL_DISTRO_NAME=Ubuntu run uninstall); echo "$after"
+case "$after" in "STATIONCHECK after ") ;; *) echo "station (linux): with no data, taken away said otherwise: $after"; exit 1 ;; esac
+[ ! -e "$S/.config/systemd/user/stillfail-station.service" ] || { echo "station (linux): with no data, its unit left"; exit 1; }
+[ ! -e "$S/.stillfail" ] || { echo "station (linux): with no data, its data made anew"; exit 1; }
+[ ! -e "$K/stillfail-station-Ubuntu.vbs" ] && [ -e "$K/stillfail-station-Debian.vbs" ] || { echo "station (linux): WSL's keeper of this distribution not the one taken away"; exit 1; }
+echo "station (linux): one started by hand said and stopped; the service's said as running it, stopped for good, started and restarted enabled; taken away, its data kept; taken away with only its unit left, WSL's keeper with it"

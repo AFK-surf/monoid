@@ -201,14 +201,18 @@ export class Downloads {
 
   #note(d: Download): Effect.Effect<void> {
     const noted: Noted = { id: d.id, station: d.station, from: d.from, name: d.name, size: d.size, startedAt: d.startedAt, ...(d.opened !== undefined ? { opened: d.opened } : {}) };
-    return this.#inner.driveKept.noteDownload(d.id, noted);
+    return Effect.suspend(() => this.#held.get(d.id) === d ? this.#inner.driveKept.noteDownload(d.id, noted) : Effect.void);
   }
 
   /// Out of the list and no longer written down; what was fetched for it stays kept (never asked of its station again).
   #drop(d: Download): Effect.Effect<void> {
-    this.#held.delete(d.id);
-    this.#invalidate();
-    return this.#inner.driveKept.dropDownload(d.id);
+    if (this.#held.get(d.id) === d) {
+      this.#held.delete(d.id);
+      this.#invalidate();
+    }
+    // Saving a cancelled part or checking the saved file can wait. The same file asked again meanwhile
+    // has a new download: the old one's cleanup must not remove its recovery record.
+    return Effect.suspend(() => this.#held.has(d.id) ? Effect.void : this.#inner.driveKept.dropDownload(d.id));
   }
 
   /// The whole of it here, a part at a time: each part read as kept, or fetched and kept. A folder is zipped on the

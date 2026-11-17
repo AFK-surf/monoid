@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { crc32, deflateRawSync, gzipSync, inflateRawSync } from "node:zlib";
-import { CHUNK, WINDOW, applyFile, encodeHeader, info, makeApk, makeDelta, makeTree, parseHeader, sparseSuffixArray, storedZip, suffixArray, treeFiles, wholeFiles, zipEntries } from "../scripts/delta.ts";
+import { BLOCK, CHUNK, PREFIXED_FROM, WINDOW, applyFile, bsdiff, encodeHeader, info, makeApk, makeDelta, makeTree, parseHeader, sameBlocks, sparseSuffixArray, storedZip, suffixArray, treeFiles, wholeFiles, zipEntries } from "../scripts/delta.ts";
 
 // Deltas are applied by the apps' own appliers (C, Java) from this format: the reference applier here must refuse
 // what they refuse, and every delta made must give back the package byte for byte.
@@ -138,6 +138,18 @@ test("the suffix array sorts suffixes, long runs of one byte too", () => {
     assert.equal(I[0], blob.length);
     assert.deepEqual([...I].sort((a, b) => a - b), Array.from({ length: blob.length + 1 }, (_, i) => i));
     for (let i = 1; i < I.length - 1; i++) assert.ok(Buffer.compare(blob.subarray(I[i]!), blob.subarray(I[i + 1]!)) < 0, `${i} of ${blob.length}`);
+  }
+});
+
+test("the suffix array is the suffixes sorted, on alphabets of 2 to 256 letters and their recursions", () => {
+  const rand = prng(4);
+  for (let round = 0; round < 300; round++) {
+    const letters = [2, 3, 4, 16, 256][round % 5]!, n = 1 + Math.floor(rand() * (round < 250 ? 200 : 5000));
+    // (runs and repeats of a few words too: what makes LMS substrings alike, named alike, sorted by recursion)
+    const blob = round % 2 ? Buffer.from(Array.from({ length: n }, () => Math.floor(rand() * letters)))
+      : Buffer.concat(Array.from({ length: n }, () => Buffer.alloc(1 + Math.floor(rand() * 5), Math.floor(rand() * letters)))).subarray(0, n);
+    const want = Array.from({ length: blob.length }, (_, i) => i).sort((a, b) => Buffer.compare(blob.subarray(a), blob.subarray(b)));
+    assert.deepEqual([...suffixArray(blob).subarray(1)], want, `round ${round}, ${blob.length} bytes of ${letters} letters`);
   }
 });
 
@@ -525,5 +537,43 @@ test("with too little of the old blob found whole, the delta is the one made wit
   for (const made of [tarLike([["x", bytes(20_000)], ["y", bytes(5000)]]), tarLike([["a", edit(others[0]!)], ["k", kept], ["b", edit(others[1]!)]])]) {
     assert.ok(wholeFiles(old.blob, old.ranges, made).reduce((n, r) => n + r.len, 0) < old.blob.length / 8);
     assert.ok(makeDelta(old.blob, made, ["a", "k", "b"], [], [], old.ranges).equals(makeDelta(old.blob, made, ["a", "k", "b"], [], [])));
+  }
+});
+
+test("the old bytes found as they were: a big file changed here and there is found where it is, shifted, beside the whole files", () => {
+  const bytes = lcg(77);
+  const big = bytes(200_000), kept = bytes(5000);
+  const old = blobOf([kept, big]);
+  // (edits a few bytes long, and a stretch put in: a binary built again)
+  const edited = Buffer.concat([big.subarray(0, 60_000), bytes(300), big.subarray(60_000)]);
+  for (const at of [10_000, 90_000, 150_000]) edited.write("build 9570", at);
+  const made = tarLike([["kept", kept], ["big", edited]]);
+  const files = wholeFiles(old.blob, old.ranges, made);
+  assert.deepEqual(files, [{ made: 512, old: 0, len: kept.length }]);
+  const runs = sameBlocks(old.blob, made, files);
+  assert.deepEqual(runs[0], files[0], "the whole files kept");
+  let found = 0;
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i]!;
+    assert.ok(made.subarray(r.made, r.made + r.len).equals(old.blob.subarray(r.old, r.old + r.len)), `run ${i} is old bytes as they were`);
+    assert.ok(r.len >= BLOCK || i === 0);
+    if (i > 0) assert.ok(runs[i - 1]!.made + runs[i - 1]!.len <= r.made, "sorted, not overlapping");
+    if (i > 0) found += r.len;
+  }
+  assert.ok(found > edited.length * 0.95, `${found} of ${edited.length} bytes of the edited file found`);
+  // and only what is left of the old blob is sorted for the search
+  const I = sparseSuffixArray(old.blob, runs);
+  assert.ok(I.length - 1 < old.blob.length * 0.05, `${I.length - 1} bytes sorted of ${old.blob.length}`);
+});
+
+test("a search starting in its first 3 bytes' bucket finds what the whole search finds", () => {
+  const rand = prng(9570);
+  const old = Buffer.from(texty(rand, PREFIXED_FROM + 200_000));
+  const made = Buffer.from(old);
+  for (let at = 1000; at < made.length; at += 30_000) made.write("relocated", at);
+  for (const I of [suffixArray(old), sparseSuffixArray(old, [{ made: 0, old: 0, len: 50_000 }])]) {
+    // (a copy of the array has no buckets: the whole search)
+    const whole = Int32Array.from(I);
+    assert.ok(Buffer.concat(bsdiff(old, made, I)).equals(Buffer.concat(bsdiff(old, made, whole))));
   }
 });

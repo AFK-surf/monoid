@@ -142,6 +142,8 @@ test("Codex subscription profiles identify the actual account, including a borro
     const config = new ConfigFile(r.dir);
     config.update((raw) => Object.assign(raw, r.raw));
     const accounts = new Accounts({ data: r.dir, store: r.store, config, machine: null });
+    // (each login read off the station's thread: the pool's picks go by what was read last)
+    await accounts.codexAccountsRead();
     assert.ok(accounts.health("cx").account);
     assert.equal(accounts.health("cx").account, accounts.health("borrowed").account);
     assert.notEqual(accounts.health("cx").account, accounts.health("other").account, "different users in the same workspace");
@@ -152,6 +154,7 @@ test("Codex subscription profiles identify the actual account, including a borro
     const [first, second] = [r.hub.accounts.pick(profiles, null, true), r.hub.accounts.pick(profiles, null, true)];
     assert.notEqual(accounts.health(first.id).account, accounts.health(second.id).account);
     writeLogin("borrowed", "new-account", "user-a");
+    await accounts.codexAccountsRead();
     assert.notEqual(accounts.health("cx").account, accounts.health("borrowed").account, "a changed login is read again");
   } finally {
     await r.close();

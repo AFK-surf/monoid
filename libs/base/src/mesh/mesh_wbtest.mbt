@@ -50,7 +50,7 @@ test "a link whose end the mesh was told is let go of at the shell, and still sa
   // The peer closes it: the shell says why to the one fiber that waits for it.
   stood.ended[2] = { "kind": "application", "reason": "bye" }
   stood.give("conn.closed", { "kind": "application", "reason": "bye" })
-  // Closed once more now that it ended: what a page's shell forgets it by (natively nothing).
+  // Closed once more now that it ended: what both shells forget it by.
   assert_eq(stood.times("conn.close 2"), 1)
   assert_true(stood.forgot.contains(2))
   // And asked of after, it answers from what the mesh kept: the shell has no such handle any more.

@@ -1,15 +1,14 @@
 // The running or pending sessions of an explicit workspace, maintained by the database so older writers keep it too.
 // Installation reads no session history. An older database's active keys are brought across in bounded steps.
 import type { DatabaseSync } from "node:sqlite";
-import { byBytes } from "./rows.ts";
 
-const active = (key: string) => `EXISTS (SELECT 1 FROM sessions z WHERE z.key = ${key} AND (z.running = 1
+export const active = (key: string) => `EXISTS (SELECT 1 FROM sessions z WHERE z.key = ${key} AND (z.running = 1
   OR EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = z.key AND d.delivered_at IS NULL)
   OR EXISTS (SELECT 1 FROM letter_deliveries d INDEXED BY letter_deliveries_pending WHERE d.session = z.key AND d.delivered_at IS NULL)))`;
 const identity = (key: string) => `SELECT s.ws, s.key FROM sessions s WHERE s.key = ${key} AND s.ws IS NOT NULL`;
 // An outer INSERT OR REPLACE or UPDATE OR FAIL overrides OR IGNORE inside a trigger. Avoid the conflicting insert
 // altogether, so old writers keep their own conflict policy and never replace an unchanged activity marker.
-const add = (key: string) => `INSERT INTO workspace_activity (ws, session)
+export const add = (key: string) => `INSERT INTO workspace_activity (ws, session)
   SELECT s.ws, s.key FROM sessions s WHERE s.key = ${key} AND s.ws IS NOT NULL AND ${active("s.key")}
     AND NOT EXISTS (SELECT 1 FROM workspace_activity a WHERE a.ws = s.ws AND a.session = s.key);`;
 const removeIdle = (key: string) => `DELETE FROM workspace_activity WHERE (ws, session) IN (${identity(key)}) AND NOT ${active(key)};`;
@@ -28,13 +27,9 @@ const stageReplaced = `DELETE FROM workspace_activity_replaced WHERE session IS 
 export const WORKSPACE_ACTIVITY = `SELECT s.* FROM workspace_activity a
   CROSS JOIN sessions s ON s.key = a.session
   WHERE a.ws = ? AND s.ws = a.ws`;
-const FIRST_RUNNING = "SELECT key AS session FROM sessions INDEXED BY sessions_running WHERE running = 1 ORDER BY key LIMIT 1";
-const NEXT_RUNNING = "SELECT key AS session FROM sessions INDEXED BY sessions_running WHERE running = 1 AND key > ? ORDER BY key LIMIT 1";
-const FIRST_MESSAGE = "SELECT session FROM deliveries INDEXED BY deliveries_pending WHERE delivered_at IS NULL ORDER BY session LIMIT 1";
-const NEXT_MESSAGE = "SELECT session FROM deliveries INDEXED BY deliveries_pending WHERE delivered_at IS NULL AND session > ? ORDER BY session LIMIT 1";
-const FIRST_LETTER = "SELECT session FROM letter_deliveries INDEXED BY letter_deliveries_pending WHERE delivered_at IS NULL ORDER BY session LIMIT 1";
-const NEXT_LETTER = "SELECT session FROM letter_deliveries INDEXED BY letter_deliveries_pending WHERE delivered_at IS NULL AND session > ? ORDER BY session LIMIT 1";
-
+export const FIRST_RUNNING = "SELECT key AS session FROM sessions INDEXED BY sessions_running WHERE running = 1 ORDER BY key LIMIT 1";
+export const FIRST_MESSAGE = "SELECT session FROM deliveries INDEXED BY deliveries_pending WHERE delivered_at IS NULL ORDER BY session LIMIT 1";
+export const FIRST_LETTER = "SELECT session FROM letter_deliveries INDEXED BY letter_deliveries_pending WHERE delivered_at IS NULL ORDER BY session LIMIT 1";
 export function installWorkspaceActivity(db: DatabaseSync): void {
   const installed = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_activity_meta'").get() !== undefined;
   if (installed()) return;
@@ -92,36 +87,4 @@ export function installWorkspaceActivity(db: DatabaseSync): void {
 
 export function workspaceActivityReady(db: DatabaseSync): boolean {
   return (db.prepare("SELECT complete FROM workspace_activity_meta WHERE id = 1").get() as { complete: number }).complete === 1;
-}
-
-/// Bring across at most `limit` distinct active session keys; all checks and progress commit atomically with the new
-/// writers. A key added before the cursor is handled by its trigger, even if an older station wrote it.
-export function workspaceActivityStep(db: DatabaseSync, limit = 64): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("workspace activity batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const meta = db.prepare("SELECT cursor, complete FROM workspace_activity_meta WHERE id = 1").get() as { cursor: string | null; complete: number };
-    if (meta.complete === 1) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const first = [FIRST_RUNNING, FIRST_MESSAGE, FIRST_LETTER].map((sql) => db.prepare(sql));
-    const next = [NEXT_RUNNING, NEXT_MESSAGE, NEXT_LETTER].map((sql) => db.prepare(sql));
-    const put = db.prepare(add("?"));
-    let cursor = meta.cursor;
-    let visited = 0;
-    let done = false;
-    while (visited < limit) {
-      const keys = (cursor === null ? first.map((s) => s.get()) : next.map((s) => s.get(cursor!)))
-        .flatMap((row) => row === undefined ? [] : [row.session as string]).sort(byBytes);
-      const key = keys[0];
-      if (key === undefined) { done = true; break; }
-      put.run(key);
-      cursor = key;
-      visited++;
-    }
-    db.prepare("UPDATE workspace_activity_meta SET cursor = ?, complete = ? WHERE id = 1").run(cursor, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, visited };
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
 }

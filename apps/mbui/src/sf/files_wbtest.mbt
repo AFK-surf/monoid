@@ -102,6 +102,7 @@ test "a quote's card (QuoteCard): whose and the passage, what is said under it; 
   )
   t.draw()
   assert_true(t.find("量过再记") is Some(_))
+  assert_true(t.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the quote starts with an opening mark")
   let (x, y) = t.find("其余的行按估计的高度占位").unwrap()
   t.tap(x, y)
   assert_true(jumped.val)
@@ -150,6 +151,7 @@ test "a quote waiting in the composer has its ✕ hung on its corner, as everyth
     h=200.0,
   )
   t.draw()
+  assert_true(t.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the composer's quote starts with an opening mark")
   let (x, y, w, h) = t.query(Button, label="web-main.quote.remove").unwrap().rect
   // (the one ✕ of what waits to go: 20 round, solid)
   assert_eq((w, h), (20.0, 20.0))

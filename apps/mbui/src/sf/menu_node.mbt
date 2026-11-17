@@ -1,29 +1,31 @@
-// A menu of the presenters' (the library's dropdown, kit's dropdown_menu and menu_panel, in the web's
-// look) as nodes of the window's tree: a modal layer over the window, nothing under it dimmed, its small panel beside
-// what opened it (where it was drawn as it opened: under it, `offset` off, lined up `along` it, over it where there is
-// not the room under: View::beside), grown out of that side as it comes (pop_in), gone at once as it closes (as the
-// presenters let go of a menu the frame it closes); its rows as menu_row draws them (as high as the screen's pick row at least, its icon or a choice's check in
-// a column before its words where one has one, a danger's in red, one not to be chosen faint), headings and lines
-// between parts; what it holds scrolling where it is taller than the window leaves it. Its rows are one roving group, the
-// one with the focus lit: Up and Down move the focus along them (not round), Home and End to the ends, letters typed
-// (alone or with Shift) to the first whose words start with them (a second's worth together), shown, what holds them
-// bringing it into sight; the pointer moving onto one gives it the focus, unseen. Enter, Space, a tap or a click choose
-// one (it closes, then what it does goes on); a press on what of its panel cannot be chosen does nothing. Escape, back
-// and a press outside close it. Opened by the keyboard, the focus on its first row, shown; else on its panel, nothing
-// lit, till a key or the pointer moves it.
+// A menu of the presenters' (the library's dropdown, kit's dropdown_menu and menu_panel, in the web's look) as nodes of
+// the window's tree: a modal layer over the window, nothing under it dimmed, its small panel beside what opened it
+// (where it was drawn as it opened: under it, `offset` off, lined up `along` it, over it where there is not the room
+// under: View::beside), grown out of that side as it comes (pop_in), drawn back into it as it closes (pop_out, as kit's
+// menu goes), nothing of it pressed, modal or read out from the moment it closes; its rows as menu_row draws them (as
+// high as the screen's pick row at least, its icon or a choice's check in a column before its words where one has one,
+// a danger's in red, one not to be chosen faint), headings and lines between parts; what it holds scrolling where it is
+// taller than the window leaves it. Its rows are one roving group, the one with the focus lit: Up and Down move the
+// focus along them (round past either end, as a Mac's), Home and End to the ends, letters typed (alone or with
+// Shift) to the first whose words start with them (a second's worth together), shown, what holds them bringing it
+// into sight; the pointer moving onto one gives it the focus, unseen. Enter, Space, a tap or a click choose one (it
+// closes, then what it does goes on); a press on what of its panel cannot be chosen does nothing. Escape, back and a
+// press outside close it. Opened by the keyboard, the focus on its first row, shown; else on its panel, nothing lit,
+// till a key or the pointer moves it.
 
 ///|
-/// A menu in `parent` while `open()` (let go of at once once not): what `content` holds as it is now (None a line
-/// between parts: its rows, what can be chosen of them, the keys' way along them and what a choice does, all from the
-/// same of it, read again as it is told changed, the menu open as it was, its focus where it was), headed by
-/// `title` ("" none), beside what `anchor` makes in its layer (what opened it, where that is drawn), `offset` off
-/// it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first row); `keep_field`: opened by a
-/// finger with a field focused (kit's dropdown_menu: its input method left in place): the focus left in that field, what
-/// is typed still its (View::leaves_typing), every key, the wheel and every press the menu's as ever. `choose` with the item chosen, once,
-/// as it closes; `cancel` as it is closed unchosen. `shown`, `gone`: as dialog_layer_node's. `side`: the side of what
-/// opened it it goes on (a submenu's beside its row: submenu_row_node). Not `modal` (a submenu's, as kit's
-/// dropdown_menu's `submenu`): what is under it its own as ever, a press outside its panel closing it as it goes down
-/// and going on to what it lands on; the arrow key back toward what opened it (away from `side`) closing it too.
+/// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
+/// what `content` holds as it is now (None a line between parts: its rows, what can be chosen of them, the keys' way
+/// along them and what a choice does, all from the same of it, read again as it is told changed, the menu open as it
+/// was, its focus where it was), headed by `title` ("" none), beside what `anchor` makes in its layer (what opened it,
+/// where that is drawn), `offset` off it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first
+/// row); `keep_field`: opened by a finger with a field focused (kit's dropdown_menu: its input method left in place):
+/// the focus left in that field, what is typed still its (View::leaves_typing), every key, the wheel and every press
+/// the menu's as ever. `choose` with the item chosen, once, as it closes; `cancel` as it is closed unchosen. `shown`,
+/// `gone`: as dialog_layer_node's. `side`: the side of what opened it it goes on (a submenu's beside its row:
+/// submenu_row_node). Not `modal` (a submenu's, as kit's dropdown_menu's `submenu`): what is under it its own as ever,
+/// a press outside its panel closing it as it goes down and going on to what it lands on; the arrow key back toward
+/// what opened it (away from `side`) closing it too.
 pub fn menu_node(
   parent : @view.View,
   open : () -> Bool,
@@ -43,18 +45,32 @@ pub fn menu_node(
   side? : @ui.Side = Bottom,
   modal? : Bool = true,
 ) -> Unit {
+  // (no line at either end, none twice: menu_clean_items)
+  let content = fn() { menu_clean_items(content()) }
   parent.show(
     open,
     fn(layer) {
       shown()
       layer.owns(gone) |> ignore
       let t = theme()
-      // (how far in it is, from the moment it opened)
+      // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
+      // as panel_node's)
       let way = EdgeWay::new(0.0)
       way.go(layer, 1.0, @kit.pop_ms)
+      layer.reacts(fn() { layer.leaving() }, at_start=false, fn(going) {
+        if going {
+          way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+        } else {
+          way.go(layer, 1.0, @kit.pop_ms)
+        }
+      })
       let look = fn() {
         let p = way.shown(layer)
-        @kit.pop_in.at(p, p)
+        if layer.leaving() {
+          @kit.pop_out.at(p, p)
+        } else {
+          @kit.pop_in.at(p, p)
+        }
       }
       let live = fn() { !layer.leaving() }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
@@ -111,6 +127,8 @@ pub fn menu_node(
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
       .modal(By(fn() { modal && live() }))
+      // (going, nothing of it read out, as panel_node's)
+      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
       if !modal {
@@ -182,12 +200,15 @@ pub fn menu_node(
           false
         } else if k.code == @ui.key_code_down || k.code == @ui.key_code_up {
           let down = k.code == @ui.key_code_down
-          // (from nothing lit, Down to the first and Up to the last; on from one, not round)
+          // (from nothing lit, Down to the first and Up to the last; on from one, round past either end to the other, as a
+          // Mac's menus go: the owner, 2026-11-16, 照苹果的来)
+          let first = first_live(items, 0, 1)
+          let last = first_live(items, items.length() - 1, -1)
           let next = if now < 0 {
-            if down { first_live(items, 0, 1) } else { first_live(items, items.length() - 1, -1) }
+            if down { first } else { last }
           } else {
             match first_live(items, now + (if down { 1 } else { -1 }), if down { 1 } else { -1 }) {
-              -1 => now
+              -1 => if down { first } else { last }
               n => n
             }
           }
@@ -237,8 +258,13 @@ pub fn menu_node(
       let marked = fn() {
         let n = content().length()
         let mut any = false
+        let items = content()
         for i in 0..<n {
-          if extras(i).mark is Some(_) {
+          let leads = match items[i] {
+            Some(it) => menu_mark_leads(it, extras(i))
+            None => false
+          }
+          if extras(i).mark is Some(_) && !(leads && lead()) {
             any = true
           }
         }
@@ -332,7 +358,15 @@ pub fn menu_node(
       })
       |> ignore
     },
+    leave=@kit.pop_out_ms,
   )
+}
+
+///|
+/// Whether a row's own mark goes in the menu's column before its words (where the menu has one): it has a mark and
+/// neither a check nor an icon of its own for that column.
+fn menu_mark_leads(item : MenuItem, extra : MenuExtra) -> Bool {
+  extra.mark is Some(_) && item.chosen is None && item.icon == ""
 }
 
 ///|
@@ -354,6 +388,7 @@ let menu_none : MenuItem = {
   disabled: true,
   chosen: None,
   heading: false,
+  further: false,
   select: fn() {  },
 }
 
@@ -385,6 +420,7 @@ fn menu_row_node(
     .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
     .gap(By(gap))
     .radius(Is(small_panel_inner(r_menu)))
+    // det-ok(raw-hover-ground): roving menu active bar moves at once across items without trailing fade
     .ground(By(fn() { if r.focused() && (r.focus_shown() || r.pointed()) { library_theme().p.hover } else { 0L } }))
     .presses(By(fn() { !off() }))
     // (one of the roving group: the menu's keys move along it, no key of its own; Tab stopping on the group's current
@@ -419,11 +455,20 @@ fn menu_row_node(
       }
     })
     |> ignore
-    // (its first line: its column before its words, where the menu has one (a choice's check, or its icon), its own
-    // mark after it, its words, and its value pushed to its end)
+    // (its own mark in that column where it has no check nor icon of its own to go there: a Slack account among kinds
+    // of secret by their icons; one beside a check or an icon goes after it)
+    let mark_leads = fn() { menu_mark_leads(item(), extra) && lead() }
+    // (that mark, as wide as the check's column, where it goes)
+    let mark_in = fn(at : @view.View, m : ChoiceMark) { choice_mark_node(at, m, menu_check_w) }
+    // (its first line: its column before its words, where the menu has one (a choice's check, or its icon, else its
+    // own mark), its own mark after it otherwise, its words, and its value pushed to its end)
     let first_line = fn(into : @view.View) {
       into.show(lead, fn(col) {
         col.width(Is(Some(menu_check_w))).lines_up(Is(Some(Middle))) |> ignore
+        match extra.mark {
+          Some(m) if menu_mark_leads(@signals.untracked(item), extra) => mark_in(col, m)
+          _ => ()
+        }
         let mark = fn() {
           let it = item()
           match it.chosen {
@@ -449,13 +494,9 @@ fn menu_row_node(
           }
         })
       })
-      // (its own mark (a station's, a maker's), drawn by the old frame, as wide as the check's column)
+      // (its own mark (a station's, a maker's) after that column)
       match extra.mark {
-        Some(m) =>
-          @ui.old(into, fn(c) { m(c, menu_check_w) })
-          .width(Is(Some(menu_check_w)))
-          .height(Is(Some(menu_check_w)))
-          |> ignore
+        Some(m) => into.show(fn() { !mark_leads() }, fn(at) { mark_in(at, m) })
         None => ()
       }
       into.box(fn(w) {
@@ -475,6 +516,12 @@ fn menu_row_node(
         })
         |> ignore
       }
+      // (one that asks more first: its chevron at its end, after its value where it has one)
+      // (what it is shown in stretches to the row's end, as the menu is wide)
+      into.show(fn() { item().further }, fn(at) {
+        at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+        icon_node(at, "chevron-right", 14.0, By(fn() { library_theme().p.subtle })) |> ignore
+      })
     }
     if extra.note == "" {
       first_line(r)
@@ -492,7 +539,7 @@ fn menu_row_node(
           .padding(
             By(fn() {
               let w = (if lead() { menu_check_w + gap() } else { 0.0 }) +
-                (if extra.mark is Some(_) { menu_check_w + gap() } else { 0.0 })
+                (if extra.mark is Some(_) && !mark_leads() { menu_check_w + gap() } else { 0.0 })
               (w, 0.0, 0.0, 0.0)
             }),
           )
@@ -515,11 +562,11 @@ fn menu_row_node(
 
 ///|
 /// What a row of a menu has besides its item (a pick's choice's): what it is under its words (`note`), what it is at
-/// now at its end (`value`), its own mark drawn by the old frame (`mark`, given the column's width).
+/// now at its end (`value`), its own mark (`mark`, as wide as the column).
 pub(all) struct MenuExtra {
   note : String
   value : String
-  mark : ((@ui.Ctx, Double) -> Unit)?
+  mark : ChoiceMark?
 }
 
 ///|

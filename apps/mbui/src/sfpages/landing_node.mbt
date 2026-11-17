@@ -1,6 +1,6 @@
 // Signed in with no workspace yet, as nodes of the window's tree (cloud_app.mbt's pages, made once): the way in's page
 // (@sf.way_in_page_node) holding the invitations waiting, each joined by its 加入; else, asked for a code, why and its
-// form (its field the old view's, hosted); else said so, with 创建 workspace, 用邀请链接加入 and 切换账号. An account the
+// form; else said so, with 创建 workspace, 用邀请链接加入 and 切换账号. An account the
 // app may not be used with: why, its email, 退出此账号 or 切换账号. What the core answers and what the page asked of it
 // as cloud_app.mbt has them (the same calls, the same state).
 
@@ -235,9 +235,9 @@ fn invitation_node(row : @view.View, src : Source, p : () -> (Json?, Json)) -> U
 }
 
 ///|
-/// The invite code's form in `body` (invite_code_form's): its field (the old view's, hosted) and 创建 workspace in a
-/// row, 8 apart, the button not pressed while no code is typed; what was last tried's error under them, none before a
-/// code was typed.
+/// The invite code's form in `body` (invite_code_form's): its field (ui's field, Enter as its button) and 创建 workspace
+/// in a row, 8 apart, the button not pressed while no code is typed; what was last tried's error under them, none
+/// before a code was typed.
 fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?) -> Unit {
   let code = fn() { landing.code.text().trim(chars=" \n").to_owned() }
   body.box(fn(form) {
@@ -245,36 +245,33 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
     form.box(fn(r) {
       r.row(Is(true)).width_share(Is(1.0)).gap(Is(@ui.Space::px(S2))).lines_up(Is(Some(Middle))) |> ignore
       r.box(fn(f) {
-        // (what its row leaves after the button, as code_field's w=Full: none of its own before that is shared out)
-        f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
-        @ui.old(f, fn(c) {
-          let t = @sf.theme()
-          c.box(style=code_field, fn() {
-            c.editor(
-              "landing/code",
-              placeholder="XXXX-XXXX-XXXX",
-              font_size=15.0,
-              line=21.0,
-              max_lines=1,
-              plain=true,
-              color=t.p.text,
-              placeholder_color=t.p.subtle,
-              caret_color=t.p.accent,
-              enter_sends=false,
-              field=landing.code,
-            )
-            |> ignore
-          })
-          |> ignore
-        })
+        // (what its row leaves after the button: none of its own before that is shared out; on the surface, a hairline
+        // round it, its words 12 and 10 in: code_field_box, as tall as its line laid out and that)
+        f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        @sf.style_node(f, fn() { code_field_box })
+        @ui.field(
+          f,
+          landing.code,
+          placeholder="XXXX-XXXX-XXXX",
+          font_size=15.0,
+          line=21.0,
+          max_lines=1,
+          // Enter: 创建 workspace with the code typed, as its button is pressed (not while none is, nor while one is made)
+          enter_sends=true,
+          submitted=fn(_) {
+            if code() != "" && !landing.creating.untracked() {
+              create_workspace(src, @signals.untracked(account), code())
+            }
+          },
+          colors_by=fn() {
+            let p = @sf.theme().p
+            (p.text, p.subtle, p.accent)
+          },
+        )
         .grow(Is(1.0))
-        // (as tall as its words are laid out, its 10 over and under round them: code_field's; as wide as its row
-        // leaves it)
-        .measured(By(fn() { landing.code.laid(font_size=15.0, line=21.0, max_lines=1) }), fn(l, w) {
-          let (side, over) = (@ui.Space::px(S3), @ui.Space::px(S2_5))
-          let (lw, lh) = l.size(w.map(fn(w) { w - side - side }))
-          (lw + side + side, lh + over + over)
-        })
+        .basis(Is(Some(0.0)))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
         |> ignore
       })
       |> ignore
@@ -337,3 +334,9 @@ fn blocked_page_node(parent : @view.View, src : Source, entry : () -> Json?) -> 
 pub fn landing_asked() -> Unit {
   landing.asked.set(true)
 }
+
+///|
+/// The code's field's box in its row: on the surface, a hairline round it, 12 round, 12 and 10 in, what it holds along
+/// it in its middle.
+// kept across runs: a value (no field of it changes)
+let code_field_box : @ui.Style = @ui.css("row align=ACenter px=S3 py=S2_5 radius=Xl bg=Surface border=B1 border_color=Line")

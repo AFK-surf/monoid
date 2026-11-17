@@ -1,4 +1,4 @@
-// The files' places (sfdesk files_nav.mbt files_places): one list, the phone's 文件 at the stack's root and the wide
+// The files' places (sfpages files_places_node.mbt files_places_node): one list, the phone's 文件 at the stack's root and the wide
 // frame's sidebar, at a width of each tier, with a finger and with a mouse.
 
 ///|
@@ -19,14 +19,14 @@ test "a folder reached through different roots is one favorite" {
     { "station": "ws1/st1", "root": "/Users/lin/文档", "path": "", "name": "文档" },
   ]
   fix_browse_prefs_set({ "driveFavorites": { "ws1": Json::string(saved.stringify()) } }) |> ignore
-  let favs = @sfdesk.favorites(src, "ws1")
-  assert_eq(favs.filter(fn(f) { f.station == "ws1/st1" && @sfdesk.favorite_has([f], "ws1/st1", fix_docs, "") }).length(), 1, msg="the same folder has one favorite")
-  assert_true(@sfdesk.favorite_has(favs, "ws1/st1", fix_docs, ""), msg="a different root still names it")
-  assert_false(@sfdesk.favorite_has(favs, "ws1/st2", fix_docs, ""), msg="another station is distinct")
-  let windows : @sfdesk.Favorite = { station: "ws1/st1", root: "C:\\Users\\lin", path: "文档", name: "文档" }
-  assert_true(@sfdesk.favorite_has([windows], "ws1/st1", "C:\\Users\\lin\\文档", ""), msg="Windows separators name the same folder")
-  let unix : @sfdesk.Favorite = { station: "ws1/st1", root: "/Users/lin", path: "a\\b", name: "a\\b" }
-  assert_false(@sfdesk.favorite_has([unix], "ws1/st1", "/Users/lin/a", "b"), msg="a backslash in a Unix name is not a separator")
+  let favs = @sfpages.favorites(src, "ws1")
+  assert_eq(favs.filter(fn(f) { f.station == "ws1/st1" && @sfpages.favorite_has([f], "ws1/st1", fix_docs, "") }).length(), 1, msg="the same folder has one favorite")
+  assert_true(@sfpages.favorite_has(favs, "ws1/st1", fix_docs, ""), msg="a different root still names it")
+  assert_false(@sfpages.favorite_has(favs, "ws1/st2", fix_docs, ""), msg="another station is distinct")
+  let windows : @sfpages.Favorite = { station: "ws1/st1", root: "C:\\Users\\lin", path: "文档", name: "文档" }
+  assert_true(@sfpages.favorite_has([windows], "ws1/st1", "C:\\Users\\lin\\文档", ""), msg="Windows separators name the same folder")
+  let unix : @sfpages.Favorite = { station: "ws1/st1", root: "/Users/lin", path: "a\\b", name: "a\\b" }
+  assert_false(@sfpages.favorite_has([unix], "ws1/st1", "/Users/lin/a", "b"), msg="a backslash in a Unix name is not a separator")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   app.nav.replace(Files)
   t.run_for(@ui.move_most_ms)

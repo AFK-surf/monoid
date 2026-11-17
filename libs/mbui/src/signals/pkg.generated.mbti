@@ -1,6 +1,10 @@
 // Generated using `moon info`, DON'T EDIT IT
 package "mbui/signals"
 
+import {
+  "moonbitlang/core/ref",
+}
+
 // Values
 pub const DIRTY : Int32 = 16
 
@@ -24,14 +28,19 @@ pub fn after_flush(() -> Unit) -> Unit
 
 pub fn batch_depth() -> Int32
 
+#callsite(autofill(loc))
 pub fn[T] computed((T?) -> T, same? : (T, T) -> Bool, loc~ : SourceLoc) -> Computed[T]
 
+#callsite(autofill(loc))
 pub fn[T] computed_following((T?) -> T, Computed[Unit], same? : (T, T) -> Bool, loc~ : SourceLoc) -> Computed[T]
 
+#callsite(autofill(loc))
 pub fn[T] computed_scoped((T?) -> T, same? : (T, T) -> Bool, untracked_read? : (() -> T?)?, loc~ : SourceLoc) -> Computed[T]
 
+#callsite(autofill(loc))
 pub fn effect(() -> Unit, loc~ : SourceLoc) -> () -> Unit
 
+#callsite(autofill(loc))
 pub fn effect_cleanup(() -> () -> Unit, loc~ : SourceLoc) -> () -> Unit
 
 pub let effect_in_watch : @ref.Ref[((SourceLoc) -> Unit)?]
@@ -40,13 +49,25 @@ pub fn effect_scope(() -> Unit) -> () -> Unit
 
 pub fn end_batch() -> Unit
 
+pub fn end_batch_in_turn() -> Unit
+
+pub fn first_told(() -> Unit) -> Unit
+
+pub fn first_told_with((() -> Unit) -> Unit) -> Unit
+
 pub fn[K : Hash + Eq] keyed() -> Keyed[K]
 
+pub fn[K : Hash + Eq, V] keyed_list(same? : (V, V) -> Bool) -> KeyedList[K, V]
+
 pub fn last_set_at() -> String
+
+pub fn rest(ReactiveNode) -> () -> Unit
 
 pub fn set_active_sub(ReactiveNode?) -> ReactiveNode?
 
 pub fn set_owner(ReactiveNode?) -> ReactiveNode?
+
+pub fn sets_said() -> Int32
 
 pub fn setting_at() -> SourceLoc?
 
@@ -82,6 +103,19 @@ pub fn[K : Hash + Eq] Keyed::has(Self[K], K) -> Bool
 pub fn[K : Hash + Eq] Keyed::peek(Self[K], K) -> Bool
 pub fn[K : Hash + Eq] Keyed::remove(Self[K], K) -> Unit
 pub fn[K : Hash + Eq] Keyed::set(Self[K], Array[K]) -> Unit
+
+pub struct KeyedList[K, V] {
+  // private fields
+}
+pub fn[K, V] KeyedList::count(Self[K, V]) -> Int32
+pub fn[K : Hash + Eq, V] KeyedList::drop(Self[K, V], K) -> Unit
+pub fn[K : Hash + Eq, V] KeyedList::get(Self[K, V], K) -> V?
+pub fn[K, V] KeyedList::keys(Self[K, V]) -> Array[K]
+pub fn[K : Eq, V] KeyedList::move_before(Self[K, V], K, before? : K?) -> Unit
+pub fn[K : Hash + Eq, V] KeyedList::peek(Self[K, V], K) -> V?
+pub fn[K, V] KeyedList::peek_keys(Self[K, V]) -> Array[K]
+pub fn[K : Hash + Eq, V] KeyedList::put(Self[K, V], K, V, before? : K?) -> Unit
+pub fn[K : Hash + Eq, V] KeyedList::reset(Self[K, V], Array[K], Map[K, V]) -> Unit
 
 type Link
 

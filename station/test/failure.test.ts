@@ -1,8 +1,8 @@
 // What failed a turn, from what any runtime said of it (agents/runtime.ts `failureOf`): the account, the provider
-// refusing it, a limit, the provider out of room, the network, the conversation's size, else the model.
+// refusing it, a limit, the provider out of room, the network, the conversation's size, else the model. (Claude Code's
+// own are told apart by the MoonBit program: station/mb/src/claude/frames_test.mbt.)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyResult } from "../src/agents/claude.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 
 test("a failure is told apart by what it means to people", () => {
@@ -22,8 +22,4 @@ test("a failure is told apart by what it means to people", () => {
   assert.equal(failureOf("prompt is too long: 210000 tokens > 200000 maximum"), "context");
   assert.equal(failureOf("this model's maximum context length is 128000 tokens"), "context");
   assert.equal(failureOf("the model failed"), "model");
-  // Claude Code's own, as before, with the network and the conversation's size told apart from the model.
-  assert.equal(classifyResult("API Error: Connection error. (ECONNRESET)"), "network");
-  assert.equal(classifyResult("Prompt is too long"), "context");
-  assert.equal(classifyResult("API Error: 500 Internal server error"), "model");
 });

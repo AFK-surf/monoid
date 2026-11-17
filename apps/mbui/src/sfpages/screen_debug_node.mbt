@@ -5,9 +5,8 @@
 // done is the same helpers' the pane's old views call.
 
 ///|
-/// What 日志 holds in `v`: App, 日志 or 设备, chosen, and what that one holds. `c` the screen page's, what a recording's
-/// movie is downloaded through and 安装 App asked by.
-fn debug_logs_node(c : @ui.Ctx, v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+/// What 日志 holds in `v`: App, 日志 or 设备, chosen, and what that one holds.
+fn debug_logs_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
   let d = u.logs
   v.box(fn(b) {
     @sf.style_node(b, fn() { debug_body })
@@ -18,9 +17,9 @@ fn debug_logs_node(c : @ui.Ctx, v : @view.View, s : ScreenSess, u : ScreenUi) ->
         debug_lines_node(t, s, d)
       } else {
         if tab == debug_tab_device {
-          debug_device_node(t, s, u)
+          debug_device_node(t, s, u, beside=false)
         } else {
-          debug_app_node(c, t, s, u)
+          debug_app_node(t, s, u, beside=false)
         }
         debug_said_node(t, d)
       }
@@ -31,8 +30,9 @@ fn debug_logs_node(c : @ui.Ctx, v : @view.View, s : ScreenSess, u : ScreenUi) ->
 
 ///|
 /// 日志 in `t`: what came, the newest first, asked for again debug_logs_ms after each answer while it shows (the
-/// station tells none of it by itself); 复制日志 over it once there is something to copy, and why it failed.
-fn debug_lines_node(t : @view.View, s : ScreenSess, d : DebugLogs) -> Unit {
+/// station tells none of it by itself); 复制日志 over it once there is something to copy (`copy`: beside the device it is
+/// in the pane's head, debug_logs_copy_node), and why it failed.
+fn debug_lines_node(t : @view.View, s : ScreenSess, d : DebugLogs, copy? : Bool = true) -> Unit {
   fn ask() -> Unit {
     // (asked already, by the pane beside the device: looked at again then)
     if d.asking {
@@ -47,21 +47,9 @@ fn debug_lines_node(t : @view.View, s : ScreenSess, d : DebugLogs) -> Unit {
   } else {
     t.at_moment(t.logic_at() + debug_logs_ms, ask, later=true) |> ignore
   }
-  t.show(fn() { !d.lines.get().is_empty() }, fn(k) {
-    // (已复制 from each press till diag_said_ms after it, a press while it shows starting it again: the button's own,
-    // let go with it; a time it shows for, not waited for)
-    let (copied_now, copied) = k.holds_for(diag_said_ms, later=true)
-    @sf.panel_button_node(
-      k,
-      fn() { @sf.t(if copied() { "web-pages.screen.stat.copied" } else { "web-pages.screen.debug.logsCopy" }) },
-      fn() {
-        @ui.clipboard_set(d.copied_text(), label="still.fail")
-        copied_now()
-      },
-      tone=Quiet,
-    )
-    |> ignore
-  })
+  if copy {
+    t.show(fn() { !d.lines.get().is_empty() }, fn(k) { debug_logs_copy_node(k, d) })
+  }
   t.show(fn() { d.failed.get() != "" }, fn(n) { @sf.panel_note_node(n, fn() { d.failed.get() }) })
   t.show(fn() { d.lines.get().is_empty() }, fn(n) { @sf.panel_note_node(n, fn() { @sf.t("web-pages.screen.debug.logsNone") }) })
   t.each(
@@ -83,6 +71,23 @@ fn debug_lines_node(t : @view.View, s : ScreenSess, d : DebugLogs) -> Unit {
       })
     },
   )
+}
+
+///|
+/// 复制日志 in `k`: what the log holds onto the clipboard, 已复制 from each press till diag_said_ms after it, a press while
+/// it shows starting it again (the button's own, let go with it; a time it shows for, not waited for).
+fn debug_logs_copy_node(k : @view.View, d : DebugLogs) -> Unit {
+  let (copied_now, copied) = k.holds_for(diag_said_ms, later=true)
+  @sf.panel_button_node(
+    k,
+    fn() { @sf.t(if copied() { "web-pages.screen.stat.copied" } else { "web-pages.screen.debug.logsCopy" }) },
+    fn() {
+      @ui.clipboard_set(d.copied_text(), label="still.fail")
+      copied_now()
+    },
+    tone=Quiet,
+  )
+  |> ignore
 }
 
 ///|
@@ -126,9 +131,13 @@ fn debug_settings_once(s : ScreenSess, d : DebugLogs) -> Unit {
 }
 
 ///|
+/// The room under a field before the row that does what it says (its lit ground apart from the field's: S1).
+let debug_field_under : Double = @ui.Space::px(S1)
+
+///|
 /// 设备 in `t` (debug_device's): how the device is set, what a page is checked against most often without going into
-/// its 设置.
-fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+/// its 设置; `beside`: beside the device, whose volume is by it.
+fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi, beside~ : Bool) -> Unit {
   let d = u.logs
   debug_settings_once(s, d)
   let done = fn() { @sf.t("web-pages.screen.debug.done") }
@@ -141,7 +150,12 @@ fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
         debug_act(s, d, "screen.location", { "at": Json::string(at) }, done())
       }
     }
-    @sf.input_node(g, at, placeholder=@sf.t("web-pages.screen.debug.locationHint"), small=true, submitted=set) |> ignore
+    // (apart from the row under it: their lit grounds never touching)
+    g.box(fn(f) {
+      f.padding(Is((0.0, 0.0, 0.0, debug_field_under))) |> ignore
+      @sf.input_node(f, at, placeholder=@sf.t("web-pages.screen.debug.locationHint"), small=true, submitted=set) |> ignore
+    })
+    |> ignore
     @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.locationSet") }, fn() { set(at.text()) }, icon=fn() { "move" })
     @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.locationClear") }, fn() {
       debug_act(s, d, "screen.location", {}, done())
@@ -166,12 +180,14 @@ fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
     })
   })
   @sf.panel_group_node(t, fn() { "" }, fn(g) {
-    @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeUp") }, fn() { debug_device_input(s, "volume_up") }, icon=fn() {
-      "volume"
-    })
-    @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeDown") }, fn() { debug_device_input(s, "volume_down") }, icon=fn() {
-      "volume-x"
-    })
+    if !beside {
+      @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeUp") }, fn() { debug_device_input(s, "volume_up") }, icon=fn() {
+        "volume"
+      })
+      @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.volumeDown") }, fn() { debug_device_input(s, "volume_down") }, icon=fn() {
+        "volume-x"
+      })
+    }
     @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.memoryWarning") }, fn() {
       debug_device_input(s, "memory_warning")
       d.acted.set(done())
@@ -180,8 +196,9 @@ fn debug_device_node(t : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
 }
 
 ///|
-/// App in `t` (debug_app's): what is done with the app being debugged, the first of it what is done over and over.
-fn debug_app_node(c : @ui.Ctx, t : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
+/// App in `t` (debug_app's): what is done with the app being debugged, the first of it what is done over and over;
+/// `beside`: beside the device, whose 录屏 is by it.
+fn debug_app_node(t : @view.View, s : ScreenSess, u : ScreenUi, beside~ : Bool) -> Unit {
   let d = u.logs
   debug_settings_once(s, d)
   // (a recording's movie, once it has ended, downloaded: debug_record_saved's)
@@ -189,7 +206,7 @@ fn debug_app_node(c : @ui.Ctx, t : @view.View, s : ScreenSess, u : ScreenUi) -> 
     match save {
       Some((root, path)) => {
         d.to_save.set(None)
-        @sfbase.download_drive_file(c, s.src, s.station, root, path, "recording.mp4")
+        @sfbase.download_start_drive(s.src, s.station, root, path, "recording.mp4", 0.0, 0.0)
       }
       None => ()
     }
@@ -210,18 +227,20 @@ fn debug_app_node(c : @ui.Ctx, t : @view.View, s : ScreenSess, u : ScreenUi) -> 
       }
     })
     g.show(fn() { s.said.get() |> ignore; text(s.state, "install") != "" }, fn(i) {
-      @sf.panel_row_node(i, fn() { @sf.t("web-pages.screen.debug.install") }, fn() { install_asked(c, s, u) }, icon=fn() { "upload" }, note=fn() {
+      @sf.panel_row_node(i, fn() { @sf.t("web-pages.screen.debug.install") }, fn() { install_asked(s) }, icon=fn() { "upload" }, note=fn() {
         @sf.t("web-pages.screen.debug.installKinds")
       })
     })
     // 录屏 (beside the device it is by the device)
-    @sf.panel_row_node(
-      g,
-      fn() { @sf.t(if debug_going(d) { "web-pages.screen.debug.recordStop" } else { "web-pages.screen.debug.recordStart" }) },
-      fn() { debug_record_pressed(s, d, @signals.untracked(fn() { debug_going(d) })) },
-      icon=fn() { if debug_going(d) { "stop" } else { "play" } },
-      note=fn() { if debug_going(d) { @sf.t("web-pages.screen.debug.recordNote") } else { "" } },
-    )
+    if !beside {
+      @sf.panel_row_node(
+        g,
+        fn() { @sf.t(if debug_going(d) { "web-pages.screen.debug.recordStop" } else { "web-pages.screen.debug.recordStart" }) },
+        fn() { debug_record_pressed(s, d, @signals.untracked(fn() { debug_going(d) })) },
+        icon=fn() { if debug_going(d) { "stop" } else { "play" } },
+        note=fn() { if debug_going(d) { @sf.t("web-pages.screen.debug.recordNote") } else { "" } },
+      )
+    }
   })
   let done = fn() { @sf.t("web-pages.screen.debug.done") }
   @sf.panel_group_node(t, fn() { @sf.t("web-pages.screen.debug.openUrl") }, fn(g) {
@@ -231,12 +250,22 @@ fn debug_app_node(c : @ui.Ctx, t : @view.View, s : ScreenSess, u : ScreenUi) -> 
         debug_act(s, d, "screen.openUrl", { "url": Json::string(url) }, done())
       }
     }
-    @sf.input_node(g, url, placeholder="https://", small=true, submitted=open) |> ignore
+    // (apart from the row under it: their lit grounds never touching)
+    g.box(fn(f) {
+      f.padding(Is((0.0, 0.0, 0.0, debug_field_under))) |> ignore
+      @sf.input_node(f, url, placeholder="https://", small=true, submitted=open) |> ignore
+    })
+    |> ignore
     @sf.panel_row_node(g, fn() { @sf.t("web-pages.screen.debug.openUrlGo") }, fn() { open(url.text()) }, icon=fn() { "external" })
   })
   @sf.panel_group_node(t, fn() { @sf.t("web-pages.screen.debug.push") }, fn(g) {
     let said = @ui.Field::new()
-    @sf.input_node(g, said, placeholder=@sf.t("web-pages.screen.debug.pushHint"), small=true) |> ignore
+    // (apart from the row under it: their lit grounds never touching)
+    g.box(fn(f) {
+      f.padding(Is((0.0, 0.0, 0.0, debug_field_under))) |> ignore
+      @sf.input_node(f, said, placeholder=@sf.t("web-pages.screen.debug.pushHint"), small=true) |> ignore
+    })
+    |> ignore
     @sf.panel_row_opens_node(g, fn() { @sf.t("web-pages.screen.debug.pushGo") }, fn(from) {
       if said.text() != "" {
         debug_apps_open(s, u, from, push=said.text())

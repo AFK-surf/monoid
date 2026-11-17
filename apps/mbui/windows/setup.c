@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include "../src/host/station_uninstall.h"  // this machine's station taken away with the app (station_with_app)
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "cabinet.lib")
@@ -764,6 +765,63 @@ static int uninstall(int silent, int from_copy) {
   return 0;
 }
 
+// `command` run with no window, waited for (`ms` at most): its exit code, -1 where it did not start or end in time
+static int run_hidden(wchar_t *command, DWORD ms) {
+  STARTUPINFOW si = {sizeof si};
+  PROCESS_INFORMATION pi;
+  if (!CreateProcessW(NULL, command, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) return -1;
+  DWORD code = (DWORD)-1;
+  if (WaitForSingleObject(pi.hProcess, ms) == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return (int)code;
+}
+
+// This machine's station goes with the app that looked after it (the app's 卸载本机 Station, the same: the scheduled
+// task would otherwise run it at every sign-in with no app to stop it): still.fail's and monoid's apps, stable or beta,
+// never the preview (fail.still.mbui), which looks after none; and not while the other channel's app of the same
+// product (its folder beside this one: stillfail and stillfail-beta, monoid and monoid-beta) is still here to. Its
+// data stays, said taken away, as the question said (「你的对话和设置会留着」).
+static void station_with_app(const wchar_t *dir) {
+  const wchar_t *id = NULL, *name = NULL;
+  if (!wcscmp(app_id, L"fail.still.desktop") || !wcscmp(app_id, L"fail.still.desktop.beta")) id = L"stillfail", name = L"still.fail";
+  else if (!wcscmp(app_id, L"build.monoid.desktop") || !wcscmp(app_id, L"build.monoid.desktop.beta")) id = L"monoid", name = L"monoid";
+  if (!id) return;
+  wchar_t other[MAX_PATH * 2], data[MAX_PATH * 2], app[MAX_PATH * 2], query[MAX_PATH];
+  _snwprintf(other, MAX_PATH * 2, L"%ls", dir);
+  wchar_t *leaf = wcsrchr(other, L'\\');
+  if (!leaf) return;
+  size_t ln = wcslen(leaf);
+  // (this one's folder with -beta taken off or put on)
+  if (ln > 5 && !_wcsicmp(leaf + ln - 5, L"-beta")) leaf[ln - 5] = 0;
+  else wcsncat(other, L"-beta", MAX_PATH * 2 - wcslen(other) - 1);
+  if (GetFileAttributesW(other) != INVALID_FILE_ATTRIBUTES) {
+    say(L"%ls is here still: its station left as it is", other);
+    return;
+  }
+  const wchar_t *home = _wgetenv(L"USERPROFILE");
+  if (!home || !*home) return;
+  _snwprintf(data, MAX_PATH * 2, L"%ls\\.%ls", home, id);
+  _snwprintf(app, MAX_PATH * 2, L"%ls\\app", data);
+  _snwprintf(query, MAX_PATH, L"schtasks.exe /Query /TN \"%ls station\"", name);
+  if (GetFileAttributesW(app) == INVALID_FILE_ATTRIBUTES && run_hidden(query, 30000) != 0) return;
+  int u = WideCharToMultiByte(CP_UTF8, 0, data, -1, NULL, 0, NULL, NULL);
+  char *d8 = (char *)malloc((size_t)u + 1);
+  if (!d8) return;
+  WideCharToMultiByte(CP_UTF8, 0, data, -1, d8, u, NULL, NULL);
+  char *c8 = station_uninstall_command(d8);
+  free(d8);
+  if (!c8) return;
+  int w = MultiByteToWideChar(CP_UTF8, 0, c8, -1, NULL, 0);
+  wchar_t *command = (wchar_t *)calloc((size_t)w + 1, sizeof(wchar_t));
+  if (command) {
+    MultiByteToWideChar(CP_UTF8, 0, c8, -1, command, w);
+    say(L"%ls's station taken away: exit %d", data, run_hidden(command, 120000));
+    free(command);
+  }
+  free(c8);
+}
+
 static int uninstall_from(const wchar_t *dir, int silent, DWORD after) {
   lstrcpynW(install_dir, dir, MAX_PATH);
   // (the uninstaller in the folder, which started this copy, ended first: its own file is the folder's too)
@@ -822,6 +880,7 @@ static int uninstall_from(const wchar_t *dir, int silent, DWORD after) {
     _snwprintf(lnk, MAX_PATH * 2, L"%ls\\%ls.lnk", folder, app_name);
     DeleteFileW(lnk);
   }
+  station_with_app(dir);
   remove_tree(dir);
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
   say(L"%ls removed", dir);

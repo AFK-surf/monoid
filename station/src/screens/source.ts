@@ -109,6 +109,9 @@ export interface ScreenView {
   regions?(): boolean;
   /// How its pictures are made (once it opened); none: not said.
   video?(): ScreenVideo;
+  /// Why it ended by itself while its source stays (its capture's own words, once `next` gave null): none where it was
+  /// closed, or does not say.
+  why?(): string | undefined;
   /// Stops capturing; a pending `next` resolves null.
   close(): void;
   /// The source's clipboard set (of a type its `clipboard()` names), then, with `paste`, pasted where its focus is (the

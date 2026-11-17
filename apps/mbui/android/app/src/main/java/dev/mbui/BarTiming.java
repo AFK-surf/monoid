@@ -239,7 +239,7 @@ final class BarTiming {
                 if (s.awayMs != null) e.put("away_ms", s.awayMs);
                 e.put("touched", s.touched);
                 put(e, "place_ms", ms(s.tap, s.placed));
-                // the end of the first frame's build that had the page (mbui builds and draws a frame on its GL thread),
+                // the end of the first frame's build that had the page (mbui builds a frame on its app thread, draws it on its GL thread),
                 // and the main thread's next frame after it
                 put(e, "composed_ms", ms(s.tap, s.built));
                 put(e, "frame_ms", ms(s.tap, s.frame));

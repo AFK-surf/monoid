@@ -20,6 +20,9 @@
 //   far.sends(4, b"…"), far.finish(4)       the peer sends on stream 4, ends its sending there;
 //   far.reset(4, 7)                       stops it both ways with that code: the device's read and write there fail.
 //   far.got(4)                            what the device wrote on stream 4 since it was open both ways, taken.
+//   far.taps = Some(true)                 a stream handed to the shell to read itself (`istream.tap`) is taken
+//                                          (false: answered not taken; none, as unless said: no such op), each
+//                                          kept in far.tapped (`<stream> <call> <bytes handed>`); its reads go on.
 //   far.cut_as_end = true                 a read that waits as its connection ends is answered the stream's end,
 //                                          not a failure: as the Rust shell can answer one it wakes then.
 //
@@ -35,7 +38,11 @@
 //   far.lose(2)                           the peer is gone from under connection 2 without a word: what the device
 //                                          writes there is taken (and kept in `heard`, `asked`), nothing comes
 //                                          back, and the connection does not end. Other connections are answered.
-//   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`).
+//   stood.rx[2] = 100.0                   what the transport says came on connection 2 so far (`conn.stats`);
+//                                          stood.tx[2] what went out; stood.paths_of[2] its ways (`conn.paths`).
+//   stood.dht = Some({"lines": …})        what the shell's DHT says once (`dht.said`), then nothing; none: no op.
+//   stood.signs = Some({…}), stood.opus   what `ed25519.sign` and `tap.opus` answer; none: the shell has no such op.
+//   stood.verifies = Some(true)           what `crypto.verify` answers (asked in `verify_asks`); none: no such op.
 //   stood.on_relay = false                the endpoint is on no relay yet (`iroh.relayStatus`): an opening's time
 //                                          is not counted until it is.
 //   stood.holding = "iroh.bind" … stood.bound()        an endpoint bound again is the test's to answer: the next
@@ -43,6 +50,21 @@
 //                                          (`stood.unbound`) takes no dial, and one under way on it fails. Its
 //                                          connections do not end with it here, as a shell's would: the mesh
 //                                          closes an endpoint only with none on it, or after closing each.
+//   stood.binds, stood.addrs, stood.entries           what each bind was asked with, where each dial was told its
+//                                          peer is, the entries the endpoint was told (`iroh.setRelayEntries`), as
+//                                          written; `stood.no_entries = true`: the shell cannot be told them.
+//   stood.added                           where the endpoint was told a peer is (`iroh.addAddr`, asked at once):
+//                                          `<endpoint> <addr as written>`.
+//   stood.bind_keys, stood.bound_as       the key each bind was given; what each endpoint bound at once was asked.
+//   far.lag[way] = 25                     a way's dials and answers take that long ("main", a relay whose own
+//                                          endpoint dials it, an address said: `Peer::way_of`); far.deaf[way]: its
+//                                          dials go unanswered; far.direct[way]: its connections go direct
+//                                          (`conn.paths`); far.dialled, far.conn_way, far.conn_of(way): which way.
+//   let conn = far.comes("pair/1")        a peer dials this endpoint on that protocol: the connection the wait for
+//                                          one (`iroh.accept`, the test's to answer) is given; its streams are the
+//                                          peer's to open (`far.open(conn)`), its end the peer's (`far.end`).
+//   far.lingers = true … far.told()       a connection the device closes is closed, and the device's wait for its
+//                                          end (`conn.closed`) answered only when the test says.
 //   let link = stood.opened(mesh, source.gives())      a link (`scope=`: in that scope), its hello answered by the
 //                                          script; `Source` gives "c1", "c2"… and keeps how each was asked
 //   stood.rt.advance(tick_ms)             time goes on: what is due meanwhile happens at its own time
@@ -70,8 +92,8 @@ priv struct Stood {
   mut last : Int
   /// The connections closed here, and why (what `conn.closeReason` answers of one).
   ended : Map[Int, Json]
-  /// The connections let go of: closed with `forget`, as the mesh does of one whose end it was told. A page's shell
-  /// forgets such a one, and answers nothing of it after.
+  /// The connections let go of: closed with `forget`, as the mesh does of one whose end it was told. Both shells
+  /// forget such a one, and answer nothing of it after.
   forgot : Map[Int, Unit]
   /// An op held back besides (`conn.openBi`, for an opening that stops with its connection made); "": none.
   mut holding : String
@@ -83,8 +105,36 @@ priv struct Stood {
   /// The bytes that came on each connection so far, as the transport counts them (`conn.stats`): the test's to say
   /// (`stood.rx[2] = 100`); 0 of one it said nothing of.
   rx : Map[Int, Double]
+  /// What the transport says went out on each connection (`conn.stats`), and each connection's ways as the shell
+  /// says them (`conn.paths`): the test's to say.
+  tx : Map[Int, Double]
+  paths_of : Map[Int, Json]
+  /// What the shell's DHT said since it was last asked (`dht.said`; none: the shell has no such op), and each
+  /// asking's `keep`.
+  mut dht : Json?
+  dht_keeps : Array[Bool]
+  /// What the shell answers `ed25519.sign` (none: it has no such op) and what it was asked; whether the endpoint
+  /// decodes Opus (`tap.opus`; none: no such op).
+  mut signs : Json?
+  sign_asks : Array[String]
+  mut opus : Bool?
+  /// What the shell answers `crypto.verify` (none: it has no such op) and what it was asked.
+  mut verifies : Json?
+  verify_asks : Array[String]
   /// The endpoints closed (`iroh.close`).
   unbound : Map[Int, Unit]
+  /// What each bind was asked with, where each dial was told its peer is, and the entries told, as written.
+  binds : Array[String]
+  addrs : Array[String]
+  entries : Array[String]
+  /// Where the endpoint was told each peer is (`iroh.addAddr`): `<endpoint> <addr as written>`.
+  added : Array[String]
+  /// The key each bind was given, in order (beside `binds`); and what each endpoint bound at once was asked, by
+  /// its handle.
+  bind_keys : Array[Bytes]
+  bound_as : Map[Int, Json]
+  /// The shell cannot be told its relays' entries (`iroh.setRelayEntries` fails).
+  mut no_entries : Bool
   /// Whether the endpoint is on a relay (`iroh.relayStatus`: no relay at all while true, as a mesh made with none;
   /// one not connected while false).
   mut on_relay : Bool
@@ -114,7 +164,23 @@ fn Stood::new() -> Stood {
     cancels: true,
     peer: None,
     rx: Map([]),
+    tx: Map([]),
+    paths_of: Map([]),
+    dht: None,
+    dht_keeps: [],
+    signs: None,
+    sign_asks: [],
+    opus: None,
+    verifies: None,
+    verify_asks: [],
     unbound: Map([]),
+    binds: [],
+    addrs: [],
+    entries: [],
+    added: [],
+    bind_keys: [],
+    bound_as: Map([]),
+    no_entries: false,
     on_relay: true,
   }
   let answer = (id : Int64, json : Json) => stood.shell.val.unwrap().answer(id, json)
@@ -123,6 +189,16 @@ fn Stood::new() -> Stood {
     calls=(id, op, args, bytes) => {
       let handle = handle_of(args)
       stood.said.push("\{op} \{handle}")
+      if op == "iroh.bind" {
+        stood.binds.push(args.stringify())
+        stood.bind_keys.push(bytes.unwrap_or(b""))
+      }
+      if op == "iroh.connect" && args is { "addr": addr, .. } {
+        stood.addrs.push(addr.stringify())
+      }
+      if op == "iroh.setRelayEntries" && args is { "entries": entries, .. } {
+        stood.entries.push(entries.stringify())
+      }
       if op == stood.holding {
         stood.held.push((id, op, handle))
         return
@@ -136,17 +212,34 @@ fn Stood::new() -> Stood {
             stood.shell.val.unwrap().refuse(id, "connection closed: closed")
           } else {
             stood.last += 1
+            if op == "iroh.bind" {
+              stood.bound_as[stood.last] = args
+            }
             answer(id, { "id": Json::number(stood.last.to_double()) })
           }
         "istream.write" | "istream.finish" | "istream.reset" | "iroh.networkChange" => answer(id, {})
+        "iroh.setRelayEntries" =>
+          if stood.no_entries {
+            stood.shell.val.unwrap().refuse(id, "no such op")
+          } else {
+            answer(id, {})
+          }
+        "iroh.accept" =>
+          if stood.unbound.contains(handle) {
+            answer(id, { "end": true })
+          } else {
+            stood.held.push((id, op, handle))
+          }
         "iroh.close" => {
           stood.unbound[handle] = ()
-          // (a dial under way on it fails with it)
+          // (a dial under way on it fails with it, and its wait for a connection ends)
           let held = stood.held.copy()
           stood.held.clear()
           for call in held {
             if call.1 == "iroh.connect" && call.2 == handle {
               stood.shell.val.unwrap().refuse(call.0, "the endpoint is closed")
+            } else if call.1 == "iroh.accept" && call.2 == handle {
+              answer(call.0, { "end": true })
             } else {
               stood.held.push(call)
             }
@@ -182,8 +275,47 @@ fn Stood::new() -> Stood {
           } else {
             [{ "url": "https://relay.test/", "connected": false }]
           }
-        "conn.paths" => Json::array([])
-        "conn.stats" => { "rxBytes": Json::number(stood.rx.get(handle).unwrap_or(0.0)), "txBytes": 0 }
+        "conn.paths" =>
+          match stood.peer {
+            _ if stood.paths_of.get(handle) is Some(paths) => paths
+            Some(far) if far.conn_way.get(handle) is Some(way) && far.direct.contains(way) =>
+              [{ "id": "0", "selected": true, "relay": Json::null(), "ip": "10.0.0.2:1" }]
+            _ => Json::array([])
+          }
+        "ed25519.sign" => {
+          guard stood.signs is Some(answer) else { raise @shell.ShellError("the stood-in shell has no ed25519.sign") }
+          stood.sign_asks.push(args.stringify())
+          answer
+        }
+        "crypto.verify" => {
+          guard stood.verifies is Some(answer) else { raise @shell.ShellError("the stood-in shell has no crypto.verify") }
+          stood.verify_asks.push(args.stringify())
+          answer
+        }
+        "tap.opus" => {
+          guard stood.opus is Some(opus) else { raise @shell.ShellError("the stood-in shell has no tap.opus") }
+          Json::boolean(opus)
+        }
+        "dht.said" => {
+          guard stood.dht is Some(said) else { raise @shell.ShellError("the stood-in shell has no dht.said") }
+          stood.dht_keeps.push(args is { "keep": True, .. })
+          stood.dht = Some({ "lines": [], "dropped": 0 })
+          said
+        }
+        "iroh.addAddr" => {
+          let addr = match args {
+            { "addr": addr, .. } => addr.stringify()
+            _ => "none"
+          }
+          stood.added.push("\{handle} \{addr}")
+          Json::null()
+        }
+        "conn.remoteId" => Json::string("ef".repeat(32))
+        "conn.stats" =>
+          {
+            "rxBytes": Json::number(stood.rx.get(handle).unwrap_or(0.0)),
+            "txBytes": Json::number(stood.tx.get(handle).unwrap_or(0.0)),
+          }
         "conn.closeReason" => {
           if stood.forgot.contains(handle) {
             raise @shell.ShellError("no handle \{handle}")
@@ -384,6 +516,9 @@ priv struct Peer {
   mut holds : Bool
   mut away : Bool
   mut cut_as_end : Bool
+  /// A connection closed here is told ended only when the test says (`told`): the waits kept back, each with why.
+  mut lingers : Bool
+  late : Array[(Int64, Json)]
   /// The connections it is gone from under (`lose`): nothing more comes on them.
   lost : Map[Int, Unit]
   /// Every control line it took, in order: `<ms on the test's clock> <connection> <the line as written>`.
@@ -407,6 +542,17 @@ priv struct Peer {
   waits : Map[Int, Int64]
   /// The answers kept back (`holds`): the stream each is for, and its pieces.
   kept : Array[(Int, Array[Bytes?])]
+  /// By way (`Peer::way_of`: "main", a relay, an address said): how many ms its dials and every answer on its
+  /// connections take (over `takes`); ways whose dials go unanswered; ways whose connections go direct
+  /// (`conn.paths`); and each connection's way, each dial's in order.
+  lag : Map[String, Int]
+  deaf : Map[String, Unit]
+  direct : Map[String, Unit]
+  conn_way : Map[Int, String]
+  dialled : Array[String]
+  /// What `istream.tap` is answered (none: no such op), and each asked: `<stream> <call> <bytes handed>`.
+  mut taps : Bool?
+  tapped : Array[String]
 }
 
 ///|
@@ -424,6 +570,8 @@ fn Stood::with_peer() -> (Stood, Peer) {
     holds: false,
     away: false,
     cut_as_end: false,
+    lingers: false,
+    late: [],
     lost: Map([]),
     heard: [],
     asked: [],
@@ -436,9 +584,44 @@ fn Stood::with_peer() -> (Stood, Peer) {
     flows: Map([]),
     waits: Map([]),
     kept: [],
+    lag: Map([]),
+    deaf: Map([]),
+    direct: Map([]),
+    conn_way: Map([]),
+    dialled: [],
+    taps: None,
+    tapped: [],
   }
   stood.peer = Some(far)
   (stood, far)
+}
+
+///|
+/// The way a dial on endpoint `handle` goes, as its bind says: a relay's own endpoint's, its relay; an endpoint on
+/// no relay, the first address it is dialled at; else (the endpoint) "main".
+fn Peer::way_of(self : Peer, handle : Int, args : Json) -> String {
+  match self.stood.bound_as.get(handle) {
+    Some({ "relayOnly": True, "relayUrls": [String(relay)], .. }) if handle != 1 => relay
+    Some({ "relayUrls": [], .. }) if handle != 1 =>
+      match args {
+        { "addr": { "ips": [String(ip), ..], .. }, .. } => ip
+        _ => "main"
+      }
+    _ => "main"
+  }
+}
+
+///|
+/// The last connection dialled on `way`. The test's mistake where none was.
+fn Peer::conn_of(self : Peer, way : String) -> Int raise {
+  let mut found = None
+  for conn, one in self.conn_way {
+    if one == way {
+      found = Some(conn)
+    }
+  }
+  guard found is Some(conn) else { fail("no connection on \{way}") }
+  conn
 }
 
 ///|
@@ -459,13 +642,20 @@ fn Peer::took(self : Peer, id : Int64, op : String, handle : Int, args : Json, b
     "iroh.connect" => {
       guard !stood.unbound.contains(handle) else { return false }
       self.dials.push(stood.rt.now())
-      if self.away {
+      let way = self.way_of(handle, args)
+      self.dialled.push(way)
+      if self.away || self.deaf.contains(way) {
         // (held as a dial by hand is: given up by `fetch.cancel`, or answered by the test)
         stood.held.push((id, op, handle))
       } else {
         stood.last += 1
-        self.conns[stood.last] = []
-        shell.answer(id, { "id": Json::number(stood.last.to_double()) })
+        let conn = stood.last
+        self.conns[conn] = []
+        self.conn_way[conn] = way
+        match self.lag.get(way) {
+          Some(ms) if ms > 0 => stood.rt.after(ms, () => shell.answer(id, { "id": Json::number(conn.to_double()) }))
+          _ => shell.answer(id, { "id": Json::number(conn.to_double()) })
+        }
       }
     }
     "conn.openBi" => {
@@ -504,7 +694,12 @@ fn Peer::took(self : Peer, id : Int64, op : String, handle : Int, args : Json, b
       if !stood.ended.contains(handle) {
         self.closes.push("\{handle} \{if args is { "reason": String(reason), .. } { reason } else { "" }}")
         // (as both shells say a connection closed here: no reason kept)
-        self.over(handle, { "kind": "local", "reason": "" })
+        let why : Json = { "kind": "local", "reason": "" }
+        if self.lingers && self.waits.get(handle) is Some(waiting) {
+          self.waits.remove(handle)
+          self.late.push((waiting, why))
+        }
+        self.over(handle, why)
       }
       shell.answer(id, {})
     }
@@ -600,6 +795,23 @@ fn Peer::took(self : Peer, id : Int64, op : String, handle : Int, args : Json, b
         flow.reader = Some(id)
       }
     }
+    "istream.tap" => {
+      guard self.flows.get(handle) is Some(flow) else { return false }
+      guard self.taps is Some(taps) else {
+        shell.refuse(id, "the stood-in shell has no istream.tap")
+        return true
+      }
+      if flow.dropped {
+        shell.refuse(id, "no handle \{handle}")
+        return true
+      }
+      let call = match args {
+        { "call": Number(call, ..), .. } => call.to_int64()
+        _ => -1L
+      }
+      self.tapped.push("\{handle} \{call} \{bytes.unwrap_or(b"").length()}")
+      shell.answer(id, { "tapped": Json::boolean(taps) })
+    }
     "istream.reset" => {
       guard self.flows.get(handle) is Some(flow) else { return false }
       flow.reset = true
@@ -635,10 +847,14 @@ fn Peer::hand(self : Peer, id : Int64, flow : Flow, piece : Bytes?) -> Unit {
 ///|
 /// The peer sends `pieces` on `stream`: now, `takes` ms from now, or once the test releases them (`holds`).
 fn Peer::send(self : Peer, stream : Int, pieces : Array[Bytes?]) -> Unit {
+  let takes = match self.flows.get(stream) {
+    Some(flow) => self.conn_way.get(flow.conn).bind(way => self.lag.get(way)).unwrap_or(self.takes)
+    None => self.takes
+  }
   if self.holds {
     self.kept.push((stream, pieces))
-  } else if self.takes > 0 {
-    self.stood.rt.after(self.takes, () => self.put(stream, pieces))
+  } else if takes > 0 {
+    self.stood.rt.after(takes, () => self.put(stream, pieces))
   } else {
     self.put(stream, pieces)
   }
@@ -793,6 +1009,29 @@ fn Peer::open(self : Peer, conn : Int) -> Int {
   }
   stood.run()
   stream
+}
+
+///|
+/// The ends kept back (`lingers`) are told now, and the fibers that woke run.
+fn Peer::told(self : Peer) -> Unit {
+  let late = self.late.copy()
+  self.late.clear()
+  for one in late {
+    self.stood.shell.val.unwrap().answer(one.0, one.1)
+  }
+  self.stood.run()
+}
+
+///|
+/// A peer dials this endpoint on `alpn`: the wait for a connection (`iroh.accept`, held) is given it, its handle;
+/// and the fibers that woke run. The connection is the peer's from there: its streams, its end.
+fn Peer::comes(self : Peer, alpn : String) -> Int raise {
+  let stood = self.stood
+  stood.last += 1
+  let conn = stood.last
+  self.conns[conn] = []
+  stood.give("iroh.accept", { "id": Json::number(conn.to_double()), "alpn": Json::string(hex(alpn)) })
+  conn
 }
 
 ///|

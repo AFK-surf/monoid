@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { facts, learn } from "../src/accounts/catalog.ts";
 import { seesImages } from "../src/accounts/models.ts";
 import { Readers } from "../src/read/pool.ts";
-import { price, priceTable } from "../src/read/usage.ts";
+import { price, priceTable } from "./reference/usage.ts";
 import { ModelCatalog } from "../src/models/module.ts";
 import { modelMakers } from "../src/api/overview.ts";
 import { Store } from "../src/store/store.ts";

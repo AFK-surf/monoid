@@ -75,6 +75,8 @@ test "sharing a chat on a small screen: a table wider than the screen and the us
     open_publish_page()
     t.frame()
     t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
     t.run_for(@ui.move_most_ms)
     t.click(Button, label="保存到相册")
     t.run_for(@kit.presence_in_ms)
@@ -96,6 +98,8 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   // the chat's sheet put down (to where it rests, gone), the page over the whole screen (the pages', as on a computer)
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   let asked = named(calls, "chat.publishPreview")
   assert_eq(asked.length(), 1)
   assert_eq(text(Some(asked[0].params), "station"), "ws1/st1")
@@ -222,6 +226,8 @@ test "分享图片: a message unticked fades on the page and is not in the pictu
   open_publish_page()
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   // a box to tick for each message, all ticked; the agent's words (the second) left out
   let ticks = t.all(Checkbox, label="放进图片")
   assert_eq(ticks.length(), 4)
@@ -260,6 +266,8 @@ test "多选: the chat's picture opened from a message has that message alone ti
   @sfpages.open_publish(publish_src.val.unwrap(), r, 7.0, picked=Some(9.0))
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   // the whole chat asked for, as 分享图片 asks it
   let asked = named(calls, "chat.publishPreview")
   assert_eq(asked.length(), 1)
@@ -292,12 +300,14 @@ test "多选: a message not ticked fades, its box to tick does not" {
   @sfpages.open_publish(publish_src.val.unwrap(), r, 7.0, picked=Some(9.0))
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   assert_true(@sfpages.publish_message_left_out(6.0))
   // the boxes of those not ticked drawn whole, not faded with their messages
   // (how opaque the box of message `i` is drawn: its own and every box's it is in)
   let box_alpha = fn(i : Int) -> Double {
     let (x, y, w, h) = t.all(Checkbox, label="放进图片")[i].rect
-    let laid = t.boxes()
+    let laid = t.boxes_held()
     let by_index : Map[Int, @ui.Laid] = Map([])
     for b in laid {
       by_index[b.index] = b
@@ -328,6 +338,8 @@ test "多选 from a message the preview does not hold: all of it ticked" {
   @sfpages.open_publish(publish_src.val.unwrap(), r, 7.0, picked=Some(11.0))
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   assert_true(t.all(Checkbox, label="放进图片").iter().all(fn(n) { n.check == Some(On) }))
 }
 
@@ -379,6 +391,8 @@ fn publish_viz_page(calls : Array[Made], platform? : Int = 2) -> @ui.Tester {
   open_publish_page()
   t.frame()
   t.run_for(@sf.presented_rest() - t.time())
+  // (as it has come in: its words seen once its ground is)
+  t.run_for(@sfpages.publish_in_ms)
   t.run_for(@ui.move_most_ms)
   t
 }
@@ -423,7 +437,7 @@ test "分享图片: a page of HTML its words place is drawn live on the page and
   let png = publish_blank_png((bw * 2.0).to_int(), (bh * 2.0).to_int())
   let drawn : Ref[(Double, Double)?] = Ref(None)
   t.each_frame(Some(fn() {
-    for (src, w, h) in t.image_nodes() {
+    for (src, w, h) in t.picture_images() {
       if src.has_prefix("mem:publish/") { drawn.val = Some((w, h)) }
     }
   }))

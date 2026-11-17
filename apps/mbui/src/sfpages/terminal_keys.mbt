@@ -108,10 +108,27 @@ fn terminal_paste_key(k : @ui.KeyIn) -> Bool {
 }
 
 ///|
-/// Whether the program asked for bracketed paste (`?2004h`), as the host's lines say (`"paste":1` in their head).
-fn terminal_bracketed_paste(said : String) -> Bool {
-  let head = if said.length() > 140 { said.unsafe_substring(start=0, end=140) } else { said }
-  head.contains("\"paste\":1")
+/// Whether key `k` asks to copy the current terminal selection (`⌘C` on Mac, `Ctrl+Shift+C` elsewhere; plain `Ctrl+C`
+/// stays SIGINT `\x03` when no Shift is held).
+fn terminal_copy_key(k : @ui.KeyIn) -> Bool {
+  match k {
+    Key(down=true, code="KeyC", mods~, ..) =>
+      (mods & @ui.key_in_alt) == 0 &&
+      ((mods & @ui.key_in_meta) != 0 || ((mods & @ui.key_in_ctrl) != 0 && (mods & @ui.key_in_shift) != 0))
+    _ => false
+  }
+}
+
+///|
+/// Whether key `k` asks to select all terminal scrollback + screen text (`⌘A` on Mac, `Ctrl+Shift+A` elsewhere; plain
+/// `Ctrl+A` stays shell line-start `\x01`).
+fn terminal_select_all_key(k : @ui.KeyIn) -> Bool {
+  match k {
+    Key(down=true, code="KeyA", mods~, ..) =>
+      (mods & @ui.key_in_alt) == 0 &&
+      ((mods & @ui.key_in_meta) != 0 || ((mods & @ui.key_in_ctrl) != 0 && (mods & @ui.key_in_shift) != 0))
+    _ => false
+  }
 }
 
 ///|
@@ -129,11 +146,15 @@ fn terminal_pasted_of(words : String, bracketed : Bool) -> String {
 }
 
 ///|
-/// Whether the program asked for the application cursor keys, as the host's lines say (`"keys":1` in their head,
-/// @hostapi.Terminal::lines): read off the head alone, not the lines.
-fn terminal_app_keys(said : String) -> Bool {
-  let head = if said.length() > 120 { said.unsafe_substring(start=0, end=120) } else { said }
-  head.contains("\"keys\":1")
+/// Whether `modes` (`@hostapi.Terminal::modes`) has `DECCKM` application cursor keys enabled.
+fn terminal_app_keys_mode(modes : Int) -> Bool {
+  (modes & @hostapi.term_mode_decckm) != 0
+}
+
+///|
+/// Whether `modes` (`@hostapi.Terminal::modes`) has `?2004h` bracketed paste enabled.
+fn terminal_bracketed_paste_mode(modes : Int) -> Bool {
+  (modes & @hostapi.term_mode_bracketed_paste) != 0
 }
 
 ///|
@@ -160,37 +181,4 @@ fn terminal_held(k : @ui.KeyIn, mods : Int) -> @ui.KeyIn {
     Key(down~, key~, code~, mods=own) => Key(down~, key~, code~, mods=own | mods)
     other => other
   }
-}
-
-///|
-/// The visible text of the terminal's screen (`said`, as the host gives it), trailing empty lines dropped, for copying.
-fn terminal_plain_text(said : String) -> String {
-  let parsed = @json.parse(said) catch { _ => return "" }
-  let rows : Array[String] = []
-  match parsed {
-    Object(o) =>
-      match o.get("lines") {
-        Some(Array(lines)) =>
-          for line in lines {
-            let buf = StringBuilder()
-            match line {
-              Array(runs) =>
-                for r in runs {
-                  match r {
-                    Array([String(t), ..]) => buf.write_string(t)
-                    _ => ()
-                  }
-                }
-              _ => ()
-            }
-            rows.push(buf.to_string())
-          }
-        _ => ()
-      }
-    _ => ()
-  }
-  while !rows.is_empty() && rows[rows.length() - 1].trim().is_empty() {
-    rows.pop() |> ignore
-  }
-  rows.join("\n")
 }

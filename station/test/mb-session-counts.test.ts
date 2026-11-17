@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbBackfill, MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installSessionCounts, sessionCountsReady, sessionCountsStep } from "../src/store/session-counts.ts";
+import { installSessionCounts, sessionCountsReady, sessionCountsStep } from "./reference/backfill/session-counts.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

@@ -53,39 +53,41 @@ test "styles: the lock's waiting page, every state, drawn as before" {
     }
   }
   inspect(out.to_string(), content=(
-    #|waiting narrow 28275:39622baf
-    #|waiting wide 58561:95cb81f6
-    #|waiting-dark narrow 28193:277c0cc7
-    #|waiting-dark wide 58388:a2810814
-    #|finding narrow 44483:19a881e2
-    #|finding wide 75292:ef31b5ff
-    #|finding-dark narrow 44536:d1f32a7a
-    #|finding-dark wide 75254:5f39daef
-    #|code narrow 31619:9deffdf
-    #|code wide 61977:d3d20b74
-    #|code-dark narrow 31494:1c8c4705
-    #|code-dark wide 61761:b97b01c
-    #|wrong narrow 28240:97d2f231
-    #|wrong wide 58675:b9440a2a
-    #|wrong-dark narrow 28342:6b141516
-    #|wrong-dark wide 58686:1155f0c7
-    #|checking narrow 35321:285a7a7f
-    #|checking wide 66422:9d8764b2
-    #|checking-dark narrow 35413:543f0fd4
-    #|checking-dark wide 66423:5c9c74d5
-    #|none narrow 37542:1dbb1867
-    #|none wide 67714:168f01d1
-    #|none-dark narrow 37420:fd5a9a96
-    #|none-dark wide 67501:fd9fa742
-    #|failed narrow 23502:ede593dd
-    #|failed wide 53789:444ff120
-    #|failed-dark narrow 23504:9d059bad
-    #|failed-dark wide 53700:83d0c2ac
-    #|nocode narrow 28275:39622baf
-    #|nocode wide 58561:95cb81f6
-    #|nocode-dark narrow 28193:277c0cc7
-    #|nocode-dark wide 58388:a2810814
+    #|waiting narrow 28264:ba6ceb2d
+    #|waiting wide 61683:3054759f
+    #|waiting-dark narrow 28182:619bad93
+    #|waiting-dark wide 61509:b88b1cc7
+    #|finding narrow 46041:a28d2bdf
+    #|finding wide 80479:f262fd37
+    #|finding-dark narrow 46094:30c3d6b1
+    #|finding-dark wide 80440:df46edad
+    #|code narrow 32242:a3becb0b
+    #|code wide 65801:59296d90
+    #|code-dark narrow 32117:5652fcc3
+    #|code-dark wide 65584:1d3050f8
+    #|wrong narrow 28229:7e53333f
+    #|wrong wide 61821:7a816eec
+    #|wrong-dark narrow 28331:af440018
+    #|wrong-dark wide 61831:7730c129
+    #|checking narrow 35310:5805713d
+    #|checking wide 69704:d1daefe4
+    #|checking-dark narrow 35402:3f56047e
+    #|checking-dark wide 69704:34a03a1
+    #|none narrow 39100:b264c5b2
+    #|none wide 72792:a8dbb5f5
+    #|none-dark narrow 38978:d220c7f5
+    #|none-dark wide 72578:6498f91a
+    #|failed narrow 23491:4185eecb
+    #|failed wide 56479:9d82874d
+    #|failed-dark narrow 23493:2aa685b9
+    #|failed-dark wide 56389:44b6de83
+    #|nocode narrow 28264:ba6ceb2d
+    #|nocode wide 61683:3054759f
+    #|nocode-dark narrow 28182:619bad93
+    #|nocode-dark wide 61509:b88b1cc7
     #|
+
+
 
 
 
@@ -150,88 +152,25 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   }
   // (the wide ones, 2026-11-10: 共享调试 a row of the settings' sidebar on a computer too, 关于 under the window's
   // foot for it; the narrow ones, a phone's, had the row)
+  // (a station's, 2026-11-15: 屏幕、浏览器与终端 a block a row, its card drawn as pieces of one ground meeting edge to
+  // edge where it was one; every glyph at the same place, and what lies under the window's foot made only as it comes)
   // (the wide ones again, 2026-11-10: a sidebar's marks, words and headings 2 in, where its rows' foot capsules start)
+  // (the wide ones again, 2026-11-16: a setting's switch on its title's line, line_end_node's, never across the middle
+  // of the title and its note)
   inspect(out.to_string(), content=(
-    #|settings narrow 77022:ba68b727
-    #|station narrow 69352:83ca5d56
-    #|me-reading narrow 23870:8074bf2b
-    #|settings wide 169493:802f151e
-    #|station wide 214680:fcc86eb
-    #|me-reading wide 164149:d62b64d1
-    #|settings-dark narrow 77290:42efbe58
-    #|station-dark narrow 69208:dc3f6006
-    #|me-reading-dark narrow 23998:5789351d
-    #|settings-dark wide 169413:9d946751
-    #|station-dark wide 214329:62b0a708
-    #|me-reading-dark wide 164135:8c5f9435
+    #|settings narrow 78736:e1c81cb7
+    #|station narrow 77764:dfaaba87
+    #|me-reading narrow 24226:e04f7391
+    #|settings wide 195544:c8c7b08a
+    #|station wide 260021:902ae401
+    #|me-reading wide 190263:7fccc390
+    #|settings-dark narrow 79004:bd5fce2
+    #|station-dark narrow 77674:804e74b
+    #|me-reading-dark narrow 24354:78389ffb
+    #|settings-dark wide 195440:653724
+    #|station-dark wide 259700:8b112d25
+    #|me-reading-dark wide 190225:5db95445
     #|
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

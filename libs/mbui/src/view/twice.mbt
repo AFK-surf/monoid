@@ -69,3 +69,11 @@ pub fn View::twice_forgot(self : View) -> Unit {
     _ => ()
   }
 }
+
+///|
+/// How soon after a first press let go the second of two must be let go, by the hand as it is now (Tree::twice_within):
+/// how long what a press alone does waits where two do something else (a picture closed by a tap, zoomed by two).
+pub fn View::twice_ms(self : View) -> Double {
+  guard self.alive() else { return double_press_ms }
+  (self.tree.twice_feel)().0
+}

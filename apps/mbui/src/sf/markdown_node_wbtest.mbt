@@ -370,3 +370,47 @@ test "a code block of more lines as nodes, on its lines as written: each line on
 test "a code block of more lines as nodes, wrapped once its key is pressed: each line from a line of its own where an old view's code block draws it, at 760 and 390, words at 1 and 1.3" {
   mlines_alike(true)
 }
+
+///|
+test "Markdown as nodes: a table whose block is taken for another message's (what it scrolls across with another's) scrolled across as that one's, not as the one it was made for" {
+  let (text, tree) = tw_four()
+  let key = @signals.signal("a")
+  let scrolls : Map[String, @view.Scroll] = Map([])
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=220.0, h=400.0, platform=2)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      markdown_node(b, fn() { text }, tree=fn() { Some(tree) }, across_of=fn(i) {
+        let k = key.get() + "#" + i.to_string()
+        match scrolls.get(k) {
+          Some(s) => s
+          None => {
+            let s = @view.Scroll::across()
+            scrolls[k] = s
+            s
+          }
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tt.draw()
+  let x_of = fn() raise {
+    match @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "Opus 5.5" }) {
+      [d] => d.x
+      ds => fail("Opus 5.5 drawn \{ds.length()} times")
+    }
+  }
+  let at_rest = x_of()
+  // (the first message's table scrolled across)
+  scrolls["a#0"].put(60.0)
+  tt.draw()
+  let scrolled = x_of()
+  // (the block taken for another message's: its table as that one's, at its start)
+  key.set("b")
+  tt.draw()
+  let other = x_of()
+  assert_true(scrolled < at_rest - 1.0, msg="scrolled \{scrolled} at rest \{at_rest}")
+  assert_eq(other, at_rest)
+}

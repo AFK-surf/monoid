@@ -48,13 +48,16 @@ fn account_scope(ws : String, station : String) -> String {
 }
 
 ///|
-/// What a profile's page on station `station` (of workspace `ws`), profile `id`, reads as it opens: its station whole
-/// and the account it is of (settings' station_read, profile_read).
+/// What a profile's page on station `station` (of workspace `ws`), profile `id`, reads as it opens: its station whole,
+/// the account it is of (settings' station_read, profile_read) and the workspaces the station is in, which its settings
+/// list the account's workspaces by (sfpages' accounts.mbt `joined`): opened before those were answered, its card grew
+/// a row a round trip after it came in.
 pub fn profile_page_asks(ws : String, station : String, id : String) -> Array[(String, Map[String, Json])] {
   let scope = Json::string(account_scope(ws, station))
   [
     ("station", { "scope": scope, "station": Json::string(station) }),
     ("profile", { "scope": scope, "station": Json::string(station), "id": Json::string(id) }),
+    ("memberships", { "station": Json::string(station) }),
   ]
 }
 
@@ -73,6 +76,58 @@ pub fn route_asks(ws : String, r : @settings.Route) -> Array[(String, Map[String
     Profile(station, id) => profile_page_asks(ws, station, id)
     ProfileAccount(key) => account_page_asks(ws, key)
     _ => []
+  }
+}
+
+///|
+/// What a press opening the settings' route `r` in workspace `w` asks before the page opens (open_answered), on `src`:
+/// route_asks, and where a card, a panel or a sheet waits for what it reads too (gates_opens, MBUI_OPEN_WHOLE) all its
+/// page reads as it is first drawn (page_reads.mbt route_reads, the same table the pane's and the stack's waits read),
+/// so none opens on its bones while the core reads what the device holds; one that waits on a station opens at once,
+/// showing that it waits.
+pub fn route_open_asks(src : Source, w : Workspace, r : @settings.Route) -> Array[(String, Map[String, Json])] {
+  if !(src.gates_opens)() {
+    return route_asks(w.id, r)
+  }
+  route_reads(src, w.id, r).asks
+}
+
+///|
+/// What follows the station's answer for a station's page opened by a press (route_open_then): what its part shown reads
+/// as it is first drawn, by the code it reads it by (sfpages' station_node.mbt, set as the app starts), given the source,
+/// the workspace, the station's address and the station whole as answered.
+// kept across runs: set once for the process by sfpages' init, what reads a station's page there
+pub let station_open_more : Ref[(Source, Workspace, String, Json) -> Array[(String, Map[String, Json])]] = Ref(fn(
+  _,
+  _,
+  _,
+  _,
+) {
+  []
+})
+
+///|
+/// What a press opening the settings' route `r` in workspace `w` asks once what route_open_asks asked is answered
+/// (asked_now's `then`), where what opens waits for what it shows (gates_opens): what follows from those answers in its
+/// page (route_reads': a station's page what its part shown reads, station_open_more), so it never draws its blocks one
+/// by one as the core answers them; None where nothing follows.
+pub fn route_open_then(
+  src : Source,
+  w : Workspace,
+  r : @settings.Route,
+) -> ((((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])])? {
+  guard (src.gates_opens)() else { return None }
+  route_reads(src, w.id, r).then
+}
+
+///|
+/// How long at most a press opening route `r` waits for what it shows where it waits for it as a card or a panel does
+/// (route_open_asks' own, not an account's: @sf.open_hold_ms), else as long as it takes.
+pub fn route_open_most(src : Source, w : Workspace, r : @settings.Route) -> Double? {
+  if (src.gates_opens)() && route_asks(w.id, r).is_empty() && !route_open_asks(src, w, r).is_empty() {
+    Some(@sf.open_hold_ms)
+  } else {
+    None
   }
 }
 
@@ -98,7 +153,7 @@ pub fn asked_now(
   let keys = asks.map(key)
   let told = fn(l : TopicLease) {
     match l.follow() {
-      Some(t) => t.value is Some(_) || t.error is Some(_)
+      Some(t) => t.value is Some(_) || t.error is Some(_) || ((src.gates_opens)() && t.waiting)
       // (let go of: nothing to wait for)
       None => true
     }
@@ -155,6 +210,7 @@ pub fn open_answered(
   open : () -> Unit,
   let_go? : () -> Unit = fn() {  },
   then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
+  most? : Double,
 ) -> PressWait {
   if asks.is_empty() || src.read_only {
     return press_wait(fn() { true }, open)
@@ -163,7 +219,7 @@ pub fn open_answered(
   press_wait(answered, fn() { hand_over(leases, open) }, let_go=fn() {
     leases.each(fn(l) { l.cancel() })
     let_go()
-  })
+  }, most?)
 }
 
 ///|
@@ -177,13 +233,24 @@ pub fn show_answered(
   show : () -> Unit,
   then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
 ) -> Unit {
+  show_answered_wait(src, asks, at, show, then?) |> ignore
+}
+
+///|
+/// show_answered, what waits returned (press_wait's, done at once where nothing is to wait for): given up by the press's
+/// control where a press after it asks for another (a tab of a chat's panel pressed while another waits).
+pub fn show_answered_wait(
+  src : Source,
+  asks : Array[(String, Map[String, Json])],
+  at : String,
+  show : () -> Unit,
+  then? : (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])],
+) -> PressWait {
   if asks.is_empty() || src.read_only {
-    show()
-    return
+    return press_wait(fn() { true }, show)
   }
   let (answered, leases) = asked_now(src, asks, then?)
   press_wait(answered, fn() { hand_over_shown(at, leases, show) }, let_go=fn() { leases.each(fn(l) { l.cancel() }) })
-  |> ignore
 }
 
 ///|
@@ -221,4 +288,76 @@ pub fn switch_answered(
     leases.each(fn(l) { l.cancel() })
     let_go()
   })
+}
+
+///|
+/// A panel or a sheet drawn by the old view (`@sf.panel`, whose body reads as frames build it, not as it is made: no
+/// OpenGate of its own) opened by a press: where what opens waits for what it shows (gates_opens, MBUI_OPEN_WHOLE),
+/// once `asks` (what its body reads as it is first drawn, said by the code it reads them by) are answered, the screen as
+/// it was meanwhile (press_wait, open_hold_ms at most); else, or asking nothing, at once. What was asked is held by
+/// what it opened, as long as that is drawn (presented_held): it puts nothing on the stack (app.nav), so open_answered's
+/// hand_over would let it go at once, between the press and the frame its body first reads it in, read then anew from
+/// nothing (the chat's 任务 sheet drawn in its bones).
+pub fn open_old_whole(src : Source, asks : Array[(String, Map[String, Json])], open : () -> Unit) -> Unit {
+  if !(src.gates_opens)() || src.read_only || asks.is_empty() {
+    open()
+    return
+  }
+  let (answered, leases) = asked_now(src, asks)
+  press_wait(answered, fn() { presented_held(leases, open) }, let_go=fn() { leases.each(fn(l) { l.cancel() }) }, most=@sf.open_hold_ms)
+  |> ignore
+}
+
+///|
+/// `open` run (what puts up something presented: a panel, a sheet), `leases` handed to what it put up (or the sheet it
+/// came to be a page of): held by the window's tree past what asked them, let go as that is drawn no more (closed and
+/// gone, @sf.presented_drawn_of); at once where nothing is drawn.
+fn presented_held(leases : Array[TopicLease], open : () -> Unit) -> Unit {
+  let readers : Array[TopicLease] = []
+  for lease in leases {
+    match prepare_chat_handoff(lease) {
+      Some(reader) => readers.push(reader)
+      None => ()
+    }
+  }
+  open()
+  let serial = @sf.last_presented()
+  let let_go_all = fn() {
+    for r in readers {
+      r.release()
+    }
+    readers.clear()
+  }
+  if readers.is_empty() || !@signals.untracked(fn() { @sf.presented_drawn_of(serial) }) {
+    let_go_all()
+    return
+  }
+  // (followed outside any build, as press_wait follows: stopped as it lets them go)
+  let stop : Ref[(() -> Unit)?] = Ref(None)
+  let gone = Ref(false)
+  let owner = @signals.set_owner(None)
+  stop.val = Some(
+    @signals.untracked(fn() {
+      @signals.effect(fn() {
+        if !gone.val && !@sf.presented_drawn_of(serial) {
+          gone.val = true
+          @signals.untracked(fn() {
+            let_go_all()
+            match stop.val {
+              Some(s) => s()
+              None => ()
+            }
+          })
+        }
+      })
+    }),
+  )
+  @signals.set_owner(owner) |> ignore
+  // (gone already as it was first followed: stopped now that it can be)
+  if gone.val {
+    match stop.val {
+      Some(s) => s()
+      None => ()
+    }
+  }
 }

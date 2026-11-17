@@ -32,7 +32,7 @@ let sb_round : Array[(Double, Double)] = [
 /// colour eight times `r` out round them, under that the same `drop` lower in `shade`'s (their text-shadow), the words
 /// over it all in `ink`'s; `scale` their size over the styles'.
 fn sb_outlined(
-  c : @ui.Ctx,
+  c : Pen,
   words : String,
   ink : @ui.TextStyle,
   edge : @ui.TextStyle,
@@ -41,15 +41,15 @@ fn sb_outlined(
   drop : Double,
   scale : Double,
 ) -> Unit {
-  c.box(fn() {
+  c.box(fn(c) {
     sr_rich(c, [@ui.span(words, scale~)], edge)
     for d in sb_round {
-      c.box(left=d.0 * r, top=d.1 * r + drop, fn() { sr_rich(c, [@ui.span(words, scale~)], shade) }) |> ignore
+      c.box(left=d.0 * r, top=d.1 * r + drop, fn(c) { sr_rich(c, [@ui.span(words, scale~)], shade) }) |> ignore
     }
     for d in sb_round {
-      c.box(left=d.0 * r, top=d.1 * r, fn() { sr_rich(c, [@ui.span(words, scale~)], edge) }) |> ignore
+      c.box(left=d.0 * r, top=d.1 * r, fn(c) { sr_rich(c, [@ui.span(words, scale~)], edge) }) |> ignore
     }
-    c.box(left=0.0, top=0.0, fn() { sr_rich(c, [@ui.span(words, scale~)], ink) }) |> ignore
+    c.box(left=0.0, top=0.0, fn(c) { sr_rich(c, [@ui.span(words, scale~)], ink) }) |> ignore
   })
   |> ignore
 }
@@ -161,20 +161,20 @@ fn sb_date(at : String) -> String {
 
 ///|
 /// Dots of light over a look's ground, each where `dots` says (left, top, across) in `ink`: drawn first, under all.
-fn sb_sparks(c : @ui.Ctx, dots : Array[(Double, Double, Double)], ink : Int64) -> Unit {
+fn sb_sparks(c : Pen, dots : Array[(Double, Double, Double)], ink : Int64) -> Unit {
   for d in dots {
     let (x, y, across) = d
-    c.box(style=@ui.style(w=Fixed(across), h=Fixed(across), radius=Full, bg=Data(ink)), left=x, top=y, fn() {  })
+    c.box(style=@ui.style(w=Fixed(across), h=Fixed(across), radius=Full, bg=Data(ink)), left=x, top=y, fn(_) {  })
     |> ignore
   }
 }
 
 ///|
 /// A speech bubble's tail over its top edge, `left` in from its left, in `ink` (the bubble's own).
-fn sb_tail(c : @ui.Ctx, left : Double, ink : Int64) -> Unit {
+fn sb_tail(c : Pen, left : Double, ink : Int64) -> Unit {
   let h = sb_tail_h
-  c.box(left~, top=-h, fn() {
-    c.shapes([@ui.shape_of([([0.0, h, h, 0.0, 2.0 * h, h], true)], fill=ink)], w=Px(2.0 * h), h=Px(h)) |> ignore
+  c.box(left~, top=-h, fn(c) {
+    c.shapes([@ui.shape_of([([0.0, h, h, 0.0, 2.0 * h, h], true)], fill=ink)], 2.0 * h, h) |> ignore
   })
   |> ignore
 }
@@ -420,17 +420,17 @@ let sb_middle_below : @ui.Style = sb_middle.then(@ui.css("pt=S1_5"))
 /// game says it, which she says she learned next door); her bubble, the week's tokens and cost; six stickers, the
 /// week's tokens, cost and chats archived, the chats at work, the tasks across devices, the devices; still.fail's line
 /// and when.
-fn sr_ciallo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_ciallo(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.ciallo."
-  sr_box(c, id, flat, ciallo_ground, fn() {
+  sr_box(c, flat, ciallo_ground, fn(c) {
     sb_sparks(c, ciallo_sparks, ciallo_spark)
-    c.box(style=ciallo_hero, fn() {
+    c.box(style=ciallo_hero, fn(c) {
       sr_art(c, "b1-chibi-ciallo", @sf.share_w_most, ciallo_art_h, at=ciallo_art_at) |> ignore
-      c.box(left=ciallo_in, top=ciallo_top, fn() { sr_brand(c, ciallo_brand) }) |> ignore
+      c.box(left=ciallo_in, top=ciallo_top, fn(c) { sr_brand(c, ciallo_brand) }) |> ignore
     })
     |> ignore
-    c.box(style=sb_middle, fn() {
+    c.box(style=sb_middle, fn(c) {
       sb_outlined(
         c,
         @sf.t(key + "salute"),
@@ -443,8 +443,8 @@ fn sr_ciallo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       )
     })
     |> ignore
-    c.box(style=sb_middle_below, fn() { sr_words(c, @sf.t(key + "from"), ciallo_from) }) |> ignore
-    c.box(style=ciallo_bubble, fn() {
+    c.box(style=sb_middle_below, fn(c) { sr_words(c, @sf.t(key + "from"), ciallo_from) }) |> ignore
+    c.box(style=ciallo_bubble, fn(c) {
       sr_words(c, sb_name("murasame"), ciallo_who)
       sr_rich(c, sb_said(key + "say", args, ciallo_hot, scale=ciallo_hot_scale, plain=["model"]), ciallo_say)
       sb_tail(c, ciallo_tail_left, ciallo_paper)
@@ -459,13 +459,13 @@ fn sr_ciallo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       (sb_said(key + "tasksV", args, ciallo_sticker_ink, scale=ciallo_v_scale), "tasks"),
       (sb_said(key + "devicesV", args, ciallo_sticker_ink, scale=ciallo_v_scale), "devices"),
     ]
-    c.box(style=ciallo_stickers, fn() {
+    c.box(style=ciallo_stickers, fn(c) {
       for row in 0..<3 {
-        c.box(style=ciallo_sticker_row, fn() {
+        c.box(style=ciallo_sticker_row, fn(c) {
           for k in 0..<2 {
             let i = row * 2 + k
             let s = stickers[i]
-            c.box(style=ciallo_sticker.then(@ui.style(bg=Data(ciallo_sticker_grounds[i]))), fn() {
+            c.box(style=ciallo_sticker.then(@ui.style(bg=Data(ciallo_sticker_grounds[i]))), fn(c) {
               sr_rich(c, s.0, ciallo_v)
               sr_words(c, @sf.t(key + s.1), ciallo_k)
             })
@@ -476,9 +476,9 @@ fn sr_ciallo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       }
     })
     |> ignore
-    c.box(style=ciallo_foot, fn() {
+    c.box(style=ciallo_foot, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareTagline"), ciallo_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), ciallo_small)
     })
     |> ignore
@@ -656,50 +656,50 @@ let ciallo_small : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(ciallo_di
 /// 犬耳: 芳乃's chibi, her dog ears out (a tatari is near, the game's sign of it), a red alarm over her: the tatari
 /// detected is the week's tokens, large, each kind's share a stretch of a meter; each day's chats archived a bar, today
 /// red; her line (有地さん, don't stare); a note in small print; still.fail's line and still.fail.
-fn sr_inumimi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_inumimi(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.inumimi."
   let spent = items(fleet, "spent")
-  sr_box(c, id, flat, inu_ground, fn() {
-    c.box(style=inu_hero, fn() {
+  sr_box(c, flat, inu_ground, fn(c) {
+    c.box(style=inu_hero, fn(c) {
       sr_art(c, "b2-chibi-yoshino-ears", @sf.share_w_most, inu_art_h, at=inu_art_at) |> ignore
-      c.box(style=inu_alert, left=inu_alert_in, top=inu_alert_in, fn() {
-        c.box(style=inu_ring, fn() { c.box(style=inu_dot, fn() {  }) |> ignore }) |> ignore
+      c.box(style=inu_alert, left=inu_alert_in, top=inu_alert_in, fn(c) {
+        c.box(style=inu_ring, fn(c) { c.box(style=inu_dot, fn(_) {  }) |> ignore }) |> ignore
         sr_words(c, @sf.t(key + "alert"), inu_alert_words)
       })
       |> ignore
-      c.box(right=inu_where_right, top=inu_where_top, fn() {
+      c.box(right=inu_where_right, top=inu_where_top, fn(c) {
         sr_rich(c, sb_said(key + "where", args, inu_dim, bold=false), inu_where)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=inu_panel, fn() {
-      c.box(style=inu_title_row, fn() {
-        c.box(style=inu_title_lead, fn() { sr_words(c, @sf.t(key + "title"), inu_title_wrap) }) |> ignore
+    c.box(style=inu_panel, fn(c) {
+      c.box(style=inu_title_row, fn(c) {
+        c.box(style=inu_title_lead, fn(c) { sr_words(c, @sf.t(key + "title"), inu_title_wrap) }) |> ignore
         sr_rich(c, sb_said(key + "most", args, inu_title_ink, bold=false), inu_title)
       })
       |> ignore
-      c.box(style=inu_big_row, fn() {
+      c.box(style=inu_big_row, fn(c) {
         sr_words(c, sr_arg(args, "weekTokens"), inu_big)
         sr_words(c, @sf.t(key + "unit"), inu_unit)
       })
       |> ignore
-      c.box(style=inu_meter, fn() {
+      c.box(style=inu_meter, fn(c) {
         for i, q in spent {
           let ink = inu_kinds[i % inu_kinds.length()]
-          c.box(style=@ui.style(w=Grow(number(Some(q), "share")), h=Full, bg=Data(ink)), fn() {  }) |> ignore
+          c.box(style=@ui.style(w=Grow(number(Some(q), "share")), h=Full, bg=Data(ink)), fn(_) {  }) |> ignore
         }
       })
       |> ignore
-      c.box(style=inu_keys, flow=true, line_gap=inu_keys_line_gap, fn() {
+      c.box(style=inu_keys, flow=true, line_gap=inu_keys_line_gap, fn(c) {
         for i, q in spent {
           let q = Some(q)
           let ink = inu_kinds[i % inu_kinds.length()]
           let share = (number(q, "share") * 100.0).round().to_int().to_string() + "%"
           let kargs = [("kind", text(q, "name")), ("accounts", count(q, "accounts").to_string()), ("share", share)]
-          c.box(style=inu_key, fn() {
-            c.box(style=@ui.style(w=Fixed(inu_key_dot), h=Fixed(inu_key_dot), radius=Full, bg=Data(ink)), fn() {  })
+          c.box(style=inu_key, fn(c) {
+            c.box(style=@ui.style(w=Fixed(inu_key_dot), h=Fixed(inu_key_dot), radius=Full, bg=Data(ink)), fn(_) {  })
             |> ignore
             sr_rich(c, sb_said(key + "key", kargs, inu_key_ink, bold=false), inu_key_words)
           })
@@ -709,28 +709,28 @@ fn sr_inumimi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=inu_obs, fn() {
-      c.box(style=inu_title_row, fn() {
-        c.box(style=inu_title_lead, fn() { sr_words(c, @sf.t(key + "daily"), inu_title_wrap) }) |> ignore
+    c.box(style=inu_obs, fn(c) {
+      c.box(style=inu_title_row, fn(c) {
+        c.box(style=inu_title_lead, fn(c) { sr_words(c, @sf.t(key + "daily"), inu_title_wrap) }) |> ignore
         sr_rich(c, sb_said(key + "week", args, inu_title_ink, bold=false), inu_title)
       })
       |> ignore
       let days = sr_days(fleet)
-      c.box(style=inu_bars, fn() {
+      c.box(style=inu_bars, fn(c) {
         for d in days {
           let h = if d.3 * inu_bars_h > inu_bar_least { d.3 * inu_bars_h } else { inu_bar_least }
-          c.box(style=inu_bar_slot, fn() {
+          c.box(style=inu_bar_slot, fn(c) {
             let ink = if d.4 { inu_red } else { inu_bar }
-            c.box(style=@ui.style(w=Full, h=Fixed(h), radius=Md, bg=Data(ink)), fn() {  })
+            c.box(style=@ui.style(w=Full, h=Fixed(h), radius=Md, bg=Data(ink)), fn(_) {  })
             |> ignore
           })
           |> ignore
         }
       })
       |> ignore
-      c.box(style=inu_labels, fn() {
+      c.box(style=inu_labels, fn(c) {
         for d in days {
-          c.box(style=inu_label_slot, fn() {
+          c.box(style=inu_label_slot, fn(c) {
             if d.4 {
               sr_words(c, @sf.t(key + "today"), inu_today)
             } else {
@@ -743,15 +743,15 @@ fn sr_inumimi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=inu_say_box, fn() {
+    c.box(style=inu_say_box, fn(c) {
       sr_words(c, sb_name("yoshino"), inu_who)
       sr_words(c, @sf.t(key + "say"), inu_say)
     })
     |> ignore
-    c.box(style=inu_note_box, fn() { sr_words(c, @sf.t(key + "note"), inu_note) }) |> ignore
-    c.box(style=inu_foot, fn() {
+    c.box(style=inu_note_box, fn(c) { sr_words(c, @sf.t(key + "note"), inu_note) }) |> ignore
+    c.box(style=inu_foot, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareTagline"), inu_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_brand(c, inu_brand)
     })
     |> ignore
@@ -1009,7 +1009,7 @@ let inu_brand : @ui.TextStyle = @ui.text_style(size=Base, weight=Bold, color=Dat
 /// account from its foot, as thick as its share of the tokens (matcha, strawberry, custard), cream, a wafer and a cherry
 /// on top; beside each layer its kind and its models' tokens, a dotted lead to it. Her line (all 3.1 亿 tokens of it
 /// hers!); the biggest spoon (the top model), today's chats archived and cost; still.fail, when, its line.
-fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_parfait(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.parfait."
   let spent = items(fleet, "spent")
@@ -1026,28 +1026,28 @@ fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
     prev = y - h / 2.0
     spots.push((at, y, h))
   }
-  sr_box(c, id, flat, parfait_ground, fn() {
-    c.box(style=parfait_card, fn() {
+  sr_box(c, flat, parfait_ground, fn(c) {
+    c.box(style=parfait_card, fn(c) {
       sb_sparks(c, parfait_sparks, parfait_spark)
-      c.box(left=parfait_art_left, top=parfait_art_top, fn() {
+      c.box(left=parfait_art_left, top=parfait_art_top, fn(c) {
         sr_art(c, "b3-chibi-murasame-spoon", parfait_art_w, parfait_art_w) |> ignore
       })
       |> ignore
-      c.box(left=parfait_glass_left, top=parfait_glass_top, fn() {
-        c.shapes(parfait_glass(bands), w=Px(parfait_glass_w * parfait_k), h=Px(parfait_glass_h * parfait_k)) |> ignore
+      c.box(left=parfait_glass_left, top=parfait_glass_top, fn(c) {
+        c.shapes(parfait_glass(bands), parfait_glass_w * parfait_k, parfait_glass_h * parfait_k) |> ignore
       })
       |> ignore
-      c.box(left=0.0, top=0.0, fn() {
-        c.shapes(parfait_leads(spots), w=Px(@sf.share_w_most), h=Px(parfait_card_h)) |> ignore
+      c.box(left=0.0, top=0.0, fn(c) {
+        c.shapes(parfait_leads(spots), @sf.share_w_most, parfait_card_h) |> ignore
       })
       |> ignore
       for i, q in spent {
         let q = Some(q)
         let s = spots[i]
         let ink = parfait_sweets[i % parfait_sweets.length()].0
-        c.box(style=parfait_label, left=parfait_label_left, right=parfait_label_right, top=s.1 - s.2 / 2.0, fn() {
-          c.box(style=parfait_label_bar.then(@ui.style(bg=Data(ink))), fn() {  }) |> ignore
-          c.box(style=parfait_label_words, fn() {
+        c.box(style=parfait_label, left=parfait_label_left, right=parfait_label_right, top=s.1 - s.2 / 2.0, fn(c) {
+          c.box(style=parfait_label_bar.then(@ui.style(bg=Data(ink))), fn(_) {  }) |> ignore
+          c.box(style=parfait_label_words, fn(c) {
             sr_words(c, parfait_kind(text(q, "name"), key), parfait_kind_words)
             for m in items(q, "models") {
               let m = Some(m)
@@ -1062,13 +1062,13 @@ fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         })
         |> ignore
       }
-      c.box(style=sb_foot, left=parfait_top_in, right=parfait_top_in, top=parfait_top_y, fn() {
+      c.box(style=sb_foot, left=parfait_top_in, right=parfait_top_in, top=parfait_top_y, fn(c) {
         sr_brand(c, parfait_brand)
-        c.box(style=sb_grow, fn() {  }) |> ignore
+        c.box(style=sb_grow, fn(_) {  }) |> ignore
         sr_words(c, sr_arg(args, "at"), parfait_small)
       })
       |> ignore
-      c.box(left=parfait_title_left, top=parfait_title_top, fn() {
+      c.box(left=parfait_title_left, top=parfait_title_top, fn(c) {
         sb_outlined(
           c,
           @sf.t(key + "title"),
@@ -1081,13 +1081,13 @@ fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         )
       })
       |> ignore
-      c.box(style=parfait_say, left=parfait_in, right=parfait_in, top=parfait_say_top, fn() {
+      c.box(style=parfait_say, left=parfait_in, right=parfait_in, top=parfait_say_top, fn(c) {
         sr_words(c, sb_name("murasame"), parfait_who)
         sr_rich(c, sb_said(key + "say", args, parfait_hot, scale=parfait_hot_scale), parfait_say_words)
         sb_tail(c, parfait_tail_left, parfait_paper)
       })
       |> ignore
-      c.box(style=parfait_chips, left=parfait_in, right=parfait_in, top=parfait_chips_top, fn() {
+      c.box(style=parfait_chips, left=parfait_in, right=parfait_in, top=parfait_chips_top, fn(c) {
         let chips : Array[(Array[@ui.Run], String)] = [
           (
             sb_said(key + "spoonV", args, parfait_ink, plain=["tokens", "cost"]),
@@ -1097,7 +1097,7 @@ fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
           (sb_figure(sr_arg(args, "todayCost"), parfait_ink, parfait_v_scale), @sf.t(key + "todayCost")),
         ]
         for i, chip in chips {
-          c.box(style=parfait_chip.then(@ui.style(w=Grow(parfait_chip_grow[i]))), fn() {
+          c.box(style=parfait_chip.then(@ui.style(w=Grow(parfait_chip_grow[i]))), fn(c) {
             sr_rich(c, chip.0, if i == 0 { parfait_v_first } else { parfait_v })
             sr_words(c, chip.1, parfait_k_words)
           })
@@ -1105,9 +1105,9 @@ fn sr_parfait(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }
       })
       |> ignore
-      c.box(style=sb_foot, left=parfait_top_in, right=parfait_top_in, bottom=parfait_foot_y, fn() {
+      c.box(style=sb_foot, left=parfait_top_in, right=parfait_top_in, bottom=parfait_foot_y, fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareTagline"), parfait_small)
-        c.box(style=sb_grow, fn() {  }) |> ignore
+        c.box(style=sb_grow, fn(_) {  }) |> ignore
         sr_words(c, @sf.t(key + "limited"), parfait_small)
       })
       |> ignore
@@ -1642,20 +1642,20 @@ let parfait_k_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(parfai
 /// the most tokens first, its rarity by them (SSR from 1 亿, gold and shining; SR from 1000 万; R the rest), its
 /// tokens and cost; her line (an SSR! the parfait's on her, but not her brother's); what the pulls cost (the week's),
 /// the chats still pulling; still.fail, its line and when.
-fn sr_gacha(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_gacha(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.gacha."
   let ranked = sb_ranked(fleet)
-  sr_box(c, id, flat, gacha_ground, fn() {
+  sr_box(c, flat, gacha_ground, fn(c) {
     sb_sparks(c, gacha_sparks, gacha_spark)
-    c.box(style=gacha_hero, fn() {
+    c.box(style=gacha_hero, fn(c) {
       sr_art(c, "b4-chibi-koharu-gacha", @sf.share_w_most, gacha_art_h, at=gacha_art_at) |> ignore
     })
     |> ignore
-    c.box(style=sb_middle, fn() {
-      c.box(style=gacha_banner, fn() {
-        c.box(left=0.0, top=0.0, fn() {
-          c.shapes(gacha_ribbon(), w=Px(gacha_banner_w), h=Px(gacha_banner_h + sb_lift)) |> ignore
+    c.box(style=sb_middle, fn(c) {
+      c.box(style=gacha_banner, fn(c) {
+        c.box(left=0.0, top=0.0, fn(c) {
+          c.shapes(gacha_ribbon(), gacha_banner_w, gacha_banner_h + sb_lift) |> ignore
         })
         |> ignore
         sr_rich(
@@ -1671,15 +1671,15 @@ fn sr_gacha(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=gacha_grid, fn() {
+    c.box(style=gacha_grid, fn(c) {
       for row in 0..<2 {
-        c.box(style=gacha_row, fn() {
+        c.box(style=gacha_row, fn(c) {
           for k in 0..<3 {
             let i = row * 3 + k
             if i < ranked.length() {
               gacha_capsule(c, ranked[i], i, key)
             } else {
-              c.box(style=sb_grow, fn() {  }) |> ignore
+              c.box(style=sb_grow, fn(_) {  }) |> ignore
             }
           }
         })
@@ -1687,26 +1687,26 @@ fn sr_gacha(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       }
     })
     |> ignore
-    c.box(style=gacha_say, fn() {
+    c.box(style=gacha_say, fn(c) {
       sr_words(c, sb_name("koharu"), gacha_who)
       let sargs = [("ssr", @sf.t(key + "ssr"))]
       sr_rich(c, sb_said(key + "say", sargs, gacha_pink), gacha_say_words)
     })
     |> ignore
-    c.box(style=gacha_bill, fn() {
+    c.box(style=gacha_bill, fn(c) {
       sr_words(c, @sf.t(key + "spent"), gacha_bill_words)
       sr_words(c, sr_arg(args, "weekCost"), gacha_bill_cost)
-      c.box(style=sb_grow, fn() {  }) |> ignore
-      c.box(style=gacha_button, fn() {
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
+      c.box(style=gacha_button, fn(c) {
         sr_rich(c, sb_said(key + "pulling", args, gacha_paper, bold=false), gacha_button_words)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=gacha_foot, fn() {
+    c.box(style=gacha_foot, fn(c) {
       sr_brand(c, gacha_brand)
       sr_words(c, @sf.t("web-main.stations.shareTagline"), gacha_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), gacha_small)
     })
     |> ignore
@@ -1716,28 +1716,28 @@ fn sr_gacha(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// A model's capsule, the `i`th by tokens: its rarity's badge, the ball in its colour over white, its name, tokens and
 /// cost; an SSR's gold, shining, its ball ringed, sparkles round it.
-fn gacha_capsule(c : @ui.Ctx, m : (String, Double, String, String), i : Int, key : String) -> Unit {
+fn gacha_capsule(c : Pen, m : (String, Double, String, String), i : Int, key : String) -> Unit {
   let rare = if m.1 >= gacha_ssr_from { 2 } else if m.1 >= gacha_sr_from { 1 } else { 0 }
-  c.box(style=gacha_slot, fn() {
+  c.box(style=gacha_slot, fn(c) {
     if rare == 2 {
       // its shine: the gold thinned, twice, round it
-      c.box(style=gacha_glow_far, left=-gacha_glow_far_w, right=-gacha_glow_far_w, top=-gacha_glow_far_w, bottom=-gacha_glow_far_w, fn() {  })
+      c.box(style=gacha_glow_far, left=-gacha_glow_far_w, right=-gacha_glow_far_w, top=-gacha_glow_far_w, bottom=-gacha_glow_far_w, fn(_) {  })
       |> ignore
-      c.box(style=gacha_glow_near, left=-gacha_glow_near_w, right=-gacha_glow_near_w, top=-gacha_glow_near_w, bottom=-gacha_glow_near_w, fn() {  })
+      c.box(style=gacha_glow_near, left=-gacha_glow_near_w, right=-gacha_glow_near_w, top=-gacha_glow_near_w, bottom=-gacha_glow_near_w, fn(_) {  })
       |> ignore
     }
-    c.box(style=if rare == 2 { gacha_cap_ssr } else { gacha_cap }, fn() {
-      c.shapes(gacha_ball(gacha_tops[i % gacha_tops.length()], rare == 2), w=Px(gacha_ball_box), h=Px(gacha_ball_box)) |> ignore
+    c.box(style=if rare == 2 { gacha_cap_ssr } else { gacha_cap }, fn(c) {
+      c.shapes(gacha_ball(gacha_tops[i % gacha_tops.length()], rare == 2), gacha_ball_box, gacha_ball_box) |> ignore
       sr_rich(c, [@ui.span(m.0, scale=gacha_name_scale)], gacha_name)
       sr_words(c, m.2, if rare == 2 { gacha_tokens_ssr } else { gacha_tokens })
       sr_words(c, m.3, gacha_cost)
-      c.box(style=gacha_rare.then(@ui.style(bg=Data(gacha_rare_grounds[rare]))), left=gacha_rare_in, top=gacha_rare_in, fn() {
+      c.box(style=gacha_rare.then(@ui.style(bg=Data(gacha_rare_grounds[rare]))), left=gacha_rare_in, top=gacha_rare_in, fn(c) {
         sr_words(c, @sf.t(key + gacha_rare_keys[rare]), gacha_rare_words)
       })
       |> ignore
       if rare == 2 {
         for s in gacha_sparkles {
-          c.box(left=s.0, top=s.1, fn() { sr_rich(c, [@ui.span("✦", scale=s.2)], gacha_sparkle) }) |> ignore
+          c.box(left=s.0, top=s.1, fn(c) { sr_rich(c, [@ui.span("✦", scale=s.2)], gacha_sparkle) }) |> ignore
         }
       }
     })
@@ -2107,18 +2107,18 @@ let gacha_small_ink : Int64 = 0xA0523AFFL
 /// here this week) over the week's tokens and the days of it worked; under it a card each, her name in her colours
 /// and one figure in her voice: 丛雨 the top model's tokens and cost, 芳乃 the chats archived, 茉子 the tasks across
 /// devices, 蕾娜 the devices, 小春 the chats at work, 芦花 the week's cost. still.fail's line and when.
-fn sr_chibi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_chibi(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.chibi."
-  sr_box(c, id, flat, chibi_ground, fn() {
-    c.box(style=chibi_hero, fn() {
+  sr_box(c, flat, chibi_ground, fn(c) {
+    c.box(style=chibi_hero, fn(c) {
       sr_art(c, "b5-chibi-group", @sf.share_w_most, chibi_art_h, at=chibi_art_at) |> ignore
-      c.box(style=chibi_brand_chip, left=chibi_brand_left, top=chibi_brand_top, fn() { sr_brand(c, chibi_brand) })
+      c.box(style=chibi_brand_chip, left=chibi_brand_left, top=chibi_brand_top, fn(c) { sr_brand(c, chibi_brand) })
       |> ignore
       for i, who in sb_six {
         let (tag_bg, tag_ink, tag_edge, _, _, _) = chibi_colors[i]
-        c.box(style=chibi_tag_slot, left=chibi_tag_x[i] - chibi_tag_w / 2.0, top=chibi_tag_top, fn() {
-          c.box(style=chibi_tag.then(@ui.style(bg=Data(tag_bg), border_color=Data(tag_edge))), fn() {
+        c.box(style=chibi_tag_slot, left=chibi_tag_x[i] - chibi_tag_w / 2.0, top=chibi_tag_top, fn(c) {
+          c.box(style=chibi_tag.then(@ui.style(bg=Data(tag_bg), border_color=Data(tag_edge))), fn(c) {
             sr_words(c, sb_name(who), chibi_tag_words.then(@ui.text_style(color=Data(tag_ink))))
           })
           |> ignore
@@ -2127,8 +2127,8 @@ fn sr_chibi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       }
     })
     |> ignore
-    c.box(style=sb_middle, fn() {
-      c.box(style=chibi_banner, fn() {
+    c.box(style=sb_middle, fn(c) {
+      c.box(style=chibi_banner, fn(c) {
         sr_rich(
           c,
           [
@@ -2142,11 +2142,11 @@ fn sr_chibi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=sb_middle_below, fn() { sr_rich(c, sb_said(key + "sub", args, chibi_dim, bold=false), chibi_sub) }) |> ignore
+    c.box(style=sb_middle_below, fn(c) { sr_rich(c, sb_said(key + "sub", args, chibi_dim, bold=false), chibi_sub) }) |> ignore
     let cost = sr_arg(args, "cost")
-    c.box(style=chibi_grid, fn() {
+    c.box(style=chibi_grid, fn(c) {
       for row in 0..<2 {
-        c.box(style=chibi_row, fn() {
+        c.box(style=chibi_row, fn(c) {
           for k in 0..<3 {
             let i = row * 3 + k
             let p = chibi_colors[i]
@@ -2160,8 +2160,8 @@ fn sr_chibi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
               _ => sb_figure(sr_arg(args, "weekCost"), ink, chibi_v_scale)
             }
             let (name_bg, name_ink, name_edge, card_edge, card_cast, _) = p
-            c.box(style=chibi_card.then(@ui.style(border_color=Data(card_edge), shadow=Cast(sb_sharp, sb_lift, card_cast))), fn() {
-              c.box(style=chibi_name.then(@ui.style(bg=Data(name_bg), border_color=Data(name_edge))), fn() {
+            c.box(style=chibi_card.then(@ui.style(border_color=Data(card_edge), shadow=Cast(sb_sharp, sb_lift, card_cast))), fn(c) {
+              c.box(style=chibi_name.then(@ui.style(bg=Data(name_bg), border_color=Data(name_edge))), fn(c) {
                 sr_words(c, sb_name(sb_six[i]), chibi_name_words.then(@ui.text_style(color=Data(name_ink))))
               })
               |> ignore
@@ -2178,9 +2178,9 @@ fn sr_chibi(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       }
     })
     |> ignore
-    c.box(style=chibi_foot, fn() {
+    c.box(style=chibi_foot, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareTagline"), chibi_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), chibi_small)
     })
     |> ignore
@@ -2348,24 +2348,24 @@ let chibi_small : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(chibi_dim)
 /// caption the day and the week's tokens; on its back each one's note in her colour and voice (丛雨 the top model's
 /// tokens, 芳乃 the chats archived, 茉子 the tasks across devices, 蕾娜 the devices, 小春 the chats at work, 芦花 the
 /// week's cost); still.fail and its line.
-fn sr_photo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_photo(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.photo."
-  sr_box(c, id, flat, photo_ground, fn() {
+  sr_box(c, flat, photo_ground, fn(c) {
     for d in photo_sparks {
       let (x, y, across, ink) = d
-      c.box(style=@ui.style(w=Fixed(across), h=Fixed(across), radius=Full, bg=Data(ink)), left=x, top=y, fn() {  }) |> ignore
+      c.box(style=@ui.style(w=Fixed(across), h=Fixed(across), radius=Full, bg=Data(ink)), left=x, top=y, fn(_) {  }) |> ignore
     }
-    c.box(style=photo_head, fn() {
+    c.box(style=photo_head, fn(c) {
       sr_rich(c, [@ui.span(@sf.t(key + "title"), scale=photo_title_scale)], photo_title)
-      c.box(style=photo_lead, fn() { sr_words(c, @sf.t(key + "back"), photo_back) }) |> ignore
+      c.box(style=photo_lead, fn(c) { sr_words(c, @sf.t(key + "back"), photo_back) }) |> ignore
     })
     |> ignore
-    c.box(style=photo_middle, fn() {
-      c.box(style=photo_polaroid, fn() {
+    c.box(style=photo_middle, fn(c) {
+      c.box(style=photo_polaroid, fn(c) {
         sr_art(c, "h1-group-festival", photo_art_w, photo_art_h, at=photo_art_at) |> ignore
-        c.box(style=photo_cap, fn() {
-          c.box(style=photo_lead, fn() {
+        c.box(style=photo_cap, fn(c) {
+          c.box(style=photo_lead, fn(c) {
             sr_rich(c, sb_said(key + "date", [("date", sb_date(sr_arg(args, "at")))], photo_cap_ink, bold=false), photo_date)
           })
           |> ignore
@@ -2374,8 +2374,8 @@ fn sr_photo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         |> ignore
         // the tapes over its top corners
         for t in photo_tapes {
-          c.box(left=t.0 - photo_tape_box_w / 2.0, top=t.1 - photo_tape_box_h / 2.0, fn() {
-            c.shapes(photo_tape(t.2, t.3), w=Px(photo_tape_box_w), h=Px(photo_tape_box_h)) |> ignore
+          c.box(left=t.0 - photo_tape_box_w / 2.0, top=t.1 - photo_tape_box_h / 2.0, fn(c) {
+            c.shapes(photo_tape(t.2, t.3), photo_tape_box_w, photo_tape_box_h) |> ignore
           })
           |> ignore
         }
@@ -2383,13 +2383,13 @@ fn sr_photo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=photo_notes, fn() {
+    c.box(style=photo_notes, fn(c) {
       for row in 0..<3 {
-        c.box(style=photo_row, fn() {
+        c.box(style=photo_row, fn(c) {
           for k in 0..<2 {
             let i = row * 2 + k
             let (ground, ink) = photo_inks[i]
-            c.box(style=photo_note.then(@ui.style(bg=Data(ground))), fn() {
+            c.box(style=photo_note.then(@ui.style(bg=Data(ground))), fn(c) {
               sr_words(c, sb_name(sb_six[i]), photo_who.then(@ui.text_style(color=Data(ink))))
               sr_rich(c, sb_said(key + sb_six[i], args, ink, scale=photo_note_scale), photo_note_words)
             })
@@ -2400,9 +2400,9 @@ fn sr_photo(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       }
     })
     |> ignore
-    c.box(style=photo_foot, fn() {
+    c.box(style=photo_foot, fn(c) {
       sr_brand(c, photo_brand)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, @sf.t("web-main.stations.shareTagline"), photo_small)
     })
     |> ignore
@@ -2608,32 +2608,32 @@ let photo_small_ink : Int64 = 0xA898C8FFL
 /// by tokens each a heroine's order (丛雨 the matcha parfait …), its model and tokens under it, its cost at its end; the
 /// week's total large, a stamp asking who pays; 芦花's line (she treats today… wait, how much?!); still.fail's line and
 /// when.
-fn sr_party(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_party(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.party."
   let ranked = sb_ranked(fleet)
-  sr_box(c, id, flat, party_ground, fn() {
+  sr_box(c, flat, party_ground, fn(c) {
     // the wood's grain, a faint line every 46
     for i in 0..<party_grains {
-      c.box(style=party_grain, left=i.to_double() * party_grain_apart, top=0.0, bottom=0.0, fn() {  }) |> ignore
+      c.box(style=party_grain, left=i.to_double() * party_grain_apart, top=0.0, bottom=0.0, fn(_) {  }) |> ignore
     }
-    c.box(style=party_hero, fn() {
+    c.box(style=party_hero, fn(c) {
       sr_art(c, "h2-group-sweets", @sf.share_w_most, party_art_h, at=party_art_at) |> ignore
-      c.box(style=party_brand_chip, left=party_chip_in, top=party_chip_in, fn() { sr_brand(c, party_brand) }) |> ignore
-      c.box(style=party_title_chip, right=party_title_right, top=party_chip_in, fn() {
+      c.box(style=party_brand_chip, left=party_chip_in, top=party_chip_in, fn(c) { sr_brand(c, party_brand) }) |> ignore
+      c.box(style=party_title_chip, right=party_title_right, top=party_chip_in, fn(c) {
         sr_words(c, @sf.t(key + "title"), party_title)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=party_slip, fn() {
-      c.box(style=party_slip_top, fn() {  }) |> ignore
-      c.box(style=party_slip_in, fn() {
+    c.box(style=party_slip, fn(c) {
+      c.box(style=party_slip_top, fn(_) {  }) |> ignore
+      c.box(style=party_slip_in, fn(c) {
         sr_words(c, @sf.t(key + "bill"), party_bill)
         for i, m in ranked {
-          c.box(style=party_line, fn() {
-            c.box(style=party_who_box, fn() { sr_words(c, sb_name(sb_six[i % sb_six.length()]), party_who) }) |> ignore
-            c.box(style=sb_grow, fn() {
+          c.box(style=party_line, fn(c) {
+            c.box(style=party_who_box, fn(c) { sr_words(c, sb_name(sb_six[i % sb_six.length()]), party_who) }) |> ignore
+            c.box(style=sb_grow, fn(c) {
               sr_words(c, @sf.t(key + "sweet" + (i % sb_six.length() + 1).to_string()), party_what)
               sr_words(c, @sf.t(key + "order", args=[("model", m.0), ("tokens", m.2)]), party_order)
             })
@@ -2641,36 +2641,36 @@ fn sr_party(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
             sr_words(c, m.3, party_price)
           })
           |> ignore
-          c.box(style=party_dashes, fn() {
+          c.box(style=party_dashes, fn(c) {
             for _ in 0..<party_dash_count {
-              c.box(style=party_dash, fn() {  }) |> ignore
+              c.box(style=party_dash, fn(_) {  }) |> ignore
             }
           })
           |> ignore
         }
-        c.box(style=party_total, fn() {
+        c.box(style=party_total, fn(c) {
           sr_words(c, @sf.t(key + "total"), party_total_words)
-          c.box(style=sb_grow, fn() {  }) |> ignore
+          c.box(style=sb_grow, fn(_) {  }) |> ignore
           sr_words(c, sr_arg(args, "weekCost"), party_total_cost)
         })
         |> ignore
       })
       |> ignore
-      c.box(style=party_hanko, left=party_hanko_left, bottom=party_hanko_bottom, fn() {
+      c.box(style=party_hanko, left=party_hanko_left, bottom=party_hanko_bottom, fn(c) {
         sr_words(c, @sf.t(key + "hanko1"), party_hanko_words)
         sr_words(c, @sf.t(key + "hanko2"), party_hanko_words)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=party_say, fn() {
-      c.box(style=party_say_chip, fn() { sr_words(c, sb_name("roka"), party_say_who) }) |> ignore
-      c.box(style=sb_grow, fn() { sr_rich(c, sb_said(key + "say", args, party_ink), party_say_words) }) |> ignore
+    c.box(style=party_say, fn(c) {
+      c.box(style=party_say_chip, fn(c) { sr_words(c, sb_name("roka"), party_say_who) }) |> ignore
+      c.box(style=sb_grow, fn(c) { sr_rich(c, sb_said(key + "say", args, party_ink), party_say_words) }) |> ignore
     })
     |> ignore
-    c.box(style=party_foot, fn() {
+    c.box(style=party_foot, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareTagline"), party_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), party_small)
     })
     |> ignore
@@ -2913,7 +2913,7 @@ let party_small : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(party_dim)
 /// class (the chats at work), the class fund (the week's cost, the top model's share of it), errands between rooms
 /// (the tasks across devices); 丛雨's doodle in its corner (only Master sees her); the chalk tray; 芳乃's line (fewer
 /// tokens next week, 有地さん); still.fail's line and when.
-fn sr_class(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_class(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   let key = "web-main.stations.shareSenren.class."
   let all = sr_days(fleet).length().to_string()
@@ -2921,26 +2921,26 @@ fn sr_class(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
   for a in args {
     said.push(a)
   }
-  sr_box(c, id, flat, class_ground, fn() {
-    c.box(style=class_hero, fn() {
+  sr_box(c, flat, class_ground, fn(c) {
+    c.box(style=class_hero, fn(c) {
       sr_art(c, "h3-group-classroom", @sf.share_w_most, class_art_h, at=class_art_at) |> ignore
-      c.box(style=class_chip, left=class_chip_left, top=class_chip_top, fn() {
+      c.box(style=class_chip, left=class_chip_left, top=class_chip_top, fn(c) {
         sr_words(c, @sf.t(key + "where"), class_chip_words)
       })
       |> ignore
-      c.box(style=class_brand_chip, right=class_brand_right, top=class_brand_top, fn() { sr_brand(c, class_brand) })
+      c.box(style=class_brand_chip, right=class_brand_right, top=class_brand_top, fn(c) { sr_brand(c, class_brand) })
       |> ignore
     })
     |> ignore
-    c.box(style=class_board, fn() {
-      c.box(style=class_date_row, fn() {
+    c.box(style=class_board, fn(c) {
+      c.box(style=class_date_row, fn(c) {
         sr_words(c, sr_arg(said, "date"), class_date)
-        c.box(style=sb_grow, fn() {  }) |> ignore
+        c.box(style=sb_grow, fn(_) {  }) |> ignore
         sr_rich(c, sb_said(key + "duty", said, class_gold, scale=class_duty_scale), class_date)
       })
       |> ignore
       sr_rich(c, sb_said(key + "homework", said, class_pink, scale=class_big_scale), class_big)
-      c.box(style=class_list, fn() {
+      c.box(style=class_list, fn(c) {
         let attend = [@ui.span("✓ ", color=class_mint)]
         for r in sb_said(key + "attend", said, class_gold, scale=class_list_scale) {
           attend.push(r)
@@ -2951,28 +2951,28 @@ fn sr_class(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }
       })
       |> ignore
-      c.box(style=class_doodle, right=class_doodle_right, bottom=class_doodle_bottom, fn() {
+      c.box(style=class_doodle, right=class_doodle_right, bottom=class_doodle_bottom, fn(c) {
         sr_words(c, @sf.t(key + "doodle1"), class_doodle_words)
         sr_words(c, @sf.t(key + "doodle2"), class_doodle_words)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=class_tray_row, fn() {
-      c.box(style=class_tray, fn() {
-        c.box(style=class_chalk_white, fn() {  }) |> ignore
-        c.box(style=class_chalk_pink, fn() {  }) |> ignore
+    c.box(style=class_tray_row, fn(c) {
+      c.box(style=class_tray, fn(c) {
+        c.box(style=class_chalk_white, fn(_) {  }) |> ignore
+        c.box(style=class_chalk_pink, fn(_) {  }) |> ignore
       })
       |> ignore
     })
     |> ignore
-    c.box(style=class_say, fn() {
+    c.box(style=class_say, fn(c) {
       sr_rich(c, [@ui.span(sb_name("yoshino") + "  ", color=class_pink), @ui.span(@sf.t(key + "say"))], class_say_words)
     })
     |> ignore
-    c.box(style=class_foot, fn() {
+    c.box(style=class_foot, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareTagline"), class_small)
-      c.box(style=sb_grow, fn() {  }) |> ignore
+      c.box(style=sb_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), class_small)
     })
     |> ignore

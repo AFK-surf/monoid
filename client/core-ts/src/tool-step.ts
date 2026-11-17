@@ -375,9 +375,16 @@ export function resolveDispatchTarget(
   };
 }
 
+function displayColumns(s: string): number {
+  let w = 0;
+  for (const ch of s) w += (ch.codePointAt(0) ?? 0) <= 0x7f ? 1 : 2;
+  return w;
+}
+
 function isLongFieldText(key: string, value: string): boolean {
-  if (value.includes("\n") || value.length >= 85) return true;
-  if (!PROSE_FIELD_KEYS.has(key) && LONG_TEXT_KEYS.has(key) && value.length > 50) return true;
+  const cols = displayColumns(value);
+  if (value.includes("\n") || value.length >= 85 || cols >= 90) return true;
+  if (!PROSE_FIELD_KEYS.has(key) && LONG_TEXT_KEYS.has(key) && (value.length > 50 || cols > 56)) return true;
   return false;
 }
 

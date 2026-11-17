@@ -85,6 +85,19 @@ test("a folder by its path: the station before a colon, ~ its home, a relative p
   assert.equal(resolveTyped("nobody:~", views, from), null);
 });
 
+test("a Windows folder typed at a drive's root keeps its separator for opening and completion", () => {
+  const stations = [{ station: "w/win", name: "Box", home: "C:\\" }];
+  const from = { station: "w/win", abs: "C:\\Users\\me" };
+  for (const root of ["C:\\", "D:/"]) {
+    // C: names the drive's current directory; C:\\ names its root.
+    assert.deepEqual(resolveTyped(root, stations, from), { station: "w/win", abs: root, parent: root, partial: "" });
+    assert.deepEqual(resolveTyped(`${root}Us`, stations, from), { station: "w/win", abs: `${root}Us`, parent: root, partial: "Us" });
+    assert.deepEqual(resolveTyped(`${root}Users/`, stations, from), { station: "w/win", abs: `${root}Users`, parent: `${root}Users`, partial: "" });
+    assert.deepEqual(resolveTyped("Us", stations, { ...from, abs: root }), { station: "w/win", abs: `${root}Us`, parent: root, partial: "Us" });
+  }
+  assert.deepEqual(resolveTyped("box:~", stations, { station: "w/other", abs: "/tmp" }), { station: "w/win", abs: "C:\\", parent: "C:\\", partial: "" });
+});
+
 test("a name kept beside one there, as the station names it: numbered before the extension; a folder whole", () => {
   const taken = [{ name: "a.txt" }, { name: "A 2.txt" }, { name: "v1.2" }];
   assert.equal(keptName(taken, "a.txt"), "a 3.txt");

@@ -146,7 +146,7 @@ export abstract class ConnectedSurface implements Connection {
     }
   }
 
-  private setStatus(connected: boolean, lastError: string | null) {
+  protected setStatus(connected: boolean, lastError: string | null) {
     if (this.status.connected === connected && this.status.lastError === lastError) return;
     this.status = { connected, lastError };
     this.changed();

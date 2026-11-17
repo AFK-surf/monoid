@@ -33,7 +33,7 @@ fn relay_mentions_tester(calls? : Array[Made] = [], held? : Array[() -> Unit]) -
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  t.tap_text("接力到频道…")
+  t.tap_text("接力到频道")
   t.frame()
   t.frame()
   t.tap_text("#dev")

@@ -4,12 +4,6 @@ import type { DatabaseSync } from "node:sqlite";
 
 const VERSION = 1;
 export const SESSION_BINDINGS_PENDING = "session binding index is still being prepared";
-export const SESSION_BINDINGS_FIRST = `SELECT CAST(rowid AS TEXT) AS position FROM bindings
-  WHERE rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`;
-export const SESSION_BINDINGS_NEXT = `SELECT CAST(rowid AS TEXT) AS position FROM bindings
-  WHERE rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?`;
-export const SESSION_BINDINGS_SELECTED = `SELECT i.session, i.connect FROM json_each(?) k
-  CROSS JOIN session_binding_rows i WHERE i.session = k.value ORDER BY i.binding_rowid`;
 export const SESSION_BINDINGS_EXISTS = "SELECT 1 FROM session_binding_rows WHERE session = ? LIMIT 1";
 export const SESSION_BINDINGS_DELETE = `DELETE FROM bindings WHERE rowid IN
   (SELECT binding_rowid FROM session_binding_rows WHERE session = ?)`;
@@ -22,7 +16,7 @@ export const SESSION_BINDINGS_DISPLACED = displaced("?1", "?2");
 const stage = (old: boolean) => `DELETE FROM session_binding_replaced;
   INSERT INTO session_binding_replaced (binding_rowid, session, connect) ${displaced("NEW.connect", "NEW.rowid")}
     ${old ? "UNION SELECT OLD.rowid, OLD.session_key, OLD.connect" : ""};`;
-const see = (rowid: string) => `INSERT INTO session_binding_rows (session, binding_rowid, connect)
+export const see = (rowid: string) => `INSERT INTO session_binding_rows (session, binding_rowid, connect)
   SELECT b.session_key, b.rowid, b.connect FROM bindings b WHERE b.rowid = ${rowid}
     AND NOT EXISTS (SELECT 1 FROM session_binding_rows i WHERE i.session = b.session_key AND i.binding_rowid = b.rowid);`;
 const reconcile = `DELETE FROM session_binding_rows WHERE (session, binding_rowid) IN
@@ -65,7 +59,7 @@ export function installSessionBindingsIndex(db: DatabaseSync): void {
   } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
 
-function checkVersion(version: number): void {
+export function checkVersion(version: number): void {
   if (version !== VERSION) throw new Error(`session binding index version ${version} is incompatible with ${VERSION}`);
 }
 
@@ -74,26 +68,4 @@ export function sessionBindingsReady(db: DatabaseSync): boolean {
   if (meta === undefined) throw new Error("session binding index version marker is missing");
   checkVersion(meta.version);
   return meta.complete === 1;
-}
-
-export function sessionBindingsStep(db: DatabaseSync, limit = 256): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("session binding batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const meta = db.prepare(`SELECT version, CAST(last_rowid AS TEXT) AS last_rowid, CAST(end_rowid AS TEXT) AS end_rowid, complete
-      FROM session_binding_meta WHERE id = 1`).get() as { version: number; last_rowid: string | null; end_rowid: string | null; complete: number } | undefined;
-    if (meta === undefined) throw new Error("session binding index version marker is missing");
-    checkVersion(meta.version);
-    if (meta.complete === 1) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const rows = (meta.last_rowid === null
-      ? db.prepare(SESSION_BINDINGS_FIRST).all(meta.end_rowid, limit)
-      : db.prepare(SESSION_BINDINGS_NEXT).all(meta.last_rowid, meta.end_rowid, limit)) as { position: string }[];
-    const put = db.prepare(see("CAST(? AS INTEGER)"));
-    for (const row of rows) put.run(row.position);
-    const done = rows.length < limit;
-    db.prepare("UPDATE session_binding_meta SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE id = 1")
-      .run(rows.at(-1)?.position ?? meta.last_rowid, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
 }

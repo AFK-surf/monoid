@@ -2,11 +2,12 @@
 // under), Git for Windows' sh for what agents write, `\` and drives in paths, links that take a privilege, PATHEXT and
 // .cmd shims, a scheduled task where Unix starts things in the background.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { cpus as cpuList, freemem, release, totalmem, uptime as osUptime, version as osVersion } from "node:os";
 import { delimiter, dirname, join, win32 } from "node:path";
 import { createConnection } from "node:net";
-import { stat } from "node:fs/promises";
+import { access, copyFile, link as hardLink, lstat, readFile, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { holder, osCpuTicks, pidAlive, runnerBinary } from "./processes.ts";
 import type { Env, Found, Host, Platform } from "./index.ts";
@@ -74,8 +75,8 @@ const WINGET_UPDATE_NOT_APPLICABLE = 0x8a15002b;
 
 /// winget as PATH finds it, else where Windows puts it (an app execution alias in WindowsApps, which a stat of it may
 /// not take for a file, though it runs).
-function wingetCommand(env: Env): string {
-  const found = findCommand("winget", env);
+async function wingetCommandSoon(env: Env): Promise<string> {
+  const found = await findCommandSoon("winget", env);
   if (found !== null) return found.onPath;
   const key = Object.keys(env).find((k) => k.toUpperCase() === "LOCALAPPDATA");
   return key && env[key] ? join(env[key], "Microsoft", "WindowsApps", "winget.exe") : "winget.exe";
@@ -97,30 +98,89 @@ function findCommand(name: string, env: Env): Found | null {
   return null;
 }
 
-let shell: string | null | undefined;
-
-/// CLAUDE_CODE_GIT_BASH_PATH (Claude Code's own setting), else Git's sh beside the git on PATH, else where Git installs
-/// by default; never System32's bash (WSL's, another machine's files).
-function posixShell(env: NodeJS.ProcessEnv = process.env): string {
-  if (shell === undefined) shell = gitShell(env);
-  if (shell === null) throw new Error("jobs and commands on Windows run under Git Bash: install Git for Windows (git-scm.com), or set CLAUDE_CODE_GIT_BASH_PATH");
-  return shell;
+/// `findCommand` off the station's thread.
+async function findCommandSoon(name: string, env: Env): Promise<Found | null> {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  const path = key === undefined ? undefined : env[key];
+  if (path === undefined) return null;
+  const exts = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((e) => e !== "").map((e) => e.toLowerCase());
+  for (const dir of path.split(delimiter)) {
+    for (const ext of exts) {
+      const onPath = join(dir === "" ? "." : dir, name + ext);
+      if ((await stat(onPath).catch(() => null))?.isFile()) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
+    }
+  }
+  return null;
 }
 
-function gitShell(env: NodeJS.ProcessEnv): string | null {
-  const candidates: string[] = [];
-  if (env.CLAUDE_CODE_GIT_BASH_PATH) candidates.push(env.CLAUDE_CODE_GIT_BASH_PATH);
-  for (const dir of pathOf(env).split(delimiter)) {
+/// Where Git's sh may be, in the order it is looked for: CLAUDE_CODE_GIT_BASH_PATH (Claude Code's own setting), else
+/// Git's sh beside a git in `dirs` (Git's cmd\ is what its installer puts on PATH; its sh is in bin\), else an sh.exe
+/// in them, else where Git installs by default; never System32's bash (WSL's, another machine's files). `dirs`: `env`'s
+/// PATH, or (`saved`) the registry's, where only those are looked in. `beside`: a file that must be there too (a
+/// directory's git.exe). Windows' paths whatever runs it, so its tests run on every machine.
+function shellCandidates(env: Env, dirs: string[], saved = false): { path: string; beside?: string }[] {
+  const found: { path: string; beside?: string }[] = [];
+  if (env.CLAUDE_CODE_GIT_BASH_PATH && !saved) found.push({ path: env.CLAUDE_CODE_GIT_BASH_PATH });
+  for (const dir of dirs) {
     if (dir === "" || /\\system32\\?$/i.test(dir)) continue;
-    // Git's cmd\ (git.exe) is what an installer puts on PATH; its sh is in bin\.
-    if (existsSync(join(dir, "git.exe"))) candidates.push(join(dirname(dir), "bin", "sh.exe"));
-    candidates.push(join(dir, "sh.exe"));
+    found.push({ path: win32.join(win32.dirname(dir), "bin", "sh.exe"), beside: win32.join(dir, "git.exe") });
+    found.push({ path: win32.join(dir, "sh.exe") });
   }
-  for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs")]) {
-    if (root) candidates.push(join(root, "Git", "bin", "sh.exe"));
+  if (!saved) {
+    for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, "Programs")]) {
+      if (root) found.push({ path: win32.join(root, "Git", "bin", "sh.exe") });
+    }
   }
-  return candidates.find((p) => existsSync(p)) ?? null;
+  return found;
 }
+
+/// Git's sh by `env` (shellCandidates, the first there), or null. Its files are looked at on the caller's thread once an
+/// environment for the process: posixShells keeps what it found.
+export function gitShell(env: Env, there: (path: string) => boolean = isFile): string | null {
+  const found = shellCandidates(env, pathOf(env).split(win32.delimiter)).find((c) => (c.beside === undefined || there(c.beside)) && there(c.path));
+  return found?.path ?? null;
+}
+
+/// `gitShell` off the station's thread, and where none is found by `env`, by the PATH the registry gives a process
+/// started now (`readSaved`): Git installed after the station started, wherever it was put, is found without a restart.
+export async function gitShellSoon(env: Env, readSaved: (env: Env) => Promise<string[] | null> = savedPath, there: (path: string) => Promise<boolean> = isFileSoon): Promise<string | null> {
+  const look = async (candidates: { path: string; beside?: string }[]) => {
+    for (const c of candidates) if ((c.beside === undefined || (await there(c.beside))) && (await there(c.path))) return c.path;
+    return null;
+  };
+  return (await look(shellCandidates(env, pathOf(env).split(win32.delimiter)))) ?? (await look(shellCandidates(env, (await readSaved(env)) ?? [], true)));
+}
+
+const isFileSoon = async (p: string) => (await stat(p).catch(() => null))?.isFile() ?? false;
+
+const NO_SHELL = "jobs and commands on Windows run under Git Bash: install Git for Windows (git-scm.com), or set CLAUDE_CODE_GIT_BASH_PATH";
+
+/// Platform.posixShell and posixShellSoon, Git's sh found by gitShell and gitShellSoon: each found one kept by what of
+/// the environment found it (the same environment asks no file again), none never kept (Git installed meanwhile is
+/// found at the next ask).
+export function posixShells(there: (path: string) => boolean = isFile, readSaved?: (env: Env) => Promise<string[] | null>, thereSoon?: (path: string) => Promise<boolean>) {
+  const kept = new Map<string, string>();
+  const keyOf = (env: Env) => JSON.stringify([env.CLAUDE_CODE_GIT_BASH_PATH, pathOf(env), env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA]);
+  const keep = (key: string, shell: string | null) => {
+    if (shell === null) throw new Error(NO_SHELL);
+    // (a few environments only: the station's, and what its runs are given)
+    if (kept.size >= 32) kept.delete(kept.keys().next().value!);
+    kept.set(key, shell);
+    return shell;
+  };
+  return {
+    posixShell(env: NodeJS.ProcessEnv = process.env): string {
+      const key = keyOf(env);
+      return kept.get(key) ?? keep(key, gitShell(env, there));
+    },
+    async posixShellSoon(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+      const key = keyOf(env);
+      return kept.get(key) ?? keep(key, await gitShellSoon(env, readSaved, thereSoon));
+    },
+  };
+}
+
+const { posixShell, posixShellSoon } = posixShells();
 
 /// A path as a shim names it: in the shim's own directory (`%dp0%\…`, `%~dp0\…`), or as written.
 export type Named = { beside: string } | { at: string };
@@ -162,6 +222,19 @@ function named(path: string): Named {
   return prefix === undefined ? { at: path } : { beside: path.slice(prefix.length) };
 }
 
+/// The largest file read as a shim.
+const SHIM_MOST = 16 * 1024;
+
+/// What the shim at `path` with `text` in it runs, its paths as they are on the machine: a script with Node (the
+/// node.exe `beside` it, else Node on PATH), or the program it hands on to; null for anything else.
+function shimOf(path: string, text: string): { script: string; beside: string } | { program: string } | null {
+  const dir = dirname(path);
+  const at = (n: Named) => ("beside" in n ? join(dir, n.beside) : n.at);
+  const shim = readShim(text);
+  if (shim === null) return null;
+  return "node" in shim ? { script: at(shim.node), beside: join(dir, "node.exe") } : { program: at(shim.program) };
+}
+
 /// What a `.cmd` shim runs when its arguments can go around cmd (as the runner's `unshim`, native/runner), as
 /// `readShim` tells, a shim that hands on followed. Null for anything else.
 export function unshim(path: string, env: NodeJS.ProcessEnv = process.env): { file: string; args: string[] } | null {
@@ -170,24 +243,57 @@ export function unshim(path: string, env: NodeJS.ProcessEnv = process.env): { fi
     let text: string;
     try {
       const st = statSync(path);
-      if (!st.isFile() || st.size > 16 * 1024) return null;
+      if (!st.isFile() || st.size > SHIM_MOST) return null;
       text = readFileSync(path, "utf8");
     } catch {
       return null;
     }
-    const dir = dirname(path);
-    const at = (n: Named) => ("beside" in n ? join(dir, n.beside) : n.at);
-    const shim = readShim(text);
+    const shim = shimOf(path, text);
     if (shim === null) return null;
-    if ("node" in shim) {
-      const beside = join(dir, "node.exe");
-      const node = existsSync(beside) ? beside : (findCommand("node", env)?.onPath ?? "node");
-      return { file: node, args: [at(shim.node)] };
-    }
-    path = at(shim.program);
+    if ("script" in shim) return { file: existsSync(shim.beside) ? shim.beside : (findCommand("node", env)?.onPath ?? "node"), args: [shim.script] }; // sync: runnable's, for a caller that cannot wait (else runnableSoon)
+    path = shim.program;
     if (/\.exe$/i.test(path)) return { file: path, args: [] };
   }
   return null;
+}
+
+/// `unshim` off the station's thread.
+export async function unshimSoon(path: string, env: NodeJS.ProcessEnv = process.env): Promise<{ file: string; args: string[] } | null> {
+  for (let i = 0; i < 4; i++) {
+    if (!/\.cmd$/i.test(path)) return null;
+    const st = await stat(path).catch(() => null);
+    if (st === null || !st.isFile() || st.size > SHIM_MOST) return null;
+    const text = await readFile(path, "utf8").catch(() => null);
+    if (text === null) return null;
+    const shim = shimOf(path, text);
+    if (shim === null) return null;
+    if ("script" in shim) return { file: (await isFileSoon(shim.beside)) ? shim.beside : ((await findCommandSoon("node", env))?.onPath ?? "node"), args: [shim.script] };
+    path = shim.program;
+    if (/\.exe$/i.test(path)) return { file: path, args: [] };
+  }
+  return null;
+}
+
+/// How Node runs `file` (found on PATH already) with `args`, given what its shim runs (`unshim`): a .cmd or .bat around
+/// cmd where it can be, else through it, each argument quoted (one cmd would read into, a quote or a %, refused).
+function runnableOf(file: string, args: string[], env: NodeJS.ProcessEnv, shim: { file: string; args: string[] } | null): ReturnType<Platform["runnable"]> {
+  if (shim !== null) return { file: shim.file, args: [...shim.args, ...args] };
+  for (const a of [file, ...args]) if (/["%\r\n]/.test(a)) throw new Error(`cannot pass ${JSON.stringify(a)} through cmd`);
+  const line = [file, ...args].map((a) => `"${a}"`).join(" ");
+  return { file: env.ComSpec ?? process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
+
+/// Where a Chrome may be (Platform.browsers), best first: Google Chrome, Chromium, then Edge, each under Program Files
+/// (both) and the user's LOCALAPPDATA.
+function browserPlaces(env: Env): string[] {
+  const value = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase()) ?? ""];
+  const roots = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].flatMap((v) => value(v) ?? []);
+  const under = (...rel: string[]) => roots.map((root) => win32.join(root, ...rel));
+  return [...new Set([
+    ...under("Google", "Chrome", "Application", "chrome.exe"),
+    ...under("Chromium", "Application", "chrome.exe"),
+    ...under("Microsoft", "Edge", "Application", "msedge.exe"),
+  ])];
 }
 
 /// A job's group is its runner: any signal ends it, and its job with it.
@@ -249,9 +355,9 @@ async function groupMemory(pgids: number[]): Promise<Map<number, number>> {
 
 const key = (path: string) => path.toLowerCase();
 
-const sameFile = (a: string, b: string) => {
+const sameFile = async (a: string, b: string) => {
   try {
-    const [x, y] = [statSync(a, { bigint: true }), statSync(b, { bigint: true })];
+    const [x, y] = await Promise.all([stat(a, { bigint: true }), stat(b, { bigint: true })]);
     return x.ino === y.ino && x.dev === y.dev;
   } catch {
     return false;
@@ -270,6 +376,59 @@ const host: Host = {
     ownRss: process.memoryUsage.rss(),
   }),
 };
+
+/// The environment's string values as the registry keeps them, unexpanded (`DoNotExpandEnvironmentNames`): the machine's
+/// and the user's, as UTF-8 JSON in base64, so a path of other than ASCII comes through whatever the console's code page.
+const SAVED_ENVIRONMENT = `$ErrorActionPreference = 'Stop'
+function Saved($path) {
+  $o = @{}
+  $key = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+  if ($key) { foreach ($n in $key.GetValueNames()) { $v = $key.GetValue($n, $null, 'DoNotExpandEnvironmentNames'); if ($v -is [string]) { $o[$n] = $v } } }
+  $o
+}
+$j = @{ machine = (Saved 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'); user = (Saved 'HKCU:\\Environment') } | ConvertTo-Json -Compress -Depth 3
+[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($j)))`;
+
+type Saved = Record<string, string>;
+
+/// PATH as Windows composes it for a new process: the machine's then the user's, each `%NAME%` expanded by the
+/// variables before it (the process's, the machine's, then the user's, case aside); one it lacks stays as written, as
+/// ExpandEnvironmentStrings leaves it. Only absolute directories, each once. The other values only expand PATH's.
+export function savedPathOf(machine: Saved, user: Saved, env: Env): string[] {
+  const vars = new Map<string, string>();
+  for (const [k, v] of Object.entries(env)) if (v !== undefined) vars.set(k.toUpperCase(), v);
+  const expand = (s: string) => s.replace(/%([^%]+)%/g, (all, name: string) => vars.get(name.toUpperCase()) ?? all);
+  const path = (saved: Saved) => Object.entries(saved).find(([k]) => k.toUpperCase() === "PATH")?.[1] ?? "";
+  const parts: string[] = [];
+  for (const saved of [machine, user]) {
+    for (const [k, v] of Object.entries(saved)) if (k.toUpperCase() !== "PATH") vars.set(k.toUpperCase(), expand(v));
+    parts.push(...expand(path(saved)).split(";"));
+  }
+  const seen = new Set<string>();
+  return parts.map((d) => d.trim()).filter((d) => {
+    if (!win32.isAbsolute(d) || /^[\\/](?![\\/])/.test(d) || seen.has(d.toLowerCase())) return false;
+    seen.add(d.toLowerCase());
+    return true;
+  });
+}
+
+/// The PATH the registry gives a process started now (savedPathOf), or null where it cannot be read in time.
+async function savedPath(env: Env): Promise<string[] | null> {
+  try {
+    const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SAVED_ENVIRONMENT, "utf16le").toString("base64")], {
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1 << 20,
+    });
+    const said: unknown = JSON.parse(Buffer.from(stdout.trim(), "base64").toString("utf8"));
+    const strings = (o: unknown): Saved =>
+      o !== null && typeof o === "object" ? Object.fromEntries(Object.entries(o).filter((e): e is [string, string] => typeof e[1] === "string")) : {};
+    const { machine, user } = (said ?? {}) as { machine?: unknown; user?: unknown };
+    return savedPathOf(strings(machine), strings(user), env);
+  } catch {
+    return null;
+  }
+}
 
 /// A PowerShell string of `s`.
 const q = (s: string) => `'${s.replaceAll("'", "''")}'`;
@@ -302,7 +461,7 @@ export function windowsUpdateScript(runDir: string, env: Record<string, string>,
 /// (`stillfail-station-w --run`, copied into run/ so the installer stopping what runs from <app> leaves it be). (Not
 /// WMI's Win32_Process.Create: PowerShell started so is what malware does, and security software refuses it.) The task
 /// starts with the user's own environment, so what this side gives it is in run/update.ps1 (windowsUpdateScript).
-function startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean> {
+async function startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean> {
   const ps1 = join(runDir, "update.ps1");
   const hidden = join(runDir, "stillfail-update-w.exe");
   // The station's task as install.ps1 named it (windows.json: a station apart's), and " update".
@@ -311,20 +470,20 @@ function startInstaller(script: string, runDir: string, env: Record<string, stri
   // register the logon task at RunLevel Highest again without a prompt (install-windows.ts keeps admin in windows.json).
   let admin = false;
   try {
-    const kept = JSON.parse(readFileSync(join(dirname(runDir), "windows.json"), "utf8").trim());
+    const kept = JSON.parse((await readFile(join(dirname(runDir), "windows.json"), "utf8")).trim());
     if (typeof kept?.task === "string" && kept.task) task = kept.task;
     if (kept?.admin === true) admin = true;
   } catch {}
   task += " update";
   try {
-    rmSync(join(runDir, "update.err"), { force: true });
+    await rm(join(runDir, "update.err"), { force: true });
     // Refused while an update before still runs from it.
-    copyFileSync(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), hidden);
+    await copyFile(join(app, "mesh", "target", "release", "stillfail-station-w.exe"), hidden);
     // A copy: the installer replaces the release it is in.
-    copyFileSync(script, join(runDir, "install.ps1"));
-    writeFileSync(ps1, windowsUpdateScript(runDir, env, task));
+    await copyFile(script, join(runDir, "install.ps1"));
+    await writeFile(ps1, windowsUpdateScript(runDir, env, task));
   } catch {
-    return Promise.resolve(false);
+    return false;
   }
   const register = [
     "$ErrorActionPreference = 'Stop'",
@@ -356,6 +515,7 @@ export const windows: Platform = {
   os: "windows",
   buildOs: "win32",
   clonesFiles: false,
+  nativeCache: (env, home) => env.STILLFAIL_NATIVE_CACHE || join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "stillfail-native"),
 
   exe: (name) => `${name}.exe`,
   home: (env) => env.HOME ?? env.USERPROFILE,
@@ -375,29 +535,55 @@ export const windows: Platform = {
     env[key] = path === "" ? dir : `${path}${delimiter}${dir}`;
   },
   findCommand,
+  findCommandSoon,
   userShell: () => null,
+  savedPath,
   /// A bare name is found with PATHEXT (libuv adds .exe and .com only), and a .cmd or .bat (npm's shims) runs through
   /// cmd, which Node refuses to do by itself: each argument quoted, and one cmd would read into (a quote, a %) refused.
   runnable(command, args, env) {
     const file = /[\\/]/.test(command) ? command : (findCommand(command, env)?.onPath ?? command);
     if (!/\.(cmd|bat)$/i.test(file)) return { file, args };
-    const shim = unshim(file, env);
-    if (shim !== null) return { file: shim.file, args: [...shim.args, ...args] };
-    for (const a of [file, ...args]) if (/["%\r\n]/.test(a)) throw new Error(`cannot pass ${JSON.stringify(a)} through cmd`);
-    const line = [file, ...args].map((a) => `"${a}"`).join(" ");
-    return { file: env.ComSpec ?? process.env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+    return runnableOf(file, args, env, unshim(file, env));
+  },
+  async runnableSoon(command, args, env) {
+    const file = /[\\/]/.test(command) ? command : ((await findCommandSoon(command, env))?.onPath ?? command);
+    if (!/\.(cmd|bat)$/i.test(file)) return { file, args };
+    return runnableOf(file, args, env, await unshimSoon(file, env));
   },
   posixShell,
+  posixShellSoon,
   /// Under `stillfail-runner --job`, whose job holds the command and all it starts (what a shell execs, its parent
   /// gone, too), ended whole when the runner is.
   grouped: (program, args) => [runnerBinary(), ["--job", "--", program, ...args]],
   lowered: (program, args) => [program, args],
+  /// As it is: Windows has no wrapper that execs a command lower and keeps its pid (a job would be another process).
+  backgrounded: (program, args) => [program, args],
+  /// None: Windows has no `sync`; what is taken there is flushed a file at a time (sending.ts `receiveFile`).
+  flushing: () => null,
   /// Windows runs no script by its #!: a .cmd beside it hands it to Git's sh (or does nothing).
   makeCommand(path, script, noop) {
     writeFileSync(path, script);
     const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
     // %~dp0 is cmd's to expand (any path); the shell's is named as a .cmd can (cmdPath).
     writeFileSync(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(posixShell())}" "%~dp0${name}" %*\r\n`);
+    return `${path}.cmd`;
+  },
+  async makeCommandSoon(path, script, noop) {
+    const name = path.slice(Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")) + 1);
+    const beside = async (to: string, text: string) => {
+      // (one there already as it is to be kept: renamed over while a command runs it, Windows refuses)
+      if ((await readFile(to, "utf8").catch(() => null)) === text) return;
+      const tmp = `${to}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, text);
+        await rename(tmp, to);
+      } catch (error) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw error;
+      }
+    };
+    await beside(path, script);
+    await beside(`${path}.cmd`, noop ? "@exit /b 0\r\n" : `@"${cmdPath(await posixShellSoon())}" "%~dp0${name}" %*\r\n`);
     return `${path}.cmd`;
   },
 
@@ -449,26 +635,27 @@ export const windows: Platform = {
 
   disks: () => drives((path) => stat(path).then((s) => s.isDirectory(), () => false)),
   mounts: () => [],
+  mountsSoon: async () => [],
   linkRefused: (error) => (error as NodeJS.ErrnoException).code === "EPERM",
   syncsDirectories: false,
   /// A symbolic link needs a privilege most users lack (Developer Mode gives it): a hard link then, the same file as
   /// long as it is written in place (seen of Codex 0.162.1 on Windows, 2026-10-10: `codex login --with-api-key` into a
   /// home whose auth.json was a hard link kept the link, both names the new file; its refresh is taken to save the same
   /// way).
-  shareFile(target, link) {
+  async shareFile(target, link) {
     try {
-      const meta = lstatSync(link);
-      if (meta.isSymbolicLink() && readlinkSync(link) === target) return;
-      if (sameFile(link, target)) return;
-      unlinkSync(link);
+      const meta = await lstat(link);
+      if (meta.isSymbolicLink() && (await readlink(link)) === target) return;
+      if (await sameFile(link, target)) return;
+      await unlink(link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     try {
-      symlinkSync(target, link);
+      await symlink(target, link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-      linkSync(target, link);
+      await hardLink(target, link);
     }
   },
 
@@ -521,22 +708,23 @@ export const windows: Platform = {
   startInstaller,
   /// Vite+'s command is a shim of its own (codex.cmd, codex.exe) beside vp.exe; npm's a .cmd in its global prefix,
   /// the package in node_modules beside it.
-  shimUpdate(found, pkg, env) {
+  async shimUpdate(found, pkg, env) {
     const winget = wingetPackage(found.real);
     if (winget !== null) {
       const args = ["upgrade", "--id", winget, "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements"];
-      return { program: wingetCommand(env), args, noUpdate: WINGET_UPDATE_NOT_APPLICABLE };
+      return { program: await wingetCommandSoon(env), args, noUpdate: WINGET_UPDATE_NOT_APPLICABLE };
     }
     const dir = dirname(found.onPath);
-    if (existsSync(join(dir, "vp.exe"))) return { program: join(dir, "vp.exe"), args: ["install", "-g", `${pkg}@latest`] };
-    if (/\.cmd$/i.test(found.onPath) && existsSync(join(dir, "node_modules", ...pkg.split("/")))) {
+    const there = (p: string) => stat(p).then(() => true, () => false);
+    if (await there(join(dir, "vp.exe"))) return { program: join(dir, "vp.exe"), args: ["install", "-g", `${pkg}@latest`] };
+    if (/\.cmd$/i.test(found.onPath) && (await there(join(dir, "node_modules", ...pkg.split("/"))))) {
       const own = join(dir, "npm.cmd");
-      const npm = existsSync(own) ? own : findCommand("npm", env)?.onPath;
+      const npm = (await there(own)) ? own : (await findCommandSoon("npm", env))?.onPath;
       return npm === undefined ? "no-npm" : { program: npm, args: ["install", "-g", `${pkg}@latest`, "--prefix", dir] };
     }
     return null;
   },
-  linkCommand: () => false,
+  linkCommand: async () => false,
   // Its installer is a shell script (install.sh).
   codexStandalone: false,
   /// nodejs.org's zip (node.exe and npm.cmd at its top, where npm's shims go with --prefix it), unpacked by Windows' own
@@ -562,16 +750,11 @@ export const windows: Platform = {
     }));
   },
 
-  browsers(env) {
-    const value = (name: string) => env[Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase()) ?? ""];
-    const roots = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].flatMap((v) => value(v) ?? []);
-    const under = (...rel: string[]) => roots.map((root) => win32.join(root, ...rel));
-    const found = [
-      ...under("Google", "Chrome", "Application", "chrome.exe"),
-      ...under("Chromium", "Application", "chrome.exe"),
-      ...under("Microsoft", "Edge", "Application", "msedge.exe"),
-    ];
-    return [...new Set(found)].filter((p) => existsSync(p));
+  browsers: (env) => browserPlaces(env).filter((p) => existsSync(p)), // sync: chromeHost's first look, before the station serves
+  async browsersSoon(env) {
+    const places = browserPlaces(env);
+    const there = await Promise.all(places.map((p) => access(p).then(() => true, () => false)));
+    return places.filter((_, i) => there[i]);
   },
   hasDisplay: () => true,
 
@@ -585,7 +768,7 @@ export const windows: Platform = {
 
   // No `script`: a login's command runs on pipes (most say their link and code then). No process tree is read: only
   // the command itself is taken to listen.
-  terminal: () => null,
+  terminalSoon: async () => null,
   descendants: async () => [],
   // What is left of the memory says its pressure; the processes are not read (the watch over them is macOS's and Linux's).
   memoryPressure: async () => pressureOfAvailable(freemem(), totalmem()),

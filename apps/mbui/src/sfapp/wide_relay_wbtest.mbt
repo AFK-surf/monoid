@@ -2,11 +2,16 @@
 // bots are in as the core offers them, one picked with its note, relayed there.
 
 ///|
-/// 「那里由 … 回复」 at the right under the place picked: its end in line with the place's note's (更换), right of its name.
+/// 「那里由 … 回复」 (and 换一个) at the right under the place picked: its end in line with the place's note's (更换), right of
+/// its name.
 fn relay_via_at_right(t : @ui.Tester) -> Unit raise {
   let (name_x, _, _, _) = t.rect_of("#dev").unwrap()
   let (via_x, _, _, _) = t.rect_of("那里由").unwrap()
-  let (end_x, _, end_w, _) = t.rect_of("回复").unwrap()
+  // (its end: 换一个 where the place has other bots, else 回复)
+  let (end_x, _, end_w, _) = match t.rect_of("换一个") {
+    Some(r) => r
+    None => t.rect_of("回复").unwrap()
+  }
   let change = match t.rect_of("更换") {
     Some(r) => r
     None => t.rect_of("新 thread · 更换").unwrap()
@@ -19,7 +24,7 @@ fn relay_via_at_right(t : @ui.Tester) -> Unit raise {
 }
 
 ///|
-test "wide: 接力到频道… from a row's menu: the dialog lists the bot's places, one picked shows who replies there, 接力 relays it (chat.relay)" {
+test "wide: 接力到频道 from a row's menu: the dialog lists the bot's places, one picked shows who replies there, 接力 relays it (chat.relay)" {
   new_run()
   let calls : Array[Made] = []
   let base = fixture("home")
@@ -35,7 +40,7 @@ test "wide: 接力到频道… from a row's menu: the dialog lists the bot's pla
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  t.tap_text("接力到频道…")
+  t.tap_text("接力到频道")
   t.frame()
   assert_eq(named(calls, "chat.relayPlaces").length(), 1)
   t.frame()
@@ -108,7 +113,7 @@ test "wide: an @ typed in the relay's note offers the people there in a popover 
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  t.tap_text("接力到频道…")
+  t.tap_text("接力到频道")
   t.frame()
   t.frame()
   t.tap_text("#dev")

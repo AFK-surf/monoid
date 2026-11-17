@@ -1,13 +1,14 @@
 // The station on the mesh, once it is in a workspace (cloud.json there): its endpoint, its relays, its presence at
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
 // the endpoint and every connection and loop it started.
+import { closePeerRelays } from "./peer-relays.ts";
 import { Cause, Effect, FiberSet, Layer, Option, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
 import { DeviceTools, accessOf } from "../device/tools.ts";
 import { TOOLS_ALPN, adminSessions, presenceTools, serveTools } from "./tools.ts";
-import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "./peer.ts";
+import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "./peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, PeerHttp, serveHttp } from "./peer-http.ts";
 import { followLock } from "./lock-sync.ts";
 import { followPersons } from "./person-sync.ts";
@@ -18,8 +19,8 @@ import { personChainsOf } from "./serve.ts";
 import { deviceBuildsOf } from "./device-builds.ts";
 import { Traces } from "./traces.ts";
 import { SubscriptionRef } from "effect";
-import { keepRelays } from "./relays.ts";
-import { ALPN, type Members, answerGiven, handledGiven, sawBuild, serve } from "./serve.ts";
+import { keepRelays, wantedRelays } from "./relays.ts";
+import { ALPN, type Members, answerGiven, handledGiven, sawBuild, seenDevicesOf, serve } from "./serve.ts";
 import { SERVED_ROUTES, Served } from "./served.ts";
 import { BUILD_HEADER } from "../api/oldest.ts";
 import { accept } from "./accept.ts";
@@ -60,7 +61,8 @@ export const MeshLive = Layer.effectDiscard(
       }
       // The order is the one the endpoint prefers: a station asking for web requests offers the station transport's
       // protocol after it (to tell a station from before it), and is to be answered in the first (peer-http.ts).
-      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: cloud.state.relays(), discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
+      const bound = wantedRelays(cloud.state);
+      const bind = Effect.tryPromise(() => bindStation(native, { secretKey: key.seed, alpns: [ALPN, PEER_HTTP_ALPN, PEER_BYTES_ALPN, PEER_ALPN, TOOLS_ALPN], relayUrls: bound, discovery: process.env.STILLFAIL_NO_DISCOVERY !== "1", congestion: congestionOf(config.raw()) }));
       const acquire = Effect.acquireRelease(
         bind,
         // iroh closes gracefully, waiting on every connection (the keepers' too): up to ~12 s. A station stopping or
@@ -84,7 +86,7 @@ export const MeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       // What other stations are told of this one's relay (jobs/load.ts), while it is on the mesh.
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net));
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound));
       // Online at the cloud only once a relay can reach the station: a device that saw "online" and connected before
       // the relay link was up had its first packets dropped (~3 s of retransmits). Its members' connections are taken
       // meanwhile (below): those that reach it already (on its LAN, or by a relay it is on) are not kept waiting. Taken
@@ -101,6 +103,8 @@ export const MeshLive = Layer.effectDiscard(
       // And the stations of other workspaces chats are shared with or from (xshare/index.ts).
       const call = peerCall(endpoint, cloud.state, undefined, { reaches: (target, workspace) => side.outside?.reaches(target, workspace) === true });
       peers.attach(call);
+      // (its watch of the ways, which lets go of connections through a relay turned off, ends with the mesh)
+      yield* Effect.addFinalizer(() => Effect.sync(() => { call.close?.(); closePeerRelays(endpoint); }));
       // The agents' door's way to the other stations' web services (peer-http.ts).
       yield* Effect.acquireRelease(
         Effect.sync(() => {
@@ -158,6 +162,8 @@ export const MeshLive = Layer.effectDiscard(
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       // (the devices' builds kept in the store, made before the first request asks for them)
       deviceBuildsOf(cloud.state, store);
+      // (and the members' devices seen, read before the first hello, not as it comes)
+      seenDevicesOf(cloud.state);
       const members: Members = { cloud: cloud.state, admin, up: () => SubscriptionRef.getUnsafe(up), streams: (head: any) => parts.streamOf(head), screens, traces, accepted: plane.credential, lan: () => lanAddrs(endpoint.sockets()), tailnet: () => tailnetAddrs(endpoint.sockets()), connected: () => parts.connected() };
       // The reads the MoonBit program answers itself (served.ts), where the front keeps the endpoint and the program is
       // here: the front hands it their streams, and this process only who each connection's member is.
@@ -178,7 +184,13 @@ export const MeshLive = Layer.effectDiscard(
           store?.told(changes);
         };
         served.says = { claim: (viewer, path, key, lang) => admin.claimSay(viewer, path, key, lang), said: (thread, n, text, row) => admin.saidElsewhere(thread, n, text, row) };
-        yield* Effect.forkScoped(Effect.promise(async () => {
+        // (a program that ended taken off the routes the connections taken from then on go by, and put back once its
+        // next one listens)
+        served.onRoutes = (paths) => void route(ALPN, paths, SERVED_ROUTES).catch(() => {});
+        // Routed before the first connection is taken (the front gives a connection the routes said by the time this
+        // process takes it): one taken before would have every request of its handed to this process, a device's
+        // events stream too, for as long as it stays. Not started, this process answers them all.
+        yield* Effect.promise(async () => {
           try {
             const paths = await served.start();
             if (!(await route(ALPN, paths, SERVED_ROUTES))) log.info("mesh", "the front routes nothing (one from before); every request is this process's");
@@ -186,7 +198,7 @@ export const MeshLive = Layer.effectDiscard(
           } catch (e) {
             log.warn("mesh", "the MoonBit program that answers requests did not start", { error: (e as Error).message });
           }
-        }));
+        });
       }
       // The control plane's gateways: the device tools, as far as the station's own setting lets them.
       const device = yield* Effect.acquireRelease(
@@ -230,7 +242,7 @@ export const MeshLive = Layer.effectDiscard(
           storms.watch(conn);
           if (conn.alpn().equals(ALPN)) void superseded.arrived(conn);
           // (another station: what this one keeps to it, from before it started again, asked whether it is still there)
-          else if (conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN)) call.arrived(conn);
+          else if (conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) || conn.alpn().equals(PEER_HTTP_ALPN)) call.arrived(conn);
         },
         serve: (conn) =>
           conn.alpn().equals(PEER_BYTES_ALPN) || conn.alpn().equals(PEER_ALPN) ? servePeer(conn, cloud.state, peers)
@@ -240,7 +252,7 @@ export const MeshLive = Layer.effectDiscard(
             })
           : conn.alpn().equals(TOOLS_ALPN) ? serveTools(gateways, conn)
           : serve(members, conn),
-        closing: "station stopping",
+        closing: STOPPING,
       });
     });
     yield* Effect.forkScoped(Effect.scoped(run).pipe(Effect.tapCause((cause) => Effect.sync(() => {

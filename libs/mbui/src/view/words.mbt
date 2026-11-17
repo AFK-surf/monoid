@@ -149,6 +149,8 @@ pub(all) struct RunsMark {
   line : Int64
   line_w : Double
   round : Double
+  starts : Bool
+  ends : Bool
 }
 
 ///|
@@ -307,6 +309,27 @@ pub fn View::words_centered_now(self : View) -> Bool {
 /// (a run of mbui/text's: View::words_runs).
 pub fn words_run(text : String, weight? : Int = 0, ink? : Int64 = 0L) -> @text.Run {
   @text.span(text, weight~, color=ink)
+}
+
+///|
+/// How narrow words in pieces may wrap as a test measures them (runs_measure): their longest word, 7 a character,
+/// words parted by spaces.
+pub fn runs_least_measure(runs : Array[@text.Run], _look : WordsLook, _set : RunsLook, _scale : Double) -> Double {
+  let mut widest = 0
+  let mut word = 0
+  for r in runs {
+    for ch in r.text {
+      if ch == ' ' || ch == '\n' {
+        word = 0
+      } else {
+        word = word + 1
+        if word > widest {
+          widest = word
+        }
+      }
+    }
+  }
+  widest.to_double() * 7.0
 }
 
 ///|
@@ -830,15 +853,13 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
   // (what takes the pointer where, as whether it takes presses is (View::presses): said at the moment it changes, its
   // hits found anew, nothing laid out for it; said anew, what was said before let go of)
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Points.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Points.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Points.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
+    if !n.points_said {
+      n.points_said = true
+      self.tree.hits_bump()
+    }
     if n.points != on {
       n.points = on
       self.tree.inputs_own_said(self.at)
@@ -851,7 +872,7 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::Points.ord()] = stop
+        n.prop_set(Prop::Points.ord(), stop)
       })
   }
   self

@@ -5,6 +5,7 @@
 // (rule 2), never polled, and never all of them. A station's first rows are where it starts from. Each workspace hears
 // of its own.
 import { Marks } from "./reactive.ts";
+import { startedBy } from "./chat-stage.ts";
 import * as decisions from "./decisions.ts";
 import * as format from "./format.ts";
 import { t } from "./i18n.ts";
@@ -165,12 +166,20 @@ function lastSeq(row: J): number {
 /// What a row's change is worth telling its person, and in what words.
 function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[], members: J[]): [string, string] | null {
   if (get(row, "mine") !== true || (get(row, "connect") !== undefined && row.connect !== null)) return null;
+  // (a chat an agent leads tells its leader, not its people: decisions.led)
+  if (decisions.led(row)) return null;
   const now = seen(row);
   const then = thenSeen ?? { state: null, seq: 0, decision: null, pending: false, told: null };
   const by = present.lastBy(row, me, slackUsers, members);
   const mine = get(by, "mine") === true;
   const card = decisions.ofRow(row);
+  // (what it asks is told only to whom it asks: its assignee, else whoever started it, where it names one;
+  // chat-stage.ts needsViewer)
+  const asked = decisions.asked(row);
+  const decider = asked === null ? null : decisions.decider(asked.card, get(row, "creator"));
+  const asksMe = decider === null || present.isViewer(me, decider, slackUsers);
   if (card !== null && now.decision !== null && now.decision !== then.decision) {
+    if (!asksMe) return null;
     const text = typeof get(get(card, "message"), "text") === "string" ? card.message.text : "";
     const line = decisions.line(text);
     const cut = line.indexOf(" · ");
@@ -185,6 +194,7 @@ function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[]
   // Blocked on what it asks that waits for them and was not told yet: not on an ask told before (woken by a job between,
   // it ends blocked on it again), nor on one answered since (nothing waits for them).
   if (now.state === "block" && card === null && now.told !== null && now.told !== then.told) {
+    if (!asksMe) return null;
     let need: string | null = null;
     for (const a of arr(get(row, "agents"))) {
       if (present.sessionStatus(a) !== "block") continue;
@@ -200,6 +210,8 @@ function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[]
   const kind = get(by, "kind");
   // A failure's first paragraph: what it means (what failed said, under it, is for the chat).
   if (fresh && isStationAuthor(kind) && text.startsWith("⚠️")) {
+    // (told to whoever started it, as it goes wrong for them alone: chat-stage.ts failedForViewer)
+    if (!startedBy(row, me)) return null;
     const first = format.cleanText(format.plainText(String(last.text).split("\n\n")[0]!));
     return ["failed", body("failed", "", first.slice("⚠️".length).trim())];
   }

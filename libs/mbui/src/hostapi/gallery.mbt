@@ -9,6 +9,7 @@
 
 ///|
 /// How much of the gallery the app may read.
+#derive(Eq)
 pub(all) enum GalleryAccess {
   /// all of it
   Whole

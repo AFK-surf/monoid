@@ -1,9 +1,8 @@
-// One of a station's memory pages (设置 › 记忆 › it; web/src/Memory.tsx MemoryDoc, Memory.css.ts; the narrow app's
-// mobile/Memory.tsx MemoryDocScreen), one page in every frame: the global memory a part at a time, or a skill (what
-// kind it is and when it is read, sharing it with the workspace's other stations, its pages to pick between), its
-// text as people read it, on a card where the page is narrow (the narrow app's), on the page where it is wide (the
-// web's). Its pages' pills go on in lines where the room ends: every one there to pick, none behind a ⋯ nor scrolled
-// out (the phone's copy, gone, left the last out). What it says is the core's (looks.ts).
+// One of the workspace's memory pages (设置 › 记忆 › it), one page in every frame: the global memory a part at a time,
+// or a skill (what kind it is and when it is read, its pages to pick between), its text as people read it, on a card
+// where the page is narrow (the narrow app's), on the page where it is wide (the web's). Its pages' pills go on in
+// lines where the room ends: every one there to pick, none behind a ⋯ nor scrolled out. What it says is the core's
+// (looks.ts).
 
 ///|
 /// The page in view of each memory page, by its station and skill ("" the global memory): picked by its chips.
@@ -31,22 +30,15 @@ pub fn memory_doc_node(
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
 ) -> Unit {
+  ignore(here)
   let read = fn() { memory_of(core, address) }
-  let names = fn() {
-    station_names(
-      match @settings.stations_of(core, here()).value {
-        Some(Array(a)) => a
-        _ => []
-      },
-    )
-  }
   let title = if skill == "" { @sf.t("web-main.memory.global") } else { skill }
   @sf.page_node(v, fn() { title }, on_back~, frame~, said?, width?, fn() { ["doc"] }, fn(b, _) {
     b.pick(fn() { read().value is None }, fn(p, reading) {
       if reading {
         @sf.waiting_node(
           p,
-          fn(s) { doc_body_node(s, core.quiet(), "sample", skill, at, fn() { Some(doc_sample(skill)) }, names) },
+          fn(s) { doc_body_node(s, "sample", skill, at, fn() { Some(doc_sample(skill)) }) },
           error=fn() {
             let e = read().error
             if e == "" {
@@ -57,7 +49,7 @@ pub fn memory_doc_node(
           },
         )
       } else {
-        doc_body_node(p, core, address, skill, at, fn() { read().value }, names)
+        doc_body_node(p, address, skill, at, fn() { read().value })
       }
     })
   })
@@ -65,17 +57,14 @@ pub fn memory_doc_node(
 
 ///|
 /// A memory's page's body (`m`, as the core reads it, as it changes) in node `v`: `skill` "" the global memory, `at` the
-/// part first shown; `names` the stations' by their ids (who has a shared skill). Its head, its pills and its text: the
-/// layers of one document, one block of the page, 16 under its head and 20 under its pills (the web's memoryHead's and
-/// memoryChips'); a skill no longer there, said so.
+/// part first shown. Its head, its pills and its text: the layers of one document, one block of the page, 16 under its
+/// head and 20 under its pills; a skill no longer there, said so.
 fn doc_body_node(
   v : @view.View,
-  core : Core,
   address : String,
   skill : String,
   at : Int,
   m : () -> Json?,
-  names : () -> Map[String, String],
 ) -> Unit {
   let key = "memory-doc/" + address + "/" + skill
   let kv = fn() -> Json? {
@@ -114,14 +103,26 @@ fn doc_body_node(
       l.box(fn(h) {
         @sf.style_node(h, fn() { md_under_head })
         if skill == "" {
-          @sf.words_node(h, fn() { join([@sf.t("web-main.memory.global.when"), text(field(m(), "global"), "size")], " · ") }, fn() {
-            md_when
-          })
+          let global = fn() { field(m(), "global") }
+          @sf.words_node(
+            h,
+            fn() {
+              join(
+                [
+                  @sf.t("web-main.memory.global.when"),
+                  text(global(), "size"),
+                  text(global(), "whenChanged"),
+                ],
+                " · ",
+              )
+            },
+            fn() { md_when },
+          )
           |> ignore
         } else {
-          // what kind it is and when it is read; sharing it (not a station's own, nor another station's copy): a card,
-          // alone where it is one of the layers (narrow), as the page's cards are where it is wide
-          @sf.page_card_node(h, layered=narrow, fn(k) { doc_skill_card_node(k, core, address, skill, kv, names) })
+          // what kind it is and when it is read: a card, alone where it is one of the layers (narrow), as the page's
+          // cards are where it is wide
+          @sf.page_card_node(h, layered=narrow, fn(k) { doc_skill_card_node(k, kv) })
         }
       })
       |> ignore
@@ -177,16 +178,10 @@ fn doc_body_node(
 }
 
 ///|
-/// A skill's card (memory_doc's head): what kind it is and when it is read; sharing it where it can be (not a
-/// station's own, nor another station's copy), who has it, who may and does not and why, why it is not being shared now
-/// (the core's words); each as `kv` says it now.
+/// A skill's card (memory_doc's head): what kind it is and when it is read, as `kv` says it now.
 fn doc_skill_card_node(
   k : @view.View,
-  core : Core,
-  address : String,
-  skill : String,
   kv : () -> Json?,
-  names : () -> Map[String, String],
 ) -> Unit {
   k.box(fn(w) {
     @sf.style_node(w, fn() { md_when_box })
@@ -194,62 +189,6 @@ fn doc_skill_card_node(
     @sf.words_node(w, fn() { text(kv(), "whenText") }, fn() { md_when }) |> ignore
   })
   |> ignore
-  let share = fn() { field(kv(), "share") }
-  let on = fn() { text(share(), "role") == "host" }
-  let name_of = fn(id : String) {
-    match names().get(id) {
-      Some(n) => n
-      None => if id.length() > 8 { id.unsafe_substring(start=0, end=8) } else { id }
-    }
-  }
-  k.show(fn() { !flag(kv(), "builtin") && text(share(), "role") != "user" }, fn(s) {
-    // (its lines as far apart as the card's: they were the card's own)
-    s.gap(Is(md_card_gap)) |> ignore
-    let on_what = [("station", address), ("name", skill)]
-    let busy = fn() { is_doing(core, ["skill.share"], on_what) }
-    @sf.switch_row_node(
-      s,
-      fn() { @sf.t("web-main.memory.share.switch") },
-      on,
-      fn(now) {
-        if now != @signals.untracked(on) {
-          @settings.act(
-            core,
-            @sf.t("web-main.memory.share.switch"),
-            "skill.share",
-            obj([("station", str(address)), ("name", str(skill)), ("on", Json::boolean(now))]),
-          )
-        }
-      },
-      disabled=busy,
-      in_words=true,
-    )
-    let users = fn() { strings(share(), "users").map(name_of) }
-    s.show(fn() { on() && users().length() > 0 }, fn(u) {
-      @sf.words_node(u, fn() { @sf.t("web-main.memory.share.users", args=[("stations", users().join(@sf.t("web-main.list.separator")))]) }, fn() {
-        md_when
-      })
-      |> ignore
-    })
-    s.show(fn() { on() }, fn(o) {
-      o.gap(Is(md_card_gap)) |> ignore
-      o.each(fn() { items(share(), "missing") }, fn(x) { text(Some(x), "station") }, fn(r, x) {
-        @sf.words_node(r, fn() {
-          @sf.t("web-main.memory.share.missing", args=[("station", name_of(text(Some(x.get()), "station"))), ("why", text(Some(x.get()), "whyText"))])
-        }, fn() { md_conflict })
-        |> ignore
-      })
-      o.show(fn() { text(share(), "unreadText") != "" }, fn(n) {
-        @sf.words_node(n, fn() { text(share(), "unreadText") }, fn() { md_conflict }) |> ignore
-      })
-    })
-    s.show(fn() { strings(share(), "conflicts").length() > 0 }, fn(c) {
-      @sf.words_node(c, fn() {
-        @sf.t("web-main.memory.share.conflicts", args=[("names", strings(share(), "conflicts").join(@sf.t("web-main.list.separator")))])
-      }, fn() { md_conflict })
-      |> ignore
-    })
-  })
 }
 
 // ── styles ──────────────────────────────────────────────
@@ -268,18 +207,10 @@ let md_when_head : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=
 let md_when : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
-// kept across runs: a value (no field of it changes)
-let md_conflict : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, w=Full)
-
-///|
 /// The pages to pick between (memoryChips: 6 apart, wrapping; memoryChip: 30 high, 12 in, round, the card's ground, the
 /// hover's under the pointer; the one in view the ink's, its words the page's ground).
 // kept across runs: a value (no field of it changes)
 let md_chips : @ui.Style = @ui.css("row w=Full pb=S5 gap=S1_5")
-
-///|
-/// The room between what a skill's card says (a page's card's, page_card_node's).
-let md_card_gap : Double = 14.0
 
 ///|
 /// The room between the pills' lines where they go on in another (md_chips' gap, as an old view's flow keeps it).

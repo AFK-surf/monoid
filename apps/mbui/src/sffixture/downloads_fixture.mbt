@@ -407,18 +407,22 @@ pub fn fixture_download_read(params : Json, done : (Result[(Json, Bytes), Json])
 ///|
 /// MBUI_FIXTURE=drive-download: a file of the drive downloading (40% here), a folder of it being zipped for it.
 pub fn fix_drive_downloads(station : String, root : String) -> Unit {
-  fix_downloads.push({
-    station,
-    key: "",
-    root,
-    path: "首页截图.png",
-    zip: false,
-    name: "首页截图.png",
-    size: 1000.0,
-    loaded: 400.0,
-    state: "going",
+  // (done by the made-up station now and told, as the core tells a change: what read the downloads before they came, a
+  // page made as it was put on, reads them anew: fix_now)
+  fix_now(fn() {
+    fix_downloads.push({
+      station,
+      key: "",
+      root,
+      path: "首页截图.png",
+      zip: false,
+      name: "首页截图.png",
+      size: 1000.0,
+      loaded: 400.0,
+      state: "going",
+    })
+    fix_downloads.push({ station, key: "", root, path: "设计稿", zip: true, name: "设计稿.zip", size: 0.0, loaded: 0.0, state: "going" })
   })
-  fix_downloads.push({ station, key: "", root, path: "设计稿", zip: true, name: "设计稿.zip", size: 0.0, loaded: 0.0, state: "going" })
 }
 
 ///|
@@ -435,6 +439,34 @@ pub fn with_download_message(v : Json) -> Json {
         msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), "打好的发布包在这里，下载下来装一下看看。", "1 分钟前", {
           "ending": "all_done",
           "attachments": [file("发布包.zip", 0, 0, 52428800), film_file("演示录屏.mp4", 1280, 720, 5242880, 12500, 375)],
+        }),
+      )
+      o["messages"] = Json::array(all)
+      Json::object(o)
+    }
+    _ => v
+  }
+}
+
+///|
+/// MBUI_FIXTURE=chat-files-sent: the chat with its agent's code, table and recording last, each opened in the preview
+/// from its message (preview_fixture.mbt's files: list.ts, 数据.csv, 演示录屏.mp4), flying in from where it is and back.
+pub fn with_sent_files(v : Json) -> Json {
+  match v {
+    Object(m) => {
+      let o = m.copy()
+      let all = match m.get("messages") {
+        Some(Array(a)) => a.copy()
+        _ => []
+      }
+      all.push(
+        msg(12, "agent", by_agent("anthropic", "claude", "s-c1"), "改好的列表代码、跑出来的帧时间表和一段录屏都在这里。", "1 分钟前", {
+          "ending": "all_done",
+          "attachments": [
+            file("list.ts", 0, 0, 600),
+            file("数据.csv", 0, 0, 200),
+            film_file("演示录屏.mp4", 1280, 720, 5242880, 12500, 375),
+          ],
         }),
       )
       o["messages"] = Json::array(all)

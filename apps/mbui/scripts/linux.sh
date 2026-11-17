@@ -18,17 +18,18 @@ if [ -n "${MBUI_IN_LINUX_SH:-}" ]; then
     t=linux-$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
     engine=$(cd "$SF_SRC" && node scripts/native.ts path engine $t) || exit 1
     shell=$(cd "$SF_SRC" && node scripts/native.ts path shell $t) || exit 1
-    export MBUI_LINUX_CFLAGS="-I$A/engine -I$MBUI_DIR/src/host $(pkg-config --cflags libsecret-1)"
-    export MBUI_LINUX_LDFLAGS="-L$engine -L$shell -lstillfail_engine -lstillfail_shell $(pkg-config --libs libsecret-1) -Wl,-rpath,\$ORIGIN"
+    ghostty_vt=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt $t) || exit 1
+    export MBUI_LINUX_CFLAGS="-I$A/engine -I$MBUI_DIR/src/host -I$ghostty_vt/include $(pkg-config --cflags libsecret-1)"
+    export MBUI_LINUX_LDFLAGS="-L$engine -L$shell -L$ghostty_vt/lib -lstillfail_engine -lstillfail_shell -lghostty-vt $(pkg-config --libs libsecret-1) -Wl,-rpath,\$ORIGIN"
   fi
   core() { HERMESC="$engine/hermesc" bash "$AD/core.sh" hermes; }
-  # put [core]: the engine and the shell beside the app's executable, the core's bytecode too when asked
+  # put [core]: the engine, the shell and libghostty-vt beside the app's executable, the core's bytecode too when asked
   put() {
     . "$MBUI_DIR/scripts/env.sh"
     # (mbui's linux.sh builds this module in its copy, out/linux/app beside mbui's own)
     dir=$MBUI_DIR/out/linux/app/$(cd "$MBUI_DIR/out/linux/app" && pkg_build $APP native ${MODE:-release})
-    # (the engine's libraries: its own, and ICU's it carries)
-    cp "$engine"/lib*.so* "$shell/libstillfail_shell.so" "$dir/" || return 1
+    # (the engine's libraries: its own, and ICU's it carries; libghostty-vt by its SONAME)
+    cp "$engine"/lib*.so* "$shell/libstillfail_shell.so" "$ghostty_vt/lib/libghostty-vt.so.1" "$dir/" || return 1
     [ "${1:-}" != core ] || cp "$A/out/core/core.hbc" "$dir/" || return 1
     ls -la "$dir"
   }

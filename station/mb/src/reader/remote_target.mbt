@@ -1,5 +1,5 @@
 // The target's side of the remote tasks (remote.ts `task` and what it stands on): a source session's tasks here, their
-// shared directory and its mirrors, and their cleanup.
+// shared directory and its mirrors, and their cleanup (`sweep`, `relieve`; the upkeep's `expire` and `budget`).
 
 ///|
 fn refusal(m : String) -> Error {
@@ -47,13 +47,13 @@ async fn Actors::task(
   if method == "session.size" {
     session_needed()
     let room = self.room(workspace, peer, session)
-    self.written(rjoin([room, "session.json"]))
+    self.written(self.rjoin([room, "session.json"]))
     // (and what Node wrote of it: a room used by work() there)
-    ignore(self.rnode("written", [jstr(rjoin([room, "session.json"]))]))
-    if !self.there(rjoin([room, "session.json"])) {
+    ignore(self.rnode("written", [jstr(self.rjoin([room, "session.json"]))]))
+    if !self.there(self.rjoin([room, "session.json"])) {
       return { "present": jbool(false) }
     }
-    let path = rjoin([room, "work"])
+    let path = self.rjoin([room, "work"])
     let cutoff = match field_of(request, "limit") {
       Null => Json::null()
       Number(n, ..) if n >= 1.0 && n == n.floor() => jnum(n)
@@ -64,14 +64,14 @@ async fn Actors::task(
   if method == "task.mirrors" || method == "task.clean" {
     session_needed()
     let room = self.room(workspace, peer, session)
-    self.written(rjoin([room, "session.json"]))
+    self.written(self.rjoin([room, "session.json"]))
     // (and what Node wrote of it: a room used by work() there)
-    ignore(self.rnode("written", [jstr(rjoin([room, "session.json"]))]))
-    let mirrors = if self.there(rjoin([room, "session.json"])) { self.mirrors_of(workspace, peer, session, self.remote_now()) } else { [] }
+    ignore(self.rnode("written", [jstr(self.rjoin([room, "session.json"]))]))
+    let mirrors = if self.there(self.rjoin([room, "session.json"])) { self.mirrors_of(workspace, peer, session, self.remote_now()) } else { [] }
     // Unlike the automatic sweep's age-based recovery, an explicit cleanup must not interrupt even a slow sync.
     let syncing_now : Map[String, Bool] = {}
     for m in mirrors {
-      if self.there(rjoin([room, "sync", m.name])) {
+      if self.there(self.rjoin([room, "sync", m.name])) {
         syncing_now[m.name] = true
       }
     }
@@ -79,7 +79,7 @@ async fn Actors::task(
     if method == "task.mirrors" {
       return {
         "mirrors": Json::array(
-          mirrors.map(m => ({ "name": jstr(m.name), "path": jstr(rjoin([room, "work", m.name])), "busy": jbool(in_use(m)), "lastUsed": jnum(m.used) } : Json)),
+          mirrors.map(m => ({ "name": jstr(m.name), "path": jstr(self.rjoin([room, "work", m.name])), "busy": jbool(in_use(m)), "lastUsed": jnum(m.used) } : Json)),
         ),
       }
     }
@@ -101,7 +101,7 @@ async fn Actors::task(
     session_needed()
     let tasks : Array[Json] = []
     for t in self.tasks_of(workspace, peer, session) {
-      let job = self.rstore("getJob", [jstr(job_of_task(t.dir))])
+      let job = self.rstore("getJob", [jstr(self.job_of_task(t.dir))])
       tasks.push({ "key": field_of(t.meta, "key"), "spec": field_of(t.meta, "spec"), "job": if job is Null { Json::null() } else { self.rnode("jobJson", [job]) } })
     }
     return { "tasks": Json::array(tasks) }
@@ -116,8 +116,8 @@ async fn Actors::task(
     raise refusal("session and task key are required (at most 256 / 128 bytes)")
   }
   let id = rhash(Json::array([jstr(workspace), jstr(peer), jstr(session), jstr(key)]))
-  let dir = rjoin([self.remote.root, "incoming", id])
-  let record = rjoin([dir, "task.json"])
+  let dir = self.rjoin([self.remote.root, "incoming", id])
+  let record = self.rjoin([dir, "task.json"])
   let job_id = "remote_\{id}"
   let owner = "remote:\{workspace}:\{peer}:\{session}"
   if method == "task.prepare" {
@@ -166,10 +166,10 @@ async fn Actors::task(
     if method == "task.start" || method == "file.put" || method == "sync.begin" {
       self.seen(workspace, peer, session)
     } else {
-      rjoin([self.room(workspace, peer, session), "work"])
+      self.rjoin([self.room(workspace, peer, session), "work"])
     }
   } else {
-    rjoin([dir, "work"])
+    self.rjoin([dir, "work"])
   }
   // A task with a directory runs in its mirror, a directory of the session's.
   let mirror = match field_of(meta, "mirror") {
@@ -177,8 +177,8 @@ async fn Actors::task(
     _ => None
   }
   let room = self.room(workspace, peer, session)
-  let manifest_path = match mirror { Some(m) => rjoin([room, "mirrors", "\{m}.json"]); None => "" }
-  let syncing = match mirror { Some(m) => rjoin([room, "sync", m]); None => "" }
+  let manifest_path = match mirror { Some(m) => self.rjoin([room, "mirrors", "\{m}.json"]); None => "" }
+  let syncing = match mirror { Some(m) => self.rjoin([room, "sync", m]); None => "" }
   if method.has_prefix("sync.") && mirror is None {
     raise refusal("this task has no directory to sync")
   }
@@ -190,13 +190,13 @@ async fn Actors::task(
       }
     }
     for t in tasks {
-      if field_of(t.meta, "safe") is True && !(field_of(t.meta, "collected") is True) && !(self.rstore("getJob", [jstr(job_of_task(t.dir))]) is Null) {
+      if field_of(t.meta, "safe") is True && !(field_of(t.meta, "collected") is True) && !(self.rstore("getJob", [jstr(self.job_of_task(t.dir))]) is Null) {
         raise refusal("task \{text_of(t.meta, "key")} is still bringing back its results from \{mirror.unwrap_or("")}; wait for its completion notice")
       }
     }
   }
   let ongoing = async fn() -> Json raise {
-    let state = self.read_json(rjoin([syncing, "state.json"])) catch { _ => Json::null() }
+    let state = self.read_json(self.rjoin([syncing, "state.json"])) catch { _ => Json::null() }
     if state is Null || text_of(state, "id") != text_of(request, "id") || text_of(state, "key") != key {
       raise refusal("this sync is over or another one began; start again")
     }
@@ -266,12 +266,12 @@ async fn Actors::task(
       refuse_busy()
       self.remove(syncing, recursive=true)
       self.mkdirs(syncing)
-      self.mkdirs(rjoin([room, "mirrors"]))
+      self.mkdirs(self.rjoin([room, "mirrors"]))
       self.used_mirror(workspace, peer, session, m)
       // (the manifest, what the mirror has now and the conflict base: dirsync.mbt)
-      let version = self.sync_begin(manifest_path, rjoin([work, m]), syncing)
+      let version = self.sync_begin(manifest_path, self.rjoin([work, m]), syncing)
       let sid = self.random_hex(12)
-      self.write_json(rjoin([syncing, "state.json"]), { "id": jstr(sid), "key": jstr(key), "version": jnum(version) })
+      self.write_json(self.rjoin([syncing, "state.json"]), { "id": jstr(sid), "key": jstr(key), "version": jnum(version) })
       if field_of(request, "safe") == jnum(1.0) {
         self.write_json(record, with_field(meta, "safe", jbool(true)))
       }
@@ -281,8 +281,8 @@ async fn Actors::task(
       ignore(ongoing())
       let after = as_u64(field_of(request, "after")).unwrap_or(0.0)
       let file = if method == "sync.manifest" { "actual.json" } else { "base.json" }
-      self.written(rjoin([syncing, file]))
-      let files = match self.read_json(rjoin([syncing, file])) {
+      self.written(self.rjoin([syncing, file]))
+      let files = match self.read_json(self.rjoin([syncing, file])) {
         Object(f) => f
         _ => {}
       }
@@ -290,13 +290,15 @@ async fn Actors::task(
     }
     "sync.put" => {
       ignore(ongoing())
-      // The packed pieces after the request (Node keeps them: `bytes`); from a station from before, base64 in it.
-      { "pieces": self.rnode("putBlobs", [jstr(rjoin([syncing, "blobs"])), field_of(request, "blobs"), field_of(request, "bytes"), field_of(request, "data")]) }
+      // The packed pieces after the request (Node landed them in a file: `landed`); from a station from before, base64
+      // in it. Unpacked and written here (dirsync.mbt).
+      let landed = str_of(Some(field_of(request, "landed")))
+      { "pieces": jnum(self.put_blobs(self.rjoin([syncing, "blobs"]), field_of(request, "blobs"), landed, field_of(request, "data")).to_double()) }
     }
     "sync.commit" => {
       let state = ongoing()
       let part = plan_part(request)
-      ignore(self.fs("fs.put", { "path": jstr(rjoin([syncing, "plan.jsonl"])) }, bytes=@utf8.encode(js_text(part) + "\n")))
+      ignore(self.fs("fs.put", { "path": jstr(self.rjoin([syncing, "plan.jsonl"])) }, bytes=@utf8.encode(js_text(part) + "\n")))
       if !(field_of(request, "final") is True) {
         return { "key": jstr(key), "planned": jbool(true) }
       }
@@ -435,7 +437,7 @@ async fn Actors::visit_files(self : Actors, cwd : String, rel : String, files : 
       match kind_of_stat(st) {
         "file" => files.push(Json::array([jstr(rel), st.value("size").unwrap_or(jnum(0.0))]))
         "dir" => {
-          let names = self.readdir_names(rjoin([cwd, rel]))
+          let names = self.readdir_names(self.rjoin([cwd, rel]))
           names.sort_by(@search.compare_units) // (as JavaScript sorts them: MoonBit's compare puts the shorter first)
           let base = trim_slashes(rel)
           for name in names {
@@ -526,7 +528,7 @@ priv struct MirrorUse {
 /// The owners of the tasks here, kept by session off the records (remote.ts `indexIncoming`): only new or unreadable
 /// ones read, the directory's stamp telling whether anything came or went meanwhile.
 async fn Actors::index_incoming(self : Actors) -> Unit raise {
-  let incoming = rjoin([self.remote.root, "incoming"])
+  let incoming = self.rjoin([self.remote.root, "incoming"])
   let stamp = async fn() -> String raise {
     match self.lstat(incoming) {
       Some(st) => "\{st.value("ino").unwrap_or(Json::null()).stringify()}:\{st.value("mtimeMs").unwrap_or(Json::null()).stringify()}:\{st.value("ctimeMs").unwrap_or(Json::null()).stringify()}"
@@ -557,7 +559,7 @@ async fn Actors::index_incoming(self : Actors) -> Unit raise {
       if self.remote.task_owners.contains(name) {
         continue
       }
-      let meta = self.read_json(rjoin([incoming, name, "task.json"])) catch { _ => Json::null() }
+      let meta = self.read_json(self.rjoin([incoming, name, "task.json"])) catch { _ => Json::null() }
       if meta is Null {
         // A directory can exist before its record is written, even across a station handover: tried again.
         self.remote.unreadable[name] = true
@@ -615,8 +617,8 @@ async fn Actors::tasks_of(self : Actors, workspace : String, peer : String, sess
   }
   let found : Array[IncomingTask] = []
   for name in names {
-    let dir = rjoin([self.remote.root, "incoming", name])
-    let meta = self.read_json(rjoin([dir, "task.json"])) catch { _ => continue }
+    let dir = self.rjoin([self.remote.root, "incoming", name])
+    let meta = self.read_json(self.rjoin([dir, "task.json"])) catch { _ => continue }
     if text_of(meta, "workspace") == workspace && text_of(meta, "station") == peer && text_of(meta, "session") == session {
       found.push({ dir, meta })
     }
@@ -650,9 +652,9 @@ async fn Actors::mirror_name(self : Actors, workspace : String, peer : String, s
       claimed[m] = text_of(field_of(t.meta, "spec"), "dir")
     }
   }
-  let mirrors = rjoin([self.room(workspace, peer, session), "mirrors"])
+  let mirrors = self.rjoin([self.room(workspace, peer, session), "mirrors"])
   for file in self.readdir_names(mirrors) {
-    match self.read_manifest(rjoin([mirrors, file])) {
+    match self.read_manifest(self.rjoin([mirrors, file])) {
       None => ()
       Some(m) => claimed[text_of(m, "name")] = text_of(m, "dir")
     }
@@ -667,7 +669,7 @@ async fn Actors::mirror_name(self : Actors, workspace : String, peer : String, s
 ///|
 /// A task ran in or synced `mirror` now. Callers are in the session's lane.
 async fn Actors::used_mirror(self : Actors, workspace : String, peer : String, session : String, mirror : String) -> Unit raise {
-  let record = rjoin([self.room(workspace, peer, session), "mirrors-used.json"])
+  let record = self.rjoin([self.room(workspace, peer, session), "mirrors-used.json"])
   let now = self.remote_now()
   ignore(self.update_json(record, used => Some(with_field(used, mirror, jnum(now))), missing={}))
 }
@@ -677,12 +679,12 @@ async fn Actors::used_mirror(self : Actors, workspace : String, peer : String, s
 /// (those marked used now).
 async fn Actors::mirrors_of(self : Actors, workspace : String, peer : String, session : String, now : Double) -> Array[MirrorUse] raise {
   let room = self.room(workspace, peer, session)
-  let record = rjoin([room, "mirrors-used.json"])
+  let record = self.rjoin([room, "mirrors-used.json"])
   let running : Map[String, Bool] = {}
   let ended : Map[String, Double] = {}
   for t in self.tasks_of(workspace, peer, session) {
     guard field_of(t.meta, "mirror") is String(mirror) else { continue }
-    let job = self.rstore("getJob", [jstr(job_of_task(t.dir))])
+    let job = self.rstore("getJob", [jstr(self.job_of_task(t.dir))])
     if str_of(job.value("state")) == Some("running") ||
       (!(job is Null) && field_of(t.meta, "safe") is True && !(field_of(t.meta, "collected") is True)) {
       running[mirror] = true
@@ -691,10 +693,10 @@ async fn Actors::mirrors_of(self : Actors, workspace : String, peer : String, se
       ended[mirror] = if ended.get(mirror).unwrap_or(0.0) > at { ended.get(mirror).unwrap_or(0.0) } else { at }
     }
   }
-  let mirrors = self.readdir_names(rjoin([room, "mirrors"])).filter(f => f.has_suffix(".json")).map(f => f.view(end_offset=f.length() - 5).to_string())
+  let mirrors = self.readdir_names(self.rjoin([room, "mirrors"])).filter(f => f.has_suffix(".json")).map(f => f.view(end_offset=f.length() - 5).to_string())
   let busy : Map[String, Bool] = {}
   for name in mirrors {
-    if running.contains(name) || self.syncing_recently(rjoin([room, "sync", name]), now) {
+    if running.contains(name) || self.syncing_recently(self.rjoin([room, "sync", name]), now) {
       busy[name] = true
     }
   }
@@ -729,7 +731,7 @@ async fn Actors::syncing_recently(self : Actors, dir : String, now : Double) -> 
   let mut latest = 0.0
   let paths = [dir]
   for name in self.readdir_names(dir) {
-    paths.push(rjoin([dir, name]))
+    paths.push(self.rjoin([dir, name]))
   }
   for p in paths {
     match self.fs("fs.lstat", { "path": jstr(p) }) {
@@ -752,16 +754,21 @@ async fn Actors::drop_mirror(self : Actors, workspace : String, peer : String, s
   let room = self.room(workspace, peer, session)
   let done = try {
     for t in self.tasks_of(workspace, peer, session) {
-      let path = rjoin([t.dir, "task.json"])
+      let path = self.rjoin([t.dir, "task.json"])
       let meta = self.read_json(path)
       if field_of(meta, "mirror") == jstr(mirror) && field_of(meta, "synced") is True {
         self.write_json(path, with_field(meta, "synced", jbool(false)))
       }
     }
-    ignore(self.rnode("removeMirror", [jstr(rjoin([room, "work", mirror]))]))
-    self.remove(rjoin([room, "sync", mirror]), recursive=true)
-    self.remove(rjoin([room, "mirrors", "\{mirror}.json"]))
-    ignore(self.update_json(rjoin([room, "mirrors-used.json"]), used => match used {
+    let tree = self.rjoin([room, "work", mirror])
+    // Over its budget (`budget`): as much is to be freed as it is over by.
+    if self.remote.over > 0.0 {
+      self.remote.over -= num_of(Some(self.rnode("treeBytes", [jstr(tree)]))).unwrap_or(0.0)
+    }
+    ignore(self.rnode("removeMirror", [jstr(tree)]))
+    self.remove(self.rjoin([room, "sync", mirror]), recursive=true)
+    self.remove(self.rjoin([room, "mirrors", "\{mirror}.json"]))
+    ignore(self.update_json(self.rjoin([room, "mirrors-used.json"]), used => match used {
       Object(m) => {
         let m = m.copy()
         m.remove(mirror)
@@ -790,7 +797,7 @@ async fn Actors::close_here(self : Actors, workspace : String, peer : String, se
   // its use asked again just before; then removed here)
   let moved = match idle_at {
     Some(at) => {
-      let recorded = self.read_json(rjoin([room, "session.json"])) catch { _ => return false }
+      let recorded = self.read_json(self.rjoin([room, "session.json"])) catch { _ => return false }
       let seen_here = num_of(Some(self.rnode("seenAt", [jstr(room)]))).unwrap_or(0.0)
       let rec = as_i64(field_of(recorded, "seen")).unwrap_or(at)
       let seen = if rec > seen_here { rec } else { seen_here }
@@ -807,7 +814,7 @@ async fn Actors::close_here(self : Actors, workspace : String, peer : String, se
     None => {
       for t in tasks {
         if self.task_running(t.dir) {
-          ignore(self.job_stop(job_of_task(t.dir)))
+          ignore(self.job_stop(self.job_of_task(t.dir)))
         }
         ignore(self.rnode("removeTask", [jstr(t.dir)]))
       }
@@ -838,16 +845,16 @@ async fn Actors::close_here(self : Actors, workspace : String, peer : String, se
 /// The target's own cleanup: a source session's directory unused for IDLE_MS, with nothing running, goes; so do task
 /// directories from before shared session directories; mirrors unused for MIRROR_IDLE_MS.
 async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
-  let sessions = rjoin([self.remote.root, "sessions"])
+  let sessions = self.rjoin([self.remote.root, "sessions"])
   for name in self.readdir_names(sessions) {
     if self.remote.stopped {
       return
     }
-    let meta = self.read_json(rjoin([sessions, name, "session.json"])) catch { _ => continue }
+    let meta = self.read_json(self.rjoin([sessions, name, "session.json"])) catch { _ => continue }
     let (workspace, peer, session) = (text_of(meta, "workspace"), text_of(meta, "station"), text_of(meta, "session"))
     self.in_lane(self.room(workspace, peer, session), async fn() raise {
-      let again = self.read_json(rjoin([sessions, name, "session.json"])) catch { _ => return }
-      let seen_here = num_of(Some(self.rnode("seenAt", [jstr(rjoin([sessions, name]))]))).unwrap_or(0.0)
+      let again = self.read_json(self.rjoin([sessions, name, "session.json"])) catch { _ => return }
+      let seen_here = num_of(Some(self.rnode("seenAt", [jstr(self.rjoin([sessions, name]))]))).unwrap_or(0.0)
       let rec = as_i64(field_of(again, "seen")).unwrap_or(now)
       let seen = if rec > seen_here { rec } else { seen_here }
       if now - seen >= idle_ms {
@@ -870,13 +877,13 @@ async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
       }
     })
   }
-  let incoming = rjoin([self.remote.root, "incoming"])
+  let incoming = self.rjoin([self.remote.root, "incoming"])
   for name in self.readdir_names(incoming) {
     if self.remote.stopped {
       return
     }
-    let dir = rjoin([incoming, name])
-    let record = rjoin([dir, "task.json"])
+    let dir = self.rjoin([incoming, name])
+    let record = self.rjoin([dir, "task.json"])
     let meta = self.read_json(record) catch { _ => continue }
     if text_of(meta, "layout") == "session" {
       continue
@@ -900,14 +907,15 @@ async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
 /// The disk of the station's data low (ops/disk.ts): mirrors go, the longest unused first, until there is enough again.
 /// One a task runs in or syncs to, or used within MIRROR_RECENT_MS, stays.
 async fn Actors::relieve(self : Actors, now : Double) -> Unit raise {
-  let low = async fn() -> Bool raise { truthy(self.rnode("diskLow", [jstr(self.remote.root)])) }
+  // (over its budget too: `budget`)
+  let low = async fn() -> Bool raise { self.remote.over > 0.0 || truthy(self.rnode("diskLow", [jstr(self.remote.root)])) }
   if !low() {
     return
   }
-  let sessions = rjoin([self.remote.root, "sessions"])
+  let sessions = self.rjoin([self.remote.root, "sessions"])
   let candidates : Array[(String, String, String, String, Double)] = []
   for name in self.readdir_names(sessions) {
-    let meta = self.read_json(rjoin([sessions, name, "session.json"])) catch { _ => continue }
+    let meta = self.read_json(self.rjoin([sessions, name, "session.json"])) catch { _ => continue }
     let (workspace, peer, session) = (text_of(meta, "workspace"), text_of(meta, "station"), text_of(meta, "session"))
     self.in_lane(self.room(workspace, peer, session), async fn() raise {
       for m in self.mirrors_of(workspace, peer, session, now) {
@@ -933,6 +941,224 @@ async fn Actors::relieve(self : Actors, now : Double) -> Unit raise {
 }
 
 ///|
+/// A room used within this stays, over its budget or not (remote.ts `ROOM_RECENT_MS`).
+let room_recent_ms : Double = 3600000.0
+
+///|
+/// A task done here (incoming/<task>), and one started from here whose end was told (outgoing/<id>.json), kept this
+/// long after (remote.ts `TASKS_KEPT_MS`).
+let tasks_kept_ms : Double = 7.0 * 24.0 * 3600.0 * 1000.0
+
+///|
+priv struct RoomUse {
+  dir : String
+  bytes : Double
+  seen : Double
+  owner : (String, String, String)?
+}
+
+///|
+/// The source sessions' rooms here (sessions/<id>), each with how much it takes and when it was last used (its record's
+/// time, or Node's of a use since: `roomInfo`).
+async fn Actors::rooms(self : Actors) -> Array[RoomUse] raise {
+  let sessions = self.rjoin([self.remote.root, "sessions"])
+  let out : Array[RoomUse] = []
+  for name in self.readdir_names(sessions) {
+    if self.remote.stopped {
+      break
+    }
+    let dir = self.rjoin([sessions, name])
+    let meta = self.read_json(self.rjoin([dir, "session.json"])) catch { _ => Json::null() }
+    let info = self.rnode("roomInfo", [jstr(dir)])
+    let recorded = match field_of(meta, "seen") {
+      Number(n, ..) => n
+      _ => 0.0
+    }
+    let here = num_of(Some(field_of(info, "seenAt"))).unwrap_or(0.0)
+    let owner = match (field_of(meta, "workspace"), field_of(meta, "station"), field_of(meta, "session")) {
+      (String(w), String(s), String(x)) => Some((w, s, x))
+      _ => None
+    }
+    out.push({ dir, bytes: num_of(Some(field_of(info, "bytes"))).unwrap_or(0.0), seen: if here > recorded { here } else { recorded }, owner })
+  }
+  out
+}
+
+///|
+fn rooms_bytes(rooms : Array[RoomUse]) -> Double {
+  rooms.fold(init=0.0, (n, r) => n + r.bytes)
+}
+
+///|
+/// The source sessions with a task running here (incoming's records, their jobs `remote_<task>` running), as JSON of
+/// [workspace, station, session]: the records read here, never on Node's thread.
+async fn Actors::running_owners(self : Actors) -> Map[String, Bool] raise {
+  let owners : Map[String, Bool] = {}
+  guard self.rstore("jobsUp", []) is Array(jobs) else { return owners }
+  for job in jobs {
+    let id = text_of(job, "id")
+    if !id.has_prefix("remote_") {
+      continue
+    }
+    let record = self.rjoin([self.remote.root, "incoming", id.view(start_offset=7).to_string(), "task.json"])
+    let meta = self.read_json(record) catch { _ => continue }
+    owners[js_text(Json::array([field_of(meta, "workspace"), field_of(meta, "station"), field_of(meta, "session")]))] = true
+  }
+  owners
+}
+
+///|
+/// remote/sessions held to `budget` (remote.ts `budget`): the mirrors not in use go first, the longest unused first
+/// (`relieve`, told the disk is low until as much as it is over by went); then the rooms with no task running there,
+/// the longest unused first. One used within ROOM_RECENT_MS, and anything a task runs in, stays. The bytes freed.
+async fn Actors::budget(self : Actors, now : Double, budget : Double) -> Double raise {
+  let before = rooms_bytes(self.rooms())
+  if before <= budget || self.remote.stopped {
+    return 0.0
+  }
+  self.rlog("warn", "other stations' rooms here over their budget: the longest unused go", fields={ "bytes": jnum(before), "budget": jnum(budget) })
+  self.remote.over = before - budget
+  let failed = try {
+    self.relieve(now)
+    None
+  } catch {
+    e => Some(e)
+  }
+  self.remote.over = 0.0
+  if failed is Some(e) {
+    raise e
+  }
+  let rooms = self.rooms()
+  let mut total = rooms_bytes(rooms)
+  let running = self.running_owners()
+  rooms.sort_by((a, b) => a.seen.compare(b.seen))
+  for room in rooms {
+    if total <= budget || self.remote.stopped {
+      break
+    }
+    guard room.owner is Some((workspace, station, session)) else { continue }
+    let owner = js_text(Json::array([jstr(workspace), jstr(station), jstr(session)]))
+    if now - room.seen < room_recent_ms || running.contains(owner) {
+      continue
+    }
+    // Taken out in one step with its use asked again (Node's `closeRoom`): one used since it was looked at stays.
+    let moved = self.rnode("closeRoom", [jstr(room.dir), Json::array([]), jnum(now - room_recent_ms)])
+    if field_of(moved, "room") is String(gone) {
+      ignore(self.rnode("removeTask", [jstr(gone)])) catch { _ => () }
+      total -= room.bytes
+      self.rlog("info", "remote session directory removed", fields={
+        "why": jstr("over budget"),
+        "bytes": jnum(room.bytes),
+        "workspace": jstr(workspace),
+        "station": jstr(station),
+        "session": jstr(session),
+      })
+    }
+  }
+  if before - total > 0.0 { before - total } else { 0.0 }
+}
+
+///|
+/// Tasks long over let go of (remote.ts `expire`): incoming/<task> whose job ended TASKS_KEPT_MS ago (or the store no
+/// longer has, and unchanged as long), and outgoing/<id>.json told its end (`delivered`) and unchanged as long. How
+/// many.
+async fn Actors::expire(self : Actors, now : Double) -> Int raise {
+  let mut gone = 0
+  let up : Map[String, Bool] = {}
+  if self.rstore("jobsUp", []) is Array(jobs) {
+    for job in jobs {
+      up[text_of(job, "id")] = true
+    }
+  }
+  let incoming = self.rjoin([self.remote.root, "incoming"])
+  for name in self.readdir_names(incoming) {
+    if self.remote.stopped {
+      return gone
+    }
+    let id = "remote_\{name}"
+    if up.contains(id) {
+      continue
+    }
+    let job = self.rstore("getJob", [jstr(id)])
+    let dir = self.rjoin([incoming, name])
+    let mut at = now
+    if job is Null {
+      let record = self.lstat(self.rjoin([dir, "task.json"])) catch { _ => None }
+      let st = match record {
+        Some(st) => Some(st)
+        None => self.lstat(dir) catch { _ => None }
+      }
+      if st is Some(st) {
+        at = num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now)
+      }
+    } else {
+      guard text_of(job, "state") != "running" && num_of(Some(field_of(job, "endedAt"))) is Some(ended) else { continue }
+      at = ended
+    }
+    if now - at < tasks_kept_ms {
+      continue
+    }
+    self.remove(dir, recursive=true) catch { _ => () }
+    gone += 1
+  }
+  let outgoing = self.rjoin([self.remote.root, "outgoing"])
+  for name in self.readdir_names(outgoing) {
+    if self.remote.stopped || !name.has_suffix(".json") {
+      continue
+    }
+    let file = self.rjoin([outgoing, name])
+    let st = self.lstat(file) catch { _ => None }
+    guard st is Some(st) else { continue }
+    if now - num_of(Some(field_of(st, "mtimeMs"))).unwrap_or(now) < tasks_kept_ms {
+      continue
+    }
+    let record = self.read_json(file) catch { _ => Json::null() }
+    if !(field_of(record, "delivered") is True) {
+      continue
+    }
+    self.remove(file) catch { _ => () }
+    gone += 1
+  }
+  if gone > 0 {
+    self.rlog("info", "tasks long over let go of", fields={ "count": jnum(gone.to_double()) })
+  }
+  gone
+}
+
+///|
+/// Prepared records from before they were kept by session (prepared/<hash>.json) moved into their session's: linked
+/// there, never over a newer prepare's record (one there already: the old one goes).
+async fn Actors::move_prepared(self : Actors) -> Unit raise {
+  let dir = self.rjoin([self.remote.root, "prepared"])
+  for name in self.readdir_names(dir) {
+    if self.remote.stopped {
+      return
+    }
+    if !name.has_suffix(".json") {
+      continue
+    }
+    let file = self.rjoin([dir, name])
+    let v = self.read_json(file) catch { _ => Json::null() }
+    let session = text_of(v, "session")
+    if session == "" {
+      self.remove(file) catch { _ => () }
+      continue
+    }
+    self.mkdirs(self.prepared_dir(session)) catch { _ => () }
+    // (true: linked; false: one there already, EEXIST: either way the old one goes)
+    let linked = try {
+      ignore(self.fs("fs.link", { "from": jstr(file), "to": jstr(self.rjoin([self.prepared_dir(session), name])) }))
+      true
+    } catch {
+      _ => false
+    }
+    if linked {
+      self.remove(file) catch { _ => () }
+    }
+  }
+}
+
+///|
 /// Peers removed from a workspace (or the workspace left) have their tasks stopped, without touching any local jobs.
 /// `rosters`: each workspace the station is in now, with its other stations.
 async fn Actors::revoke(self : Actors, rosters : Json, current : Bool) -> Unit raise {
@@ -940,9 +1166,9 @@ async fn Actors::revoke(self : Actors, rosters : Json, current : Bool) -> Unit r
     return
   }
   let list = match rosters { Array(a) => a; _ => [] }
-  let incoming = rjoin([self.remote.root, "incoming"])
+  let incoming = self.rjoin([self.remote.root, "incoming"])
   for name in self.readdir_names(incoming) {
-    let meta = self.read_json(rjoin([incoming, name, "task.json"])) catch { _ => continue }
+    let meta = self.read_json(self.rjoin([incoming, name, "task.json"])) catch { _ => continue }
     let peer = text_of(meta, "station")
     if list.iter().any(r => text_of(r, "workspace") == text_of(meta, "workspace") && (match field_of(r, "peers") { Array(p) => p.contains(jstr(peer)); _ => false })) {
       continue

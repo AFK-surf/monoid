@@ -516,6 +516,7 @@ fn DeviceState::new() -> DeviceState {
 /// last read it, what this frame reads, and which frame that is.
 priv struct Catcher {
   mut composing : String
+  composing_sig : @signals.Signal[String]
   came : Array[KeyIn]
   mut keys : Array[KeyIn]
   mut frame : Int
@@ -528,6 +529,15 @@ priv struct Catcher {
   /// a field's are, and what is told each key and word as it comes, at its moment (none read as a frame builds)
   mut node : @view.NodeId?
   mut told : ((KeyIn) -> Unit)?
+  mut paste_told : ((String) -> Unit)?
+}
+
+///|
+fn Catcher::set_composing(self : Catcher, s : String) -> Unit {
+  if self.composing != s {
+    self.composing = s
+    self.composing_sig.set(s)
+  }
 }
 
 ///|
@@ -535,7 +545,18 @@ fn Ctx::catcher_of(self : Ctx, id : Int) -> Catcher {
   match self.dev.catchers.get(id) {
     Some(st) => st
     None => {
-      let st = { composing: "", came: [], keys: [], frame: -1, island: None, place: None, node: None, told: None }
+      let st = {
+        composing: "",
+        composing_sig: @signals.signal("", same=fn(a, b) { a == b }),
+        came: [],
+        keys: [],
+        frame: -1,
+        island: None,
+        place: None,
+        node: None,
+        told: None,
+        paste_told: None,
+      }
       self.dev.catchers[id] = st
       st
     }
@@ -741,24 +762,27 @@ fn catcher_text(c : Ctx, kind : Int, s : String, a : Int, b : Int) -> Bool {
   guard c.dev.catchers.get(c.focus_allowed()) is Some(st) else { return false }
   match kind {
     0 => {
-      st.composing = ""
+      st.set_composing("")
       st.type_words(s)
     }
-    1 => st.composing = s
+    1 => st.set_composing(s)
     2 => {
-      if st.composing != "" {
-        st.type_words(st.composing)
+      let had = st.composing
+      st.set_composing("")
+      if had != "" {
+        st.type_words(had)
       }
-      st.composing = ""
     }
     4 =>
       if st.composing != "" {
         let n = st.composing.length() - a
-        st.composing = if n <= 0 {
-          ""
-        } else {
-          st.composing.unsafe_substring(start=0, end=n)
-        }
+        st.set_composing(
+          if n <= 0 {
+            ""
+          } else {
+            st.composing.unsafe_substring(start=0, end=n)
+          },
+        )
       } else {
         for _ in 0..<a {
           st.tap("Backspace", "Backspace", 0)
@@ -767,6 +791,15 @@ fn catcher_text(c : Ctx, kind : Int, s : String, a : Int, b : Int) -> Bool {
           st.tap("Delete", "Delete", 0)
         }
       }
+    8 => {
+      st.set_composing("")
+      if s != "" {
+        match st.paste_told {
+          Some(f) => f(s)
+          None => st.type_words(s)
+        }
+      }
+    }
     _ => ()
   }
   true

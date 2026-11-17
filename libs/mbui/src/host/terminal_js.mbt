@@ -1,27 +1,52 @@
-// terminal.mbt's calls in a browser: none kept yet (libghostty-vt's Wasm is a step of its own), so the app shows no
-// terminal there.
+// terminal.mbt's calls in a browser, backed by ghostty-vt.wasm in web/host.js when carried beside host.js.
 
 ///|
-fn tm_open(_cols : Int, _rows : Int) -> Int {
-  0
-}
+extern "js" fn tm_open(cols : Int, rows : Int) -> Int =
+  #|(cols, rows) => __mbhost.termOpen(cols, rows)
 
 ///|
-fn tm_write(_id : Int, _data : Bytes) -> Unit {
-  ()
-}
+extern "js" fn tm_write(id : Int, data : Bytes) -> Unit =
+  #|(id, data) => __mbhost.termWrite(id, data)
 
 ///|
-fn tm_resize(_id : Int, _cols : Int, _rows : Int) -> Unit {
-  ()
-}
+extern "js" fn tm_resize(id : Int, cols : Int, rows : Int, cw : Int, ch : Int) -> Unit =
+  #|(id, cols, rows, cw, ch) => __mbhost.termResize(id, cols, rows, cw, ch)
 
 ///|
-fn tm_lines(_id : Int) -> String {
-  ""
-}
+extern "js" fn tm_frame(id : Int, flags : Int) -> Bytes =
+  #|(id, flags) => __mbhost.termFrame(id, flags)
 
 ///|
-fn tm_close(_id : Int) -> Unit {
-  ()
-}
+extern "js" fn tm_modes(id : Int) -> Int =
+  #|(id) => __mbhost.termModes(id)
+
+///|
+extern "js" fn tm_scroll(id : Int, kind : Int, value : Int) -> Unit =
+  #|(id, kind, value) => __mbhost.termScroll(id, kind, value)
+
+///|
+extern "js" fn tm_select(id : Int, kind : Int, x0 : Int, y0 : Int, x1 : Int, y1 : Int) -> Int =
+  #|(id, kind, x0, y0, x1, y1) => __mbhost.termSelect(id, kind, x0, y0, x1, y1)
+
+///|
+extern "js" fn tm_text(id : Int, sel : Int) -> String =
+  #|(id, sel) => __mbhost.termText(id, sel)
+
+///|
+extern "js" fn tm_mouse(
+  id : Int,
+  action : Int,
+  button : Int,
+  mods : Int,
+  x : Int,
+  y : Int,
+  w : Int,
+  h : Int,
+  cw : Int,
+  ch : Int,
+) -> Bytes =
+  #|(id, action, button, mods, x, y, w, h, cw, ch) => __mbhost.termMouse(id, action, button, mods, x, y, w, h, cw, ch)
+
+///|
+extern "js" fn tm_close(id : Int) -> Unit =
+  #|(id) => __mbhost.termClose(id)

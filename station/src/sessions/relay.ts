@@ -8,7 +8,7 @@ import { log } from "../ops/log.ts";
 import type { ThreadRow } from "../store/rows.ts";
 import { titleOf } from "../read/views.ts";
 import { threadAddress } from "../agents/instructions.ts";
-import type { ChatSurface, Member, Place, ThreadRef } from "./chat.ts";
+import { type ChatSurface, type Member, type Place, type ThreadRef, markNotice } from "./chat.ts";
 import type { Connect } from "./config.ts";
 import type { Hub } from "./hub.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
@@ -23,11 +23,16 @@ export type RelayConnect = {
   kind: "slack" | "feishu" | "lark";
   name: string;
   team: string | null;
+  /// Its workspace's id (a Slack team's, a Feishu tenant's), once known: bots of one are in the same places.
+  teamId: string | null;
   /// Its bot's picture as the platform shows it, once known.
   botImage: string | null;
   /// The bot the chat goes on through unless another is picked (one of them at most): see `preferredOf`.
   preferred: boolean;
   places: RelayPlace[];
+  /// Whether its bot may join a public channel itself, and those of its workspace it is not in (only where it may).
+  joins?: boolean;
+  open?: Place[];
   error?: string;
 };
 
@@ -49,6 +54,8 @@ function connectsFor(hub: Hub, session: string): { id: string; chat: ChatSurface
     .config()
     .connects.filter((c) => c.enabled && (home === null || (c.workspace ?? home) === ws))
     .flatMap((c) => {
+      // (a group connect's conversations are not offered here yet: the app's relay knows Slack's and Feishu's)
+      if (c.kind === "group") return [];
       const chat = hub.chatOf(c.id);
       if (chat === undefined || !chat.places || !chat.begin) return [];
       const kind: RelayConnect["kind"] = c.kind === "feishu" ? (chat.platform?.() === "lark" ? "lark" : "feishu") : "slack";
@@ -85,12 +92,16 @@ export async function relayPlaces(hub: Hub, thread: ThreadRow): Promise<RelayCon
   const connects = connectsFor(hub, session);
   const preferred = preferredOf(hub, session, connects);
   for (const c of connects) {
-    const shown = { id: c.id, kind: c.kind, name: c.chat.botName?.() || c.id, ...identityOf(c.chat), preferred: c.id === preferred };
+    const shown = { id: c.id, kind: c.kind, name: c.chat.botName?.() || c.id, ...identityOf(c.chat), teamId: c.chat.workspace() || null, preferred: c.id === preferred };
     try {
       const used = hub.store.relayedTo(c.id);
       const places: RelayPlace[] = (await c.chat.places!()).map((p) => (used.has(p.id) ? { ...p, used: used.get(p.id)! } : p));
       places.sort((a, b) => (b.used ?? -1) - (a.used ?? -1) || a.name.localeCompare(b.name));
-      out.push({ ...shown, places });
+      // (the public channels it may join, where it may: a channel some other bot of its workspace is in is then one
+      // this bot joins as it relays there, 「接力时加入」; one that cannot be read leaves them out)
+      const joins = c.chat.joins?.() === true && c.chat.openPlaces !== undefined;
+      const open = joins ? await c.chat.openPlaces!().catch((error: Error) => (log.warn("hub", "a connect's open channels were not read", { connect: c.id, error: error.message }), null)) : null;
+      out.push({ ...shown, places, ...(open !== null ? { joins: true, open } : {}) });
     } catch (error) {
       log.warn("hub", "a connect's places were not read for relaying", { connect: c.id, error: (error as Error).message });
       out.push({ ...shown, places: [], error: (error as Error).message });
@@ -104,7 +115,8 @@ const placeName = (place: Place) => (place.kind === "channel" ? `#${place.name}`
 
 /// Where a person relays a chat: a connect's place (a new conversation there), or a link to a message of a thread
 /// in one (that thread; through the connect named, when it is in that workspace, else the first that is).
-export type RelayTarget = { connect: string; channel: string } | { link: string; connect?: string };
+/// `join`: the connect's bot joins that public channel first, where it is not in it.
+export type RelayTarget = { connect: string; channel: string; join?: boolean } | { link: string; connect?: string };
 
 /// Who relays a chat: their name on still.fail and the email of their account there.
 export type Relayer = { name: string; email: string };
@@ -128,7 +140,16 @@ async function targetOf(connects: ReturnType<typeof connectsFor>, target: RelayT
     if (c === undefined) throw new Error(`connect ${target.connect} cannot take this chat`);
   }
   const channel = existing?.channel ?? (target as { channel: string }).channel;
-  const place = (await c.chat.places!()).find((p) => p.id === channel);
+  let place = (await c.chat.places!()).find((p) => p.id === channel);
+  // (a public channel it is not in, where it was asked to join it: joined now, as it relays there)
+  const join = "channel" in target && target.join === true;
+  if (place === undefined && join && c.chat.join !== undefined && c.chat.openPlaces !== undefined) {
+    const open = (await c.chat.openPlaces()).find((p) => p.id === channel);
+    if (open !== undefined) {
+      await c.chat.join(channel);
+      place = open;
+    }
+  }
   if (place === undefined) throw new Error(`the bot is not in ${channel}`);
   return { c, existing, channel, place };
 }
@@ -206,7 +227,7 @@ export async function relay(hub: Hub, thread: ThreadRow, relayer: Relayer, targe
   if (here !== undefined) {
     const text = `↗ ${tr(lang, "station.relay.relayed", { who: by, place: named })}`;
     try {
-      const ts = await hub.chat(here.connect).post({ channel: thread.channel, threadTs: thread.threadTs }, text, []);
+      const ts = await hub.chat(here.connect).post({ channel: thread.channel, threadTs: thread.threadTs }, markNotice(text), []);
       hub.store.insertMessage({ thread: thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: [] });
     } catch (error) {
       log.warn("hub", "a relay was not said in the chat it came from", { thread: thread.id, error: (error as Error).message });

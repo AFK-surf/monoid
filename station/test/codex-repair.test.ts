@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpat
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { canSwitchCodex, captureCodex, codexBinary, missingCodexHost, restoreCodex, switchCodex } from "../src/updates/codex-repair.ts";
+import { canSwitchCodex, captureCodexSoon, codexBinarySoon, missingCodexHost, restoreCodex, switchCodex } from "../src/updates/codex-repair.ts";
 import { platform as machine } from "../src/platform/index.ts";
 import { platform } from "../src/updates/versions.ts";
 
@@ -45,11 +45,11 @@ test("npm's launcher resolves its platform executable and missing companion", as
   const binary = join(pkg, "vendor", triples[target]!, "bin", machine.exe("codex"));
   native(binary);
   const found = { onPath: entry, real: entry };
-  assert.equal(codexBinary(found), binary);
+  assert.equal(await codexBinarySoon(found), binary);
   assert.equal((await missingCodexHost(found, {}, active))?.helper, join(dirname(binary), machine.exe("codex-code-mode-host")));
 });
 
-test("switching keeps the old entry and rolls back; it refuses changed or outside-home commands", { skip: !machine.codexStandalone }, () => {
+test("switching keeps the old entry and rolls back; it refuses changed or outside-home commands", { skip: !machine.codexStandalone }, async () => {
   const home = temp(), old = join(home, "old-codex"), entry = join(home, "bin", "codex"), launcher = join(home, "npm", "codex");
   native(old);
   native(launcher);
@@ -58,7 +58,7 @@ test("switching keeps the old entry and rolls back; it refuses changed or outsid
   const found = { onPath: entry, real: old }, env = { HOME: home };
   assert.equal(canSwitchCodex(found, env), true);
   assert.equal(canSwitchCodex(found, { HOME: temp() }), false);
-  const captured = captureCodex(found, env)!;
+  const captured = (await captureCodexSoon(found, env))!;
   const backup = switchCodex(captured, launcher, env);
   assert.equal(readlinkSync(backup), old);
   assert.equal(realpathSync(entry), launcher);
@@ -66,17 +66,17 @@ test("switching keeps the old entry and rolls back; it refuses changed or outsid
   assert.equal(readlinkSync(entry), old);
   assert.equal(existsSync(backup), false);
   assert.deepEqual(readFileSync(old), Buffer.from("7f454c4601020304", "hex"));
-  const stale = captureCodex(found, env)!;
+  const stale = (await captureCodexSoon(found, env))!;
   writeFileSync(old, Buffer.from("7f454c460102030405", "hex"));
   assert.throws(() => switchCodex(stale, launcher, env), /changed/);
   assert.equal(readlinkSync(entry), old);
 });
 
-test("rollback preserves a command changed after the switch and keeps its backup", { skip: !machine.codexStandalone }, () => {
+test("rollback preserves a command changed after the switch and keeps its backup", { skip: !machine.codexStandalone }, async () => {
   const home = temp(), entry = join(home, "codex"), launcher = join(home, "npm-codex");
   native(entry);
   native(launcher);
-  const env = { HOME: home }, captured = captureCodex({ onPath: entry, real: entry }, env)!;
+  const env = { HOME: home }, captured = (await captureCodexSoon({ onPath: entry, real: entry }, env))!;
   const backup = switchCodex(captured, launcher, env);
   unlinkSync(entry);
   writeFileSync(entry, "a different command");

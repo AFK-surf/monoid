@@ -44,6 +44,43 @@ pub fn local_station_addable_in(workspace : String, known : Array[String]) -> Bo
 }
 
 ///|
+// kept across runs: put back as a run begins (reset)
+let local_said_kept : Ref[@signals.Signal[String]?] = Ref(None)
+
+///|
+/// What the host says of this machine's station, as a signal: read of the host as it is first asked, and again as a
+/// page that reads it on its own time hears it anew (local_station_heard), so what shows it is made again then.
+fn local_said() -> @signals.Signal[String] {
+  match local_said_kept.val {
+    Some(s) => s
+    None => {
+      let s = @signals.signal(@hostapi.app_said("local_station"), same=fn(a, b) { a == b })
+      local_said_kept.val = Some(s)
+      s
+    }
+  }
+}
+
+///|
+/// What the host said of this machine's station just now, heard by a page that reads it again on its own time
+/// (本机 Station's, this machine's station's page): Station's list tags and orders by it.
+pub fn local_station_heard(said : String) -> Unit {
+  local_said().set(said)
+}
+
+///|
+/// The id of the station this machine is (its host's, the same in every workspace it is in), "" where it is none.
+fn local_station_id() -> String {
+  if !local_station_managed() {
+    return ""
+  }
+  let s = Some(@json.parse(local_said().get()) catch { _ => Json::null() })
+  let ws = field(s, "workspace")
+  // (not one taken away from here, its data kept: 已卸载)
+  if flag(s, "uninstalled") || flag(ws, "removed") || flag(ws, "rig") { "" } else { text(ws, "station") }
+}
+
+///|
 fn add_here_note(pc : Bool) -> String {
   if text(local_station_json(), "data") != "" {
     tr(if pc { "android-settings.station.addHereExistingPc" } else { "android-settings.station.addHereExisting" })
@@ -110,38 +147,6 @@ fn press_add_here(
       (core.push)(LocalStation)
     }
   }
-}
-
-///|
-/// 添加这台 Mac offered where a station is added (添加 station's sheet, a workspace's first): what it does, its button;
-/// pressed, joins via `station.join` when online and joinable in the mesh, else calls `local_install(true)` and opens
-/// 本机 Station.
-fn add_this_machine(c : @ui.Ctx, core : Core, here : Here, then : () -> Unit) -> Unit {
-  let pc = local_machine_pc()
-  let (join_addr, needs_lock, lock_line) = local_here_join_state(core, here)
-  let joining = match join_addr {
-    Some(st) => is_doing(core, ["station.join"], [("station", st), ("workspace", here.workspace)])
-    None => false
-  }
-  c.box(style=here_column, fn() {
-    c.text(add_here_note(pc), style=here_words) |> ignore
-    if lock_line != "" {
-      c.text(lock_line, style=join_soft_words) |> ignore
-    }
-    @sf.button(
-      c,
-      tr(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }),
-      key="add-here",
-      busy=joining,
-      disabled=needs_lock || joining,
-      on_press=fn() { press_add_here(core, here, join_addr, false, then) },
-    )
-    let err = adding.here_error.get()
-    if err != "" {
-      c.text(err, style=add_error_words) |> ignore
-    }
-  })
-  |> ignore
 }
 
 ///|
