@@ -344,9 +344,9 @@ fn fact_chip(c : @ui.Ctx, words : String) -> Unit {
 /// A state in a tinted pill: its glyph (GitHub's, 12) and its name, 500, in the state's colours:
 /// open and passed green, merged and completed purple, closed and failed red, pending amber, a draft or not planned
 /// grey.
-fn state_pill(c : @ui.Ctx, state : String, glyph : String?, words : String) -> Unit {
+fn state_pill(c : @ui.Ctx, state : String, glyph : String?, words : String, style? : @ui.Style = peek_state) -> Unit {
   let (ink, ground) = state_colours(state)
-  c.box(style=peek_state.then(@ui.style(bg=Data(ground))), fn() {
+  c.box(style=style.then(@ui.style(bg=Data(ground))), fn() {
     match glyph {
       Some(d) => @sf.vector(c, "peek-state/" + state, glyph_of(d, ink), peek_glyph) |> ignore
       None => ()

@@ -54,7 +54,7 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
   let state = fn() { run_state(text(value(), "state")) }
   parent.box(fn(meta) {
     @sf.style_node(meta, fn() { peek_change_meta })
-    state_pill_node(meta, fn() { state().0 }, fn() { None }, fn() { @sf.t(state().1) })
+    state_pill_node(meta, fn() { state().0 }, fn() { None }, fn() { @sf.t(state().1) }, style=run_pill)
     meta.box(fn(r) {
       @sf.style_node(r, fn() { peek_ref }, in_row=true)
       @sf.words_node(r, fn() { run_workflow(value()) }, fn() { peek_meta_words }) |> ignore
@@ -67,15 +67,21 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
     @sf.style_node(line, fn() { peek_meta })
     line.wraps(Is(Some(@ui.Space::S2.px()))) |> ignore
     line.each(fn() { run_counts(value()) }, fn(f) { f }, fn(b, item) {
-      state_pill_node(b, fn() { item.get().0 }, fn() { None }, fn() { item.get().1 })
+      state_pill_node(b, fn() { item.get().0 }, fn() { None }, fn() { item.get().1 }, style=run_pill)
     })
   }) |> ignore
   parent.each(fn() { run_jobs(value()) }, fn(j) { j.2 }, fn(row, item) {
-    @sf.style_node(row, fn() { peek_meta })
-    @sf.panel_button_node(row, fn() { item.get().0 }, fn() { open_link(item.get().2) }, tone=Quiet) |> ignore
-    row.box(fn(detail) {
-      @sf.style_node(detail, fn() { peek_ref }, in_row=true)
-      @sf.words_node(detail, fn() { item.get().1 }, fn() { run_step_words }) |> ignore
+    @headless.button(row, fn() { item.get().0 }, fn(_) { open_link(item.get().2) }, fn(b, _) {
+      @sf.style_node(b, fn() { run_job_row })
+      b.focus_ring_theme() |> ignore
+      b.box(fn(name) {
+        @sf.style_node(name, fn() { run_name_column }, in_row=true)
+        @sf.words_node(name, fn() { item.get().0 }, fn() { run_name_words(@sf.lit_node(b)) }) |> ignore
+      }) |> ignore
+      b.box(fn(detail) {
+        @sf.style_node(detail, fn() { peek_ref }, in_row=true)
+        @sf.words_node(detail, fn() { item.get().1 }, fn() { run_step_words }) |> ignore
+      }) |> ignore
     }) |> ignore
   })
   parent.box(fn(foot) {
@@ -90,19 +96,22 @@ fn run_card_node(parent : @view.View, value : () -> Json?, href : () -> String, 
 fn run_card(c : @ui.Ctx, v : Json?, href : String, copy : () -> Unit) -> Unit {
   let (tone, key) = run_state(text(v, "state"))
   c.box(style=peek_change_meta, fn() {
-    state_pill(c, tone, None, @sf.t(key))
+    state_pill(c, tone, None, @sf.t(key), style=run_pill)
     c.box(style=peek_ref, fn() { c.text(run_workflow(v), style=peek_meta_words) |> ignore }) |> ignore
     c.text(run_elapsed(v), style=peek_meta_words) |> ignore
   }) |> ignore
   c.text(text(v, "title"), style=peek_tile_title) |> ignore
   c.text(run_source(v), style=peek_meta_words) |> ignore
   c.box(style=peek_meta, flow=true, line_gap=@ui.Space::S2.px(), fn() {
-    for fact in run_counts(v) { state_pill(c, fact.0, None, fact.1) }
+    for fact in run_counts(v) { state_pill(c, fact.0, None, fact.1, style=run_pill) }
   }) |> ignore
   for job in run_jobs(v) {
-    c.box(style=peek_meta, fn() {
-      @sf.panel_button(c, job.2, job.0, tone=Quiet, on_press=fn() { open_link(job.2) }) |> ignore
-      c.box(style=peek_ref, fn() { c.text(job.1, style=run_step_words) |> ignore }) |> ignore
+    c.on_press(c.id(job.2), fn() { open_link(job.2) })
+    @kit.button(c, job.0, key=job.2, w=Fill(1.0), look=fn(c, state) {
+      c.box(style=run_job_row, fn() {
+        c.box(style=run_name_column, fn() { c.text(job.0, style=run_name_words(state.hovered || state.focus_shown)) |> ignore }) |> ignore
+        c.box(style=peek_ref, fn() { c.text(job.1, style=run_step_words) |> ignore }) |> ignore
+      }) |> ignore
     }) |> ignore
   }
   c.box(style=run_foot, fn() {
@@ -118,4 +127,21 @@ let run_foot : @ui.Style = peek_file_foot.then(@ui.style(ml=@sf.room_of(peek_but
 
 ///|
 // kept across runs: the current step can take a second line beside the job button
-let run_step_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full, max_lines=2)
+let run_step_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full, max_lines=2)
+
+///|
+// kept across runs: both columns start on the same line even when either wraps
+let run_job_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+// kept across runs: job names share a column and wrap inside it
+let run_name_column : @ui.Style = @ui.style(w=S24)
+
+///|
+fn run_name_words(hot : Bool) -> @ui.TextStyle {
+  @ui.text_style(size=Meta, leading=L5, weight=Medium, color=if hot { AccentText } else { Fg }, w=Full, max_lines=2)
+}
+
+///|
+// kept across runs: a text-only status pill has the same inset on both sides
+let run_pill : @ui.Style = peek_state.then(@ui.style(pl=S2))

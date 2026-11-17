@@ -659,9 +659,10 @@ fn state_pill_node(
   glyph : () -> String?,
   words : () -> String,
   own? : Bool = false,
+  style? : @ui.Style = peek_state,
 ) -> Unit {
   let pill = fn(p : @view.View) {
-    @sf.style_node(p, fn() { peek_state }, in_row=true)
+    @sf.style_node(p, fn() { style }, in_row=true)
     p.ground(By(fn() { state_colours(state()).1 })) |> ignore
     p.show(fn() { glyph() is Some(_) }, fn(g) {
       g
