@@ -14,7 +14,7 @@ type Json = any;
 export const FEEDBACK_SEND = {
   name: "feedback_send",
   description:
-    "Send a bug report about still.fail itself (the station, its tools, the still.fail apps, web or cloud, its Slack side) to the still.fail team. Only after the person you work for agreed to it and saw what is sent; the stillfail-feedback skill says when and how. Not for bugs in their own code or other services.",
+    "Report a bug in still.fail itself to its team after the person has seen and approved what will be sent. See the stillfail-feedback skill.",
   inputSchema: {
     "type": "object",
     "properties": {

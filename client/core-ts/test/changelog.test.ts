@@ -1,8 +1,9 @@
 // The Rust core's changelog.rs tests, ported.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { item } from "../src/changelog.ts";
+import { Changelog, item } from "../src/changelog.ts";
 import { holdLanguage } from "../src/i18n.ts";
+import { setup } from "./views-rig.ts";
 
 holdLanguage();
 const entry = (version: number, parts: string[]) => ({ version, commit: "c", at: 1_790_000_000, text: ["修复：一件事"], fixes: [], parts });
@@ -33,4 +34,20 @@ test("a_line_has_its_kind_apart", () => {
     { label: "", text: "安卓：别的" },
     { label: "", text: "修复：" },
   ]);
+});
+
+test("desktop availability follows the device OS as each build is released", () => {
+  const { host, store, data } = setup();
+  const changelog = new Changelog(host, store, data);
+  const entries = [entry(1335, ["desktop"])];
+  data.put("changelog", "feed", { entries, released: { desktop: 1329, macos: 1329, windows: 1340 } });
+  const note = (userAgent: string) => {
+    changelog.device({ app: "desktop", build: "0.1.1300", userAgent });
+    return changelog.value().tabs[0].days[0].entries[0].note;
+  };
+  assert.equal(note("Windows"), "更新到 0.1.1335 后可用");
+  assert.equal(note("Macintosh; Mac OS X"), "未发布");
+  assert.equal(note(""), "未发布");
+  data.put("changelog", "feed", { entries, released: { desktop: 1340 } });
+  assert.equal(note("Macintosh; Mac OS X"), "更新到 0.1.1335 后可用");
 });

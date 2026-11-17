@@ -152,7 +152,7 @@ export class Changelog implements Owner {
   #released(feed: J): J {
     const releases = get(feed, "released");
     const platform = get(this.#data.record(TABLE, "device"), "platform");
-    if ((platform === "windows" || platform === "macos") && releases && platform in releases) {
+    if ((platform === "windows" || platform === "macos") && releases && typeof releases === "object" && platform in releases) {
       return { ...releases, desktop: releases[platform] };
     }
     return releases;
