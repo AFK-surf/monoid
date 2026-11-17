@@ -185,6 +185,26 @@ for (const drive of [false, true]) test(`overlapping ${drive ? "drive" : "attach
   }
 });
 
+test("cancelling the save that started a range leaves its installer reading", async () => {
+  const file = new Uint8Array(16384).fill(2);
+  const name = "tiny.apk";
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: file.length };
+  const release = r.host.hold(`offset=0&length=${file.length}`);
+  try {
+    const { ok } = await r.ask("download.start", params);
+    await r.ask("station.file", { ...params, keep: true });
+    await r.ask("download.cancel", { id: ok.download.id });
+    release();
+    await r.host.settle();
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    release();
+    r.core.close();
+  }
+});
+
 test("an installer with no listed size shares and reuses the bytes of the download", async () => {
   const file = new Uint8Array(65536).fill(3);
   const name = "old.apk";
@@ -200,6 +220,25 @@ test("an installer with no listed size shares and reuses the bytes of the downlo
     assert.equal(r.parts(name), 1);
   } finally {
     release();
+    r.core.close();
+  }
+});
+
+test("a second reader takes a completed range while the device is still writing it", async () => {
+  const file = new Uint8Array(32768).fill(9);
+  const name = "pending.apk";
+  const r = await rig(new Map([[name, file]]));
+  const write = Deferred.makeUnsafe<void>();
+  const put = r.host.storageSet.bind(r.host);
+  r.host.storageSet = (key, value) => key.startsWith("drive-kept-") ? Effect.andThen(Deferred.await(write), put(key, value)) : put(key, value);
+  const params = { station: ST, key: "k1", name, size: file.length };
+  try {
+    await r.ask("download.start", params);
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    Deferred.doneUnsafe(write, Effect.void);
+    await r.host.settle();
     r.core.close();
   }
 });

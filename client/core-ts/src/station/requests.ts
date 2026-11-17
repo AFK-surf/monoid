@@ -461,14 +461,16 @@ export class Requests {
       (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet), heard, sink, said);
   }
 
-  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     const path = `/sessions/${encode(key)}/parts?name=${encode(name)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
       const total = Number(headerOf(headers, "stillfail-total"));
       if (Number.isSafeInteger(total)) said({ type: headerOf(headers, "content-type") ?? "", total });
     });
-    return Effect.flatMap(this.exchange(station, "GET", path, [], empty, quiet, ctx, undefined, undefined, sink, onHead, false, true), (r) => {
+    let received = 0;
+    const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
+    return Effect.flatMap(this.exchange(station, "GET", path, [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.fileOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -476,7 +478,7 @@ export class Requests {
       }
       const header = (name: string) => r.headers.find(([k]) => k.toLowerCase() === name)?.[1];
       const total = Number(header("stillfail-total"));
-      return Effect.succeed({ type: header("content-type") ?? "", total: Number.isSafeInteger(total) ? total : offset + r.body.length, bytes: r.body });
+      return Effect.succeed({ type: header("content-type") ?? "", total: Number.isSafeInteger(total) ? total : offset + received, bytes: r.body });
     });
   }
 
@@ -514,7 +516,7 @@ export class Requests {
       (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet), heard, sink, said);
   }
 
-  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     const asked = `/drive/read?root=${encode(root)}&path=${encode(path)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -522,7 +524,9 @@ export class Requests {
       const mtime = Number(headerOf(headers, "stillfail-mtime"));
       if (Number.isSafeInteger(total)) said({ type: headerOf(headers, "content-type") ?? "", total, mtime: Number.isSafeInteger(mtime) ? mtime : null });
     });
-    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, quiet, ctx, undefined, undefined, sink, onHead, false, true), (r) => {
+    let received = 0;
+    const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
+    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.driveOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -531,7 +535,7 @@ export class Requests {
       const header = (name: string) => r.headers.find(([k]) => k.toLowerCase() === name)?.[1];
       const total = Number(header("stillfail-total"));
       const mtime = Number(header("stillfail-mtime"));
-      return Effect.succeed({ type: header("content-type") ?? "", total: Number.isSafeInteger(total) ? total : offset + r.body.length, mtime: Number.isSafeInteger(mtime) ? mtime : null, bytes: r.body });
+      return Effect.succeed({ type: header("content-type") ?? "", total: Number.isSafeInteger(total) ? total : offset + received, mtime: Number.isSafeInteger(mtime) ? mtime : null, bytes: r.body });
     });
   }
 

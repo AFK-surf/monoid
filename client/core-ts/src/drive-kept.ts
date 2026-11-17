@@ -156,6 +156,8 @@ export class DriveKept {
   #sql: Sql | null | undefined = undefined;
   /// Files a part of which is being written, how many: not let go meanwhile.
   readonly #writing = new Map<string, number>();
+  // A part is listed before storageSet completes. Readers can take it during that handoff too.
+  readonly #putting = new Map<string, Uint8Array>();
   /// Whether `part_bytes` is kept (ensurePartBytes): what each file's parts take is read of it, or summed of them.
   #partBytes = false;
 
@@ -267,7 +269,7 @@ export class DriveKept {
         let best: Part | null = null;
         for (const p of parts) if (p.at <= at && p.at + p.length > at && (best === null || p.at + p.length > best.at + best.length)) best = p;
         if (best === null) break;
-        const bytes = yield* Effect.orElseSucceed(this.#host.storageGet(best.key), () => null);
+        const bytes = this.#putting.get(best.key) ?? (yield* Effect.orElseSucceed(this.#host.storageGet(best.key), () => null));
         if (bytes === null || bytes.length !== best.length) {
           // Gone from under it (the storage cleared by the system, or the part never written whole).
           sql.run("DELETE FROM part WHERE id = ? AND at = ? AND length = ?", [id, best.at, best.length]);
@@ -345,12 +347,15 @@ export class DriveKept {
       // Its row first: what is in the storage is always what a row says (a part whose writing stopped is found short).
       sql.run("INSERT INTO part (id, at, length, key) VALUES (?, ?, ?, ?)", [id, offset, bytes.length, key]);
       this.#writing.set(id, (this.#writing.get(id) ?? 0) + 1);
-      const wrote = yield* Effect.result(this.#host.storageSet(key, bytes));
-      const left = (this.#writing.get(id) ?? 1) - 1;
-      if (left > 0) this.#writing.set(id, left);
-      else this.#writing.delete(id);
+      this.#putting.set(key, bytes);
+      const wrote = yield* Effect.result(this.#host.storageSet(key, bytes).pipe(Effect.onExit((exit) => Effect.sync(() => {
+        this.#putting.delete(key);
+        const left = (this.#writing.get(id) ?? 1) - 1;
+        if (left > 0) this.#writing.set(id, left);
+        else this.#writing.delete(id);
+        if (exit._tag === "Failure") sql.run("DELETE FROM part WHERE key = ?", [key]);
+      }))));
       if (wrote._tag === "Failure") {
-        sql.run("DELETE FROM part WHERE key = ?", [key]);
         yield* this.#forget([key]);
         return;
       }
