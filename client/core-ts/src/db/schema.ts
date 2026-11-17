@@ -391,15 +391,17 @@ export function ensureOverviewParts(sql: Sql): void {
 
 /// How this core derives a chat record's columns beyond those every core writes (CHAT_COLUMNS, `state`): another number
 /// whenever one of them would come out otherwise of the same record, so that rows derived before are derived again.
-export const CHAT_MADE = 1;
+export const CHAT_MADE = 2;
 
 /// The columns of a chat's record that SQLite makes of its JSON (`j`, an expression of it), as the record is put and as a
-/// row another core put is derived again: whether it is hidden; its title; whether it is marked archived, and when
+/// row another core put is derived again: whether it is hidden; whether an agent leads it (chat_create for itself: its
+/// `opener.led`, shown in no list but from its opener's info); its title; whether it is marked archived, and when
 /// (archive.ts: the mark's `at`, else its last activity; null where that is not a number). What reads by them reads what
 /// the JS reading the record would (views.ts, archive.ts, fleet.ts): list-rows.test.ts holds each to it. What only the
 /// core says of a record (`state`, `watched`: what its agents do, whether one keeps watch) is the core's (Derive).
 export const CHAT_COLUMNS: [name: string, of: (j: string) => string][] = [
   ["hidden", (j) => `(json_type(${j}, '$.hidden') IS 'true')`],
+  ["led", (j) => `(json_type(${j}, '$.opener.led') IS 'true')`],
   ["title", (j) => `(CASE json_type(${j}, '$.title') WHEN 'text' THEN json_extract(${j}, '$.title') END)`],
   ["archived_mark", (j) => `(json_type(${j}, '$.archived') IS 'object')`],
   ["archived_at", (j) => `(CASE WHEN json_type(${j}, '$.archived') IS NOT 'object' THEN NULL
@@ -465,11 +467,14 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // every column its statement names in it, those of the index's own WHERE too (SQLite takes it as covering only so),
     // and is searched by more terms than `chat_ord` (`chat_archived_at`'s `archived_mark`: else the device's SQLite
     // took `chat_ord`, and the table's rows).
+    // (`chat_listed` from before `led` was among its columns: made again with it)
+    const listedWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_listed'");
+    if (listedWas.length > 0 && !/\bled\b/.test(String(listedWas[0]![0]))) sql.exec("DROP INDEX chat_listed");
     sql.exec(`
       CREATE INDEX IF NOT EXISTS chat_made ON chat (made);
       CREATE INDEX IF NOT EXISTS chat_archived_at ON chat (station, archived, archived_mark, archived_at DESC, thread, session) WHERE archived_mark = 1;
       CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, coalesce(archived_at, 0) DESC) WHERE archived_mark = 1;
-      CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, watched, last_active, thread, session, id) WHERE archived = 0;
+      CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, led, watched, last_active, thread, session, id) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);
       DROP INDEX IF EXISTS chat_marked;
       DROP INDEX IF EXISTS chat_running;

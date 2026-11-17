@@ -2179,6 +2179,8 @@ export class Views implements Owner {
       if (this.local.beingArchived(station, raw)) return false;
       const shown = this.local.asChanging(station, raw);
       if (visibility !== "all" && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
+      // (a chat an agent leads is in no list: its opener's info leads to it, the user 2026-11-17)
+      if (decisions.led(shown)) return false;
       return !watching || present.watches(arr(get(shown, "agents")));
     };
     // (the key each station's rows are kept by beside their records, where they are read so: listRowKey)
@@ -2239,6 +2241,7 @@ export class Views implements Owner {
           }
           if (visibility === "visible" && whole.hidden === true) return null;
           if (visibility === "hidden" && whole.hidden !== true) return null;
+          if (decisions.led(whole)) return null;
           const standIn: J = { lastActiveAt: whole.lastActiveAt, station: s.address, state: h.row!.state };
           if (h.pinnedAt !== null) {
             pinnedAt.set(standIn, h.pinnedAt);
@@ -2261,6 +2264,7 @@ export class Views implements Owner {
           const shown = this.local.asChanging(s.address, raw);
           if (visibility === "visible" && get(shown, "hidden") === true) return null;
           if (visibility === "hidden" && get(shown, "hidden") !== true) return null;
+          if (decisions.led(shown)) return null;
           // Only a frozen row (db/account.ts) is surely as it was when its row was made.
           const keepable = isObject(shown) && Object.isFrozen(shown);
           const kept = keepable ? this.#rowsMade.get(shown) : undefined;

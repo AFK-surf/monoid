@@ -1881,6 +1881,30 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
   core.close();
 });
 
+// A chat an agent opened to lead itself (chat_create for me) is the agent's to manage: it shows in no list, the `@`
+// menu or a search, reached only from its opener's info (the user, 2026-11-17). One opened for its person is theirs and
+// listed as any other.
+test("a_chat_an_agent_leads_is_in_no_list_and_one_it_opened_for_its_person_is", async () => {
+  const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
+  const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
+  answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
+  const { host, core } = await started(answers);
+  const ui = core.connect();
+  subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
+  subscribe(core, ui, 2, { topic: "chatSearch", scope: "ws", query: "部署", limit: 8 });
+  subscribe(core, ui, 3, { topic: "chats", scope: "ws", hidden: true });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const listed = (n: number) => v(values, n).days.flatMap((d: J) => d.items.map((i: J) => i.id));
+  assert.deepEqual(listed(1), ["theirs", "lead"]);
+  assert.deepEqual(v(values, 2).items.map((i: J) => i.id), ["theirs", "lead"]);
+  assert.deepEqual(listed(3), []);
+  // Still the device's: opened by its key, as its opener's info opens it.
+  assert.equal((core.inner.data.chat("ws/st", "part") as J)?.opener?.led, true);
+  core.close();
+});
+
 // The owner found the `@` menu's order useless: the pinned chats always first, the rest by whichever an agent last
 // touched (the user, 2026-11-10).
 test("the_at_menu_lists_the_chats_opened_here_latest_first_then_the_rest_by_when_they_were_last_active_pinned_or_not", async () => {
