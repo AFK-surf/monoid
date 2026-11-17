@@ -19,7 +19,7 @@
   // the numbers of an instance (src/ui/scene.mbt)
   const INST = 60;
   let f32 = new Float32Array(INST * 4096);
-  let pending = false;
+  let pending = false, pendingRaf = 0;
   window.__logs = [];
 
   // ---- frames ----
@@ -37,6 +37,7 @@
   let frames = 0, inFrame = false;
   function tick() {
     pending = false;
+    pendingRaf = 0;
     resize();
     inFrame = true;
     const t = shotAt >= 0 ? clock : performance.now();
@@ -70,9 +71,18 @@
   H.requestFrame = () => {
     if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
       pending = true;
-      requestAnimationFrame(tick);
+      pendingRaf = requestAnimationFrame(tick);
     }
   };
+  // The frame a touch asked for, drawn while the browser still handles that touch rather than at the display's next:
+  // iOS brings its soft keyboard up for a field focused (setIme's focus) only while a person's gesture is handled, and
+  // a requestAnimationFrame later is out of it, so a field tapped took the focus with no keyboard, which came up only on
+  // a second tap (its pointerdown's focus, setupInput). The display's frame asked for is called off: drawn once.
+  function frameInGesture() {
+    if (!pending || !pendingRaf || shotAt >= 0) return;
+    cancelAnimationFrame(pendingRaf);
+    tick();
+  }
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
@@ -2581,13 +2591,16 @@
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
-        if (touch(e)) ptr(10, e, e.pointerId);
+        if (touch(e)) { ptr(10, e, e.pointerId); frameInGesture(); }
         else ptr(0, e, e.button);
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
       el.addEventListener('pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
-      el.addEventListener('pointerup', (e) => (touch(e) ? ptr(12, e, e.pointerId) : ptr(2, e, e.button === 2 ? 2 : 0)));
+      el.addEventListener('pointerup', (e) => {
+        if (touch(e)) { ptr(12, e, e.pointerId); frameInGesture(); }
+        else ptr(2, e, e.button === 2 ? 2 : 0);
+      });
       el.addEventListener('pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
