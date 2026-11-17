@@ -37,6 +37,7 @@ import {
   "station/history",
   "station/readops",
   "station/replica",
+  "station/mesh_door",
   "station/footprint",
   "station/memory",
   "station/packed",

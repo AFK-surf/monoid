@@ -986,6 +986,8 @@ fn main {
     }
     (Some("live-locator"), Some(db), Some(data)) =>
       @host.run(shell_dir=beside(db, "shell"), host => live_locator(host, db, data, flag("--sep").unwrap_or("/")))
+    (Some("harness-mesh-door"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mesh_door.harness(host))
     (Some("forward"), _, _) =>
       // (a listening socket, handed down or bound here, carried to a port of this machine: `{"listening": port}` said once
       // it listens; the shell's own files in `--shell-dir`)
