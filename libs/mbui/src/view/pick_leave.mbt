@@ -173,17 +173,16 @@ fn held_scaled(f : View, p : View, held : @signals.Signal[Int], progress : (View
 }
 
 ///|
-fn[K : Eq] View::pick_leaving(
+fn View::pick_leaving(
   slot : View,
-  which : () -> K,
-  make : (View, K) -> Unit,
+  which : () -> Picked,
   at_once : Bool,
   leave : Double,
   loc : SourceLoc,
 ) -> Unit {
   let tree = slot.tree
   let place : Ref[View?] = Ref(None)
-  let had : Ref[(K, LeaveShown)?] = Ref(None)
+  let had : Ref[(Picked, LeaveShown)?] = Ref(None)
   // (when what is fading out over the place is all gone: what comes is seen no sooner)
   let gone_by = Ref(-1.0 / 0.0)
   // (how many times it changed: what a moment asked for by one change finds no newer one took over)
@@ -196,7 +195,7 @@ fn[K : Eq] View::pick_leaving(
     leave_held_progress(p)
   }
   // (a fader for key `k` in `p`, seen from `from`: how opaque it is drawn its fade in from then, and out as it leaves)
-  let fader = fn(p : View, k : K, from : Double) -> LeaveShown {
+  let fader = fn(p : View, k : Picked, from : Double) -> LeaveShown {
     let seen_from = @signals.signal(from, same=fn(a, b) { a == b })
     let held = @signals.signal(0, same=fn(a, b) { a == b })
     let said = Ref(tree.said_count)
@@ -222,7 +221,7 @@ fn[K : Eq] View::pick_leaving(
       )
       |> ignore
       said.val = tree.said_count
-      make(f, k)
+      (k.make)(f)
     }, loc~)
     // (one that made nothing: nothing to its place, which holding nothing else is nothing to a box that takes no room
     // holding nothing, as a pick's case that made nothing is)

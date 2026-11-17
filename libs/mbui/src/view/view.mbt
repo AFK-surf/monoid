@@ -3476,8 +3476,40 @@ fn[T : Eq] Tree::structured(
   at_start? : Bool = true,
   draws? : Bool = true,
 ) -> () -> Unit {
-  let live = Ref(true)
+  // (its work done once for every type it reads, by the count of the times what it read came out otherwise: each read
+  // compared with the one before here alone, `then` given what was read last, the read that told it, as it is done at
+  // once after it (Tree::structured_by). Compiled as one, not once a type: 385 of them were 15 MB of a program's C)
   let last : Ref[T?] = Ref(None)
+  let changes = Ref(0)
+  self.structured_by(
+    fn() {
+      let v = read()
+      if last.val != Some(v) {
+        last.val = Some(v)
+        changes.val = changes.val + 1
+      }
+      changes.val
+    },
+    fn(_) {
+      guard last.val is Some(v) else { return }
+      then(v)
+    },
+    at_start~,
+    draws~,
+  )
+}
+
+///|
+/// Tree::structured's work, of what is read counted by its changes
+fn Tree::structured_by(
+  self : Tree,
+  read : () -> Int,
+  then : (Int) -> Unit,
+  at_start~ : Bool,
+  draws~ : Bool,
+) -> () -> Unit {
+  let live = Ref(true)
+  let last : Ref[Int?] = Ref(None)
   // (the watch reads anew as it is told; let go as it stops)
   let watch : Ref[@signals.Watch?] = Ref(None)
   let w = @signals.watch(fn() {
@@ -8939,17 +8971,85 @@ pub fn[K : Eq] View::pick(
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.alive() else { return }
+  let (which, leave_of) = Picked::of(which, make, leave_of)
+  self.pick_by(which, at_once, along_row, leave, leave_of, loc)
+}
+
+///|
+/// A key of a pick, its type left behind: what it is compared with another of the same pick by, and what makes its
+/// node, its own key in each. So a pick's work is compiled once for every type of key, not once a type (90 of its
+/// `leave` and 89 of the rest were 25 MB of a program's C).
+priv struct Picked {
+  // (whether it is the same key as another of its pick's)
+  same : (Picked) -> Bool
+  // (its key put where the pick's others read it: what `same` and `leave_of` are worked out by)
+  put : () -> Unit
+  // (its node made in that box)
+  make : (View) -> Unit
+}
+
+///|
+impl Eq for Picked with equal(a, b) {
+  (a.same)(b)
+}
+
+///|
+/// `which` and `leave_of` of a pick, of keys of its own type, as of Picked: each read a key of its own, put
+/// into `at` as it is compared and let go of there at once.
+fn[K : Eq] Picked::of(
+  which : () -> K,
+  make : (View, K) -> Unit,
+  leave_of : ((K, K) -> Double)?,
+) -> (() -> Picked, ((Picked, Picked) -> Double)?) {
+  let at : Ref[K?] = Ref(None)
+  let take = fn(p : Picked) -> K? {
+    (p.put)()
+    let k = at.val
+    at.val = None
+    k
+  }
+  let of = fn(k : K) -> Picked {
+    {
+      same: fn(o) { take(o) is Some(ok) && ok == k },
+      put: fn() { at.val = Some(k) },
+      make: fn(v) { make(v, k) },
+    }
+  }
+  let leave_of = match leave_of {
+    Some(f) =>
+      Some(fn(a : Picked, b : Picked) {
+        match (take(a), take(b)) {
+          (Some(x), Some(y)) => f(x, y)
+          _ => 0.0
+        }
+      })
+    None => None
+  }
+  (fn() { of(which()) }, leave_of)
+}
+
+///|
+/// View::pick's work, of its keys as Picked
+fn View::pick_by(
+  self : View,
+  which : () -> Picked,
+  at_once : Bool,
+  along_row : Bool,
+  leave : Double,
+  leave_of : ((Picked, Picked) -> Double)?,
+  loc : SourceLoc,
+) -> Unit {
   let slot = self.slot(loc)
   slot.along_row_said(along_row, at_once, "pick", loc)
   // (what it showed leaving over a time as what it shows now waits to be seen: pick_leave.mbt)
   if leave > 0.0 {
-    slot.pick_leaving(which, make, at_once, leave, loc)
+    slot.pick_leaving(which, at_once, leave, loc)
     return
   }
-  let had : Ref[(K, View)?] = Ref(None)
+  let had : Ref[(Picked, View)?] = Ref(None)
   // (what it showed on its way out, `leave_of`'s: its key, its node, and what makes what it shows now at that way's end
   // called off)
-  let going : Ref[(K, View, () -> Unit)?] = Ref(None)
+  let going : Ref[(Picked, View, () -> Unit)?] = Ref(None)
   let stop = slot.tree.structured(which, fn(k) {
     guard slot.alive() else { return }
     // (on its way out: back as what it showed is asked again; else what it shows now waits for that way's end)
@@ -8976,7 +9076,7 @@ pub fn[K : Eq] View::pick(
             going.val = None
             guard slot.alive() else { return }
             let now = @signals.untracked(which)
-            let nv = slot.box(fn(n) { make(n, now) }, loc~)
+            let nv = slot.box(fn(n) { (now.make)(n) }, loc~)
             had.val = Some((now, nv))
           })
           going.val = Some((was, v, off))
@@ -9007,7 +9107,7 @@ pub fn[K : Eq] View::pick(
           None => (0.0 / 0.0, false)
         }
         let said = slot.tree.said_count
-        let v = slot.box(fn(v) { make(v, k) }, loc~)
+        let v = slot.box(fn(v) { (k.make)(v) }, loc~)
         let none = slot.tree.structural(v, said)
         if tall == tall && !at_once {
           if none && tall >= 0.5 {
