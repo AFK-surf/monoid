@@ -301,7 +301,10 @@ static double drawn_for;
   drawn_for = target;
   CGSize s = self.bounds.size;
   self.drawnSize = s;
-  double scale = self.window.screen.scale ?: 3.0;
+  // (the display's scale as this view's traits have it, said again as it changes: MBController's viewDidLoad; before
+  // the view has one, the scale it was drawn at last)
+  double scale = self.traitCollection.displayScale;
+  if (scale <= 0) scale = self.layer.contentsScale;
   self.layer.contentsScale = scale;
   mb_text_set_scale(scale);
   mb_render_set_size(s.width, s.height, scale);
@@ -780,10 +783,10 @@ static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
 // ---------------------------------------------------------------------------
 
 // Which way the app is held while it has not turned itself: a phone upright only (an iPhone), a tablet as the person
-// turns it. A foldable (an iPhone Duo) turns as it is held on either panel (MBController's `held`).
-static UIInterfaceOrientationMask mb_upright(void) {
-  return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll
-                                                                                 : UIInterfaceOrientationMaskPortrait;
+// turns it. A foldable (an iPhone Duo) turns as it is held on either panel (MBController's `held`). The idiom is the
+// controller's traits', not the device's.
+static UIInterfaceOrientationMask mb_upright(UITraitCollection *t) {
+  return t.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskPortrait;
 }
 
 @interface MBController : UIViewController
@@ -822,15 +825,17 @@ static MBController *the_controller;
 - (UIInterfaceOrientationMask)held {
   if (self.sideways) return UIInterfaceOrientationMaskLandscape;
   if (self.hinge >= 0) return UIInterfaceOrientationMaskAllButUpsideDown;
-  return self.turnable ? UIInterfaceOrientationMaskAllButUpsideDown | mb_upright() : mb_upright();
+  UIInterfaceOrientationMask upright = mb_upright(self.traitCollection);
+  return self.turnable ? UIInterfaceOrientationMaskAllButUpsideDown | upright : upright;
 }
 - (BOOL)prefersStatusBarHidden { return self.sideways; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return self.sideways; }
-// the system's light or dark changed (@hostapi.system_dark, read as frames are built): a frame; the window's size
+// the system's light or dark changed (@hostapi.system_dark, read as frames are built), or the display's scale (the
+// view's drawn at: MBView's drawFor): a frame; the window's size
 // classes changed (an iPhone Duo opened or closed, the app put beside another): said to the app; the hinge moved: said
 - (void)viewDidLoad {
   [super viewDidLoad];
-  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class, UITraitDisplayScale.class ]
                      withHandler:^(id<UITraitEnvironment> env, UITraitCollection *was) { [the_view requestFrame]; }];
   [self registerForTraitChanges:@[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]
                      withHandler:^(id<UITraitEnvironment> env, UITraitCollection *was) { [(MBController *)env saySizeClasses]; }];
@@ -1715,7 +1720,8 @@ void mb_host_wake_after(double ms) {
 // as any frame asked for, in a scripted run (its frames are its steps') and where the frame asks for it besides (the
 // soft keyboard moving: drawFor).
 void mb_host_frames_paced(double hz) {
-  double top = (double)(the_view.window.screen ?: UIScreen.mainScreen).maximumFramesPerSecond;
+  // (the screen the view's scene is on; none yet: 0, a frame at the next tick)
+  double top = (double)the_view.window.windowScene.screen.maximumFramesPerSecond;
   double every = top > 0 && hz > 0 ? round(top / hz) : 1;
   if (script || building_for < 0 || the_view.wantFrame || every <= 1) {
     mb_host_request_frame();
@@ -2444,7 +2450,9 @@ void mb_host_a11y_tree(moonbit_string_t s) {
 }
 
 int32_t mb_host_system_dark(void) {
-  return UIScreen.mainScreen.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0;
+  // (the view's traits, which nothing overrides: the system's light or dark where the app is shown)
+  UITraitCollection *t = the_view ? the_view.traitCollection : UITraitCollection.currentTraitCollection;
+  return t.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0;
 }
 
 // Sharing out (@hostapi.share): the system's share sheet over the app, the words or the file (kept in a folder of the app's
@@ -2587,7 +2595,8 @@ void mb_host_set_sideways(int32_t on) {
 // one held upright (not an iPad).
 int32_t mb_host_set_turnable(int32_t on) {
   MBController *c = the_controller;
-  BOOL phone = UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad;
+  UITraitCollection *t = c ? c.traitCollection : UITraitCollection.currentTraitCollection;
+  BOOL phone = t.userInterfaceIdiom != UIUserInterfaceIdiomPad;
   if (!c || c.turnable == (on != 0)) return phone ? 1 : 0;
   c.turnable = on != 0;
   [c setNeedsUpdateOfSupportedInterfaceOrientations];

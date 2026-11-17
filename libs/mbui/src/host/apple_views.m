@@ -1596,7 +1596,7 @@ void mb_host_view_place(int32_t vid, double x, double y, double w, double h, dou
 #if TARGET_OS_OSX
     double px = views_root.window ? views_root.window.backingScaleFactor : NSScreen.mainScreen.backingScaleFactor;
 #else
-    double px = UIScreen.mainScreen.scale;
+    double px = views_root.traitCollection.displayScale;
 #endif
     CGRect b = v.box.frame, c = v.content.frame;
     // (its corners as put: the layer's, else its mask's, as told)
