@@ -55,6 +55,7 @@ import {
   "station/events",
   "station/claude",
   "station/session_storage",
+  "station/screens",
   "station/codex",
   "station/dsh",
   "station/cursor",
