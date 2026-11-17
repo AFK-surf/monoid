@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 2.56 | 3.63 | 15.18 | 36.32 | 57.93 | 31.67 | 64.57 | 96.49 | 127.43 |
 | [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.67 | 64.57 | 96.49 | 127.01 |
 | [22d710a47](https://github.com/AFK-surf/monoid/commit/22d710a4790454fb0face4be2d50b8e15ddbefb0) mbui: add writable derivations, optimistic project | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.66 | 64.57 | 96.21 | 124.28 |
 | [0e7a6fd68](https://github.com/AFK-surf/monoid/commit/0e7a6fd68280c9c72a313cab07f0b2107b84fb78) Choose the Claude TUI runtime in model settings (# | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.66 | 64.57 | 96.21 | 124.28 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b62deb04c](https://github.com/AFK-surf/monoid/commit/b62deb04cd6b7837f000c6fb19254b1de6ada86f) mbui: main's reds after #6647 mended: rows steady  | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [914d1b53e](https://github.com/AFK-surf/monoid/commit/914d1b53ede0af04f93dc6845317b0916a65b663) mbui: quick inner-loop builds, an external module' | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
-| [d4e786633](https://github.com/AFK-surf/monoid/commit/d4e7866332c0abe006a91e00a26eddfae533cc2f) mbui web host: a field's keyboard by its kind (inp | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [22d710a47](https://github.com/AFK-surf/monoid/commit/22d710a4790454fb0face4be2d50b8e15ddbefb0) mbui: add writable derivations, optimistic project | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [0e7a6fd68](https://github.com/AFK-surf/monoid/commit/0e7a6fd68280c9c72a313cab07f0b2107b84fb78) Choose the Claude TUI runtime in model settings (# | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b62deb04c](https://github.com/AFK-surf/monoid/commit/b62deb04cd6b7837f000c6fb19254b1de6ada86f) mbui: main's reds after #6647 mended: rows steady  | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.51 |
 | [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.63 |
 | [914d1b53e](https://github.com/AFK-surf/monoid/commit/914d1b53ede0af04f93dc6845317b0916a65b663) mbui: quick inner-loop builds, an external module' | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
-| [d4e786633](https://github.com/AFK-surf/monoid/commit/d4e7866332c0abe006a91e00a26eddfae533cc2f) mbui web host: a field's keyboard by its kind (inp | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
