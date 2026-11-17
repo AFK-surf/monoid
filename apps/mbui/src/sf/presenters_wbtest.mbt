@@ -300,6 +300,8 @@ test "a long pick with a finger at Small: the search in its sheet finds by the w
   assert_eq(presented_how, [AsSheet])
   t.tap_text("common.search")
   t.type_text("第12")
+  // (what is not found makes its way out: View::each's)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("第3项") is None)
   t.tap_text("第12项")
   assert_eq(chosen.val, "c12")
@@ -698,7 +700,7 @@ fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
               title="分享",
               gone=fn() { said.push("level gone") },
             )
-          }),
+          }, further=true),
         ),
       ],
       from=beside,
@@ -761,6 +763,16 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
   assert_true(!presenting())
   t.run_for(@ui.move_most_ms)
   assert_eq(said, ["level gone", "gone", "copy"])
+  // gone back to from the level, the menu chosen in as ever: what it does done, all of it closed
+  open_it(t)
+  t.tap_text("分享")
+  t.run_for(@ui.move_most_ms)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("归档")
+  assert_true(!presenting())
+  t.run_for(@ui.move_most_ms)
+  assert_eq(said, ["level gone", "gone", "copy", "level gone", "archive"])
 }
 
 ///|

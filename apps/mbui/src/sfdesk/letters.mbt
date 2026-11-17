@@ -108,9 +108,9 @@ pub fn letters_tab_node(
           fn(w) {
             w.box(fn(l) {
               @sf.style_node(l, fn() { if panel { letters_list_panel } else { letters_list } })
-              for ch in letters_sample() {
-                letters_chat_node(l, fn() { Some(ch) }, fn() {  }, panel~)
-              }
+              l.each(letters_sample, fn(ch) { text(Some(ch), "key") }, at_once=true, fn(row, ch) {
+                letters_chat_node(row, fn() { Some(ch.get()) }, fn() {  }, panel~)
+              })
             })
             |> ignore
             // (room under the last of them in a dialog in the middle of the window, as under the chats' list there)

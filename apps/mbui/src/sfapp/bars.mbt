@@ -21,6 +21,17 @@ fn bar_room_now() -> Double {
 }
 
 ///|
+/// What the bottom bar takes at the pages' foot in a window `width` wide (bar_room_now's, by the width a node of the
+/// window's tree follows: View::window).
+fn bar_room_at(width : Double) -> Double {
+  if !@sfdesk.wide_at(width) {
+    bar_room
+  } else {
+    0.0
+  }
+}
+
+///|
 /// A top bar's least height, the status bar's and its own (bar_h) as one length (TopGlassBar, Chat.kt BarFrame: the
 /// status bar's padding, then heightIn(min = TopBarHeight)).
 fn top_bar_h() -> Double {

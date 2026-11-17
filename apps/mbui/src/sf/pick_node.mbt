@@ -28,53 +28,55 @@ pub fn pick_node(
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
 ) -> Unit {
-  parent.show(open, fn(layer) {
-    shown()
-    layer.owns(gone) |> ignore
-    let th = theme()
-    // (how far in it is, from the moment it opened)
-    let way = EdgeWay::new(0.0)
-    way.go(layer, 1.0, @kit.pop_ms)
-    let look = fn() {
-      let p = way.shown(layer)
-      @kit.pop_in.at(p, p)
-    }
-    let words_in = fn() { look().words }
-    // (what is found by the words typed, as they are now)
-    let found = fn() { pick_found(choices, line.text()) }
-    // (said once: the first choice, or a close)
-    let said = Ref(false)
-    let go = fn(k : String) {
-      if !said.val {
-        said.val = true
-        choose(k)
+  parent.show(
+    open,
+    fn(layer) {
+      shown()
+      layer.owns(gone) |> ignore
+      let th = theme()
+      // (how far in it is, from the moment it opened)
+      let way = @motion.NodeWay::new(0.0)
+      way.go_ms(layer, 1.0, @kit.pop_ms)
+      let look = fn() {
+        let p = way.shown(layer)
+        @kit.pop_in.at(p, p)
       }
-    }
-    layer
-    .over(Is(true))
-    .modal(Is(true))
-    .held_back_goes_on()
-    // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
-    .presses(Is(true))
-    .on_drag(fn(d) {
-      if d.kind == Down {
-        cancel()
+      let words_in = fn() { look().words }
+      // (what is found by the words typed, as they are now)
+      let found = fn() { pick_found(choices, line.text()) }
+      // (said once: the first choice, or a close)
+      let said = Ref(false)
+      let go = fn(k : String) {
+        if !said.val {
+          said.val = true
+          choose(k)
+        }
       }
-    })
-    .on_key(fn(k) {
-      // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
-      if k.code == @ui.key_escape && line.text() != "" {
-        line.set("")
-        true
-      } else if k.code == @ui.key_escape {
-        cancel()
-        true
-      } else {
-        false
-      }
-    })
-    .takes_back(fn() { cancel() })
-    |> ignore
+      layer
+      .over(Is(true))
+      .modal(Is(true))
+      .held_back_goes_on()
+      // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
+      .presses(Is(true))
+      .on_drag(fn(d) {
+        if d.kind == Down {
+          cancel()
+        }
+      })
+      .on_key(fn(k) {
+        // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
+        if k.code == @ui.key_escape && line.text() != "" {
+          line.set("")
+          true
+        } else if k.code == @ui.key_escape {
+          cancel()
+          true
+        } else {
+          false
+        }
+      })
+      .takes_back(cancel)
+      |> ignore
     // (what opened it, where it is drawn: what its panel goes beside)
     let at = anchor(layer)
     let reach = menu_row_reach(th.rows.pick)
@@ -95,6 +97,7 @@ pub fn pick_node(
       .clips(Is(true))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside)
+      .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
       // (a press on it its own: on what of it takes none, nothing, not outside it)
       |> ground_node
@@ -165,7 +168,8 @@ pub fn pick_node(
       layer.focus_opens(search.val.unwrap()) |> ignore
     })
     |> ignore
-  })
+    },
+  )
 }
 
 ///|

@@ -7,27 +7,30 @@
 
 ///|
 /// 建实神社's ema rack: the week's offerings, the top model, four heroines' wishes on four plaques, the chats at work.
-fn sr_ema(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  args.push(("n", sr_num(sr_arg(args, "archived"))))
+fn sr_ema(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() {
+    let a = sr_args(fleet())
+    a.push(("n", sr_num(sr_arg(a, "archived"))))
+    a
+  }
   sr_box(c, flat, ema_ground, fn(c) {
     ema_wall(c)
     ema_petals(c)
     ema_streamers(c)
     ema_rope(c)
     c.box(style=ema_head, fn(c) {
-      sr_words(c, ema_t("shrine"), ema_kick)
-      c.box(style=ema_title_box, fn(c) { sr_words(c, ema_t("title"), ema_title) }) |> ignore
+      sr_words(c, fn() { ema_t("shrine") }, ema_kick)
+      c.box(style=ema_title_box, fn(c) { sr_words(c, fn() { ema_t("title") }, ema_title) }) |> ignore
       c.box(style=ema_koh_under, fn(c) {
         c.box(style=ema_koh, fn(c) {
-          sr_words(c, ema_t("offerings"), ema_koh_words)
-          sr_words(c, sr_arg(args, "weekCost"), ema_koh_cost)
+          sr_words(c, fn() { ema_t("offerings") }, ema_koh_words)
+          sr_words(c, fn() { sr_arg(args(), "weekCost") }, ema_koh_cost)
         })
         |> ignore
       })
       |> ignore
       c.box(style=ema_top_box, fn(c) {
-        sr_rich(c, ema_runs(ema_t("top"), args, ema_title_ink, 1.0, plain=["model"]), ema_top)
+        sr_rich(c, fn() { ema_runs(ema_t("top"), args(), ema_title_ink, 1.0, plain=["model"]) }, ema_top)
       })
       |> ignore
     })
@@ -35,15 +38,15 @@ fn sr_ema(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     ema_rack(c, args)
     c.box(style=ema_end, fn(c) {
       c.box(style=ema_now_box, fn(c) {
-        sr_rich(c, ema_runs(ema_t("now"), args, ema_red, ema_now_hi), ema_now)
+        sr_rich(c, fn() { ema_runs(ema_t("now"), args(), ema_red, ema_now_hi) }, ema_now)
       })
       |> ignore
       c.box(style=ema_foot, fn(c) {
         sr_brand(c, ema_brand)
         c.spacer()
-        sr_words(c, @sf.t("web-main.stations.shareTagline"), ema_foot_words)
+        sr_words(c, fn() { @sf.t("web-main.stations.shareTagline") }, ema_foot_words)
         c.box(style=ema_foot_gap, fn(_) {  }) |> ignore
-        sr_words(c, sr_arg(args, "at"), ema_foot_words)
+        sr_words(c, fn() { sr_arg(args(), "at") }, ema_foot_words)
       })
       |> ignore
     })
@@ -220,7 +223,7 @@ fn ema_rope(c : Pen) -> Unit {
 ///|
 /// The rack: two red posts, two beams with their black caps, and on each beam two plaques hung on red-and-white cords,
 /// each with its heroine's wish and her name.
-fn ema_rack(c : Pen, args : Array[(String, String)]) -> Unit {
+fn ema_rack(c : Pen, args : () -> Array[(String, String)]) -> Unit {
   c.box(style=ema_rack_box, fn(c) {
     c.box(style=ema_post, left=ema_post_at, top=ema_zero, fn(c) { ema_post_bands(c) }) |> ignore
     c.box(style=ema_post, right=ema_post_at, top=ema_zero, fn(c) { ema_post_bands(c) }) |> ignore
@@ -255,7 +258,7 @@ fn ema_post_bands(c : Pen) -> Unit {
 /// middle of its wood and its heroine's name at its lower right, both upright where the turn carries them.
 fn ema_plaque(
   c : Pen,
-  args : Array[(String, String)],
+  args : () -> Array[(String, String)],
   i : Int,
   p : (Double, Double, Double, Double, Double, Double, Double, String, Int, Int64),
 ) -> Unit {
@@ -277,7 +280,7 @@ fn ema_plaque(
   |> ignore
   c.box(style=ema_wish, left=x + ema_wish_left + wdx, top=y + ema_wish_top + wdy, fn(c) {
     for n in 1..=lines {
-      sr_rich(c, ema_runs(ema_t(who + n.to_string()), args, ema_wish_ink, ema_wish_hi), ema_wish_words)
+      sr_rich(c, fn() { ema_runs(ema_t(who + n.to_string()), args(), ema_wish_ink, ema_wish_hi) }, ema_wish_words)
     }
   })
   |> ignore
@@ -285,7 +288,7 @@ fn ema_plaque(
     c.box(right=ema_who_right - ndx, bottom=ema_who_bottom - ndy, fn(c) {
       sr_rich(
         c,
-        [@ui.span(ema_dash, color=(ink & ema_rgb) | ema_dash_alpha), @ui.span(ema_t(who), color=ink, weight=600)],
+        fn() { [@ui.span(ema_dash, color=(ink & ema_rgb) | ema_dash_alpha), @ui.span(ema_t(who), color=ink, weight=600)] },
         ema_who_words,
       )
     })

@@ -100,6 +100,8 @@ export async function harness(
     /** An OpenID provider in Google's place (OIDC_ISSUER; its client a public one, without a secret),
      * its discovery, keys and token endpoint answered here; `codes` hold what it gave, as Google's do (their `sub` its). */
     oidc?: true;
+    /** OIDC_ROLE_CLAIM: the provider's claim of someone's role (given by a code's `claims`). */
+    oidcRoleClaim?: string;
     /** Cloudflare Access in front of the console's host (ACCESS_TEAM_DOMAIN, ACCESS_AUD): `accessToken` makes its tokens. */
     access?: true;
     /** Another cloud's releases its own bucket lacks some of (RELEASES_UPSTREAM, https://upstream.test/releases): its answer to each file asked there. */
@@ -134,7 +136,8 @@ export async function harness(
     alg: "RS256",
     use: "sig",
   };
-  const codes = new Map<string, { nonce: string; challenge: string; sub: string; invalid?: string }>();
+  /** What the provider gave for each code: `claims` more of its ID token's (the OpenID provider's). */
+  const codes = new Map<string, { nonce: string; challenge: string; sub: string; invalid?: string; claims?: Record<string, unknown> }>();
   const mails: MailMessage[] = [];
   const telemetryAccount = options.telemetry === "real"
     ? process.env.GCP_TELEMETRY!
@@ -196,7 +199,7 @@ export async function harness(
         BETA_ORIGIN: betaOrigin,
         GOOGLE_CLIENT_ID: options.noGoogle ? "" : "test-google-client",
         GOOGLE_CLIENT_SECRET: options.oidc ? "" : randomSecret(),
-        ...(options.oidc ? { OIDC_ISSUER: OIDC_ISSUER, OIDC_NAME: "Example SSO" } : {}),
+        ...(options.oidc ? { OIDC_ISSUER: OIDC_ISSUER, OIDC_NAME: "Example SSO", ...(options.oidcRoleClaim ? { OIDC_ROLE_CLAIM: options.oidcRoleClaim } : {}) } : {}),
         AUTH_SIGNING_KEY: signingKey,
         ADMIN_TOKEN: adminToken,
         FEEDBACK_TOKEN: feedbackToken,
@@ -244,7 +247,7 @@ export async function harness(
           codes.delete(body.get("code") ?? "");
           // (a public client: it sends no secret)
           if (!code || body.has("client_secret") || (await digest(body.get("code_verifier") ?? "")) !== code.challenge || body.get("redirect_uri") !== origin + "/v1/auth/google/callback") return new MFResponse(null, { status: 401 });
-          const idToken = await new SignJWT({ nonce: code.nonce, sub: code.sub, email: `${code.sub.replace(/\W/g, "")}@sso.example.test`, email_verified: true, name: `SSO ${code.sub}` })
+          const idToken = await new SignJWT({ nonce: code.nonce, sub: code.sub, email: `${code.sub.replace(/\W/g, "")}@sso.example.test`, email_verified: true, name: `SSO ${code.sub}`, ...code.claims })
             .setProtectedHeader({ alg: "RS256", kid: "test-google" })
             .setIssuedAt(now())
             .setExpirationTime(now() + 300)

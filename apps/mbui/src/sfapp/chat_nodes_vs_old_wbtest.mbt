@@ -271,15 +271,17 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// row_aside_node: the ground round them and who started it ringed, rings of the face's own): nothing of the new page
 /// changed, the old one's opening, Home's list going under it, laying out fewer; phone card's and plp_narrow card's
 /// brought down to what is laid out now.
+/// Each brought down, 2026-11-17, to the most of the five rates, once a message's time is its words' own node and an
+/// avatar over a row one node with its layer (measured again after main's).
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2736, 968),
-  "phone md": (1788, 1077),
-  "plp_narrow card": (2800, 978),
-  "plp_narrow md": (2217, 941),
-  "tape card": (1350, 1192),
-  "tape md": (1400, 1166),
-  "wide card": (1280, 1117),
-  "wide md": (1272, 1074),
+  "phone card": (2613, 968),
+  "phone md": (1707, 1054),
+  "plp_narrow card": (2646, 978),
+  "plp_narrow md": (2125, 931),
+  "tape card": (1318, 1184),
+  "tape md": (1368, 1150),
+  "wide card": (1254, 1110),
+  "wide md": (1245, 1062),
 }
 
 ///|
@@ -300,15 +302,16 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// before) once Home's transfers key is made as nodes, as chat_vs_bars' are: the most of the five rates, the default's.
 /// Phone card's and plp_narrow md's laid out more again (1135, 1060 before) once Home's list's faces are fewer boxes, as
 /// chat_vs_bars' phone md, nothing of the new page changed; the most of the five rates, the default's, rounded up.
+/// Each brought down, 2026-11-17, as chat_vs_bars' are.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1716, 1184),
-  "phone md": (1390, 1065),
-  "plp_narrow card": (1754, 978),
-  "plp_narrow md": (1709, 1139),
-  "tape card": (1350, 1192),
-  "tape md": (1400, 1166),
-  "wide card": (1280, 1117),
-  "wide md": (1272, 1074),
+  "phone card": (1639, 1182),
+  "phone md": (1329, 1045),
+  "plp_narrow card": (1658, 978),
+  "plp_narrow md": (1639, 1132),
+  "tape card": (1318, 1184),
+  "tape md": (1368, 1150),
+  "wide card": (1254, 1110),
+  "wide md": (1245, 1062),
 }
 
 ///|

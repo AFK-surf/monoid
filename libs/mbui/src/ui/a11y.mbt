@@ -378,7 +378,7 @@ fn a11y_olds(
     let disabled = s.disabled || off
     let node : A11yNode = {
       id: n,
-      role: s.role.to_string(),
+      role: Show::to_string(s.role),
       flags: a11y_flags(s.check, s.expanded, s.selected, s.pressed, disabled, s.modal),
       x: a11y_round(ax - holder_at.0),
       y: a11y_round(ay - holder_at.1),
@@ -440,7 +440,7 @@ pub fn Ctx::a11y_lines(self : Ctx) -> String {
       n.to_string(),
       parent.to_string(),
       s.id.to_string(),
-      s.role.to_string(),
+      Show::to_string(s.role),
       if s.focused { a11y_focused_flags(flags) } else { flags },
       a11y_length(a11y_at(x)),
       a11y_length(a11y_at(y)),
@@ -820,7 +820,7 @@ fn Ctx::a11y_tree_pass(self : Ctx, tree : @view.Tree, full : Bool, out : Array[A
         }
         {
           id: n,
-          role: s.role.to_string(),
+          role: Show::to_string(s.role),
           flags: a11y_flags(s.check, s.expanded, s.selected, s.pressed, e.disabled, false),
           x: a11y_round(ax - holder_at.0),
           y: a11y_round(ay - holder_at.1),

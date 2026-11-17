@@ -5,14 +5,16 @@ test "a way short of room: the first and the last whole, those between leaving f
   let steps = ["Home", "Projects", "Reports", "Quarterly", "Drafts", "Final notes"]
   let went : Array[Int] = []
   @sf.presenters_reset()
+  // (what it presents, on 小屏 a sheet of the window's tree: presented_tree)
   let t = @ui.Tester::new(
-    fn(c) {
+    @ui.old_views_here,
+    tree=@sf.presented_tree(fn(c) {
       @sf.begin(c) |> ignore
       c.with_theme(@sf.ui_theme(), fn() {
         c.box(style=way_test_room, fn() { @sf.way_line(c, "way", steps, narrow_way(), fn(i) { went.push(i) }) }) |> ignore
         @sf.presented(c)
       })
-    },
+    }),
     w=600.0,
     h=700.0,
     platform=2,

@@ -2,7 +2,11 @@
 test "a thread's address read back" {
   assert_eq(@session_storage.parse_thread_address(" C123/1700000000.000100 "), Some(("C123", "1700000000.000100")))
   assert_eq(@session_storage.parse_thread_address("oc_ab/omt_x1"), Some(("oc_ab", "omt_x1")))
-  assert_eq(@session_storage.parse_thread_address("0123456789abcdef/0123456789abcdef").is_empty(), false)
+  assert_eq(@session_storage.parse_thread_address("0123456789abcdef/0123456789abcdef"), None)
+  assert_eq(
+    @session_storage.parse_thread_address("s_0123456789abcdef01234567/t_0123456789abcdef"),
+    Some(("s_0123456789abcdef01234567", "t_0123456789abcdef")),
+  )
   assert_eq(@session_storage.parse_thread_address("c1/1.2"), None)
   assert_eq(@session_storage.parse_thread_address("C1/12"), None)
 }

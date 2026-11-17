@@ -730,6 +730,13 @@ pub fn Ctx::field_focused(self : Ctx) -> Bool {
 }
 
 ///|
+/// Whether a field (an old view's or the window's tree's) has the keyboard now, read outside a build (Ctx::field_focused
+/// of the window's frame's Ctx): what is made as it opens takes it from no field in use.
+pub fn field_has_keys() -> Bool {
+  g().field_focused()
+}
+
+///|
 /// Whether a field has the keyboard's focus that what is being built now would take it from: not one in a modal layer
 /// of the tree's that keeps this old view from input (a question over a chat its composer is first drawn under): what
 /// it asks then is kept for that layer to give back as it goes (view_focus_kept_for), taken from no one.

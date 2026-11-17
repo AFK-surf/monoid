@@ -10,6 +10,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   cloud:
+    # A fork's pull request, or a run by hand: a branch of this repository has its push's pipeline.yml check the cloud
+    # (check-linux), and ran it here a second time on a runner of its own.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork == true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
