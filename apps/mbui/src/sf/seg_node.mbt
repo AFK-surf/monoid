@@ -286,8 +286,8 @@ let seg_lens_shadow_y : Double = 2.0
 /// A narrow page's choice of a few (seg's filling Seg, as nodes: segmented's on a narrow page) in `parent`: as wide as
 /// where it is, `labels` sharing it alike, none narrower than its words with their sides (fitted: where they need more,
 /// their sides narrower, else their words smaller alike, else the chosen one alone with a chevron, the others in a pick a
-/// press on it opens), on a track the ink at 6%, 34 high, 2 in, 10 round; a thumb lifted out of it (the theme's lifted,
-/// a hairline round it) under the chosen one's words, sliding to the one chosen as that changes, from where it is then,
+/// press on it opens), on a neutral capsule track, 34 high, 2 in. A thumb in the theme's lifted colour sits under the
+/// chosen one's words and slides to the one chosen as that changes, from where it is then,
 /// as a cover does (@ui.Ctx::cover: on its spring, between where those options are laid out as it is drawn); a finger
 /// held on an option (glass not drawn solid), the thumb there, fading under a lens of liquid glass growing over it, the
 /// option chosen as it is let go on it. `chosen()` the one chosen; `choose` told the one a press, an arrow, a screen
