@@ -48,6 +48,7 @@ import {
   "station/session_chats",
   "station/slack",
   "station/memory",
+  "station/updates",
   "station/packed",
   "station/front",
   "station/jsjson",

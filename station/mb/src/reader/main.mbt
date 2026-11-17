@@ -1059,6 +1059,8 @@ fn main {
     (Some("packed"), _, _) =>
       // (the shell's own files, which this asks for none of, in `--shell-dir`)
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => packed(host))
+    (Some("harness-updates"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @updates.harness(host))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
     (Some("harness-session-storage"), _, _) =>
