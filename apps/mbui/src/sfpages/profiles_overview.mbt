@@ -26,6 +26,8 @@ priv struct ModelPool {
   will_starve : Array[Bool]
   /// each hour against what it could keep up (%/h): the last 24 (0..23), the next 24 as foreseen (24..47)
   hourly_net : Array[Double]
+  /// how many more accounts of its usual plan it would take to keep up with its pace (0: it keeps up)
+  needed_accounts : Int
 }
 
 ///|
@@ -70,6 +72,17 @@ fn ov_pool_of(j : Json) -> ModelPool {
       starve
     },
     hourly_net: nums("hourlyNet"),
+    needed_accounts: count(v, "neededAccounts"),
+  }
+}
+
+///|
+/// What a pool short of accounts says under its charts: how many more of its usual plan would keep it going.
+fn ov_needed_words(n : Int) -> String {
+  if ov_en() {
+    "Needs ~" + n.to_string() + (if n == 1 { " more account" } else { " more accounts" }) + " of this plan at current pace"
+  } else {
+    "按当前消耗速度，还需约 " + n.to_string() + " 个同档账号才能不断档"
   }
 }
 
@@ -918,6 +931,15 @@ fn ov_pools_card_node(
           }
         })
         |> ignore
+        // (how many more accounts would keep it going, under both charts: only where it does not keep up as it is; at once
+        // as another pool is picked, as the charts over it are)
+        body.show(fn() { active_pool().map(fn(p) { p.needed_accounts > 0 }).unwrap_or(false) }, at_once=true, fn(hint) {
+          hint.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
+          @sf.words_node(hint, fn() { ov_needed_words(active_pool().map(fn(p) { p.needed_accounts }).unwrap_or(0)) }, fn() {
+            @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.red))
+          })
+          |> ignore
+        })
       })
       |> ignore
     })
@@ -1099,9 +1121,9 @@ pub fn profiles_overview_node(
                 note=fn() {
                   let (_, left, dur) = it_sig.get()
                   if ov_en() {
-                    left.to_string() + "% left · resets in " + dur
+                    left.to_string() + "% weekly unused · resets to zero in " + dur
                   } else {
-                    "剩 " + left.to_string() + "% · " + dur + "后重置"
+                    "周额度剩 " + left.to_string() + "% 未用 · " + dur + "后重置清零"
                   }
                 },
                 lacks=true,

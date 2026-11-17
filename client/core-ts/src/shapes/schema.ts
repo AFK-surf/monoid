@@ -3595,6 +3595,7 @@ export const SHAPES: Record<string, Shape> = {
     ["traj", vec("i64"), { client: vec("I54"), doc: "Percent of the pool left, whole, an hour apart: 48 hours back (0), now (48), 168 hours on (216)." }],
     ["starveSpans", vec("i64"), { client: vec("I54"), doc: "The hours on it goes without, in pairs: the first (0: the next hour) and the one after the last." }],
     ["hourlyNet", vec("f64"), { doc: "Each hour's pace against what it could keep up (%/h, to a tenth): the last 24 (0..23) as spent, the next 24 (24..47) as\nforeseen; an hour going without negative." }],
+    ["neededAccounts", opt("i64"), { client: opt("I54"), doc: "How many more accounts of the pool's usual plan are needed to keep up with its pace without going without; none\nwhen it keeps up (left out: a pool's change as a station goes holds to its bar)." }],
   ], { doc: "A model's pool of the Profile overview." }),
   ProfileRow: struct([
     ["key", "String", { doc: "As WorkspaceProfile's: what one account's page asks it by (`profile`)." }],

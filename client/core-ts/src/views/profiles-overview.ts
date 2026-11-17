@@ -34,6 +34,8 @@ const DIURNAL_MIN = 0.25;
 const DIURNAL_MAX = 2.4;
 /// What a full five hours is of its week, in percent, where an account's hours do not tell (about eight a week).
 const SHORT_OF_LONG = 12;
+/// The most accounts said to be needed.
+const NEEDED_MOST = 999;
 
 export type OverviewPool = {
   title: string;
@@ -54,6 +56,9 @@ export type OverviewPool = {
   /// Each hour's pace against what it could keep up (sustainablePerHour − what it spent, %/h, to a tenth): the last 24
   /// (0..23), then the next 24 as foreseen (24..47), what it would ask of them (an hour going without, negative).
   hourlyNet: number[];
+  /// How many more accounts of its usual plan, full, it would take to keep up with its pace and not go without within
+  /// the week (`neededFor`); none where it keeps up.
+  neededAccounts: number | null;
 };
 
 /// One window of an account's allowance, as its station or an hour of it says it.
@@ -499,6 +504,8 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
     return {
       title: spec.title, ready: 0, total, nowPct: 0, exhaustHours: 0, currentBurnPerHour: 0, sustainablePerHour: 0, netPerHour: 0, overPace: true,
       traj: new Array(PAST_HOURS + 1 + FUTURE_HOURS).fill(0), starveSpans: [0, FUTURE_HOURS], hourlyNet: new Array(48).fill(0),
+      // (none of its accounts usable: nothing to say how much one more would be of it)
+      neededAccounts: null,
     };
   }
   const shares = active.map((s) => (s.weight / weight) * 100);
@@ -603,6 +610,10 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
     starveSpans.push(h, end);
   }
   const overPace = recent > sustainable || exhaustHours !== null;
+  // (the faster of now's pace, the week's where it goes without within it, and the cycles' so far where nothing is
+  // left now: an hour it could not spend in is no pace of its)
+  const pace = Math.max(recent, exhaustHours !== null ? base : 0, nowAvail <= 0.3 ? cycleAvg : 0);
+  const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demand, pace) : null;
   // (over it, or going without within the week: said against the faster of now's pace and the week's, never above
   // -0.1, so it falls as either rises)
   const net = sustainable - recent;
@@ -619,7 +630,60 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
     traj: traj.map((v) => Math.round(v)),
     starveSpans,
     hourlyNet,
+    neededAccounts,
   };
+}
+
+/// The most often of `xs`, ties to the larger; null where there is none.
+function mode(xs: number[]): number | null {
+  const counts = new Map<number, number>();
+  for (const x of xs) counts.set(x, (counts.get(x) ?? 0) + 1);
+  let best: number | null = null;
+  let most = 0;
+  for (const [x, c] of counts) if (c > most || (c === most && best !== null && x > best)) [best, most] = [x, c];
+  return best;
+}
+
+/// The fewest accounts of the pool's usual plan (its accounts' most common weight, cycle and five hours), each full
+/// and its week begun now, that put beside its own keep it from going without: their cycles give back what `pace`
+/// spends, the week foreseen (`demand`) goes without in no hour, and `pace` spent evenly is always taken. Each is
+/// reckoned at the pool's shares with them in (`scale`), as the pools made again of those accounts would be, so that
+/// with so many more the pool keeps up. Most `NEEDED_MOST`.
+function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demand: (h: number) => number, pace: number): number {
+  const unitWeight = mode(active.map((s) => s.weight))!;
+  const unitShare = (unitWeight / weight) * 100;
+  const unitCycle = mode(active.flatMap((s) => (s.long !== null ? [cycleOf(s.long)] : []))) ?? 168;
+  const shortHours = active.flatMap((s) => (s.short !== null ? [shortHoursOf(s.short)] : []));
+  const unitShort = shortHours.length * 2 >= active.length ? { used: 0, resetIn: null, hours: mode(shortHours)!, ofLong: SHORT_OF_LONG } : null;
+  // What its own give back an hour, at their cycles.
+  const existingSteady = active.reduce((a, s, i) => a + shares[i]! / (s.long !== null ? cycleOf(s.long) : 168), 0);
+  const canKeepUp = (k: number): boolean => {
+    const scale = 100 / (100 + k * unitShare);
+    if ((existingSteady + k * (unitShare / unitCycle)) * scale < pace * scale + 0.005) return false;
+    const scaled: Tank[] = tanks.map((t) => ({ ...t, share: t.share * scale, left: t.left * scale, short: t.short === null ? null : { ...t.short } }));
+    for (let j = 0; j < k; j++) {
+      scaled.push({ share: unitShare * scale, left: unitShare * scale, resetIn: unitCycle, cycle: unitCycle, lockedTill: 0, short: unitShort === null ? null : { ...unitShort } });
+    }
+    const forecast = simulate(scaled, (h) => demand(h) * scale);
+    if (forecast.avail.some((_, h) => starves(forecast, h))) return false;
+    // (over the even pace the pools' own search finds to half a hundredth)
+    const even = simulate(scaled, () => pace * scale + 0.01);
+    return !even.avail.some((_, h) => even.unmet[h]! > 0.05);
+  };
+  // (lo: so few do not keep it from going without, or 0; hi: so many do)
+  let lo = 0;
+  let hi = 1;
+  while (!canKeepUp(hi)) {
+    if (hi >= NEEDED_MOST) return NEEDED_MOST;
+    lo = hi;
+    hi = Math.min(NEEDED_MOST, hi * 2);
+  }
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (canKeepUp(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
 }
 
 /// The overview's pools of the workspace's accounts (`profilesWhole`'s items), with their stations' hours (`pace`,

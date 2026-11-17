@@ -156,6 +156,34 @@ test("accounts refilling at different hours, their five hours spent again and ag
   for (let k = PAST_HOURS; k >= 1; k--) assert.ok(back(pool, k - 1) <= back(pool, k), `up ${k - 1} back: ${back(pool, k)} → ${back(pool, k - 1)}`);
 });
 
+test("how many more accounts of its plan a pool needs to keep up: none where it does, and with so many more in it, it does", () => {
+  const spend = (f: (i: number) => number, hours = 60): [number, number][] => Array.from({ length: hours }, (_, i) => [i, f(i)] as [number, number]);
+  // With `n` more of its plan in it, each full, its week begun now (and its five hours unused where it has them).
+  const more = (items: J[], n: number, short: boolean) => [
+    ...items,
+    ...Array.from({ length: n }, (_, j) => account(`more${j}`, short ? [five(0, null), week(0, 168)] : [week(0, 168)])),
+  ];
+  const cases: [string, J[], J, boolean][] = [
+    ["spending faster in the last hours", [account("a", [week(40, 100)])], paceOf({ a: { spend: spend((i) => (i < 3 ? 10 : 1)) } }), false],
+    ["idle now, going without within the week at the week's pace", [account("a", [week(60, 100)])], paceOf({ a: { spend: spend((i) => (i < 12 ? 0 : 1)) } }), false],
+    ["its five hours taking it faster than they come back", [account("a", [five(0, null), week(60, 150)])], paceOf({ a: { spend: spend(() => 1, 6) } }), true],
+    ["its week spent long ago, nothing spent since", [account("a", [week(100, 100)])], paceOf({ a: { spend: spend((i) => (i < 30 ? 0 : 2), 68) } }), false],
+    ["two accounts, both spent fast", [account("a", [week(70, 120)]), account("b", [week(50, 40)])], paceOf({ a: { spend: spend(() => 1.5) }, b: { spend: spend(() => 1.5) } }), false],
+  ];
+  const steady = claude([account("a", [week(10, 100)])], paceOf({ a: { spend: spend(() => 1) } }));
+  assert.equal(steady.overPace, false);
+  assert.equal(steady.neededAccounts, null, "keeping up: none more");
+  for (const [name, items, pace, short] of cases) {
+    const pool = claude(items, pace);
+    assert.ok(pool.overPace, `${name}: over its pace`);
+    const needed = pool.neededAccounts ?? 0;
+    assert.ok(needed >= 1, `${name}: ${pool.neededAccounts}`);
+    // With so many more it keeps up: not over its pace, not going without in the week, needing none more.
+    const after = claude(more(items, needed, short), pace);
+    assert.deepEqual([after.overPace, after.exhaustHours, after.neededAccounts], [false, null, null], `${name}, ${needed} more: ${after.currentBurnPerHour} of ${after.sustainablePerHour} %/h`);
+  }
+});
+
 test("the pools of a workspace's accounts: each model's, its accounts ready of all, one in trouble leaving its share", () => {
   const items = [
     account("a", [five(10, 2), week(20, 100), week(50, 100, "Fable")]),
