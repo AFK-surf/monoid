@@ -10,6 +10,7 @@ import {
   "station/widgets",
   "station/cards",
   "station/accounts_oauth",
+  "station/replica_coord",
   "station/sessions",
   "station/store_sessions",
   "station/outflow",
