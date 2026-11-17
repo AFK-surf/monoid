@@ -31,6 +31,8 @@ import { HostWire, concat, encodeFrame, readAll, takeFrames, type LinkNet } from
 import { NET_EVERY_MS } from "../src/station/topics.ts";
 import { apply as applyOps, type Op } from "../src/delta.ts";
 import { jsonResponse, type FakeHost } from "../src/testing.ts";
+import { parse } from "../src/markdown.ts";
+import { wordsIn } from "./md-words.ts";
 
 const gets = (host: FakeHost, path: string) => host.requests.flatMap(readsOf).filter((url) => url.endsWith(path)).length;
 const text = (b: Uint8Array | null | undefined) => (b === undefined || b === null ? undefined : new TextDecoder().decode(b));
@@ -289,6 +291,42 @@ test("a_file_a_message_names_opens_whole_its_bytes_beside_from_a_station_new_or_
   await host.settle();
   assert.equal(said(3).error.code, "http_404");
   core.close();
+});
+
+test("a_windows_file_an_agent_names_in_code_can_be_peeked_and_opened_by_its_marked_path", async () => {
+  const { host, core } = await started(base());
+  const paths = ["C:/work/report.md", "C:\\work\\报告.md"];
+  const asked: string[] = [];
+  stationReplies(host, (req) => {
+    const url = new URL(req.url);
+    const at = url.pathname.replace(/^\/admin\/api/, "");
+    if (!/^\/sessions\/k\/(?:peek|open)$/.test(at)) return undefined;
+    const path = url.searchParams.get("path")!;
+    assert(paths.includes(path));
+    asked.push(at + ":" + path);
+    if (at.endsWith("/peek")) return { kind: "text", path, text: "report" };
+    return new Raw({ status: 200, headers: [["content-type", "text/markdown"], ["stillfail-name", "report.md"], ["stillfail-path", encodeURIComponent(path)]], body: new TextEncoder().encode("report") });
+  });
+  const ui = core.connect();
+  const said = (id: number) => host.takeEmitted().map(([, m]) => m as J).find((m) => m.id === id && ("ok" in m || "error" in m)) as J;
+  try {
+    for (const path of paths) {
+      const message = "See `" + path + ":12`";
+      const [[, [, [, file]]]] = wordsIn(parse(message), message) as [[string, [string, [string, { path?: string; line?: number }]]]];
+      assert.equal(file.path, path, "the file chip carries the station path, without its line suffix");
+      assert.equal(file.line, 12);
+      // The app's file chip passes this path to open_named: file.peek first, then the viewer's file.open.
+      call(core, ui, 1, "file.peek", { station: ST, key: "k", path: file.path });
+      await host.settle();
+      assert.equal(said(1).ok?.kind, "text");
+      call(core, ui, 2, "file.open", { station: ST, key: "k", path: file.path });
+      await host.settle();
+      const opened = said(2);
+      assert.equal(opened.ok.path, path);
+      assert.equal(new TextDecoder().decode(opened.bytes), "report");
+    }
+    assert.deepEqual(asked, paths.flatMap(path => [`/sessions/k/peek:${path}`, `/sessions/k/open:${path}`]));
+  } finally { core.close(); }
 });
 
 test("a_part_of_a_file_a_message_names_is_read_by_its_path_its_whole_size_said_or_cut_from_the_whole_of_an_old_station", async () => {

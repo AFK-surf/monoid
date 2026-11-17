@@ -51,6 +51,19 @@ test("markdown_an_inline_code_or_a_link_naming_a_file_says_its_path_its_line_and
   assert.equal(code[1].shown, "~/projects/…/list/Row.tsx");
 });
 
+test("markdown_windows_drive_paths_in_code_name_files_without_changing_their_separators", () => {
+  for (const path of ["C:/work/report.md", "C:\\work\\report.md", "d:\\工作\\报告.md", "D:\\work/notes.txt", "C:\\work\\README"]) {
+    for (const [suffix, line] of [["", null], [":12:4", 12], ["#L7-L9", 7]] as const) {
+      const content = path + suffix;
+      assert.deepEqual(read("`" + content + "`"), [["p", [["code", { content, path, ...(line === null ? {} : { line }) }]]]], content);
+    }
+  }
+  // A drive-relative path depends on that drive's current directory; schemes, streams and elided paths stay code.
+  for (const content of ["C:report.md", "C:\\work\\report.md:stream", "C:\\work\\...", "C:\\work\\…", "https://example.com/a.md", "mailto:user@example.com"]) {
+    assert.deepEqual(read("`" + content + "`"), [["p", [["code", { content }]]]], content);
+  }
+});
+
 test("markdown_a_tight_list_holds_its_words_a_loose_one_its_paragraphs", () => {
   assert.deepEqual(read("- 一\n- 二"), [["list", [["li", ["一"]], ["li", ["二"]]]]]);
   assert.deepEqual(read("1. 一\n\n2. 二"), [["list", [["li", [["p", ["一"]]]], ["li", [["p", ["二"]]]]], { ordered: true }]]);
@@ -194,9 +207,10 @@ test("markdown_kept_on_the_device_is_read_as_this_reading_reads_it_or_its_readin
     "<b>不要</b> 原样\n第二行  \n硬换行 &amp; &lt; &#x4e2d;\n\n![图](a.png \"标题\") [引用][r]\n\n[r]: https://r.dev",
     "前面**“强调。”**后面，*斜体。*继续，~~删除。~~继续。",
     "[对话](https://still.fail/o/ws1/st1/c-1) https://still.fail/w/ws1/s/st1/screen/desktop [https://github.com/a/b/pull/1](https://github.com/a/b/pull/1)",
+    "See `C:\\work\\report.md:12` and `D:/work/notes.txt#L3`.",
   ];
   const digest = createHash("sha256").update(JSON.stringify(texts.map(parse))).digest("hex").slice(0, 16);
-  assert.equal(`${MD_READING}:${digest}`, "10:c633e49572d2c2a1", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
+  assert.equal(`${MD_READING}:${digest}`, "11:7ca7b9ea011ca1c4", "what Markdown is read as changed: MD_READING one more (markdown.ts) and this digest with it");
 });
 
 test("a_link_or_picture_alone_on_its_line_is_a_paragraph_of_its_own_with_no_blank_line_round_it", () => {
