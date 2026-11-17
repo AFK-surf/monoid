@@ -69,6 +69,7 @@ jobs:
       release_smoke: ${{ steps.plan.outputs.release_smoke }}
       check_mac: ${{ steps.plan.outputs.check_mac }}
     steps:
+      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, fetch-tags: true, filter: "blob:none" } # (the history's commits and trees: the range, the paths it changed; a blob read is fetched then)
       - uses: ./.github/actions/node
@@ -1073,8 +1074,9 @@ jobs:
     env:
       MBUI_FRESH: 1
     steps:
+      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
+      - run: bash scripts/git-history.sh
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
         with: { name: "mac-beta-${{ github.sha }}", path: "${{ runner.temp }}/from" }
@@ -1108,8 +1110,10 @@ jobs:
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "MBC_STORE=$RUNNER_TEMP/ci-live/mbc-store" >> "$GITHUB_ENV"
           echo "HBC_CACHE=$RUNNER_TEMP/ci-live/hbc" >> "$GITHUB_ENV"
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
+      - run: bash scripts/git-history.sh main arch/next
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
       # they hold, as preview.yml's jobs keep theirs; stable.yml's Mac app restores them too)
       # mbc still validates the full compiler and every dependency; the prefix just keeps each launcher’s store.
@@ -1405,8 +1409,9 @@ jobs:
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBUI_MAC_FROM: ${{ github.workspace }}/.ci/mac-unsigned/youdid.wtf.app
     steps:
+      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" }
+      - run: bash scripts/git-history.sh
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
         with:
@@ -1508,6 +1513,8 @@ jobs:
       # and when it is cut, for the build's own limit to the second, scripts/with-timeout.sh: first, before pwsh's start)
       - run: |
           git config --global core.autocrlf false
+          git config --global http.lowSpeedLimit 1024
+          git config --global http.lowSpeedTime 20
           echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
           # (less the 3-5 s of "Set up job" before this step: preview's windows, 43998071944)
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
@@ -1519,7 +1526,7 @@ jobs:
           Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
           "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
+      - run: bash scripts/git-history.sh
       # Node alone first, the image's (or the Actions cache's) as preview.yml's windows job takes it: the setup's pnpm and
       # its store only for a core.hbc not kept, below
       - id: node-keep

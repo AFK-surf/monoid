@@ -106,7 +106,14 @@ for t in $targets; do
   # each of them beside sfapp's, ~80 s of four programs' compile on CI's four cores, 2026-10-24, 40127533069
   light=""
   for p in $pkgs; do
-    case $p in -p | stillfail/sfapp | stillfail/core | stillfail/sfreplay/*) continue ;; esac
+    case $p in
+      -p | stillfail/core | stillfail/sfreplay/*) continue ;;
+      stillfail/sfapp)
+        if [ -n "${GITHUB_ACTIONS:-}" ] && [ "${GITHUB_REF:-}" != refs/heads/main ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ] && [ "${GITHUB_EVENT_NAME:-}" != schedule ]; then
+          light="$light sfapp/sfapp.whitebox_test"
+        fi
+        continue ;;
+    esac
     n=$(basename "$p")
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
@@ -504,15 +511,19 @@ for t in $targets; do
           # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
-          *) specs="4,4,109,1 3,4,321,1 2,4,403,1 4,4,262,1" ;;
+          # (44196822098 and 44200405812 across GitHub's fast and slow 4-core SKUs: the groups' sweeps take some 275,
+          # 530, 315 and 365 table-seconds of their cores, and p3=$n keeps the third's four cores busy once its sweeps
+          # finish: by the table 731, 476, 691 and 641 s of pages, ~167 s a job on the fast SKU and ~240 s on the slow)
+          *) specs="4,4,275,1 3,4,530,1 4,4,315,1 4,4,365,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
         # (the second's pages on three programs beside its sweeps at the default rate, on $n at a rate, where it has
-        # none; the third's on two at the default rate, on one at a rate beside kept_rows' five runs, as it was)
-        p2=3 p3=2
+        # none; the third's on $n at the default rate since two of kept_rows' moved to the first, on one at a rate
+        # beside kept_rows' five runs, as it was)
+        p2=3 p3=$n
         [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
         runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else

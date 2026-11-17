@@ -123,6 +123,7 @@ jobs:
         uses: ./.github/actions/node
       # (from the Actions cache the moonbit workflow fills, never downloaded here; on ci-1, local NVMe _tool/moon-ci + ~/stillfail-ci/mbui-tools)
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: "${{ env.PART == 'replay' && 'mbc testexe detlint chk' || 'mbc testexe' }}" }
       # (on ci-1: one content-addressed MBC_STORE and per-part moon _build seed on local NVMe, shared by ci-1-1 and ci-1-2)
       - if: runner.environment == 'self-hosted'
         run: |
@@ -164,6 +165,23 @@ jobs:
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
+      # The app build reaches the store only after moonc, so restore it while moonc runs.
+      - name: Start the app build
+        id: app-start
+        if: runner.environment != 'self-hosted' && env.PART == 'app' && env.GROUP == 'build'
+        run: |
+          mkdir -p "$RUNNER_TEMP/app-live"
+          : > "$RUNNER_TEMP/app-store-pending"
+          rm -rf "$RUNNER_TEMP/app-live/mbc-store" "$RUNNER_TEMP/app-store-pending.failed" "$RUNNER_TEMP/app-status" "$RUNNER_TEMP/built"
+          touch "$RUNNER_TEMP/start"
+          echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/tests-tree"
+          export MBUI_TESTS_TREE=$(cat "$RUNNER_TEMP/tests-tree")
+          export MBUI_BUILT_MARK="$RUNNER_TEMP/built" MBC_LOG="$RUNNER_TEMP/mbc.log"
+          export MBC_STORE="$RUNNER_TEMP/app-live/mbc-store" MBC_STORE_WAIT="$RUNNER_TEMP/app-store-pending"
+          export TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=app APP_GROUP=1/4
+          export APP_BUILD_OUT="$RUNNER_TEMP/app-test" SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40
+          nohup bash -c 'set +e; bash scripts/with-timeout.sh @$((JOB_END - 25)) bash apps/mbui/scripts/test.sh > "$RUNNER_TEMP/mbui-test.log" 2>&1; code=$?; printf "%s\n" "$code" > "$RUNNER_TEMP/app-status.tmp"; mv "$RUNNER_TEMP/app-status.tmp" "$RUNNER_TEMP/app-status"; exit "$code"' > "$RUNNER_TEMP/app-worker.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/app-pid"
       # The units main's newest run kept, and on a branch its own last run's beside them (a store by content: the two
       # together, nothing of one replaces the other's). A branch's own alone, after it took main's newer commits in
       # (a rebase), compiled again all main had changed since: 253 s of the app part where its push before was 82 s
@@ -224,7 +242,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
+        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push' && !(env.PART == 'app' && env.GROUP == 'build')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -257,11 +275,17 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
       # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
           { (cd "$RUNNER_TEMP/store-main" && find . -mindepth 2 -maxdepth 2 -type d); (cd "$RUNNER_TEMP/store-arch" && find . -mindepth 2 -maxdepth 2 -type d); } | sort -u > "$RUNNER_TEMP/units-before"
+      - name: Publish the app build's store
+        if: steps.app-start.outcome == 'success'
+        run: |
+          mkdir -p "$MBC_STORE"
+          mv "$MBC_STORE" "$RUNNER_TEMP/app-live/mbc-store"
+          rm "$RUNNER_TEMP/app-store-pending"
       # (stopped by its own limit, before the job's, so what it compiled is kept below: cut at the job's 5 minutes, its
       # moon, mbc and clang went on writing the store as the cache's tar read it, and the save failed, `tar` exit 1, none
       # of the hundreds of units compiled kept, the next push as far behind: 43839505847, 2026-11-16. Cut before the job
@@ -274,6 +298,19 @@ jobs:
       - name: The mbui app's tests and the flows seen again (native, ${{ env.PART }})
         id: tests
         run: |
+          if [ '${{ steps.app-start.outcome }}' = success ]; then
+            while [ ! -s "$RUNNER_TEMP/app-status" ]; do
+              [ "$(date +%s)" -lt "$((JOB_END - 25))" ] || { echo 'app build did not report its result before the deadline' >&2; exit 124; }
+              if ! kill -0 "$(cat "$RUNNER_TEMP/app-pid")" 2>/dev/null; then
+                [ ! -s "$RUNNER_TEMP/app-status" ] || break
+                cat "$RUNNER_TEMP/app-worker.log" "$RUNNER_TEMP/mbui-test.log"
+                exit 1
+              fi
+              sleep 1
+            done
+            cat "$RUNNER_TEMP/mbui-test.log"
+            exit "$(cat "$RUNNER_TEMP/app-status")"
+          fi
           set -o pipefail
           touch "$RUNNER_TEMP/start"
           # (written by test.sh once every program it builds is built, whatever their tests then say: the units kept
@@ -333,8 +370,9 @@ jobs:
       # saved, the store still as they are read; found by the tests step's mark, so on ci-1 another runner's are left
       # alone. On GitHub's runner, the job's alone, by name too, and the locks a stopped compile left taken out)
       - name: What the tests left running, stopped
-        if: always() && steps.tests.outcome != 'success' && steps.tests.outcome != 'skipped'
+        if: always() && (steps.tests.outcome == 'failure' || steps.tests.outcome == 'cancelled' || (steps.app-start.outcome != 'skipped' && steps.tests.outcome == 'skipped'))
         run: |
+          [ ! -f "$RUNNER_TEMP/app-store-pending" ] || touch "$RUNNER_TEMP/app-store-pending.failed"
           t=$(cat "$RUNNER_TEMP/tests-tree" 2>/dev/null || true)
           left() { [ -z "$t" ] || grep -lsz "^MBUI_TESTS_TREE=$t\$" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 || true; }
           hosted=${{ runner.environment != 'self-hosted' && '1' || '' }}
@@ -347,13 +385,21 @@ jobs:
             sleep 1
           done
           [ -z "$hosted" ] || [ ! -d "$MBC_STORE" ] || find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
+      # The build has finished or has been stopped; cache/save keeps its original path/version.
+      - name: Return the app build's store
+        if: always() && steps.app-start.outcome == 'success'
+        run: |
+          if [ -d "$RUNNER_TEMP/app-live/mbc-store" ]; then
+            mkdir -p "$(dirname "$MBC_STORE")"
+            mv "$RUNNER_TEMP/app-live/mbc-store" "$MBC_STORE"
+          fi
       # (a branch's: the units it has that main's store lacks, for main's run once it is merged (above). Its own cache
       # is its branch's alone; main's run is helped by it, never waits on it: a failed upload fails nothing. Only after
       # the tests went through: main takes them from a merged pull request's last run, never a red or cut one, whose
       # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
         run: |
           (cd "$MBC_STORE" && find . -mindepth 2 -maxdepth 2 -type d | sort) > "$RUNNER_TEMP/units-after"
           comm -13 "$RUNNER_TEMP/units-before" "$RUNNER_TEMP/units-after" > "$RUNNER_TEMP/units-new"
@@ -378,8 +424,13 @@ jobs:
       - name: The units kept
         if: always()
         run: |
+          if [ '${{ steps.app-start.outcome }}' != skipped ] && [ '${{ steps.tests.outcome }}' = skipped ]; then
+            echo 'store restore did not complete: no cache is saved'
+            exit 0
+          fi
           S=$MBC_STORE
           went=${{ steps.tests.outcome }}
+          [ '${{ steps.app-start.outcome }}' != success ] || [ "$went" != skipped ] || went=failure
           [ "$OWN" != a- ] || [ "$went" != failure ] || went=success
           if [ "${{ runner.environment }}" = self-hosted ]; then
             [ ! -d "$S" ] || find "$S" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
