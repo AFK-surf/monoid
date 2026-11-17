@@ -4265,6 +4265,9 @@ export class Views implements Owner {
       const agent = { name: str(get(a.session, "agentText")) ?? "agent", agent: key, maker: get(a.session, "maker") ?? null, runtime: get(a.session, "runtime") ?? null };
       const pictures = slackPictures(a.session, threads, connects);
       for (const s of said) {
+        // What the tool refused on its way to a thread its session is not in went nowhere (a chat_post to a mistyped
+        // address, `CHT/…` for `CHAT/…`): it is not shown as sent to Slack.
+        if (s.out && s.refused && !threads.some((th) => `${str(get(th, "channel"))}/${str(get(th, "threadTs"))}` === s.to)) continue;
         if (!s.out) {
           const id = `${s.user ?? ""} ${s.to} ${s.at}`;
           if (heard.has(id)) continue;
