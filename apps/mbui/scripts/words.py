@@ -26,7 +26,7 @@ for part in glob.glob(os.path.join(ROOT, "client/i18n/catalog/zh/*.json")):
         catalog.update(json.load(f))
 words = {SETTINGS: listed(SETTINGS), BASE: listed(BASE) | listed(SETTINGS)}
 lacking = []
-for path in sorted(glob.glob(os.path.join(A, "src/**/*.mbt"), recursive=True)):
+for path in sorted(glob.glob(os.path.join(A, "src/**/*.mbt"), recursive=True)) + sorted(glob.glob(os.path.join(ROOT, "libs/sf-ui/src/**/*.mbt"), recursive=True)):
     if re.search(r"/strings_(zh|en)\.mbt$", path):
         continue
     own = SETTINGS if path.startswith(SETTINGS + os.sep) else BASE
@@ -35,7 +35,8 @@ for path in sorted(glob.glob(os.path.join(A, "src/**/*.mbt"), recursive=True)):
             for via, key in re.findall(r'(@sf\.t\()?"([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)"', line):
                 pkg = BASE if via else own
                 if key in catalog and key not in words[pkg]:
-                    lacking.append(f"{os.path.relpath(pkg, A)}/words.txt lacks {key} ({os.path.relpath(path, A)}:{n})")
+                    where = os.path.relpath(path, A) if path.startswith(A + os.sep) else os.path.relpath(path, ROOT)
+                    lacking.append(f"{os.path.relpath(pkg, A)}/words.txt lacks {key} ({where}:{n})")
 if lacking:
     print("words: keys said but not in their package's words.txt (add them, then scripts/strings):", file=sys.stderr)
     for line in lacking:

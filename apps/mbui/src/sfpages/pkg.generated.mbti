@@ -513,11 +513,9 @@ pub let reveal_ms : Double
 
 pub fn role_words(String) -> String
 
-pub fn row_aside(@ui.Ctx, @sfbase.Source, @sfbase.ChatItem, String, Int64, ground_by? : () -> Int64) -> Unit
+pub fn row_aside(@ui.Ctx, @sfbase.Source, @sfbase.ChatItem, String, Int64, ground_by? : () -> Int64, reach? : Double) -> Unit
 
-pub fn row_aside_end_w(@sfbase.ChatItem, String) -> Double
-
-pub fn row_aside_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.ChatItem, String, () -> Int64, () -> Int32) -> Unit
+pub fn row_aside_node(@view.View, @sfbase.Source, @sf.TipLayer, () -> @sfbase.ChatItem, String, () -> Int64, () -> Int32, reach? : () -> Double) -> Unit
 
 pub fn row_aside_shows(@sfbase.ChatItem, String) -> Bool
 

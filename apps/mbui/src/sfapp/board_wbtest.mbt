@@ -1452,6 +1452,134 @@ test "小屏 and 大屏: a chat's card held long, or right clicked, offers the c
 }
 
 ///|
+test "大屏: a right click across a waiting chat's card opens its menu when its whole row comes back" {
+  new_run()
+  let base = fixture("board")
+  let src = round_trip_again(base, 0.0, late=fn(name, _) { if name == "chatRow" { 150.0 } else { 0.0 } })
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  for title in ["整理发布清单", "夜里的构建又失败了"] {
+    guard board_rect_of(t, Button, title) is Some((x, y, w, h)) else { fail("no card: \{title}") }
+    for at in [(0.15, 0.2), (0.5, 0.2), (0.85, 0.2), (0.15, 0.5), (0.5, 0.5), (0.85, 0.5), (0.15, 0.8), (0.5, 0.8), (0.85, 0.8)] {
+      t.right_click(x + w * at.0, y + h * at.1)
+      t.run_for(150.0 + @ui.move_most_ms)
+      assert_true(board_menu_said(t).contains("重命名"), msg="\{title} at \{Repr(at)}: \{Repr(board_menu_said(t))}")
+      t.key(@ui.key_escape)
+      t.run_for(@ui.move_most_ms)
+    }
+  }
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: right clicking a busy board's waiting cards, including after scrolling, opens their menus" {
+  new_run()
+  let base = fixture("board-many")
+  let src = round_trip_again(base, 0.0, late=fn(name, _) { if name == "chatRow" { 150.0 } else { 0.0 } })
+  open_fixture_over("board-many", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  for title in ["整理发布清单", "夜里的构建又失败了", "迁移数据库的演练", "station W10-2：清退 src/store 剩余 16 处 TS Step 代码并加固门禁"] {
+    guard board_rect_of(t, Button, title) is Some((x, y, w, h)) else { fail("no card: \{title}") }
+    t.right_click(x + w / 2.0, y + h / 2.0)
+    t.run_for(150.0 + @ui.move_most_ms)
+    assert_true(board_menu_said(t).contains("重命名"), msg="\{title}: \{Repr(board_menu_said(t))}")
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+  }
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, _)) else { fail("no waiting column") }
+  t.wheel(x + w / 2.0, y + 20.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  guard board_rect_of(t, Button, "安卓冷启动又慢了") is Some((x, y, w, h)) else { fail("no last card") }
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(150.0 + @ui.move_most_ms)
+  assert_true(board_menu_said(t).contains("重命名"), msg="scrolled: \{Repr(board_menu_said(t))}")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: waiting cards still offer their menu while a chat is open beside the board and the pointer has rested on them" {
+  new_run()
+  let base = fixture("board")
+  let src = round_trip_again(base, 0.0, late=fn(name, _) { if name == "chatRow" { 150.0 } else { 0.0 } })
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  for title in ["整理发布清单", "夜里的构建又失败了"] {
+    guard board_rect_of(t, Button, title) is Some((x, y, w, h)) else { fail("no card: \{title}") }
+    for at in [(0.2, 0.5), (0.8, 0.8)] {
+      let px = x + w * at.0
+      let py = y + h * at.1
+      t.move_to(px, py)
+      t.run_for(@sf.tip_delay_ms + @ui.move_most_ms)
+      t.right_click(px, py)
+      t.run_for(150.0 + @ui.move_most_ms)
+      assert_true(board_menu_said(t).contains("重命名"), msg="\{title} at \{Repr(at)}: \{Repr(board_menu_said(t))}")
+      t.key(@ui.key_escape)
+      t.run_for(@ui.move_most_ms)
+    }
+  }
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: right clicking a second waiting card while the first menu is open opens the second card's menu" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, h)) else { fail("no first card") }
+  guard board_rect_of(t, Button, "迁移数据库的演练") is Some((x2, y2, w2, h2)) else { fail("no second card") }
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_menu_said(t).contains("重命名"))
+  let first = @sf.last_presented()
+  t.right_click(x2 + w2 * 0.2, y2 + h2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.last_presented() > first, msg="the second card's menu was not opened")
+  board_tap_words(t, "重命名")
+  assert_eq(t.get(TextField).value, "迁移数据库的演练")
+}
+
+///|
+test "大屏: menus keep switching across repeated right clicks on waiting cards" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, h)) else { fail("no first card") }
+  guard board_rect_of(t, Button, "迁移数据库的演练") is Some((x2, y2, w2, h2)) else { fail("no second card") }
+  for i, point in [
+    (x + w * 0.8, y + h / 2.0),
+    (x2 + w2 * 0.2, y2 + h2 / 2.0),
+    (x + w * 0.2, y + h / 2.0),
+    (x2 + w2 * 0.1, y2 + h2 / 2.0),
+    (x + w * 0.1, y + h / 2.0),
+  ] {
+    let previous = @sf.last_presented()
+    t.right_click(point.0, point.1)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.last_presented() > previous, msg="right click \{i + 1} did not open a menu")
+    assert_true(board_menu_said(t).contains("重命名"), msg="right click \{i + 1} has no chat menu")
+  }
+  board_tap_words(t, "重命名")
+  assert_eq(t.get(TextField).value, "整理发布清单")
+}
+
+///|
+test "大屏: right clicking one waiting card repeatedly outside its menu opens it again" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, h)) else { fail("no card") }
+  for i, fraction in [0.8, 0.4, 0.1] {
+    let previous = @sf.last_presented()
+    t.right_click(x + w * fraction, y + h / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.last_presented() > previous, msg="right click \{i + 1} did not open a menu")
+    assert_true(board_menu_said(t).contains("重命名"), msg="right click \{i + 1} has no chat menu")
+  }
+  board_tap_words(t, "重命名")
+  assert_eq(t.get(TextField).value, "整理发布清单")
+}
+
+///|
 /// A card lifted for its menu as it is drawn (its raised ground, wider than a card at rest of 小屏's, 358, by a
 /// hundredth and more, narrower than the window) and where among what is drawn; None where none is.
 fn board_lifted_card(t : @ui.Tester) -> ((Double, Double, Double, Double), Int)? {

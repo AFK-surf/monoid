@@ -56,7 +56,8 @@ export const admin = {
   me: (sub: string) => operations(sub).adminMe<{ email: string }>(),
   /** Each with its sign-up link on the web app. */
   /** With `beta`, whoever redeems it is let into the test channel too. */
-  createCode: (sub: string, note: string, days: number, beta = false) => operations(sub).adminCreateCode<InviteCodeView & { url: string }>({ note, days, ...(beta ? { beta } : {}) }),
+  createCode: (sub: string, note: string, days: number, beta = false) =>
+    operations(sub).adminCreateCode<InviteCodeView & { url: string; links?: { product: string; url: string }[] }>({ note, days, ...(beta ? { beta } : {}) }),
   revokeCode: (sub: string, code: string) => operations(sub).adminRevokeCode<{ ok: true }>({ code }),
   /** Lets the account `user` into the test channel (app.youdid.wtf), or out of it. */
   setBeta: (sub: string, user: string, on: boolean) => operations(sub).adminSetBeta<{ sub: string; beta: boolean }>({ user, on }),
@@ -74,16 +75,30 @@ export const admin = {
   /** A workspace for a company: its owners by email (members when they first sign in), and limits of its own. */
   createWorkspace: (sub: string, input: { name: string; owners: string[]; members: number; stations: number }) =>
     operations(sub).adminCreateWorkspace<{ id: string; joined: string[]; added: string[] }>(input),
-  setLimits: (sub: string, workspace: string, limits: { members: number; stations: number }) =>
-    operations(sub).adminSetLimits<{ members: number; stations: number }>({ workspace, ...limits }),
-  /** A station's enrollment for any workspace, the admin not in it. */
+  /** Its limits; `reset` back to its creator's plan (no limits of its own). */
+  setLimits: (sub: string, workspace: string, limits: { members: number; stations: number } | { reset: true }) =>
+    operations(sub).adminSetLimits<{ members: number; stations: number; reset?: true }>({ workspace, ...limits }),
+  /** Owners put in by the admin, not in it: members made owners, others joined or added till they sign in. */
+  addOwners: (sub: string, workspace: string, emails: string[]) =>
+    operations(sub).adminAddOwners<{ joined: string[]; added: string[]; already: string[]; unmailed: string[] }>({ workspace, emails }),
+  /** An email added that has not signed in yet, taken back. */
+  removeAdded: (sub: string, workspace: string, email: string) => operations(sub).adminRemoveAdded<{ ok: true }>({ workspace, email }),
+  /** A station's enrollment for any workspace, the admin not in it: its install command for each system. */
   enroll: (sub: string, workspace: string, name: string) =>
-    operations(sub).adminEnroll<{ token: string; expires_at: number; install: string; installWindows?: string; command: string }>({ workspace, name }),
+    operations(sub).adminEnroll<{ token: string; expires_at: number; install: string; installWindows?: string; installDocker?: string; command: string }>({ workspace, name }),
   /** Where a bug report stands. */
   feedbackStatus: (sub: string, id: string, status: FeedbackStatus) => operations(sub).adminFeedbackStatus<{ ok: true }>({ id, status }),
-  /** A token for a relay to put itself on the cloud's list with, and the command its machine runs. */
-  relayToken: (sub: string, name: string, url: string) =>
-    operations(sub).adminRelayToken<{ token: string; name: string; url: string | null; expires_at: number; command: string }>({ name, ...(url ? { url } : {}) }),
+  /** The team's reply to the chat a report came from (shown to its people, never to a station or its agents). */
+  feedbackReply: (sub: string, id: string, text: string) => operations(sub).adminFeedbackReply<{ id: string; delivery: "pending" }>({ id, text }),
+  /** A token for a relay to put itself on the cloud's list with, and the command its machine runs; with `target`, a
+   *  way into that relay of the list (an entry) whose machine says its own URL. */
+  relayToken: (sub: string, name: string, url: string, target = "") =>
+    operations(sub).adminRelayToken<{ token: string; name: string; url: string | null; expires_at: number; command: string }>({ name, ...(url ? { url } : {}), ...(target ? { target } : {}) }),
+  /** A token not used yet taken back, by its id (the page's `tokens`). */
+  relayTokenRevoke: (sub: string, id: string) => operations(sub).adminRelayTokenRevoke<{ revoked: true }>({ id }),
+  /** A relay on the list named anew (an entry kept a way into the relay it is). */
+  relayPut: (sub: string, url: string, name: string, target?: string) =>
+    operations(sub).adminRelayPut<{ url: string; name: string; target: string | null }>({ url, name, ...(target ? { target } : {}) }),
   /** A relay, or a way into one, taken off the cloud's list. */
   relayRemove: (sub: string, url: string) => operations(sub).adminRelayRemove<{ removed: true }>({ url }),
 };

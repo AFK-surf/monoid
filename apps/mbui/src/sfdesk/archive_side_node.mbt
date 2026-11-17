@@ -375,6 +375,7 @@ fn archive_row_side_node(
       high=true,
       // (恢复 and 删除 over its first line's end)
       end_room=fn() { if over() { @sf.row_keys_room(keys_n()) } else { 0.0 } },
+      end_slot=@ui.Space::S4.px(),
       fn(h) {
         h.box(fn(n) {
           n.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -391,8 +392,12 @@ fn archive_row_side_node(
             }
           },
           fn(k, size) {
-            guard size is Some(size) else { return }
+            guard size is Some(size) else {
+              k.laid_nowhere(Is(true)) |> ignore
+              return
+            }
             @sf.style_node(k, fn() { @sfpages.kind_slot }, in_row=true)
+            k.gone_empty(Is(true)) |> ignore
             k.says(By(fn() { Some(@view.said(Image, label=text(v(), "place"))) })) |> ignore
             @sf.station_mark_node(
               k,
@@ -401,6 +406,7 @@ fn archive_row_side_node(
               size,
               fn() { t().p.muted },
               stint,
+              visible_only=true,
             )
             @sf.tip_node(tips, k, fn() { text(v(), "place") }, within=true) |> ignore
           },

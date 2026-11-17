@@ -89,8 +89,9 @@ export const switchThumbSmall = style({
   width: "12px", height: "12px",
   selectors: { "&[data-state=\"checked\"]": { transform: "translateX(12px)" } },
 });
-export const switchRow = style({ display: "flex", alignItems: "center", gap: "16px" });
-export const switchRowText = style({ flex: "1", display: "grid", gap: "2px", fontSize: vars.textUi, cursor: "pointer" });
+/** Its switch beside the first line of the words, however many lines they take (22px, the switch's height). */
+export const switchRow = style({ display: "flex", alignItems: "flex-start", gap: "16px" });
+export const switchRowText = style({ flex: "1", display: "grid", gap: "2px", fontSize: vars.textUi, lineHeight: "22px", cursor: "pointer" });
 export const choice = style({
   border: `1px solid ${vars.lineStrong}`, borderRadius: `calc(16px * ${vars.cornerScale})`, background: vars.canvas,
   transition: `border-color ${vars.dur} ${vars.easeOut}, box-shadow ${vars.dur} ${vars.easeOut}`,
@@ -237,7 +238,7 @@ export const edgeTip = style({
 globalStyle(`${edgeTip} > *`, { transform: "translateY(-50%)" });
 globalStyle(`${empty} h2`, { margin: "10px 0 0", fontSize: vars.textTitle, color: vars.text });
 globalStyle(`${empty} p`, { margin: "0", maxWidth: "34em", fontSize: vars.textUi });
-globalStyle(`${switchRowText} ${note}`, { fontSize: vars.textMeta });
+globalStyle(`${switchRowText} ${note}`, { fontSize: vars.textMeta, lineHeight: "18px" });
 globalStyle(`${select} > span:first-child`, { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 globalStyle(`${command} code`, { flex: "1", fontSize: vars.textMeta, overflowX: "auto", whiteSpace: "nowrap" });
 globalStyle(`${dialogAlert} ${dialogLead}`, { margin: "0" });

@@ -401,8 +401,14 @@ export class Choose implements Owner {
   /// What `#hand` held before the last save asked of the station, put back if that fails (`unsaved`).
   readonly #handWas = new Map<string, Record<string, J> | null>();
   readonly #saving = new Map<string, number>();
-  /// The key each scope's next new chat is to be made under (`next`), until one is made under it.
-  readonly #next = new Map<string, string>();
+  /// The pending chat in each workspace. Its key and any explicit mode last until that chat is accepted.
+  readonly #next = new Map<string, { key: string; tui?: boolean }>();
+
+  /// The preference on this device. A chat or preset with a model keeps its own choice.
+  setDefaultTui(on: boolean): void {
+    this.#env.data.put(TABLE, "defaultTui", on, false);
+    this.#changed();
+  }
 
   constructor(env: ChooseEnv) {
     this.#env = env;
@@ -442,7 +448,10 @@ export class Choose implements Owner {
   #choice(scope: string, id: string): J {
     const kept = this.#record(`ws:${scope}:station:${id}`) ?? this.#record(`station:${id}`) ?? {};
     const pm = this.#bound(scope)?.model;
-    return pm !== null && pm !== undefined ? boundChoice(pm, kept) : kept;
+    if (pm !== null && pm !== undefined) return boundChoice(pm, kept);
+    const station = address(scope, id);
+    const supported = get(this.#env.store.get({ topic: "overview", station }), "claudeTui") === true;
+    return { ...kept, tui: supported && (this.#next.get(scope)?.tui ?? (this.#record("defaultTui") === true)) };
   }
 
   /// What the preset picked for the scope's new chats binds them to (`presetBinds`), with its name; none for none. Every
@@ -531,7 +540,7 @@ export class Choose implements Owner {
 
   #newChat(scope: string): J {
     const kept = this.#kept(scope);
-    const view: J = { kept, next: this.#nextKey(scope), any: false, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
+    const view: J = { kept, next: this.#pending(scope).key, any: false, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
     const found = this.#online(scope);
     if (!Array.isArray(found)) {
       view.error = found.error;
@@ -876,6 +885,9 @@ export class Choose implements Owner {
         const allowed = normProfiles(next.profiles) ?? (next.profile ? [next.profile] : null);
         if (next.runtime !== "codex" || !offersUltrafast(overview, next.model, accounts, allowed)) delete next.speed;
       }
+      if (next.runtime === "claude" && typeof params.tui === "boolean") {
+        this.#pending(scope).tui = params.tui;
+      }
       this.#keepChoice(scope, id, next);
     }
     this.#changed();
@@ -974,24 +986,20 @@ export class Choose implements Owner {
 
   /// The key scope `scope`'s next new chat is to be made under: what its page becomes as its first words are sent,
   /// before the core has made it (`newChat.create` `key`), the same until a chat is made under it.
-  #nextKey(scope: string): string {
-    let key = this.#next.get(scope);
-    if (key === undefined) {
-      key = pendingKeyMade();
-      this.#next.set(scope, key);
+  #pending(scope: string): { key: string; tui?: boolean } {
+    let pending = this.#next.get(scope);
+    if (pending === undefined) {
+      pending = { key: pendingKeyMade() };
+      this.#next.set(scope, pending);
     }
-    return key;
+    return pending;
   }
 
-  /// A chat made under `key`: its scope's next new chat under another.
-  taken(key: string): void {
-    for (const [scope, next] of this.#next) if (next === key) this.#next.delete(scope);
-    this.#changed();
-  }
-
-  /// A new chat accepted by the core.
-  used(station: string, choice: J): void {
-    const key = `ws:${ofAddress(station)}:frequent`;
+  /// A new chat accepted by the core. A retry for an older key leaves the current draft alone.
+  used(station: string, choice: J, acceptedKey?: string): void {
+    const scope = ofAddress(station);
+    if (acceptedKey !== undefined && (acceptedKey === "" || this.#next.get(scope)?.key === acceptedKey)) this.#next.delete(scope);
+    const key = `ws:${scope}:frequent`;
     this.#env.data.put(TABLE, key, recordCombo(arr(this.#record(key)), choice, this.#env.now()), false);
     this.#keepUsual(ofAddress(station), choice);
     this.#changed();
@@ -1032,7 +1040,7 @@ export class Choose implements Owner {
           const [options, base] = this.#onStation(station);
           const saved = this.#adding.get(`${station}\u0001preset`);
           const r = saved !== undefined ? resolve(options, saved, get(ov, "accountSubsets") === true) : base;
-          return [options, saved !== undefined ? picked(r) : { ...picked(r), model: null }, null, false, true, 0];
+          return [options, saved !== undefined ? picked(r) : { ...picked(r), model: null, tui: undefined }, null, false, true, 0];
         }
         const options = models(ov, now);
         const r = resolve(options, this.#adding.get(`${station}\u0001${o.form}`) ?? {}, get(ov, "accountSubsets") === true);
@@ -1200,7 +1208,10 @@ export class Choose implements Owner {
       arr(get(overview, "profiles")).some((p) => typeof p.fast === "boolean" && (allowedIds === null || allowedIds.includes(p.id)) && accounts.some((a) => a.id === p.id));
     const offersTui = get(overview, "claudeTui") === true && (o.kind === "new" || o.kind === "session" || isPreset);
     const claudeModeAvailable = offersTui && onName === "claude";
-    const tui = claudeModeAvailable && ("tui" in draft ? draft.tui : value.tui) === true;
+    const deviceTui = offersTui && this.#record("defaultTui") === true;
+    const newTui = o.kind === "new" && offersTui && !this.#bound(ofAddress(station))?.model
+      ? this.#next.get(ofAddress(station))?.tui ?? deviceTui : undefined;
+    const tui = claudeModeAvailable && ("tui" in draft ? draft.tui : newTui ?? value.tui) === true;
     const ultrafastOffered = (id: string) => offersUltrafast(overview, id, arr(get(get(optionOf(options, id), "accounts"), "codex")), allowedIds);
     const ultrafastAvailable = fastAvailable && onName === "codex" && offersUltrafast(overview, nextModel, accounts, allowedIds);
     // How fast it runs where none is picked: its account's own (the one drafted, else the one it is on), said as what
@@ -1326,8 +1337,9 @@ export class Choose implements Owner {
     work.annotated += options.length;
     const annotated = options.map((opt: J) => {
       const id = typeof opt.model === "string" ? opt.model : "";
-      const ran = id === m || id === panelOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
-      const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), ...(offersTui ? tuiFields(ran) : {}), context: ran.context });
+      const currentOption = id === m || id === panelOption;
+      const ran = currentOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
+      const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), ...(offersTui ? tuiFields(currentOption || newTui === undefined ? ran : { tui: newTui }) : {}), context: ran.context });
       const rts = arr(opt.runtimes);
       const parts: string[] = [];
       if (r !== null) {
@@ -1406,7 +1418,7 @@ export class Choose implements Owner {
     return {
       ok: {
         fastAvailable,
-        ...(claudeModeAvailable ? { claudeModeAvailable: true } : {}),
+        ...(claudeModeAvailable ? { claudeModeAvailable: true, ...(deviceTui ? { defaultTui: true } : {}) } : {}),
         ...(ultrafastAvailable ? { ultrafastAvailable: true } : {}),
         effortDefault: (() => {
           const level = effortDefault(overview, onName, option !== undefined ? (option.model ?? null) : null, allowedIds);
@@ -1650,8 +1662,9 @@ export class Choose implements Owner {
     }
     // A chat can run Claude's default model. Its mode alone can change without naming a model or touching its account.
     const modeOnly = o.kind === "session" && typeof params.tui === "boolean" && set.length === 1 && get(params, "model") === undefined;
+    const explicitNewMode = o.kind === "new" && v.claudeModeAvailable && this.#drafts.get(key)?.tui !== undefined;
     const inFlight = (this.#saving.get(key) ?? 0) > 0;
-    if ((!inFlight && v.changed !== true) || (v.option === null && !modeOnly)) {
+    if ((!inFlight && v.changed !== true && !explicitNewMode) || (v.option === null && !modeOnly)) {
       this.#drafts.delete(key);
       this.#env.store.invalidate(topic);
       return { done: { saved: false } };
@@ -1670,7 +1683,7 @@ export class Choose implements Owner {
           profiles: next.profiles ?? null,
           fast: next.fast,
           speed: next.speed ?? null,
-          tui: next.tui === true,
+          ...(explicitNewMode ? { tui: next.tui === true } : {}),
           context: next.context,
         });
         saved = { done: { saved: true } };

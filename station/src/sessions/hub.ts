@@ -791,14 +791,18 @@ export class Hub {
     const ranOn = (row.runtimeSessionId ? this.store.ranOn(row.key, row.runtimeSessionId) : null) ?? row.profile;
     let agent: AgentSession | null = null;
     if (withProcess) {
+      const generation = actor.nextGeneration();
+      const router = actor.beginAdopt(generation);
       try {
         const driver = this.sessionDriver(snap.runtime);
-        const generation = actor.nextGeneration();
         const memory = await this.deps.linkSkills(row);
-        agent = await driver.adopt(await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory), snap.agent, actor.listener(generation));
+        const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
+        agent = await driver.adopt({ ...options, router }, snap.agent, actor.listener(generation));
       } catch (error) {
+        actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
+      if (!agent) actor.cancelAdopt(generation);
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;

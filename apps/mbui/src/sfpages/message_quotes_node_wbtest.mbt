@@ -210,10 +210,10 @@ fn qt_seen(
 /// rest of what it says.
 fn qt_unknown(faults : Array[String]) -> Array[String] {
   faults.filter(fn(f) {
-    let pin = f.has_prefix("words \"") && f.contains("stillfail/src/sf/quote_card_node.mbt:") &&
+    let pin = f.has_prefix("words \"") && f.contains("stillfail/sf/src/quote_card_node.mbt:") &&
       f.contains("#ffffff on #cc5a34 4.13:1")
     let room = f.has_prefix("room: 「") &&
-      (f.contains("stillfail/src/sf/quote_card_node.mbt:") || f.contains("stillfail/src/sfpages/message_head_node.mbt:"))
+      (f.contains("stillfail/sf/src/quote_card_node.mbt:") || f.contains("stillfail/src/sfpages/message_head_node.mbt:"))
     !pin && !room
   })
 }

@@ -102,6 +102,7 @@ test("a most lowered under what it holds, at rest: compacted at once, on a proce
   await settle();
   assert.equal(r.session(key).contextBefore, null);
   assert.ok(r.chat.texts().includes("已压缩上下文"), r.chat.texts().join("\n"));
+  await r.close();
 });
 
 test("a most lowered while a turn runs: that turn goes on, it is compacted as the turn ends, before what waited", async () => {
@@ -127,6 +128,7 @@ test("a most lowered while a turn runs: that turn goes on, it is compacted as th
   next.complete();
   await settle();
   assert.equal(next.prompts.length, 1, "what waited is given after");
+  await r.close();
 });
 
 test("a most lowered but still over what it holds, or raised again: nothing to compact", async () => {
@@ -137,6 +139,7 @@ test("a most lowered but still over what it holds, or raised again: nothing to c
   await settle();
   assert.equal(r.session(key).contextBefore, null);
   assert.equal(r.claude.last().compactions, 0);
+  await r.close();
 });
 
 test("a compaction down to its most that fails is said once and not tried again", async () => {
@@ -153,6 +156,7 @@ test("a compaction down to its most that fails is said once and not tried again"
   await settle();
   assert.equal(next.compactions, 1);
   assert.equal(next.prompts.length, 1);
+  await r.close();
 });
 
 test("a runtime that cannot compact says so", async () => {

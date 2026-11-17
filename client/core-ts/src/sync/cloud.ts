@@ -70,6 +70,8 @@ export class CloudSync {
   onRelease: () => void = () => {};
   /// Told when still.fail cloud says it sampled its relays, to an operator's account (sync/admin-relays.ts).
   onRelayLoad: (sub: string) => void = () => {};
+  /// Told when an operator's list read only while shown changed (`audit`; `feedback/`, a report's own): sync/admin-relays.ts.
+  onAdminSubList: (sub: string, prefix: string) => void = () => {};
   /// The lock entries a hello to a station of the workspace brings (views/lock.ts `carried`): none, null.
   carry: ((workspace: string) => import("../lock.ts").Entry[] | null) | null = null;
   /// The chain of the person's own lock a hello brings to a station (views/lock.ts `carriedPerson`).
@@ -247,7 +249,10 @@ export class CloudSync {
       // (only the lists the write changed: each of the operator's lists is all of a kind, and `/v1/admin/me` changes by none)
       else if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) {
         for (const list of adminListsForWrite(at)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}/${list}`, Priority.asked, Effect.asVoid(this.adminList(sub, list))), { log: "Unhandled", message: "admin read" }));
+        if (at.startsWith("/v1/admin/feedback")) this.onAdminSubList(sub, "feedback/");
       }
+      // (every change of an operator's is in its 操作记录, the relays' too)
+      if (at.startsWith("/v1/admin/") && at !== "/v1/admin/me" && method !== "GET") this.onAdminSubList(sub, "audit");
       yield* Effect.all(reads, { concurrency: "unbounded", discard: true });
     });
   }
@@ -408,6 +413,10 @@ export class CloudSync {
         return;
       }
       this.#admins.add(sub);
+      // (what a page has open of them is read again too: as it is first shown and as the events socket opens again)
+      this.onRelayLoad(sub);
+      this.onAdminSubList(sub, "audit");
+      this.onAdminSubList(sub, "feedback/");
       const failed = yield* Effect.all(ADMIN_LISTS.map((list) => this.adminList(sub, list)), { concurrency: "unbounded" });
       if (failed.some((e) => e !== null && passing(e))) this.#adminAgain(sub);
       else this.#adminRetry.delete(sub);
@@ -747,7 +756,11 @@ export class CloudSync {
     else if (event.type === "admin" && this.#admins.has(sub)) {
       // An operator's lists changed (another operator's write, someone signed up, a report sent): those it names read
       // again, each alone; all where it names none.
-      const lists = Array.isArray(event.lists) ? event.lists.filter((l): l is string => typeof l === "string" && ADMIN_LISTS.includes(l)) : ADMIN_LISTS;
+      const named: unknown[] | null = Array.isArray(event.lists) ? event.lists : null;
+      const lists = named !== null ? named.filter((l): l is string => typeof l === "string" && ADMIN_LISTS.includes(l)) : ADMIN_LISTS;
+      // (those read only while shown: a report's own page, the operators' changes)
+      if (named === null || named.includes("feedback")) this.onAdminSubList(sub, "feedback/");
+      if (named === null || named.includes("audit")) this.onAdminSubList(sub, "audit");
       for (const list of lists) {
         core.scheduler.enqueue("cloud", `admin/${sub}/${list}`, Priority.shown, Effect.flatMap(this.adminList(sub, list), (e): Effect.Effect<void> => {
           if (e !== null && passing(e)) this.#adminAgain(sub);

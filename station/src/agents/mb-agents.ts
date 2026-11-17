@@ -41,7 +41,7 @@ export type CodexHeard = { thread: string; events: Json[]; live: Json; batch?: n
 
 /// What takes a batch the program keeps for the actor in the same program (mb-actor.ts): told the batch, once its
 /// events are had here; false: it was not, so it is acknowledged as before (its events not given there).
-export type Router = { program: SessionsProgram; took: (batch: number) => boolean };
+export type Router = { program: SessionsProgram; took: (batch: number, proc?: number) => boolean };
 
 /// How a process's lines are read: Claude Code's frames, a Codex app-server's JSON-RPC, DeepSeek Harness' or Cursor's
 /// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs), an ACP runtime's JSON-RPC, Pi's RPC.
@@ -212,8 +212,7 @@ export class AgentsHost {
   attach(p: HostedProcess) {
     this.#ensure().hold(this.#user, true);
     this.#sessions.set(p.n, p);
-    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind, ...p.flavor, ...(p.orphans ? { orphans: true } : {}) });
-    if (p.routed) this.post({ route: p.n, on: true });
+    this.post({ attach: p.n, socket: p.info.socket, turn: p.turnNow(), live: p.liveNow(), kind: p.kind, ...p.flavor, ...(p.orphans ? { orphans: true } : {}), ...(p.routed ? { routed: true } : {}) });
     p.attached();
   }
 
@@ -392,8 +391,9 @@ export class HostedProcess {
 
   /// Takes up the process a runner keeps, its turn and live steps as `turn` and `live` say: one its caller found
   /// listening, off the station's thread (process.ts `findRunner`, codex.ts `leftRunners`).
-  static adopt(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json) {
+  static adopt(host: AgentsHost, info: RunnerInfo, options: HostedOptions, turn: Json, live: Json, router: Router | null = null) {
     const p = new HostedProcess(host, info, options, turn, live);
+    if (router !== null && p.kind !== "codex" && host.program() === router.program) p.#router = router;
     host.attach(p);
     return p;
   }
@@ -402,23 +402,25 @@ export class HostedProcess {
   /// told here, as before, then taken there; null: told here only.
   route(router: Router | null) {
     if (router !== null && (this.kind === "codex" || this.#host.program() !== router.program)) router = null;
-    if (router === null && this.#router === null) return;
+    const was = this.#router !== null;
     this.#router = router;
-    this.#host.post({ route: this.n, on: router !== null });
+    if ((router !== null) !== was) this.#host.post({ route: this.n, on: router !== null });
   }
 
   /// A Codex app-server's thread's events given its session's actor in the program (`route`, by thread): the router
   /// that takes them, or null where none does.
   routeThread(thread: string, router: Router | null, was: boolean): Router | null {
     if (router !== null && (this.kind !== "codex" || this.#host.program() !== router.program)) router = null;
-    if (router !== null || was) this.#host.post({ route: this.n, on: router !== null, thread });
+    if ((router !== null) !== was) this.#host.post({ route: this.n, on: router !== null, thread });
     return router;
   }
 
   /// A session's thread on a Codex app-server, its live steps as they stand: its notifications read for it from now on
   /// (with what was held for it while it was not taken up).
-  thread(thread: string, live: Json) {
-    this.#host.post({ codexThread: this.n, id: thread, live });
+  acceptsRouter(router: Router): boolean { return this.#host.program() === router.program; }
+
+  thread(thread: string, live: Json, routed = false) {
+    this.#host.post({ codexThread: this.n, id: thread, live, ...(routed ? { routed: true } : {}) });
   }
 
   /// A thread no longer a session's.
@@ -513,7 +515,7 @@ export class HostedProcess {
     const done = () => {
       if (taken === true || this.gone) return;
       // (acknowledged by the program as its actor takes them)
-      if (router === null || !router.took(heard.batch!)) this.#host.post({ ack: this.n, to: heard.to });
+      if (router === null || !router.took(heard.batch!, this.n)) this.#host.post({ ack: this.n, to: heard.to });
     };
     if (taken instanceof Promise) return taken.then(done);
     done();

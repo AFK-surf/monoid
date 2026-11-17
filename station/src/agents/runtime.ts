@@ -3,6 +3,7 @@
 // comes back as events, in order, to the one listener it was opened with. Processes run under runners (./runner.ts): a
 // station that starts again takes its sessions up from the runners (`adopt`), from what the previous one left
 // (`snapshot`) or, after a crash, from what the runner kept unread.
+import type { Router } from "./mb-agents.ts";
 import { startEnv } from "../ops/agent-env.ts";
 
 /// The runtimes a station runs, in the order they are offered.
@@ -59,6 +60,7 @@ export type Profile = {
 };
 
 export type OpenOptions = {
+  router?: Router;
   /// The station's session key: the runner's id is made from it.
   key: string;
   profile: Profile;

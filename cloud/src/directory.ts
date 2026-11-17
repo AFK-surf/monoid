@@ -27,7 +27,7 @@ import { MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl
 import { RELAY_TABLES, RELAY_TOKEN_TTL_SEC, relayPut, relayTokenOf, type RelayListed, type RelayTokenInput } from "./relay-registry";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
-import type { AccountEvent, AdminList, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
+import type { AccountEvent, AdminAuditEntry, AdminList, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
 import { apply, asEntry, entryHash, genesis, keepLockAt, LockAppendRefused, shortCode, type Entry, type LockEntry, type LockState } from "./lock";
 export type { Role };
 
@@ -69,6 +69,9 @@ export const CLOSE = { replaced: 4000, removed: 4004, silent: 4008 } as const;
 /** Reports one sender may send in a day, and how many the console lists. */
 const FEEDBACK_PER_DAY = 20;
 const FEEDBACK_LISTED = 500;
+/** How many of the operators' changes are kept (recordAudit), and how many the console lists. */
+const AUDIT_KEPT = 1000;
+const AUDIT_LISTED = 500;
 /** How many replies a station's agents may write on its reports a day. */
 const FEEDBACK_REPLIES_PER_DAY = 100;
 /** How many reports with replies a member's device is given of a workspace (feedbackOf). */
@@ -168,6 +171,8 @@ export class Directory extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS live (kind TEXT NOT NULL, key TEXT NOT NULL, gen INTEGER NOT NULL, PRIMARY KEY (kind, key));
       CREATE TABLE IF NOT EXISTS hits (hour INTEGER NOT NULL, family TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (hour, family));
       CREATE TABLE IF NOT EXISTS operators (sub TEXT PRIMARY KEY, email TEXT NOT NULL, seen_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS admin_audit (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '');
+      CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit (created_at DESC);
     `);
     // users had neither column before invite codes, nor beta (1: let into the test channel) before it, nor blocked (1:
     // the admin blocked the account; the account's own object is what keeps it out) before the console could block,
@@ -1040,10 +1045,11 @@ export class Directory extends DurableObject<Env> {
     return rigs.length ? { rigs } : {};
   }
 
-  /** The rigs of a workspace, each with its person (who added it). */
-  #rigViews(workspace: string): RigView[] {
-    return this.#rows(`SELECT m.station AS id, m.name, m.enrolled_at, m.enrolled_by AS owner, COALESCE(u.email, '') AS owner_email, COALESCE(u.name, '') AS owner_name, s.last_seen, s.version
-      FROM station_members m LEFT JOIN stations s ON s.id = m.station LEFT JOIN users u ON u.sub = m.enrolled_by WHERE m.workspace = ? AND m.rig = 1 ORDER BY m.enrolled_at, m.rowid`, workspace) as unknown as RigView[];
+  /** The rigs of a workspace (of every workspace, grouped by the caller, without one), each with its person (who added it). */
+  #rigViews(workspace: string | null): RigView[] {
+    const rows = this.#rows(`SELECT m.workspace, m.station AS id, m.name, m.enrolled_at, m.enrolled_by AS owner, COALESCE(u.email, '') AS owner_email, COALESCE(u.name, '') AS owner_name, s.last_seen, s.version
+      FROM station_members m LEFT JOIN stations s ON s.id = m.station LEFT JOIN users u ON u.sub = m.enrolled_by WHERE (? IS NULL OR m.workspace = ?) AND m.rig = 1 ORDER BY m.enrolled_at, m.rowid`, workspace, workspace);
+    return (workspace === null ? rows : rows.map(({ workspace: _, ...rig }) => rig)) as unknown as RigView[];
   }
 
   // ── the workspace lock (lock.ts): kept and carried, not trusted ─────────────────────────
@@ -1944,8 +1950,45 @@ export class Directory extends DurableObject<Env> {
       relays: this.#rows("SELECT url, name, target, secret_hash, added_at, added_by FROM relays ORDER BY added_at, rowid").map((r) => ({
         url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null, added_at: r.added_at as number, added_by: r.added_by as string, enrolled: r.secret_hash !== null,
       })),
-      tokens: this.#rows("SELECT name, url, target, expires_at FROM relay_tokens ORDER BY expires_at").map((r) => ({ name: r.name as string, url: (r.url as string | null) ?? null, target: (r.target as string | null) ?? null, expires_at: r.expires_at as number })),
+      // (`id`: the first 16 characters of its digest, to take it back by; never the token nor its whole digest)
+      tokens: this.#rows("SELECT token_hash, name, url, target, expires_at FROM relay_tokens ORDER BY expires_at").map((r) => ({ id: (r.token_hash as string).slice(0, 16), name: r.name as string, url: (r.url as string | null) ?? null, target: (r.target as string | null) ?? null, expires_at: r.expires_at as number })),
     };
+  }
+
+  /** The operator takes back a token made for a relay not used yet (made by mistake), by its `id` (relayList). */
+  relayTokenRevoke(id: unknown): { revoked: true } {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{16}$/.test(id)) fail(400, "invalid_request");
+    const gone = this.ctx.storage.sql.exec("DELETE FROM relay_tokens WHERE substr(token_hash, 1, 16) = ?", id).rowsWritten;
+    if (gone > 0) this.#relaysChanged();
+    return { revoked: true };
+  }
+
+  // ── what the operators changed (the console's 操作记录) ─────────────────────
+
+  /** Notes a change an operator made (api.ts, index.ts): the newest AUDIT_KEPT kept. */
+  recordAudit(actor: string, action: string, target = "", detail = ""): void {
+    this.#run("INSERT INTO admin_audit (id, created_at, actor, action, target, detail) VALUES (?, ?, ?, ?, ?, ?)", ulid(), nowSeconds(), actor, action, target.slice(0, 200), detail.slice(0, 200));
+    // (in the order they were noted: ids of one second are in no order of their own)
+    this.#run(`DELETE FROM admin_audit WHERE rowid NOT IN (SELECT rowid FROM admin_audit ORDER BY created_at DESC, rowid DESC LIMIT ${AUDIT_KEPT})`);
+    this.#adminChanged("audit");
+  }
+
+  /** What an operator's change was to, as the console's record names it: `user:<sub>` its email, `workspace:<id>` its
+   * name, `feedback:<id>` FB-<n>; anything else as it is. */
+  auditName(ref: string): string {
+    const [kind, id] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+    if (kind === "user") return (this.#one("SELECT email FROM users WHERE sub = ?", id)?.email as string | undefined) ?? id;
+    if (kind === "workspace") return (this.#one("SELECT name FROM workspaces WHERE id = ?", id)?.name as string | undefined) ?? id;
+    if (kind === "feedback") {
+      const n = this.#one("SELECT number FROM feedback WHERE id = ?", id)?.number;
+      return typeof n === "number" ? `FB-${n}` : id;
+    }
+    return ref;
+  }
+
+  /** The operators' changes, newest first. */
+  adminAudit(): AdminAuditEntry[] {
+    return this.#rows(`SELECT id, created_at, actor, action, target, detail FROM admin_audit ORDER BY created_at DESC, rowid DESC LIMIT ${AUDIT_LISTED}`) as unknown as AdminAuditEntry[];
   }
 
   /** The operator puts a relay on the list (or names it anew, or changes what an entry is a way into). */
@@ -2168,9 +2211,17 @@ export class Directory extends DurableObject<Env> {
     return { id, joined, added };
   }
 
-  /** The admin sets how many people a workspace may hold; stations have the shared limit. */
-  adminSetLimits(workspace: string, input: { members?: unknown; stations?: unknown }): { members: number; stations: number } {
+  /**
+   * The admin sets how many people a workspace may hold; stations have the shared limit. `reset` (or members null)
+   * gives it back to its creator's plan: no limits of its own, an enterprise one no more.
+   */
+  adminSetLimits(workspace: string, input: { members?: unknown; stations?: unknown; reset?: unknown }): { members: number; stations: number; reset?: true } {
     if (!this.#one("SELECT 1 AS x FROM workspaces WHERE id = ?", workspace)) fail(404, "workspace_not_found");
+    if (input.reset === true || input.members === null) {
+      this.#run("UPDATE workspaces SET max_members = NULL, max_stations = NULL WHERE id = ?", workspace);
+      this.#adminChanged("workspaces");
+      return { members: this.#memberCap(workspace), stations: STATIONS_PER_WORKSPACE, reset: true };
+    }
     const limits = limitsOf(input);
     this.#run("UPDATE workspaces SET max_members = ?, max_stations = ? WHERE id = ?", limits.members, limits.stations, workspace);
     this.#adminChanged("workspaces");
@@ -2193,6 +2244,52 @@ export class Directory extends DurableObject<Env> {
     return Boolean(this.#one("SELECT 1 AS x FROM members WHERE workspace = ? AND role = 'owner' LIMIT 1", workspace));
   }
 
+  /**
+   * The admin makes emails owners of a workspace it is not in (a company whose owner left, or lost their way in):
+   * a member made one at once (the credentials it holds name its old role, as setRole's), an account not in it
+   * joined, an email nobody signed in with added. Those told by mail as addMembers tells them (api.ts).
+   */
+  adminAddOwners(by: string, workspace: string, emails: unknown): { joined: string[]; added: string[]; already: string[]; mail: AddedMail } {
+    if (!this.#one("SELECT 1 AS x FROM workspaces WHERE id = ?", workspace)) fail(404, "workspace_not_found");
+    const wanted = emailsOf(emails);
+    const promoted: string[] = [];
+    const rest: string[] = [];
+    for (const email of wanted) {
+      const members = this.#rows("SELECT m.sub, m.role FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?", workspace, email);
+      if (members.length === 0) rest.push(email);
+      else if (members.some((m) => m.role !== "owner")) promoted.push(email);
+    }
+    const subs: string[] = [];
+    this.ctx.storage.transactionSync(() => {
+      for (const email of promoted) {
+        for (const m of this.#rows("SELECT m.sub FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ? AND m.role != 'owner'", workspace, email)) {
+          this.#run("UPDATE members SET role = 'owner' WHERE workspace = ? AND sub = ?", workspace, m.sub);
+          this.#revoke(workspace, "sub", m.sub as string);
+          subs.push(m.sub as string);
+        }
+      }
+    });
+    if (subs.length > 0) {
+      this.#changed(workspace, false);
+      this.#tell(subs, LIST);
+    }
+    const { joined, added, already } = rest.length > 0 ? this.#addEmails(by, workspace, "owner", rest) : { joined: [], added: [], already: [] };
+    const owners = wanted.filter((e) => !promoted.includes(e) && !rest.includes(e));
+    this.#adminChanged("workspaces", "users");
+    return { joined: [...promoted, ...joined], added, already: [...owners, ...already], mail: this.#toMail(by, workspace, joined, added, [], true) };
+  }
+
+  /** The admin takes back an email added to a workspace that has not signed in yet (one written wrong). */
+  adminRemoveAdded(workspace: string, email: unknown): { ok: true } {
+    if (typeof email !== "string" || email.trim() === "") fail(400, "invalid_email");
+    if (!this.#one("SELECT 1 AS x FROM workspaces WHERE id = ?", workspace)) fail(404, "workspace_not_found");
+    const address = (email as string).trim().toLowerCase();
+    this.#run("DELETE FROM added WHERE workspace = ? AND email = ?", workspace, address);
+    this.#forgetMailRetry(workspace, address);
+    this.#changed(workspace, true);
+    return { ok: true };
+  }
+
   adminWorkspaces(): AdminWorkspace[] {
     const now = nowSeconds();
     // Three reads for all of them, grouped here: a query per workspace grows with every one made.
@@ -2208,6 +2305,7 @@ export class Directory extends DurableObject<Env> {
     const members = group<AdminWorkspace["members"][number]>(this.#rows(`SELECT m.workspace, m.sub, COALESCE(u.email, '') AS email, COALESCE(u.name, '') AS name,
       COALESCE(${SHOWN_PICTURE}, '') AS picture, m.role, m.added_at, u.last_seen FROM members m LEFT JOIN users u ON u.sub = m.sub ORDER BY m.added_at`));
     const stations = group<StationView>(this.#stationViews(null) as unknown as Row[]);
+    const rigs = group<RigView>(this.#rigViews(null) as unknown as Row[]);
     const invitations = group<AdminWorkspace["invitations"][number]>(this.#rows(`SELECT i.workspace, i.id, i.role, i.email, i.created_by, i.expires_at,
       COALESCE(NULLIF(u.name, ''), u.email, '') AS inviter FROM invitations i LEFT JOIN users u ON u.sub = i.created_by WHERE i.expires_at > ? ORDER BY i.expires_at`, now));
     const added = group<AddedView>(this.#rows("SELECT workspace, email, role, added_by, added_at FROM added ORDER BY added_at"));
@@ -2227,6 +2325,8 @@ export class Directory extends DurableObject<Env> {
       added: added.get(w.id as string) ?? [],
       // As adminEnrollment has it: one made for a company, none of its owners signed in yet.
       enrollable: w.max_members !== null && !(members.get(w.id as string) ?? []).some((m) => m.role === "owner"),
+      // (none said with none, as before there were any)
+      ...(rigs.has(w.id as string) ? { rigs: rigs.get(w.id as string)! } : {}),
       // As #memberCap has it: its own, or its creator's plan's. Stations use the same cap for all workspaces.
       station_seats: STATIONS_PER_WORKSPACE,
       ...(w.max_members !== null && w.max_stations !== null
@@ -2337,56 +2437,69 @@ export class Directory extends DurableObject<Env> {
     return { id, number, duplicate: false };
   }
 
-  /** The reports, newest first, with the station, workspace and account they came from, and their replies. */
-  adminFeedback(): AdminFeedback[] {
+  /**
+   * The reports, newest first, with the station, workspace and account they came from, and their replies. `slim` (the
+   * console's list): without their logs, only whether each has any (`has_logs`), as up to FEEDBACK_LISTED of them at
+   * 64 KB each is what every console carried at each change; a report's own page reads its logs (adminFeedbackItem).
+   */
+  adminFeedback(slim = false): AdminFeedback[] {
     const replies = new Map<string, FeedbackReply[]>();
     for (const r of this.#rows(`SELECT * FROM feedback_replies WHERE feedback IN (SELECT id FROM feedback ORDER BY number DESC LIMIT ${FEEDBACK_LISTED}) ORDER BY created_at, rowid`)) {
-      const team = r.author === "team";
-      const reply: FeedbackReply = {
-        id: r.id as string,
-        from: team ? "team" : "reporter",
-        by: r.by as string,
-        text: r.text as string,
-        created_at: r.created_at as number,
-        delivery: !team ? null : r.delivered_at !== null ? "delivered" : "pending",
-        delivered_at: (r.delivered_at as number | null) ?? null,
-      };
+      const reply = replyOf(r);
       const list = replies.get(r.feedback as string) ?? [];
       list.push(reply);
       replies.set(r.feedback as string, list);
     }
-    const rows = this.#rows(`SELECT f.*, s.name AS station_name, w.name AS workspace_name, u.email AS account_email, u.name AS account_name
+    const rows = this.#rows(`SELECT ${slim ? FEEDBACK_SLIM : "f.*"}, s.name AS station_name, w.name AS workspace_name, u.email AS account_email, u.name AS account_name
       FROM feedback f LEFT JOIN station_members s ON s.station = f.station AND s.workspace = f.workspace LEFT JOIN workspaces w ON w.id = f.workspace LEFT JOIN users u ON u.sub = f.account
       ORDER BY f.number DESC LIMIT ${FEEDBACK_LISTED}`);
-    return rows.map((r) => {
-      let context: Record<string, unknown> | null = null;
-      try {
-        context = r.context ? (JSON.parse(r.context as string) as Record<string, unknown>) : null;
-      } catch {
-        // Cut at its limit: shown as it came.
-        context = { text: r.context };
-      }
-      return {
-        id: r.id as string,
-        number: r.number as number,
-        channel: r.channel === "beta" ? "beta" : "stable",
-        station: r.station ? { id: r.station as string, name: (r.station_name as string | null) ?? "" } : null,
-        workspace: r.workspace ? { id: r.workspace as string, name: (r.workspace_name as string | null) ?? "" } : null,
-        account: r.account ? { sub: r.account as string, email: (r.account_email as string | null) ?? "", name: (r.account_name as string | null) ?? "" } : null,
-        title: r.title as string,
-        body: r.body as string,
-        area: r.area as AdminFeedback["area"],
-        reporter: r.reporter as string,
-        context,
-        logs: (r.logs as string | null) ?? null,
-        status: r.status as FeedbackStatus,
-        fixed_in: (r.fixed_in as number | null) ?? null,
-        told_at: (r.told_at as number | null) ?? null,
-        created_at: r.created_at as number,
-        updated_at: r.updated_at as number,
-        replies: replies.get(r.id as string) ?? [],
-      };
-    });
+    return rows.map((r) => this.#feedbackOf(r, replies.get(r.id as string) ?? [], slim));
+  }
+
+  /**
+   * One report whole, its logs too, by its id or its number (`FB-12`, `fb-12`, `12`): any of them, not only the
+   * newest the list holds.
+   */
+  adminFeedbackItem(idOrRef: string): AdminFeedback {
+    const number = /^(?:fb-)?([0-9]{1,9})$/i.exec(idOrRef)?.[1];
+    const r = this.#one(`SELECT f.*, s.name AS station_name, w.name AS workspace_name, u.email AS account_email, u.name AS account_name
+      FROM feedback f LEFT JOIN station_members s ON s.station = f.station AND s.workspace = f.workspace LEFT JOIN workspaces w ON w.id = f.workspace LEFT JOIN users u ON u.sub = f.account
+      WHERE ${number !== undefined ? "f.number = ?" : "f.id = ?"}`, number !== undefined ? Number(number) : idOrRef);
+    if (!r) fail(404, "feedback_not_found");
+    const replies = this.#rows("SELECT * FROM feedback_replies WHERE feedback = ? ORDER BY created_at, rowid", r!.id).map(replyOf);
+    return this.#feedbackOf(r!, replies, false);
+  }
+
+  /** A report's row as the console has it. */
+  #feedbackOf(r: Row, replies: FeedbackReply[], slim: boolean): AdminFeedback {
+    let context: Record<string, unknown> | null = null;
+    try {
+      context = r.context ? (JSON.parse(r.context as string) as Record<string, unknown>) : null;
+    } catch {
+      // Cut at its limit: shown as it came.
+      context = { text: r.context };
+    }
+    return {
+      id: r.id as string,
+      number: r.number as number,
+      channel: r.channel === "beta" ? "beta" : "stable",
+      station: r.station ? { id: r.station as string, name: (r.station_name as string | null) ?? "" } : null,
+      workspace: r.workspace ? { id: r.workspace as string, name: (r.workspace_name as string | null) ?? "" } : null,
+      account: r.account ? { sub: r.account as string, email: (r.account_email as string | null) ?? "", name: (r.account_name as string | null) ?? "" } : null,
+      title: r.title as string,
+      body: r.body as string,
+      area: r.area as AdminFeedback["area"],
+      reporter: r.reporter as string,
+      context,
+      logs: slim ? null : ((r.logs as string | null) ?? null),
+      has_logs: slim ? Boolean(r.has_logs) : typeof r.logs === "string" && r.logs.trim() !== "",
+      status: r.status as FeedbackStatus,
+      fixed_in: (r.fixed_in as number | null) ?? null,
+      told_at: (r.told_at as number | null) ?? null,
+      created_at: r.created_at as number,
+      updated_at: r.updated_at as number,
+      replies,
+    };
   }
 
   setFeedbackStatus(id: string, status: FeedbackStatus): void {
@@ -2828,14 +2941,16 @@ for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWo
   "feedbackOf", "memberFeedbackReply", "setRole", "removeMember", "addMembers", "mailFailed", "removeAdded", "setRelays", "setWay", "manages", "createEnrollment", "createRigEnrollment", "updateStation", "setStationMode", "removeStation", "memberRole", "recordDevice", "devices",
   "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest"]) FAMILIES[name] = "workspaces";
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
-  "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount"]) FAMILIES[name] = "admin";
+  "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount",
+  "adminFeedbackItem", "adminAddOwners", "adminRemoveAdded", "recordAudit", "adminAudit", "auditName"]) FAMILIES[name] = "admin";
 /** The tables that are this object's own, not moved into another cloud: its sockets' generations, the outbox to the
  * objects (made again as things change), its counts, the views as last told (`#told`: begun again by the next change,
- * at a version above any before), who opened its console (noteOperator: noted again as they open the other's). */
-const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told", "operators"]);
+ * at a version above any before), who opened its console (noteOperator: noted again as they open the other's), and
+ * what its operators changed there (recordAudit: the console's own record, begun again in the other). */
+const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told", "operators", "admin_audit"]);
 for (const name of ["moveExport", "moveImport", "moveAccounts"]) FAMILIES[name] = "admin";
 // The relays' list: the operator's (a relay's counters and its enrolling are "other"); the cron's reading of it.
-for (const name of ["relayList", "relayPut", "relayRemove", "relayToken"]) FAMILIES[name] = "admin";
+for (const name of ["relayList", "relayPut", "relayRemove", "relayToken", "relayTokenRevoke"]) FAMILIES[name] = "admin";
 FAMILIES.relaysNow = "broadcast";
 /** What it runs for itself rather than being called for. */
 const UNCOUNTED = new Set(["constructor", "handOff", "migrateStationMembers", "migrateFreePlan", "send", "settled", "sweep"]);
@@ -2862,6 +2977,24 @@ function cleanName(value: unknown): string | null {
 }
 
 /** Emails as addMembers takes them: lowercased, each once, at least one; fails when one is no email. */
+/** A reply on a report as the console has it. */
+function replyOf(r: Row): FeedbackReply {
+  const team = r.author === "team";
+  return {
+    id: r.id as string,
+    from: team ? "team" : "reporter",
+    by: r.by as string,
+    text: r.text as string,
+    created_at: r.created_at as number,
+    delivery: !team ? null : r.delivered_at !== null ? "delivered" : "pending",
+    delivered_at: (r.delivered_at as number | null) ?? null,
+  };
+}
+
+/** A report's columns but its logs, and whether it has any (adminFeedback's `slim`). */
+const FEEDBACK_SLIM = `f.id, f.number, f.channel, f.station, f.workspace, f.account, f.title, f.body, f.area, f.reporter, f.context, f.status, f.fixed_in, f.told_at, f.created_at, f.updated_at,
+  CASE WHEN f.logs IS NOT NULL AND trim(f.logs) != '' THEN 1 ELSE 0 END AS has_logs, NULL AS logs`;
+
 function emailsOf(value: unknown): string[] {
   const given = Array.isArray(value) ? value : [];
   const wanted = [...new Set(given.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];

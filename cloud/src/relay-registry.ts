@@ -57,14 +57,18 @@ export function relayPut(input: RelayTokenInput, r: Relays, insecure: boolean): 
   return { url, name, target };
 }
 
-/** A token to make for a relay as `input` says: what it will be called, and the URL it must enroll (null: any), or
- * what it is a way into; or why it cannot be. */
+/** A token to make for a relay as `input` says: what it will be called, and the URL it must enroll (null: any, the
+ * machine saying its own as it enrolls), and what it is a way into (an entry of a relay of the list); or why it
+ * cannot be. */
 export function relayTokenOf(input: RelayTokenInput, r: Relays, insecure: boolean): { name: string; url: string | null; target: string | null } | string {
   const name = nameOf(input.name);
   if (name === null || name === "") return "invalid_name";
   if (input.url === undefined || input.url === null || input.url === "") {
-    if (input.target !== undefined && input.target !== null && input.target !== "") return "invalid_relay";
-    return { name, url: null, target: null };
+    if (input.target === undefined || input.target === null || input.target === "") return { name, url: null, target: null };
+    // An entry whose machine says its URL as it enrolls (relay-enroll.sh): a way into a relay of the list.
+    const said = relayUrl(input.target, insecure);
+    const relay = said === null ? undefined : relayUrls(r).find((u) => sameUrl(u) === sameUrl(said));
+    return relay === undefined ? "invalid_target" : { name, url: null, target: relay };
   }
   const put = relayPut({ ...input, name }, r, insecure);
   return typeof put === "string" ? put : { name, url: put.url, target: put.target };

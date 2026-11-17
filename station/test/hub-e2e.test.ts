@@ -205,6 +205,43 @@ test("a Codex turn handed over while it writes is taken up by the next station a
   }
 });
 
+test("a Codex handover routes events written before the next station takes up", { skip: process.platform === "win32" ? "fifos" : false }, async () => {
+  const data = mkdtempSync("/tmp/hz-");
+  const dump = join(data, "dump");
+  const first = await codexStation(data, { FAKE_DUMP: dump });
+  let next: Awaited<ReturnType<typeof codexStation>> | null = null;
+  try {
+    const gate = `${dump}.held`;
+    for (const part of ["a", "b"]) execFileSync("/usr/bin/mkfifo", [`${gate}.${part}`]);
+    const [key, thread] = await newSession(first.hub, { runtime: "codex", createdBy: "ada@x.com" });
+    say(first.hub, thread.id, "ada@x.com", "gate:3:0:held");
+    await until(() => first.store.getSession(key)?.running === true && first.store.lastTurn(key) !== undefined, "its turn begun");
+    await first.hub.handOver();
+    await first.served.close(1000);
+    await writeFile(`${gate}.a`, "go");
+    await until(() => existsSync(`${gate}.said`), "the deltas written before take-up");
+    next = await codexStation(data, { FAKE_DUMP: dump });
+    await next.hub.takeUp();
+    await writeFile(`${gate}.b`, "go");
+    const store = next.store;
+    // (its turn and the one that nudges it, no state said: both ended before the station is let go, as below; let go
+    // between them, the nudge's app-server started as it shut down: mb-agents-closed.test.ts)
+    await until(() => store.listTurns(key).length >= 2 && store.lastTurn(key)?.endedAt != null && !store.getSession(key)!.running, "its turns ended on the next station");
+    assert.deepEqual(store.listTurns(key).map((t) => t.summary.outcome), ["completed", "completed"], "its turn, ended on the next station, and the nudge's");
+    const posted = next.hub.program()!.posted;
+    assert.equal(posted.get("event") ?? 0, 0, `events said through Node: ${JSON.stringify([...posted])}`);
+  } finally {
+    // (the one handed over let go of what it ran: its own parts end)
+    await first.hub.shutdown();
+    await next?.hub.shutdown();
+    await next?.served.close(1000);
+    next?.store.close();
+    first.store.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+
 // DeepSeek Harness', Cursor's and the ACP runtimes' processes read in the program (mb agents_own.mbt) give their
 // sessions' actors there their events as Claude Code's do: Node only says each batch taken.
 const OWN: { runtime: string; profile: Record<string, unknown>; driver: (data: string) => AgentDriver }[] = [

@@ -7,7 +7,8 @@
 import { consoleAdmin, isAdmin } from "./admin";
 import { bearerToken, clock, denied, limited, readJson, reply, verifyToken, type Claims } from "./auth";
 import { adminOrigins, betaOrigin, header, publicOrigins, signedMessages } from "./compat";
-import { guestOf } from "./guests";
+import { guestOf, guests } from "./guests";
+import { productOf } from "../../client/i18n/brand.ts";
 import type { Live } from "./account";
 import { EVENTS_PROTOCOLS, ROLES, sockets, type AddedMail, type Role } from "./directory";
 import type { Env } from "./env";
@@ -429,6 +430,30 @@ const notFound = () => new Response("Not found", { status: 404 });
 
 const inviteUrl = (env: Env, code: string) => `${env.PUBLIC_ORIGIN}/?invite=${code}`;
 
+/**
+ * A code's sign-up link, and where this cloud answers as another product too (GUESTS), each product's (`links`): the
+ * code is good on all of them, and whoever it is for signs up in the app they know.
+ */
+function inviteLinks(env: Env, code: string): { url: string; links?: { product: string; url: string }[] } {
+  const url = inviteUrl(env, code);
+  const others = guests(env);
+  if (others.length === 0) return { url };
+  return { url, links: [{ product: productOf(env.PUBLIC_ORIGIN).name, url }, ...others.map((g) => ({ product: productOf(g.origin).name, url: `${g.origin}/?invite=${code}` }))] };
+}
+
+/**
+ * Runs an operator's change and notes it in the console's 操作记录 once it answered well (Directory recordAudit):
+ * `target` named as it is before the change (`user:<sub>`, `workspace:<id>` and `feedback:<id>` as their email, name
+ * and FB-<n>: what a deleted one was called stays).
+ */
+export async function audited(env: Env, actor: string, action: string, target: string, detail: string, run: () => Promise<Response>): Promise<Response> {
+  const dir = env.DIRECTORY.getByName("primary");
+  const named = await dir.auditName(target).catch(() => target);
+  const response = await run();
+  if (response.ok) await dir.recordAudit(actor, action, named, detail).catch(() => undefined);
+  return response;
+}
+
 /** Blocks an account or lets it back, in its own object (which keeps it out) and in the directory (which lists it). */
 export async function blockAccount(env: Env, sub: string, on: boolean): Promise<Response> {
   const answer = await env.ACCOUNTS.getByName(sub).administer(on);
@@ -436,12 +461,19 @@ export async function blockAccount(env: Env, sub: string, on: boolean): Promise<
   return answer;
 }
 
-/** The console's bug reports (feedback.ts), those the changelog fixes marked first (changelog.ts). */
-export async function feedbackList(env: Env): Promise<AdminFeedback[]> {
-  const dir = env.DIRECTORY.getByName("primary");
+/** The changelog's fixes marked on the reports (changelog.ts): the Directory does nothing when it is as last time. */
+async function markFixed(env: Env): Promise<void> {
   const entries = await changelog(env.RELEASES);
-  await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
-  return dir.adminFeedback();
+  await env.DIRECTORY.getByName("primary").markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
+}
+
+/**
+ * The console's bug reports (feedback.ts), those the changelog fixes marked first. `slim`: the console's list, each
+ * without its logs (`has_logs` says whether it has any); the feedback monitor's has them whole.
+ */
+export async function feedbackList(env: Env, slim = false): Promise<AdminFeedback[]> {
+  await markFixed(env);
+  return env.DIRECTORY.getByName("primary").adminFeedback(slim);
 }
 
 /** Where a report's status is marked: the console's admin's, and the feedback monitor's with its token (index.ts). */
@@ -488,15 +520,18 @@ export async function relayAdmin(env: Env, by: string, path: string, method: str
   if (method !== "POST" || !path.startsWith("/v1/admin/relays/")) return null;
   const dir = env.DIRECTORY.getByName("primary");
   const call = path.slice("/v1/admin/relays/".length);
+  const said = (v: unknown) => (typeof v === "string" ? v : "");
   if (call === "list") return directory(() => dir.relayList());
-  if (call === "put") return directory(() => dir.relayPut(by, input));
-  if (call === "remove") return directory(async () => (await dir.relayRemove(input.url), { removed: true }));
+  if (call === "put") return audited(env, by, "relay.put", said(input.name) || said(input.url), said(input.url), () => directory(() => dir.relayPut(by, input)));
+  if (call === "remove") return audited(env, by, "relay.remove", said(input.url), "", () => directory(async () => (await dir.relayRemove(input.url), { removed: true })));
   if (call === "token") {
-    return directory(async () => {
+    return audited(env, by, "relay.token", said(input.name), said(input.url) || said(input.target), () => directory(async () => {
       const made = await dir.relayToken(by, input);
       return { ...made, command: `sh relay-enroll.sh ${env.PUBLIC_ORIGIN} ${made.token}${made.url ? "" : " <https://this relay's URL>"}` };
-    });
+    }));
   }
+  // A token not used yet taken back: { id } (relayList's).
+  if (call === "token/revoke") return audited(env, by, "relay.token_revoke", said(input.id), "", () => directory(() => dir.relayTokenRevoke(input.id)));
   return null;
 }
 
@@ -516,23 +551,29 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   // With the emails given rights before anyone signed in with them (`pending`; a console from before reads no such list).
   if (path === "/v1/admin/users" && method === "GET") return directory(async () => ({ users: await dir.adminUsers(), pending: await dir.adminPending() }));
   // Gives an email the test channel or the standard plan, signed in with or not: { email, beta?: boolean, may_create?: boolean }.
+  const by = claims.email;
+  const text = (v: unknown) => (typeof v === "string" ? v : "");
+  const onOff = (v: unknown) => (v === true ? "on" : v === false ? "off" : "");
   if (path === "/v1/admin/pending" && method === "POST") {
     const right = (v: unknown) => v === undefined || v === null || typeof v === "boolean";
     if (!right(input.beta) || !right(input.may_create)) return reply({ error: "invalid_request" }, 400);
-    return directory(() => dir.setPending(claims.sub, input.email, input.beta as boolean | null | undefined, input.may_create as boolean | null | undefined));
+    const rights = [input.beta !== undefined && input.beta !== null ? `beta=${onOff(input.beta)}` : "", input.may_create !== undefined && input.may_create !== null ? `may_create=${onOff(input.may_create)}` : ""].filter(Boolean).join(" ");
+    return audited(env, by, "pending.set", text(input.email).trim().toLowerCase(), rights, () => directory(() => dir.setPending(claims.sub, input.email, input.beta as boolean | null | undefined, input.may_create as boolean | null | undefined)));
   }
-  if (path === "/v1/admin/pending/remove" && method === "POST") return directory(() => dir.removePending(input.email));
+  if (path === "/v1/admin/pending/remove" && method === "POST") return audited(env, by, "pending.remove", text(input.email).trim().toLowerCase(), "", () => directory(() => dir.removePending(input.email)));
+  // What the operators changed here, the newest first (the console's 操作记录).
+  if (path === "/v1/admin/audit" && method === "GET") return directory(async () => ({ audit: await dir.adminAudit() }));
   // Lets an account into the test channel (BETA_ORIGIN) or out of it: { on: boolean }.
   const beta = /^\/v1\/admin\/users\/([A-Za-z0-9_-]{1,128})\/beta$/.exec(path);
   if (beta && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
-    return directory(() => dir.setBeta(beta[1]!, input.on as boolean));
+    return audited(env, by, "user.beta", `user:${beta[1]!}`, onOff(input.on), () => directory(() => dir.setBeta(beta[1]!, input.on as boolean)));
   }
   // Gives an account the right to create workspaces, as a code would, or takes it back: { on: boolean }.
   const mayCreate = /^\/v1\/admin\/users\/([A-Za-z0-9_-]{1,128})\/may-create$/.exec(path);
   if (mayCreate && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
-    return directory(() => dir.setMayCreate(mayCreate[1]!, input.on as boolean));
+    return audited(env, by, "user.may_create", `user:${mayCreate[1]!}`, onOff(input.on), () => directory(() => dir.setMayCreate(mayCreate[1]!, input.on as boolean)));
   }
   // Blocks an account (signs it out everywhere) or lets it back: { on: boolean }. Not the operator's own, nor ADMIN_EMAIL's
   // (with Access, others of the team operate the console too).
@@ -540,46 +581,72 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   if (block && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
     if (block[1] === claims.sub || (await dir.isAdminAccount(block[1]!))) return reply({ error: "forbidden" }, 403);
-    return blockAccount(env, block[1]!, input.on as boolean);
+    return audited(env, by, "user.block", `user:${block[1]!}`, onOff(input.on), () => blockAccount(env, block[1]!, input.on as boolean));
   }
   if (path === "/v1/admin/workspaces" && method === "GET") return directory(async () => ({ workspaces: await dir.adminWorkspaces() }));
   // A workspace made for a company (「企业 workspace」): { name, owners: [email], members, stations }.
-  if (path === "/v1/admin/workspaces" && method === "POST") return directory(() => dir.adminCreateWorkspace(claims.sub, input));
-  // Its limits: { members, stations }.
+  if (path === "/v1/admin/workspaces" && method === "POST") {
+    const owners = Array.isArray(input.owners) ? input.owners.map(String).join(", ") : "";
+    return audited(env, by, "workspace.create", text(input.name).trim(), owners, () => directory(() => dir.adminCreateWorkspace(claims.sub, input)));
+  }
+  // Its limits: { members, stations }; { reset: true } back to its creator's plan.
   const limits = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/limits$/.exec(path);
-  if (limits && method === "POST") return directory(() => dir.adminSetLimits(limits[1]!, input));
+  if (limits && method === "POST") return audited(env, by, "workspace.limits", `workspace:${limits[1]!}`, input.reset === true || input.members === null ? "reset" : `members=${String(input.members)}`, () => directory(() => dir.adminSetLimits(limits[1]!, input)));
+  // Owners put in by the admin, not in it: { emails } (a company whose owner left); told by mail as members added are.
+  const owners = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/owners$/.exec(path);
+  if (owners && method === "POST") {
+    const emails = Array.isArray(input.emails) ? input.emails.map(String).join(", ") : "";
+    return audited(env, by, "workspace.owners", `workspace:${owners[1]!}`, emails, () => directory(async () => {
+      const { mail, ...made } = await dir.adminAddOwners(claims.sub, owners[1]!, input.emails);
+      return { ...made, unmailed: await mailAdded(env, input.lang === "zh" || input.lang === "en" ? input.lang : requestLang(request), owners[1]!, mail) };
+    }));
+  }
+  // An email added that has not signed in yet, taken back: { email }.
+  const addedRemove = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/added\/remove$/.exec(path);
+  if (addedRemove && method === "POST") return audited(env, by, "workspace.added_remove", `workspace:${addedRemove[1]!}`, text(input.email).trim().toLowerCase(), () => directory(() => dir.adminRemoveAdded(addedRemove[1]!, input.email)));
   // A station's enrollment for a company's workspace before any owner is in it, the admin not in it: { name }. The
   // stable channel's installer.
   const enroll = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/enrollments$/.exec(path);
-  if (enroll && method === "POST") return directory(async () => withCommands(env, await dir.adminEnrollment(claims.sub, enroll[1]!, input.name), false));
+  if (enroll && method === "POST") return audited(env, by, "workspace.enroll", `workspace:${enroll[1]!}`, text(input.name).trim(), () => directory(async () => withCommands(env, await dir.adminEnrollment(claims.sub, enroll[1]!, input.name), false)));
   // Deletes a workspace as its owner would: its stations are let go, its people told.
   const remove = /^\/v1\/admin\/workspaces\/([A-Za-z0-9_-]{1,64})\/delete$/.exec(path);
-  if (remove && method === "POST") return directory(() => dir.adminDeleteWorkspace(remove[1]!));
-  // Each with its sign-up link: that is the web app's, on the other origin.
-  if (path === "/v1/admin/invite-codes" && method === "GET") return directory(async () => ({ codes: (await dir.inviteCodes()).map((c) => ({ ...c, url: inviteUrl(env, c.code) })) }));
+  if (remove && method === "POST") return audited(env, by, "workspace.delete", `workspace:${remove[1]!}`, "", () => directory(() => dir.adminDeleteWorkspace(remove[1]!)));
+  // Each with its sign-up link: that is the web app's, on the other origin (each product's, `links`, where it is two).
+  if (path === "/v1/admin/invite-codes" && method === "GET") return directory(async () => ({ codes: (await dir.inviteCodes()).map((c) => ({ ...c, ...inviteLinks(env, c.code) })) }));
   // { note?, days?, beta?: boolean }: with beta, whoever redeems it is let into the test channel too.
   if (path === "/v1/admin/invite-codes" && method === "POST") {
     if (input.beta !== undefined && input.beta !== null && typeof input.beta !== "boolean") return reply({ error: "invalid_request" }, 400);
-    return directory(async () => {
-      const made = await dir.createInviteCode(claims.sub, input.note, input.days, input.beta === true);
-      return { ...made, url: inviteUrl(env, made.code) };
+    const detail = [text(input.note).trim(), typeof input.days === "number" ? `days=${input.days}` : "", input.beta === true ? "beta" : ""].filter(Boolean).join(" · ");
+    let made = "";
+    const response = await directory(async () => {
+      const code = await dir.createInviteCode(claims.sub, input.note, input.days, input.beta === true);
+      made = code.code;
+      return { ...code, ...inviteLinks(env, code.code) };
     });
+    if (response.ok) await dir.recordAudit(by, "code.create", made, detail).catch(() => undefined);
+    return response;
   }
   // Bug reports about still.fail (feedback.ts), and marking where each is: { status }.
   // Those the changelog fixes marked first (changelog.ts).
   if (path === "/v1/admin/feedback" && method === "GET") {
-    return directory(async () => ({ feedback: await feedbackList(env) }));
+    return directory(async () => ({ feedback: await feedbackList(env, true) }));
   }
   const status = FEEDBACK_STATUS_PATH.exec(path);
-  if (status && method === "POST") return setFeedbackStatus(env, status[1]!, input.status);
+  if (status && method === "POST") return audited(env, by, "feedback.status", `feedback:${status[1]!}`, text(input.status), () => setFeedbackStatus(env, status[1]!, input.status));
   // A reply to the session that reported it: { text }.
   const replied = FEEDBACK_REPLY_PATH.exec(path);
-  if (replied && method === "POST") return replyToFeedback(env, replied[1]!, claims.email, input.text);
+  if (replied && method === "POST") return audited(env, by, "feedback.reply", `feedback:${replied[1]!}`, "", () => replyToFeedback(env, replied[1]!, claims.email, input.text));
+  // One report whole, its logs too, by its id or its number (FB-12): any of them, not only those the list holds.
+  const item = /^\/v1\/admin\/feedback\/([A-Za-z0-9_-]{1,32})$/.exec(path);
+  if (item && method === "GET") {
+    await markFixed(env);
+    return directory(async () => ({ item: await dir.adminFeedbackItem(item[1]!) }));
+  }
   // How loaded the relays are (relay-load.ts).
   if (path === "/v1/admin/relays" && method === "GET") return reply(await relaysLoad(env));
   const relayCall = await relayAdmin(env, claims.email, path, method, input);
   if (relayCall) return relayCall;
   const revoke = /^\/v1\/admin\/invite-codes\/([A-Za-z0-9-]{1,32})\/revoke$/.exec(path);
-  if (revoke && method === "POST") return directory(() => dir.revokeInviteCode(revoke[1]!));
+  if (revoke && method === "POST") return audited(env, by, "code.revoke", revoke[1]!, "", () => directory(() => dir.revokeInviteCode(revoke[1]!)));
   return notFound();
 }

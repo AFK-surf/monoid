@@ -63,6 +63,7 @@ jobs:
       kit: ${{ steps.plan.outputs.kit }}
       mbui: ${{ steps.plan.outputs.mbui }}
       comma_ui: ${{ steps.plan.outputs.comma_ui }}
+      sf_ui: ${{ steps.plan.outputs.sf_ui }}
       station_tests: ${{ steps.plan.outputs.station_tests }}
       core_tests: ${{ steps.plan.outputs.core_tests }}
       release_smoke: ${{ steps.plan.outputs.release_smoke }}
@@ -620,6 +621,44 @@ jobs:
       - uses: ./.github/actions/mbui-moonbit
       - run: bash libs/comma-ui/scripts/check.sh
 
+  # still.fail's component library (libs/sf-ui), on its own beside mbui: detlint, type-checked on native and js, its
+  # tests. On main too: nothing runs it after the merge.
+  check-sf-ui:
+    needs: plan
+    if: ${{ !cancelled() && !failure() && needs.plan.outputs.sf_ui == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { contents: read }
+    env:
+      MBC_STORE: ${{ github.workspace }}/libs/sf-ui/_build/native/release/mbc-store
+    steps:
+      - name: The runner's image
+        id: img
+        run: echo "img=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: sf-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
+          restore-keys: |
+            sf-ui-linux-store-${{ steps.img.outputs.img }}-
+            sf-ui-linux-store-
+            mbui-linux-store-app-pkgs-m-${{ steps.img.outputs.img }}-
+            mbui-linux-store-app-pkgs-m-
+      - run: touch "$RUNNER_TEMP/start"
+      - run: bash libs/sf-ui/scripts/check.sh
+      - if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        run: |
+          sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" "$MBC_STORE"
+          find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: sf-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
+
   # A branch: what main would deploy, built and bundled beside the check (not after it: the build is most of the run);
   # nothing sent, no secrets.
   bundle:
@@ -673,7 +712,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives, natives-mac, windows-natives, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives, natives-mac, windows-natives, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

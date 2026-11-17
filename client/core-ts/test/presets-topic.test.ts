@@ -205,7 +205,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   };
   const said: Record<string, unknown> = {
     ...base(),
-    "GET /overview": { ...overview, profiles: [p2] },
+    "GET /overview": { ...overview, claudeTui: true, profiles: [p2] },
     "GET /presets": { presets: [presetBound, presetFree], candidates: [candidate] },
   };
   const { host, core } = await started(said as never);
@@ -217,10 +217,13 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   apply(host, values);
   assert.equal(v(values, 2).pick.value.model, "claude-opus-5-5");
 
+  call(core, ui, 10, "pick.defaultTui", { tui: true });
+
   // Picking a preset with a model applies that model and effort.
   call(core, ui, 3, "newChat.pick", { scope: "ws", preset: "review", presetStation: S });
   await host.settle();
   apply(host, values);
+  assert.equal(core.inner.choose.create(S).tui, undefined);
   assert.equal(v(values, 2).preset, "review");
   assert.equal(v(values, 2).pick.value.model, "claude-sonnet-5-5");
   assert.equal(v(values, 2).pick.value.effort, "high");
@@ -230,6 +233,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   call(core, ui, 4, "newChat.pick", { scope: "ws", preset: "free", presetStation: S });
   await host.settle();
   apply(host, values);
+  assert.equal(core.inner.choose.create(S).tui, true);
   assert.equal(v(values, 2).preset, "free");
   assert.equal(v(values, 2).presetModel, false);
   assert.equal(v(values, 2).pick.value.model, "claude-opus-5-5");
@@ -241,6 +245,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   apply(host, values);
   assert.equal(v(values, 5).value.model, undefined);
   assert.equal(v(values, 5).option, "claude-opus-5-5");
+  assert.equal(v(values, 5).draft.tui, undefined);
   assert.equal(v(values, 5).changed, true);
 
   call(core, ui, 6, "pick.save", { station: S, of: "connect-new:preset", model: "claude-opus-5-5", effort: "medium" });

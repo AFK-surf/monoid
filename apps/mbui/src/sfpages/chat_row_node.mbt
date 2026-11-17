@@ -258,7 +258,7 @@ pub fn chat_row_node(
       // (in the slot it moves across in, every row: its corners the slot's, its own ground square)
       slotted=true,
       end_slot=kind_slot_w,
-      corner_end=fn() { row_aside_end_w(item(), lead) },
+      corner_end=fn() { row_aside_end_w_node(row, item(), lead) },
       fn(h) {
         let tone = fn() { @sfbase.row_tone(item()) }
         // (the show's own box its slot: a box a part, no box round one)
@@ -312,7 +312,11 @@ pub fn chat_row_node(
           }
         }
         h.pick(away_which, fn(s, which) {
-          guard which != 0 else { return }
+          if which == 0 {
+            // An empty pick is still a box in this row. Leave it out of layout too, including its gap.
+            s.laid_nowhere(Is(true)) |> ignore
+            return
+          }
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
           let said = fn() {
             if which >= 3 {
@@ -356,10 +360,13 @@ pub fn chat_row_node(
           } else {
             None
           }
-        }, fn(k, size) {
-          guard size is Some(size) else { return }
-          let s = k
+        }, fn(s, size) {
+          guard size is Some(size) else {
+            s.laid_nowhere(Is(true)) |> ignore
+            return
+          }
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
+          s.gone_empty(Is(true)) |> ignore
           s.says(By(fn() { Some(@view.said(Image, label=item().station_name)) })) |> ignore
           @sf.station_mark_node(
             s,
@@ -368,6 +375,7 @@ pub fn chat_row_node(
             size,
             fn() { if offline() { t().p.subtle } else { t().p.muted } },
             stint,
+            visible_only=true,
           )
           @sf.tip_node(tips, s, fn() { item().station_name }, within=true) |> ignore
         })
@@ -415,7 +423,12 @@ pub fn chat_row_node(
                   @sf.tip_node(tips, time, fn() { said().full }, within=true) |> ignore
                 })
                 |> ignore
-              2 => row_aside_node(e, src, tips, item, lead, face_ground, stint)
+              2 => {
+                // Across the whole screen the aside is in the second line, but its last part still uses the same
+                // column as the first line and the archive action (set with its own style, no binding of its own)
+                let reach = fn() { @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.row_corner }
+                row_aside_node(e, src, tips, item, lead, face_ground, stint, reach~)
+              }
               _ => ()
             }
           })
@@ -1117,6 +1130,13 @@ fn swiped_key(item : ChatItem) -> String {
 ///|
 /// A row's key's side (row_key_box: S6).
 let row_key_side : Double = 24.0
+
+///|
+/// The end of the aside as it is laid out with the words' size in `v`'s tree.
+fn row_aside_end_w_node(v : @view.View, item : ChatItem, lead : String) -> Double {
+  let size = @sf.node_sp(v, @ui.tree_theme().text_size(Meta).0)
+  row_aside_end_w_at(item, lead, fn(n) { @ui.text_advance("+\{n}", size~) })
+}
 
 ///|
 /// How wide what row_aside_node shows is (row_aside_w's), by its parts' sizes as the theme says them now, its words at

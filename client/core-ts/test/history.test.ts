@@ -32,6 +32,18 @@ const cx = (threads: J[], members: J[], slack: string[]): Context => ({
   workspaces: new Map([["T1", { name: "Acme", url: "https://acme.slack.com/" }]]),
 });
 
+test("a_web_call_in_history_says_how_many_pages_it_opens", () => {
+  const text = JSON.stringify({ open: [{ ref_id: "turn8search2" }, { ref_id: "turn6search1" }] });
+  const timeline = [
+    { kind: "tool_call", tool: "web__run", callId: "w1", text },
+    { kind: "tool_result", callId: "w1", ok: true, text: "results" },
+  ];
+  const h = presentHistory({ timeline }, cx([], [], []));
+  const row = h.items[0].body.content.rows[0].content;
+  assert.deepEqual([row.name, row.said], ["WebSearch", "打开 2 个网页"]);
+  assert.equal(row.call, text, "the original references remain available in the expanded call");
+});
+
 test("a_slack_place_is_named_with_its_workspace_and_links_to_its_thread", () => {
   const threads = [{ surface: "slack:T1", channel: "C1", threadTs: "1.000200", channelName: "ops", sessions: [{ session: "s1" }] }];
   const c = cx(threads, [], []);

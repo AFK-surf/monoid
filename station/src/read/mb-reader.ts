@@ -225,8 +225,12 @@ export class MbProcess extends EventEmitter {
 
   terminate(): Promise<number> {
     if (this.#exited) return Promise.resolve(this.#child.exitCode ?? 1);
+    this.ref(true);
     return new Promise((resolve) => {
-      this.#child.once("close", (code) => resolve(code ?? 1));
+      this.#child.once("close", (code) => {
+        this.ref(false);
+        resolve(code ?? 1);
+      });
       this.#child.kill();
     });
   }
