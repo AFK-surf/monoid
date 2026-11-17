@@ -2194,8 +2194,17 @@
   let generation = 0;
   // the glyph drawn last (H.glyph), its picture until it is put in the atlas (H.glyphPut)
   let held = null;
+  // where a glyph is drawn to be read back: one canvas, grown and never shrunk, each glyph drawn in its top left
+  // corner and only that much of it cleared and read. Sizing it to each glyph (as till 2026-11-17) gave the canvas a
+  // new backing store per glyph: on a phone's CPU an issue's page of Han opened in one 300 ms frame, two thirds of it
+  // that (clearRect 138 ms, getImageData 36 ms of a 4x slowed Chrome).
   const rc = document.createElement('canvas');
   const rctx = rc.getContext('2d', { willReadFrequently: true });
+  rc.width = rc.height = 0;
+  // a canvas's font set only as it changes: the setter parses the CSS font each time, set or not (mctxFont, rctxFont:
+  // what each was last set to; forgotten as a face comes or goes, so the new one is found)
+  let mctxFont = '', rctxFont = '';
+  const setMFont = (f) => { if (f !== mctxFont) { mctx.font = f; mctxFont = f; } };
   // the faces given (faceAdd, style.mbt), loaded: each a family of its own ahead of the place's own
   const faces = new Set();
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
@@ -2244,6 +2253,7 @@
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
   const textChanged = () => {
+    mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
@@ -2292,7 +2302,7 @@
   };
 
   H.fontMetrics = (size, weight, style, out) => {
-    mctx.font = font(size, weight, style);
+    setMFont(font(size, weight, style));
     const m = mctx.measureText('Hg国');
     out[0] = m.fontBoundingBoxAscent;
     out[1] = m.fontBoundingBoxDescent;
@@ -2333,7 +2343,7 @@
 
   H.shape = (text, size, weight, style, out) => {
     const f = font(size, weight, style);
-    mctx.font = f;
+    setMFont(f);
     const cap = out.length / 4;
     const segs = [...seg.segment(text)];
     // the canvas says no more of a cluster than its width alone; within a word, a cluster starts where the word up
@@ -2399,7 +2409,7 @@
     held = null;
     const sc = dpr;
     const sub = (fullKey >>> 26) & 7;
-    mctx.font = font(e.size, e.weight, e.style);
+    setMFont(font(e.size, e.weight, e.style));
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
@@ -2417,15 +2427,20 @@
     const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
-    rc.width = pw;
-    rc.height = ph;
+    if (pw > rc.width || ph > rc.height) {
+      // (grown by 64 px steps, to the largest glyph yet: a canvas sized anew forgets its state, set again here)
+      rc.width = Math.max(rc.width, Math.ceil(pw / 64) * 64);
+      rc.height = Math.max(rc.height, Math.ceil(ph / 64) * 64);
+      rctxFont = '';
+      // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
+      // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
+      // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
+      rctx.fillStyle = '#000';
+      rctx.textBaseline = 'alphabetic';
+    }
     rctx.clearRect(0, 0, pw, ph);
-    rctx.font = font(e.size * sc, e.weight, e.style);
-    // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
-    // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
-    // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
-    rctx.fillStyle = '#000';
-    rctx.textBaseline = 'alphabetic';
+    const rf = font(e.size * sc, e.weight, e.style);
+    if (rf !== rctxFont) { rctx.font = rf; rctxFont = rf; }
     rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
