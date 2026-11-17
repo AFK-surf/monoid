@@ -60,7 +60,11 @@ export async function fcmPushAny(accounts: ServiceAccount[], token: string, know
   const order = [...accounts.filter((a) => a.project_id === known), ...accounts.filter((a) => a.project_id !== known)];
   let failed = false, gone = false;
   for (const account of order) {
-    const outcome = await fcmPush(account, token, data);
+    // A transport failure for one project must still let the token reach its own project.
+    const outcome = await fcmPush(account, token, data).catch((error) => {
+      console.warn(`fcm push: ${error}`);
+      return "failed" as const;
+    });
     if (outcome === "sent") return { outcome, app: account.project_id };
     if (outcome === "failed") failed = true;
     if (outcome === "gone") gone = true;
