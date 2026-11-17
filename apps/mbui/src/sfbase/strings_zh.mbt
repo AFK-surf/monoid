@@ -1001,6 +1001,7 @@ let zh : Map[String, String] = {
   "web-main.jobs.noneNote": "agent 启动的网页和长期监控的任务会列在这里",
   "web-main.jobs.notices": "通知",
   "web-main.jobs.output": "输出",
+  "web-main.jobs.others": "其他运行中 · {n}",
   "web-main.jobs.services": "服务",
   "web-main.jobs.show": "显示内容",
   "web-main.jobs.stop": "停止",

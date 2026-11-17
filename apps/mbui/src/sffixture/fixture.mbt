@@ -1436,7 +1436,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "archive" => @settings.fixture_topic(f.mode, name, params)
     // (the web's demo has none)
     "workspaceMarks" if f.mode == "webdemo" => Some({ "workspaces": { "ws1": {} } })
-    "workspaceMarks" if f.mode == "home-attention" => Some(fix_attention_marks())
+    "workspaceMarks" if f.mode == "home-attention" || f.mode.has_prefix("home-shared") =>
+      Some(fix_attention_marks())
     "workspaceMarks" if board_mode(f.mode) => Some(board_marks())
     "workspaceMarks" =>
       Some({

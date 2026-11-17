@@ -3685,8 +3685,11 @@ export const SHAPES: Record<string, Shape> = {
   LongJobsView: struct([
     ["groups", vec("LongJobsGroup")],
     ["lit", "bool", { default: true, doc: "They light the rail's bell: one is there it has not shown yet (`prefs.jobsSeen`), and the\nbell is lit by them (`badgeKinds.services`)." }],
-    ["ids", vec("String"), { default: true, doc: "Each of them as `<station>/<id>`: what to keep as shown (`prefs.set {jobsSeen: {<workspace>: ids}}`)\nonce the bell opens." }],
-  ], { doc: "The services and jobs left up a long while (an hour) on a scope's stations that are up (the `longJobs` view),\noldest first, in groups: web services, then background jobs; none while empty.", keepNone: true }),
+    ["ids", vec("String"), { default: true, doc: "Each of the viewer's as `<station>/<id>`: what to keep as shown (`prefs.set {jobsSeen: {<workspace>: ids}}`)\nonce the bell opens." }],
+    ["otherGroups", opt(vec("LongJobsGroup")), { skipNone: true, doc: "Those not the viewer's (where others are members: their chats' jobs and views, a shared station's\nsimulators), grouped as `groups` are; they light nothing. None (left out) while there are none." }],
+    ["otherCount", opt("u32"), { skipNone: true, doc: "How many `otherGroups` hold; absent with none." }],
+    ["otherText", opt("String"), { skipNone: true, doc: "Their fold's words: 其他运行中 · 3; absent with none." }],
+  ], { doc: "The services and jobs left up a long while (an hour) on a scope's stations that are up (the `longJobs` view),\noldest first, in groups: web services, then background jobs, simulators, views; the viewer's own (`groups`) apart from\nthe others' (`otherGroups`); none while empty.", keepNone: true }),
   LongJobsGroup: struct([
     ["key", "String", { doc: "services | jobs | simulators | views" }],
     ["head", "String", { doc: "开了很久的网页服务 · 3" }],

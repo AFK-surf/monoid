@@ -53,6 +53,10 @@ let corners_everywhere_known : Map[String, Int] = {
   known["desk-en settings-profile-account"] = 1
   known["desk-win-zh settings-profile-account"] = 3
   known["desk-win-en settings-profile-account"] = 3
+  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape, said
+  // twice (the bell's panel holds the rail drawn as it was pressed, rail_drawn, beside the rail itself).
+  known["desk-win-zh home-shared-bell"] = 2
+  known["desk-win-en home-shared-bell"] = 2
   known
 }
 
@@ -67,7 +71,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",

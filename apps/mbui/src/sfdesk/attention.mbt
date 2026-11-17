@@ -1,6 +1,8 @@
 // What wants the viewer and they have not looked at yet, beside the rail's bell or under 待处理 (still.fail
-// web/src/Attention.tsx, Attention.css.ts): the stations' trouble and the services left up long (with the bell), then
+// web/src/Attention.tsx, Attention.css.ts): the stations' trouble (with the bell, and in 待处理 of its own), then
 // each workspace's chats that came to want the viewer and were not read since (the core's `workspaceMarks` items),
+// then what is left up long (the viewer's own, the others' folded: open_jobs.mbt), below the chats so that what waits
+// on the viewer is never pushed down by a service left up all week;
 // each leading to its chat: a card until read (then its row still says it), a failure until the chat runs again,
 // an unread chat the app's number counts until read (全部已读 reads them at once, leaving cards and failures);
 // one let go here neither (忽略: a card's `decision.dismiss`, a failure's `prefs.failsGone` until it fails again). A
@@ -66,6 +68,8 @@ fn attention_panel(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   let trigger = c.id(if railed || @sf.native_on() { "rail/attention" } else { "side/attention" })
   // its stations all reached again: a trouble later in the same words is new (said once the frame is built)
   c.after_build("attention/forget", fn() { trouble_forget(src, w) })
+  // what was stopped here let go of once the core no longer lists it (open_jobs.mbt)
+  c.after_build("attention/jobs-gone", fn() { open_jobs_prune(src, w) })
   // looked at as it opens (kept at once), no longer listed once it closes: listed while it is first read
   if wide.attention_open.get() && attention.trouble_seen is None {
     attention.trouble_seen = Some(trouble_kept(src, w, "seen"))
@@ -206,8 +210,9 @@ fn bell_trouble(src : Source, w : Workspace) -> String {
 }
 
 ///|
-/// Whether the rail's bell has its dot: something in its panel, the chats (less what was let go here), the stations'
-/// trouble not looked at or services left up long it has not shown yet.
+/// Whether the bell has its dot (the rail's, 小屏 Home's top bar's): something in its panel, the chats (less what was let
+/// go here), the stations' trouble not looked at or the viewer's own left up long it has not shown yet (never another's:
+/// the core's `lit`).
 pub fn bell_lit(src : Source, w : Workspace) -> Bool {
   // (each read whatever the others hold: what it reads never comes and goes with another's value, its topics held
   // all along, not let go of as 待处理 comes to list a chat and asked again as it lists none; sfapp's
@@ -242,12 +247,6 @@ fn attention_mark(src : Source, ws : String) -> Json? {
 }
 
 ///|
-/// Whether 待处理 lists any chat (what a bell with no services or stations of its own, the phone's, lights by).
-pub fn attention_any(src : Source, w : Workspace) -> Bool {
-  attention_groups(src, w, true).length() > 0
-}
-
-///|
 /// The unread 待处理 lists, read up to their last message: gone at once, back if that could not be done.
 fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
   for i in list {
@@ -266,9 +265,21 @@ fn attention_read_all(src : Source, list : Array[Json]) -> Unit {
 }
 
 ///|
-/// 待处理 as a panel of its own, where there is no bell to open it beside (a phone's Home): its rows and its foot
-/// nodes, each following what it lists (the core's marks, what was let go here) as that changes.
+/// 待处理 as a panel of its own, where there is no bell to open it beside (小屏's Home, its top bar's bell): its rows
+/// and its foot nodes, each following what it lists (the stations' trouble, the core's marks, what is left up long,
+/// what was let go here) as that changes. As it opens, what it shows of the stations' trouble and of what is left up
+/// long is looked at, as attention_panel's (kept: no longer lighting the bell), listed while it is open.
 pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> Unit {
+  attention.trouble_seen = Some(trouble_kept(src, w, "seen"))
+  let now = station_trouble_words(src, w)
+  if now != "" {
+    trouble_keep(src, w, "seen", Json::string(now))
+  }
+  if long_jobs_lit(src, w) {
+    long_jobs_seen(src, w)
+  }
+  // its stations all reached again: a trouble later in the same words is new
+  trouble_forget(src, w)
   @sf.panel_nodes(
     @sf.t("web-main.attention.entry"),
     fn(v, close) {
@@ -287,6 +298,7 @@ pub fn open_attention_panel(src : Source, w : Workspace, from : @sf.Anchor) -> U
       })
       |> ignore
     },
+    gone=fn() { attention.trouble_seen = None },
   )
 }
 
@@ -322,9 +334,9 @@ fn attention_groups(src : Source, w : Workspace, shown : Bool) -> Array[(String,
 fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close : () -> Unit) -> Unit {
   let groups = attention_groups(src, w, true)
   let trouble = if railed { bell_trouble(src, w) } else { "" }
-  let jobs = if railed { long_jobs(src, w) } else { 0 }
+  let jobs = railed && open_jobs_any(src, w)
   let several = groups.length() > 1 || groups.iter().any(fn(g) { g.0 != w.id })
-  if groups.length() == 0 && trouble == "" && jobs == 0 {
+  if groups.length() == 0 && trouble == "" && !jobs {
     c.box(style=att_empty, fn() { c.text(@sf.t("web-main.attention.empty"), style=att_empty_words) |> ignore }) |> ignore
   }
   let mut first = true
@@ -344,9 +356,6 @@ fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close
         @sfbase.go_place("stations") |> ignore
       })
     })
-  }
-  if jobs > 0 {
-    group("", None, fn() { open_jobs(c, src, w) })
   }
   for g in groups {
     // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
@@ -371,6 +380,10 @@ fn attention_rows(c : @ui.Ctx, src : Source, w : Workspace, railed : Bool, close
         )
       }
     })
+  }
+  // (what is left up long under what waits on the viewer)
+  if jobs {
+    group("", None, fn() { open_jobs(c, src, w, close) })
   }
 }
 
@@ -457,45 +470,71 @@ fn attention_unread(src : Source, w : Workspace) -> Array[Json] {
 }
 
 ///|
-/// What 待处理's panel of its own holds (open_attention_panel: no bell, so neither the stations' trouble nor the
-/// services left up long), in node `v`: each workspace's chats that want the viewer, the one in view's first, under
-/// its name where there are several (its mark before it); nothing waiting said where none; each group and row
-/// following the core's marks and what was let go here as they change.
+/// What 待处理's panel of its own holds (open_attention_panel), in node `v`, as the panel beside the rail's bell holds it
+/// (attention_rows): the stations' trouble not looked at before it opened (pressed, the Stations' place); each
+/// workspace's chats that want the viewer, the one in view's first, under its name where there are several (its mark
+/// before it); what is left up long (open_jobs_node: the viewer's own, the others' folded); nothing waiting said where
+/// none of it is. A part with one before it 6 under it, as a group with no name of attention_rows' is; each following
+/// what it lists as that changes.
 fn attention_rows_node(v : @view.View, src : Source, w : Workspace, close : () -> Unit) -> Unit {
   let groups = fn() { attention_groups(src, w, true) }
+  let trouble = fn() { bell_trouble(src, w) }
+  let jobs = fn() { open_jobs_any(src, w) }
   let several = fn() {
     let gs = groups()
     gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
   }
-  v.show(at_once=true, fn() { groups().length() == 0 }, fn(e) {
+  let next = fn(before : Bool) { if before { @ui.Space::S1_5.px() } else { 0.0 } }
+  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(e) {
     e.box(fn(b) {
       @sf.style_node(b, fn() { att_empty })
       @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
     })
     |> ignore
   })
-  v.each(groups, fn(g) { g.0 }, fn(gb, g) {
-    // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
-    let first_item = fn() { attention_mark(src, g.get().0) }
-    @sf.panel_group_node(
-      gb,
-      fn() { if several() { g.get().1 } else { "" } },
-      lead=fn(l) {
-        @sf.workspace_badge_node(
-          l,
-          fn() { g.get().1 },
-          fn() { text(first_item(), "workspaceEmoji") },
-          fn() { text(first_item(), "workspaceIcon") },
-          att_ws_mark,
-        )
-      },
-      fn(rows) {
-        rows.each(fn() { g.get().2 }, attention_key, fn(row, i) {
-          let ws = @signals.untracked(fn() { g.get().0 })
-          attention_item_node(row, src, fn() { i.get() }, fn() { attention_go(src, w, ws, i.untracked(), close) })
-        })
-      },
-    )
+  v.show(at_once=true, fn() { trouble() != "" }, fn(t) {
+    @sf.panel_group_node(t, fn() { "Station" }, fn(rows) {
+      attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(trouble()) } }, fn() {
+        close()
+        @sfbase.go_place("stations") |> ignore
+      })
+    })
+  })
+  v.box(fn(chats) {
+    // (6 under the trouble where the chats have no name of their own over them)
+    chats.padding(By(fn() { (0.0, next(trouble() != "" && groups().length() > 0 && !several()), 0.0, 0.0) })) |> ignore
+    chats.each(groups, fn(g) { g.0 }, fn(gb, g) {
+      // each workspace's mark before its name, as the core says it of the workspace (WorkspaceMark's workspaceEmoji, workspaceIcon)
+      let first_item = fn() { attention_mark(src, g.get().0) }
+      @sf.panel_group_node(
+        gb,
+        fn() { if several() { g.get().1 } else { "" } },
+        lead=fn(l) {
+          @sf.workspace_badge_node(
+            l,
+            fn() { g.get().1 },
+            fn() { text(first_item(), "workspaceEmoji") },
+            fn() { text(first_item(), "workspaceIcon") },
+            att_ws_mark,
+          )
+        },
+        fn(rows) {
+          rows.each(fn() { g.get().2 }, attention_key, fn(row, i) {
+            let ws = @signals.untracked(fn() { g.get().0 })
+            attention_item_node(row, src, fn() { i.get() }, fn() { attention_go(src, w, ws, i.untracked(), close) })
+          })
+        },
+      )
+    })
+  })
+  |> ignore
+  // (what is left up long under what waits on the viewer, 6 under it)
+  v.show(at_once=true, jobs, fn(j) {
+    j.box(fn(b) {
+      b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
+      open_jobs_node(b, src, w, close)
+    })
+    |> ignore
   })
 }
 

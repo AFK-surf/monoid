@@ -21,7 +21,10 @@
 // left up long, each with its 关闭 or 断开); "home-attention" (the wide frame's 待处理 open: a decision to let
 // go, a failure looked at, a station offline); "home-syncing" (Home catching up on what changed while away: the line
 // over the rows); "history-link" (Home, the history there for a link to open at
-// an entry: what apps/android's MbuiCompareTest pictures beside it). Every word here is made up.
+// an entry: what apps/android's MbuiCompareTest pictures beside it); "home-shared" (a workspace others are members
+// of: a decision waiting on the viewer, their own service left up long, others' services and task, the station's
+// simulators and a colleague's view of a screen; "home-shared-bell" that with the wide frame's 待处理 open). Every word
+// here is made up.
 
 ///|
 /// Whether `mode` is one of this slice's.
@@ -32,7 +35,7 @@ pub fn decide_mode(mode : String) -> Bool {
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
     "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls",
     "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
-    "chat-station-tag", "home-attention", "home-syncing", "home-foot", "home-foot-many",
+    "chat-station-tag", "home-attention", "home-syncing", "home-foot", "home-foot-many", "home-shared", "home-shared-bell",
   ].contains(mode)
 }
 
@@ -456,6 +459,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
         Some(Some(long_screens_view()))
       } else if f.mode == "home-foot-many" {
         Some(Some(long_many_view()))
+      } else if f.mode.has_prefix("home-shared") {
+        Some(Some(long_shared_view()))
       } else if f.mode == "home-jobs" || f.mode == "home-foot" {
         Some(
           Some({
@@ -489,6 +494,67 @@ pub fn long_job() -> Json {
   m["age"] = Json::string("3 小时")
   m["chat"] = { "id": "s-c1", "title": "整理发布清单", "archived": false }
   Json::object(m)
+}
+
+///|
+/// What is left up long in a workspace others are members of (home-shared), as the core sends it: the viewer's own
+/// service in `groups`; a colleague's service, a task of no chat, the station's simulators and a colleague's view of a
+/// screen in `otherGroups`.
+pub fn long_shared_view() -> Json {
+  let job = fn(id : String, name : String, where_text : String, age : String, service : Bool, chat : (String, String)?) {
+    let m = match long_job() {
+      Object(m) => m.copy()
+      _ => {}
+    }
+    m["id"] = Json::string(id)
+    m["name"] = Json::string(name)
+    m["whereText"] = Json::string(where_text)
+    m["age"] = Json::string(age)
+    m["service"] = Json::boolean(service)
+    if !service {
+      m["port"] = Json::null()
+      m["tone"] = Json::string("live")
+    }
+    match chat {
+      Some((id, title)) => m["chat"] = { "id": Json::string(id), "title": Json::string(title), "archived": false }
+      None => m.remove("chat")
+    }
+    Json::object(m)
+  }
+  {
+    "groups": [
+      {
+        "key": "services",
+        "head": "长时间运行的网页服务 · 1",
+        "jobs": [job("j-web", "发布清单预览", "Willow · 整理发布清单", "3 小时", true, Some(("s-c1", "整理发布清单")))],
+      },
+    ],
+    "lit": true,
+    "ids": ["ws1/st1/j-web"],
+    "otherGroups": [
+      {
+        "key": "services",
+        "head": "长时间运行的网页服务 · 1",
+        "jobs": [job("j-ana", "官网首页预览", "Willow · 新官网首页", "6 小时", true, Some(("s-ana", "新官网首页")))],
+      },
+      { "key": "jobs", "head": "长时间运行的后台任务 · 1", "jobs": [job("j-soak", "e2e soak", "Willow · 不属于任何对话", "9 小时", false, None)] },
+      {
+        "key": "simulators",
+        "head": "长时间开着的模拟器 · 2",
+        "jobs": [
+          long_screen("screen:simulator:A", "Demo iPhone · iOS 27.2", "Willow · iOS 模拟器", "5 小时", "screen.close", "simulator:A", "", "关闭"),
+          long_screen("screen:android:emulator-5580", "fold · Android 16", "Willow · 安卓模拟器", "4 小时", "screen.close", "android:emulator-5580", "", "关闭"),
+        ],
+      },
+      {
+        "key": "views",
+        "head": "长时间开着的远程连接 · 1",
+        "jobs": [long_screen("view:desktop/v1", "Willow 的桌面", "Willow · Ana · iPhone", "2 小时", "screen.endView", "desktop", "v1", "断开")],
+      },
+    ],
+    "otherCount": 5,
+    "otherText": "其他运行中 · 5",
+  }
 }
 
 ///|
@@ -697,7 +763,7 @@ pub fn fix_preview_viz() -> Json {
 /// This slice's calls in the fixture: taken as a station would.
 pub fn decide_fixture_call(name : String) -> Result[Json, Json]? {
   match name {
-    "decision.answer" | "decision.dismiss" | "decision.defer" | "decision.reply" | "chat.keep" | "chat.pin" | "chat.read" | "chat.rename" | "session.stop" | "session.evict" | "session.compact" | "session.clear" | "job.stop" | "history.detail" | "history.older" | "machineLogin.cancel" =>
+    "decision.answer" | "decision.dismiss" | "decision.defer" | "decision.reply" | "chat.keep" | "chat.pin" | "chat.read" | "chat.rename" | "session.stop" | "session.evict" | "session.compact" | "session.clear" | "job.stop" | "screen.close" | "screen.endView" | "history.detail" | "history.older" | "machineLogin.cancel" =>
       Some(Ok(Json::object({})))
     "chat.publishPreview" => Some(Ok(fix_preview()))
     _ => None

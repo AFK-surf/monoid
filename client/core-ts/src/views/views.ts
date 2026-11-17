@@ -2072,37 +2072,52 @@ export class Views implements Owner {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         const several = stations.length > 1;
-        // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no more).
+        // Whose each is (jobs.ts `mineOf`): in a workspace of one, all the viewer's; where others are members, what
+        // the viewer's own chats run (`mine` of their columns) and their own views, a shared station's others' (its
+        // simulators the viewer's where a view of theirs is on it). (Machines that only run tasks, a member's own, are
+        // no station of the list: the workspace's `rigs`.)
+        const multi = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members")).length > 1;
+        // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no
+        // more), the chat it is among the agents of where it has none of its own (`chat_agent`).
         const named = (address: string, j: J): J => {
-          if (get(j, "chat") !== undefined && get(j, "chat") !== null) return j;
+          const chat = get(j, "chat");
+          if (chat !== undefined && chat !== null) {
+            if (!multi) return j;
+            // (the station named its chat: whose it is, of that row's columns)
+            const id = str(get(chat, "id"));
+            return { ...j, mine: id !== null && this.#core.data.chatOfJob(address, id)?.mine === true };
+          }
           const session = str(get(j, "session"));
-          // (its id, title and whether it is archived alone, of their columns)
-          const found = session === null ? undefined : this.#core.data.chatTitled(address, session);
-          return found === undefined ? j : { ...j, chat: { id: found.id, title: found.title, archived: found.archived } };
+          // (its id, title, whether it is archived and the viewer's, of their columns alone)
+          const found = session === null ? undefined : this.#core.data.chatOfJob(address, session);
+          const mine = !multi || found?.mine === true;
+          return found === undefined ? (mine ? j : { ...j, mine }) : { ...j, chat: { id: found.id, title: found.title, archived: found.archived }, ...(mine ? {} : { mine }) };
         };
         const open = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(this.ok({ topic: "jobs", station: s.address })).map((j) => named(s.address, j as J))] as [string, string | null, J[]]);
         // Their simulators and the views of their screens too (jobs.ts `longScreens`).
-        const screens = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(get(this.ok({ topic: "screens", station: s.address }), "screens"))] as jobs.HeldScreens);
+        const screens = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(get(this.ok({ topic: "screens", station: s.address }), "screens")), !multi] as jobs.HeldScreens);
         const prefs = this.ok({ topic: "prefs" }) ?? null;
         const bell = { on: badgeKindsOf(prefs).services, seen: jobsSeenOf(prefs, view.scope as string) };
         const clock = this.#clock();
-        // Asked again as the next of them has been up an hour (nothing else would say it).
+        // Asked again as the next of them has been up an hour, or as how long one has says something else (nothing else
+        // would say it: present.ts NO_TICK).
         const next = jobs.longNext(open, screens, clock.now);
         if (next !== null) this.#againIn(next);
-        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session), bell, screens) };
+        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session, multi), bell, screens) };
       }
     }
     return undefined;
   }
 
   /// The chat on another of the scope's stations a task here runs for (`jobs.remoteOwner`), as that station's sidebar
-  /// has it: the session's own chat over one it only takes part in (as the station names its own jobs' chats).
-  #ranFrom(stations: StationInfo[], session: string): jobs.From | null {
+  /// has it: the one its session names, else one it takes part in (data.ts chatOfJob); the viewer's where that chat is
+  /// (`multi`: others are members) or where nobody else is.
+  #ranFrom(stations: StationInfo[], session: string, multi: boolean): jobs.From | null {
     const owner = jobs.remoteOwner(session);
     const station = owner && stations.find((s) => s.address === owner.station);
     if (!owner || !station) return null;
-    const row = this.#core.data.chatNamedOfAgent(station.address, owner.session);
-    return { name: station.name, chat: row === undefined ? null : { id: row.id, title: row.title, archived: false, station: station.address } };
+    const row = this.#core.data.chatOfJob(station.address, owner.session);
+    return { name: station.name, chat: row === undefined ? null : { id: row.id, title: row.title, archived: row.archived, station: station.address }, mine: !multi || row?.mine === true };
   }
 
   /// When the chats of `stations` marked archived were, from `from` on (their `archived_at`: the mark's moment, else their

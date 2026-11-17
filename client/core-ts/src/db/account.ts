@@ -2167,6 +2167,40 @@ export class AccountDb {
     return unknown;
   }
 
+  /// A job gone from its station (`job-removed`): its row let go of, off the open ones at once. Answers whether it was
+  /// among them.
+  dropJob(station: string, id: string): boolean {
+    let was = false;
+    this.#write(() => {
+      const r = this.sql.all("SELECT open FROM job WHERE station = ? AND id = ?", [station, id])[0];
+      if (!r) return;
+      was = r[0] === 1;
+      this.#run("DELETE FROM job WHERE station = ? AND id = ?", [station, id]);
+      this.#cache.delete(K("job", station, id));
+      this.#cache.delete(K("jobitem", station, id));
+      this.#loadedList(station, "jobs")?.delete(id);
+      if (was) this.#tell({ topic: "jobs", station });
+      this.#tell({ topic: "job", station, id });
+    });
+    return was;
+  }
+
+  /// A session gone from its station: its jobs no longer among the open ones (its station ends them with it), at once.
+  /// (`job_open`: the station's open ones are few, its jobs of before many.)
+  closeSessionJobs(station: string, session: string): void {
+    this.#write(() => {
+      const found = this.sql.all("SELECT id FROM job INDEXED BY job_open WHERE station = ? AND open = 1 AND session = ?", [station, session]);
+      if (found.length === 0) return;
+      for (const r of found) {
+        const id = String(r[0]);
+        this.#run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", [station, id]);
+        this.#cache.delete(K("jobitem", station, id));
+        this.#loadedList(station, "jobs")?.delete(id);
+      }
+      this.#tell({ topic: "jobs", station });
+    });
+  }
+
   // ── what was said ──
 
   /// The messages of these stations whose latest text has every one of `terms` (case aside), newest first.
