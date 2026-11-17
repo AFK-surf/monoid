@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
-| [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.49 |
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.63 |
 | [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.3 |
 | [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
-| [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
