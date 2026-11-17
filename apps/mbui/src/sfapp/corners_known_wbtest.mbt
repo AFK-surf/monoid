@@ -150,17 +150,13 @@ let corners_outgrown_known : Map[String, Int] = Map([])
 /// What is pressed side by side another height than the rest of its row (mbui's Tester::height_faults; the user,
 /// 2026-10-30: what can be pressed is one height) on every screen in every window (corners_wbtest.mbt), by window,
 /// language and screen: the bar it may only fall from, counted as the rule first ran (2026-11-14). A screen not listed
-/// has none. Listed: 连接's 继续 (a connect's session waiting to go on) in the wide windows, its button 36 and the
+/// has none, and none is now. Listed till then: 连接's 继续 (a connect's session waiting to go on) in the wide windows, its button 36 and the
 /// icon's button beside it 32. And what old views hosted in the window's tree show, not measured till the spacing rules
 /// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows till their ＋ was as
 /// high as their tabs (2026-11-17; their address field beside 后退, 2026-11-15); a chat's 任务 beside it in the
-/// wide windows till it was made of nodes (2026-11-15).
-let corners_heights_known : Map[String, Int] = Map([
-  ("wide-zh settings-connects", 1),
-  ("wide-win-zh settings-connects", 1),
-  ("wide-en settings-connects", 1),
-  ("wide-win-en settings-connects", 1),
-])
+/// wide windows till it was made of nodes (2026-11-15); 连接's waiting app's ⋯ beside its 继续 till it was
+/// as high as its row's first line (2026-11-17).
+let corners_heights_known : Map[String, Int] = Map([])
 
 ///|
 /// A mark beside a block of several lines off its first line (mbui's Tester::first_line_faults; the user, 2026-11-14:

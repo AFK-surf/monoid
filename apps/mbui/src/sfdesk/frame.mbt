@@ -174,6 +174,8 @@ pub(all) struct ArchiveSide {
   q : @signals.Signal[String]
   limit : @signals.Signal[Int]
   mut last : Json?
+  /// the workspace `last` is of: shown again only in it
+  mut last_ws : String
   note : @signals.Signal[String]
   mut landed : Bool
 }
@@ -183,6 +185,7 @@ pub let archive_side : ArchiveSide = {
   q: @signals.signal(""),
   limit: @signals.signal(archive_side_page),
   last: None,
+  last_ws: "",
   note: @signals.signal(""),
   landed: false,
 }
@@ -197,6 +200,7 @@ fn wide_reset() -> Unit {
   archive_side.q.set("")
   archive_side.limit.set(archive_side_page)
   archive_side.last = None
+  archive_side.last_ws = ""
   archive_side.note.set("")
   archive_side.landed = false
   wide.side_w.set(side_own)

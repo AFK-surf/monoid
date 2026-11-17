@@ -1528,6 +1528,8 @@ pub let peek_frame_px : Double
 
 pub let person_ringed : @ui.Len
 
+pub fn[K : Hash + Eq] pg_blocks_read(Ref[Set[K]], Ref[Bool], Array[K]) -> Array[K]
+
 pub let pg_card_room : @ui.Style
 
 pub let pg_chevron : Double
@@ -2135,6 +2137,8 @@ pub let strong : @ui.TextStyle
 
 pub fn style_node(@view.View, () -> @ui.Style, in_row? : Bool) -> Unit
 
+pub fn styled_words(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
+
 pub fn submenu_row(@ui.Ctx, String, String, Array[MenuItem?], icon? : String, side? : @view.Side) -> Unit
 
 pub fn submenu_row_node(@view.View, () -> String, () -> Array[MenuItem?], icon? : () -> String, side? : @view.Side) -> Unit
@@ -2697,13 +2701,6 @@ pub(all) struct Dial {
 }
 
 type DrawnShapes
-
-type EdgeWay
-pub fn EdgeWay::go(Self, @view.View, Double, Double, ease? : @ui.Ease) -> Unit
-pub fn EdgeWay::go_by(Self, @view.View, Double, @motion.Spec) -> Unit
-pub fn EdgeWay::go_from(Self, @view.View, Double, Double, @motion.Spec) -> Unit
-pub fn EdgeWay::new(Double) -> Self
-pub fn EdgeWay::shown(Self, @view.View) -> Double
 
 pub(all) struct FileCardDone {
   removed : Bool

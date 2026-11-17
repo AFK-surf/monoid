@@ -128,6 +128,9 @@ pub struct Scroll {
   /// what it does as a node in it says what is read in its block starts at it (View::read_from): a page's list's
   /// (View::scrolls_window) keeps it for that block; elsewhere nothing
   priv mut read_from_said : (View) -> Unit
+  /// where a page's list's first block's top is now (under its head, as tall as that is laid out: View::scrolls_window);
+  /// elsewhere 0: for what judges its rows (lists_seen.mbt) to move them with that head, not with what covers its top
+  priv mut keys_start : () -> Double
   /// what it does as a node in it says it holds what a go-to brings (View::sought): a page's list's
   /// (View::scrolls_window) keeps it for its block; elsewhere nothing
   priv mut sought_said : (View, () -> ((Double, Double) -> (Double, Double, Double, Double)?)?) -> Unit
@@ -248,6 +251,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     held_said: fn() {  },
     pressed_said: fn(_) { fn() {  } },
     read_from_said: fn(_) {  },
+    keys_start: fn() { 0.0 },
     sought_said: fn(_, _) {  },
     at_foot_said: None,
     foot_covered: fn() { 0.0 },
@@ -1374,6 +1378,7 @@ pub fn View::scrolls(
     s.held_said = fn() {  }
     s.pressed_said = fn(_) { fn() {  } }
     s.read_from_said = fn(_) {  }
+    s.keys_start = fn() { 0.0 }
     s.sought_said = fn(_, _) {  }
     // (whether it is at its foot, by what it held: said again by what scrolls in it next; till then where it is put.
     // Kept, it held all it read (a page's list's blocks and keys) past its going, read again by any that asks it)

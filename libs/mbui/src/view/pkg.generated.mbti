@@ -1267,7 +1267,7 @@ pub fn Tree::on_offset(Self, (NodeId) -> Unit) -> Unit
 pub fn Tree::on_old_scroll(Self, () -> Bool, there? : (NodeId, Double, Double) -> Bool) -> Unit
 pub fn Tree::on_target(Self, (Target, Array[Target], Double, Double) -> Target) -> Unit
 pub fn Tree::on_through(Self, (Target, Double, Double, Double, Handed) -> Unit) -> Unit
-pub fn Tree::on_way_at(Self, Int32, Double) -> Bool
+pub fn Tree::on_way_at(Self, Int32, Double, within? : Int32) -> Bool
 pub fn Tree::opener_of(Self, NodeId) -> Opener?
 pub fn Tree::opens_first(Self, NodeId) -> Bool
 pub fn Tree::opens_first_takes(Self, NodeId) -> ((Said) -> Bool)?
@@ -1671,6 +1671,8 @@ pub fn View::stacked(Self, Live[Int32], loc~ : SourceLoc) -> Self
 pub fn View::steps(Self, Int32, Int32, (Int32, Double) -> Unit) -> () -> Unit
 #callsite(autofill(loc))
 pub fn View::stretches(Self, Live[Double], loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, loc~ : SourceLoc) -> Unit
 pub fn View::tab_stop(Self, Live[Bool]) -> Self
 pub fn View::takes(Self, (Double, Double, Double) -> Array[(Double, Double, Double, Double)]) -> Self
 pub fn View::takes_back(Self, () -> Unit) -> Self

@@ -424,7 +424,7 @@ fn side_adb_tab(front : String) -> String? {
 fn side_adb_node(q : @view.View, src : Source, station : String) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+    s.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
       guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
       p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       let core = settings_core(src, w)
@@ -516,7 +516,7 @@ fn side_own_node(
     }
     // (once its view, and so its thread, is read: what both show is the thread's)
     // (its head alone: sfbase's chat_view_now)
-    s.pick(fn() { @sfbase.chat_view_now(src, r).bind(fn(v) { v.thread }) }, fn(t, thread) {
+    s.switch_by(fn() { @sfbase.chat_view_now(src, r).bind(fn(v) { v.thread }) }, fn(t, thread) {
       t.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       guard thread is Some(th) else { return }
       if tab == "letters" {

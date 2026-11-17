@@ -1813,11 +1813,12 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       !ground_drawn.reshaped() &&
       (c.shadow.2 & 0xFFL) == 0L &&
       c.ring.0 == 0.0 &&
-      c.halo.0 <= 0.0 {
+      c.halo.0 <= 0.0 &&
+      tree.words_edge_of(c.id).0 <= 0.0 {
       // (wholly outside the clip it is drawn in, where it is drawn (moved, grown, what holds it scrolled): nothing of its own
       // drawn or made, no glyph of its words asked of the host, as the old frame paints nothing of what lies outside its
       // clip where it is drawn (scene.mbt's paint, what is moved carried: draw_carries); not where what it draws may lie
-      // elsewhere than its box: turned, shadowed, its words on a halo (View::words_halo), its ground drawn in a box of its
+      // elsewhere than its box: turned, shadowed, its words on a halo or edged (View::words_halo, words_edge), its ground drawn in a box of its
       // own (View::ground_drawn), or in what is drawn
       // stretched (Android's list at an end, moved after it is drawn). What it holds each looked at where it is.)
       self.ride_spot(c, x, y, s, a, false)
@@ -2709,6 +2710,26 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     // halo.mbt)
     let halo_at = self.halo_start(c.halo.0, c.halo.1)
     let from = self.ninst - start
+    // (the edge round them, under them: they in its colour, as far off each of the eight ways, each glyph its own look
+    // as theirs (numbered again from where theirs are): View::words_edge)
+    let (edge_out, edge_ink) = tree.words_edge_of(c.id)
+    if edge_out > 0.0 && (edge_ink & 0xFFL) != 0L {
+      let n_was = glyph_n.val
+      for o in words_edge_ways {
+        glyph_n.val = n_was
+        self.emit_text(
+          tl,
+          o.0 * edge_out,
+          o.1 * edge_out,
+          edge_ink,
+          1.0,
+          unplaced=glyphs,
+          center_in=if c.words_center { c.w } else { -1.0 },
+          font=(size, k.weight, style, spacing),
+        )
+      }
+      glyph_n.val = n_was
+    }
     // (each line in the middle of its width where it says so, as an old view's centred words: Ctx::text's `center`)
     self.emit_text(
       tl,
@@ -3704,6 +3725,21 @@ fn view_frame_end(c : Ctx) -> Unit {
     None => ()
   }
 }
+
+///|
+/// The eight ways a node's words are drawn off for the edge round them (View::words_edge): across, up and down, and
+/// corner to corner.
+// kept across runs: a table, never written
+let words_edge_ways : Array[(Double, Double)] = [
+  (-1.0, 0.0),
+  (1.0, 0.0),
+  (0.0, -1.0),
+  (0.0, 1.0),
+  (-1.0, -1.0),
+  (1.0, 1.0),
+  (-1.0, 1.0),
+  (1.0, -1.0),
+]
 
 ///|
 /// An old view in node `v`: a node of `v`'s (as big and as placed as it is said to be: `.grow(Is(1.0))` for the room

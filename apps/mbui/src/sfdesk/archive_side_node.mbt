@@ -46,13 +46,24 @@ fn archive_pane_node(
   let topic = fn() { src.topic("archive", asked()).get() }
   // (what the core last answered: shown while what is asked now (other words, a page more) has not come)
   // (the core's value, a new JSON each time it changes: told by its object)
-  let last : @signals.Signal[Json?] = @signals.signal_by(archive_side.last, same=fn(a, b) { physical_equal(a, b) })
+  // (another workspace's last answer is none of this one's)
+  let kept = if archive_side.last_ws == @signals.untracked(ws) { archive_side.last } else { None }
+  let last : @signals.Signal[Json?] = @signals.signal_by(kept, same=fn(a, b) { physical_equal(a, b) })
+  // what came, went or moved in it makes its way only as the core tells it changed (watched): not its answer first come
+  // here (made again, back from 设置 or another workspace: what showed till then was the last answer kept), nor one to
+  // other words looked for or of another workspace, each its list anew at once
+  let watched = Ref(false)
+  let seen : Ref[(String, String)?] = Ref(None)
   l.reacts(topic, fn(t) {
     match t.value {
       Some(_) as now => {
+        let here = (@signals.untracked(ws), archive_side.q.untracked())
+        watched.val = seen.val == Some(here) && !@view.answering_now()
+        seen.val = Some(here)
         last.set(now)
         // (for ⌥↑ ⌥↓ and the newest opened beside it: what is shown, read as they are done, keys.mbt neighbour)
         archive_side.last = now
+        archive_side.last_ws = here.0
         archive_side.note.set(text(now, "note"))
       }
       None => ()
@@ -158,6 +169,9 @@ fn archive_pane_node(
       })
       |> ignore
     },
+    // (a chat's row or a day's heading, as the core told the list it changed: watched)
+    comes=fn(k) { watched.val && (k.has_prefix("r/") || k.has_prefix("h/")) },
+    goes=fn(k) { watched.val && (k.has_prefix("r/") || k.has_prefix("h/")) },
     fn(b, k) {
       // (what this line is as the list says it now, told only as that changes: a chat put back tells the others nothing)
       let mine = @signals.computed(fn(_) { line_of(k) })
@@ -333,10 +347,10 @@ fn archive_row_side_node(
     // (its keys while pointed at in it, or one under way; none drawn for a finger, too small for one: its menu)
     let over = fn() { busy() || (!@sf.more_held() && @sf.lit_in_node(holder)) }
     // its ground as nav_ground_by has it: the pointer's eased in and out, the selected one's while its chat is in view
-    let hover = @sf.EdgeWay::new(0.0)
-    let chosen = @sf.EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    row.reacts(fn() { @sf.lit_node(row) }, fn(h) { hover.go(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    row.reacts(on, fn(o) { chosen.go(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hover = @motion.NodeWay::new(0.0)
+    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    row.reacts(fn() { @sf.lit_node(row) }, fn(h) { hover.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    row.reacts(on, fn(o) { chosen.go_ms(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
     // (taken for another chat as it comes to show (archive_pane_node's reused): its ground as were it made for that one,
     // at once, not easing from the one it was)
     row.reacts(key, at_start=false, fn(_) {

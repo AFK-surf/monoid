@@ -86,7 +86,7 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   page_switch_said(v, fn() { @sfbase.workspace_in_view(src).0 is Some(_) && !gated() })
   // (what waits in its place giving back the focus as it goes, to what had it as it came: the page under it kept, laid
   // out nowhere meanwhile (none of it built, pressed or read out), the focus in it let go of then, after it is kept)
-  v.show(gated, fn(g) {
+  v.show(gated, at_once=true, fn(g) {
     g.grow(Is(1.0)).focus_returns() |> ignore
     pane_gate_node(g, src)
   })
@@ -104,7 +104,7 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 /// system's tabs are the rail (gate_heading_node).
 fn pane_gate_node(g : @view.View, src : Source) -> Unit {
   g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  g.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+  g.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
     // (all of the pane, as the page it is in the place of; what waits clear of the column of the system's bars down
     // the window's trailing edge, an iPhone Duo's on its side (@sf.native_clear), the page's ground on under it)
     p.over(Is(true)).padding(By(fn() { (0.0, 0.0, @sf.native_clear(), 0.0) })) |> ignore
@@ -236,7 +236,7 @@ fn pane_made(
       (
         kind,
         fn(v : @view.View, page : () -> Page, under : Page?, stint : () -> Int, k : Int) {
-          v.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
             let core = settings_core(src, w)
             let here = fn() { @settings.here_of(core, w.id, w.name) }
@@ -550,6 +550,12 @@ fn pane_made(
                   }
                 },
                 foot_node=fn(n, s, r) { @sfpages.chat_composer_node(n, s, r, tips, apart=wide.tape.get()) },
+                leaving=fn(c, s, r) {
+                  match @sfbase.workspace_in_view(s).0 {
+                    Some(w) => new_chat_after(c, s, w, r)
+                    None => ()
+                  }
+                },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
                 narrower=fn(n) { side_narrower(src, n, k) },
                 // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)

@@ -126,9 +126,9 @@ pub fn Moves::reshapes(
   // (let go with its node: its way's end let go, it no more of what moves)
   v.owns(fn() {
     for w in s.ways {
-      (w.due)()
+      w.stop()
     }
-    (s.round.due)()
+    s.round.stop()
     match self.shapes.search_by(fn(o) { physical_equal(o, s) }) {
       Some(i) => self.shapes.remove(i) |> ignore
       None => ()
@@ -136,6 +136,11 @@ pub fn Moves::reshapes(
   })
   |> ignore
   v.ground_drawn(By(fn() { s.drawn() })) |> ignore
+  // (what it holds carried with its shape while that goes: said for what judges a step inside it, Tree::on_way_at)
+  v.carries_until(fn() {
+    s.ways.fold(init=s.round.ends_at(), fn(m, w) { if w.ends_at() > m { w.ends_at() } else { m } })
+  })
+  |> ignore
 }
 
 ///|
@@ -147,15 +152,15 @@ pub fn Moves::moves_with(self : Moves, v : @view.View) -> Unit {
   // (made for a change while a shape it is in goes with what it holds, after that set off: carried on its ground, by
   // the edges of it it is nearer as the change lays it out, worked out at that change's moment once it is laid out)
   let at = self.owner.cause_at()
-  match self.shapes.iter().find_first(fn(s) { s.carrying && s.round.way.goes_at(at) && held_in(v, s.v) }) {
+  match self.shapes.iter().find_first(fn(s) { s.carrying && s.round.goes_at(at) && held_in(v, s.v) }) {
     Some(s) =>
       v.at_moment(at, fn() { p.ride.set(Some((s, carried_edges(v.laid_window_now(), s.to)))) }) |> ignore
     None => ()
   }
   // (let go with its node: its ways' ends let go, it no more of what moves)
   v.owns(fn() {
-    (p.x.due)()
-    (p.y.due)()
+    p.x.stop()
+    p.y.stop()
     match self.parts.search_by(fn(o) { physical_equal(o, p) }) {
       Some(i) => self.parts.remove(i) |> ignore
       None => ()
@@ -163,6 +168,17 @@ pub fn Moves::moves_with(self : Moves, v : @view.View) -> Unit {
   })
   |> ignore
   v.drawn_off(By(fn() { p.off() })) |> ignore
+  // (what it holds carried with it while it goes: said for what judges a step inside it, Tree::on_way_at)
+  v.carries_until(fn() {
+    let a = p.x.ends_at()
+    let b = p.y.ends_at()
+    if a > b {
+      a
+    } else {
+      b
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -218,13 +234,13 @@ fn Shape::shown(self : Shape) -> (Double, Double, Double, Double) {
 ///|
 /// Whether its ground was on its way at moment `at` (its edges or its corners).
 fn Shape::goes_at(self : Shape, at : Double) -> Bool {
-  self.round.way.goes_at(at) || self.ways.iter().any(fn(w) { w.way.goes_at(at) })
+  self.round.goes_at(at) || self.ways.iter().any(fn(w) { w.goes_at(at) })
 }
 
 ///|
 /// Where its ground was drawn at moment `at` in the window, its ways' (laid out as they went to, `to`).
 fn Shape::at(self : Shape, at : Double) -> (Double, Double, Double, Double) {
-  let k = fn(i : Int) { self.ways[i].way.value_at(at) }
+  let k = fn(i : Int) { self.ways[i].value_at(at) }
   (k(0), k(1), k(2), k(3))
 }
 
@@ -286,7 +302,7 @@ fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
     let carry = carries && @signals.untracked(s.carry)
     // (where its ground was drawn as the change came: as far off where it stood as its ways had it off where they
     // went, moved since by what holds it; how far its corners had got)
-    let p0 = s.round.way.value_at(at)
+    let p0 = s.round.value_at(at)
     let (gx, gy, gw, gh) = if s.goes_at(at) { shape_held(s.at(at), s.to, placed) } else { placed }
     let moved = if s.foot && !carry { foot_moved_by(placed, laid) } else { 0.0 }
     let g = (gx, gy + moved, gw, gh)
@@ -331,8 +347,8 @@ fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
       }
       Some((placed, laid)) => {
         p.ride.set(None)
-        let ox = p.x.way.value_at(at)
-        let oy = p.y.way.value_at(at)
+        let ox = p.x.value_at(at)
+        let oy = p.y.value_at(at)
         let dx = placed.0 - laid.0
         let dy = placed.1 - laid.1
         let far = way_far(ox + dx, oy + dy + foot, laid.2 - placed.2, laid.3 - placed.3, 0.0)
@@ -358,7 +374,7 @@ fn Moves::set_off(self : Moves, spec : Spec, carries : Bool) -> Unit {
     for k in 0..<4 {
       s.ways[k].put_at(s.v, from[k], to[k], spec, at)
     }
-    s.round.go_from(s.v, 0.0, 1.0, spec, at)
+    s.round.go_from(s.v, 0.0, 1.0, spec, at~)
   }
   for m in moving {
     let (p, fx, fy) = m

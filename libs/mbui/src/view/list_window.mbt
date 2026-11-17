@@ -493,6 +493,13 @@ fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
 /// key's (flex's ComeGroup `spec`; the coordinator of the migration, 2026-11-14). `foot_clear`: how tall the top of its
 /// foot is that hides nothing of what shows (room it keeps under its last block the rows show through): what is pinned
 /// over its foot and hides (Scroll::foot_hides_now, what a thing flying from the list is seen clear of) is the rest of it.
+/// `reorders`: asked of a key that stays
+/// among them as it moves among those that stay by data (once, then, untracked: the fewest that moved, the rest kept in
+/// their order, in_order_most's): whether it closes its way where it was and opens it where it is now, in the column's
+/// one way, as what comes and goes does (View::each_by's `splits`; the user, 2026-10-31: 「原地缩下去再从目标点挤出来更合
+/// 理」), so only where it is seen as ever (not at once, nor an answer's, nor with motion reduced, nor as it is first
+/// laid out); else it is simply where it is now (none: every list till it says so). Never what the layout comes to
+/// otherwise (a width, the words' size): a key moved is a change of its keys alone.
 pub fn[K : Hash + Eq] View::scrolls_window(
   self : View,
   s : Scroll,
@@ -511,6 +518,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   leaves_room? : (K) -> Bool = fn(_) { false },
   comes_whole? : (K) -> Bool = fn(_) { false },
   comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
+  reorders? : (K) -> Bool = fn(_) { false },
   at_once? : Bool = false,
   flips? : Bool = false,
   place? : ListPlace[K],
@@ -663,6 +671,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let showing : Map[K, Bool] = Map([])
   // (the blocks made, each with its key as it is now: what is measured as the column is laid out)
   let blocks : Array[(View, () -> K)] = []
+  // (key `k` shows no more, the block at `at` that showed it let go or put by: unless another shows it (a key moved
+  // among them, its row split: the one closing where it was let go as the one opening where it is now shows it))
+  let unshow = fn(k : K, at : Int) {
+    if !blocks.iter().any(fn(b) { b.0.at != at && b.0.alive() && @signals.untracked(b.1) == k }) {
+      showing.remove(k)
+    }
+  }
   // (where what is read in each block starts, as its page marks it (View::read_from): the node, by the block's own
   // node, let go with it; none in a block that marks none, a list none of whose blocks marks one held as ever)
   let marks : Map[Int, View] = Map([])
@@ -789,6 +804,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     }
   }
   let column : Column[K] = Column::new()
+  // (where its first block's top is now, under its head: for what judges its rows, lists_seen.mbt)
+  s.keys_start = fn() { column.start }
   // (the anchor taken again where the column is scrolled to now, by its blocks as they are counted before its keys
   // change: anchor_again, below)
   let anchor_again : Ref[(Column[K]) -> Unit] = Ref(fn(_) {  })
@@ -824,6 +841,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let flip_items : Map[K, @flex.FlipItem] = Map([])
   let flip_new : Map[K, Bool] = Map([])
   let gone_from : Ref[Map[K, (Double, K?)]] = Ref(Map([]))
+  // (the keys that stay moved among them by the last change of its keys that its page says reorder (`reorders`): each
+  // in came_by_data too, and where it showed in gone_from, its row split as the each takes the change (each_by's
+  // `splits`, each asked once), till the fill that lays it out forgets them)
+  let moved_now : Ref[Map[K, Bool]] = Ref(Map([]))
+  // (the anchor, where it is one of those moved, put on the first of its stand-ins that did not move: anchor_moved,
+  // below)
+  let anchor_moved : Ref[(Map[K, Bool]) -> Unit] = Ref(fn(_) {  })
   let laid_grid = Ref(-1.0)
   // (how many times they were worked out: what shows by them worked out again each time)
   let laid_rev = Ref(0)
@@ -900,10 +924,57 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         }
       }
       column.summed()
+      // (those that stay and moved among them, the fewest (the rest kept in their order), its page saying they reorder:
+      // come by this change where they are, gone where they were, each its row split, as it is seen)
+      if moved_now.val.length() > 0 {
+        moved_now.val = Map([])
+      }
+      if laid_once &&
+        !at_once &&
+        p < was.length() &&
+        p < ks.length() &&
+        !answering_now() &&
+        !self.tree.answer_holds(self.at) &&
+        !@signals.untracked(self.tree.motion_reduced) {
+        let was_index : Map[K, Int] = Map([])
+        for j in p..<was.length() {
+          was_index[was[j]] = j
+        }
+        let stay : Array[K] = []
+        let stay_was : Array[Int] = []
+        for i in p..<ks.length() {
+          match was_index.get(ks[i]) {
+            Some(j) => {
+              stay.push(ks[i])
+              stay_was.push(j)
+            }
+            None => ()
+          }
+        }
+        let kept = in_order_most(stay_was)
+        for n, k in stay {
+          if !kept[n] && @signals.untracked(fn() { reorders(k) }) {
+            moved_now.val[k] = true
+            came_by_data.val[k] = true
+          }
+        }
+        if moved_now.val.length() > 0 {
+          (anchor_moved.val)(moved_now.val)
+        }
+      }
       // (those that showed and are gone, each over the first after it still among them (none: at their foot), as far
-      // under the top of what showed as it was)
+      // under the top of what showed as it was; those moved, over the first after it that stays where it was)
       if gone_from.val.length() > 0 {
         gone_from.val = Map([])
+      }
+      for e in showed_at {
+        let (k, j, off) = e
+        guard moved_now.val.contains(k) else { continue }
+        let mut b = j + 1
+        while b < was.length() && (!laid_at.contains(was[b]) || moved_now.val.contains(was[b])) {
+          b = b + 1
+        }
+        gone_from.val[k] = (off, if b < was.length() { Some(was[b]) } else { None })
       }
       for e in showed_at {
         let (k, j, off) = e
@@ -1676,7 +1747,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     v.shrink(Is(0.0)) |> ignore
     let k = @signals.untracked(key)
     showing[k] = true
-    v.owns(fn() { showing.remove(@signals.untracked(key)) }) |> ignore
+    v.owns(fn() { unshow(@signals.untracked(key), v.at) }) |> ignore
     // (measured as it is laid out, in that layout: the column's fill, below)
     blocks.push((v, key))
     // (known by its key as the row it is made for, read as its key is: taken for another key, that one's row from then;
@@ -1922,6 +1993,19 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           None
         }
         anchor_else_start.push(st)
+      }
+    }
+  }
+  // (the anchor one of the keys that moved among them: what shows held by the first of its stand-ins that stayed, where it
+  // showed, not by one gone elsewhere taking what shows with it)
+  anchor_moved.val = fn(moved) {
+    guard !s.at_foot() else { return }
+    guard anchor.val is Some((a, _)) && moved.contains(a) else { return }
+    for j, o in anchor_else {
+      if laid_at.contains(o.0) && !moved.contains(o.0) {
+        anchor.val = Some(o)
+        anchor_start.val = anchor_else_start.get(j).unwrap_or(None)
+        return
       }
     }
   }
@@ -3134,6 +3218,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     }
     if gone_from.val.length() > 0 {
       gone_from.val = Map([])
+    }
+    if moved_now.val.length() > 0 {
+      moved_now.val = Map([])
     }
     self.tree.room_bindings_run()
     // (the scroll put where the anchor says, told as one with how far it goes (View::scrolls' measure_reach): moved by
@@ -4397,7 +4484,17 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       |> ignore
     })
     |> ignore
-    held.each_by(fn() { slot_keys.get() }, fn(k) { k }, way_of~, from_of~, fn(slot, item) {
+    // (a row whose key moved among them by this change, its page saying it reorders: split, asked once)
+    // (the row made anew for it another row from the one closing where it was: a number of its own, View::row_place's
+    // and what judges how rows go)
+    let splits = fn(k : K) {
+      guard moved_now.val.contains(k) else { return false }
+      moved_now.val.remove(k)
+      row_numbered.val = row_numbered.val + 1
+      row_numbers[k] = row_numbered.val
+      true
+    }
+    held.each_by(fn() { slot_keys.get() }, fn(k) { k }, way_of~, from_of~, splits~, fn(slot, item) {
       let k = item.untracked()
       let cell = @signals.signal(shown_now.contains(k), same=fn(a, b) { a == b })
       shown[k] = cell
@@ -4525,7 +4622,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       let slot_at = slot.at
       // (its key's row: where a word in it is placed, View::row_place stops at it)
       self.tree.nodes[slot_at].each_row = true
-      let named = (self.id(), fn() { number_of(k) }, fn() { laid_at.get(k).unwrap_or(-1) })
+      // (its number as its slot is made: a key moved among them, its row split, numbered anew for the one opening where
+      // it is now, this one closing keeping its own)
+      let number = number_of(k)
+      let named = (self.id(), fn() { number }, fn() { laid_at.get(k).unwrap_or(-1) })
       self.tree.rows_named[slot_at] = named
       slot.owns(fn() {
         if self.tree.rows_named.get(slot_at) is Some(r) && physical_equal(r.2, named.2) {
@@ -4536,7 +4636,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       self.tree.alone_asks[slot_at] = fn() {
         // (the block that shows its key)
         guard showing.contains(k) else { return false }
-        match blocks.iter().find_first(fn(b) { b.0.alive() && @signals.untracked(b.1) == k }) {
+        // (in this slot: another's of the same key, a row split as its key moved, closing where it was, is not it)
+        match
+          blocks
+          .iter()
+          .find_first(fn(b) { b.0.alive() && @signals.untracked(b.1) == k && self.tree.holds_at(slot_at, b.0.at) }) {
           Some((v, _)) =>
             match room_w.untracked() {
               // (measured as the column's fill measures it, against how tall it is counted: as it was measured, else
@@ -4621,7 +4725,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               (false, Some((v, key))) => {
                 slot.tree.work.structure = slot.tree.work.structure + 1
                 mine.val = None
-                showing.remove(k)
+                unshow(k, v.at)
                 let all = match spare.get(kind) {
                   Some(all) => all
                   None => {
@@ -4654,8 +4758,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           // (its slot let go: what shows in it let go with it, as what it holds)
           slot.owns(fn() {
             stop()
-            if mine.val is Some(_) {
-              showing.remove(k)
+            if mine.val is Some((v, _)) {
+              unshow(k, v.at)
               mine.val = None
             }
             // (what was put by in it let go with it)
@@ -4896,3 +5000,40 @@ pub fn[K] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double
 /// laid out again, measured and made in each.
 // kept across runs: only counted on, each test reading how far it went
 let fill_passes : Ref[Int] = Ref(0)
+
+///|
+/// Which of `was` (where those that stay were among them before, in their order now) are among the most still in the
+/// order they had: a longest increasing run of them. The others are the fewest that moved (View::scrolls_window's
+/// `reorders`).
+fn in_order_most(was : Array[Int]) -> Array[Bool] {
+  let n = was.length()
+  let ends : Array[Int] = []
+  let back = Array::make(n, -1)
+  for i in 0..<n {
+    let mut lo = 0
+    let mut hi = ends.length()
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if was[ends[mid]] < was[i] {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    if lo > 0 {
+      back[i] = ends[lo - 1]
+    }
+    if lo == ends.length() {
+      ends.push(i)
+    } else {
+      ends[lo] = i
+    }
+  }
+  let kept = Array::make(n, false)
+  let mut i = if ends.is_empty() { -1 } else { ends[ends.length() - 1] }
+  while i >= 0 {
+    kept[i] = true
+    i = back[i]
+  }
+  kept
+}

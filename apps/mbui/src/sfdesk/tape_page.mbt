@@ -334,7 +334,7 @@ fn tape_made(
         kind,
         fn(v : @view.View, _page : () -> Page, _under : Page?, stint : () -> Int, k : Int) {
           let told = fn(s : @sf.PageSaid) { tape_bar_of(k).page_said.set(Some(s)) }
-          v.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             // (what the page made in `p` does in the bar, its own while `p` is: given as it is made, let go with `p`
             // where none since gave the bar another's)
             let gen = next_tape_actions_gen()
@@ -680,6 +680,12 @@ fn tape_made(
                 @sf.pane_round.val = Some(tape_page_round())
                 @sfpages.chat_composer_node(n, s, r, tips, apart=true)
                 @sf.pane_round.val = None
+              },
+              leaving=fn(c, s, r) {
+                match @sfbase.workspace_in_view(s).0 {
+                  Some(w) => new_chat_after(c, s, w, r)
+                  None => ()
+                }
               },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
               narrower=tape_page_narrower,

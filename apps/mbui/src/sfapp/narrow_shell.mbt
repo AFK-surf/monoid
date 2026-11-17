@@ -594,6 +594,12 @@ fn narrow_made_as(
               },
               foot=chat_foot_nodes,
               foot_node=fn(n, s, r) { chat_foot_node(n, s, r, @sf.TipLayer::new(fn() { Some(v) })) },
+              leaving=fn(c, s, r) {
+                match workspace_in_view(s).0 {
+                  Some(w) => new_chat_leaving(c, s, w, r)
+                  None => ()
+                }
+              },
             )
             |> ignore
           },
@@ -869,9 +875,14 @@ fn narrow_made_as(
 /// the ball goes to by switch_slide, fading in; all of it but its ground.
 fn place_comes_in(v : @view.View) -> Unit {
   let w = place_switch
-  // (told at the way's end, as each way is said: read again then)
+  // (told at the way's end, as each way is said: read again then; cleaned up if let go mid-way)
   let ended : @signals.Signal[Int] = @signals.signal(0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
+  v.owns(fn() {
+    (due.val)()
+    due.val = fn() {  }
+  })
+  |> ignore
   v.reacts(fn() { w.said(); w.ends_at() }, fn(end) {
     (due.val)()
     due.val = if end >= 0.0 {
@@ -884,7 +895,11 @@ fn place_comes_in(v : @view.View) -> Unit {
     ended.get() |> ignore
     w.shown_on(v)
   }
-  v.alpha(By(shown)).offset(By(fn() { (app.switch_way.to_double() * switch_slide * (1.0 - shown()), 0.0) })) |> ignore
+  v
+  .alpha(By(shown))
+  .offset(By(fn() { (app.switch_way.to_double() * switch_slide * (1.0 - shown()), 0.0) }))
+  .carries_until(fn() { w.ends_at() })
+  |> ignore
 }
 
 ///|

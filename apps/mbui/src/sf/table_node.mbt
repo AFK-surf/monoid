@@ -594,14 +594,14 @@ fn table_key_node(
     .padding(By(fn() { (table_key_gap, top(), table_key_gap, 0.0) }))
     |> ignore
     let shown = fn() { beside.pointed_in() || menu_open.get() || copied.get() || @ui.pointing() is Finger }
-    let seen = EdgeWay::new(0.0)
+    let seen = @motion.NodeWay::new(0.0)
     // (there while it shows or fades: gone, as it fades out to nothing, at that moment)
     let there = @signals.signal(false)
     let gone_off : Ref[() -> Unit] = Ref(fn() {  })
     k.reacts(shown, fn(on) {
       (gone_off.val)()
       gone_off.val = fn() {  }
-      seen.go(k, if on { 1.0 } else { 0.0 }, dur_ms)
+      seen.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms)
       if on {
         there.set(true)
       } else {

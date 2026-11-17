@@ -428,12 +428,7 @@
       "src/sfpages/new_chat.mbt": 1
     },
     "list-comes-off": {
-      "src/sf/page_node.mbt": 1,
-      "src/sf/page_wide_node.mbt": 1,
-      "src/sf/panel_list_node.mbt": 1,
-      "src/sfpages/history_steps_node.mbt": 1,
-      "src/sfpages/sidebar_node.mbt": 1,
-      "src/sfpages/things.mbt": 1
+      "src/sfpages/history_steps_node.mbt": 1
     },
     "old-island": {
       "src/sf/panel_centred_node.mbt": 5,
@@ -542,11 +537,66 @@
       "src/sfpages/sidebar_node.mbt": 1,
       "src/sfpages/things.mbt": 1
     },
-    "manual-fade-way": {
-      "src/sf/sync_key_node.mbt": 1,
-      "src/sf/table_node.mbt": 1,
+    "manual-fade-way": {},
+    "page-at-moment": {
+      "src/sfapp/app.mbt": 3,
+      "src/sfapp/bar_timing.mbt": 1,
+      "src/sfapp/narrow_shell.mbt": 1,
+      "src/sfapp/settings/station_parts.mbt": 1,
       "src/sfapp/sheets.mbt": 1,
-      "src/sfpages/message_media_node.mbt": 1
+      "src/sfbase/act.mbt": 1,
+      "src/sfbase/bars.mbt": 1,
+      "src/sfbase/pages.mbt": 1,
+      "src/sfbase/press_wait.mbt": 1,
+      "src/sfbase/screen_links_node.mbt": 2,
+      "src/sfbase/viewer.mbt": 2,
+      "src/sfbase/viewer_tree.mbt": 6,
+      "src/sfbase/workspace_switch.mbt": 2,
+      "src/sfdesk/page_wait.mbt": 1,
+      "src/sfdesk/panel_node.mbt": 1,
+      "src/sfdesk/rail_node.mbt": 2,
+      "src/sfdesk/tape_view.mbt": 1,
+      "src/sfpages/about.mbt": 1,
+      "src/sfpages/activity_steady_node.mbt": 1,
+      "src/sfpages/agent_card_node.mbt": 1,
+      "src/sfpages/automatic_decisions.mbt": 1,
+      "src/sfpages/board_node.mbt": 8,
+      "src/sfpages/chat_body_node.mbt": 5,
+      "src/sfpages/chat_jump_node.mbt": 2,
+      "src/sfpages/chat_read_node.mbt": 1,
+      "src/sfpages/chat_row_node.mbt": 5,
+      "src/sfpages/composer_node.mbt": 2,
+      "src/sfpages/drive_row_node.mbt": 1,
+      "src/sfpages/drive_views_node.mbt": 1,
+      "src/sfpages/find_bar_node.mbt": 1,
+      "src/sfpages/font_setting.mbt": 1,
+      "src/sfpages/history_steps_node.mbt": 2,
+      "src/sfpages/local_station.mbt": 1,
+      "src/sfpages/message_agent_node.mbt": 6,
+      "src/sfpages/message_media_node.mbt": 1,
+      "src/sfpages/message_notice_node.mbt": 1,
+      "src/sfpages/message_small_rows_node.mbt": 1,
+      "src/sfpages/message_viz_node.mbt": 1,
+      "src/sfpages/message_video_node.mbt": 1,
+      "src/sfpages/message_working_node.mbt": 1,
+      "src/sfpages/model_triple.mbt": 2,
+      "src/sfpages/new_profile.mbt": 1,
+      "src/sfpages/outline.mbt": 3,
+      "src/sfpages/peeks_file_node.mbt": 1,
+      "src/sfpages/peeks_node.mbt": 3,
+      "src/sfpages/presets.mbt": 1,
+      "src/sfpages/publish.mbt": 4,
+      "src/sfpages/screen_bars_node.mbt": 1,
+      "src/sfpages/screen_debug_node.mbt": 3,
+      "src/sfpages/screen_panel.mbt": 1,
+      "src/sfpages/screen_passkey.mbt": 1,
+      "src/sfpages/screen_stage.mbt": 4,
+      "src/sfpages/screen_view.mbt": 4,
+      "src/sfpages/search.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 2,
+      "src/sfpages/station_node.mbt": 1,
+      "src/sfpages/terminal_view_node.mbt": 3,
+      "src/sfpages/vault.mbt": 1
     }
   },
   "excused": {
@@ -652,6 +702,7 @@
       "src/sf/player_node.mbt": 1
     },
     "reused-untracked-key": {},
-    "manual-fade-way": {}
+    "manual-fade-way": {},
+    "page-at-moment": {}
   }
 }

@@ -453,6 +453,7 @@ pub(all) struct ArchiveSide {
   mut q : String
   mut limit : Int32
   mut last : @json.Json?
+  mut last_ws : String
   mut landed : Bool
 }
 
