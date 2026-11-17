@@ -835,6 +835,10 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
   n.prop_stop(Prop::Points.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
+    if !n.points_said {
+      n.points_said = true
+      self.tree.hits_bump()
+    }
     if n.points != on {
       n.points = on
       self.tree.inputs_own_said(self.at)

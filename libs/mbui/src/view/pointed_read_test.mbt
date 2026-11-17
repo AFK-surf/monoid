@@ -77,3 +77,11 @@ test "what is read as pointed at takes no press for itself: a press on it goes t
   assert_true(c.tree.target_at(20.0, 20.0) is Pressed(id) && id == card, msg="on the mark: the card's")
   assert_true(c.tree.target_at(70.0, 20.0) is Pressed(id) && id == key, msg="on the key: the key's")
 }
+
+///|
+test "said not to point, what takes no press is not pointed at, read so or not" {
+  let c = read_case()
+  c.mark.val.unwrap().points(Is(false)) |> ignore
+  @signals.untracked(fn() { c.mark.val.unwrap().pointed() }) |> ignore
+  assert_eq(c.at(20.0, 20.0), (false, false))
+}

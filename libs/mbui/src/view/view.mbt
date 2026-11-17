@@ -528,6 +528,9 @@ struct Node {
   /// whether the pointer over it, or over what it holds that takes it not, is over it (View::points): pointed at,
   /// never pressed nor held
   mut points : Bool
+  /// whether View::points was said of it at all: said false, it is pointed at as it takes a press only, read as
+  /// pointed at or not (Node::points_alone)
+  mut points_said : Bool
   mut bar_near_cell : @signals.Signal[Bool]?
   /// whether it takes a finger or the pointer some way (pressed, held, hosting the old view, a top row, pointed at,
   /// taking holds over: Tree::inputs_own_said), and how many of what it holds, it with them, do: what finds what
@@ -1872,6 +1875,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.bar_near = 0.0
       n.bar_across = false
       n.points = false
+      n.points_said = false
       n.bar_near_cell = None
       n.inputs_own = false
       n.inputs_in = 0
@@ -2006,6 +2010,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         bar_near: 0.0,
         bar_across: false,
         points: false,
+        points_said: false,
         bar_near_cell: None,
         inputs_own: false,
         inputs_in: 0,
@@ -8234,6 +8239,7 @@ fn View::let_go(self : View) -> Unit {
   n.bar_near = 0.0
   n.bar_across = false
   n.points = false
+  n.points_said = false
   n.bar_near_cell = None
   self.drag_ended()
   n.on_drag = None
@@ -13081,10 +13087,12 @@ fn Tree::inputs_own_said(self : Tree, at : Int) -> Unit {
 
 ///|
 /// Whether the pointer over it is over it alone, taking no press nor hold there for it: said to point (View::points), or
-/// read as pointed at (View::pointed) where it takes nothing else of the hand.
+/// read as pointed at (View::pointed) where it takes nothing else of the hand and was never said whether it points
+/// (said not to, as the web's `pointer-events: none`, it is not).
 fn Node::points_alone(self : Node) -> Bool {
   self.points ||
   (
+    !self.points_said &&
     self.pointed_cell is Some(_) &&
     self.on_press is None &&
     self.on_drag is None &&
