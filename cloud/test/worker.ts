@@ -64,6 +64,10 @@ class Saying {
 }
 
 export class Directory extends ProductionDirectory {
+  /** A member left while the Directory still kept their unused rig enrollment tokens. */
+  leaveWithRigTokenFromBefore(workspace: string, sub: string) {
+    this.ctx.storage.sql.exec("DELETE FROM members WHERE workspace = ? AND sub = ?", workspace, sub);
+  }
   /** The presence alarm's check, as if it ran at `ms` (the sockets held here, while rolled back). */
   sweepAt(ms: number) {
     return this.sweep(ms);
