@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 2.56 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 114.21 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 122.81 |
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.26 | 125.26 |
 | [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
 | [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 | [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
-| [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 2.52 | 3.56 | 15.39 | 36.78 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f763bcf4e](https://github.com/AFK-surf/monoid/commit/f763bcf4e04a4fcf6552c59186f5a46771ca28c6) ci: publish ready beta feeds when the Android job  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [f18d30634](https://github.com/AFK-surf/monoid/commit/f18d3063414e5f696a1782eae614d560b99df6e7) app: a process's stop sits on its name's line on a | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [bc074d677](https://github.com/AFK-surf/monoid/commit/bc074d67709bfcf785c69f67ad34d3f3b3400f8e) station: tell the workspace when its last terminal | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
 | [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
 | [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
-| [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
