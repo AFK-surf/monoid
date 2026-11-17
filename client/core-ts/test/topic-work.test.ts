@@ -378,6 +378,11 @@ test("what each change the sync writes makes the core read follows what it write
     }
   }
   for (const all of sizes.values()) for (const [name, m] of all) if (m.error !== undefined) fail(name, `failed: ${m.error}`);
+  // A rate tick changes numbers, not session names: even with 20 rows shown it must not read the database again.
+  for (const all of sizes.values()) {
+    const rates = all.get("rates held");
+    if (rates !== undefined && rates.statements !== 0) fail("rates held", `ran ${rates.statements} database statements`);
+  }
   // (a cause told otherwise than the sync would is one: real-size-asked.ts UNTOLD)
   for (const name of Object.keys(UNTOLD)) if (CAUSES[name] === undefined) fail(name, "in UNTOLD, not a cause");
   // READ.

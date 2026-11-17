@@ -16,6 +16,8 @@ import { retryAfter } from "../src/station/sync.ts";
 
 test("live rates follow station events, clear on reconnect, and distinguish older stations", async () => {
   const { host, core, push, end, gate } = await started(base(), 0, undefined, (s) => { s.gate.rates = true; });
+  const chat = { id: "7", thread: 7, session: "k1", title: "部署", agents: [{ key: "k1", process: "running" }], lastActiveAt: 1 };
+  core.inner.data.setChatsAt("ws/st", [chat], [0]);
   const ui = core.connect();
   const values = new Map();
   subscribe(core, ui, 1, { topic: "agentRates", scope: "ws" });
@@ -27,6 +29,11 @@ test("live rates follow station events, clear on reconnect, and distinguish olde
   await host.time.pass(100);
   apply(host, values);
   assert.equal(v(values, 1).total, "≈ 50 token/s");
+  assert.equal(v(values, 1).rows.find((row: { chat: string }) => row.chat === "7").title, "部署");
+  core.inner.data.putChat("ws/st", { ...chat, title: "新名称" }, 0);
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).rows.find((row: { chat: string }) => row.chat === "7").title, "新名称");
   push("live", { key: "k1", type: "clear" });
   await host.time.pass(100);
   apply(host, values);

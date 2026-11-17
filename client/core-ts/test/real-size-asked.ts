@@ -521,7 +521,6 @@ export const CAUSES: Record<string, Cause> = {
   job: { run: (h) => jobsMoved(h.base, h.t.host.nowMs()).forEach((j) => job(h, j)) },
   // Maple's usage read again (its `usage` event).
   usage: { run: ({ t, base }) => t.set({ topic: "stationUsage", station }, usageRead(base)) },
-  rates: { run: ({ t }) => t.set({ topic: "stationRates", station }, ratesOf(1)) },
   // A sample more of what still.fail uses of Maple's machine, and of the device's connection to it.
   sample: {
     run: ({ t, base }) => {
@@ -570,6 +569,8 @@ export const CAUSES: Record<string, Cause> = {
       t.store.invalidateAll((topic) => topic.topic === "changelog");
     },
   },
+  // Each cause advances the shared test clock. Append this one so it does not shift the timing of earlier causes.
+  rates: { run: ({ t }) => t.set({ topic: "stationRates", station }, ratesOf(1)) },
 };
 
 /// What goes out to each of `ASKED` as each cause happens, on a rig of its own (the chat's six pages' too where it is
