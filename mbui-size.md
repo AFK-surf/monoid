@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 117.47 |
 | [bbd04474c](https://github.com/AFK-surf/monoid/commit/bbd04474cb95ea1d4bc6cbfabcc89ab583fb65b8) mbui: bars brought down to what main's runs found; | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 117.47 |
 | [22a872852](https://github.com/AFK-surf/monoid/commit/22a872852b208d55becec3d70e86e69ac94797f9) move: a login a third station hosts is neither's t | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 119.56 |
-| [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.53 | 65.33 | 95.75 | 119.56 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.27 |
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.3 |
 | [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [bbd04474c](https://github.com/AFK-surf/monoid/commit/bbd04474cb95ea1d4bc6cbfabcc89ab583fb65b8) mbui: bars brought down to what main's runs found; | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [22a872852](https://github.com/AFK-surf/monoid/commit/22a872852b208d55becec3d70e86e69ac94797f9) move: a login a third station hosts is neither's t | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
-| [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
