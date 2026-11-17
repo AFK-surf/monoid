@@ -1,0 +1,563 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/drive"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn[T] attempt(() -> T raise) -> Result[T, Error]
+
+pub fn base64(Bytes) -> String
+
+pub fn base64url(Bytes) -> String
+
+pub fn basename(String) -> String
+
+pub let chunk : Double
+
+pub fn clean(String) -> String
+
+pub fn code_status(String) -> Int32
+
+pub fn collate(String, String) -> Int32
+
+pub fn copy_file(String, String) -> Unit raise FsError
+
+pub fn covers(@jsjson.JValue, String) -> Bool
+
+pub fn crc32(Bytes, UInt32) -> UInt32
+
+pub fn cwd() -> String
+
+pub fn direct() -> Fs
+
+pub fn dirname(String) -> String
+
+pub fn disks(String) -> Array[(String, String)]
+
+pub fn dos(Double) -> (Int32, Int32)
+
+pub fn drive_error(String, String, have? : Double) -> DriveError
+
+pub fn drive_for_peer(Drive, Bytes, @jsjson.JValue, String?, Double) -> Answer raise Refused
+
+pub fn drop_folder(String) -> String
+
+pub fn dropped_into(String) -> () -> String
+
+pub fn encode_uri(String) -> String
+
+pub fn env(String) -> String?
+
+pub fn failed(Error) -> DriveError
+
+pub fn free(String, Bool, (String) -> Bool) -> String
+
+pub fn from_base64(String) -> Bytes
+
+pub fn fs_error(String, String) -> FsError
+
+pub fn grant_key(String) -> Bytes
+
+pub let grant_ms : Double
+
+pub fn grant_names(@jsjson.JValue) -> Array[String]
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn hash_of(String, Codecs?) -> (String, Double, Double)?
+
+pub let held_ms : Double
+
+pub fn hex(BytesView) -> String
+
+pub fn hmac_sha256(Bytes, Bytes) -> Bytes
+
+pub fn homedir() -> String
+
+pub fn id_of(String) -> String
+
+pub fn image_wanted(String) -> Bool
+
+pub fn is_id(String) -> Bool
+
+pub fn is_mac() -> Bool
+
+pub fn is_part(String) -> Bool
+
+pub fn is_windows() -> Bool
+
+pub fn jbool(@jsjson.JValue, String) -> Bool?
+
+pub fn jclone(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn jnum(@jsjson.JValue, String) -> Double?
+
+pub fn join(Array[String]) -> String
+
+pub fn js_number(Double) -> String
+
+pub fn js_round(Double) -> Double
+
+pub fn jstr(@jsjson.JValue, String) -> String?
+
+pub fn jtruthy(@jsjson.JValue, String) -> Bool
+
+pub fn jvs(String) -> @jsjson.JValue
+
+pub fn keep(Array[@jsjson.JValue], String, Codecs?) -> Array[@jsjson.JValue]
+
+pub fn kept(String, String, since? : Double) -> Thumbnail? raise
+
+pub fn local_midnight(Int32, Int32, Int32) -> Double
+
+pub fn local_source(Drive, String, String, Bool) -> Source
+
+pub fn local_time(Double) -> (Int32, Int32, Int32, Int32, Int32, Int32)
+
+pub fn lstat(String) -> Stat raise FsError
+
+pub let making_ms : Int32
+
+pub let max_depth : Int32
+
+pub let max_entries : Int32
+
+pub let max_read : Double
+
+pub fn message_of(Error) -> String
+
+pub fn mkdir(String, Bool, mode? : Int32) -> Unit raise FsError
+
+pub let most_items : Int32
+
+pub let most_roots : Int32
+
+pub let most_watches : Int32
+
+pub fn names(String) -> Array[String] raise FsError
+
+pub fn odel(@jsjson.JValue, String) -> Unit
+
+pub fn of_jv(@jsjson.JValue) -> @json.Json
+
+pub fn oget(@jsjson.JValue, String) -> @jsjson.JValue?
+
+pub fn oset(@jsjson.JValue, String, @jsjson.JValue) -> Unit
+
+pub fn path_key(String) -> String
+
+pub let path_mode : @ref.Ref[PathMode]
+
+pub fn peer_source(async (String, @jsjson.JValue) -> Answer, @jsjson.JValue) -> Source
+
+pub fn pid() -> Int32
+
+pub fn place_word(String, String) -> String
+
+pub async fn poster(String, String, Makers, since? : Double) -> String?
+
+pub fn poster_path(String, String) -> String
+
+pub fn protected_place(String, String, Array[String]) -> Where?
+
+pub fn protected_place_soon(String, String, Array[String]) -> Where?
+
+pub fn protected_top(String, String, Array[String]) -> String?
+
+pub fn protected_top_soon(String, String, Array[String]) -> String?
+
+pub fn random_bytes(Int32) -> Bytes
+
+pub fn random_uuid() -> String
+
+pub fn read_all(String) -> Bytes raise FsError
+
+pub fn read_part(String, Double, Double) -> (Bytes, Double, Double) raise FsError
+
+pub fn readdir(String) -> Array[Dirent] raise FsError
+
+pub fn real_of(String) -> String
+
+pub fn realpath(String) -> String raise FsError
+
+pub fn relative_in(String, String) -> String?
+
+pub fn remove_or_trash(Drive, String, String, Bool) -> Unit raise DriveError
+
+pub fn rename(String, String) -> Unit raise FsError
+
+pub fn rm(String) -> Unit raise FsError
+
+pub fn rm_force(String) -> Unit
+
+pub fn root_name(String) -> String
+
+pub fn root_of(String) -> String
+
+pub fn root_view(String) -> RootView
+
+pub fn root_view_through(String, Protected?, String, Array[String]) -> RootView
+
+pub fn rooted(String) -> Bool
+
+pub fn roots_of(@json.Json, workspace? : String) -> Array[String]
+
+pub fn safe_integer(Double) -> Bool
+
+pub fn sep() -> String
+
+pub let settle_ms : Double
+
+pub fn sha256_bytes(Bytes) -> Bytes
+
+pub fn shell_makers(@host.Host) -> Makers
+
+pub fn shown(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn sign(Bytes, @jsjson.JValue) -> String
+
+pub let small : Double
+
+pub fn split_parts(String) -> Array[String]
+
+pub fn[T] stable_sort(Array[T], (T, T) -> Int32) -> Array[T]
+
+pub fn stat(String) -> Stat raise FsError
+
+pub fn station_drive(() -> @json.Json, String, String, () -> Array[String], Protected?, () -> Array[String]) -> Drive
+
+pub fn thumbnail(String, String, Codecs?, since? : Double) -> Thumbnail? raise
+
+pub fn thumbs_dir(String) -> String
+
+pub fn tmpdir() -> String
+
+pub fn to_jv(@json.Json) -> @jsjson.JValue
+
+pub fn to_trash(String, String?, Double, String?) -> String? raise
+
+pub let too_big : String
+
+pub fn trash_kind() -> String?
+
+pub fn type_of(String) -> String
+
+pub fn uid() -> Int32
+
+pub fn units_compare(String, String) -> Int32
+
+pub fn unlink(String) -> Unit raise FsError
+
+pub fn unreadable_dir(String) -> Bool
+
+pub fn verify(Bytes, @jsjson.JValue?, String?, Double) -> @jsjson.JValue raise DriveError
+
+pub fn video_wanted(String) -> Bool
+
+pub fn walk_drive(Drive, String, String, Array[String], Bool) -> Array[@jsjson.JValue] raise DriveError
+
+pub fn wall_clock() -> Double
+
+pub let wall_now : @ref.Ref[() -> Double]
+
+pub let watch_kept_ms : Double
+
+pub fn[T] with_paths(PathMode, () -> T raise) -> T raise
+
+pub fn within(String, String) -> Bool
+
+pub fn write_part(String, Write) -> Written raise FsError
+
+pub fn write_private(String, String) -> Unit raise FsError
+
+pub fn write_private_bytes(String, Bytes) -> Unit raise FsError
+
+pub let zip_chunk : Int32
+
+pub fn zip_folder(String, String, Double, (String, String) -> Bool raise, Fs) -> Double raise
+
+// Errors
+#derive(Show)
+pub(all) suberror DriveError {
+  DriveError(DriveFailure)
+}
+
+#derive(Show)
+pub(all) suberror FsError {
+  FsError(FsFailure)
+}
+
+#derive(Show)
+pub(all) suberror Refused {
+  Refused(String)
+}
+
+#derive(Show)
+pub(all) suberror TooBig
+
+// Types and methods
+pub(all) struct Answer {
+  json : @jsjson.JValue
+  bytes : (async () -> Bytes?, async () -> Unit)?
+}
+
+pub(all) struct Clock {
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+}
+
+pub(all) struct Codecs {
+  thumbnail : (String, String) -> Thumbnail? raise
+  thumbhash : (String, String?) -> (String, Double, Double)? raise
+}
+
+pub struct Deflater {
+  // private fields
+}
+pub fn Deflater::finish(Self) -> Bytes
+pub fn Deflater::new() -> Self
+pub fn Deflater::push(Self, Bytes) -> Bytes
+
+#derive(Show)
+pub(all) struct Dirent {
+  name : String
+  is_dir : Bool
+  is_link : Bool
+}
+
+pub struct Drive {
+  deps : DriveDeps
+  mut shape : ((String, (String, Array[Entry], Bool)) -> (String, Array[Entry], Bool) raise DriveError)?
+}
+pub fn Drive::check_root(Self, String) -> String raise DriveError
+pub fn Drive::file(Self, String, String, Bool) -> FileAt raise DriveError
+pub fn Drive::folder_to_watch(Self, String, String, Bool) -> String raise
+pub fn Drive::folders(Self, String, String, String) -> @json.Json raise
+pub fn Drive::list(Self, String, String, Bool) -> (String, Array[Entry], Bool) raise DriveError
+pub fn Drive::locate(Self, String, String, Bool) -> (String, String) raise DriveError
+pub fn Drive::mkdir(Self, String, String, Bool) -> Entry raise DriveError
+pub fn Drive::new(DriveDeps) -> Self
+pub fn Drive::place(Self, String, String, Bool) -> Place raise
+pub fn Drive::read(Self, String, String, Double, Double, Bool) -> Read raise DriveError
+pub fn Drive::remove(Self, String, String, Bool, Bool) -> Unit raise DriveError
+pub fn Drive::rename(Self, String, String, String, Bool) -> Entry raise DriveError
+pub fn Drive::root_view(Self, String) -> RootView
+pub fn Drive::roots(Self) -> Array[RootView]
+pub fn Drive::scoped(Self, String) -> Self
+pub fn Drive::set_shape(Self, ((String, (String, Array[Entry], Bool)) -> (String, Array[Entry], Bool) raise DriveError)?) -> Unit
+pub fn Drive::stage(Self, String, String, (String) -> (String, String) raise, Double, Bool, Bool) -> (String, String, Double) raise DriveError
+pub fn Drive::stat(Self, String, String, Bool) -> Entry raise DriveError
+pub fn Drive::upload(Self, String, String, String, Double, Double, Bytes, Bool, Bool) -> (Double, Entry?) raise DriveError
+pub fn Drive::zip(Self, String, String, Double, Bool) -> (String, String, String, Double) raise DriveError
+
+pub(all) struct DriveDeps {
+  config : () -> @json.Json
+  protect : () -> Array[String]
+  now : (() -> Double)?
+  files : Protected?
+  home : String?
+  mounts : () -> Array[String]
+  disks : (String) -> Array[(String, String)]
+}
+
+#derive(Show)
+pub(all) struct DriveFailure {
+  code : String
+  message : String
+  have : Double?
+  mut about : String?
+  mut need : Need?
+}
+
+#derive(Eq, Show)
+pub(all) struct Entry {
+  name : String
+  dir : Bool
+  size : Double
+  mtime : Double
+  type_ : String
+}
+pub fn Entry::to_json(Self) -> @json.Json
+
+pub(all) struct FileAt {
+  found : String
+  name : String
+  size : Double
+  mtime : Double
+  copy : ((String) -> Unit raise DriveError)?
+}
+
+pub struct FolderWatches {
+  // private fields
+}
+pub fn FolderWatches::changed(Self, String, String, (Bool) -> Unit) -> Unit
+pub fn FolderWatches::close(Self) -> Unit
+pub fn FolderWatches::follow(Self, String, () -> Unit) -> (() -> Unit)?
+pub fn FolderWatches::new(held? : Double, kept? : Double, Clock, (String, () -> Unit, () -> Unit) -> Watcher raise) -> Self
+pub fn FolderWatches::size(Self) -> Int32
+
+pub(all) struct Fs {
+  helper : Bool
+  list : (String, Int32) -> (Array[Listed], Bool) raise
+  names : (String) -> Array[String] raise
+  stat : (String) -> Stat raise
+  lstat : (String) -> Stat raise
+  real : (String) -> String raise
+  read : (String, Double, Double) -> (Bytes, Double, Double) raise
+  read_all : (String) -> Bytes raise
+  copy_to : (String, String) -> Unit raise
+  write : (String, Write) -> Written raise
+  rename : (String, String) -> Unit raise
+  mkdir : (String, Bool) -> Unit raise
+  remove : (String) -> Unit raise
+  trash : (String, Double, String?) -> String? raise
+  unlink : (String) -> Unit raise
+}
+
+#derive(Show)
+pub(all) struct FsFailure {
+  code : String
+  message : String
+  grant : String?
+  top : String?
+}
+
+#derive(Show)
+pub(all) struct Listed {
+  name : String
+  link : Bool
+  real : String
+  stat : Stat?
+}
+
+pub(all) struct Makers {
+  quicklook : Bool
+  run : async (String, Array[String]) -> Bool
+}
+
+#derive(Show)
+pub(all) struct Need {
+  grant : String
+  top : String
+  mut window : String
+}
+
+#derive(Eq, Show)
+pub(all) enum PathMode {
+  Posix
+  Win(String)
+}
+
+pub(all) struct Place {
+  root : String
+  top : String
+  asked : String
+  found : String
+  entry : String
+  parts : Array[String]
+  fs : Fs
+  scope : String
+}
+
+pub(all) struct Protected {
+  fs : (Array[String], Array[String]) -> Fs
+  known : (String) -> (String, String)?
+  check : (Array[String]) -> Unit
+  ask : (String, String) -> String
+}
+
+pub(all) struct Read {
+  bytes : Bytes
+  total : Double
+  mtime : Double
+  type_ : String
+}
+
+#derive(Eq, Show)
+pub(all) struct RootView {
+  path : String
+  name : String
+  state : String
+}
+pub fn RootView::to_json(Self) -> @json.Json
+
+pub(all) struct Source {
+  station : String?
+  part : Double
+  walk : async (Array[String]) -> Array[@jsjson.JValue]
+  read : async (String, Double, Double) -> (Bytes, Double, Double)
+  release : async (Array[String]) -> Unit
+}
+
+#derive(Eq, Show)
+pub(all) struct Stat {
+  dir : Bool
+  file : Bool
+  link : Bool
+  size : Double
+  mtime_ms : Double
+  dev : Double
+}
+
+#derive(Eq, Show)
+pub(all) struct Thumbnail {
+  path : String
+  type_ : String
+}
+
+pub struct Transfers {
+  // private fields
+}
+pub fn Transfers::cancel(Self, String, String) -> @jsjson.JValue raise DriveError
+pub fn Transfers::close(Self) -> Unit
+pub fn Transfers::get(Self, String) -> @jsjson.JValue?
+pub async fn Transfers::idle(Self) -> Unit
+pub fn Transfers::list(Self, String) -> Array[@jsjson.JValue]
+pub fn Transfers::new(TransfersDeps) -> Self
+pub fn Transfers::retry(Self, String, String) -> @jsjson.JValue raise DriveError
+pub fn Transfers::start(Self, @jsjson.JValue) -> @jsjson.JValue raise DriveError
+
+pub(all) struct TransfersDeps {
+  dir : String
+  drive_for : (@jsjson.JValue) -> Drive
+  remote : (@jsjson.JValue) -> Source
+  now : () -> Double
+  changed : (@jsjson.JValue) -> Unit
+  rt : @effect.Runtime
+}
+
+pub(all) struct Watcher {
+  close : () -> Unit
+}
+
+#derive(Eq, Show)
+pub(all) struct Where {
+  top : String
+  helper : Bool
+}
+
+pub(all) struct Write {
+  create : Bool
+  offset : Double
+  data : Bytes
+  at_least : Double?
+  truncate : Double?
+  sync : Bool
+}
+
+#derive(Show)
+pub(all) struct Written {
+  size : Double
+  short : Bool
+}
+
+// Type aliases
+
+// Traits
+trait ToJ
