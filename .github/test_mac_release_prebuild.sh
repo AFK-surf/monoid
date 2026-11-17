@@ -22,7 +22,8 @@ set -eu
 case "$*" in
   'apple-native aarch64-apple-darwin')
     [ "${FAIL_CORE:-0}" = 0 ] || exit 7
-    mkdir -p "$GITHUB_WORKSPACE/apps/mbui/out/core"
+    mkdir -p "$GITHUB_WORKSPACE/apps/mbui/out/core/aarch64-apple-darwin"
+    touch "$GITHUB_WORKSPACE/apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a"
     if [ ! -e "$RUNNER_TEMP/core-finished" ]; then
       touch "$RUNNER_TEMP/core-finished"
       [ ! -p "$RUNNER_TEMP/core-signal" ] || printf 'ready\n' > "$RUNNER_TEMP/core-signal"
@@ -51,6 +52,7 @@ set -eu
 [ "$MOON_HOME" = "$RUNNER_TOOL_CACHE/moon-ci" ]
 touch "$RUNNER_TEMP/app-built"
 [ "${FAIL_APP:-0}" = 0 ] || exit 8
+[ "${SAY_NEWER:-0}" = 0 ] || echo "ld: warning: object file (x.o) was built for newer macOS version (15.0) than being linked (12.0)"
 # (the app, with libghostty-vt's calls unless NO_GHOSTTY: the app's mac.sh fails one without them)
 exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
 mkdir -p "$(dirname "$exe")"
@@ -90,12 +92,28 @@ bash "$script" packages
 bash "$script" wait
 [ -f "$RUNNER_TEMP/app-built" ]
 [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo 'core bytecode was not prepared before packaging' >&2; exit 1; }
+[ -f "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a build done was not marked built (mac-app.sh MBUI_BUILT)' >&2; exit 1; }
 
-case_dir uncached
-bash "$script" start
-bash "$script" ready
-bash "$script" wait
-[ ! -e "$RUNNER_TEMP/app-built" ]
+# (no Moon build kept, or one for another minimum macOS: built from nothing here, the native parts just made kept)
+for was in none 11.0; do
+  case_dir "uncached_$was"
+  if [ "$was" != none ]; then
+    echo "$was" > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+    touch "$GITHUB_WORKSPACE/apps/mbui/_build/stale"
+    mkdir -p "$GITHUB_WORKSPACE/apps/mbui/out/mbc" && touch "$GITHUB_WORKSPACE/apps/mbui/out/mbc/stale"
+  fi
+  bash "$script" start
+  bash "$script" ready
+  bash "$script" packages
+  bash "$script" wait
+  [ "$(cat "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min")" = 12.0 ] || { echo "uncached ($was): _build not marked 12.0" >&2; exit 1; }
+  [ ! -e "$GITHUB_WORKSPACE/apps/mbui/_build/stale" ] && [ ! -e "$GITHUB_WORKSPACE/apps/mbui/out/mbc/stale" ] \
+    || { echo "uncached ($was): another minimum's build kept" >&2; exit 1; }
+  [ -f "$GITHUB_WORKSPACE/apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a" ] \
+    || { echo "uncached ($was): the native parts just made were taken away" >&2; exit 1; }
+  [ -f "$RUNNER_TEMP/app-built" ] && [ -f "$RUNNER_TEMP/bytecode-built" ] && [ -f "$RUNNER_TEMP/mac-prebuild/built" ] \
+    || { echo "uncached ($was): not built and marked built" >&2; exit 1; }
+done
 
 case_dir core_failure
 export FAIL_CORE=1
@@ -110,6 +128,7 @@ bash "$script" start
 bash "$script" ready
 bash "$script" packages
 if bash "$script" wait; then echo 'app failure was not reported' >&2; exit 1; fi
+[ ! -e "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a failed build was marked built' >&2; exit 1; }
 unset FAIL_APP
 
 case_dir no_terminal
@@ -120,6 +139,16 @@ bash "$script" ready
 bash "$script" packages
 if bash "$script" wait; then echo 'an app without libghostty-vt was not reported' >&2; exit 1; fi
 unset NO_GHOSTTY
+
+case_dir newer_macos
+echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+export SAY_NEWER=1
+bash "$script" start
+bash "$script" ready
+bash "$script" packages
+if bash "$script" wait; then echo 'an object built for a newer macOS was not reported' >&2; exit 1; fi
+[ ! -e "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a build for a newer macOS was marked built' >&2; exit 1; }
+unset SAY_NEWER
 
 case_dir bytecode_failure
 echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"

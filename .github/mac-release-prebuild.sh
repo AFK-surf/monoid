@@ -3,12 +3,14 @@
 # `ready` means the Moon toolchain and _build cache have been restored and source mtimes set; `packages` that the job's
 # pnpm install is over, the core's bytecode's own install waiting for it (one store, two installs at once lost files:
 # its pending file, made at the start, taken away). `wait` reports failures
-# before the usual release script signs or publishes anything; that script still does its own up-to-date build.
+# before the usual release script signs or publishes anything; a build done (`built`) is the one it takes
+# (mac-app.sh's MBUI_BUILT), else it does its own up-to-date build.
 set -eu
 dir="$RUNNER_TEMP/mac-prebuild"
 case "${1:-}" in
   start)
     mkdir -p "$dir"
+    rm -f "$dir/built"
     # the PostHog project the core sends what people use to (scripts/core.sh posthog_define): the file the bundling
     # step writes too, the same, so that core.hbc made here is the one it takes
     if [ -n "${POSTHOG_JSON:-}" ]; then
@@ -67,10 +69,15 @@ case "${1:-}" in
     export CARGO_TARGET_DIR="$A/out/core-target-macos$MACOSX_DEPLOYMENT_TARGET"
     bash "$A/scripts/core.sh" apple-native aarch64-apple-darwin
     while [ ! -f "$dir/ready" ]; do sleep 1; done
-    # mac-app.sh clears outputs when this marker differs. Let it do so and build normally in that case.
+    # (no Moon build for this minimum macOS restored, its cache gone: what was built for another one goes, as mac-app.sh
+    # would take it away, and the build starts here from nothing, beside the job's other steps and under its own limit.
+    # out/core/aarch64-apple-darwin, made just above for this one, stays. Left to mac-app.sh, it was taken away and made
+    # again, and the whole build ran in the bundling step past the Finish step's limit: cut at the job's five minutes
+    # with nothing kept, every run after as cold, main's from 09:41 UTC on 2026-11-17, 133969410711)
     if [ "$(cat "$A/_build/.macos-min" 2>/dev/null || :)" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
-      echo 'Mac prebuild: no matching Moon build; the release builds it normally'
-      exit 0
+      echo "Mac prebuild: no Moon build for macOS $MACOSX_DEPLOYMENT_TARGET kept: built from nothing"
+      rm -rf "$A/_build" "$A/out/mbc"
+      mkdir -p "$A/_build" && echo "$MACOSX_DEPLOYMENT_TARGET" > "$A/_build/.macos-min"
     fi
     exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
     [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/stillfail/core_engine.m"
@@ -78,7 +85,17 @@ case "${1:-}" in
     export PATH="$MOON_HOME/bin:$PATH" APP=stillfail MODE=release MBUI_PACKAGES_PENDING="$dir/packages-pending"
     # The app's wrapper builds core.hbc beside the app. Leaving it until mac-app.sh bundled the app added 26 s after
     # the compile and let a successful build time out during cleanup (42588746155, 2026-11-09).
-    bash "$A/scripts/mac.sh" build
+    # Built so, the bundling step's mac-app.sh takes this program and core.hbc (MBUI_BUILT) and does not run the same
+    # build again: its moon, mbc and link checks found nothing to do and still took 12-20 s of a job cut at its five
+    # minutes (133850663609). Its check of what was built for a newer macOS is made here then.
+    set -o pipefail
+    bash "$A/scripts/mac.sh" build 2>&1 | tee "$dir/build.log"
+    if grep -q 'built for newer macOS version' "$dir/build.log"; then
+      grep 'built for newer macOS version' "$dir/build.log" | head -5 >&2
+      echo "Mac prebuild: something was built for a newer macOS than $MACOSX_DEPLOYMENT_TARGET" >&2
+      exit 1
+    fi
+    touch "$dir/built"
     ;;
   *) echo "usage: $0 start|ready|packages|wait|stop" >&2; exit 2 ;;
 esac

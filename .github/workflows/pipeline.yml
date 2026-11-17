@@ -995,6 +995,27 @@ jobs:
         run: |
           mkdir -p .ci && rsync -a --ignore-existing "$RUNNER_TEMP/ci-main/" .ci/
           rm -rf "$RUNNER_TEMP/ci-main"
+      # A branch's own units and bytecode under main's, as preview.yml's Linux and Windows builds keep theirs: what
+      # a push compiled, kept for its next by content, a build cut short too (Finish, below). With main's alone, a push
+      # that changed what every unit is made by (a MoonBit of its own, #6968) compiled the whole app on every push of a
+      # branch, cut at the job's five minutes with nothing kept (#6921's 133997943943, 2026-11-17). Named apart from
+      # main's (mbui-branch-mac-, not mbui-mac-): GitHub tries every restore key on the branch's own caches before
+      # main's, so the store's `mbui-mac-` above took the branch's for main's newest (#6921's 134015707427).
+      - if: github.ref != 'refs/heads/main'
+        run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-main"
+      - uses: actions/cache/restore@v4
+        id: own
+        if: github.ref != 'refs/heads/main'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-branch-mac-cc-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
+          restore-keys: mbui-branch-mac-cc-${{ steps.mac-cc.outputs.key }}-
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-main"
+          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
@@ -1055,10 +1076,17 @@ jobs:
             !apps/mbui/_build/**/*.mbc/**
           key: mbui-mac-moon-${{ github.sha }}
           restore-keys: mbui-mac-moon-
-      - run: |
+      # (pnpm, its store and the packages only for a core.hbc not kept for this commit's inputs, as preview.yml's jobs:
+      # asked as the prebuild's `core.sh hermes apple` makes it, with the PostHog project it was started with. Kept, the
+      # store's ~58 MB restore and pnpm's install were ~20 s for nothing the build used)
+      - id: core
+        run: |
           bash apps/mbui/scripts/moon-mtimes.sh
           bash .github/mac-release-prebuild.sh ready
-      - uses: ./.github/actions/setup
+          [ ! -f "$RUNNER_TEMP/posthog.json" ] || export STILLFAIL_POSTHOG="$RUNNER_TEMP/posthog.json"
+          if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.core.outputs.kept != 'true'
+        uses: ./.github/actions/setup
       - run: bash .github/mac-release-prebuild.sh packages
       - uses: actions/cache@v4
         with:
@@ -1071,16 +1099,12 @@ jobs:
       # Cut 60 s before the job is (JOB_END, scripts/with-timeout.sh), what follows a build done: its bundle 26 s, upload
       # 3 s, key and both saves 19 s, post steps 6 s, 54 s in all (main 992d331c, 43998125472: done 18 s before a cut at
       # 35 s, all green, and cancelled at the job's 300 s). Cut, the bundle, upload and moon's save are skipped: the
-      # worker's stop, the key and the store's save ~18 s. Main's alone: a branch saves no store, so only the job's own
-      # limit holds it)
+      # worker's stop, the key and the store's save ~18 s. A branch's 45 s: it saves no moon build and no shell)
       - name: Finish the Mac app build
         id: finish
         run: |
-          if [ "$GITHUB_REF" = refs/heads/main ]; then
-            bash scripts/with-timeout.sh @$((JOB_END - 60)) bash .github/mac-release-prebuild.sh wait
-          else
-            bash .github/mac-release-prebuild.sh wait
-          fi
+          reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 60 || echo 45)
+          bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
         env:
@@ -1093,6 +1117,8 @@ jobs:
           fi
           unset POSTHOG_JSON
           trap 'rm -f "$RUNNER_TEMP/posthog.json"' EXIT
+          # (the app as "Finish the Mac app build" made it, when it built one: not built again, mac-app.sh's MBUI_BUILT)
+          [ ! -f "$RUNNER_TEMP/mac-prebuild/built" ] || export MBUI_BUILT=1
           MBUI_VARIANT=beta MBUI_SIGN_AFTER_BUILD=1 bash apps/mbui/scripts/mac-app.sh build
           mkdir -p "$RUNNER_TEMP/mac-unsigned"
           ditto -c -k --sequesterRsrc --keepParent apps/mbui/out/mac/youdid.wtf.app "$RUNNER_TEMP/mac-unsigned/bundle.zip"
@@ -1110,7 +1136,7 @@ jobs:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
       - name: The cache's key, by what it holds
-        if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome != 'skipped'
+        if: always() && steps.finish.outcome != 'skipped'
         run: |
           if [ "${{ steps.finish.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
@@ -1121,8 +1147,8 @@ jobs:
             bash .github/mac-release-prebuild.sh stop
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
           fi
-          echo "STORE_KEY=mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
-      - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
+          echo "STORE_KEY=${{ github.ref != 'refs/heads/main' && 'mbui-branch-mac-cc' || 'mbui-mac-cc' }}-${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+      - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |
