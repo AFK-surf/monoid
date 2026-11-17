@@ -26,6 +26,7 @@ import {
   "station/cloud_lock",
   "station/jobs",
   "station/posts",
+  "station/agent_runtimes",
   "station/usagefill",
   "station/usagecount",
   "station/signin",

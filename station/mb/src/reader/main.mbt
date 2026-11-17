@@ -970,6 +970,8 @@ fn main {
         String(session) => Some(@signin.step(db, session))
         _ => None
       }))
+    (Some("harness-agent-runtimes"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_runtimes.harness(host))
     (Some("search"), Some(db), Some(data)) =>
       @host.run(shell_dir=beside(db, "shell"), host => search_program(host, db, data, flag("--sep").unwrap_or("/")))
     (Some("search-scope"), Some(db), _) => {
