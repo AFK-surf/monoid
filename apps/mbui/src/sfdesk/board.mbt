@@ -1,6 +1,9 @@
-// Home as the board in the wide frame's pane (sfpages' board_node): the sidebar closed to its bar while it shows
-// (place_bare's, as 连接 and 用量 have it), the board the pane's whole; a card pressed, its chat beside the board, its
-// bar of its own over it (its title, 全屏打开 to its page, × to close it), the chat's page as the pane draws it.
+// Home as the board, the rail's 看板 (right under 对话, while 实验性功能's 对话列表看板视图 is on; sfpages' board_node):
+// off the tape (大屏) the sidebar closed to its bar while it shows (place_bare_now's, as 连接 and 用量 have it), the
+// board the pane's whole, a card pressed its chat beside the board, its bar of its own over it (its title, 全屏打开 to
+// its page, × to close it), the chat's page as the pane draws it; on the tape (中屏) the board the page's panel's,
+// brought over as 看板 is pressed, the sidebar's list beside it as ever. 对话 pressed from it, the list again with the
+// chat that was open as 看板 was gone to (board_kept_chat).
 
 ///|
 /// The source the wide frame was last made over (pane_view's, tape_view's): what whether the workspace in view shows
@@ -136,7 +139,7 @@ fn board_archive_go(src : Source) -> Unit {
 }
 
 ///|
-/// What 列表 does on the tape besides showing the list: the sidebar brought over, the list in use (nothing left in the
+/// What going back to the list (the rail's 对话) does on the tape besides showing it: the sidebar brought over, the list in use (nothing left in the
 /// page's panel to look at); only while Home is what the page's panel shows (the board turned off from 实验性功能
 /// leaves the panel on that page, as it was).
 fn board_listed_back() -> Unit {
@@ -181,7 +184,12 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       .row(Is(true))
       .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
-      .padding(By(fn() { (16.0, 0.0, (ends.end)(false, false), 0.0) }))
+      // (its title as far in from its start as × is seen from its end: the button's room at the end's, its icon of 16
+      // in its middle)
+      .padding(By(fn() {
+        let end = (ends.end)(false, false)
+        (end + (@sf.icon_button_side - 16.0) / 2.0, 0.0, end, 0.0)
+      }))
       .ground(By(fn() { @sf.theme().p.bg }))
       // (its empty part drags the window, as a chat's bar does)
       .presses(Is(true))
@@ -215,29 +223,6 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
 let beside_title_look : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, wrap=false)
 
 ///|
-/// The sidebar's key to the board (beside its filter, as it looks): the chats as columns, the sidebar closed to its bar.
-fn board_key_node(f : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
-  let hot = @motion.NodeWay::new(0.0)
-  f.reacts(fn() { @sf.lit_node(f) }, fn(on) { hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
-  @sf.style_node(f, fn() { filter_box })
-  f.radius(Is(1.0e6)).ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot.shown(f)) })) |> ignore
-  // (on the tape the page's panel brought over with it: the board is what it holds)
-  @sf.presses_node(f, fn() {
-    @sfbase.board_set(src, true)
-    if wide.tape.get() {
-      bring_page()
-    }
-  })
-  f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.board.board"))) })) |> ignore
-  @sf.icon_node(f, "view-columns", side_icon, By(fn() {
-    let t = @sf.theme()
-    @sf.mix(t.p.text, hot.shown(f), t.p.muted)
-  }))
-  |> ignore
-  @sf.tip_node(tips, f, fn() { @sf.t("web-main.board.board") }) |> ignore
-}
-
-///|
 /// The board's bar in the tape's page panel, laid out as the panel's bar is (pane_bar_node's): as tall, as far under
 /// the panel's top, its ends as far in as the panel's top corners leave what stands there concentric with them; read
 /// out only while the panel is in use.
@@ -266,4 +251,55 @@ fn board_tape_bar(parent : @view.View, make : (@view.View) -> Unit) -> Unit {
     bar_room_node(bar, fn() { tape_bar_end_room(corners(), side=@sf.button_height()) })
   })
   |> ignore
+}
+
+///|
+/// The chat (or the new chat) open in the chats' place of each workspace as its 看板 was gone to from there, put back
+/// as 对话 is pressed from the board (board_back_to_chat).
+// kept across runs: put back by wide_reset as a run starts
+let board_kept_chat : Map[String, Page] = Map([])
+
+///|
+/// The rail's 看板 pressed in workspace `w`: the board, kept as it is where it shows already (what is open beside it);
+/// from the chats' list, the chat open there kept to come back to (board_kept_chat).
+fn board_go(src : Source, w : Workspace) -> Unit {
+  // (on the tape, the page's panel the board is in brought over)
+  if lit_place() == "board" {
+    if wide.tape.get() {
+      bring_page()
+    }
+    return
+  }
+  if lit_place() == "chats" && !app.nav.pages().contains(Archived) {
+    let mut open : Page? = None
+    for p in app.nav.pages() {
+      match p {
+        Chat(_) | NewChat => open = Some(p)
+        _ => ()
+      }
+    }
+    match open {
+      Some(p) => board_kept_chat[w.id] = p
+      None => board_kept_chat.remove(w.id)
+    }
+  }
+  @sfbase.board_set(src, true)
+  if wide.tape.get() {
+    bring_page()
+  }
+}
+
+///|
+/// Back to workspace `w`'s chats from its board: the chat open as 看板 was gone to put back beside the list (on the
+/// tape, the list the one in use beside it, board_listed_back's). Whether there was one.
+fn board_back_to_chat(w : Workspace) -> Bool {
+  guard board_kept_chat.get(w.id) is Some(p) else { return false }
+  board_kept_chat.remove(w.id)
+  if app.nav.pages()[0] != Home {
+    @sfbase.go_place("chats") |> ignore
+  }
+  @sfbase.history_push()
+  app.nav.replace_above(1, [p])
+  wide.landed.set(w.id)
+  true
 }

@@ -1,14 +1,14 @@
 // Home's chats as a board (sfbase's board.mbt) made once as nodes: on the page's own paper, no frame round a column,
 // its title standing on the paper and its cards under it; a card the chat's title, where it stands now, and where it
-// runs, who and what is in it. Wide (720 and over) every column side by side under the board's bar (列表 | 看板, its
-// filter, how it is grouped, 新待办), going sideways where they have not the room; a card pressed opens its chat beside
-// the board at 960 and over (the shell's, `beside`), else as its page. Narrow a column at a time under chips choosing
-// it, the columns on a track a finger swipes across, no card dragged. A card goes to another column as its chat goes
-// on (its node flies there: View::shared), never because it is dragged: dragged (wide), a draft starts where 进行中
-// takes it, a chat goes to the archive where the archive's place takes it, nothing else lights up to take it; a draft
-// dragged goes to be deleted where the board's foot takes it. What the board
-// shows and keeps is the workspace's in view, as this device keeps it (sfbase's board.mbt): its drafts, how it is
-// grouped, the stations a draft may go to (its stations' rows: none made up).
+// runs, who and what is in it. Wide (720 and over) every column side by side under the board's bar (its filter, how it
+// is grouped, 新待办; the list is the rail's 对话 on 中屏 and 大屏, Home's own key on 小屏), going sideways where they
+// have not the room; a card pressed opens its chat beside the board at board_beside_from and over (the shell's,
+// `beside`, as wide as its edge is dragged), else as its page. Narrow a column at a time under chips choosing it, the
+// columns on a track a finger swipes across. No card is dragged on any screen (the user, 2026-11-17): a card is in the
+// column its chat stands in and goes to another as its chat goes on (its node flies there: View::shared); a draft is
+// started by its 开始 or its menu, a chat archived by its 归档, 归档已读 or its menu. What the board shows and keeps is
+// the workspace's in view, as this device keeps it (sfbase's board.mbt): its drafts, how it is grouped, the stations a
+// draft may go to (its stations' rows: none made up).
 
 ///|
 /// What a column shows: a draft of 待派发's or a chat's card, by its key.
@@ -19,49 +19,25 @@ priv enum BoardKey {
 }
 
 ///|
-/// A card being dragged: which, the words it shows, where in the card it was taken (where the pointer is now apart, in
-/// BoardOwn's `drag_xy`: what moves with the pointer reads that alone, the cards what is dragged alone).
-#derive(Eq)
-priv struct BoardDrag {
-  key : BoardKey
-  title : String
-  said : String
-  dx : Double
-  dy : Double
-  w : Double
-  ox : Double
-  oy : Double
-}
-
-///|
-/// The board's own: the card dragged, the place under it that takes it ("run", "archive", "" none), the columns' nodes by
-/// their key and the archive's place (where a drop lands), the field 新待办 is written in, the station it goes to.
+/// The board's own: the field 新待办 is written in, the station it goes to.
 priv struct BoardOwn {
   src : Source
   /// the workspace in view ("" none), and how its board is grouped
   ws : () -> String
   group : () -> String
-  drag : @signals.Signal[BoardDrag?]
-  /// where the pointer is in the window while a card is dragged: told at each move, read by the card in hand alone
-  drag_xy : @signals.Signal[(Double, Double)]
-  /// whether a card is the one dragged, the one picked (its chat beside the board), read by key: a card told only as it
-  /// comes to be so or stops being so (View::selected)
-  mut dragged : (BoardKey) -> Bool
+  /// whether a card is the one picked (its chat beside the board), read by key: a card told only as it comes to be so
+  /// or stops being so (View::selected)
   mut picked : (String) -> Bool
-  over : @signals.Signal[String]
-  /// whether the place under the card in hand is the one of key (a column's, "archive"), read by key as `dragged` is
-  mut over_is : (String) -> Bool
-  lanes : Map[String, @view.View]
-  mut archive : @view.View?
-  root : @view.View?
   mut side : () -> Bool
+  /// whether the frame offers the chat beside the board (the wide frame's pane, sfdesk's), whatever the width now
+  mut beside_offered : Bool
   /// the columns brought sideways so that column `key`'s shows whole (beside the chat as it opens), "" the first
   mut reveal : (String) -> Unit
   /// the columns put back to their start (another grouping)
   mut to_start : () -> Unit
-  /// a draft started (let go over 进行中, or its 开始 pressed): its key, where its card was in the window then, and
-  /// whether it was lifted off the board (dragged): its chat's card flies in from there as it comes, once
-  mut start_from : (String, (Double, Double, Double, Double), Bool)?
+  /// a draft started (its 开始 pressed, or its menu's 立即派发): its key and where its card was in the window then: its
+  /// chat's card flies in from there as it comes, once
+  mut start_from : (String, (Double, Double, Double, Double))?
   /// a draft just written: its key and where the card it was written in was, which its card grows from as it comes, once
   mut added_from : (String, (Double, Double, Double, Double))?
   /// how many times the room the line to write a draft in stands in was put away by what was written in it (not
@@ -120,8 +96,6 @@ fn board_open_add(own : BoardOwn) -> Bool {
 /// The board's words for what Home's list has none for yet.
 fn board_words(key : String) -> String {
   match key {
-    "list" => @sf.t("web-main.board.list")
-    "board" => @sf.t("web-main.board.board")
     "by-state" => @sf.t("web-main.board.by_state")
     "by-station" => @sf.t("web-main.board.by_station")
     "by-person" => @sf.t("web-main.board.by_person")
@@ -137,11 +111,6 @@ fn board_words(key : String) -> String {
     "start-now" => @sf.t("web-main.board.start_now")
     "delete" => @sf.t("web-main.board.delete")
     "archive" => @sf.t("web-main.board.archive")
-    "drop-archive" => @sf.t("web-main.board.drop_archive")
-    "drag-archive" => @sf.t("web-main.board.drag_archive")
-    "drop-delete" => @sf.t("web-main.board.drop_delete")
-    "drag-delete" => @sf.t("web-main.board.drag_delete")
-    "drop-start" => @sf.t("web-main.board.drop_start")
     "placeholder" => @sf.t("web-main.board.placeholder")
     "empty" => @sf.t("web-main.board.empty")
     "empty-draft" => @sf.t("web-main.board.empty_draft")
@@ -169,14 +138,8 @@ let board_pad : Double = 16.0
 let board_bar_end : Double = 20.0
 
 ///|
-/// How wide the board's foot's place to let a card go is at least: its longer words' (拖到这里归档) and its room.
-let board_drop_place_w : Double = 240.0
-
-///|
-/// How wide the chat open beside the board is, and from what width the board has it beside it.
-pub let board_beside_w : Double = 460.0
-
-///|
+/// From what width the board has the chat of the card picked beside it (as wide as sfbase's board_chat_w_of says,
+/// its edge dragged between board_chat_least and board_chat_most).
 pub let board_beside_from : Double = 1040.0
 
 ///|
@@ -410,16 +373,9 @@ pub fn board_node(
     src,
     ws,
     group: fn() { @sfbase.board_group_of(src, ws()) },
-    drag: @signals.signal(None),
-    drag_xy: @signals.signal((0.0, 0.0)),
-    dragged: fn(_) { false },
     picked: fn(_) { false },
-    over: @signals.signal(""),
-    over_is: fn(_) { false },
-    lanes: Map([]),
-    archive: None,
-    root: Some(v),
     side: fn() { false },
+    beside_offered: false,
     reveal: fn(_) {  },
     to_start: fn() {  },
     start_from: None,
@@ -471,13 +427,6 @@ pub fn board_node(
     }
   })
   own.columns = fn() { columns_now.get() }
-  own.dragged = v.selected(fn() { own.drag.get().map(fn(g) { g.key }) })
-  own.over_is = v.selected(fn() {
-    match own.over.get() {
-      "" => None
-      o => Some(o)
-    }
-  })
   // (the chat picked, as the card its row is: looked for only while one is picked)
   own.picked = v.selected(fn() {
     match @sfbase.board_pick.get() {
@@ -499,60 +448,16 @@ pub fn board_node(
       board_narrow(p, src, tips, own, top, foot)
     }
   })
-  // the card dragged, over all of the board where the pointer has it
-  // (let go, gone at once: let go over 进行中, its chat's card flies on from where it was, board_chat_card's)
-  let last : Ref[BoardDrag?] = Ref(None)
-  v.show(fn() { own.drag.get() is Some(_) }, at_once=true, fn(g) {
-    g.over(Is(true)).presses(Is(false)).lines_up(Is(Some(Start))) |> ignore
-    g.box(fn(c) {
-      let d = fn() {
-        match own.drag.get() {
-          Some(d) => {
-            last.val = Some(d)
-            Some(d)
-          }
-          None => last.val
-        }
-      }
-      c
-      .width(By(fn() { d().map(fn(d) { Some(d.w) }).unwrap_or(None) }))
-      // (where the pointer has it: the one binding a move of it runs)
-      .offset(By(fn() {
-        let (x, y) = own.drag_xy.get()
-        match d() {
-          Some(d) => (x - d.dx - d.ox, y - d.dy - d.oy)
-          None => (0.0, 0.0)
-        }
-      }))
-      .ground(By(fn() { @sf.theme().p.card }))
-      .radius(Is(@sf.card_corner))
-      // (lifted off the board: a hairline round it and a soft shadow under it, the cards at rest have neither)
-      .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-      .shadow(By(fn() { (24.0, 10.0, @sf.alpha(@sf.theme().p.shadow, 0.28)) }))
-      .padding(Is((card_pad, card_pad, card_pad, card_pad)))
-      |> ignore
-      c.gap(Is(6.0)) |> ignore
-      @sf.words_node(c, fn() { d().map(fn(d) { d.title }).unwrap_or("") }, fn() { card_title_look }) |> ignore
-      // (where it runs and stands, as on the card; let go over what takes it, what it does there)
-      @sf.words_node(c, fn() {
-        match own.over.get() {
-          "run" => board_words("drop-start")
-          "archive" if d().map(fn(d) { d.key is DraftKey(_) }).unwrap_or(false) => board_words("drop-delete")
-          "archive" => board_words("drop-archive")
-          _ => d().map(fn(d) { d.said }).unwrap_or("")
-        }
-      }, fn() { if own.over.get() != "" { card_drop_look } else { card_meta_look } }) |> ignore
-    })
-    |> ignore
-  })
 }
 
 ///|
 /// The wide board: its bar over its columns side by side (whole columns where they have not all the room, going
-/// sideways to the rest), the archive's place at its foot while a chat's card is dragged; the chat of the card picked
-/// beside all of it, the window's whole height, where there is the room. The chat slides in and out from the board's
-/// end (a Move as far as it is wide), the columns going from their width to the one they come to over the same way, and
-/// the columns brought sideways to where they are to show over it too: one motion, its three parts each worked out of it.
+/// sideways to the rest); the chat of the card picked beside all of it, the window's whole height, where there is the
+/// room. The chat slides in and out from the board's end (a Move as far as it is wide), the columns going from their
+/// width to the one they come to over the same way, and the columns brought sideways to where they are to show over it
+/// too: one motion, its three parts each worked out of it. Open and still, its edge at its start dragged for its width
+/// (sfbase's board_chat_w_of: board_chat_least to board_chat_most, a whole column and the board's margins always left
+/// beside it), the columns laid out again as it goes; pressed twice, its own width again.
 fn board_wide(
   p : @view.View,
   src : Source,
@@ -563,8 +468,16 @@ fn board_wide(
   bar_frame : ((@view.View, (@view.View) -> Unit) -> Unit)?,
 ) -> Unit {
   own.side = fn() { beside is Some(_) && width() >= board_beside_from }
+  own.beside_offered = beside is Some(_)
   let split = fn() { beside is Some(_) && width() >= board_beside_from && @sfbase.board_pick.get() is Some(_) }
-  let spec = @motion.moved(over=board_beside_w)
+  // (how wide the chat beside them is: as its edge was dragged or kept, within what leaves a whole column and the
+  // board's margins beside it)
+  let beside_most = fn() {
+    dmax(@sfbase.board_chat_least, dmin(@sfbase.board_chat_most, width() - (2.0 * board_pad + board_col_least)))
+  }
+  let beside_w = fn() { dmax(@sfbase.board_chat_least, dmin(beside_most(), @sfbase.board_chat_w_of(src))) }
+  // (a Move as far as the chat is wide as it sets off)
+  let spec = fn() { @motion.moved(over=@signals.untracked(beside_w)) }
   // (how far open the chat beside it is, 0 to 1; the chat it shows, kept as it slides out; where the columns are
   // brought sideways from and to, how far along that is)
   let opened = @motion.Way::new(if @signals.untracked(split) { 1.0 } else { 0.0 })
@@ -588,18 +501,20 @@ fn board_wide(
   // (each column's width as the chat beside them is to be: laid out at it at once as it is opened or closed, its cards'
   // words broken anew once, at the width they come to, never along the way (View::lays_anew), the chat sliding in
   // over the board's end as the pane's sidebar does beside a page, sfdesk board.mbt)
-  let laid_w = fn() { board_col_w(width() - (if split() { board_beside_w } else { 0.0 }), count()) }
+  let laid_w = fn() { board_col_w(width() - (if split() { beside_w() + board_edge_reach } else { 0.0 }), count()) }
   p.row(Is(true)) |> ignore
   p.box(fn(left) {
     left.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     match bar_frame {
-      // (laid out as the frame lays out a bar where it stands: the tape's page panel's, its ends concentric with the
-      // panel's corners)
+      // (laid out as the frame lays out a bar where it stands: the wide frame's pane's, as a chat's bar there)
       Some(frame) => frame(left, fn(bar) { board_bar_items(bar, own, apart=true) })
       None => board_bar(left, own)
     }
     left.box(fn(area) {
       area.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      // (short of the chat beside it by as much as that chat's edge reaches over the line between them: a press there
+      // the edge's alone)
+      area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore
       let across = @view.Scroll::across()
       // (brought sideways to `to` over the chat's way: drawn moved by what is left of the way, put there as it ends)
       let glide_to = fn(to : Double) {
@@ -618,7 +533,7 @@ fn board_wide(
         across.put(now)
         glides.val = (now, to)
         glide.put(0.0)
-        glide.go(1.0, spec, at~)
+        glide.go(1.0, spec(), at~)
         let end = glide.end()
         area.at_moment(end, fn() { if glide.end() == end { across.put(to) } }) |> ignore
       }
@@ -627,7 +542,8 @@ fn board_wide(
         let cols = @signals.untracked(own.columns)
         let n = cols.length()
         let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
-        let r = width() - (if @signals.untracked(own.side) && key != "draft" { board_beside_w } else { 0.0 })
+        let r = width() -
+          (if @signals.untracked(own.side) && key != "draft" { @signals.untracked(beside_w) + board_edge_reach } else { 0.0 })
         let w = board_col_w(r, n)
         let avail = r - 2.0 * board_pad
         let fits = ((avail + board_gap) / (board_col_least + board_gap)).floor().to_int()
@@ -647,7 +563,7 @@ fn board_wide(
         if open {
           shown.set(@sfbase.board_pick.untracked())
         }
-        opened.go(if open { 1.0 } else { 0.0 }, spec, at~)
+        opened.go(if open { 1.0 } else { 0.0 }, spec(), at~)
         let end = opened.end()
         area.at_moment(end, fn() {
           if opened.end() == end && !@signals.untracked(split) {
@@ -664,6 +580,21 @@ fn board_wide(
           if now > most {
             glide_to(if most < 0.0 { 0.0 } else { most })
           }
+        }
+      }, at_start=false)
+      // (the chat beside them made narrower or wider by its edge: the columns no further sideways than they go in the
+      // room it leaves, none left empty at their end; put there at once, as the edge is in the hand)
+      // (not as it opens or closes: the way above's)
+      let was_w = Ref(0.0)
+      area.reacts(fn() { if split() { beside_w() } else { 0.0 } }, fn(bw) {
+        let was = was_w.val
+        was_w.val = bw
+        guard bw > 0.0 && was > 0.0 else { return }
+        let r = width() - bw - board_edge_reach
+        let n = count().to_double()
+        let most = dmax(0.0, 2.0 * board_pad + n * board_col_w(r, count()) + (n - 1.0) * board_gap - r)
+        if across.at(area.tree) > most {
+          across.put(most)
         }
       }, at_start=false)
       // (another chat picked while it is open: shown in its place)
@@ -708,28 +639,26 @@ fn board_wide(
         |> ignore
       })
       |> ignore
-      // where a card dragged goes to be archived (a chat's) or deleted (a draft's), at the board's foot while one is
-      area.show(fn() { own.drag.get() is Some(_) }, fn(z) {
-        z.over(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))).padding(Is((0.0, 0.0, 0.0, 20.0))).presses(Is(false))
-        |> ignore
-        board_archive_place(z, own)
-      })
     })
     |> ignore
   })
   |> ignore
   match beside {
     Some(make) =>
-      // (as wide as it is open, what it shows as wide as it is all the way: cut to its room as it slides)
+      // (as wide as it is open, what it shows as wide as it is all the way: cut to its room as it slides, not once it is
+      // there, its edge reaching out over the board)
       p.show(fn() { shown.get() is Some(_) }, fn(s) {
         s
-        .width(By(fn() { Some(board_beside_w * opened.shown_on(s)) }))
+        .width(By(fn() { Some(beside_w() * opened.shown_on(s)) }))
         .shrink(Is(0.0))
         .min_height(Is(Some(0.0)))
-        .clips(Is(true))
+        .clips(By(fn() { opened.shown_on(s) < 1.0 }))
         |> ignore
         s.box(fn(inner) {
-          inner.width(Is(Some(board_beside_w))).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          // (laid out anew at once at each width its edge drags it to, as the window made another size is: its chat's
+          // words broken again in that frame, no move of its rows: View::lays_anew)
+          inner.width(By(fn() { Some(beside_w()) })).lays_anew(By(fn() { beside_w() })).grow(Is(1.0)).min_height(Is(Some(0.0)))
+          |> ignore
           inner.pick(fn() { shown.get() }, fn(b, r) {
             b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             match r {
@@ -739,10 +668,61 @@ fn board_wide(
           }, at_once=true)
         })
         |> ignore
+        // its edge, while it is open and still
+        s.show(at_once=true, fn() { split() && opened.shown_on(s) >= 1.0 }, fn(e) {
+          board_beside_edge(e, src, tips, beside_w, beside_most)
+        })
       }, at_once=true)
     None => ()
   }
 }
+
+///|
+/// The edge of the chat beside the board in `e` (over its start, its middle on the line between them, half over the
+/// board), as a side panel's is (sfdesk's side_edge_node): dragged, its width, kept as it is let go (sfbase's
+/// set_board_chat_w); pressed twice, its own width again; pressed once, nothing (× in its bar closes it).
+fn board_beside_edge(
+  e : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  width : () -> Double,
+  most : () -> Double,
+) -> Unit {
+  let held = @signals.signal(false, same=fn(a, b) { a == b })
+  e.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-board_edge_reach, 0.0))) |> ignore
+  let edge = @sf.edge_node(
+    e,
+    fn() { @sf.t("web-pages.chat.resizePanel") },
+    width,
+    fn() { @sfbase.board_chat_least },
+    most,
+    Left,
+    fn(said, _) {
+      match said {
+        Dragging(x) => @sfbase.set_board_chat_w(src, Some(x), save=false)
+        Dropped(x) => @sfbase.set_board_chat_w(src, Some(x), save=true)
+        Twice => @sfbase.set_board_chat_w(src, None, save=true)
+        Pressed | Untouched => ()
+      }
+    },
+    fn(h) { held.set(h) },
+    tips~,
+    side=Left,
+  )
+  edge.box(fn(g) {
+    g.over(Is(true)) |> ignore
+    @sf.edge_look_node(g, fn() { @sf.edge_over() }, fn() { edge.pointed() || edge.focus_shown() || held.get() }, fn() {
+      held.get()
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// How far the edge of the chat beside the board reaches over the board, its middle on the 1 point line between them
+/// (board_beside_edge).
+let board_edge_reach : Double = @sf.handle_w / 2.0 - 0.5
 
 ///|
 /// How wide each of `n` columns is in `room`: as many whole columns as `room` holds at the least, sharing it, at most
@@ -761,49 +741,6 @@ fn board_col_w(room : Double, n : Int) -> Double {
   } else {
     fit
   }
-}
-
-///|
-/// The archive's place a chat's card is let go on, where a draft's is deleted (board_wide's foot): lit while one is over
-/// it.
-fn board_archive_place(z : @view.View, own : BoardOwn) -> Unit {
-  let draft = fn() { own.drag.get().map(fn(d) { d.key is DraftKey(_) }).unwrap_or(false) }
-  z.box(fn(a) {
-    own.archive = Some(a)
-    a
-    .row(Is(true))
-    .gap(Is(8.0))
-    .lines_up(Is(Some(Middle)))
-    .padding(Is((20.0, 12.0, 20.0, 12.0)))
-    // (as wide lit as not, its words shorter then: what the pointer is let go over stays under it)
-    .min_width(Is(Some(board_drop_place_w)))
-    .lies_along(Is(Middle))
-    .radius(Is(1.0e6))
-    .ground(By(fn() {
-      let p = @sf.theme().p
-      if (own.over_is)("archive") { p.accent_bg } else { p.neutral_bg }
-    }))
-    .says(By(fn() { Some(@view.said(Image, label=board_words(if draft() { "delete" } else { "archive" }))) }))
-    |> ignore
-    a.pick(draft, fn(ic, d) {
-    @sf.icon_node(ic, if d { "trash" } else { "archive" }, 16.0, By(fn() {
-      if (own.over_is)("archive") { @sf.theme().p.accent_text } else { @sf.theme().p.muted }
-    }))
-    |> ignore
-    }, at_once=true)
-    @sf.words_node(a, fn() {
-      match ((own.over_is)("archive"), draft()) {
-        (true, true) => board_words("drop-delete")
-        (true, false) => board_words("drop-archive")
-        (false, true) => board_words("drag-delete")
-        (false, false) => board_words("drag-archive")
-      }
-    }, fn() {
-      if (own.over_is)("archive") { drop_lit_look } else { drop_look }
-    })
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -826,8 +763,8 @@ fn board_bar(p : @view.View, own : BoardOwn) -> Unit {
 
 ///|
 /// What the board's bar holds, in `bar` (its own, or a frame's bar it is given: the tape's page's), all at its end, as
-/// Linear's board has it: 列表 (back to the list) and the filter, quiet keys; 显示, what opens how the board is shown
-/// (board_display); 新待办. The filter and 显示 say on themselves what is chosen otherwise than as the board starts
+/// Linear's board has it: the filter, a quiet key; 显示, what opens how the board is shown (board_display); 新待办 (the
+/// list again is the rail's 对话 on 中屏 and 大屏, Home's own key on 小屏). The filter and 显示 say on themselves what is chosen otherwise than as the board starts
 /// (我参与的; 按机器 or 按成员, the empty columns left out). `apart`: the rest of the bar left empty before them.
 fn board_bar_items(bar : @view.View, own : BoardOwn, apart~ : Bool) -> Unit {
   bar.box(fn(row) {
@@ -838,9 +775,6 @@ fn board_bar_items(bar : @view.View, own : BoardOwn, apart~ : Bool) -> Unit {
       row.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       row.box(fn(g) { g.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
     }
-    // (as tall as what stands beside it in the bar: a button's)
-    @sf.icon_button_node(row, "list", fn() { board_words("list") }, fn() { @sfbase.board_set(own.src, false) }, size=@sf.button_h)
-    |> ignore
     board_filter_key(row, own)
     board_display_key(row, own)
     @sf.button_node(row, fn() { board_words("new") }, fn() {
@@ -915,28 +849,15 @@ fn board_display_key(bar : @view.View, own : BoardOwn) -> Unit {
 }
 
 ///|
-/// 显示's panel beside it (Linear's Display): 列表 | 看板 as cards, how the board is grouped, whether its empty columns
-/// show. Each changes the board behind it at once, the panel left open; 列表 closes it.
+/// 显示's panel beside it (Linear's Display): how the board is grouped, whether its empty columns show. Each changes the
+/// board behind it at once, the panel left open.
 fn board_display(own : BoardOwn, btn : @view.View) -> Unit {
   @sf.panel_nodes(
     board_words("display"),
-    fn(held, close) {
+    fn(held, _close) {
       // (in a column of its own, down the panel: the panel lays what it holds out as it says)
       held.box(fn(col) {
       col.row(Is(false)).gap(Is(10.0)).width_share(Is(1.0)) |> ignore
-      @sf.choice_cards_node(
-        col,
-        fn() { [("list", board_words("list")), ("view-columns", board_words("board"))] },
-        fn() { if @sfbase.board_on_now(own.src) { 1 } else { 0 } },
-        fn(i) {
-          if i == 0 {
-            close()
-            @sfbase.board_set(own.src, false)
-          }
-        },
-        said=board_words("board"),
-      )
-      |> ignore
       // how it is grouped: its words over a choice the panel's width
       col.box(fn(g) {
         g.row(Is(false)).gap(Is(6.0)).width_share(Is(1.0)) |> ignore
@@ -1179,8 +1100,7 @@ let board_fling_least : Double = 16.0
 
 ///|
 /// Column `key` (named `name`): its title on the paper (its count beside it, 待派发's ＋ at its end), the line to write a
-/// draft in where it is open, its cards; lit faintly while a card dragged over it may be let go there (a draft over
-/// 进行中). Wide, its title over its cards; narrow, the chips name it, its cards alone.
+/// draft in where it is open, its cards. Wide, its title over its cards; narrow, the chips name it, its cards alone.
 fn board_column(
   col : @view.View,
   src : Source,
@@ -1192,14 +1112,6 @@ fn board_column(
   top? : () -> Double = fn() { 0.0 },
   foot? : () -> Double = fn() { 0.0 },
 ) -> Unit {
-  own.lanes[key] = col
-  col.owns(fn() {
-    match own.lanes.get(key) {
-      Some(c) if c.id() == col.id() => own.lanes.remove(key)
-      _ => ()
-    }
-  })
-  |> ignore
   let cards_now = @signals.computed(fn(_) { (own.cards_of)(key) })
   let cards = fn() { cards_now.get() }
   // (待收口's: how many of its chats read may be put away at once)
@@ -1211,20 +1123,7 @@ fn board_column(
     }
   })
   let settled_n = fn() { settled_now.get() }
-  // (lit faintly while a card in hand may be let go on it, coming and going as a control answering does)
-  let lit = @motion.NodeWay::new(0.0)
-  col.reacts(fn() { (own.over_is)(key) }, fn(on) { lit.go_ms(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
-  col
-  .gap(Is(if wide { 2.0 } else { 0.0 }))
-  .grow(Is(if wide { 0.0 } else { 1.0 }))
-  .min_height(Is(Some(0.0)))
-  .radius(Is(@sf.card_corner))
-  .ground(By(fn() {
-    let p = @sf.theme().p
-    let k = lit.shown(col)
-    if k <= 0.0 { 0L } else { @sf.alpha(p.accent_bg, 0.45 * k) }
-  }))
-  |> ignore
+  col.gap(Is(if wide { 2.0 } else { 0.0 })).grow(Is(if wide { 0.0 } else { 1.0 })).min_height(Is(Some(0.0))) |> ignore
   if wide {
     col.box(fn(h) {
       h.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).min_height(Is(Some(44.0))).padding(Is((4.0, 0.0, 0.0, 0.0)))
@@ -1272,7 +1171,7 @@ fn board_column(
           CardRow(k) => {
             row.padding(Is((ends.0, 0.0, ends.1, 10.0))) |> ignore
             match k {
-              DraftKey(id) => draft_card(row, src, tips, own, id, key, wide~)
+              DraftKey(id) => draft_card(row, src, tips, own, id, key)
               ChatKey(name) => board_chat_card(row, src, tips, own, name, key, wide)
             }
           }
@@ -1304,13 +1203,6 @@ fn board_column(
       // (its cards each one thing on the board (View::shared): one gone to another column flies there, one archived or
       // deleted here closes its room over the cards under it, as what comes and goes in a list whose blocks fly does)
       flips=true,
-      // (a card in the hand holds its place as what is over it changes)
-      holds=fn(r) {
-        match (r, own.drag.get()) {
-          (CardRow(k), Some(g)) => g.key == k
-          _ => false
-        }
-      },
       head=fn(h) {
         h.padding(By(fn() { (ends.0, if wide { 0.0 } else { top() + board_narrow_top_in }, ends.1, 0.0) })) |> ignore
         if key == "draft" {
@@ -1730,7 +1622,6 @@ let chip_on_look : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, colo
 fn card_ground(
   card : @view.View,
   picked : () -> Bool,
-  faded : () -> Bool,
   lit : () -> Bool,
   lifted : () -> Double,
 ) -> () -> Int64 {
@@ -1753,7 +1644,6 @@ fn card_ground(
   .radius(Is(@sf.card_corner))
   .padding(Is((card_pad, card_pad, card_pad, card_pad)))
   .gap(Is(6.0))
-  .alpha(By(fn() { if faded() { 0.35 } else { 1.0 } }))
   |> ignore
   ground
 }
@@ -1801,18 +1691,13 @@ fn CardLift::put_up(self : CardLift, held : Bool) -> Unit {
 let card_lift_scale : Double = 1.03
 
 ///|
-/// The shadow of a card lifted `up` (0 … 1) for its menu (held_raised's, as a row of Home's list's), or brought off
-/// the board `landing` (0 … 1) as a draft's chat lands: whichever is the more.
-fn card_shadow(up : Double, landing : Double) -> (Double, Double, Int64) {
-  if up <= 0.0 && landing <= 0.0 {
+/// The shadow of a card lifted `up` (0 … 1) for its menu (held_raised's, as a row of Home's list's).
+fn card_shadow(up : Double) -> (Double, Double, Int64) {
+  if up <= 0.0 {
     return (0.0, 0.0, 0L)
   }
-  if landing > up {
-    (24.0 * landing, 10.0 * landing, @sf.alpha(@sf.theme().p.shadow, 0.28 * landing))
-  } else {
-    let r = @sf.held_raised
-    (r.sigma * up, r.dy * up, @sf.alpha(r.color, up))
-  }
+  let r = @sf.held_raised
+  (r.sigma * up, r.dy * up, @sf.alpha(r.color, up))
 }
 
 ///|
@@ -1831,9 +1716,9 @@ fn CardHand::new() -> CardHand {
 }
 
 ///|
-/// A pointer over `card` followed: not while a card is in the hand (what it passes over wakes nothing).
+/// A pointer over `card` followed.
 fn CardHand::watch(self : CardHand, card : @view.View) -> Unit {
-  card.reacts(fn() { @sf.hovered_node(card) && !@sfbase.board_drag_active.get() }, fn(h) { self.hovered.set(h) })
+  card.reacts(fn() { @sf.hovered_node(card) }, fn(h) { self.hovered.set(h) })
 }
 
 ///|
@@ -1858,120 +1743,8 @@ fn CardHand::up(self : CardHand) -> Unit {
 }
 
 ///|
-/// A card's drag: taken past the slop, it follows the pointer (BoardOwn's drag); what is under it that takes it lit;
-/// let go there, `drop` told that place's key ("run", "archive") and where the card in hand was in the window then (as
-/// tall as the card it was taken from); else nothing.
-fn card_drags(
-  card : @view.View,
-  own : BoardOwn,
-  key : BoardKey,
-  title : () -> String,
-  said : () -> String,
-  takes : Array[String],
-  press : () -> Unit,
-  drop : (String, (Double, Double, Double, Double)) -> Unit,
-  menu? : (Double, Double, Bool) -> Unit,
-  down? : () -> Unit = fn() {  },
-  up? : () -> Unit = fn() {  },
-) -> Unit {
-  let under = fn(x : Double, y : Double) -> String {
-    let inside = fn(n : @view.View) {
-      let (nx, ny, nw, nh) = n.placed_window_now()
-      x >= nx && x < nx + nw && y >= ny && y < ny + nh
-    }
-    for t in takes {
-      let at = match t {
-        "archive" =>
-          match own.archive {
-            Some(a) if a.alive() && inside(a) => "archive"
-            _ => ""
-          }
-        lane =>
-          match own.lanes.get(lane) {
-            Some(c) if c.alive() && inside(c) => lane
-            _ => ""
-          }
-      }
-      if at != "" {
-        return at
-      }
-    }
-    ""
-  }
-  let held_h = Ref(0.0)
-  // (right clicked: its menu where it was; held long: its menu from the card)
-  match menu {
-    Some(m) => card.on_menu(fn(e) { m(e.wx, e.wy, false) }) |> ignore
-    None => ()
-  }
-  card.gesture(
-    @ui.touch_slop(),
-    press=fn(_) { down() },
-    tap=fn(_) {
-      press()
-      up()
-    },
-    // (held long by a finger: its menu; a mouse's button held is a press as long as any, its card waiting to be dragged)
-    hold?=menu.map(fn(m) {
-      (@ui.long_press_ms, fn(d : @view.Drag) { if !@sf.pointer_rests() { m(d.wx, d.wy, true) } })
-    }),
-    drag=fn(d) {
-      match d.kind {
-        Down => {
-          up()
-          let (cx, cy, cw, ch) = card.placed_window_now()
-          held_h.val = ch
-          let (ox, oy) = match own.root {
-            Some(r) if r.alive() => {
-              let (x, y, _, _) = r.placed_window_now()
-              (x, y)
-            }
-            _ => (0.0, 0.0)
-          }
-          own.drag_xy.set((d.wx, d.wy))
-          own.drag.set(Some({ key, title: @signals.untracked(title), said: @signals.untracked(said), dx: d.wx - cx, dy: d.wy - cy, w: cw, ox, oy }))
-          own.over.set("")
-          @sfbase.board_drag_active.set(true)
-        }
-        // (the card in hand follows the pointer, and what is under it that takes it is lit: nothing else told)
-        Moved =>
-          if own.drag.untracked() is Some(_) {
-            own.drag_xy.set((d.wx, d.wy))
-            own.over.set(under(d.wx, d.wy))
-          }
-        Up => {
-          let at = under(d.wx, d.wy)
-          let rect = match own.drag.untracked() {
-            Some(g) => {
-              let (x, y) = own.drag_xy.untracked()
-              (x - g.dx, y - g.dy, g.w, held_h.val)
-            }
-            None => card.placed_window_now()
-          }
-          own.drag.set(None)
-          own.over.set("")
-          @sfbase.board_drag_active.set(false)
-          up()
-          if at != "" {
-            drop(at, rect)
-          }
-        }
-        Off => {
-          up()
-          own.drag.set(None)
-          own.over.set("")
-          @sfbase.board_drag_active.set(false)
-        }
-      }
-    },
-  )
-  |> ignore
-}
-
-///|
-/// A draft's card (待派发's): its words, where it is to run, 开始 at its top end; `wide`, dragged onto 进行中, started
-/// there too. Narrow, a column at a time with nowhere to drag it to: not dragged, so a finger on it scrolls the column;
-/// held long (or right clicked), its menu.
+/// A draft's card (待派发's): its words, where it is to run, 开始 at its top end; held long (or right clicked), its menu
+/// (立即派发, 删除). Never dragged, wide or narrow: a finger on it scrolls its column.
 fn draft_card(
   row : @view.View,
   src : Source,
@@ -1979,18 +1752,16 @@ fn draft_card(
   own : BoardOwn,
   id : String,
   lane : String,
-  wide~ : Bool,
 ) -> Unit {
   let d = fn() { (own.drafts_by)().get(id) }
   let title = fn() { d().map(fn(d) { d.title }).unwrap_or("") }
   let card_at : Ref[@view.View?] = Ref(None)
-  // (started from `from` in the window, `lifted` off the board there: its chat's card flies in from there,
-  // board_chat_card's)
-  let start_from = fn(from : (Double, Double, Double, Double), lifted : Bool) {
+  // (started from `from` in the window: its chat's card flies in from there, board_chat_card's)
+  let start_from = fn(from : (Double, Double, Double, Double)) {
     match @signals.untracked(d) {
       Some(d) => {
         // (its chat's card is of the key it is made under: its row's all along)
-        own.start_from = Some((d.station + "/" + @sfbase.board_key_of(d), from, lifted))
+        own.start_from = Some((d.station + "/" + @sfbase.board_key_of(d), from))
         @sfbase.board_start(src, @signals.untracked(own.ws), d)
       }
       None => ()
@@ -1998,8 +1769,8 @@ fn draft_card(
   }
   let start = fn() {
     match card_at.val {
-      Some(c) if c.alive() => start_from(c.placed_window_now(), false)
-      _ => start_from((0.0, 0.0, 0.0, 0.0), false)
+      Some(c) if c.alive() => start_from(c.placed_window_now())
+      _ => start_from((0.0, 0.0, 0.0, 0.0))
     }
   }
   let delete = fn() { @sfbase.board_draft_remove(src, @signals.untracked(own.ws), id) }
@@ -2052,54 +1823,28 @@ fn draft_card(
       }
       _ => ()
     }
-    card_ground(card, fn() { false }, fn() { (own.dragged)(DraftKey(id)) }, fn() { hand.lit(card, fn() { false }) }, lifted)
-    |> ignore
-    card.shadow(By(fn() { card_shadow(lifted(), 0.0) })) |> ignore
+    card_ground(card, fn() { false }, fn() { hand.lit(card, fn() { false }) }, lifted) |> ignore
+    card.shadow(By(fn() { card_shadow(lifted()) })) |> ignore
     hand.watch(card)
-    if wide {
-      card_drags(
-        card,
-        own,
-        DraftKey(id),
-        title,
-        fn() { d().map(fn(d) { d.station_name }).unwrap_or("") },
-        ["archive", "run"],
-        fn() {  },
-        fn(at, rect) {
-          if at == "archive" {
-            delete()
-          } else {
-            start_from(rect, true)
-          }
-        },
-        menu~,
-        down=fn() { hand.down(card) },
-        up=fn() {
-          hand.up()
-          lift.held.set(false)
-        },
-      )
-    } else {
-      card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
-      @sf.presses_held_node(
-        card,
-        fn() {  },
-        @ui.long_press_ms,
-        // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
-        fn(e) {
-          if !@sf.pointer_rests() {
-            lift.held.set(true)
-            menu(e.wx, e.wy, true)
-          }
-        },
-        down=fn(_) { hand.down(card) },
-        up=fn() {
-          hand.up()
-          lift.held.set(false)
-        },
-      )
-      card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-    }
+    card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
+    @sf.presses_held_node(
+      card,
+      fn() {  },
+      @ui.long_press_ms,
+      // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
+      fn(e) {
+        if !@sf.pointer_rests() {
+          lift.held.set(true)
+          menu(e.wx, e.wy, true)
+        }
+      },
+      down=fn(_) { hand.down(card) },
+      up=fn() {
+        hand.up()
+        lift.held.set(false)
+      },
+    )
+    card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     card.box(fn(head) {
       head.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
       head.box(fn(t) {
@@ -2163,7 +1908,7 @@ fn card_title_end() -> Double {
 /// watch's beat; red where it failed) in the list's quiet inks (its words the page's ink where it is the viewer's turn,
 /// red where it failed, else muted), two lines at most; where it runs (its station's mark only where it has one), where
 /// it came from, its agents and its people as the list's rows show them (row_aside_node). Pressed, its chat beside the
-/// board (wide) or its page; wide, dragged onto the archive's place, archived; right clicked, or held long by a finger,
+/// board (wide) or its page; never dragged; right clicked, or held long by a finger,
 /// the chat's menu (chat_menu_items, once its whole row is answered: WholeHeld), its time beside where it runs while
 /// that shows.
 fn board_chat_card(
@@ -2230,6 +1975,11 @@ fn board_chat_card(
         (own.reveal)(lane)
       }
     } else {
+      // (in the wide frame's pane with no room for it beside the board: the list again, the chat open beside it, as
+      // 全屏打开 has it; else (小屏) its page over the board, back to it)
+      if wide && own.beside_offered {
+        @sfbase.board_set(src, false)
+      }
       open_page(Chat(r))
     }
   }
@@ -2303,77 +2053,42 @@ fn board_chat_card(
   }
   // (its time while its menu is open, its whole row answered then)
   let shows_time = fn() { menu_on() && @sfbase.whole_answered(src, item_now()) }
-  // (a draft's chat come as it was started: from where its card was, lifted off the board (its hairline and shadow
-  // going as it lands) where it was dragged; by its key alone, as the column lists it: its row by key may come a moment
-  // after, items_by following the chats as a reaction)
+  // (a draft's chat come as it was started: from where its card was; by its key alone, as the column lists it: its row
+  // by key may come a moment after, items_by following the chats as a reaction)
   let came = match own.start_from {
-    Some((sid, _, _)) if sid == name => own.start_from
+    Some((sid, _)) if sid == name => own.start_from
     _ => None
   }
   if came is Some(_) {
     own.start_from = None
   }
-  // (brought off the board as a draft's chat lands: its hairline and shadow going as it does)
-  let landing = @motion.NodeWay::new(0.0)
   row.box(fn(w) {
   let raised = lift.node(w)
   match came {
-    Some((_, (fx, fy, fw, _), up)) => {
+    Some((_, (fx, fy, fw, _))) =>
       w.flies_in(@motion.flight_by(@motion.moved()), fn(to) { Some((fx, fy, fw, to.3)) }) |> ignore
-      if up {
-        w.at_moment(w.cause_at(), fn() { landing.go_from(w, 1.0, 0.0, @motion.moved()) }) |> ignore
-      }
-    }
     None => ()
   }
   w.box(fn(card) {
     card_at.val = Some(card)
-    card
-    .edge(By(fn() {
-      let k = landing.shown(card)
-      if k <= 0.0 { (0.0, 0L) } else { (k, @sf.alpha(@sf.theme().p.line, k)) }
-    }))
-    .shadow(By(fn() { card_shadow(raised(), landing.shown(card)) }))
-    |> ignore
+    card.shadow(By(fn() { card_shadow(raised()) })) |> ignore
     // (one thing by its row's key: the same from the draft's card on through the core's pending row to its station's)
     // (narrow, its column's alone: the track slides from one to another, a card going on to another column is not
     // flown across it)
     @motion.shared(card, board_shared(own, lane, name) + (if wide { "" } else { "@" + lane })) |> ignore
-    let ground = card_ground(card, picked, fn() { (own.dragged)(ChatKey(name)) }, fn() { hand.lit(card, menu_on) }, raised)
+    let ground = card_ground(card, picked, fn() { hand.lit(card, menu_on) }, raised)
     card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-    if wide {
-      card.presses(Is(true)).focusable(Is(true)).focus_ring_theme().on_press(open) |> ignore
-      card_drags(
-        card,
-        own,
-        ChatKey(name),
-        title,
-        fn() {
-          match item() {
-            Some(i) => i.station_name + " · " + card_said(Some(i))
-            None => ""
-          }
-        },
-        ["archive"],
-        open,
-        fn(_, _) { archive() },
-        menu=open_menu,
-        down~,
-        up~,
-      )
-    } else {
-      // (narrow, a column at a time with nowhere to drag it to: not dragged, so a finger on it scrolls the column)
-      card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
-      // (held long by a finger: its menu; a mouse's button held is a press as long as any)
-      @sf.presses_held_node(
-        card,
-        open,
-        @ui.long_press_ms,
-        fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
-        down=fn(_) { down() },
-        up~,
-      )
-    }
+    // (never dragged, wide or narrow: a finger on it scrolls its column; right clicked, its menu; held long by a finger,
+    // its menu; a mouse's button held is a press as long as any)
+    card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
+    @sf.presses_held_node(
+      card,
+      open,
+      @ui.long_press_ms,
+      fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
+      down=fn(_) { down() },
+      up~,
+    )
     // (a pointer over it lights it, asking nothing: its whole row is asked as the hand goes down on it or its menu is
     // asked for, never for each card a pointer passes over)
     hand.watch(card)
@@ -2784,10 +2499,6 @@ let card_title_read_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Normal
 
 ///|
 // kept across runs: a value (no field of it changes)
-let card_drop_look : @ui.TextStyle = @ui.text_style(size=Meta, color=Accent, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
 let card_meta_look : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
@@ -2833,14 +2544,6 @@ let lane_title_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, w
 ///|
 // kept across runs: a value (no field of it changes)
 let lane_count_look : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let drop_look : @ui.TextStyle = @ui.text_style(size=Ui, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let drop_lit_look : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
 
 ///|
 /// The key a card is one thing by (View::shared): its chat's (or its draft's, the chat it becomes), within how the board is
