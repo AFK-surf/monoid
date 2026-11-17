@@ -1129,6 +1129,43 @@ test "大屏: right clicking a second waiting card while the first menu is open 
 }
 
 ///|
+test "大屏: menus keep switching across repeated right clicks on waiting cards" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, h)) else { fail("no first card") }
+  guard board_rect_of(t, Button, "迁移数据库的演练") is Some((x2, y2, w2, h2)) else { fail("no second card") }
+  for i, point in [
+    (x + w * 0.8, y + h / 2.0),
+    (x2 + w2 * 0.2, y2 + h2 / 2.0),
+    (x + w * 0.2, y + h / 2.0),
+    (x2 + w2 * 0.1, y2 + h2 / 2.0),
+    (x + w * 0.1, y + h / 2.0),
+  ] {
+    let previous = @sf.last_presented()
+    t.right_click(point.0, point.1)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.last_presented() > previous, msg="right click \{i + 1} did not open a menu")
+    assert_true(board_menu_said(t).contains("重命名"), msg="right click \{i + 1} has no chat menu")
+  }
+  board_tap_words(t, "重命名")
+  assert_eq(t.get(TextField).value, "整理发布清单")
+}
+
+///|
+test "大屏: right clicking one waiting card repeatedly outside its menu opens it again" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "整理发布清单") is Some((x, y, w, h)) else { fail("no card") }
+  for i, fraction in [0.8, 0.4, 0.1] {
+    let previous = @sf.last_presented()
+    t.right_click(x + w * fraction, y + h / 2.0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.last_presented() > previous, msg="right click \{i + 1} did not open a menu")
+    assert_true(board_menu_said(t).contains("重命名"), msg="right click \{i + 1} has no chat menu")
+  }
+  board_tap_words(t, "重命名")
+  assert_eq(t.get(TextField).value, "整理发布清单")
+}
+
+///|
 /// A card lifted for its menu as it is drawn (its raised ground, wider than a card at rest of 小屏's, 358, by a
 /// hundredth and more, narrower than the window) and where among what is drawn; None where none is.
 fn board_lifted_card(t : @ui.Tester) -> ((Double, Double, Double, Double), Int)? {
