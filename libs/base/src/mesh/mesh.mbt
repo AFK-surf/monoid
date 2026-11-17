@@ -239,7 +239,8 @@ pub struct Mesh {
   priv unanswered_at : Map[Place, String]
   /// The ways to each place and what is kept of them (ways.mbt); the endpoints of a way's own, by way, and the dials
   /// under way on them (none is let go of meanwhile); the ways no more gone on, closed `retire_ms` after; the dials
-  /// on the endpoint beside a place's link (`Mesh::explore`); and what a relay's endpoint's key is made with.
+  /// on the endpoint beside a place's link (`Mesh::explore`) and on no link's (`Mesh::connect`, bind.mbt); and what
+  /// a relay's endpoint's key is made with.
   priv ways_of : Map[Place, Ways]
   priv pinned : Map[String, Pinned]
   priv mut dialing : Int

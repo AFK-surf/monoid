@@ -19,13 +19,13 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   A page keeps keys and their bytes past localStorage's few MB in IndexedDB (`idb.*`, `shell_js.mbt`'s head), in a map
   of its own where there is none (Node): no other shell has those ops.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
-- `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
-  requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
-  with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
-  `addrs.mbt`, a connection dialled once on a protocol of its program's in `dial_once.mbt`, the ways to a place and
-  the choice among them in `ways.mbt`, with `sha256.mbt` (a program's to call too) for the keys of relays' own
-  endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself in `trace.mbt`,
-  and a program's other asks in `hooks.mbt`, with Ed25519 and SHA-512 in `sign.mbt`).
+- `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links,
+  hello/pings/renewal, requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the
+  endpoint is bound with, relays told again and connections peers dial to it or it dials itself in `bind.mbt`, where
+  peers are dialled straight in `addrs.mbt`, a connection dialled once on a protocol of its program's in
+  `dial_once.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` (a program's to call
+  too) for the keys of relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself
+  in `trace.mbt`, and a program's other asks in `hooks.mbt`, with Ed25519 and SHA-512 in `sign.mbt`).
 
 ## It knows no program
 
@@ -79,6 +79,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   device's endpoint is on, the same endpoint id puts that one off it), so it proves nothing of the device; that is
   its program's to send on it (`Mesh::sign`). Its connection and that endpoint are closed to be forgotten as it is
   closed, ends, fails to open, is given up or the mesh closes.
+- `Mesh::connect` dials on the endpoint itself instead, so the peer's transport proves the device (no relay put off),
+  and hands out an `Incoming` kept as one a peer dialled; its dial counts as on the endpoint while it lasts.
 - What a peer's hello answer says of its `lan` / `tailnet` addresses (IPv4 `a.b.c.d:port`, 8 of each, as the
   TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
   values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.

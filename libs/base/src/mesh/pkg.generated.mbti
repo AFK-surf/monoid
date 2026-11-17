@@ -196,6 +196,7 @@ pub struct Mesh {
 }
 pub fn Mesh::add_addr(Self, String, relays? : Array[String], ips? : Array[String]) -> Unit
 pub async fn Mesh::close(Self) -> Unit
+pub async fn Mesh::connect(Self, String, String, ips? : Array[String], within? : Int32) -> Incoming
 pub fn Mesh::current(Self, String, scope? : String) -> Link?
 pub fn Mesh::decodes_opus(Self) -> Bool
 pub fn Mesh::device_id(Self) -> String
