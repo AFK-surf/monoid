@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 126.02 |
 | [d22cd0108](https://github.com/AFK-surf/monoid/commit/d22cd0108877e467355bf712e88d98a7ae0efd1f) move: the stations it may not go to are listed, ea | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 117.97 |
 | [f0a58f6f0](https://github.com/AFK-surf/monoid/commit/f0a58f6f07497deeaf5b6f7cac0065359c4ea40f) mbui app: Profile's subscriptions and every pool's | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 117.97 |
 | [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 2.55 | 3.6 | 15.73 | 37.09 | 62.5 | 32.34 | 68.4 | 96.03 | 155.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ea08aff29](https://github.com/AFK-surf/monoid/commit/ea08aff29c69fa5f152ebb10f20373aebc066884) mbui: 已迁移节点清扫：服务页随宽度不再重建网页舞台，整块 pick 改为分区 show 与按键 | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [15d0f113d](https://github.com/AFK-surf/monoid/commit/15d0f113d35fa0926c0eb687adcc8eeb0dbdb21e) app, mbui iOS: a chat's notification taken off as  | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [d5f0f7a20](https://github.com/AFK-surf/monoid/commit/d5f0f7a2010d05be821fb3d252acc3d446e6c7f1) app, core, station: what is not yet everyone's dec | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
-| [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [d22cd0108](https://github.com/AFK-surf/monoid/commit/d22cd0108877e467355bf712e88d98a7ae0efd1f) move: the stations it may not go to are listed, ea | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [f0a58f6f0](https://github.com/AFK-surf/monoid/commit/f0a58f6f07497deeaf5b6f7cac0065359c4ea40f) mbui app: Profile's subscriptions and every pool's | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
 | [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ea08aff29](https://github.com/AFK-surf/monoid/commit/ea08aff29c69fa5f152ebb10f20373aebc066884) mbui: 已迁移节点清扫：服务页随宽度不再重建网页舞台，整块 pick 改为分区 show 与按键 | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 54.84 |
 | [15d0f113d](https://github.com/AFK-surf/monoid/commit/15d0f113d35fa0926c0eb687adcc8eeb0dbdb21e) app, mbui iOS: a chat's notification taken off as  | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 55.2 |
 | [d5f0f7a20](https://github.com/AFK-surf/monoid/commit/d5f0f7a2010d05be821fb3d252acc3d446e6c7f1) app, core, station: what is not yet everyone's dec | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 53.4 |
-| [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 53.4 |
