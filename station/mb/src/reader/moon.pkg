@@ -2,6 +2,7 @@ import {
   "station/host",
   "station/wire",
   "station/sql",
+  "station/mcp_tools",
   "station/store_schema",
   "station/marks",
   "station/bindings",

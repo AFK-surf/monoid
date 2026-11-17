@@ -855,6 +855,8 @@ fn main {
         { "session": String(session), .. } => Some(@upjobs.step(db, session))
         _ => None
       }))
+    (Some("harness-mcp-tools"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mcp_tools.harness(host))
     (Some("workspace-up-jobs"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "workspace up jobs", all(db => @upjobs.workspace_step(db))))
     (Some("widget-sources"), Some(db), _) =>
