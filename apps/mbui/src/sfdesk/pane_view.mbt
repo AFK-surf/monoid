@@ -196,6 +196,13 @@ fn same_board(a : Source?, b : Source?) -> Bool {
 }
 
 ///|
+/// How far down the window the frame off the tape starts (the system's status bar over its top, edge to edge): the
+/// page's stack, the block and the sidebar's edge each under it, worked out here alone (the pane's room's `top`).
+fn pane_top() -> Double {
+  @ui.system_bars().top
+}
+
+///|
 fn pane_room_now(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let gated = lit_place() != "settings" && @settings.lock_waiting(settings_core(src, w), w.id)
   let bare = place_bare_now(lit_place())
@@ -207,8 +214,7 @@ fn pane_room_now(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let on_fold = if folded { None } else { side_on_fold() }
   let bar = (own && folded) || bare
   let s = if gated { 0.0 } else { on_fold.unwrap_or(wide.side_w.get()) }
-  let bars = @ui.system_bars()
-  let foot = if @sf.native_side() { cards_foot } else { bars.bottom }
+  let foot = if @sf.native_side() { cards_foot } else { @ui.system_bars().bottom }
   {
     gated,
     bare,
@@ -217,7 +223,7 @@ fn pane_room_now(src : Source, w : Workspace, ww : Double) -> PaneRoom {
     bar,
     peek: own && folded && wide.peeking.get(),
     s,
-    top: bars.top,
+    top: pane_top(),
     foot,
   }
 }
@@ -625,15 +631,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       |> ignore
     })
     |> ignore
-    // the page's pane in what the column leaves, under the bars at the top
+    // the page's pane in what the column leaves, its stack under the bars at the top (pane_top: a margin, as what is
+    // laid over what holds it takes none of that one's padding)
     row.box(fn(pane) {
       fold_goes.parts.push(pane)
-      pane
-      .grow(Is(1.0))
-      .padding(By(fn() { (0.0, @ui.system_bars().top, 0.0, 0.0) }))
-      |> ignore
+      pane.grow(Is(1.0)) |> ignore
       pane.box(fn(page) {
-        page.grow(Is(1.0)).over(Is(true)) |> ignore
+        page.grow(Is(1.0)).over(Is(true)).margin(By(fn() { (0.0, pane_top(), 0.0, 0.0) })) |> ignore
         // (the stack the tree's, each page its island: page_pane.mbt)
         pane_pages(page, src, tips)
       })
@@ -995,14 +999,14 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   let fold = fn() { wide.folded.set(!wide.folded.get()) }
   n
   .width(Is(Some(@ui.Space::px(S3))))
-  .height(By(fn() { Some(n.window().1) }))
+  .height(By(fn() { Some(dmax(0.0, n.window().1 - pane_top())) }))
   .offset(By(fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
-        let (_, now) = fold_target(src, w, n.window().0)
-        (fold_along(fold_drawn_at(holder), now).edge, 0.0)
+        let (r, now) = fold_target(src, w, n.window().0)
+        (fold_along(fold_drawn_at(holder), now).edge, r.top)
       }
-      None => (0.0, 0.0)
+      None => (0.0, pane_top())
     }
   }))
   |> ignore

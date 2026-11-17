@@ -1451,3 +1451,104 @@ test "on the tape, the pointer resting on a message's ⋯ till its tip shows: ba
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
 }
+
+///|
+/// The app in `mode` on an iPad's whole screen `w` × `h` (a finger its input, regular both ways), its system's status
+/// bar `top` high over the view's top and the home indicator's 20 under its foot, as its host says them edge to edge.
+fn ipad_at(mode : String, w : Double, h : Double, top : Double) -> @ui.Tester {
+  new_run()
+  let src = fixture(mode)
+  open_fixture_over(mode, src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, native=Finger)
+  say_room(t, "regular", "regular")
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":\{top},\"bottom\":20,\"left\":0,\"right\":0}}")
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// What of the app is in the status bar's room at the window's top (over `top`): where a press there lands on what
+/// does something (the frame's grounds reach under it, edge to edge, and take none), and words or an icon drawn there
+/// (as much of each as what cuts it shows).
+fn under_status_bar(t : @ui.Tester, w : Double, top : Double) -> Array[String] {
+  let out = []
+  for y in [0.5, top / 2.0, top - 0.5] {
+    let mut x = 0.5
+    let mut run = false
+    while x < w {
+      let pressed = t.press_lands_at(x, y) == "pressed"
+      if pressed && !run {
+        out.push("pressed at \{x},\{y}: \{t.sources_at(x, y)}")
+      }
+      run = pressed
+      x = x + 4.0
+    }
+  }
+  let seen = fn(b : (Double, Double, Double, Double), cut : (Double, Double, Double, Double)) {
+    let (x0, y0, x1, y1) = b
+    let (cx0, cy0, cx1, cy1) = cut
+    let top_seen = dmax(y0, cy0)
+    dmin(x1, cx1) > dmax(x0, cx0) && dmin(y1, cy1) > top_seen && top_seen < top - 0.01
+  }
+  for g in t.glyph_clips() {
+    if seen(g.0, g.1) {
+      let (x, y, _, _) = g.0
+      out.push("words at \{x},\{y}: \{t.sources_at(x, y)}")
+    }
+  }
+  for d in t.drawn_cut() {
+    let (kind, x, y, dw, dh, cut) = d
+    // (a shape the size of an icon or a mark, not a ground)
+    if kind == 11 && dw < 60.0 && dh < 60.0 && seen((x, y, x + dw, y + dh), cut) {
+      out.push("icon at \{x},\{y}: \{t.sources_at(x + dw / 2.0, y + dh / 2.0)}")
+    }
+  }
+  out
+}
+
+///|
+test "on an iPad's whole screen nothing of the wide frame is pressed or drawn under the system's status bar, the page's bar and the side panel's switch under it: on the pane and on the tape, a chat with its side panel shut and open, the sidebar folded, settings, a new chat, 文件, the places with no sidebar, the board, the safe mode's wait" {
+  let top = 24.0
+  let bad = []
+  // (landscape and upright, a large one's, and beside another app: split widths, on the tape and off it)
+  for size in [(1180.0, 820.0), (1366.0, 1024.0), (820.0, 1180.0), (1024.0, 1366.0), (694.0, 1024.0), (981.0, 820.0)] {
+    let (w, h) = size
+    for state in [
+        "chat", "chat-panel", "chat-folded", "chat-side", "settings-about", "newchat", "files", "connects", "usage", "board",
+        "lock-waiting",
+      ] {
+      let mode = if state.has_prefix("chat") || state == "connects" || state == "usage" { "chat" } else { state }
+      let t = ipad_at(mode, w, h, top)
+      match state {
+        "chat-panel" => {
+          tap_said(t, "打开侧栏")
+          t.run_for(@ui.move_most_ms)
+        }
+        "chat-folded" => {
+          @sfdesk.wide.folded.set(true)
+          t.run_for(@ui.move_most_ms)
+        }
+        // (on the tape, the sidebar in use)
+        "chat-side" => {
+          @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Side))
+          t.run_for(@ui.move_most_ms)
+        }
+        // (the places with no sidebar of their own: the pane's whole, on the tape's screens too)
+        "connects" | "usage" => {
+          @sfbase.go_place(state) |> ignore
+          t.run_for(@ui.move_most_ms)
+        }
+        _ => ()
+      }
+      let at = "\{w}x\{h} \{state}"
+      assert_eq(@sfdesk.is_wide(t.ctx()), true, msg=at)
+      let faults = under_status_bar(t, w, top)
+      if faults.length() > 0 {
+        bad.push("\{at}: \{faults.length()} under the status bar, the first \{faults[0]}")
+      }
+    }
+  }
+  if bad.length() > 0 {
+    fail(bad.join("\n"))
+  }
+}

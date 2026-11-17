@@ -1472,3 +1472,29 @@ test "an iPhone Duo upright: a picture waiting in the composer, rounder than a c
     assert_eq([r0, r1, r2, r3], [@sf.row_corner, @sf.row_corner, @sf.row_corner, @sf.row_corner])
   }
 }
+
+///|
+test "an iPhone Duo upright and on its side: the pane off the tape (连接 and 用量, with no sidebar of their own; the safe mode's wait) under the system's bars at the top, nothing of it pressed or drawn there" {
+  for p in [(669.0, 951.0, 82.0, 0.0), (951.0, 669.0, 24.0, 84.0)] {
+    let (w, h, top, side) = p
+    for state in ["connects", "usage", "lock-waiting"] {
+      new_run()
+      let mode = if state == "lock-waiting" { state } else { "chat" }
+      let src = fixture(mode)
+      open_fixture_over(mode, src)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able=true)
+      t.post(@hostapi.system_channel, "{\"bars\":{\"top\":\{top},\"bottom\":34,\"left\":0,\"right\":\{side}}}")
+      t.run_for(@ui.move_most_ms)
+      if state != "lock-waiting" {
+        @sfbase.go_place(state) |> ignore
+        t.run_for(@ui.move_most_ms)
+      }
+      let at = "\{w}x\{h} \{state}"
+      assert_false(@sfdesk.wide.tape.get(), msg=at)
+      let faults = under_status_bar(t, w, top)
+      if faults.length() > 0 {
+        fail("\{at}: \{faults.length()} under the system's bars, the first \{faults[0]}")
+      }
+    }
+  }
+}

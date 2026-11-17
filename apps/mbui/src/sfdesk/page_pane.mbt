@@ -146,7 +146,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
       Some(dmin(dmax(side_min, wide.side_w.get()), pane_w_at(src, b) - @sf.native_clear() - 2.0 * inset()))
     }))
     .height(By(fn() { Some(@sf.band_row_h()) }))
-    .offset(By(fn() { (inset(), @ui.system_bars().top + side_top_web + band_new_top) }))
+    .offset(By(fn() { (inset(), side_top_web + band_new_top) }))
     .says(Is(Some(@view.said(Button, label=w.name))))
     |> ignore
     let id = @ui.tree_read_out_id(b)
