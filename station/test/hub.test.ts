@@ -3486,7 +3486,7 @@ test("a process ended with work going in the background: its next turn is told w
   await r.close();
 });
 
-test("an account that has reported no levels does not hold back the ones that have", () => {
+test("an account that has reported no levels does not hold back the ones that have", async () => {
   const r = new Rig();
   r.edit((raw) => {
     const p = raw.profiles.find((p: any) => p.id === "cx");
@@ -3499,6 +3499,7 @@ test("an account that has reported no levels does not hold back the ones that ha
   assert.deepEqual(r.hub.accounts.modelEfforts("codex", "gpt-6-astra", "unknown"), ["minimal", "low", "medium", "high", "xhigh"], "kept to it, the runtime's usual ones");
   r.hub.accounts.setHealth(() => ({ check: { state: "ok", detail: "", models: ["gpt-6-astra"], checkedAt: 0 } }));
   assert.deepEqual(r.hub.accounts.modelEfforts("codex", "gpt-6-astra", null), ["minimal", "low", "medium", "high", "xhigh"], "none has said");
+  await r.close();
 });
 
 test("codex model efforts validate new chats, changes and pinned accounts", async () => {
