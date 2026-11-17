@@ -97,11 +97,12 @@ fn open_jobs_any(src : Source, w : Workspace) -> Bool {
 }
 
 ///|
-/// Where a row leads: a simulator or a view of a screen to that screen; a web service to its page, or beside its chat in
+/// Where a row leads: a simulator or a view of a screen to that screen; a terminal to it; a web service to its page, or beside its chat in
 /// its own tab where the page has a side panel; a task to its chat (its 任务 tab beside it where there is one); one in
 /// no chat nowhere (its row presses nothing, only its stop).
 priv enum OpenJobGoes {
   ToScreen(String, String, String)
+  ToTerminal(String, String)
   ToService(String, String, ChatRef?)
   ToChat(ChatRef, String)
   Nowhere
@@ -111,8 +112,11 @@ priv enum OpenJobGoes {
 fn open_job_goes(job : Json?) -> OpenJobGoes {
   let station = text(job, "station")
   let screen = text(field(job, "stop"), "screen")
+  let terminal = text(field(job, "stop"), "terminal")
   if screen != "" {
     ToScreen(station, screen, text(job, "name"))
+  } else if terminal != "" {
+    ToTerminal(station, terminal)
   } else if flag(job, "service") {
     ToService(station, text(job, "id"), @sfbase.job_chat(job))
   } else {
@@ -132,6 +136,10 @@ fn open_job_go(src : Source, job : Json?, close : () -> Unit) -> Unit {
     ToScreen(station, screen, name) => {
       close()
       @sfbase.open_screen(station, screen, Some(name))
+    }
+    ToTerminal(station, terminal) => {
+      close()
+      @sfbase.open_terminal(station, terminal, "", "")
     }
     ToService(station, id, chat) => {
       close()

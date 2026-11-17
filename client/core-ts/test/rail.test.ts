@@ -12,7 +12,7 @@ test("a_rail_kept_reads_as_the_places_known_once_each_none_kept_the_default", ()
   // What this build does not know left out (奏, gone, too), each once, in the order kept.
   const kept = railOf(["files", "nope", "chats", "files", 3, "decisions"]);
   assert.deepEqual(kept.items, ["files", "chats"]);
-  assert.deepEqual(kept.hidden, ["mine", "watching", "hidden", "archive", "attention", "stations", "profiles", "connects", "usage"]);
+  assert.deepEqual(kept.hidden, ["mine", "watching", "hidden", "archive", "attention", "remote", "stations", "profiles", "connects", "usage"]);
   assert.equal(kept.changed, true);
   // Kept empty: nothing in it, not the default.
   assert.deepEqual(railOf([]), { items: [], hidden: RAIL_PLACES, changed: true });
@@ -24,9 +24,10 @@ test("the_rail_view_says_every_place_its_words_kind_and_list_and_each_workspaces
   assert.deepEqual(view.places.map((p: any) => p.id), RAIL_PLACES);
   assert.deepEqual(view.places.find((p: any) => p.id === "chats"), { id: "chats", label: "对话", kind: "lists", list: "all" });
   assert.deepEqual(view.places.find((p: any) => p.id === "attention"), { id: "attention", label: "待处理", kind: "attention" });
+  assert.deepEqual(view.places.find((p: any) => p.id === "remote"), { id: "remote", label: "远程", kind: "places" });
   assert.deepEqual(view.places.find((p: any) => p.id === "stations"), { id: "stations", label: "Station", kind: "places" });
   assert.deepEqual(view.groups.map((g: any) => [g.kind, g.label, g.places]), [
-    ["places", "页面", ["files", "stations", "profiles", "connects", "usage"]],
+    ["places", "页面", ["files", "remote", "stations", "profiles", "connects", "usage"]],
     ["lists", "对话列表", ["chats", "mine", "watching", "hidden", "archive"]],
     ["attention", "提醒", ["attention"]],
   ]);
@@ -51,7 +52,7 @@ test("the_prefs_topic_says_the_rail_as_each_workspace_keeps_it", async () => {
   await host.settle();
   apply(host, values);
   const rail = v(values, 1).railView;
-  assert.deepEqual(rail.by.w1, { items: ["files", "chats"], hidden: ["mine", "watching", "hidden", "archive", "attention", "stations", "profiles", "connects", "usage"], changed: true });
+  assert.deepEqual(rail.by.w1, { items: ["files", "chats"], hidden: ["mine", "watching", "hidden", "archive", "attention", "remote", "stations", "profiles", "connects", "usage"], changed: true });
   assert.deepEqual(rail.all.items, RAIL_DEFAULT, "the others as before");
   // Kept as it was written: the view is the core's, not kept.
   assert.deepEqual(v(values, 1).rails.w1, ["files", "chats", "files"]);

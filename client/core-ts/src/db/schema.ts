@@ -205,19 +205,20 @@ export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object
     END`;
 
 /// What a chat's page reads of its station's overview, the JSON `j` (views.ts #chatOverview: its agents' connects,
-/// `#peopleOf`, `#shown`, `#whereIn`, `#sentElsewhere`, its station's update and context), as SQL: its `connects`,
-/// `disk`, `slackUsers`, `updates`, `feedback` and `context`, each as the overview has it, one absent left out; NULL
+/// `#peopleOf`, `#shown`, `#whereIn`, `#sentElsewhere`, its station's update and context, the `beta` features it runs:
+/// `canTerminal`), as SQL: its `connects`, `disk`, `slackUsers`, `updates`, `feedback`, `context` and `features`, each
+/// as the overview has it, one absent left out; NULL
 /// where the overview is not an object. Kept apart from the list's part and the row's (`station_part.chat`): a chat's
 /// first answer read the whole overview of its station (25-27 KB of the real-size workspace's). Its agents' accounts
 /// are not in it: each agent's own profile is read alone (overviewProfilesOf).
 export const overviewChatOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('connects', 'disk', 'slackUsers', 'updates', 'feedback', 'context')))
+      WHERE o.key IN ('connects', 'disk', 'slackUsers', 'updates', 'feedback', 'context', 'features')))
     END`;
 
 /// The fields of an overview a chat's page reads (overviewChatOf), for where it is made of an overview in the core (one
 /// shown with what is being done to it here: data.ts overviewChat).
-export const OVERVIEW_CHAT = ["connects", "disk", "slackUsers", "updates", "feedback", "context"] as const;
+export const OVERVIEW_CHAT = ["connects", "disk", "slackUsers", "updates", "feedback", "context", "features"] as const;
 
 /// An overview's profiles (the JSON `j`), each whole, by its id, as SQL: what a chat's agent reads of the one it runs
 /// on, read by its key (account.ts overviewProfile: `profiles -> '$."<id>"'`, SQLite taking that one of them), never

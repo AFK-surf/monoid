@@ -177,6 +177,8 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
   bindings.append(@sf.reader_bindings())
   // (the files' own where they are: sfdesk's files.mbt)
   bindings.append(files_bindings())
+  // (Farview browser tabs and the Remote multi-tab workbench: sfpages' farview_tab.mbt and remote_node.mbt)
+  bindings.append(remote_bindings())
   // (↓ ↑ in a chat's outline, with the cursor in its field too: the row the keys are at, sfpages' outline.mbt)
   bindings.push({ keys: [stroke(@ui.key_code_down, 0)], action: "outline.down", when: In("Outline") })
   bindings.push({ keys: [stroke(@ui.key_code_up, 0)], action: "outline.up", when: In("Outline") })
@@ -300,5 +302,30 @@ fn files_bindings() -> Array[@view.Binding] {
     // (↓ ↑ in 前往文件夹, with the cursor in its field: what is chosen under it, sfdesk's files_go.mbt)
     b(@ui.key_code_down, 0, "files.go_to.down", In("GoTo")),
     b(@ui.key_code_up, 0, "files.go_to.up", In("GoTo")),
+  ]
+}
+
+///|
+/// Farview browser tabs (`Farview`) and the Remote multi-tab workbench (`Remote`), the app's own, never changed.
+fn remote_bindings() -> Array[@view.Binding] {
+  let farview : @view.KeyWhen = In("Farview")
+  let remote : @view.KeyWhen = All([In("Remote"), Not(In("Field"))])
+  let shift = @ui.mod_shift_key
+  let b = fn(code : Int, mods : Int, action : String, when : @view.KeyWhen) -> @view.Binding {
+    { keys: [{ code, mods }], action, when }
+  }
+  [
+    b(@ui.key_of_char('l'), mod_key(), "farview.address", farview),
+    b(@ui.key_of_char('r'), mod_key(), "farview.reload", farview),
+    b(@ui.key_of_char('['), mod_key(), "farview.back", farview),
+    b(@ui.key_of_char(']'), mod_key(), "farview.forward", farview),
+    b(@ui.key_of_char('t'), mod_key(), "farview.tab_new", farview),
+    b(@ui.key_of_char('w'), mod_key(), "farview.tab_close", farview),
+    b(@ui.key_of_char('t'), mod_key(), "remote.tab_new", remote),
+    b(@ui.key_of_char('w'), mod_key(), "remote.tab_close", remote),
+    b(@ui.key_tab, @ui.mod_ctrl, "remote.tab_next", remote),
+    b(@ui.key_of_char(']'), mod_key() | shift, "remote.tab_next", remote),
+    b(@ui.key_tab, @ui.mod_ctrl | shift, "remote.tab_back", remote),
+    b(@ui.key_of_char('['), mod_key() | shift, "remote.tab_back", remote),
   ]
 }

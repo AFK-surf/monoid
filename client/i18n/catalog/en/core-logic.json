@@ -356,6 +356,8 @@
   "core-logic.jobs.long.services": "Long-running services",
   "core-logic.jobs.long.shutdown": "Shut down",
   "core-logic.jobs.long.simulators": "Simulators left running",
+  "core-logic.jobs.long.terminals": "Terminals left open",
+  "core-logic.jobs.long.endTerminal": "End",
   "core-logic.jobs.long.views": "Remote connections left open",
   "core-logic.jobs.no_notice": "No notices yet · last output {ago}",
   "core-logic.jobs.notices": {

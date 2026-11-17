@@ -115,7 +115,7 @@ fn side_change_from(src : Source, r : ChatRef, action : String, tab : String?, n
   if tabs.length() > 0 && (action == "open" || action == "front") {
     tape_bring_side(r)
   }
-  // a web service's or a visualization's tab closed lets its page go
+  // a web service's, visualization's, screen's or terminal's tab closed lets its session go
   match (action, tab) {
     ("close", Some(t)) => tab_let_go(src, r, t)
     ("clear", _) => for t in tabs { tab_let_go(src, r, t) }

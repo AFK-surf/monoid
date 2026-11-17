@@ -1436,6 +1436,13 @@ pub fn View::scrolls(
     (self.tree.glides_gone)(s.serial)
   })
   |> ignore
+  // (the soft keyboard come up or gone down: what the focus is kept in sight by down it placed anew in this same pass,
+  // whether anything laid out reads the keyboard or not (Tree::holds_now: its room read as it is now))
+  if !across {
+    let tree = self.tree
+    let at = self.at
+    self.reacts(fn() { (tree.env.keyboard_inset)() }, fn(_) { if tree.focus_holds.contains(at) { tree.marked() } }, at_start=false)
+  }
   self
   // (the wheel up or down more than across, as an old view's box kept to a height takes it: sideways_wheel_moves)
   .on_wheel_moves(fn(w) {
@@ -1584,7 +1591,8 @@ pub fn View::scrolls(
     let vh = if across {
       self.tree.nodes[self.at].flex.width
     } else {
-      self.tree.nodes[self.at].flex.height - dmax(0.0, @signals.untracked(s.foot_covered))
+      self.tree.nodes[self.at].flex.height -
+      dmax(dmax(0.0, @signals.untracked(s.foot_covered)), @signals.untracked(fn() { self.keyboard_cover() }))
     }
     let tc = if across { 0.0 } else { dmax(0.0, @signals.untracked(fn() { (s.top_cover)() })) }
     // (where it is, read: stopped and sent only where something of it has to move. In sight already, it is left as it
@@ -1605,10 +1613,23 @@ pub fn View::scrolls(
       (
         self.tree.nodes[self.at].flex.height,
         dmax(0.0, (s.top_cover)()),
-        dmax(0.0, (s.foot_covered)()),
+        dmax(dmax(0.0, (s.foot_covered)()), self.keyboard_cover()),
       )
     })
   })
+}
+
+///|
+/// How much of column `self`'s foot the soft keyboard covers (Tree::drawn_by's `keyboard_inset`, over the window's foot),
+/// in its own terms: none where it ends over the keyboard's top (laid out above it already by what holds it, nothing
+/// taken twice), or the keyboard is down.
+fn View::keyboard_cover(self : View) -> Double {
+  let kb = dmax(0.0, (self.tree.env.keyboard_inset)())
+  let win = self.tree.last_h
+  guard kb > 0.0 && win > 0.0 else { return 0.0 }
+  let (_, vy, vs) = self.tree.placed(self.at)
+  let sc = if vs > 0.0 { vs } else { 1.0 }
+  dmax(0.0, (vy + self.tree.nodes[self.at].flex.height * sc - (win - kb)) / sc)
 }
 
 ///|

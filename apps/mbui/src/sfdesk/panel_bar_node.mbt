@@ -19,11 +19,23 @@ priv enum SideMark {
 /// service's its job's dot, a mini-program its own (`.mbui` / `.wasm`: its manifest's), else the icon of what it shows.
 fn side_mark_of(src : Source, r : ChatRef, v : ChatView?, tab : String) -> SideMark {
   match station_tab(tab) {
-    Some((kind, _, _)) =>
+    Some((kind, station, screen)) =>
       return Icon(
         match kind {
           "drive" => "folder"
           "adb" => "phone"
+          "terminal" => "terminal"
+          "screen" => {
+            let card = src.topic("screenCard", { "station": Json::string(station), "screen": Json::string(screen) }).get().value
+            let sk = text(card, "kind")
+            if sk == "simulator" {
+              "phone"
+            } else if sk == "browser" || screen.has_prefix("browser:") {
+              "web"
+            } else {
+              "monitor"
+            }
+          }
           _ => "monitor"
         },
       )
@@ -127,7 +139,29 @@ fn side_bar_node(
         })
       }
     })
-    // the station's screen in front: to a window of its own (a desktop's), its tab closed here (station_tabs.mbt)
+    // the station's screen or terminal in front: expand to full window, or pop out to a window of its own (a screen's
+    // with touch its own 全屏 does it, over all of it with the system's bars put away: sfpages' full_asked, so not
+    // twice)
+    let bar_linked = fn() { if on_tape { None } else { @sf.bar_keys_link() } }
+    let expandable_page = fn() {
+      match station_tab_page(r, front()) {
+        Some(Screen(_)) if @sf.soft_keyboard() => None
+        p => p
+      }
+    }
+    bar.show(at_once=true, fn() { expandable_page() is Some(_) }, fn(e) {
+      e.shrink(Is(0.0)) |> ignore
+      @sf.icon_button_node(e, "expand", fn() { @sf.t("web-main.preview.fullWindow") }, fn() {
+        match expandable_page() {
+          Some(p) => {
+            @sfbase.history_push()
+            app.nav.push(p)
+          }
+          None => ()
+        }
+      }, tips~, linked=bar_linked)
+      |> ignore
+    })
     let window_page = fn() {
       match station_tab_page(r, front()) {
         Some(p) if @sfbase.window_opens_for(p) => Some(p)
@@ -142,7 +176,7 @@ fn side_bar_node(
           Some(p) if @sfbase.open_window(p) => side_change(src, r, "close", Some(tab))
           _ => ()
         }
-      }, tips~)
+      }, tips~, linked=bar_linked)
       |> ignore
     })
     // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row under it; any other

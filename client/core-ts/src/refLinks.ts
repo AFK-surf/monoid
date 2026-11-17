@@ -114,6 +114,17 @@ export function screenOfLink(href: string): { station: string; screen: string } 
   }
 }
 
+/// The terminal a link names (`…/w/<workspace>/s/<station>/terminal/<id>`): its station and its id. Null otherwise.
+export function terminalOfLink(href: string): { station: string; terminal: string } | null {
+  const m = /^(?:https?:\/\/[^/]+)?\/w\/([^/?#\s]+)\/s\/([^/?#\s]+)\/terminal\/([^/?#\s]+)\/?$/.exec(href);
+  if (!m) return null;
+  try {
+    return { station: `${decodeURIComponent(m[1]!)}/${decodeURIComponent(m[2]!)}`, terminal: decodeURIComponent(m[3]!) };
+  } catch {
+    return null;
+  }
+}
+
 /// The station a link to its 共享调试 names (`…/w/<workspace>/s/<station>/adb`, as its agents' `adb_devices` tool links
 /// it), as `<workspace>/<station>`. Null otherwise.
 export function adbOfLink(href: string): string | null {
@@ -155,11 +166,13 @@ export function githubOf(url: string): { kind: "pull" | "issue"; repository: str
 /// pull request's or an issue's (`peek`: its card over it is that one's, bars while it is read). Null for any other
 /// link. The clients take it from the core with each link (markdown.ts, personWords, things.ts), reading none of it
 /// themselves.
-export type LinkTo = { chat?: true; card?: "screen" | "adb" | "service"; station?: string; screen?: string; job?: string; peek?: "pull" | "issue" };
+export type LinkTo = { chat?: true; card?: "screen" | "terminal" | "adb" | "service"; station?: string; screen?: string; terminal?: string; job?: string; peek?: "pull" | "issue" };
 export function linkTo(href: string): LinkTo | null {
   const chat = isChatLink(href) ? { chat: true as const } : {};
   const screen = screenOfLink(href);
   if (screen) return { ...chat, card: "screen", station: screen.station, screen: screen.screen };
+  const terminal = terminalOfLink(href);
+  if (terminal) return { ...chat, card: "terminal", station: terminal.station, terminal: terminal.terminal };
   const adb = adbOfLink(href);
   if (adb) return { ...chat, card: "adb", station: adb };
   const service = serviceOfLink(href);
