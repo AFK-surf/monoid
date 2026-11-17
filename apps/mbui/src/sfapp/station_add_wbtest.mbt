@@ -161,11 +161,13 @@ test "添加 station: named, 生成命令 makes the command (workspace.enroll) a
     // the field done with: the keys and the input method let go of
     assert_false(t.focus_said().has_prefix("TextField"), msg="\{at}: \{t.focus_said()}")
     assert_false(t.ime().0, msg=at)
-    // the commands to run there, macOS's and Linux's and Windows' each under its system's name, what runs them, the
-    // wait; the choices gone, 取消 alone at its foot
+    // the commands to run there, macOS's and Linux's, Windows' and still.fail's container's each under its system's
+    // name, what runs them, the wait; the choices gone, 取消 alone at its foot
     for w in [
       "在该机器的终端中执行：", "macOS、Linux", "curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b", "Windows（PowerShell）",
-      "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b", "等待机器加入… 执行命令后将自动继续 · 命令 1 小时内有效",
+      "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b", "Docker",
+      "docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b",
+      "等待机器加入… 命令 1 小时内有效",
       "取消",
     ] {
       assert_true(sa_drawn(t, w), msg="\{at}: \{w}")
@@ -180,7 +182,7 @@ test "添加 station: named, 生成命令 makes the command (workspace.enroll) a
     assert_eq(joined.length(), 1, msg=at)
     assert_false(sa_drawn(t, "取消"), msg=at)
     assert_false(sa_drawn(t, "在该机器的终端中执行："), msg=at)
-    sa_leaving(t, at, fn() raise { t.click(Button, label="完成") }, seen=["station 是一台运行 still.fail 的机器。为它命名，然后在该机器的终端中执行生成的命令，它会安装 still.fail 并加入。", joined[0].0, "完成"], unseen=["取消", "在该机器的终端中执行：", "名称"])
+    sa_leaving(t, at, fn() raise { t.click(Button, label="完成") }, seen=["station 是一台运行 still.fail 的机器。为它命名，再到它的终端里执行生成的命令。", joined[0].0, "完成"], unseen=["取消", "在该机器的终端中执行：", "名称"])
     @settings.fixture_motion(0)
   }
 }
@@ -261,7 +263,7 @@ test "添加 station: 添加这台 Mac pressed, closed as it showed, the station
     let calls : Array[Made] = []
     let t = sa_open(calls, platform=0, wide~)
     t.run_for(@ui.move_most_ms)
-    sa_leaving(t, at, fn() raise { t.click(Button, label="添加这台 Mac") }, seen=["也可以直接添加这台 Mac：在这里下载 station 并加入这个 workspace，不用到终端里执行命令。", "station 是一台运行 still.fail 的机器。为它命名，然后在该机器的终端中执行生成的命令，它会安装 still.fail 并加入。", "名称"], unseen=[])
+    sa_leaving(t, at, fn() raise { t.click(Button, label="添加这台 Mac") }, seen=["也可以直接添加这台 Mac：在这里下载 station 并加入这个 workspace，不用到终端里执行命令。", "station 是一台运行 still.fail 的机器。为它命名，再到它的终端里执行生成的命令。", "名称"], unseen=[])
     assert_eq(t.app_told("local_station_act").length(), 1, msg=at)
     assert_true(t.app_told("local_station_act")[0].has_prefix("install"), msg=at)
   }

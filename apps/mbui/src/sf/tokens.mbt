@@ -796,10 +796,6 @@ pub let card_foot_out : @ui.Style = @ui.style(mb=room(card_corner - small_corner
 pub let panel_words : Double = card_pad
 
 ///|
-/// A command's box's corner: a block's on a card, its copy button corner_inset in from its corner.
-pub let command_box_corner : Double = row_corner
-
-///|
 /// A button's height with keyboard and mouse (34, as everything pressed is: a row, a field; button_height): a capsule,
 /// @ui.capsule_in(card_corner, 34) in from a card's corner where it stands in one.
 pub let button_h : Double = menu_row_min

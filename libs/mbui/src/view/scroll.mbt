@@ -948,13 +948,14 @@ pub fn View::scroll_holding(self : View, across? : Bool = false) -> Scroll? {
 /// along its right, as that says (scroll_bar.mbt; none: none). Scrolling across (Scroll::across): a row, what it holds
 /// laid out as wide as it is, given way to nothing across where what holds it is narrower; a hold its own once it moves
 /// across past the slop; its bar along its foot, `bar_in` in from either end (under what it is for, where what it holds
-/// reaches past that: Ctx::sideways's), room under what it holds for it while it can go (its bar never over what it
-/// holds' last line), none while it cannot. `top_covered`: down a column, how tall what lies over its top is now (the
+/// reaches past that: Ctx::sideways's), over what it holds' foot, no room kept for it (the user, 2026-11-17:
+/// 「滚动条不应该占位置，也不应该没有」, every container so). Every bar keeps clear of the round corners of what cuts
+/// it (View::corner_clear). `top_covered`: down a column, how tall what lies over its top is now (the
 /// bar a page's list runs under: its room), a live value its page says once (Scroll::top_covered); what is brought into
 /// sight comes to rest under it. `bar_clear`: down a column, how much of its top and its foot its bar keeps clear of,
 /// as it is now (by default what covers its top), as an old view's list's bar does. `bar_here`: whether this one has
 /// its bar now, as that changes (one of several scrolled beside each other as one, Scroll::beside: the last of a long
-/// table's pieces, its bar under its last row alone): the bar drawn and its room kept only while it says so; a hand
+/// table's pieces, its bar under its last row alone): the bar drawn only while it says so; a hand
 /// on any of them shows it (Scroll's `peers_scrolled`).
 pub fn View::scrolls(
   self : View,
@@ -1281,21 +1282,6 @@ pub fn View::scrolls(
     // (down a column that is no page's list: room under what it holds for what was pressed in it, press_stays.mbt)
     if !across && s.whole is None {
       held.margin(By(fn() { (0.0, 0.0, 0.0, press_room.get()) })) |> ignore
-    }
-    // (across with a bar: room at its foot for it while it can go, as laid out (none while it cannot), its bar never
-    // over what it holds' last line: Ctx::sideways's bar_room, from this layout's told reach, not a frame's before)
-    // (under what it holds, its own room at its foot counted, as Ctx::sideways' `foot` is the more of its padding there
-    // and the bar's room: what of the bar's room its padding there has not, under it)
-    match bar {
-      Some(b) if across =>
-        held.margin(By(fn() {
-          let room = if bar_room() && s.most_now() > 0.5 { b.size + 2.0 * b.inset } else { 0.0 }
-          let st = self.tree.nodes[held.at].flex.style
-          let pad = if st.padding_bottom_kind() == @flex.LEN_PT { st.padding_bottom_value() } else { 0.0 }
-          (0.0, 0.0, 0.0, if room > pad { room - pad } else { 0.0 })
-        }))
-        |> ignore
-      _ => ()
     }
     build(held)
   })

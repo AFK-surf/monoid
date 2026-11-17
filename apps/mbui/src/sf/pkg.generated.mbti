@@ -305,7 +305,7 @@ pub let code_big_size : @ui.TextSize
 
 pub fn code_block(@ui.Ctx, String, String, colours? : String?, face? : Int32?) -> Unit
 
-pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?) -> Unit
+pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?, face? : () -> Int?, command? : Bool) -> Unit
 
 pub let code_edge : @ui.Color
 
@@ -325,7 +325,6 @@ pub fn coming_mark(@ui.Ctx, String, Double?, Double, Int64) -> Unit
 
 pub fn coming_mark_node(@view.View, () -> Double, Double, () -> Int64) -> Unit
 
-pub let command_box_corner : Double
 
 pub fn compare_natural(String, String) -> Int32
 
@@ -357,7 +356,6 @@ pub let confirm_w : Double
 
 pub let copied_ms : Double
 
-pub fn copy_command_node(@view.View, () -> String, copy~ : String, copied~ : String) -> Unit
 
 pub let corner_fit : @paint.CornerFit
 
