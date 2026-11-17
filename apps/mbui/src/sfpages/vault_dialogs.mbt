@@ -31,7 +31,7 @@ pub fn vault_add(core : Core, here : Here, from~ : @sf.Beside) -> Unit {
           k,
           @sf.t("web-pages.vault.addKind.slack"),
           note=@sf.t("web-pages.vault.addKind.slackDetail"),
-          mark=fn(c, size) { @sf.drawable(c, "slack", size) |> ignore },
+          mark=Drawn("slack"),
         )
       _ =>
         @sf.choice(

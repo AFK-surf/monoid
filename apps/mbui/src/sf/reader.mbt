@@ -1050,11 +1050,6 @@ let desk_found_words : @ui.TextStyle = @ui.text_style(size=Meta, wrap=false, nar
 let desk_hairline : @ui.Style = @ui.css("row w=Full h=S0_5")
 
 ///|
-/// The panel: under the bar, at the window's right, a line before it, 320 wide.
-// kept across runs: a value (no field of it changes)
-pub let desk_panel_place : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
 // kept across runs: a value (no field of it changes)
 pub fn desk_panel_top() -> @ui.Style {
   @ui.style(w=Full, h=Fixed(viewer_bar_under()))

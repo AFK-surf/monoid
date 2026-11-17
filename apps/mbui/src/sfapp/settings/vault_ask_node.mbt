@@ -744,7 +744,7 @@ pub fn vault_outcome_node(
 }
 
 ///|
-/// Request `request()` in workspace `ws()` as a card in `v` (vault_ask's, as nodes), as the vaults topic lists it (the
+/// Request `request()` in workspace `ws()` as a card in `v`, as the vaults topic lists it (the
 /// vault page's waiting requests, the viewer's to answer): what is asked (`ask()`), and its answer at its foot as that
 /// topic says it, `extra` after its buttons (its chat's way there).
 pub fn vault_request_node(
@@ -759,7 +759,7 @@ pub fn vault_request_node(
   // not the view whole as another request or a vault's count changes)
   let said_now = @signals.computed(fn(_) { topic_answer(core, ws(), request(), true, None) })
   let said = fn() { said_now.get() }
-  // (in its card's foot corners where it is answered here: vault_ask's `foot`)
+  // (in its card's foot corners where it is answered here: vault_card's `foot`)
   let foot = @signals.untracked(said) is Some((Approve(_) | SetUp, _, _))
   @sf.ask_card_node(v, fn(k) {
     vault_asked_node(k, ask, false)

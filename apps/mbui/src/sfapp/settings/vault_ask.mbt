@@ -302,30 +302,6 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
 }
 
 ///|
-/// Request `request` in workspace `ws` as a card, from the vaults topic (the vault page's waiting requests): what is
-/// asked, and its answer at the foot (`mine`, `who`, `extra` as vault_actions').
-pub fn vault_ask(
-  c : @ui.Ctx,
-  core : Core,
-  ws : String,
-  request : String,
-  ask : Asked,
-  mine : Bool,
-  who? : String? = None,
-  extra? : (() -> Unit)? = None,
-) -> Unit {
-  let answer = topic_answer(core, ws, request, mine, who)
-  @sf.card(c, fill=ask.picks_file(), fn() {
-    vault_asked(c, ask)
-    match answer {
-      Some((a, save, _)) => vault_foot(c, core, ws, request, a, save, typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, extra~, foot=a is (Approve(_) | SetUp), describe=ask.describe, remove=ask.remove)
-      None => ()
-    }
-  })
-  |> ignore
-}
-
-///|
 /// Request `request` in workspace `ws` as its card where it is asked (a chat's): what is asked, and its
 /// answer at the foot as the card says it (`answer`: card_answer), whole with its message. `ended`: how it went
 /// (granted, denied, else ended; `scope`), once answered while the card shows: said in its answer's place
@@ -399,12 +375,6 @@ pub let answered_fade_ms : Double = 200.0
 /// What is asked as its card alone, with no answer at its foot (AskCard without children: where nothing is answered).
 pub fn vault_ask_words(c : @ui.Ctx, ask : Asked) -> Unit {
   @sf.card(c, fn() { vault_asked(c, ask) }) |> ignore
-}
-
-///|
-/// The request's original contents without its card or its answer, for a read-only history panel.
-pub fn vault_ask_details(c : @ui.Ctx, ask : Asked) -> Unit {
-  vault_asked(c, ask, full_command=true)
 }
 
 ///|
@@ -605,7 +575,7 @@ pub fn vault_actions(c : @ui.Ctx, core : Core, ws : String, request : String, mi
 /// The answer to request `request` in workspace `ws` as `answer` says (`save`: one to keep a secret; `typed`: its secret
 /// the person's to type in, its field over them): the buttons (`foot`: last on its card, in the card's foot corners:
 /// @sf.foot_reach), or a line where there is none to give here.
-/// `extra`: after the buttons (the vault page's 打开对话). Tapped, the button turns till what it did shows: its card saying how it went
+/// Tapped, the button turns till what it did shows: its card saying how it went
 /// (the core says so at once), or the request gone from the vault page.
 pub fn vault_foot(
   c : @ui.Ctx,
@@ -617,7 +587,6 @@ pub fn vault_foot(
   typed? : Typed? = None,
   timeout_kind? : String = "",
   timeout_seconds? : Int = 0,
-  extra? : (() -> Unit)? = None,
   foot? : Bool = false,
   describe? : Bool = false,
   remove? : Bool = false,
@@ -756,21 +725,9 @@ pub fn vault_foot(
     None => None
   }
   // its buttons, last in the card's foot corners; how long beside them where the line has the room for it, else on a
-  // line of its own over them (never under: the buttons keep the foot), its ends where theirs are (over_foot_reach).
-  // Whether it has the room: the widths they were laid at, against the card's width inside it (the last frame's; none
-  // yet: beside them). Not the foot's own: it is as wide as what is in it, a line short of the room once one goes over
-  let room_id = c.id("vault/" + request + "/room")
-  let acts_id = c.id("vault/" + request + "/acts")
+  // line of its own over them (never under: the buttons keep the foot), its ends where theirs are: the foot's flow,
+  // its later line over its first (flow_reverse), laid out in the pass that lays out the card, nothing read back.
   let picks = !save && scopes.length() > 1
-  let over = picks &&
-    (match (c.laid_size(room_id), c.laid_size(acts_id), c.laid_size(c.id("vault/" + request + "/scope"))) {
-      (Some((fw, _)), Some((aw, _)), Some((sw, _))) => {
-        // (its foot reaching out past the card's words to its corners on a page card: that room the line's too)
-        let out = if foot { 2.0 * dmax(0.0, @sf.card_pad - @sf.card_foot_in(@sf.button_height())) } else { 0.0 }
-        aw + ask_foot_gap + sw > fw + out + 0.5
-      }
-      _ => false
-    })
   let pick = fn() {
     if picks && timed {
       let words = if scope == "once" { tr("android-settings.vault.scope.once") } else {
@@ -793,7 +750,7 @@ pub fn vault_foot(
     }
   }
   let acts = fn() {
-    c.box(style=@sf.ask_foot, id=acts_id, fn() {
+    c.box(style=@sf.ask_foot, fn() {
       if answer is SetUp {
         // kept only in a vault that is on here: the way to turn it on first
         @sf.button(c, tr("android-settings.vault.turnOn"), key="vault/" + request + "/on", tone=Primary, on_press=fn() {
@@ -846,19 +803,10 @@ pub fn vault_foot(
     |> ignore
   }
   @sf.card_foot_words(on=foot, fn() {
-    c.box(style=ask_room, id=room_id, fn() {
-      if over {
-        c.box(style=if foot { ask_over.then(@sf.over_foot_reach(@sf.button_height())) } else { ask_over }, pick) |> ignore
-      }
+    c.box(style=ask_room, fn() {
       c.box(style=if foot { @sf.ask_foot.then(@sf.foot_reach(@sf.button_height())) } else { @sf.ask_foot }, flow_reverse=true, line_gap=@sf.ask_foot_lines(), fn() {
         acts()
-        if !over {
-          pick()
-        }
-        match extra {
-          Some(f) => f()
-          None => ()
-        }
+        pick()
       })
       |> ignore
     })
@@ -890,10 +838,6 @@ let ask_file : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 ///|
 // kept across runs: a value (no field of it changes)
 let ask_file_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Fg, wrap=false, w=Cut)
-
-///|
-/// Between the answer's buttons (@sf.ask_foot's gap), to say whether how long has the room beside them.
-let ask_foot_gap : Double = 10.0
 
 ///|
 /// The answer across the card, its width what says whether how long has the room beside the buttons.

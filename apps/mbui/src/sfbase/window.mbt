@@ -170,17 +170,6 @@ pub fn lone_page_replace(next : Page) -> Unit {
 }
 
 ///|
-/// The window of this run beside its first showing `screen` on `station` now (window_has_screen), by its id.
-pub fn window_with_screen(station : String, screen : String) -> Int? {
-  for wid, p in windows_here_show {
-    if p is Screen(at) && at.station == station && at.screen == screen {
-      return Some(wid)
-    }
-  }
-  None
-}
-
-///|
 /// Window `wid` of this run closed (@ui.when_window_closed): forgotten, and what it showed told (window_page_left).
 fn window_here_gone(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }

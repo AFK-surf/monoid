@@ -105,15 +105,6 @@ pub fn icon(c : @ui.Ctx, name : String, size? : Double = 16.0, color? : Int64, b
 let play_mark_share : Double = 0.64
 
 ///|
-/// A video's play mark over its picture (the web's msgVideoPlay): a disc `side` across of `shade`, the solid triangle
-/// in it white, its weight (where the triangle balances, not its box) in the disc's middle: play-mark draws it so.
-pub fn play_mark(c : @ui.Ctx, side : Double, shade : @ui.Color) -> Int {
-  c.box(style=@ui.style(w=Fixed(side), h=Fixed(side), radius=Full, bg=shade, align=ACenter, justify=JCenter), fn() {
-    icon(c, "play-mark", size=side * play_mark_share, color=white) |> ignore
-  })
-}
-
-///|
 /// A video's play mark over its picture in `parent` (play_mark's, as nodes): a disc `side` across of `shade`, the solid
 /// triangle in it white, its weight in the disc's middle. The node.
 #callsite(autofill(loc))
@@ -403,22 +394,6 @@ fn icon_parts_shapes(name : String, parts : Array[Int], size : Double, ink : Int
       s
     }
   }
-}
-
-///|
-/// Icon `name` with its lines drawn as `trace` gives them (each line's place among them, from 0, and its points in the
-/// 24 grid: the lines to draw for it, none for nothing), as `icon` draws it whole: a mark drawn on or drawn back along
-/// its strokes (sync_key's tick). Its lines only: built each frame it is asked for, for what moves.
-fn icon_traced(
-  c : @ui.Ctx,
-  name : String,
-  trace : (Int, Array[Double]) -> Array[Array[Double]],
-  size? : Double = 16.0,
-  color? : Int64,
-) -> Int {
-  let color = color.unwrap_or(theme().p.text)
-  let data = icon_traced_data(name, trace)
-  c.shapes(icon_shapes(data, size / 24.0, color), w=Px(size), h=Px(size), name="sf/icon/\{name}/\{size}/\{color}")
 }
 
 ///|

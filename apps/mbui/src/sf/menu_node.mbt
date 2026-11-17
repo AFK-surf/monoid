@@ -457,13 +457,8 @@ fn menu_row_node(
     // (its own mark in that column where it has no check nor icon of its own to go there: a Slack account among kinds
     // of secret by their icons; one beside a check or an icon goes after it)
     let mark_leads = fn() { menu_mark_leads(item(), extra) && lead() }
-    // (that mark, drawn by the old frame, as wide as the check's column, where it goes)
-    let mark_in = fn(at : @view.View, m : (@ui.Ctx, Double) -> Unit) {
-      @ui.old(at, fn(c) { m(c, menu_check_w) })
-      .width(Is(Some(menu_check_w)))
-      .height(Is(Some(menu_check_w)))
-      |> ignore
-    }
+    // (that mark, as wide as the check's column, where it goes)
+    let mark_in = fn(at : @view.View, m : ChoiceMark) { choice_mark_node(at, m, menu_check_w) }
     // (its first line: its column before its words, where the menu has one (a choice's check, or its icon, else its
     // own mark), its own mark after it otherwise, its words, and its value pushed to its end)
     let first_line = fn(into : @view.View) {
@@ -560,11 +555,11 @@ fn menu_row_node(
 
 ///|
 /// What a row of a menu has besides its item (a pick's choice's): what it is under its words (`note`), what it is at
-/// now at its end (`value`), its own mark drawn by the old frame (`mark`, given the column's width).
+/// now at its end (`value`), its own mark (`mark`, as wide as the column).
 pub(all) struct MenuExtra {
   note : String
   value : String
-  mark : ((@ui.Ctx, Double) -> Unit)?
+  mark : ChoiceMark?
 }
 
 ///|

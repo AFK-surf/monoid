@@ -75,9 +75,7 @@ fn open_pick_station(stations : Array[Json], go : (String) -> Unit, from~ : @sf.
   // (each by its mark, as the sidebar and a chat's bar have it)
   let choices = stations.map(fn(s) {
     let sv = Some(s)
-    @sf.choice(text(sv, "station"), text(sv, "name"), mark=fn(c, size) {
-      @sf.station_icon(c, text(sv, "emoji"), text(sv, "icon"), size, @sf.theme().p.text)
-    })
+    @sf.choice(text(sv, "station"), text(sv, "name"), mark=OfStation(text(sv, "emoji"), text(sv, "icon"), false, fn() { @sf.theme().p.text }))
   })
   @sf.pick(tr("android-settings.pickStation"), choices, "", go, from~)
 }

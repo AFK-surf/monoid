@@ -79,18 +79,6 @@ pub fn Surface::style(self : Surface) -> @ui.Style {
 }
 
 ///|
-/// The same at its start only, its end where it is (bleedStart).
-pub fn bleed_start(x : Double) -> @ui.Style {
-  @ui.style(pl=room(x), ml=room(-x))
-}
-
-///|
-/// The same at its end only (bleedEnd).
-pub fn bleed_end(x : Double) -> @ui.Style {
-  @ui.style(pr=room(x), mr=room(-x))
-}
-
-///|
 /// A ground reaching `y` above and below: the line it sits in no taller for it (bleedY).
 pub fn bleed_y(y : Double) -> @ui.Style {
   @ui.style(py=room(y), my=room(-y))

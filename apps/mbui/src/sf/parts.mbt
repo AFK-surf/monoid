@@ -3,12 +3,6 @@
 // choice, small panels and their rows, page heads and cards, and the three
 // ways of waiting.
 
-///|
-/// A control answering (--dur on the ease-out, dur_ms: global.css.ts's buttons' background): a hover's or a press's
-/// ground coming and going, a button's that can be pressed or not; how far it is on (0 … 1).
-pub fn ease_to(c : @ui.Ctx, key : String, on : Bool) -> Double {
-  @motion.animate(c, key, if on { 1.0 } else { 0.0 }, spec=@motion.tween(dur_ms, ease=Out))
-}
 
 ///|
 /// For parts whose own parameter is called `icon`.
@@ -937,50 +931,6 @@ let panel_row_face : @ui.Style = @ui.css("align=AStart justify=JCenter")
 // ---------------------------------------------------------------------------
 // Pages (styles/pages.css.ts)
 
-///|
-/// A page's head: its name (text-heading, 600), a line under it, and its
-/// buttons at its end.
-pub fn page_head(
-  c : @ui.Ctx,
-  title : String,
-  meta? : String = "",
-  actions? : () -> Unit = fn() {  },
-) -> Unit {
-  let t = theme()
-  c.box(dir=Row, gap=16.0, align=AStart, fn() {
-    c.box(w=Fill(1.0), gap=4.0, fn() {
-      if look() == Narrow {
-        // a narrow page's place title (the phone's): display size
-        c.text(
-          title,
-          size=t.t.display,
-          weight=600,
-          color=t.p.text,
-          wrap=false,
-          line=34.0,
-        )
-        |> ignore
-      } else {
-        c.text(
-          title,
-          size=t.t.heading,
-          weight=600,
-          color=t.p.text,
-          wrap=false,
-          line=34.0,
-        )
-        |> ignore
-      }
-      if meta != "" {
-        c.text(meta, size=t.t.meta, color=t.p.muted, wrap=false, line=t.t.meta_line)
-        |> ignore
-      }
-    })
-    |> ignore
-    c.box(dir=Row, gap=6.0, align=ACenter, h=Px(34.0), actions) |> ignore
-  })
-  |> ignore
-}
 
 ///|
 /// A page card of words (pages.css.ts card): card_pad in from every side, round by the ladder's card step; a solid
@@ -1638,33 +1588,6 @@ pub fn tool_of(key : String, draw : () -> Unit, drop? : Int = 0, instead? : Arra
   { key, drop, draw, instead }
 }
 
-///|
-/// An icon button as a tool (icon_button: `label` its tip, `lit` its ink and quiet, as one that is on; as a bar's
-/// buttons are: round on the tape, the last in its panel's corner concentric with it, at a window's corner the corner
-/// they share, @sf.bar_keys_link): pressed, `on_press`; gone (the `drop`-th), the ⋯'s line of the same icon and words.
-/// `shortcut`: the action whose keys its tip says (tip).
-pub fn tool_button(
-  c : @ui.Ctx,
-  key : String,
-  icon : String,
-  label : String,
-  on_press~ : () -> Unit,
-  drop? : Int = 0,
-  lit? : Int64,
-  disabled? : Bool = false,
-  shortcut? : String = "",
-) -> Tool {
-  {
-    key,
-    drop,
-    draw: fn() {
-      icon_button(c, icon, key~, ink?=lit, quiet?=lit, round=true, linked?=bar_keys_link(), disabled~, label~, shortcut~, on_press=fn() {
-        on_press()
-      }) |> ignore
-    },
-    instead: [menu_item_of(label, on_press, icon~, disabled~)],
-  }
-}
 
 ///|
 /// `tools` in a row (`style`: a row's), then its ⋯ (`label`, the app's word for 更多): what the row has not the room
@@ -1846,20 +1769,6 @@ let switch_at : @ui.Style = @ui.css("justify=JCenter align=AStart")
 // kept across runs: a value (no field of it changes)
 let switch_reach : @ui.Style = @ui.css("justify=JCenter")
 
-///|
-/// A switch drawn in a row that takes the tap itself (the row turns it): its look alone, its thumb sliding as a
-/// switch's does (`@kit.switch_knob` by `key`), held as the row is `pressed`.
-pub fn switch_look(c : @ui.Ctx, key : String, on : Bool, small? : Bool = false, pressed? : Bool = false) -> Unit {
-  switch_look_for(small)(c, {
-    on,
-    t: @kit.switch_knob(c, key, on),
-    hovered: false,
-    pressed,
-    held: @kit.switch_held(c, key, pressed),
-    focus_shown: false,
-    disabled: false,
-  })
-}
 
 ///|
 /// A setting's row (parts.tsx SwitchRow, switchRow): what it is on the left, `note` quieter under it, its switch on the
@@ -1928,46 +1837,6 @@ fn control_row(
   |> ignore
 }
 
-///|
-/// One of several to tick (the phone's PickRow): its box,
-/// then what it is (`note` quieter under it), the whole row pressed to tick it or not, its ground lit under the hand. Its
-/// room, its words and its box the theme's rows' (Rows: a finger's with touch, a list row's with keyboard and mouse). What
-/// it is now. `lead`: what goes before its words, after its box (a workspace's mark: workspace_badge).
-pub fn check_row(
-  c : @ui.Ctx,
-  key : String,
-  label : String,
-  on : Bool,
-  note? : String = "",
-  disabled? : Bool = false,
-  lead? : (@ui.Ctx) -> Unit,
-  on_change~ : (Bool) -> Unit,
-) -> Unit {
-  let id = c.id(key + "/row")
-  let r = theme().rows
-  c.box(style=check_row_box.then(@ui.style(min_h=Fixed(theme().items.least))), id=if disabled { 0 } else { id }, fn() {
-    let look = @kit.checkbox_look_of(size=r.check, radius=r.check_corner)
-    @kit.checkbox(c, key, if on { On } else { Off }, label~, disabled~, look~, on_change=fn(v) { on_change(v == On) })
-    |> ignore
-    match lead {
-      Some(draw) => draw(c)
-      None => ()
-    }
-    // (its words as a setting row's: what is left of the row)
-    c.box(style=switch_row_words, fn() {
-      c.text(label, style=r.title) |> ignore
-      if note != "" {
-        c.text(note, style=theme().rows.note) |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-  // (the row pressed, past its box: ticked or not as its box would be)
-  if !disabled {
-    c.on_press(id, fn() { on_change(!on) })
-  }
-}
 
 ///|
 /// A tick row's room (check_row): 12 by 10 in, its box 12 before its words, a row's corner, the hover grey under the
@@ -2188,16 +2057,6 @@ let step_number_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, co
 // kept across runs: a value (no field of it changes)
 let step_body : @ui.Style = @ui.style(row=true, w=grow, gap=S2, align=ACenter)
 
-///|
-/// What was checked and found right (controls.css.ts verifyOk): a ticked circle 16 and its words, 6 apart, the ui's 13
-/// in green.
-pub fn verify_ok(c : @ui.Ctx, words : String) -> Unit {
-  c.box(style=verify_line, fn() {
-    draw_icon(c, "check-circle", verify_icon, theme().p.green_ink)
-    c.text(words, style=verify_words) |> ignore
-  })
-  |> ignore
-}
 
 ///|
 let verify_icon : Double = 16.0
@@ -2625,20 +2484,6 @@ let dialog_pad : Double = 24.0
 // kept across runs: said by dialog round the body it draws, false between
 let in_dialog : Ref[Bool] = { val: false }
 
-///|
-/// A list of rows `row_h` high, each pressed as a whole (a station to pick), and each row: in a dialog the rows round as
-/// their height, the list out past the dialog's words at its sides and foot to where the last row stands concentric with
-/// its foot corners (capsule_in), each row's words back on the words' line; elsewhere (a sheet's, a small panel's) as
-/// the list and its rows are. One corner for all of them, the last's in the corners concentric, never that one's alone.
-pub fn dialog_rows(row_h : Double) -> (@ui.Style, @ui.Style) {
-  if !in_dialog.val {
-    return (no_style, no_style)
-  }
-  // (from its column: its padding, and the room a panel's dialog stands what it holds in from that, column_in_now)
-  let out = @ui.capsule_in(dialog_r, row_h) - dialog_pad
-  let side = out - column_in_now.val
-  (@ui.style(mx=room(side), mb=room(out)), @ui.style(radius=Full, px=room(-side)))
-}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3224,102 +3069,11 @@ let radio_mark_on : @ui.Style = radio_mark.then(@ui.css("border_color=Fg"))
 // kept across runs: a value (no field of it changes)
 let radio_dot : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Fg")
 
-// ---------------------------------------------------------------------------
-// Asking before (parts.tsx Confirm; parts.css.ts dialogAlert, dialogError)
 
-///|
-/// Asks before something that cannot be undone (parts.tsx Confirm: an alert dialog, a press outside does not close
-/// it): 420 wide, 28 over its title, 24 in; its title (22, 600) and `description` (13, muted), what went wrong (`error`:
-/// 13 red, 12 over the buttons, it stays open), an optional red `warning`, then `cancel` (its words alone) and `action`
-/// (solid red, the primary's when not `danger`; a ring while `busy`) at its end, 16 under, 8 apart. Escape, the back
-/// and `cancel` close it.
-/// `scrim`: what the page under it is dimmed with (the theme's where not said; 0 where it is dimmed already);
-/// `on_confirm`: what its action does, as it is pressed (press_does); `on_close`: what closing it does (`cancel`
-/// pressed, Escape, the back), as it is.
-pub fn confirm_dialog(
-  c : @ui.Ctx,
-  key : String,
-  open : Bool,
-  title : String,
-  description : String,
-  action : String,
-  cancel~ : String,
-  busy? : Bool = false,
-  error? : String = "",
-  danger? : Bool = true,
-  warning? : String = "",
-  scrim? : Int64,
-  on_confirm? : () -> Unit,
-  on_close? : () -> Unit = fn() {  },
-) -> Unit {
-  c.with_dismissed(fn(_) { on_close() }, fn() {
-  @kit.dialog(
-    c,
-    key,
-    open,
-    title,
-    description~,
-    w=dmin(confirm_w, room_across(c) - dialog_margin),
-    outside=false,
-    close_label="",
-    scrim?,
-    look=fn(c, s, inner) {
-      // (the dialog: the surface of the look it comes in by, coming first, all on it after: Ctx::surface)
-      let panel = c.box(
-        style=confirm_box,
-        w=Px(s.w),
-        radius=dialog_r,
-        bg=panel_ground(),
-        shadow=dialog_shadow,
-        shadow_y=dialog_shadow_y,
-        shadow_color=theme().p.shadow,
-        fn() {
-          c.text(s.title, style=dialog_title) |> ignore
-          c.text(s.description, style=dialog_lead) |> ignore
-          if warning != "" {
-            c.text(warning, style=confirm_warning) |> ignore
-          }
-          inner()
-        },
-      )
-      c.surface(panel)
-    },
-    fn() {
-      if error != "" {
-        c.box(style=confirm_error_at, fn() { c.text(error, style=confirm_error) |> ignore }) |> ignore
-      }
-      c.box(style=confirm_foot.then(dialog_corner_foot(dialog_pad)), fn() {
-        button(c, cancel, key=key + "/cancel", tone=Ghost, on_press=on_close)
-        button(c, action, key=key + "/action", tone=if danger { DangerSolid } else { Primary }, busy~, on_press?=on_confirm)
-      })
-      |> ignore
-    },
-  )
-  |> ignore
-  })
-}
 
-///|
-/// Its frame (dialogAlert: 28 over, 24 in, 8 between its title, its lead and what follows; its foot its buttons':
-/// confirm_foot).
-// kept across runs: a value (no field of it changes)
-let confirm_box : @ui.Style = @ui.css("px=S6 pt=S7 gap=S2 border=B1 border_color=Line")
 
-///|
-// kept across runs: a value (no field of it changes)
-let confirm_error_at : @ui.Style = @ui.css("w=Full pt=S1")
 
-///|
-// kept across runs: a value (no field of it changes)
-let confirm_error : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Danger)
 
-///|
-// kept across runs: a value (no field of it changes)
-let confirm_warning : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Danger)
-
-///|
-// kept across runs: a value (no field of it changes)
-let confirm_foot : @ui.Style = @ui.css("row w=Full justify=JEnd align=ACenter gap=S2 pt=S2")
 
 // ---------------------------------------------------------------------------
 // A small panel's parts (parts.tsx PanelHead, PanelGroup, PanelNote, PanelFoot, PanelText, PanelButton,
@@ -3451,30 +3205,6 @@ pub fn panel_button(
   c.semantics(b, Button, id~, label=words, disabled~)
 }
 
-///|
-/// An icon to press in a small panel (PanelIconButton: close, stop, a step): a 24 circle, the muted ink, the hover's
-/// ground and the ink pointed at; named on hover; `cornered`, in the panel's top end corner (panel_icon_corner).
-/// `on_press`: what pressing it does, as it is let go (press_does).
-pub fn panel_icon_button(
-  c : @ui.Ctx,
-  key : String,
-  name : String,
-  label : String,
-  disabled? : Bool = false,
-  cornered? : Bool = false,
-  on_press? : () -> Unit,
-) -> Unit {
-  let p = theme().p
-  let id = c.id(key)
-  press_does(c, id, !disabled, on_press)
-  let hot = !disabled && c.lit(id)
-  let style = if cornered { panel_icon_box.then(panel_icon_corner) } else { panel_icon_box }
-  let b = c.box(style~, disabled~, id=if disabled { 0 } else { id }, fn() {
-    icon(c, name, size=panel_icon_size, color=if hot { p.text } else { p.muted }) |> ignore
-  })
-  c.semantics(b, Button, id~, label~, disabled~)
-  tip(c, "pib/" + key, id, label)
-}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3546,38 +3276,12 @@ let panel_icon_box : @ui.Style = @ui.css((
   #|w=S6 h=S6 radius=Full align=ACenter justify=JCenter hovered{bg=Hover} disabled{opacity=O35}
 ))
 
-///|
-/// Where a small panel's icon button stands in its top end corner (its ×): as far in as makes its circle
-/// concentric with the panel's corner (capsule_in: the corner less its half), past the panel's padding (panel_pad).
-pub let panel_icon_corner : @ui.Style = @ui.style(mt=room(panel_icon_in), mr=room(panel_icon_in))
 
-///|
-let panel_icon_in : Double = @ui.capsule_in(r_menu, panel_icon_side) - panel_pad
 
-///|
-/// Its side (panel_icon_box's S6).
-let panel_icon_side : Double = 24.0
 
 // ---------------------------------------------------------------------------
 // A command to copy, a chooser (parts.tsx CopyCommand, Chooser; parts.css.ts command, controls.css.ts chooser)
 
-///|
-/// A command to copy (CopyCommand, parts.css.ts command): the words in the code face (12) on one line, its copy button
-/// at its end (an icon button, 6 in, its corner concentric), on the paper, 14 in at its start; pressed, the words
-/// copied and a check for a moment (`copied` its name then, `copy` before).
-pub fn copy_command(c : @ui.Ctx, key : String, text : String, copy~ : String, copied~ : String) -> Unit {
-  let id = c.id(key + "/copy")
-  let just = c.within(id, copied_ms)
-  c.box(style=command_box, bg=theme().p.paper, fn() {
-    c.box(style=command_words_at, fn() { c.text(text, style=command_words) |> ignore }) |> ignore
-    icon_button(c, if just { "check" } else { "copy" }, key=key + "/copy", label=if just { copied } else { copy }, on_press=fn() {
-      @ui.clipboard_set(text)
-      c.mark(id)
-      c.wake_in(copied_ms, later=true)
-    }) |> ignore
-  })
-  |> ignore
-}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -4384,33 +4088,6 @@ let dialog_step : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Mu
 // kept across runs: a value (no field of it changes)
 let dialog_title_one : @ui.TextStyle = dialog_title.then(one_line)
 
-///|
-/// A page that waits on something:
-/// its mark (`mark`, an icon's name), what it waits for (`title`, `lead`), then what can be done meanwhile (`body`); its parts 14 apart,
-/// centred. On a touch screen the phone's (mWaiting: in the middle of its height, 28 in at its sides, the mark 44, the
-/// title bold); with keyboard and mouse the desktop page's (waiting: 110 down, 460 wide at most, 24 in, the mark 40, the title
-/// 600).
-pub fn waiting_page(c : @ui.Ctx, mark : String, title : String, lead : String, body : () -> Unit) -> Unit {
-  let touch = native_input() is Finger
-  c.box(style=if touch { wait_room_touch } else { wait_room }, fn() {
-    if touch {
-      c.box(style=wait_spring, fn() {  }) |> ignore
-    } else {
-      c.box(style=@ui.style(h=Fixed(wait_top)), fn() {  }) |> ignore
-    }
-    c.box(style=if touch { wait_column_touch } else { wait_column }, fn() {
-      icon(c, mark, size=if touch { wait_icon_touch } else { wait_icon }, color=c.color(Fg)) |> ignore
-      c.text(title, style=if touch { wait_title_touch } else { wait_title }) |> ignore
-      c.text(lead, style=wait_lead) |> ignore
-      body()
-    })
-    |> ignore
-    if touch {
-      c.box(style=wait_spring, fn() {  }) |> ignore
-    }
-  })
-  |> ignore
-}
 
 ///|
 /// The same page (waiting_page) as nodes of the window's tree, made once in `parent`: its mark, `title()` and `lead()`
@@ -4546,131 +4223,6 @@ let sign_in_picture_w : Double = 300.0
 /// What the page leaves either side of the picture (its sides: way_in_whole's px).
 let sign_in_side_w : Double = 30.0
 
-///|
-/// The list catching up on what changed while away (the chats' `syncing`; sf/waiting.mbt): beside the keys of
-/// the bar it stands in, `side` across, the refresh mark (`mark`, in the grey of what it says nothing of) turning, a
-/// turn each sync_turn_ms, evenly (by the clock as each frame is drawn: nothing built anew for it); `text` its tip and what it is said to be. Only once it has gone on later_ms
-/// (a moment's catching up shows nothing). Once all is here, the mark becomes a tick: it goes on from where it is and as
-/// fast as it turns, slowing to rest where it looks as upright (sync_rest), its arrows drawn back along their strokes,
-/// then the tick drawn as a hand ticks (no two marks fading over each other); there sync_done_ms, then it fades.
-pub fn sync_key(c : @ui.Ctx, key : String, side : Double, mark : Double, shown : Bool, text : String) -> Unit {
-  let t = theme()
-  let on = shown && waited_long(c, key)
-  if shown {
-    sync_said[key] = text
-  } else {
-    done_waiting(c, key)
-  }
-  if on {
-    sync_seen[key] = true
-  }
-  // done: brought to rest, the tick drawn, held a while, then gone
-  let seen = sync_seen.get(key).unwrap_or(false)
-  let ticked = seen && !shown
-  let rest = if ticked {
-    match sync_rests.get(key) {
-      Some(r) => Some(r)
-      None => {
-        let r = sync_rest(c.moment())
-        sync_rests[key] = r
-        Some(r)
-      }
-    }
-  } else {
-    sync_rests.remove(key)
-    None
-  }
-  // the arrows go as it is nearly at rest (its last part hardly moves)
-  let settle = match rest {
-    Some(r) => r.ms * sync_rest_gone
-    None => 0.0
-  }
-  let held = ticked && !@kit.after(c, key + "/done", true, settle + sync_back_ms + sync_tick_ms + sync_done_ms)
-  if !ticked {
-    @kit.after(c, key + "/done", false, sync_done_ms) |> ignore
-  }
-  let p = @kit.presence(c, key, on || held, exit=@motion.tween(sync_out_ms, ease=Leave))
-  if !p.built {
-    sync_said.remove(key)
-    sync_seen.remove(key)
-    sync_rests.remove(key)
-    return
-  }
-  let words = sync_said.get(key).unwrap_or(text)
-  // how far on to rest it has gone (0 to 1, as SyncRest::ease): turned as it is drawn
-  let resting = @motion.told(c, key + "/rest", if ticked { 1.0 } else { 0.0 }, spec=match rest {
-    Some(r) => @motion.tween_to(duration=r.ms, ease=fn(s) { r.ease(s) })
-    None => @motion.tween(0.0, ease=Out)
-  })
-  // how far the arrows are drawn back, then the tick drawn (0 to 1 each), once it is at rest: read as it is built, each
-  // a shape traced so far (icon_traced: its points worked out as it is built), which no paint taker draws
-  let back = @motion.animate(
-    c,
-    key + "/back",
-    if ticked { 1.0 } else { 0.0 },
-    spec=@motion.tween(if ticked { sync_back_ms } else { 0.0 }, ease=InOut, delay=settle),
-  )
-  let drawn = @motion.animate(
-    c,
-    key + "/tick",
-    if ticked { 1.0 } else { 0.0 },
-    spec=@motion.tween(if ticked { sync_tick_ms } else { 0.0 }, ease=Out, delay=settle + sync_back_ms * 0.6),
-  )
-  let id = c.id(key)
-  let b = c.box(style=update_key_box.then(@ui.style(w=Fixed(side), h=Fixed(side))), id~, fn() {
-    if back < 1.0 {
-      // (in the whole key, in its middle: turned about it)
-      let a = c.layer(fn() {
-        c.box(style=update_ring_at, fn() {
-          ignore(
-            if back > 0.0 {
-              icon_traced(c, "refresh", fn(i, pts) { sync_drawn_back(i, pts, 1.0 - back) }, size=mark, color=t.p.muted)
-            } else {
-              icon(c, "refresh", size=mark, color=t.p.muted)
-            },
-          )
-        })
-        |> ignore
-      })
-      match rest {
-        // turned evenly by the clock as each frame is drawn (Ctx::cycle_look)
-        None => c.cycle_look(a, sync_turn_ms, fn(k) { @ui.look(rot=sync_turned(k)) })
-        // going on to rest (upright again once there: it looks the same each half turn)
-        Some(r) =>
-          if back == 0.0 {
-            c.look_by(a, fn() {
-              let k = resting.get(c)
-              if k < 1.0 {
-                @ui.look(rot=r.from + (r.to - r.from) * k)
-              } else {
-                @ui.still_look
-              }
-            })
-          }
-      }
-    }
-    if drawn > 0.0 {
-      c.layer(fn() {
-        c.box(style=update_ring_at, fn() {
-          ignore(
-            if drawn < 1.0 {
-              icon_traced(c, "check", fn(_, pts) { [stroke_from_start(pts, drawn)] }, size=mark, color=t.p.muted)
-            } else {
-              icon(c, "check", size=mark, color=t.p.muted)
-            },
-          )
-        })
-        |> ignore
-      })
-      |> ignore
-    }
-  })
-  // (coming and going, faded as it is drawn)
-  let fade = p.t
-  c.look_by(b, fn() { { ..@ui.still_look, alpha: dmin(1.0, fade.get(c)) } })
-  c.semantics(b, Status, id~, label=words)
-  tip(c, key + "/tip", id, words, side=Bottom)
-}
 
 ///|
 /// How far round the mark has turned where a turn is at `k` (0 to 1): the same speed through each turn's join, so it
@@ -4795,62 +4347,6 @@ let sync_tick_ms : Double = 240.0
 ///|
 let sync_out_ms : Double = 400.0
 
-///|
-/// A key of a bar for what comes by itself (what comes to this device: sfdesk transfers.mbt), as update_key draws one:
-/// round, `side` across, its `glyph` `mark` big in its middle, in its place while something comes how far it has come
-/// (`coming`: coming_mark; None while nothing comes), update_key's dot, red's, where something `failed`; pressed, what
-/// comes (the page's): `on_press`.
-pub fn progress_key(
-  c : @ui.Ctx,
-  key : String,
-  side : Double,
-  mark : Double,
-  glyph : String,
-  label : String,
-  coming : Double?,
-  failed~ : Bool,
-  on_press? : () -> Unit,
-) -> Unit {
-  let t = theme()
-  let id = c.id(key)
-  let b = c.box(
-    style=(if c.lit(id) { update_key_hot } else { update_key_box }).then(@ui.style(w=Fixed(side), h=Fixed(side))),
-    id~,
-    fn() {
-      if coming is Some(_) {
-        coming_mark(c, key, coming, mark, t.p.text)
-      } else {
-        icon(c, glyph, size=mark, color=t.p.text) |> ignore
-      }
-      if failed {
-        c.layer(fn() {
-          c.box(style=update_dot_at, fn() {
-            c.box(style=update_dot_ring, fn() { c.box(style=update_dot_bad, fn() {  }) |> ignore })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      }
-      press_ripple(c, id, side / 2.0)
-    },
-  )
-  c.semantics(b, Button, id~, label~)
-  match on_press {
-    Some(f) => c.on_press(id, f)
-    None => ()
-  }
-}
-
-///|
-/// The key: round, what it holds in its middle.
-// kept across runs: a value (no field of it changes)
-let update_key_box : @ui.Style = @ui.css("radius=Full align=ACenter justify=JCenter")
-
-///|
-/// Under the pointer: on the hover's ground.
-// kept across runs: a value (no field of it changes)
-let update_key_hot : @ui.Style = update_key_box.then(@ui.css("bg=Hover"))
 
 ///|
 /// What a key holds, in its middle, over what else it holds (sync_key's marks turning into each other).

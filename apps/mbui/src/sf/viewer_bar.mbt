@@ -192,29 +192,6 @@ pub fn viewer_tool_corner() -> @ui.Style {
 }
 
 ///|
-/// Download, as every bar has it last (ViewerDownload); `on_press` as it is pressed. `coming`: how far a download of it
-/// has come (0 to 1), a ring of the file's ink in its place meanwhile, not pressed again.
-pub fn viewer_download(
-  c : @ui.Ctx,
-  key : String,
-  ink : ViewerInk,
-  disabled? : Bool = false,
-  coming? : Double,
-  on_press? : () -> Unit,
-) -> Unit {
-  match coming {
-    Some(part) => {
-      let label = t("web-main.preview.download")
-      let b = c.box(style=viewer_tool_box.then(viewer_tool_corner()), disabled=true, fn() {
-        progress_ring(c, viewer_tool_icon, part, ink.ink) |> ignore
-      })
-      c.semantics(b, Button, label~, disabled=true)
-    }
-    None => viewer_tool(c, key, "download", t("web-main.preview.download"), ink, disabled~, on_press?)
-  }
-}
-
-///|
 /// When a bar over a file read down (a text, a PDF, code) is out of the way (useBarOnScroll): gone as it is read on
 /// down, back as it is read back up, or as the pointer comes to the window's top. Where the list it reads by was last
 /// seen: its first row in view and how far down it.

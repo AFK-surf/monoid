@@ -156,8 +156,6 @@ pub fn flag(@json.Json?, String) -> Bool
 
 pub fn frame(Core, Here, root? : Bool, top? : Double) -> Unit
 
-pub fn group_mark(@ui.Ctx, String) -> Unit
-
 pub fn has(@json.Json?, String) -> Bool
 
 pub fn here_of(Core, String, String) -> Here
@@ -175,8 +173,6 @@ pub fn join(Array[String], String) -> String
 pub fn kept_ask(Core) -> Unit
 
 pub fn kept_asked() -> Int32
-
-pub fn kept_said(@ui.Ctx, Core) -> String
 
 pub fn kept_told() -> String
 
@@ -221,10 +217,6 @@ pub fn lock_prompts(Core, Bool) -> Unit
 pub fn lock_waiting(Core, String) -> Bool
 
 pub fn machine_sessions_offer(@ui.Ctx, Core, String, String) -> Unit
-
-pub fn mark_login(String, String) -> Unit
-
-pub let memory_chevron : Double
 
 pub fn memory_of(Core, String) -> MemoryRead
 
@@ -327,8 +319,6 @@ pub let settings_button_h : Double
 
 pub fn short_date_time(Double) -> String
 
-pub fn skill_tag(@json.Json?, Map[String, String]) -> String
-
 pub fn spinner(@ui.Ctx, inline? : Bool) -> Unit
 
 pub fn stamp(@json.Json?, String, String) -> String
@@ -377,10 +367,6 @@ pub fn vault_actions(@ui.Ctx, Core, String, String, Bool, who? : String?) -> Uni
 
 pub fn vault_actions_node(@view.View, Core, () -> String, () -> String, () -> Bool, who? : () -> String?) -> Unit
 
-pub fn vault_ask(@ui.Ctx, Core, String, String, Asked, Bool, who? : String?, extra? : (() -> Unit)?) -> Unit
-
-pub fn vault_ask_details(@ui.Ctx, Asked) -> Unit
-
 pub fn vault_ask_details_node(@view.View, () -> Asked) -> Unit
 
 pub fn vault_ask_words(@ui.Ctx, Asked) -> Unit
@@ -391,7 +377,7 @@ pub fn vault_card(@ui.Ctx, Core, String, String, Asked, Answer, ended? : (String
 
 pub fn vault_card_node(@view.View, Core, () -> String, () -> String, () -> Asked, () -> Answer, () -> (String, String)?) -> Unit
 
-pub fn vault_foot(@ui.Ctx, Core, String, String, Answer, Bool, typed? : Typed?, timeout_kind? : String, timeout_seconds? : Int32, extra? : (() -> Unit)?, foot? : Bool) -> Unit
+pub fn vault_foot(@ui.Ctx, Core, String, String, Answer, Bool, typed? : Typed?, timeout_kind? : String, timeout_seconds? : Int32, foot? : Bool) -> Unit
 
 pub fn vault_foot_node(@view.View, Core, () -> String, () -> String, () -> Answer?, () -> Bool, () -> Typed?, () -> (String, Int32), foot~ : Bool) -> Unit
 
@@ -427,13 +413,9 @@ pub let vault_serial : @ref.Ref[Int32]
 
 pub fn wait_line(@ui.Ctx, String, error? : Bool, pad? : Bool) -> Unit
 
-pub fn waiting_cards(@ui.Ctx, () -> Unit, error? : String, failing? : Array[String]) -> Unit
-
 pub let wide : @ref.Ref[Bool]
 
 pub let wide_deep : @ref.Ref[Bool]
-
-pub fn wide_head(@ui.Ctx, Core, String, String, trailing? : () -> Unit, inside? : Bool, on_back? : () -> Unit, about? : String, lead? : String, deep? : Bool) -> Unit
 
 pub fn workspace_keys(@json.Json?) -> (String, String)
 

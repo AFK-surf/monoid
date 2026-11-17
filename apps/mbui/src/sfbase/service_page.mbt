@@ -219,12 +219,6 @@ pub fn service_left_called_off(station : String, job : String) -> Unit {
 }
 
 ///|
-/// Whether a node holds the page kept by `key` (service_page_held's).
-pub fn service_page_is_held(key : String) -> Bool {
-  service_held.get(key).unwrap_or(0) > 0
-}
-
-///|
 /// How many nodes hold each page (by its service_key), while they live.
 // kept across runs: put back by service_pages_reset
 let service_held : Map[String, Int] = Map([])

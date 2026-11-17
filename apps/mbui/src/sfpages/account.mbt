@@ -440,10 +440,6 @@ fn own_picture_of(core : Core, sub : String) -> Bool {
 let acc_picture : Double = @sf.identity_mark
 
 ///|
-// kept across runs: a value (no field of it changes)
-pub let acc_delete_words : @ui.TextStyle = @sf.body.then(@sf.bad)
-
-///|
 /// (a narrow page's foot: what takes something away, 16 over it)
 // kept across runs: a value (no field of it changes)
 pub let acc_narrow_foot : @ui.Style = @ui.css("w=Full pt=S4")

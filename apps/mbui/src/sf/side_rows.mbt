@@ -122,18 +122,6 @@ pub fn band_row_h() -> Double {
 }
 
 ///|
-/// A row's words, as long as there is room (`color`: the words' own by default): a list's title's (the theme's chats'
-/// list's: 13 on 20 with keyboard and mouse, 16 on 22 with touch).
-pub fn nav_words(c : @ui.Ctx, words : String, color? : Int64) -> Unit {
-  let base = theme().chat_list.title
-  let look = match color {
-    Some(k) => base.then(@ui.text_style(color=Data(k)))
-    None => base
-  }
-  c.text(words, style=look, allow_ellipsis=true) |> ignore
-}
-
-///|
 /// The action over a list (SidebarList.tsx NavAction, in its band: Sidebar.css.ts navNew, 6 over it, 8 at its sides, 2
 /// under, the list's own 4 then): its ＋ (16, the row's mark column, ICON) and words, with an optional key beside it.
 /// `band` places both where the frame needs them. No band where neither action is present. Pressed, `run` goes on with

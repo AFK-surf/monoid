@@ -350,8 +350,6 @@ pub let side_tab_words : @ui.TextStyle
 
 pub fn side_toggle(@sfbase.Source, @sfbase.ChatRef, String) -> Unit
 
-pub fn side_top(@ui.Ctx) -> Unit
-
 pub fn side_top_h() -> Double
 
 pub fn side_width(Double) -> Double

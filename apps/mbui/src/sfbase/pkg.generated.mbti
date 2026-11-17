@@ -684,8 +684,6 @@ pub fn flights_reset() -> Unit
 
 pub fn floor_of(@ui.Ctx, Reading, String, Array[String]) -> Double
 
-pub let flow_ahead : Int32
-
 pub let flow_part : Int32
 
 pub fn fly_share(Bool) -> Double
@@ -1197,8 +1195,6 @@ pub fn page_entry_source(Source, @view.View, Int32) -> Source
 pub fn page_faces() -> Array[Bytes]
 
 pub fn page_glass() -> @paint.Glass
-
-pub let page_glass_blur : Double
 
 pub let page_js : String
 
@@ -1721,8 +1717,6 @@ pub fn tag_place(Bytes, Bool) -> Int32?
 pub fn tagging_new() -> Tagging
 
 pub fn tagging_take(Tagging, Bytes, Bool) -> Bytes
-
-pub fn tap_stage(@ui.Ctx, Viewer, Int32) -> Unit
 
 pub fn tell_focus(Source, ChatRef, ChatView, Reading, Bool, Double) -> Unit
 

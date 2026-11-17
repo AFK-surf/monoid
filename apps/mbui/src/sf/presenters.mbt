@@ -86,7 +86,46 @@ pub(all) struct Choice {
   note : String
   value : String
   icon : String
-  mark : ((@ui.Ctx, Double) -> Unit)?
+  mark : ChoiceMark?
+}
+
+///|
+/// What marks a choice (its `mark`), said as what it is, so that a sheet of the old frame and a panel of the window's
+/// tree each draw it their own way (choice_mark, choice_mark_node): a station's (`OfStation`: its emoji and its icon,
+/// station_icon's, this machine's or a station's where it has none (`here`), in `ink` as it is now), or a picture of
+/// the app's by name in its own colours (`Drawn`: a maker's, Slack's).
+pub(all) enum ChoiceMark {
+  OfStation(String, String, Bool, () -> Int64)
+  Drawn(String)
+}
+
+///|
+/// Choice mark `m`, `size` across, in the old frame (a sheet's row).
+fn choice_mark(c : @ui.Ctx, m : ChoiceMark, size : Double) -> Unit {
+  match m {
+    OfStation(emoji, icon, here, ink) => station_icon(c, emoji, icon, size, ink(), here~)
+    Drawn(name) => drawable(c, name, size) |> ignore
+  }
+}
+
+///|
+/// Choice mark `m` in `parent`, `size` across (choice_mark's, as nodes): a station's own mark where it has one, else
+/// this machine's or a station's icon; a picture by its name.
+#callsite(autofill(loc))
+pub fn choice_mark_node(parent : @view.View, m : ChoiceMark, size : Double, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(b) {
+    b.width(Is(Some(size))).height(Is(Some(size))) |> ignore
+    match m {
+      OfStation(emoji, icon, here, ink) =>
+        if has_station_mark(emoji, icon) {
+          station_mark_node(b, fn() { emoji }, fn() { icon }, size, ink, fn() { 0 })
+        } else {
+          icon_node(b, if here { "monitor" } else { "server" }, size, By(ink)) |> ignore
+        }
+      Drawn(name) => drawable_node(b, name, size) |> ignore
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -96,7 +135,7 @@ pub fn choice(
   note? : String = "",
   value? : String = "",
   icon? : String = "",
-  mark? : (@ui.Ctx, Double) -> Unit,
+  mark? : ChoiceMark,
 ) -> Choice {
   { key, label, note, value, icon, mark }
 }
@@ -899,14 +938,6 @@ fn stepping() -> Presented? {
 let steps_drawn_now : Ref[Int] = Ref(0)
 
 ///|
-/// What reaches a panel's sides on purpose (a strip that scrolls under them, attach's photos): out across the room
-/// the panel leaves at its sides where it is drawn (beside what opened it small_panel's pad, in a sheet as far as its
-/// rows are in), what it holds laying out its own sides. All else in a panel stands in that room by itself.
-pub fn panel_bleed() -> @ui.Style {
-  @ui.style(mx=room(-panel_sides_in.val))
-}
-
-///|
 /// The room a panel leaves at its sides while its body is drawn (the presenters set it): what panel_bleed reaches across,
 /// and what a row's ground reaches out across, its words on the column's line (choice_row).
 let panel_sides_in : Ref[Double] = { val: 0.0 }
@@ -1171,13 +1202,6 @@ let whole_room : @ui.Style = @ui.style(w=Full, h=grow)
 let whole_box : @ui.Style = @ui.css("")
 
 ///|
-/// Whether the panel whose body is drawn now is as tall as what it holds (a dialog: its body scrolls in itself), so
-/// what would scroll in a room of its own (a page's list) lays itself out whole instead.
-pub fn panel_whole() -> Bool {
-  panel_whole_now.val > 0
-}
-
-///|
 // kept across runs: counted up and down round what a dialog's body draws (0 between them)
 let panel_whole_now : Ref[Int] = Ref(0)
 
@@ -1192,13 +1216,6 @@ pub fn panel_held() -> Bool {
 ///|
 // kept across runs: said by the presenters while a panel's body is drawn
 let panel_held_now : Ref[Bool] = { val: false }
-
-///|
-/// How far under what a ruled panel holds (`panel`'s `ruled`) the line over its foot is, while its body is drawn (0
-/// where it has none): for a line of its own going down to meet it (a column's line beside another).
-pub fn panel_rule_over() -> Double {
-  rule_over_now.val
-}
 
 ///|
 // kept across runs: said by the presenters while a panel's body is drawn
@@ -1231,28 +1248,6 @@ pub fn panel_column(c : @ui.Ctx, key : String, most : Double, style : @ui.Style,
 /// panel_column's row beside what opened it: across its column and down all of it.
 // kept across runs: a value (no field of it changes)
 let column_past_most : @ui.Style = @ui.style(row=true, w=Full, h=grow)
-
-///|
-/// A sheet's column of its own (a sheet a page lays out itself: the settings' adding people, joining a station): what
-/// it holds as far in from its sides as a sheet's words are (sheet_panel_sides), its rows' grounds reaching out across
-/// that room, their words on the column's line, as in a sheet the presenters lay out.
-pub fn sheet_column(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  // (in a panel that stands what it holds in such a column already, a dialog's: in it as it is)
-  if column_given.val {
-    body()
-    return
-  }
-  let (was, rows_were, words_were) = (panel_sides_in.val, rows_out.val, words_in_now.val)
-  // (in a panel that says its words' line, that far in: a dialog's; else a sheet's; its rows reaching out across it)
-  let sides = if words_in_now.val > 0.0 { words_in_now.val } else { sheet_panel_sides }
-  panel_sides_in.val = sides
-  rows_out.val = dmax(0.0, sides - panel_card_in)
-  words_in_now.val = 0.0
-  c.box(style=sheet_column_box.then(@ui.style(px=room(sides))), body) |> ignore
-  panel_sides_in.val = was
-  rows_out.val = rows_were
-  words_in_now.val = words_were
-}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1335,18 +1330,6 @@ pub fn panel_card_out() -> @ui.Style {
 }
 
 ///|
-/// Under the last of what a dialog with no buttons holds where that is a card: the room its foot leaves less what a
-/// card at its foot stands in (`panel_card_in`, concentric with its foot corners as with its sides: panel_card_out);
-/// none elsewhere (a sheet's foot is the screen's).
-pub fn panel_card_foot() -> @ui.Style {
-  if column_given.val && !small_panel_now.val {
-    @ui.style(mt=room(-(dialog_pad - panel_card_in)))
-  } else {
-    no_card_out
-  }
-}
-
-///|
 /// The same on the last of what a dialog holds itself, where that is a card (or holds one at its foot): its margin under
 /// it, what follows it in a column with a gap between not pushed further down by that gap.
 pub fn panel_card_last() -> @ui.Style {
@@ -1360,25 +1343,6 @@ pub fn panel_card_last() -> @ui.Style {
 ///|
 // kept across runs: a value (no field of it changes)
 let no_card_out : @ui.Style = @ui.css("")
-
-///|
-/// Something standing `by` out of a panel's words' line at its start (a round button whose mark is on the line): its
-/// margin the line less `by`, no further out than the panel's rows reach (rows_out: `panel_card_in` from its sides, the
-/// room of a list it is in): a mark is no button's words, its ground no nearer the sides than a row's (the user,
-/// 2026-11-03: 只有按钮的字考虑跟卡片/面板的字对齐).
-pub fn panel_words_out_by(by : Double) -> @ui.Style {
-  @ui.style(ml=room(dmax(words_in_now.val - by, -rows_out.val)))
-}
-
-///|
-/// A row to press that a page lays out itself in a panel's body: its ground out across the room the panel leaves at its
-/// sides (rows_out: a dialog's column), its words on the panel's words' line (as row_line has the library's rows); round
-/// (row_corner) where it still stands in from the panel's sides (panel_sides_in), never a square patch there (the corner
-/// rule's lit square, 2026-11-13: the agent 往来's chats in a dialog).
-pub fn panel_row_reach() -> @ui.Style {
-  let out = rows_out.val
-  @ui.style(mx=room(-out), px=room(out + words_in_now.val)).then(panel_row_rounds(out))
-}
 
 ///|
 /// What a row of a panel's body reaching `out` past its column takes of a corner: row_corner where it still stands in
@@ -3170,7 +3134,7 @@ fn sheet_row(
   note? : String = "",
   value? : String = "",
   icon? : String = "",
-  mark? : (@ui.Ctx, Double) -> Unit,
+  mark? : ChoiceMark,
   on? : Bool = false,
   danger? : Bool = false,
   disabled? : Bool = false,
@@ -3192,7 +3156,7 @@ fn sheet_row(
   c.box(style=sheet_row_box.then(@ui.style(min_h=Fixed(th.items.least))), id=if disabled { 0 } else { id }, fn() {
     let leads = fn() {
       match mark {
-        Some(m) => m(c, th.items.mark)
+        Some(m) => choice_mark(c, m, th.items.mark)
         None =>
           if icon != "" {
             draw_icon(c, icon, th.items.mark, if danger { ink } else { th.p.muted })

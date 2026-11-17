@@ -122,6 +122,14 @@ fn vault_both(
 }
 
 ///|
+/// What head_drawn says, a line each, in order of the line.
+fn drawn_lines(drawn : String) -> Array[String] {
+  let lines = drawn.split("\n").map(fn(l) { l.to_owned() }).to_array()
+  lines.sort()
+  lines
+}
+
+///|
 /// The post `m` (as it changes) over `src` as the nodes draw it, `w` wide.
 fn vault_new(w : Double, src : Source, m : () -> Message) -> @ui.Tester {
   card_new(w, src, m, body=Some(fn(b, here, core) {
@@ -166,7 +174,9 @@ test "a vault item's approval under its post at 1.3, narrow, and under a mouse: 
     let (w, scale) = case
     let at = "in minutes at \{w}, \{scale}"
     let (was, now, t) = vault_both(vault_src(Some(topic)), vault_ask_post(), w, at, scale~)
-    assert_eq(now, was, msg=at)
+    // (each the same where it is drawn, in whichever order: the old view puts the line over its buttons by its foot's
+    // flow, after them in what it draws, the nodes before them)
+    assert_eq(drawn_lines(now), drawn_lines(was), msg=at)
     dec_audit(t, at)
     let (_, cy, _, ch) = t.query(Button, label="闲置 4319 分钟后失效").unwrap().rect
     let (_, ay, _, ah) = t.query(Button, label="允许").unwrap().rect

@@ -702,19 +702,6 @@ fn declared_reset() -> Unit {
 }
 
 ///|
-/// Topics asked as the core holds them now for what follows them, asking for none (one nothing follows yet is answered
-/// by nothing): what reads it follows its value and error while it reads, holding nothing it would not hold else
-/// (sfapp's first_page_node, reading between frames whether what a page builds is answered).
-pub fn read_held(src : Source) -> (String, Map[String, Json]) -> TopicState {
-  fn(name, params) {
-    match existing_followed_topic(src, name, params) {
-      Some(h) => h.get()
-      None => { value: None, error: None, version: -1, waiting: false }
-    }
-  }
-}
-
-///|
 /// What `src` holds of a topic followed now, as read_held reads it; None where nothing follows it.
 pub fn read_held_found(src : Source) -> (String, Map[String, Json]) -> TopicState? {
   fn(name, params) { existing_followed_topic(src, name, params).map(fn(h) { h.get() }) }

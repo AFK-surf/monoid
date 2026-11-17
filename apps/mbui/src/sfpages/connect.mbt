@@ -127,15 +127,6 @@ priv enum CdState {
 }
 
 ///|
-/// What a block of a page shows, said as its data (what it reads: its version on its page's list, @sf.page's `keys`).
-pub fn json_sign(v : Json?) -> String {
-  match v {
-    Some(j) => j.stringify()
-    None => ""
-  }
-}
-
-///|
 /// A connect made up, for its page while the connects are read (in its bones).
 fn cd_sample() -> Json {
   {

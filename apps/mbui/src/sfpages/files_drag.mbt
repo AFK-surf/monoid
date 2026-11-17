@@ -527,12 +527,6 @@ fn ndrag_send(src : Source, item : Dragged, into : DriveAt, moves : Bool, into_n
   }
 }
 
-///|
-/// What is carried now (a row dragged), for what it goes over to show it.
-pub fn node_dragged() -> Dragged? {
-  ndrag.item.get()
-}
-
 // ── a name already there, asked about ──
 
 ///|

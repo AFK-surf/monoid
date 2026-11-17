@@ -9,10 +9,6 @@
 pub let flow_part : Int = 256 * 1024
 
 ///|
-/// How many rows of 60 lines before the end of what has come the next part is read.
-pub let flow_ahead : Int = 10
-
-///|
 /// Lines coloured together: `from` its first, `to` past its last, its words until they are coloured.
 pub(all) struct FlowPiece {
   from : Int

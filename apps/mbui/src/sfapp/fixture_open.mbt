@@ -73,8 +73,8 @@ pub fn open_cards_fixture(mode : String) -> Unit {
       @sf.pick(
         "切换工作站",
         [
-          @sf.choice("st1", "Willow", note="这台 Mac", mark=fn(c, size) { @sf.station_icon(c, "", "", size, @sf.theme().p.muted, here=true) }),
-          @sf.choice("st2", "Cedar", value="离线", mark=fn(c, size) { @sf.station_icon(c, "", "", size, @sf.theme().p.muted) }),
+          @sf.choice("st1", "Willow", note="这台 Mac", mark=OfStation("", "", true, fn() { @sf.theme().p.muted })),
+          @sf.choice("st2", "Cedar", value="离线", mark=OfStation("", "", false, fn() { @sf.theme().p.muted })),
           @sf.choice("st3", "Birch", value="2 个任务"),
         ],
         "st1",

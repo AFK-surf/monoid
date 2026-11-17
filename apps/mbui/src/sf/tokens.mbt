@@ -785,18 +785,6 @@ pub let card_top_end_out : @ui.Style = @ui.style(
 )
 
 ///|
-/// A tile with a ground leading a row (a maker's mark): out from the row's words (text_in) to the ladder's inset (8)
-/// from its start and top, concentric with its corner there (a row's 18 less 8, the small block's 10).
-pub fn row_lead_out() -> @ui.Style {
-  // (a narrow row's words `text_in` under its top, a wide one's 10: the web's list row's)
-  let top = match look() {
-    Narrow => text_in
-    Wide => 10.0
-  }
-  @ui.style(ml=room(corner_inset - text_in), mt=room(corner_inset - top))
-}
-
-///|
 /// What ends a card with small blocks with grounds at its foot (a field's buttons on its last line): its foot out from
 /// the card's words to where the ladder's small corner is concentric with the card's (16 in), as card_end_out at its end.
 pub let card_foot_out : @ui.Style = @ui.style(mb=room(card_corner - small_corner - card_pad))
@@ -838,32 +826,6 @@ pub let empty_in : @ui.Space = room(30.0)
 pub let identity_mark : Double = 46.0
 
 ///|
-/// A tile leading a row with a note (the workspace's mark on its card atop settings): the account's picture's size, or,
-/// narrow, its words' two lines (each one line, cut short) where the system's size of words makes them taller, so the
-/// ladder's inset over and under it whatever that size (link_row's `tile`, link_row_node's LeadTile).
-fn row_tile_side(c : @ui.Ctx, look : Look) -> Double {
-  match look {
-    Narrow => dmax(identity_mark, c.sp(c.text_size(Body).1) + c.sp(c.text_size(Meta).1))
-    Wide => identity_mark
-  }
-}
-
-///|
-/// A row's lead tile as the old view draws it (row_tile_side): out from the row's words to the ladder's inset from its
-/// start; wide, in its corner at any size of words (the row's lead is put in the middle of its first line, row_lead,
-/// which the tile, as tall as that line at least by its foot's margin, fills).
-pub fn row_tile(c : @ui.Ctx) -> @ui.Style {
-  let look = look()
-  let out = corner_inset - text_in
-  let (top, foot) = match look {
-    Narrow => (0.0, 0.0)
-    Wide => (out, dmax(out, row_lead_line(c) - identity_mark - out))
-  }
-  let side = row_tile_side(c, look)
-  workspace_tile.then(@ui.style(w=Fixed(side), h=Fixed(side), ml=room(out), mt=room(top), mb=room(foot)))
-}
-
-///|
 /// A row's lead tile's side as nodes (row_tile_side), in `parent`'s look, for the tile `t`: as the system's size of
 /// words changes, in the theme the window's tree is drawn in.
 pub fn row_tile_side_node(parent : @view.View, t : @view.View) -> () -> Double? {
@@ -879,19 +841,6 @@ pub fn row_tile_side_node(parent : @view.View, t : @view.View) -> () -> Double? 
     }
   }
 }
-
-///|
-/// The workspace's mark's square: the account's picture's size beside it, in its row's
-/// corners the ladder's inset in (a row's 18, 10 in), so concentric with them: the small block's 10, all four alike;
-/// what it holds in its middle.
-pub let workspace_tile : @ui.Style = @ui.style(
-  w=Fixed(identity_mark),
-  h=Fixed(identity_mark),
-  radius=small_radius,
-  align=ACenter,
-  justify=JCenter,
-  clip=true,
-)
 
 ///|
 /// A mark of the workspace's own (one of still.fail's icons, an emoji) in its square: 26.
@@ -2082,11 +2031,6 @@ pub let found_start : @ui.Space = Exact(22.0)
 pub let grow : @ui.Len = Grow(1.0)
 
 ///|
-/// Words on one line given the room left in their row, cut there with an ellipsis (Compose's Text with maxLines = 1
-/// in a Row: measured in what is left).
-pub let line_left : @ui.Size = Fill(1.0)
-
-///|
 /// A card as wide as what holds it (card's `fill`): one whose words change as it is answered, its width not with them.
 pub let card_across : @ui.Size = Fill(1.0)
 
@@ -2142,9 +2086,6 @@ pub let mark_key_on : @ui.Color = A(Accent, Exact(0.14))
 
 ///|
 pub let mark_ring_bg : @ui.Color = A(Accent, Exact(0.22))
-
-///|
-pub let mark_open_bg : @ui.Color = A(Accent, Exact(0.08))
 
 ///|
 pub let mark_bubble : @ui.Color = A(Card, Exact(0.94))
@@ -2532,17 +2473,6 @@ pub fn bar_keys_top() -> Double {
 }
 
 ///|
-/// How far in from its start a bar whose first thing stands wherever the room left puts it (the files' bar: what is done
-/// to the folder, at its end) keeps clear of the panel's top left corner: as far in as it is round, or `alone`, if that
-/// is further.
-pub fn tape_bar_clear_start(alone : Double) -> Double {
-  match pane_radii() {
-    Some(k) => dmax(alone, k[0])
-    None => alone
-  }
-}
-
-///|
 pub fn tape_bar_over() -> Double {
   dmax(0.0, tape_line - (wide_bar_h - hairline_h - 32.0) / 2.0)
 }
@@ -2834,12 +2764,6 @@ pub let mark_red : @ui.Color = Exact(0xE5484DFFL)
 pub let mark_yellow : Int64 = 0xF2B01EFFL
 
 ///|
-/// The rail's places 8 from its edges open (Rail.css.ts rail: 9 under the last, its 38s 9 in; here where they stand in
-/// the closed bar, 6 + its 2, so folding moves none and their grounds, 12 in, are concentric with a Mac window's corner
-/// as the bar's are through it: rail_ground_radius).
-pub let rail_in : @ui.Space = room(8.0)
-
-///|
 /// The same as the sidebar's panel on the tape (laid out Medium, its left corners tape_side_corners'): the places in
 /// its left corners (a 38 to press, its ground 30 round in its middle) as far in as makes their grounds concentric with
 /// them; where the corner is too square for a circle (it follows a Mac window's), as far in as makes a ground's corner
@@ -2872,11 +2796,6 @@ pub fn rail_in_tape() -> Double {
       _ => box_fit(corner, 9.0 + ground_in, 0.0).0 - ground_in
     }
   }
-}
-
-///|
-pub fn rail_in_tape_room() -> @ui.Space {
-  room(rail_in_tape())
 }
 
 ///|
@@ -3073,11 +2992,6 @@ pub fn usage_series(i : Int) -> Int64 {
 }
 
 ///|
-/// An agent's history's steps: the turn's rail 9.5 in, how much of a wait
-/// has gone a bar 3 high; a diff's line 22 in, its mark 9.
-pub let history_rail_in : @ui.Space = room(9.5)
-
-///|
 pub let wait_bar_h : @ui.Len = Fixed(3.0)
 
 ///|
@@ -3148,19 +3062,6 @@ pub let home_workspace_title_look : @view.WordsLook = {
   tracking: ScaledPoints(-0.4),
   balance: false,
   max_lines: 0,
-}
-
-///|
-/// Secondary emphasis ground (`Palette.secondary_bg`) for `dark` or light themes: tuned separately in light (`#2B2822`
-/// at `10.2%`, warm stone `#E0DEDA` on `#F5F3EF`) and dark (`#F2F3F5` at `10.6%`, neutral charcoal `#323336` on
-/// `#1B1C1F`) so neutral bubbles/cards stack one step over it and chromatic error pills (`Over(Bg, DangerBg)`) stay
-/// untinted.
-pub fn flash_band_bg(dark : Bool) -> Int64 {
-  if dark {
-    dark_palette.secondary_bg
-  } else {
-    light_palette.secondary_bg
-  }
 }
 
 ///|

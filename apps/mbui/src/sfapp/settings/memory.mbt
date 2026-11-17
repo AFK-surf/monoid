@@ -31,31 +31,6 @@ pub fn sections_of(m : Json?) -> Array[(String, String, String)] {
 }
 
 ///|
-/// Whose a skill is, after its name: another station's, or shared from here.
-pub fn skill_tag(k : Json?, names : Map[String, String]) -> String {
-  let share = field(k, "share")
-  match text(share, "role") {
-    "user" => {
-      let host = text(share, "host")
-      fill("web-main.memory.share.from", [
-        (
-          "station",
-          match names.get(host) {
-            Some(n) => n
-            None => if host.length() > 8 { host.unsafe_substring(start=0, end=8) } else { host }
-          },
-        ),
-      ])
-    }
-    "host" => tr("web-main.memory.share.shared")
-    _ => ""
-  }
-}
-
-///|
-pub let memory_chevron : Double = 14.0
-
-///|
 /// Whether the built-in skills are folded open, by station: kept as one goes back and comes in again, the same for
 /// every page that shows that station's memory (builtin_open_of, builtin_turn).
 // kept across runs: put back as a run begins (on_reset)

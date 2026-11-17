@@ -2319,14 +2319,6 @@ pub fn Viewer::coming(self : Viewer) -> Bool {
 }
 
 ///|
-/// Taps on the stage (not on what is over it) show or hide the bars.
-pub fn tap_stage(c : @ui.Ctx, v : Viewer, stage : Int) -> Unit {
-  c.on_press(stage, fn() {
-    v.toggle()
-  })
-}
-
-///|
 /// A wait: a spinner and its words on the chip's ground, round.
 pub fn reading_pill(c : @ui.Ctx, words : String) -> Unit {
   c.box(style=reading_pill_box, fn() {
@@ -3140,9 +3132,6 @@ pub fn Viewer::view(self : Viewer) -> @ui.NativeView? {
 ///|
 /// Haze's blur of 24 dp and 20 dp as CSS's (glass.mbt: (px - 0.5) / 0.57735 dp).
 pub let dark_glass_blur : Double = 24.0 * 0.57735 + 0.5
-
-///|
-pub let page_glass_blur : Double = 20.0 * 0.57735 + 0.5
 
 ///|
 /// The frosted glass over a picture: 0x121214 at 62% over its blur; with transparency

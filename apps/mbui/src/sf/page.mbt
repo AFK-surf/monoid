@@ -342,36 +342,6 @@ fn barred_page(
 }
 
 ///|
-/// A page still drawn with the web's desktop pieces alone (until it is made of these parts), laid out wide whatever
-/// its width (detlint's page-look counts the pages that ask for it). As `page`, but for what only a narrow page has.
-pub fn page_wide(
-  c : @ui.Ctx,
-  key : String,
-  title : String,
-  content : Array[() -> Unit],
-  on_back~ : () -> Unit,
-  frame? : PageFrame = no_frame,
-  lead? : String = "",
-  about? : String = "",
-  actions? : () -> Unit,
-  head? : () -> Unit,
-) -> Unit {
-  let (title, content, head, actions, lead) = page_parts(c, title, content, head, actions, lead)
-  let content = content.map(fn(b) { fn() { with_look(Wide, b) } })
-  let head = match head {
-    Some(h) => Some(fn() { with_look(Wide, h) })
-    None => None
-  }
-  let back = frame.back.map(fn(w) { (w, on_back) })
-  let bar = { back, title, about, small: "", own_head: head is Some(_), actions }
-  with_look(Wide, fn() {
-    under_pane_bar(c, bar, fn() { barred_page(c, key, Wide, content, frame.foot, lead, head) }, fn() {
-      wide_page(c, key, title, content, on_back, frame.back, frame.top, frame.foot, lead, about, actions, head)
-    })
-  })
-}
-
-///|
 /// Narrow: back to where it was opened from (TopBack), then its large title (LargeTitle) or its own head, what it is
 /// for under it, what it holds; 30 under that, then the frame's room.
 fn narrow_page(
@@ -879,15 +849,6 @@ pub fn groups(c : @ui.Ctx, body : () -> Unit) -> Unit {
 let groups_wide : @ui.Style = @ui.css("w=Full gap=S3")
 
 ///|
-/// A group's rows while they are read the first time (sf/waiting.mbt: a list's first read, a section's as
-/// well): its card with `rows` in it (its own rows, drawn by what draws them, of made-up words) in their bones,
-/// breathing, `text` what it waits on said to a screen reader. Its card as it will be, its rows where they will be:
-/// not a wait's line at the card's edge (2026-10-26, 账号's devices: 「这个 loading 很怪」).
-pub fn group_waiting(c : @ui.Ctx, rows : () -> Unit, text? : String = "") -> Unit {
-  waiting(c, text~, fn() { group(c, rows) })
-}
-
-///|
 /// A page's long list (its rows laid out as they come into view: `Ctx::list`), its rows drawn in the arrangement of
 /// the page it is in: they are drawn after the page's frame has said it (group_row reads it). `sized`: what changed
 /// its rows' heights, by their keys (a ListRows' answer: Ctx::list's `sized`).
@@ -912,31 +873,6 @@ pub fn rows_room(c : @ui.Ctx, body : () -> Unit) -> Unit {
   } else {
     body()
   }
-}
-
-///|
-/// What stands over a page's list and stays while it scrolls (a field that filters it), in the page's column as the
-/// list's blocks are: narrow, the page's room (pg_room: 12 from its sides); wide, the lanes' column (desk_lanes: in
-/// the pane's middle, 792 at most, 24 from its sides at least).
-pub fn over_rows(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  match look() {
-    Narrow => c.box(style=pg_room_now(), body) |> ignore
-    Wide => c.box(style=desk_lane_now(), fn() { c.box(style=desk_lane_column, body) |> ignore }) |> ignore
-  }
-}
-
-///|
-/// What stands over a group's rows and tells of them (a list's head: where it is, what it holds), in as far as their
-/// words: narrow, those on its card (20); wide, a wide list's rows' (12); 6 between its lines; the rows as far under
-/// it as under any small title over a card (title_card_gap). `first`: the first thing of a pane that keeps no room over
-/// what it shows (a folder's page under its tools): its own room over it (narrow 2, wide 12); in a page, what is over it
-/// is the page's to space.
-pub fn rows_head(c : @ui.Ctx, body : () -> Unit, first? : Bool = false) -> Unit {
-  let style = match look() {
-    Narrow => if first { rows_head_narrow_first } else { rows_head_narrow }
-    Wide => if first { rows_head_wide_first } else { rows_head_wide }
-  }
-  c.box(style~, body) |> ignore
 }
 
 ///|
@@ -1658,19 +1594,6 @@ let row_first_line : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
 let row_first_lines : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
 
 ///|
-/// A figure (a code to scan, a picture) and the words about it (FeishuConnect.css.ts scan: 24 apart, across their
-/// middle, the words 10 apart): wide, the words beside it; narrow, under it, 16 apart, as wide as the page (beside a
-/// 196 code a phone left them a hundred points: three lines a sentence, the button past the edge, 2026-10-26).
-pub fn figure_words(c : @ui.Ctx, figure : () -> Unit, words : () -> Unit) -> Unit {
-  let narrow = look() is Narrow
-  c.box(style=if narrow { figure_under } else { figure_beside }, fn() {
-    figure()
-    c.box(style=if narrow { figure_words_under } else { figure_words_beside }, words) |> ignore
-  })
-  |> ignore
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 let figure_beside : @ui.Style = @ui.css("row w=Full gap=S6 align=ACenter")
 
@@ -1856,22 +1779,6 @@ pub fn choice_row(
 ///|
 // kept across runs: a value (no field of it changes)
 let no_reach : @ui.Style = @ui.css("")
-
-///|
-/// A list of a page's rows at a dialog's foot (a station's card's ways on), each pressed as a whole, `style` round
-/// them: as dialog_rows' are, the rows round as their height (a wide row's, desk_row_least: no note under its title),
-/// out past the dialog's words at its sides and its foot to where the last stands concentric with its foot corners,
-/// their words back on the dialog's line (row_line); elsewhere (a sheet's) as they are.
-pub fn dialog_foot_rows(c : @ui.Ctx, style : @ui.Style, body : () -> Unit) -> Unit {
-  if !in_dialog.val {
-    c.box(style~, body) |> ignore
-    return
-  }
-  let was = foot_rows_now.val
-  foot_rows_now.val = true
-  c.box(style=style.then(@ui.style(mb=room(-foot_rows_out()))), body) |> ignore
-  foot_rows_now.val = was
-}
 
 ///|
 /// How far a dialog's foot rows reach out past its words: from its side (dialog_pad) to where a capsule a wide row high
@@ -3070,11 +2977,6 @@ pub let desk_list_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, co
 pub let wide_list_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
 
 ///|
-/// A note on one line beside or under what it is about: cut short where it has less, never wrapped a letter a line.
-// kept across runs: a value (no field of it changes)
-pub let desk_note_line : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
-
-///|
 // kept across runs: a value (no field of it changes)
 pub let desk_note_bad : @ui.TextStyle = wide_list_note.then(@ui.text_style(color=Danger))
 
@@ -3320,16 +3222,6 @@ pub fn row_lead_line(c : @ui.Ctx, at? : Look) -> Double {
     Narrow => c.text_size(Body).1
     Wide => c.theme().leading(L6).unwrap_or(c.text_size(Ui).1)
   })
-}
-
-///|
-/// How far a page's row's words stand in from its foot (narrow: text_in; wide: a list row's 10): what lies in its foot's
-/// corner reaches out by that less the ladder's inset.
-pub fn row_words_foot() -> Double {
-  match look() {
-    Narrow => text_in
-    Wide => wide_row_pad
-  }
 }
 
 ///|

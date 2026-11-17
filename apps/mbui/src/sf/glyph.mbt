@@ -318,13 +318,6 @@ fn standard_at(t : Double) -> Double {
 }
 
 ///|
-/// A rounded frame `w` by `h` (its corner `r`) drawn as dashes `line` wide in `color` (CSS's `dashed`: a dash three of
-/// its widths, a gap two, spread to come round evenly), its line's middle on the frame; what stands by it is under.
-pub fn dashed_frame(c : @ui.Ctx, w : Double, h : Double, r : Double, line : Double, color : Int64) -> Int {
-  draw_drawable(c, "dashed/\{w}/\{h}/\{r}/\{line}/\{color}", dashed_vector(w, h, r, line, color), w + line, None)
-}
-
-///|
 /// What dashed_frame draws, as a picture `w + line` by `h + line`.
 pub fn dashed_vector(w : Double, h : Double, r : Double, line : Double, color : Int64) -> @pixels.Vector {
   let path = StringBuilder()

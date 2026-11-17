@@ -1160,26 +1160,6 @@ fn open_block_node(parent : @view.View, core : Core, ws : () -> String, draft : 
 }
 
 ///|
-/// A section whose title says how many it holds (narrow: after its title, quieter; wide: the accent's count beside it).
-pub fn sec_section(c : @ui.Ctx, look : Look, title : String, count~ : Int, body : () -> Unit) -> Unit {
-  match look {
-    Narrow => {
-      @sf.heading(c, title + " · " + count.to_string())
-      body()
-    }
-    Wide =>
-      @sf.section(
-        c,
-        title,
-        title_after=fn() {
-          c.box(style=sec_count, fn() { c.text(count.to_string(), style=sec_count_words) |> ignore }) |> ignore
-        },
-        body,
-      )
-  }
-}
-
-///|
 /// 移除「…」？: a device taken out of the lock, said what that means first.
 pub fn remove_dialog(core : Core, ws : String, device : String, name : String) -> Unit {
   @sf.confirm(
@@ -1491,15 +1471,6 @@ let sec_over_apart : @ui.Style = @ui.css("w=Full pt=S1_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let sec_over_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, wrap=false, w=Cut)
-
-///|
-/// The count of those waiting (count: the meta's 12 in 500 on the accent's ground, 7 in, round).
-// kept across runs: a value (no field of it changes)
-let sec_count : @ui.Style = @ui.css("px=S1_5 radius=Full bg=AccentBg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_count_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=AccentText, wrap=false)
 
 ///|
 /// A station's dot (dot: 7 round, the online green, amber where it is not protected).

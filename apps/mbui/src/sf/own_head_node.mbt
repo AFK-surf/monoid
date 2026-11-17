@@ -293,41 +293,6 @@ pub fn copy_command_node(
 }
 
 ///|
-/// Figures side by side (figures', as a node) in `parent`: what each is, its number large, a line under it where it has
-/// one, as `figures` says them now, on the page's ground as cards of their own; always on one line, sharing it: narrow,
-/// closer and their numbers a size smaller, each's line under it there only where it fits whole.
-#callsite(autofill(loc))
-pub fn figures_node(parent : @view.View, figures : () -> Array[(String, String, String)], loc~ : SourceLoc) -> Unit {
-  let narrow = look_node(parent) is Narrow
-  parent.box(made_for=loc, fn(o) {
-    style_node(o, fn() { if narrow { pg_card_room } else { wide_block } })
-    o.box(fn(r) {
-      style_node(r, fn() { if narrow { fig_row_narrow } else { fig_row } })
-      r.each(fn() { figures().mapi(fn(i, f) { (i, f) }) }, fn(x) { x.0 }, fn(tile, x) {
-        style_node(tile, fn() { if narrow { fig_tile_narrow } else { fig_tile } }, in_row=true)
-        words_node(tile, fn() { x.get().1.0 }, fn() { fig_label }) |> ignore
-        words_node(tile, fn() { x.get().1.1 }, fn() { if narrow { fig_value_narrow } else { fig_value } }) |> ignore
-        tile.show(fn() { x.get().1.2 != "" }, fn(s) {
-          if narrow {
-            // (its line under it whole, or none: words cut short say nothing)
-            s.box(fn(l) {
-              style_node(l, fn() { fig_sub_line })
-              l.fits(Is(true)) |> ignore
-              words_node(l, fn() { x.get().1.2 }, fn() { fig_sub_whole }).drops(Is(1)) |> ignore
-            })
-            |> ignore
-          } else {
-            words_node(s, fn() { x.get().1.2 }, fn() { fig_sub }) |> ignore
-          }
-        })
-      })
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// What a section holds that is neither rows nor a card (loose's, as a node: its chips, a field with its button) in
 /// `parent`, what `body` makes in it 12 apart: narrow, as far in as the page's headings' words, 10 under it; wide, at
 /// the column's edges.

@@ -207,11 +207,7 @@ fn pick_row_node(
         into.box(fn(col) {
           col.width(Is(Some(panel_icon_col))).lines_up(Is(Some(Middle))) |> ignore
           match x.mark {
-            Some(m) =>
-              @ui.old(col, fn(c) { m(c, panel_icon) })
-              .width(Is(Some(panel_icon)))
-              .height(Is(Some(panel_icon)))
-              |> ignore
+            Some(m) => choice_mark_node(col, m, panel_icon)
             None => icon_node(col, x.icon, panel_icon, By(fn() { library_theme().p.muted })) |> ignore
           }
         })

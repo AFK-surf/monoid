@@ -95,15 +95,6 @@ priv struct Kept {
 let kept : Kept = { chats: @signals.signal(None), drive: @signals.signal(0.0, same=fn(a, b) { a == b }), loose: @signals.signal([]), asked: @signals.signal(0, same=fn(a, b) { a == b }), read: @signals.signal(-1, same=fn(a, b) { a == b })}
 
 ///|
-/// The chats' kept data asked of the core again.
-fn kept_read(c : @ui.Ctx, core : Core) -> Unit {
-  if kept_unread() {
-    // (asked once the frame's builds are over: the build that first comes to it alone)
-    c.tell("cache.usage", fn() { kept_usage(core) })
-  }
-}
-
-///|
 /// Whether what is kept is not read as last asked; said read as it is asked now.
 fn kept_unread() -> Bool {
   if kept.read.get() == kept.asked.get() {
@@ -132,14 +123,6 @@ fn kept_usage(core : Core) -> Unit {
       Err(_) => []
     })
   })
-}
-
-///|
-/// What 本机缓存's row in the settings' list says: all its page counts (kept_total), once the core has said it (""
-/// until then).
-pub fn kept_said(c : @ui.Ctx, core : Core) -> String {
-  kept_read(c, core)
-  kept_told()
 }
 
 ///|

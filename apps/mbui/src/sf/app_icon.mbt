@@ -55,17 +55,6 @@ pub fn avatars_base() -> String {
 }
 
 ///|
-/// The buddies, asked of the core once (`ask`: its `buddies` call, answering id, label, bg each) once the frame is
-/// built; none where it has none, or until it has answered.
-pub fn app_buddies(c : @ui.Ctx, ask : ((Result[Json, Json]) -> Unit) -> Unit) -> Array[AppAvatar] {
-  // (said by each build until it is asked: a build let go of asks nothing)
-  if !buddies_asked.val {
-    c.after_build("app-icon/buddies", fn() { app_buddies_ask(ask) })
-  }
-  app_buddies_now()
-}
-
-///|
 /// The buddies asked of the core (`ask`: its `buddies` call), unless they were already: what is made once asks it as it
 /// is made (app_buddies' after its build).
 pub fn app_buddies_ask(ask : ((Result[Json, Json]) -> Unit) -> Unit) -> Unit {

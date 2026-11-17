@@ -48,8 +48,6 @@ pub fn apart_node(@view.View, (@view.View) -> Unit) -> @view.View
 
 pub fn app_avatar_icon(AppAvatar, String, Int32, Int32, FixedArray[Byte]) -> @pixels.Canvas?
 
-pub fn app_buddies(@ui.Ctx, ((Result[@json.Json, @json.Json]) -> Unit) -> Unit) -> Array[AppAvatar]
-
 pub fn app_buddies_ask(((Result[@json.Json, @json.Json]) -> Unit) -> Unit) -> Unit
 
 pub fn app_buddies_now() -> Array[AppAvatar]
@@ -73,8 +71,6 @@ pub fn arranged(Double, wide~ : () -> Unit, narrow~ : () -> Unit) -> Unit
 pub fn ask(String, String, (String) -> Unit, value? : String, placeholder? : String, hint? : String, secret? : Bool, empty? : Bool, from? : Anchor) -> Unit
 
 pub fn ask_buttons(@ui.Ctx, () -> Unit) -> Unit
-
-pub fn ask_buttons_across(@ui.Ctx, () -> Unit) -> Unit
 
 pub fn ask_buttons_node(@view.View, (@view.View) -> Unit) -> @view.View
 
@@ -160,10 +156,6 @@ pub fn band_words(@ui.Ctx, String) -> Unit
 
 pub fn bar(@ui.Ctx, @ui.Size, Double, radius? : Double, breathing? : Bool) -> Unit
 
-pub fn bar_field(@ui.Ctx, Int32, Bool, () -> Unit, end? : (() -> Unit)?, part? : (Double, @ui.Color)?) -> Unit
-
-pub fn bar_key(@ui.Ctx, String, String, String, enabled? : Bool) -> Bool
-
 pub let bar_key_side : Double
 
 pub fn bar_keys_link() -> @paint.CornerOf?
@@ -177,10 +169,6 @@ pub fn behind_ground(k? : Double) -> Int64
 pub let beside : @ui.Style
 
 pub fn beside_look(@ui.Size, inner? : @ui.Style, most? : Double) -> (@ui.Ctx, @kit.PopState, () -> Unit) -> Unit
-
-pub fn bleed_end(Double) -> @ui.Style
-
-pub fn bleed_start(Double) -> @ui.Style
 
 pub fn bleed_y(Double) -> @ui.Style
 
@@ -267,17 +255,17 @@ pub let chat_station_most : @ui.Len
 
 pub fn check_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool) -> Unit
 
-pub fn check_row(@ui.Ctx, String, String, Bool, note? : String, disabled? : Bool, lead? : (@ui.Ctx) -> Unit) -> Bool
-
 pub fn check_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit) -> Unit
 
 pub fn chip(@ui.Ctx, String, key? : String, icon? : String, ink? : Int64, disabled? : Bool, inner? : Bool, said? : String, on_press? : () -> Unit) -> Bool
 
 pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer) -> @view.View
 
-pub fn choice(String, String, note? : String, value? : String, icon? : String, mark? : (@ui.Ctx, Double) -> Unit) -> Choice
+pub fn choice(String, String, note? : String, value? : String, icon? : String, mark? : ChoiceMark) -> Choice
 
 pub let choice_gap : Double
+
+pub fn choice_mark_node(@view.View, ChoiceMark, Double, loc~ : SourceLoc) -> Unit
 
 pub fn choice_row(@ui.Ctx, String, Bool, String, body? : () -> Unit, note? : String, lead? : () -> Unit, tag? : () -> Unit, trail? : () -> Unit, ink? : Int64, disabled? : Bool, busy? : Bool, on_press? : () -> Unit) -> Bool
 
@@ -363,15 +351,11 @@ pub fn composer_round_in() -> Double
 
 pub fn confirm(String, String, String, () -> Unit, danger? : Bool, warning? : String, from? : Anchor) -> Unit
 
-pub fn confirm_dialog(@ui.Ctx, String, Bool, String, String, String, cancel~ : String, busy? : Bool, error? : String, danger? : Bool, warning? : String, scrim? : Int64, on_confirm? : () -> Unit) -> Confirmed
-
 pub fn confirm_node(@view.View, () -> Bool, () -> String, () -> String, () -> String, Bool, () -> Unit, () -> Unit, warning? : String, shown? : () -> Unit, gone? : () -> Unit, dims? : () -> Bool, covered? : () -> Bool) -> Unit
 
 pub let confirm_w : Double
 
 pub let copied_ms : Double
-
-pub fn copy_command(@ui.Ctx, String, String, copy~ : String, copied~ : String) -> Unit
 
 pub fn copy_command_node(@view.View, () -> String, copy~ : String, copied~ : String) -> Unit
 
@@ -394,8 +378,6 @@ pub let custom_field_r : @ui.Radius
 pub fn custom_hue(String) -> Int32?
 
 pub fn custom_tone(Int32) -> AccentTone
-
-pub fn dashed_frame(@ui.Ctx, Double, Double, Double, Double, Int64) -> Int32
 
 pub fn danger_row_node(@view.View, () -> String, () -> Unit, busy? : () -> Bool) -> Unit
 
@@ -459,8 +441,6 @@ pub let desk_named : @ui.Style
 
 pub let desk_note_bad : @ui.TextStyle
 
-pub let desk_note_line : @ui.TextStyle
-
 pub let desk_own_head : @ui.Style
 
 pub let desk_panel_box : @ui.Style
@@ -468,8 +448,6 @@ pub let desk_panel_box : @ui.Style
 pub let desk_panel_list : @ui.Style
 
 pub let desk_panel_note : @ui.TextStyle
-
-pub let desk_panel_place : @ui.Style
 
 pub let desk_panel_room : @ui.Style
 
@@ -497,15 +475,11 @@ pub let dialog_close : Double
 
 pub fn dialog_corner_foot(Double) -> @ui.Style
 
-pub fn dialog_foot_rows(@ui.Ctx, @ui.Style, () -> Unit) -> Unit
-
 pub fn dialog_foot_rows_node(@view.View, @ui.Style, (@view.View) -> Unit) -> Unit
 
 pub let dialog_margin : Double
 
 pub let dialog_r : Double
-
-pub fn dialog_rows(Double) -> (@ui.Style, @ui.Style)
 
 pub fn dialog_rows_node(@view.View, Double) -> (@ui.Style, @ui.Style)
 
@@ -533,8 +507,6 @@ pub fn dmax(Double, Double) -> Double
 
 pub fn dmin(Double, Double) -> Double
 
-pub fn done_waiting(@ui.Ctx, String) -> Unit
-
 pub fn donut(@ui.Ctx, Array[(Double, Int64)], Double, Double, Int64) -> Int32
 
 pub let dot_size : @ui.Len
@@ -552,8 +524,6 @@ pub fn drawable_vector(String) -> @pixels.Vector?
 pub fn dropdown(@ui.Ctx, String, Bool, Int32, Array[@kit.Entry], Map[String, String], Double, submenu? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, at? : (Double, Double, Double, Double), row_end? : (@ui.Ctx, @kit.MenuItemState) -> Unit, danger? : Array[String], marks? : Map[String, (@ui.Ctx, Double) -> Unit], notes? : Map[String, String], check_end? : Bool, show_exit? : Bool, on_pick? : (String) -> Unit) -> @kit.Menu
 
 pub let dur_ms : Double
-
-pub fn ease_to(@ui.Ctx, String, Bool) -> Double
 
 pub let edge_bar_ms : Double
 
@@ -623,11 +593,7 @@ pub fn field_round() -> Double
 
 pub let field_wide_most : Double
 
-pub fn figure_words(@ui.Ctx, () -> Unit, () -> Unit) -> Unit
-
 pub fn figures(@ui.Ctx, Array[(String, String, String)]) -> Unit
-
-pub fn figures_node(@view.View, () -> Array[(String, String, String)]) -> Unit
 
 pub let file_capsule_h : @ui.Len
 
@@ -775,15 +741,9 @@ pub fn group_row(@ui.Ctx, Bool, Bool, () -> Unit, id? : Int32) -> Unit
 
 pub let group_row_end_radius : @ui.Radius
 
-pub fn group_rows(@ui.Ctx, String, Array[(String, () -> Unit)]) -> Unit
-
 pub fn group_rows_node(@view.View, (@view.View) -> Unit) -> Unit
 
 pub fn[T : Eq, K : Hash + Eq] keyed_rows_node(@view.View, () -> Array[T], (T) -> K, (@view.View, @signals.Signal[T]) -> Unit) -> Unit
-
-pub fn group_rows_reset() -> Unit
-
-pub fn group_waiting(@ui.Ctx, () -> Unit, text? : String) -> Unit
 
 pub fn grouped(Double) -> String
 
@@ -824,8 +784,6 @@ pub fn held_reach() -> @ui.Style
 pub fn hex_color(String) -> Int64?
 
 pub let hint_back_ms : Double
-
-pub let history_rail_in : @ui.Space
 
 pub fn holds_least(Double) -> Double
 
@@ -979,8 +937,6 @@ pub fn line_end(@ui.Ctx, () -> Unit) -> Unit
 
 pub fn line_end_in(Double, Double, side? : Double) -> Double
 
-pub let line_left : @ui.Size
-
 pub let line_stroke : StrokeShape
 
 pub let link : @ui.TextStyle
@@ -1001,8 +957,6 @@ pub fn link_row_opens_node(@view.View, () -> String, (@view.View) -> Unit, value
 
 pub fn link_to_of(@json.Json, text? : String, bare? : Bool) -> LinkTo
 
-pub fn list_apart(@ui.Ctx) -> Unit
-
 pub let list_card_corner : Double
 
 pub fn list_card_node(@view.View, (@view.View) -> Unit) -> Unit
@@ -1010,8 +964,6 @@ pub fn list_card_node(@view.View, (@view.View) -> Unit) -> Unit
 pub let list_card_radius : @ui.Radius
 
 pub fn list_foot_in(ListAt) -> Double
-
-pub fn list_heading(@ui.Ctx, String, ListAt) -> Unit
 
 pub fn list_heading_in(ListAt) -> @ui.Style
 
@@ -1089,8 +1041,6 @@ pub let mark_bubble_dark : @ui.Color
 
 pub let mark_key_on : @ui.Color
 
-pub let mark_open_bg : @ui.Color
-
 pub let mark_pin_size : @ui.TextSize
 
 pub let mark_put_gap : @ui.Space
@@ -1123,8 +1073,6 @@ pub fn md_node_at(@json.Json) -> Int32
 
 pub fn md_node_depth(@json.Json) -> Int32?
 
-pub fn media_bar_box() -> @ui.Style
-
 pub fn media_bar_foot() -> Double
 
 pub fn media_bar_h() -> Double
@@ -1151,37 +1099,17 @@ pub let media_glass_share : Double
 
 pub fn media_ground() -> Int64
 
-pub fn media_group() -> @ui.Style
-
-pub fn media_head(@ui.Ctx, Double, Int64, small? : Bool, rail? : Bool) -> Unit
-
-pub let media_head_row : @ui.Style
-
 pub fn media_ink(Bool) -> MediaInk
-
-pub fn media_key(@ui.Ctx, String, String, String, Bool, small? : Bool, bright? : Bool, lit? : Bool, ink? : MediaInk) -> Bool
 
 pub let media_key_d : Double
 
-pub fn media_rate(@ui.Ctx, String, String, String, Bool, ink? : MediaInk) -> Bool
-
 pub let media_rate_share : Double
-
-pub fn media_row() -> @ui.Style
 
 pub fn media_row_h() -> Double
 
-pub fn media_share_bar(@ui.Ctx, Double, Int64) -> Unit
-
 pub let media_strong : Int32
 
-pub let media_time_words : @ui.TextStyle
-
-pub fn media_timeline_box() -> @ui.Style
-
 pub fn media_timeline_h() -> Double
-
-pub let media_track : @ui.Style
 
 pub let media_track_share : Double
 
@@ -1352,8 +1280,6 @@ pub fn nav_title(@ui.Ctx, String, away? : Bool) -> Unit
 
 pub let nav_title_clear : @ui.Space
 
-pub fn nav_words(@ui.Ctx, String, color? : Int64) -> Unit
-
 pub fn nav_words_node(@view.View, () -> String) -> Unit
 
 pub fn neg(Double) -> Double
@@ -1390,8 +1316,6 @@ pub fn oklch(Double, Double, Double) -> Int64
 
 pub fn on_corner(Double, Double, room? : Double) -> Double
 
-pub fn on_the_night(() -> Unit) -> Unit
-
 pub let one_line : @ui.TextStyle
 
 pub fn one_of(@ui.Ctx, String, String, Array[(String, String)], (String) -> Unit, label? : String, placeholder? : String, disabled? : Bool) -> Unit
@@ -1422,8 +1346,6 @@ pub fn over_foot_reach(Double) -> @ui.Style
 
 pub fn over_room(@view.View) -> (Double, Double)
 
-pub fn over_rows(@ui.Ctx, () -> Unit) -> Unit
-
 pub fn overlap(Double) -> @ui.Style
 
 pub fn oversize(Double) -> @ui.Style
@@ -1434,8 +1356,6 @@ pub fn own_head_node(@view.View, (@view.View, Double) -> Unit, () -> String, ren
 
 pub fn page(@ui.Ctx, String, String, Array[() -> Unit], on_back~ : () -> Unit, frame? : PageFrame, lead? : String, about? : String, actions? : () -> Unit, head? : () -> Unit, small? : String) -> Unit
 
-pub fn page_bar(@ui.Ctx, () -> Unit, corners? : (Double, Double)?) -> Unit
-
 pub fn page_block(@view.View, (@view.View) -> Unit) -> Unit
 
 pub fn page_card(@ui.Ctx, () -> Unit, footed? : Bool) -> Unit
@@ -1445,8 +1365,6 @@ pub fn page_card_node(@view.View, (@view.View) -> Unit, footed? : Bool, layered?
 pub fn page_choice(@ui.Ctx, String, Array[String], Int32, item_w? : Double, on_pick? : (Int32) -> Unit) -> Int32
 
 pub fn page_choice_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double) -> Unit
-
-pub fn page_head(@ui.Ctx, String, meta? : String, actions? : () -> Unit) -> Unit
 
 pub let page_list_opened : @ref.Ref[(@ui.Ctx, String, Int32) -> Unit]
 
@@ -1467,8 +1385,6 @@ pub fn page_said_node(@view.View, () -> String, bad? : Bool) -> Unit
 pub fn page_viewer_ink() -> ViewerInk
 
 pub fn page_waiting(@ui.Ctx, String, () -> Unit, text? : String, error? : String, note? : WaitNote) -> Unit
-
-pub fn page_wide(@ui.Ctx, String, String, Array[() -> Unit], on_back~ : () -> Unit, frame? : PageFrame, lead? : String, about? : String, actions? : () -> Unit, head? : () -> Unit) -> Unit
 
 pub fn palette_of(Bool) -> Palette
 
@@ -1500,8 +1416,6 @@ pub fn panel(String, (@ui.Ctx, () -> Unit) -> Unit, from~ : Anchor, w? : Double,
 
 pub fn panel_back(to? : Int32) -> Bool
 
-pub fn panel_bleed() -> @ui.Style
-
 pub fn panel_button(@ui.Ctx, String, String, tone? : PanelTone, disabled? : Bool, on_press? : () -> Unit) -> Bool
 
 pub fn panel_button_node(@view.View, () -> String, () -> Unit, tone? : PanelTone) -> @view.View
@@ -1532,11 +1446,7 @@ pub fn panel_heading_node(@view.View, () -> String) -> Unit
 
 pub fn panel_held() -> Bool
 
-pub fn panel_icon_button(@ui.Ctx, String, String, String, disabled? : Bool, cornered? : Bool, on_press? : () -> Unit) -> Bool
-
 pub fn panel_icon_button_node(@view.View, String, () -> String, () -> Unit) -> @view.View
-
-pub let panel_icon_corner : @ui.Style
 
 pub let panel_icon_size : Double
 
@@ -1568,15 +1478,11 @@ pub fn panel_row_in() -> @ui.Style
 
 pub fn panel_row_in_node(@view.View) -> @ui.Style
 
-pub fn panel_row_reach() -> @ui.Style
-
 pub fn panel_row_node(@view.View, () -> String, () -> Unit, icon? : () -> String, note? : () -> String, end? : String, danger? : Bool, plain? : Bool) -> Unit
 
 pub fn panel_row_opens_node(@view.View, () -> String, (Anchor) -> Unit, icon? : () -> String, note? : () -> String) -> Unit
 
 pub fn panel_rule_node(@view.View) -> Unit
-
-pub fn panel_rule_over() -> Double
 
 pub fn panel_said_row_node(@view.View, () -> Array[@text.Run], () -> Unit, () -> String, lead? : (@view.View, Double) -> Unit, end? : () -> String, who? : (() -> String, (@view.View, Double) -> Unit), chosen? : () -> Bool, lit? : () -> Bool, made? : (@view.View) -> Unit) -> Unit
 
@@ -1594,15 +1500,11 @@ pub fn panel_tips_of(@view.View) -> TipLayer?
 
 pub let panel_w : Double
 
-pub fn panel_whole() -> Bool
-
 pub fn panel_words_at_node(@view.View) -> Double
 
 pub fn panel_words_in() -> @ui.Style
 
 pub fn panel_words_in_node(@view.View) -> @ui.Style
-
-pub fn panel_words_out_by(Double) -> @ui.Style
 
 pub fn panel_words_out_by_node(@view.View, Double) -> @ui.Style
 
@@ -1696,8 +1598,6 @@ pub let pin_raised : Raised
 
 pub fn place_node(@view.View, () -> String, () -> String, (Bool) -> @ui.Style, @ui.TextStyle, press? : (() -> Unit)?, on? : () -> Bool, mark? : Double) -> @view.View
 
-pub fn play_mark(@ui.Ctx, Double, @ui.Color) -> Int32
-
 pub fn player(@ui.Ctx, String, ViewerFile, Array[ViewerEntry], back_label~ : String, on_back~ : () -> Unit, on_go~ : (String) -> Unit) -> Unit
 
 pub fn player_fills_native(Double) -> Bool
@@ -1786,8 +1686,6 @@ pub fn presses_node(@view.View, () -> Unit, on? : () -> Bool) -> Unit
 
 pub fn progress(@ui.Ctx, String, Double?, w? : @ui.Size, color? : Int64) -> Unit
 
-pub fn progress_key(@ui.Ctx, String, Double, Double, String, String, Double?, failed~ : Bool) -> Bool
-
 pub fn progress_node(@view.View, () -> Double?, () -> Int64, () -> Int64, h? : Double, period? : Double) -> @view.View
 
 pub fn progress_ring(@ui.Ctx, Double, Double, Int64) -> Int32
@@ -1797,10 +1695,6 @@ pub fn progress_ring_node(@view.View, Double, () -> Double, () -> Int64) -> @vie
 pub fn progress_spinner(@ui.Ctx, String, Double?, size? : Double, stroke? : Double) -> Int32
 
 pub fn progress_spinner_node(@view.View, () -> Double?, size? : Double, stroke? : Double) -> @view.View
-
-pub fn provider_logo(@ui.Ctx, String, String, Double, String) -> Unit
-
-pub fn qr_code(@ui.Ctx, @json.Json?, Double, String) -> Unit
 
 pub let quiet : @ui.TextStyle
 
@@ -1837,11 +1731,7 @@ pub fn rail_ground_radius(@paint.CornerOf, Double, alone? : Double) -> @ui.Radiu
 
 pub let rail_ground_side : Double
 
-pub let rail_in : @ui.Space
-
 pub fn rail_in_tape() -> Double
-
-pub fn rail_in_tape_room() -> @ui.Space
 
 pub let rail_say_max : @ui.Len
 
@@ -1958,8 +1848,6 @@ pub fn row_ripple(@ui.Ctx, Int32) -> Unit
 pub fn row_tag_node(@view.View, () -> String) -> Unit
 
 pub let row_top_in_y : Double
-
-pub fn rows_head(@ui.Ctx, () -> Unit, first? : Bool) -> Unit
 
 pub fn rows_list(@ui.Ctx, String, Int32, Double, (Int32) -> Unit, sized? : @ui.RowCauses) -> Int32
 
@@ -2117,8 +2005,6 @@ pub let share_terminal_palette : Array[Int64]
 
 pub let share_w_most : Double
 
-pub fn sheet_column(@ui.Ctx, () -> Unit) -> Unit
-
 pub fn sheet_column_node(@view.View, (@view.View) -> Unit) -> Unit
 
 pub fn sheet_grab(@ui.Ctx) -> Unit
@@ -2261,8 +2147,6 @@ pub let switch_h : Double
 
 pub let switch_in : Double
 
-pub fn switch_look(@ui.Ctx, String, Bool, small? : Bool, pressed? : Bool) -> Unit
-
 pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String) -> Unit
 
 pub fn switch_row(@ui.Ctx, String, String, Bool, note? : String, disabled? : Bool, busy? : Bool, lead? : (@ui.Ctx) -> Unit, on_change? : (Bool) -> Unit) -> Bool
@@ -2275,8 +2159,6 @@ pub let switch_small_w : Double
 
 pub let switch_w : Double
 
-pub fn sync_key(@ui.Ctx, String, Double, Double, Bool, String) -> Unit
-
 pub fn t(String, args? : Array[(String, String)]) -> String
 
 pub fn t_around(String, String, args? : Array[(String, String)]) -> (String, String)
@@ -2288,8 +2170,6 @@ pub fn tag_node(@view.View, () -> String) -> Unit
 pub let take_over_max : @ui.Len
 
 pub fn tap_text_node(@view.View, () -> String, () -> Unit, size? : Double) -> Unit
-
-pub fn tape_bar_clear_start(Double) -> Double
 
 pub fn tape_bar_end(Double, side? : Double) -> Double
 
@@ -2383,10 +2263,6 @@ pub fn tone_ground(Int64) -> Int64
 
 pub fn tone_of(String) -> AccentTone?
 
-pub fn tool_button(@ui.Ctx, String, String, String, on_press~ : () -> Unit, drop? : Int32, lit? : Int64, disabled? : Bool, shortcut? : String) -> Tool
-
-pub fn tool_mark(@ui.Ctx, String, Double) -> Unit
-
 pub fn tool_mark_node(@view.View, String, Double) -> Unit
 
 pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool) -> @view.View
@@ -2449,8 +2325,6 @@ pub let value : @ui.TextStyle
 
 pub fn vector(@ui.Ctx, String, @pixels.Vector, Double) -> Int32
 
-pub fn verify_ok(@ui.Ctx, String) -> Unit
-
 pub fn verify_ok_node(@view.View, () -> String) -> Unit
 
 pub fn video_capsule(@ui.Ctx, String, Double, coming? : Double?, corner? : Double) -> Unit
@@ -2499,8 +2373,6 @@ pub fn viewer_bar_under() -> Double
 
 pub fn viewer_coming_node(@view.View, () -> (Double, Double?)?, () -> Double, () -> ViewerInk) -> @view.View
 
-pub fn viewer_download(@ui.Ctx, String, ViewerInk, disabled? : Bool, coming? : Double) -> Bool
-
 pub let viewer_facts_icon : Double
 
 pub fn viewer_frame_act(@ui.Ctx, String, String, String, String, ViewerInk, String, busy? : Bool, disabled? : Bool) -> (Bool, Bool)
@@ -2547,8 +2419,6 @@ pub fn wait_line(@ui.Ctx, String, key? : String, error? : Bool) -> Unit
 
 pub fn wait_line_node(@view.View, () -> String) -> @view.View
 
-pub fn wait_more(@ui.Ctx, WaitNote?, () -> Unit) -> Unit
-
 pub fn wait_more_node(@view.View, () -> WaitNote, (@view.View) -> Unit) -> Unit
 
 pub fn wait_pill(@ui.Ctx, String, key? : String, error? : Bool) -> Unit
@@ -2558,8 +2428,6 @@ pub fn waiting(@ui.Ctx, () -> Unit, text? : String, error? : String, note? : Wai
 pub let waiting_in : @motion.Trans
 
 pub fn waiting_node(@view.View, (@view.View) -> Unit, error? : () -> String, note? : () -> WaitNote, fill? : Bool) -> Unit
-
-pub fn waiting_page(@ui.Ctx, String, String, String, () -> Unit) -> Unit
 
 pub let wake_ms : Double
 
@@ -2633,8 +2501,6 @@ pub fn window_keys_room_tape(roots? : @paint.CornerRoots) -> Double
 
 pub fn window_keys_w() -> Double
 
-pub let window_page_in : @motion.Trans
-
 pub fn with_corner_remove(@ui.Ctx, String, String, Double, () -> Unit, w? : Double, turn? : () -> Double, on_remove? : () -> Unit) -> Unit
 
 pub fn with_ground(@ui.Ctx, Int64, () -> Unit) -> Unit
@@ -2654,8 +2520,6 @@ pub fn workspace_badge(@ui.Ctx, String, String, String, Double, still? : Bool) -
 pub fn workspace_badge_node(@view.View, () -> String, () -> String, () -> String, Double, stint? : () -> Int) -> Unit
 
 pub let workspace_letter : @ui.TextStyle
-
-pub let workspace_tile : @ui.Style
 
 pub let workspace_tile_mark : Double
 
@@ -2800,7 +2664,12 @@ pub(all) struct Choice {
   note : String
   value : String
   icon : String
-  mark : ((@ui.Ctx, Double) -> Unit)?
+  mark : ChoiceMark?
+}
+
+pub(all) enum ChoiceMark {
+  OfStation(String, String, Bool, () -> Int64)
+  Drawn(String)
 }
 
 pub(all) struct Columns {
@@ -3065,7 +2934,7 @@ pub(all) struct MediaInk {
 pub(all) struct MenuExtra {
   note : String
   value : String
-  mark : ((@ui.Ctx, Double) -> Unit)?
+  mark : ChoiceMark?
 }
 
 pub(all) struct MenuItem {

@@ -377,22 +377,27 @@ test "how a request ended, the phone's as the vault's: its dot beside its words,
 test "the vault's page's request where it is not this device's to answer, or decided: a line saying so" {
   new_run()
   let calls = []
-  let t = @ui.Tester::new(fn(c) { vault_ask(c, vault_src(["r1"], false, calls)) }, w=390.0, h=844.0, platform=2)
-  t.draw()
+  let t = vault_ask(vault_src(["r1"], false, calls))
   assert_true(t.find("请在客户端批准") is Some(_))
   new_run()
-  let t = @ui.Tester::new(fn(c) { vault_ask(c, vault_src([], true, calls)) }, w=390.0, h=844.0, platform=2)
-  t.draw()
+  let t = vault_ask(vault_src([], true, calls))
   assert_true(t.find("此申请已处理") is Some(_))
   assert_eq(calls.length(), 0)
 }
 
 ///|
-/// The vault page's card of request r1 in ws1, from the vaults topic.
-fn vault_ask(c : @ui.Ctx, src : Source) -> Unit {
+/// The vault page's card of request r1 in ws1, from the vaults topic (vault_request_node, the vault page's), alone in a
+/// phone's window, drawn.
+fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
   let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
-  c.box(w=Fill(1.0), fn() { @settings.vault_ask(c, settings_core(src, w), "ws1", "r1", asked, true) }) |> ignore
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  let core = settings_core(src, w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t.draw()
+  t
 }
 
 ///|
