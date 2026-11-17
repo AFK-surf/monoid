@@ -69,7 +69,8 @@ test("a relay puts itself on the cloud's list only with the operator's token, an
     const made = (await (await console_("POST", "/v1/admin/relays/token", { name: "东京", url: `${NEW}/` })).json()) as { token: string; url: string; command: string };
     assert.equal(made.url, NEW);
     assert.match(made.command, new RegExp(`relay-enroll\\.sh ${h.origin} ${made.token}$`));
-    assert.equal((await events.take()).length, 0, "nothing told for a token made");
+    // (but the operators' console its 操作记录, which the token is noted in)
+    assert.deepEqual(await events.take(), ["admin"], "nothing told for a token made");
     const enroll = (body: unknown) => h.fetch("/v1/relays/enroll", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     assert.equal((await enroll({ token: "nope", url: NEW })).status, 403);
     assert.equal((await enroll({ token: made.token, url: "https://elsewhere.example" })).status, 403);

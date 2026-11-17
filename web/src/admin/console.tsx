@@ -1,19 +1,18 @@
 // The admin's console, on its own host: every user and workspace in still.fail cloud, the invite codes that let
-// a new person create a workspace, and the bug reports people's agents sent about still.fail. Only the admin's account reaches it (still.fail cloud answers 404 to everyone
-// else). The core puts each page together (views/admin.ts: found, filtered, sorted, counted); this draws it. Where
-// the page is (a list's words, filter and sort, the item open) is in its URL, so a link shows the same.
-import { useTopic } from "../core/react.ts";
-import type { CoreError, Topic } from "../core/client.ts";
-import { Boxes, ChevronRight, Close, Copy, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Trash, Users } from "@stillfail/ui/icons.tsx";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "preact/compat";
+// a new person create a workspace, the bug reports people's agents sent about still.fail, the relays and what the
+// operators changed. Only the admin's account reaches it (still.fail cloud answers 404 to everyone else). The core puts
+// each page together (views/admin.ts: found, filtered, sorted, counted); this draws it. Where the page is (a list's
+// words, filter and sort, the item open) is in its URL, so a link shows the same. A page's own parts are beside it:
+// feedback.tsx, workspace.tsx, relays.tsx; what they share, shared.tsx; what the core gives, types.ts.
+import { Boxes, ChevronRight, Copy, List as ListIcon, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
+import { useEffect, useState, type ReactNode } from "preact/compat";
 import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRoute, useSearchParams } from "wouter-preact";
 import { Wordmark } from "../brand.tsx";
-import { stamp, type Stamp } from "../api.ts";
-import { sampleStamp, sampleWords } from "../samples.ts";
+import { stamp } from "../api.ts";
 import { failure, useToast } from "@stillfail/ui/toast.tsx";
-import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, MobileBack, Pill, ResizeHandle, Segmented, Select, StatusDot, Switch, SwitchRow, Time, ICON, type Presence, type Tone, Waiting } from "../ui.tsx";
-import { useAccounts, useSignOut, type Account } from "../cloud/accounts.ts";
-import { admin, useAction, type FeedbackStatus } from "../cloud/api.ts";
+import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, Menu, MobileBack, ResizeHandle, Select, StatusDot, Switch, SwitchRow, Time, ICON, type Presence, Waiting } from "../ui.tsx";
+import { useSignOut, type Account } from "../cloud/accounts.ts";
+import { admin, useAction } from "../cloud/api.ts";
 import { Avatar } from "../cloud/gate.tsx";
 import * as nav from "../Sidebar.css.ts";
 import * as shellCss from "../styles/shell.css.ts";
@@ -21,107 +20,14 @@ import * as css from "./console.css.ts";
 import * as pagesCss from "../styles/pages.css.ts";
 import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import { t } from "../i18n.ts";
-import { STATIONS_PER_WORKSPACE } from "../../../client/limits.ts";
+import { NAME } from "../channel.ts";
+import { Detail, Failed, Marks, narrow, PATH, PENDING, SAMPLE_OVERVIEW, SAMPLE_USER, sampleRows, useKept } from "./shared.tsx";
+import { FeedbackDetail } from "./feedback.tsx";
+import { NewWorkspaceDialog, WorkspaceDetail } from "./workspace.tsx";
+import { RelaysPage } from "./relays.tsx";
+import type { List, ListView, Overview, Row, UserPage } from "./types.ts";
 
-// Each account is asked once per page load whether it is the admin.
-const probes = new Map<string, Promise<boolean>>();
-
-/** The signed-in account that is still.fail's admin: null when none is, undefined until known. */
-export function useAdminAccount(): Account | null | undefined {
-  const list = useAccounts();
-  const [known, setKnown] = useState<Record<string, boolean>>({});
-  useEffect(() => {
-    let current = true;
-    for (const account of list ?? []) {
-      if (!probes.has(account.sub)) probes.set(account.sub, admin.me(account.sub).then(() => true, () => false));
-      void probes.get(account.sub)!.then((yes) => { if (current) setKnown((k) => (k[account.sub] === yes ? k : { ...k, [account.sub]: yes })); });
-    }
-    return () => { current = false; };
-  }, [list]);
-  if (!list) return undefined;
-  return list.find((a) => known[a.sub]) ?? (list.every((a) => a.sub in known) ? null : undefined);
-}
-
-// ── what the core gives (views/admin.ts) ───────────────────────────────
-
-type List = "users" | "workspaces" | "invite-codes" | "feedback";
-type Timed = { time?: Record<string, Stamp> };
-type Mark = { label: string; tone: Tone };
-type PersonLike = { name: string; email: string; picture: string };
-type Row = Timed & {
-  id: string; title: string; line: string; marks: Mark[]; person?: PersonLike;
-  /** A workspace's: how its stations last stood. A code's: open, used, expired, revoked. */
-  state?: Presence | string | null; url?: string | null; note?: string;
-  /** A bug report's: FB-<number>. */
-  number?: string;
-};
-type ListView = { total: number; found: number; filter: string; filters: { id: string; label: string; count: number }[]; sort: string; sorts: { id: string; label: string }[]; rows: Row[]; more: boolean };
-type UserPage = Timed & {
-  /** An email given rights before anyone signed in with it (id `email:<address>`). */
-  pending?: boolean;
-  id: string; title: string; person: PersonLike; email: string; admin: boolean; admission: string; code: string | null;
-  mayCreate: boolean | null; mayCreateHint: string; mayCreateFixed: boolean; beta: boolean | null; blocked: boolean | null;
-  workspaces: { id: string; name: string; line: string }[];
-};
-type WorkspacePage = Timed & {
-  id: string; title: string; creator: { id: string; title: string } | null; people: string;
-  /** Missing from a core from before. */
-  stationCount?: string; plan?: string | null; limits?: { members: number; stations: number | null } | null; enrollable?: boolean;
-  members: (Timed & { id: string; title: string; person: PersonLike; role: string })[];
-  /** Emails added that have not signed in yet. */
-  added?: (Timed & { id: string; email: string; line: string })[];
-  stations: (Timed & { id: string; name: string; version: string | null; outdated: boolean; state: Presence })[];
-  invitations: (Timed & { id: string; email: string; line: string })[];
-};
-type FeedbackPage = Timed & {
-  id: string; number: string; title: string; body: string; status: FeedbackStatus; statuses: { id: FeedbackStatus; label: string }[];
-  marks: Mark[]; channel: string; channelLabel: string; area: string; reporter: string;
-  station: { id: string; name: string } | null; workspace: { id: string; title: string } | null; account: { id: string; title: string } | null;
-  context: { key: string; value: string }[]; logs: string | null;
-  /** All of it as plain text, to hand to an agent. */
-  text: string;
-};
-type Range = "day" | "week";
-type RelaysView = {
-  range: Range;
-  ranges: { id: Range; label: string }[];
-  relays: Relay[];
-  /** Whether the cloud's list can be kept from here (a still.fail cloud from before says none; a core from before neither). */
-  manage?: boolean;
-  /** The tokens made for relays not used yet. */
-  tokens?: { key: string; name: string; line: string }[];
-};
-type Relay = {
-  url: string; name: string;
-  /** Whether it can be taken off the list (the cloud's own cannot), how it came onto it, the ways into it. */
-  removable?: boolean; how?: string[] | null; entries?: { url: string; name: string; host: string }[];
-  state: "online" | "offline" | "error";
-  /** When it was last heard from, said for people ("1 分钟前更新"). */
-  seen: string;
-  numbers: { label: string; value: string; tone?: "amber" | "red" }[];
-  charts: RelayChart[];
-  /** Where times are marked along the charts: `index` a bucket's. */
-  ticks: { index: number; label: string }[];
-};
-type RelayChart = { id: string; label: string; peak: string; series: { id: string; label: string; values: (number | null)[] }[] };
-type Overview = {
-  stats: { label: string; value: number; note: string; list: List; filter: string }[];
-  weeks: { count: number; label: string }[];
-  todo: { text: string; hint: string; tone: string; list: List; filter: string }[];
-};
-
-/** A topic of the core; while the next one (other words, say) is read, the last one's value stays in view. */
-function useKept<T>(topic: Topic): { value: T | undefined; error: CoreError | null } {
-  const state = useTopic<T>(topic);
-  const last = useRef<T | undefined>(undefined);
-  if (state.value) last.current = state.value;
-  return { value: state.value ?? (state.error ? undefined : last.current), error: state.error };
-}
-
-const PATH: Record<List, string> = { users: "/users", workspaces: "/workspaces", "invite-codes": "/codes", feedback: "/feedback" };
-
-// On a phone the sidebar and a page take turns: "/" is the sidebar there, and the overview elsewhere.
-const narrow = () => matchMedia("(max-width: 700px)").matches;
+export { useAdminAccount } from "./account.ts";
 
 export function Console({ account }: { account: Account }) {
   const atIndex = useLocation()[0] === "/";
@@ -139,6 +45,7 @@ export function Console({ account }: { account: Account }) {
           <NavRow to="/codes"><Ticket {...ICON} />{t("web-pages.cloud.inviteCode")}</NavRow>
           <NavRow to="/feedback"><Said {...ICON} />{t("web-pages.admin.feedback")}</NavRow>
           <NavRow to="/relays"><Server {...ICON} />{t("web-pages.admin.relays")}</NavRow>
+          <NavRow to="/audit"><ListIcon {...ICON} />{t("web-pages.admin.audit")}</NavRow>
         </div>
         <div className={`${nav.navFootRow} ${css.adminFoot}`}>
           <span className={css.adminAccount}><Avatar account={account} size={20} /><span className={css.accountEmail}>{account.email}</span></span>
@@ -154,6 +61,7 @@ export function Console({ account }: { account: Account }) {
           <Route path="/codes"><ListPage account={account} list="invite-codes" /></Route>
           <Route path="/feedback/:id?"><ListPage account={account} list="feedback" /></Route>
           <Route path="/relays"><RelaysPage account={account} /></Route>
+          <Route path="/audit"><ListPage account={account} list="audit" /></Route>
           <Route><Redirect to="/" replace /></Route>
         </Routes>
       </main>
@@ -165,10 +73,6 @@ export function Console({ account }: { account: Account }) {
 function NavRow({ to, children }: { to: string; children: ReactNode }) {
   const [open] = useRoute(`${to}/*?`);
   return <Link className={nav.navRow} to={to} aria-current={open ? "page" : undefined}>{children}</Link>;
-}
-
-function Failed({ error }: { error: Error | null }) {
-  return error ? <p className={controlsCss.fieldError} role="alert">{t("web-pages.admin.readFailed", { error: error.message })}</p> : null;
 }
 
 // ── the overview ────────────────────────────────────────────────────────
@@ -228,188 +132,18 @@ function OverviewBody({ view }: { view: Overview }) {
   );
 }
 
-/** The console's pages made up, for what they show while they are read (in their bones). */
-const SAMPLE_OVERVIEW: Overview = {
-  stats: [3, 4, 3, 4].map((n, i) => ({ label: sampleWords(n), value: 100 + i, note: sampleWords(n + 3), list: "users", filter: "" })),
-  weeks: [3, 5, 4, 6, 8, 5, 7, 9, 6, 8, 10, 7].map((count) => ({ count, label: sampleWords(2) })),
-  todo: [14, 10].map((n) => ({ text: sampleWords(n), hint: sampleWords(6), tone: "amber", list: "users", filter: "" })),
-};
-const SAMPLE_RELAYS: Relay[] = [6, 8].map((n, i) => ({
-  url: String(i), name: sampleWords(n), state: "online", seen: sampleWords(5), ticks: [],
-  numbers: [3, 4, 3].map((m) => ({ label: sampleWords(m), value: sampleWords(3) })),
-  charts: [4, 3].map((m, j) => ({ id: String(j), label: sampleWords(m), peak: sampleWords(3), series: [{ id: "", label: "", values: [2, 3, 5, 4, 6, 5, 7, 6, 8, 6] }] })),
-}));
-const sampleRows = (list: List): Row[] => [6, 8, 5, 7, 9, 6].map((n, i) => ({
-  id: `sample-${i}`, title: sampleWords(n), line: sampleWords(n + 8), marks: [], number: sampleWords(4),
-  ...(list === "users" ? { person: { name: sampleWords(n), email: "", picture: "" } } : {}), time: { last_seen: sampleStamp(3), created_at: sampleStamp(3) },
-}));
-const SAMPLE_TIME = { created_at: sampleStamp(4), last_seen: sampleStamp(4) };
-const SAMPLE_USER: UserPage = {
-  id: "", title: sampleWords(5), person: { name: sampleWords(5), email: "", picture: "" }, email: sampleWords(16), admin: false, admission: sampleWords(4), code: null,
-  mayCreate: false, mayCreateHint: sampleWords(14), mayCreateFixed: false, beta: false, blocked: false, time: SAMPLE_TIME,
-  workspaces: [6, 4].map((n, i) => ({ id: String(i), name: sampleWords(n), line: sampleWords(n + 4) })),
-};
-const SAMPLE_WORKSPACE: WorkspacePage = {
-  id: sampleWords(10), title: sampleWords(5), creator: { id: "", title: sampleWords(5) }, people: sampleWords(6), invitations: [], time: SAMPLE_TIME,
-  members: [5, 7].map((n, i) => ({ id: String(i), title: sampleWords(n), person: { name: sampleWords(n), email: "", picture: "" }, role: sampleWords(2), time: SAMPLE_TIME })),
-  stations: [5, 3].map((n, i) => ({ id: String(i), name: sampleWords(n), version: sampleWords(4), outdated: false, state: "online", time: SAMPLE_TIME })),
-};
-const SAMPLE_FEEDBACK: FeedbackPage = {
-  id: "", number: sampleWords(4), title: sampleWords(12), body: [40, 26].map(sampleWords).join("\n\n"), status: "new", statuses: [{ id: "new", label: sampleWords(2) }],
-  marks: [], channel: "", channelLabel: sampleWords(3), area: sampleWords(4), reporter: sampleWords(5), station: null, workspace: null, account: null,
-  context: [], logs: null, text: "", time: SAMPLE_TIME,
-};
-
-// ── the relays ──────────────────────────────────────────────────────────
-
-/** still.fail's relays, a card each: how each stands, its numbers, and its load over the range picked (in the URL). */
-function RelaysPage({ account }: { account: Account }) {
-  const toast = useToast();
-  const [params, setParams] = useSearchParams();
-  const [issuing, setIssuing] = useState(false);
-  const [removing, setRemoving] = useState<{ url: string; name: string; entry: boolean } | null>(null);
-  const remove = useAction((url: string) => admin.relayRemove(account.sub, url), () => toast(t("web-pages.admin.relays.removed")));
-  const range = params.get("range") === "week" ? "week" : undefined;
-  const { value: view, error } = useKept<RelaysView>({ topic: "adminRelays", account: account.sub, ...(range ? { range } : {}) });
-  const pick = (to: Range) => setParams((p) => { const next = new URLSearchParams(p); if (to === "day") next.delete("range"); else next.set("range", to); return next; }, { replace: true });
-  // A still.fail cloud from before has none.
-  const none = error?.status === 404 || view?.relays.length === 0;
-  return (
-    <div className={`${pagesCss.page} ${css.mid}`}>
-      <MobileBack to="/" label={t("web-pages.admin.title")} />
-      <header className={pagesCss.pageHead}>
-        <div><h1>{t("web-pages.admin.relays")}</h1></div>
-        <div className={css.relaysTools}>
-          {view && view.ranges.length > 1 && (
-            <Segmented<Range> label={t("web-pages.admin.relays.range")} value={view.range} onChange={pick} options={view.ranges.map((r) => ({ value: r.id, label: r.label }))} />
-          )}
-          {view?.manage && <Button icon={Plus} variant="primary" onClick={() => setIssuing(true)}>{t("web-pages.admin.relays.issue")}</Button>}
-        </div>
-      </header>
-      {none ? <p className={css.relaysNone}>{t("web-pages.admin.relays.none")}</p> : <Failed error={error} />}
-      {view?.tokens && view.tokens.length > 0 && (
-        <section className={`${pagesCss.card} ${css.relayTokens}`} aria-label={t("web-pages.admin.relays.waiting")}>
-          <b>{t("web-pages.admin.relays.waiting")}</b>
-          {view.tokens.map((k) => (
-            <div key={k.key} className={css.line}><span className={css.grow}>{k.name}</span><span className={css.lineAside}>{k.line}</span></div>
-          ))}
-        </section>
-      )}
-      {!view ? !error && <Waiting sample={<div className={css.relays}>{SAMPLE_RELAYS.map((r) => <RelayCard key={r.url} relay={r} />)}</div>} /> : !none && (
-        <div className={css.relays}>{view.relays.map((r) => <RelayCard key={r.url} relay={r} onRemove={(url, name, entry) => setRemoving({ url, name, entry })} />)}</div>
-      )}
-      {issuing && <RelayTokenDialog account={account} onClose={() => setIssuing(false)} />}
-      <Confirm open={removing !== null} onClose={() => setRemoving(null)} onConfirm={() => { const r = removing!; setRemoving(null); void remove.run(r.url); }}
-        title={t(removing?.entry ? "web-pages.admin.relays.removeEntryConfirm" : "web-pages.admin.relays.removeConfirm", { name: removing?.name ?? "" })}
-        action={t("web-pages.admin.relays.remove")}
-        description={t(removing?.entry ? "web-pages.admin.relays.removeEntryBody" : "web-pages.admin.relays.removeBody")} />
-    </div>
-  );
-}
-
-function RelayCard({ relay, onRemove }: { relay: Relay; onRemove?: (url: string, name: string, entry: boolean) => void }) {
-  return (
-    <section className={`${pagesCss.card} ${css.relay}`} aria-label={relay.name}>
-      <div className={css.relayHead}>
-        <StatusDot state={relay.state} />
-        <b>{relay.name}</b>
-        <span className={css.relaySeen}>{relay.seen}</span>
-        {relay.removable && onRemove && <IconButton label={t("web-pages.admin.relays.remove")} icon={Trash} onClick={() => onRemove(relay.url, relay.name, false)} />}
-      </div>
-      {(relay.how || (relay.entries && relay.entries.length > 0)) && (
-        <div className={css.relayKept}>
-          {relay.how && <span className={css.relayHow}>{relay.how.map((part, i) => <Fragment key={i}>{i > 0 && " · "}<span>{part}</span></Fragment>)}</span>}
-          {relay.entries?.map((e) => (
-            <div key={e.url} className={css.line}>
-              <span className={css.grow}>{t("web-pages.admin.relays.entry", { name: e.name })}</span>
-              <span className={css.lineAside}>{e.host}</span>
-              {onRemove && <IconButton label={t("web-pages.admin.relays.removeEntry")} icon={Close} onClick={() => onRemove(e.url, e.name, true)} />}
-            </div>
-          ))}
-        </div>
-      )}
-      {relay.numbers.length > 0 && (
-        <dl className={css.relayNumbers}>
-          {relay.numbers.map((n) => (
-            <div key={n.label}><dt>{n.label}</dt><dd data-tone={n.tone}>{n.value}</dd></div>
-          ))}
-        </dl>
-      )}
-      {relay.charts.slice(0, 1).map((c) => <LoadChart key={c.id} chart={c} ticks={relay.ticks} />)}
-      {relay.charts.length > 1 && <div className={css.relayCharts}>{relay.charts.slice(1).map((c) => <LoadChart key={c.id} chart={c} ticks={relay.ticks} />)}</div>}
-    </section>
-  );
-}
-
-/** Each series' line, in a fixed order (the first blue, the second the accent): the same series the same colour in every chart. */
-const SERIES = [css.seriesFirst, css.seriesSecond];
-
-/**
- * One chart of a relay's load: a line for each series (a lone one with a faint wash under it: two washes over each
- * other only muddy), from 0 at the foot to the highest value of any of its series at the top (its peak, said above
- * it); a gap where a bucket has no value.
- */
-function LoadChart({ chart, ticks }: { chart: RelayChart; ticks: Relay["ticks"] }) {
-  const n = Math.max(1, ...chart.series.map((s) => s.values.length));
-  const top = Math.max(0, ...chart.series.flatMap((s) => s.values.filter((v): v is number => v !== null)));
-  // Drawn in a box 0–100 across (stretched to the chart's width; the lines keep their width) and 0–100 down.
-  const x = (i: number) => (n === 1 ? 50 : (i / (n - 1)) * 100);
-  const y = (v: number) => (top > 0 ? 100 - (v / top) * 100 : 100);
-  return (
-    <figure className={css.loadChart} aria-label={`${chart.label} · ${chart.peak}`}>
-      <figcaption className={css.loadHead}>
-        <b>{chart.label}</b>
-        {chart.series.length > 1 && chart.series.map((s, i) => <span key={s.id} className={`${css.legend} ${SERIES[i % SERIES.length]}`}>{s.label}</span>)}
-        <span className={css.peak}>{chart.peak}</span>
-      </figcaption>
-      <div className={css.plot}>
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          <line className={css.rule} x1="0" x2="100" y1="0" y2="0" vectorEffect="non-scaling-stroke" />
-          <line className={css.rule} x1="0" x2="100" y1="100" y2="100" vectorEffect="non-scaling-stroke" />
-          {chart.series.map((s, i) => {
-            const runs = stretches(s.values);
-            return (
-              <g key={s.id} className={SERIES[i % SERIES.length]}>
-                {chart.series.length === 1 && <path className={css.wash} d={runs.map((r) => `M${x(r.from)} 100${r.values.map((v, k) => `L${x(r.from + k)} ${y(v)}`).join("")}L${x(r.from + r.values.length - 1)} 100Z`).join("")} />}
-                <path className={css.trace} vectorEffect="non-scaling-stroke"
-                  d={runs.map((r) => `M${x(r.from)} ${y(r.values[0]!)}${r.values.length === 1 ? "h0" : r.values.slice(1).map((v, k) => `L${x(r.from + k + 1)} ${y(v)}`).join("")}`).join("")} />
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-      <div className={css.ticks} aria-hidden="true">
-        {ticks.map((tk) => {
-          const at = x(tk.index);
-          return <span key={tk.index} style={{ left: `${at}%` }} data-edge={at < 3 ? "start" : at > 97 ? "end" : undefined}>{tk.label}</span>;
-        })}
-      </div>
-    </figure>
-  );
-}
-
-/** A series' values in the stretches between its gaps (null). */
-function stretches(values: (number | null)[]): { from: number; values: number[] }[] {
-  const out: { from: number; values: number[] }[] = [];
-  values.forEach((v, i) => {
-    if (v === null) return;
-    const last = out.at(-1);
-    if (last && last.from + last.values.length === i) last.values.push(v);
-    else out.push({ from: i, values: [v] });
-  });
-  return out;
-}
-
 // ── the lists ───────────────────────────────────────────────────────────
 
 // Getters: read in the language at the time.
 const TITLE: Record<List, string> = {
   get users() { return t("web-pages.admin.users"); }, workspaces: "Workspace",
   get "invite-codes"() { return t("web-pages.cloud.inviteCode"); }, get feedback() { return t("web-pages.admin.feedback"); },
+  get audit() { return t("web-pages.admin.audit"); },
 };
 const PLACEHOLDER: Record<List, string> = {
   get users() { return t("web-pages.admin.search.users"); }, get workspaces() { return t("web-pages.admin.search.workspaces"); },
   get "invite-codes"() { return t("web-pages.admin.search.codes"); }, get feedback() { return t("web-pages.admin.search.feedback"); },
+  get audit() { return t("web-pages.admin.search.audit"); },
 };
 const STEP = 50;
 
@@ -427,7 +161,10 @@ function ListPage({ account, list }: { account: Account; list: List }) {
   const [granting, setGranting] = useState(false);
   const [creating, setCreating] = useState(false);
   const search = params.toString() ? `?${params}` : "";
-  const detail = id && list !== "invite-codes";
+  const detail = id && list !== "invite-codes" && list !== "audit";
+  // A report's list is narrowed by its area too, said after its tab in the one filter (views/admin.ts: `new@android`).
+  const [tab, area] = filter?.includes("@") ? [filter.slice(0, filter.indexOf("@")), filter.slice(filter.indexOf("@") + 1)] : [filter ?? "", ""];
+  const setFilter = (nextTab: string, nextArea: string) => set("filter", nextArea ? `${nextTab === "all" ? "" : nextTab}@${nextArea}` : nextTab === "all" || nextTab === "" ? null : nextTab);
   return (
     <div className={css.split} data-open={detail || undefined}>
       <div className={`${pagesCss.page} ${css.listPage}`}>
@@ -443,9 +180,15 @@ function ListPage({ account, list }: { account: Account; list: List }) {
             <Search {...ICON} />
             <input className={controlsCss.input} value={query} placeholder={PLACEHOLDER[list]} aria-label={t("web-pages.admin.search")} onChange={(e) => set("q", e.currentTarget.value)} />
           </label>
+          {view?.areas && (
+            <span className={css.sort}>
+              <Select value={view.area ?? ""} onChange={(v) => setFilter(tab, v)} label={t("web-pages.admin.fb.area")}
+                options={view.areas.map((a) => ({ value: a.id, label: a.id === "" ? a.label : `${a.label} ${a.count}` }))} />
+            </span>
+          )}
           {view && view.sorts.length > 1 && (
             <label className={css.sort}>
-              <span className={shellCss.muted}>{t("web-pages.admin.sortBy")}</span>
+              <span className={`${shellCss.muted} ${css.sortBy}`}>{t("web-pages.admin.sortBy")}</span>
               <Select value={view.sort} onChange={(v) => set("sort", v === view.sorts[0]!.id ? null : v)} label={t("web-pages.admin.sort")} options={view.sorts.map((s) => ({ value: s.id, label: s.label }))} />
             </label>
           )}
@@ -454,7 +197,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           <div className={css.filters} role="tablist">
             {view.filters.map((f) => (
               <button key={f.id} role="tab" aria-selected={view.filter === f.id} className={css.filter} data-on={view.filter === f.id || undefined}
-                onClick={() => set("filter", f.id === "all" ? null : f.id)}>{f.label}<span>{f.count}</span></button>
+                onClick={() => setFilter(f.id, area)}>{f.label}<span>{f.count}</span></button>
             ))}
           </div>
         )}
@@ -462,14 +205,15 @@ function ListPage({ account, list }: { account: Account; list: List }) {
         {list === "feedback" && error?.status === 404 ? <p className={css.empty}>{t("web-pages.admin.noFeedback")}</p> : <Failed error={error} />}
         {!view ? !error && <Waiting sample={<div className={css.list}>{sampleRows(list).map((row) => list === "invite-codes"
           ? <CodeRow key={row.id} account={account} row={row} />
-          : <ItemRow key={row.id} list={list} row={row} open={false} to="" />)}</div>} />
+          : list === "audit" ? <AuditRow key={row.id} row={row} /> : <ItemRow key={row.id} list={list} row={row} open={false} to="" />)}</div>} />
           : view.rows.length === 0 ? (
           <p className={css.empty}>{query ? t("web-pages.admin.notFound") : t("web-pages.admin.empty")}</p>
         ) : (
           <div className={css.list}>
             {view.rows.map((row) => list === "invite-codes"
               ? <CodeRow key={row.id} account={account} row={row} />
-              : <ItemRow key={row.id} list={list} row={row} open={row.id === id} to={`${PATH[list]}/${encodeURIComponent(row.id)}${search}`} />)}
+              : list === "audit" ? <AuditRow key={row.id} row={row} />
+              : <ItemRow key={row.id} list={list} row={row} sort={view.sort} open={row.id === id} to={`${PATH[list]}/${encodeURIComponent(row.id)}${search}`} />)}
             {view.more && <button className={css.more} onClick={() => setLimit((n) => n + STEP)}>{t("web-pages.admin.more", { n: Math.min(STEP, view.found - view.rows.length), total: view.found })}</button>}
           </div>
         )}
@@ -486,12 +230,14 @@ function ListPage({ account, list }: { account: Account; list: List }) {
   );
 }
 
-function Marks({ marks }: { marks: Mark[] }) {
-  return <>{marks.map((m) => <Pill key={m.label} tone={m.tone}>{m.label}</Pill>)}</>;
+/** An invite code's links, this console's product's first (the cloud lists its own first: monoid's, on still.fail's console too). */
+function ownFirst<L extends { product: string }>(links: L[]): L[] {
+  return [...links.filter((l) => l.product === NAME), ...links.filter((l) => l.product !== NAME)];
 }
 
-/** A user, a workspace or a bug report: two lines, what is off marked, when it was last seen (sent) at the end. */
-function ItemRow({ list, row, open, to }: { list: List; row: Row; open: boolean; to: string }) {
+/** A user, a workspace or a bug report: two lines, what is off marked, when it was last seen (sent; by the order of
+ * when each last changed, when it last did) at the end. */
+function ItemRow({ list, row, sort, open, to }: { list: List; row: Row; sort?: string; open: boolean; to: string }) {
   const feedback = list === "feedback";
   return (
     <Link className={css.row} to={open ? to.replace(/\/[^/?]+(\?|$)/, "$1") : to} aria-current={open ? "page" : undefined}>
@@ -500,11 +246,13 @@ function ItemRow({ list, row, open, to }: { list: List; row: Row; open: boolean;
         <span className={css.rowLine1}>
           {feedback && <span className={`${shellCss.mono} ${shellCss.muted} ${css.fbNumber}`}>{row.number}</span>}
           <b className={feedback ? css.fbTitle : undefined}>{row.title}</b>
-          <Marks marks={row.marks} />
-          <span className={css.rowTime}>
-            {list === "workspaces" && row.state && <StatusDot state={row.state as Presence} />}
-            {feedback ? <Time stamp={stamp(row, "created_at")} fixed />
-              : stamp(row, "last_seen") ? <Time stamp={stamp(row, "last_seen")} fixed /> : list === "users" ? t("web-pages.admin.neverSeen") : ""}
+          <span className={css.rowTail}>
+            <Marks marks={row.marks} />
+            <span className={css.rowTime}>
+              {list === "workspaces" && row.state && <StatusDot state={row.state as Presence} />}
+              {feedback ? <Time stamp={(sort === "updated" ? stamp(row, "updated_at") : undefined) ?? stamp(row, "created_at")} fixed />
+                : stamp(row, "last_seen") ? <Time stamp={stamp(row, "last_seen")} fixed /> : list === "users" ? t("web-pages.admin.neverSeen") : ""}
+            </span>
           </span>
         </span>
         <span className={css.rowLine2}>{row.line}</span>
@@ -517,7 +265,7 @@ function CodeRow({ account, row }: { account: Account; row: Row }) {
   const toast = useToast();
   const [revoking, setRevoking] = useState(false);
   const revoke = useAction(() => admin.revokeCode(account.sub, row.id), () => toast(t("web-pages.admin.code.revoked")));
-  const copy = () => void navigator.clipboard.writeText(row.url ?? "").then(() => toast(t("web-pages.admin.code.linkCopied")), (e: unknown) => toast(t("web-pages.admin.copyFailed", { error: failure(e) })));
+  const copyUrl = (url: string) => void navigator.clipboard.writeText(url).then(() => toast(t("web-pages.admin.code.linkCopied")), (e: unknown) => toast(t("web-pages.admin.copyFailed", { error: failure(e) })));
   const at = row.state === "used" ? stamp(row, "used_at") : row.state === "revoked" ? stamp(row, "revoked_at") : stamp(row, "created_at");
   return (
     <div className={css.row} data-static>
@@ -527,7 +275,11 @@ function CodeRow({ account, row }: { account: Account; row: Row }) {
           <Marks marks={row.marks} />
           <span className={css.rowTime}>
             {row.state === "open" ? <>
-              <IconButton label={t("web-pages.admin.code.copyLink")} icon={Copy} onClick={copy} />
+              {/* Where the cloud answers as two products, each one's link (whoever it is for signs up in the app they know). */}
+              {row.links && row.links.length > 1
+                ? <Menu label={t("web-pages.admin.code.copyLink")} trigger={<IconButton label={t("web-pages.admin.code.copyLink")} icon={Copy} />}
+                  items={ownFirst(row.links).map((l) => ({ label: t("web-pages.admin.code.copyProduct", { product: l.product }), icon: Copy, onSelect: () => copyUrl(l.url) }))} />
+                : <IconButton label={t("web-pages.admin.code.copyLink")} icon={Copy} onClick={() => copyUrl(row.url ?? "")} />}
               <Button variant="ghost" busy={revoke.busy} onClick={() => setRevoking(true)}>{t("web-pages.settings.members.revoke")}</Button>
             </> : <Time stamp={at} fixed />}
           </span>
@@ -542,24 +294,22 @@ function CodeRow({ account, row }: { account: Account; row: Row }) {
   );
 }
 
-// ── an item's page, beside its list ─────────────────────────────────────
-
-/** An item's pane beside its list: its head (`head`), closed from its end, over what it holds; `bones`: made up, while
- * the item is read, its head and all of it in their bones. */
-function Detail({ close, head, bones = false, children }: { close: string; head: React.ReactNode; bones?: boolean; children: React.ReactNode }) {
+/** An operator's change: what, to what, on its first line with when; who and what it said under it. */
+function AuditRow({ row }: { row: Row }) {
   return (
-    <aside className={css.detail}>
-      <MobileBack to={close} label={t("web-pages.admin.backToList")} />
-      {bones ? <Waiting sample={<><div className={css.detailHead}>{head}</div>{children}</>} /> : <>
-        <div className={css.detailHead}>{head}<Link className={css.close} to={close} aria-label={t("common.close")}><Close {...ICON} /></Link></div>
-        {children}
-      </>}
-    </aside>
+    <div className={css.row} data-static>
+      <span className={css.rowText}>
+        <span className={css.rowLine1}>
+          <b>{row.title}</b>
+          <span className={css.rowTime}><Time stamp={stamp(row, "created_at")} fixed /></span>
+        </span>
+        <span className={css.rowLine2}>{row.line}</span>
+      </span>
+    </div>
   );
 }
 
-// An email given rights before anyone signed in with it is listed as `email:<address>` (views/admin.ts).
-const PENDING = "email:";
+// ── an item's page, beside its list ─────────────────────────────────────
 
 function UserDetail({ account, id, close, search }: { account: Account; id: string; close: string; search: string }) {
   const { value: u, error } = useKept<UserPage>({ topic: "adminItem", account: account.sub, list: "users", id });
@@ -607,18 +357,19 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
       {!u.admin && <>
         <div className={css.group}>{t("web-pages.admin.user.rights")}</div>
         {u.mayCreate !== null && (
-          <label className={css.line}>
-            <span className={css.grow}>{t("web-pages.admin.user.mayCreate")}<span className={css.hint}>{u.mayCreateHint}</span></span>
-            <Switch checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} label={t("web-pages.admin.user.mayCreate")} />
+          <label className={`${css.line} ${css.switchLine}`}>
+            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.mayCreate")}</span><span className={css.hint}>{u.mayCreateHint}</span></span>
+            <span className={css.switchBox}><Switch checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} label={t("web-pages.admin.user.mayCreate")} /></span>
           </label>
         )}
         {u.beta !== null && (
-          <label className={css.line}>
-            <span className={css.grow}>{t("web-pages.admin.user.beta")}<span className={css.hint}>{t("web-pages.admin.user.betaHint")}</span></span>
-            <Switch checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} label={t("web-pages.admin.user.beta")} />
+          <label className={`${css.line} ${css.switchLine}`}>
+            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.beta")}</span><span className={css.hint}>{t("web-pages.admin.user.betaHint")}</span></span>
+            <span className={css.switchBox}><Switch checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} label={t("web-pages.admin.user.beta")} /></span>
           </label>
         )}
-        {u.blocked !== null && (
+        {/* (not one's own: the cloud refuses it, and nobody is to lock themselves out of the console) */}
+        {u.blocked !== null && u.id !== account.sub && (
           <div className={css.actions}>
             {u.blocked
               ? <Button busy={block.busy} onClick={() => block.run(false)}>{t("web-pages.admin.user.unblock")}</Button>
@@ -636,130 +387,6 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
       <Confirm open={blocking} onClose={() => setBlocking(false)} onConfirm={() => { setBlocking(false); void block.run(true); }}
         title={t("web-pages.admin.user.blockConfirm", { name: u.title })} action={t("web-pages.admin.user.block")}
         description={t("web-pages.admin.user.blockBody")} />
-    </Detail>
-  );
-}
-
-function WorkspaceDetail({ account, id, close }: { account: Account; id: string; close: string }) {
-  const { value: w, error } = useKept<WorkspacePage>({ topic: "adminItem", account: account.sub, list: "workspaces", id });
-  if (!w) return error ? <aside className={css.detail}><Failed error={error} /></aside> : <WorkspaceShown account={account} id={id} close={close} w={SAMPLE_WORKSPACE} bones />;
-  return <WorkspaceShown account={account} id={id} close={close} w={w} />;
-}
-
-/** A workspace's pane (`w`): who made it, its plan, its people, stations and invitations; adding a station, its limits, deleting it. */
-function WorkspaceShown({ account, id, close, w, bones = false }: { account: Account; id: string; close: string; w: WorkspacePage; bones?: boolean }) {
-  const toast = useToast();
-  const [, navigate] = useLocation();
-  const [deleting, setDeleting] = useState(false);
-  const [enrolling, setEnrolling] = useState(false);
-  const [limiting, setLimiting] = useState(false);
-  const remove = useAction(() => admin.deleteWorkspace(account.sub, id), () => toast(t("web-pages.settings.workspace.deleted")));
-  return (
-    <Detail close={close} bones={bones} head={<>
-      <span className={`${css.wsMark} ${css.wsMarkLarge}`}>{[...w.title][0]}</span>
-      <span className={css.detailTitle}><b>{w.title}</b><span className={shellCss.mono}>{w.id}</span></span>
-    </>}>
-      <dl className={css.kv}>
-        <dt>{t("web-pages.chat.info.created")}</dt><dd>{w.creator ? <Link className={css.link} to={`${PATH.users}/${encodeURIComponent(w.creator.id)}`}>{w.creator.title}</Link> : t("web-pages.admin.ws.gone")} · <Time stamp={stamp(w, "created_at")} /></dd>
-        {w.plan && <><dt>{t("web-pages.admin.ws.plan")}</dt><dd>{w.plan}</dd></>}
-        <dt>{t("web-pages.admin.ws.people")}</dt><dd>{w.people}</dd>
-        {w.stationCount !== undefined && <><dt>Station</dt><dd>{w.stationCount}</dd></>}
-      </dl>
-      <div className={css.group}>{t("web-pages.admin.ws.members", { n: w.members.length })}</div>
-      {w.members.map((m) => (
-        <Link key={m.id} className={css.line} to={`${PATH.users}/${encodeURIComponent(m.id)}`}>
-          <Avatar account={m.person} size={20} />
-          <span className={css.grow}>{m.title}</span>
-          <span className={css.lineAside}>{m.role}{stamp(m, "last_seen") && <> · <Time stamp={stamp(m, "last_seen")} fixed /></>}</span>
-          <ChevronRight {...ICON} />
-        </Link>
-      ))}
-      {w.added && w.added.length > 0 && <>
-        <div className={css.group}>{t("web-pages.admin.ws.added", { n: w.added.length })}</div>
-        {w.added.map((a) => (
-          <div key={a.id} className={css.line}>
-            <span className={css.grow}>{a.email}</span>
-            <span className={css.lineAside}>{a.line}</span>
-          </div>
-        ))}
-      </>}
-      <div className={css.group}>Station {w.stations.length}</div>
-      {w.stations.length === 0 && <div className={css.line} data-quiet>{t("web-pages.admin.ws.noStations")}</div>}
-      {w.stations.map((s) => (
-        // still.fail cloud only knows when a station last came to it; whether it is up is for the devices to find out.
-        <div key={s.id} className={css.line}>
-          <StatusDot state={s.state} />
-          <span className={css.grow}>{s.name}</span>
-          <span className={css.lineAside}>
-            <span data-off={s.outdated || undefined}>{s.version ?? t("web-pages.admin.ws.versionUnknown")}</span> · {stamp(s, "last_seen") ? <Time stamp={stamp(s, "last_seen")} fixed /> : t("web-pages.admin.ws.neverConnected")}
-          </span>
-        </div>
-      ))}
-      {w.invitations.length > 0 && <>
-        <div className={css.group}>{t("web-pages.admin.ws.invitations", { n: w.invitations.length })}</div>
-        {w.invitations.map((i) => (
-          <div key={i.id} className={css.line}>
-            <span className={css.grow}>{i.email}</span>
-            <span className={css.lineAside}>{i.line} · {t("web-pages.admin.expires", { until: stamp(i, "expires_at")?.until ?? "" })}</span>
-          </div>
-        ))}
-      </>}
-      <div className={css.actions}>
-        {w.enrollable && <Button icon={Plus} onClick={() => setEnrolling(true)}>{t("web-pages.admin.ws.addStation")}</Button>}
-        {w.limits && <Button onClick={() => setLimiting(true)}>{t("web-pages.admin.ws.limits")}</Button>}
-        <Button variant="danger" onClick={() => setDeleting(true)}>{t("web-pages.settings.workspace.delete")}</Button>
-      </div>
-      {enrolling && <EnrollDialog account={account} workspace={id} onClose={() => setEnrolling(false)} />}
-      {limiting && w.limits && <LimitsDialog account={account} workspace={id} limits={w.limits} onClose={() => setLimiting(false)} />}
-      {/* Back to the list at once: it goes on by itself, a failure said by toast. */}
-      <Confirm open={deleting} onClose={() => setDeleting(false)} onConfirm={() => { setDeleting(false); navigate(close, { replace: true }); void remove.run(); }}
-        title={t("web-pages.settings.workspace.deleteConfirm", { name: w.title })} action={t("web-pages.settings.workspace.delete")}
-        description={t("web-pages.admin.ws.deleteBody")} />
-    </Detail>
-  );
-}
-
-function FeedbackDetail({ account, id, close }: { account: Account; id: string; close: string }) {
-  const { value: f, error } = useKept<FeedbackPage>({ topic: "adminItem", account: account.sub, list: "feedback", id });
-  if (!f) return error ? <aside className={css.detail}><Failed error={error} /></aside> : <FeedbackShown account={account} id={id} close={close} f={SAMPLE_FEEDBACK} bones />;
-  return <FeedbackShown account={account} id={id} close={close} f={f} />;
-}
-
-/** A bug report's pane (`f`): its status, copied whole; when, where and from whom; what it says, its context and logs. */
-function FeedbackShown({ account, id, close, f, bones = false }: { account: Account; id: string; close: string; f: FeedbackPage; bones?: boolean }) {
-  const toast = useToast();
-  const status = useAction((to: FeedbackStatus) => admin.feedbackStatus(account.sub, id, to), (_, to) => toast(t("web-pages.admin.fb.marked", { status: f.statuses.find((s) => s.id === to)?.label ?? to })));
-  const copy = () => void navigator.clipboard.writeText(f.text).then(() => toast(t("web-pages.admin.fb.copied")), () => toast(t("web-pages.admin.fb.copyFailed")));
-  return (
-    <Detail close={close} bones={bones} head={
-      <span className={css.detailTitle}><b>{f.title}</b><span className={shellCss.mono}>{f.number}</span></span>
-    }>
-      <div className={css.fbBar}>
-        <Select value={status.busy ? status.arg! : f.status} disabled={status.busy} onChange={(v) => { if (v !== f.status) status.run(v as FeedbackStatus); }} label={t("web-pages.admin.fb.status")}
-          options={f.statuses.map((s) => ({ value: s.id, label: s.label }))} />
-        <Button icon={Copy} onClick={copy}>{t("web-pages.admin.fb.copy")}</Button>
-      </div>
-      <dl className={css.kv}>
-        <dt>{t("web-pages.admin.fb.submitted")}</dt><dd><Time stamp={stamp(f, "created_at")} /></dd>
-        <dt>{t("web-pages.admin.fb.channel")}</dt><dd>{f.channelLabel}</dd>
-        <dt>{t("web-pages.admin.fb.area")}</dt><dd>{f.area}</dd>
-        {f.reporter && <><dt>{t("web-pages.admin.fb.reporter")}</dt><dd>{f.reporter}</dd></>}
-        {f.account && <><dt>{t("web-pages.profiles.account")}</dt><dd><Link className={css.link} to={`${PATH.users}/${encodeURIComponent(f.account.id)}`}>{f.account.title}</Link></dd></>}
-        {f.workspace && <><dt>Workspace</dt><dd><Link className={css.link} to={`${PATH.workspaces}/${encodeURIComponent(f.workspace.id)}`}>{f.workspace.title}</Link></dd></>}
-        {f.station && <><dt>Station</dt><dd>{f.station.name || <span className={shellCss.mono}>{f.station.id}</span>}</dd></>}
-      </dl>
-      <div className={css.group}>{t("web-pages.admin.fb.content")}</div>
-      <div className={css.fbBody}>{f.body}</div>
-      {f.context.length > 0 && <>
-        <div className={css.group}>{t("web-pages.admin.fb.context")}</div>
-        <dl className={`${css.kv} ${css.fbContext}`}>
-          {f.context.map((c) => <Fragment key={c.key}><dt>{c.key}</dt><dd className={shellCss.mono}>{c.value}</dd></Fragment>)}
-        </dl>
-      </>}
-      {f.logs && <>
-        <div className={css.group}>{t("web-pages.admin.fb.logs")}</div>
-        <pre className={`${shellCss.mono} ${css.fbLogs}`}>{f.logs}</pre>
-      </>}
     </Detail>
   );
 }
@@ -784,7 +411,11 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
       {made ? (
         <>
           <Field label={t("web-pages.cloud.inviteCode")}><CopyCommand text={made.code} /></Field>
-          <Field label={t("web-pages.admin.code.link")} hint={t("web-pages.admin.code.linkHint")}><CopyCommand text={made.url} /></Field>
+          {made.links && made.links.length > 1
+            ? ownFirst(made.links).map((l, i) => (
+              <Field key={l.url} label={t("web-pages.admin.code.productLink", { product: l.product })} {...(i === made.links!.length - 1 ? { hint: t("web-pages.admin.code.linkHint") } : {})}><CopyCommand text={l.url} /></Field>
+            ))
+            : <Field label={t("web-pages.admin.code.link")} hint={t("web-pages.admin.code.linkHint")}><CopyCommand text={made.url} /></Field>}
         </>
       ) : (
         <>
@@ -830,149 +461,6 @@ function PendingDialog({ account, search, onClose }: { account: Account; search:
       <SwitchRow title={t("web-pages.admin.user.beta")} description={t("web-pages.admin.user.betaHint")} checked={beta} onChange={setBeta} />
       <SwitchRow title={t("web-pages.admin.user.mayCreate")} description={t("web-pages.admin.pending.mayCreateHint")} checked={mayCreate} onChange={setMayCreate} />
       {add.error && <p className={controlsCss.fieldError} role="alert">{add.error.message}</p>}
-    </Dialog>
-  );
-}
-
-// ── a workspace made for a company ──────────────────────────────────────
-
-/** Whole numbers from 1 to the most the cloud takes (directory.ts LIMITS_MAX), or null. */
-const limit = (text: string, max: number): number | null => (/^[0-9]{1,4}$/.test(text.trim()) && Number(text) >= 1 && Number(text) <= max ? Number(text) : null);
-const MAX = { members: 1000 };
-
-function LimitFields({ members, setMembers, submit }: { members: string; setMembers(v: string): void; submit(): void }) {
-  const enter = (e: React.KeyboardEvent<HTMLElement>) => { if (e.key === "Enter" && !e.isComposing) submit(); };
-  return (
-    <>
-      <Field label={t("web-pages.admin.ws.memberLimit")} htmlFor="limit-members" hint={t("web-pages.admin.ws.limitHint", { max: MAX.members })}>
-        <input id="limit-members" className={controlsCss.input} inputMode="numeric" value={members} onChange={(e) => setMembers(e.currentTarget.value)} onKeyDown={enter} />
-      </Field>
-      <Field label={t("web-pages.admin.ws.stationLimit")} htmlFor="limit-stations" hint={t("web-pages.admin.ws.stationFixed", { n: STATIONS_PER_WORKSPACE })}>
-        <input id="limit-stations" className={controlsCss.input} value={STATIONS_PER_WORKSPACE} readOnly />
-      </Field>
-    </>
-  );
-}
-
-/** Makes a workspace for a company: its name, its owners by email, its limits; opens its page. */
-function NewWorkspaceDialog({ account, search, onClose }: { account: Account; search: string; onClose(): void }) {
-  const toast = useToast();
-  const [, navigate] = useLocation();
-  const [name, setName] = useState("");
-  const [owners, setOwners] = useState("");
-  const [members, setMembers] = useState("20");
-  const emails = owners.split(/[\s,，;；]+/).filter(Boolean);
-  const cap = limit(members, MAX.members);
-  const create = useAction(() => admin.createWorkspace(account.sub, { name: name.trim(), owners: emails, members: cap!, stations: STATIONS_PER_WORKSPACE }), (made) => {
-    toast(t("web-pages.admin.ws.created"));
-    navigate(`${PATH.workspaces}/${encodeURIComponent(made.id)}${search}`);
-    onClose();
-  });
-  const ready = name.trim() !== "" && emails.length > 0 && cap !== null && !create.busy;
-  const submit = () => { if (ready) create.run(); };
-  return (
-    <Dialog open onClose={onClose} title={t("web-pages.admin.ws.new")} description={t("web-pages.admin.ws.newLead")}
-      footer={<>
-        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="primary" busy={create.busy} disabled={!ready} onClick={submit}>{t("web-pages.admin.ws.create")}</Button>
-      </>}>
-      <Field label={t("web-pages.admin.ws.name")} htmlFor="ws-name">
-        <input id="ws-name" className={controlsCss.input} value={name} autoFocus maxLength={80} onChange={(e) => setName(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
-      </Field>
-      <Field label={t("web-pages.admin.ws.owners")} htmlFor="ws-owners" hint={t("web-pages.admin.ws.ownersHint")}>
-        <input id="ws-owners" className={controlsCss.input} inputMode="email" autoComplete="off" spellcheck={false} value={owners} placeholder="name@example.com" onChange={(e) => setOwners(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
-      </Field>
-      <LimitFields members={members} setMembers={setMembers} submit={submit} />
-      {create.error && <p className={controlsCss.fieldError} role="alert">{create.error.message}</p>}
-    </Dialog>
-  );
-}
-
-function LimitsDialog({ account, workspace, limits, onClose }: { account: Account; workspace: string; limits: { members: number; stations: number | null }; onClose(): void }) {
-  const toast = useToast();
-  const [members, setMembers] = useState(String(limits.members));
-  const cap = limit(members, MAX.members);
-  const save = useAction(() => admin.setLimits(account.sub, workspace, { members: cap!, stations: STATIONS_PER_WORKSPACE }), () => { toast(t("web-pages.admin.ws.limitsSaved")); onClose(); });
-  const ready = cap !== null && !save.busy;
-  const submit = () => { if (ready) save.run(); };
-  return (
-    <Dialog open onClose={onClose} title={t("web-pages.admin.ws.limits")} description={t("web-pages.admin.ws.limitsLead")}
-      footer={<>
-        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="primary" busy={save.busy} disabled={!ready} onClick={submit}>{t("common.save")}</Button>
-      </>}>
-      <LimitFields members={members} setMembers={setMembers} submit={submit} />
-      {save.error && <p className={controlsCss.fieldError} role="alert">{save.error.message}</p>}
-    </Dialog>
-  );
-}
-
-// ── a relay onto the cloud's list ───────────────────────────────────────
-
-/** What the cloud says of a token it would not make, in words. */
-const RELAY_ERRORS = (): Record<string, string> => ({
-  invalid_name: t("web-pages.admin.relays.errors.name"),
-  invalid_relay: t("web-pages.admin.relays.errors.url"),
-  too_many_relays: t("web-pages.admin.relays.errors.full"),
-});
-
-/** A token for a relay to put itself on the cloud's list with: what it is called and, if said, the URL it must have;
- * then the command its machine runs (cloud/relay-enroll.sh). */
-function RelayTokenDialog({ account, onClose }: { account: Account; onClose(): void }) {
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("");
-  const make = useAction(() => admin.relayToken(account.sub, name.trim(), url.trim()));
-  const made = make.result;
-  const ready = name.trim() !== "" && !make.busy;
-  const enter = (e: React.KeyboardEvent<HTMLElement>) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); };
-  const failed = make.error && (RELAY_ERRORS()[(make.error as { code?: string }).code ?? ""] ?? make.error.message);
-  return (
-    <Dialog open onClose={onClose} wide title={made ? t("web-pages.admin.relays.issued") : t("web-pages.admin.relays.issue")}
-      description={made ? t("web-pages.admin.relays.issuedLead") : t("web-pages.admin.relays.issueLead")}
-      footer={made ? <Button variant="primary" onClick={onClose}>{t("common.done")}</Button> : <>
-        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="primary" busy={make.busy} disabled={!ready} onClick={() => make.run()}>{t("web-pages.admin.relays.issueShort")}</Button>
-      </>}>
-      {made ? (
-        <Field label={t("web-pages.admin.relays.run")} hint={t("web-pages.admin.relays.runHint")}><div className={css.command}><CopyCommand text={made.command} /></div></Field>
-      ) : (
-        <>
-          <Field label={t("web-pages.admin.relays.name")} htmlFor="relay-name" hint={t("web-pages.admin.relays.nameHint")}>
-            <input id="relay-name" className={controlsCss.input} value={name} autoFocus maxLength={40} placeholder={t("web-pages.admin.relays.namePlaceholder")} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={enter} />
-          </Field>
-          <Field label={t("web-pages.admin.relays.url")} htmlFor="relay-url" hint={t("web-pages.admin.relays.urlHint")}>
-            <input id="relay-url" className={controlsCss.input} type="url" inputMode="url" autoComplete="off" spellcheck={false} value={url} placeholder="https://relay.example.com:8443" onChange={(e) => setUrl(e.currentTarget.value)} onKeyDown={enter} />
-          </Field>
-        </>
-      )}
-      {failed && <p className={controlsCss.fieldError} role="alert">{failed}</p>}
-    </Dialog>
-  );
-}
-
-/** A station's install command for the workspace, the admin not in it: its name first. */
-function EnrollDialog({ account, workspace, onClose }: { account: Account; workspace: string; onClose(): void }) {
-  const [name, setName] = useState("");
-  const make = useAction(() => admin.enroll(account.sub, workspace, name.trim()));
-  const made = make.result;
-  const ready = name.trim() !== "" && !make.busy;
-  return (
-    <Dialog open onClose={onClose} wide title={t("web-pages.admin.ws.addStation")} description={made ? t("web-pages.admin.ws.commandLead") : t("web-pages.admin.ws.addStationLead")}
-      footer={made ? <Button variant="primary" onClick={onClose}>{t("common.done")}</Button> : <>
-        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="primary" busy={make.busy} disabled={!ready} onClick={() => make.run()}>{t("web-pages.admin.ws.makeCommand")}</Button>
-      </>}>
-      {made ? (
-        <Field label={t("web-pages.settings.enroll.run")}><div className={css.command}><CopyCommand text={made.install} /></div></Field>
-      ) : (
-        <Field label={t("web-pages.admin.ws.stationName")} htmlFor="station-name">
-          <input id="station-name" className={controlsCss.input} value={name} autoFocus maxLength={80} placeholder="Mac mini" onChange={(e) => setName(e.currentTarget.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); }} />
-        </Field>
-      )}
-      {make.error && <p className={controlsCss.fieldError} role="alert">{make.error.message}</p>}
     </Dialog>
   );
 }

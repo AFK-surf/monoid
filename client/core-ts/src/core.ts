@@ -489,6 +489,7 @@ export class Core {
       const adminRelays = new AdminRelays(inner);
       inner.router.owners.push(adminRelays);
       inner.cloudSync.onRelayLoad = (sub) => adminRelays.told(sub);
+      inner.cloudSync.onAdminSubList = (sub, prefix) => adminRelays.told(sub, prefix);
       inner.router.owners.push(new Pills(inner.store, inner.runner, () => inner.host.nowMs(), (station) => inner.views.stationName(station)));
       // The stations every account reaches are linked, as the workspaces say (once a burst of changes settles).
       let reconciling = false;

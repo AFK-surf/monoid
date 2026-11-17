@@ -602,17 +602,22 @@ test "the subscriptions' allowances and Profile's 概览's pool as pictures to s
 }
 
 ///|
-test "Profile offers 分享订阅额度 by the settings (概览's title wide) and 分享额度与恢复图 at its chart: each opens its picture" {
+test "Profile overview shares charts or accounts from its header and charts directly from their own button" {
   for at in [(1280.0, 800.0, 0), (390.0, 844.0, 2)] {
-    for mode in [("place-profiles-sum-overview", "分享订阅额度", "个订阅账号"), ("place-profiles-sum-overview", "分享额度与恢复图", "个账号可用")] {
-      let src = fixture_app(mode.0)
+    for (from_header, charts) in [(true, true), (true, false), (false, true)] {
+      let src = fixture_app("place-profiles-sum-overview")
       let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=at.0, h=at.1, platform=at.2)
       t.run_for(@kit.presence_in_ms)
-      assert_eq(@sf.presenting(), false)
-      t.click(Button, label=mode.1)
-      t.run_for(@kit.presence_in_ms)
-      assert_eq(@sf.presenting(), true)
-      assert_true(picture_says(t, mode.2), msg="\{Repr((at, mode))}")
+      if from_header {
+        t.click(Button, label="分享")
+        t.run_for(@kit.presence_in_ms)
+        move_pick(t, if charts { "分享额度与恢复图" } else { "分享订阅额度" })
+      } else {
+        t.click(Button, label="分享额度与恢复图")
+        t.run_for(@kit.presence_in_ms)
+      }
+      assert_true(picture_says(t, if charts { "个账号可用" } else { "个订阅账号" }))
+      assert_eq(t.query(Tab, label="完全打码") is Some(_), !charts)
     }
   }
 }

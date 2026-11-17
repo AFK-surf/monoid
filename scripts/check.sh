@@ -555,10 +555,9 @@ if [ $full = 1 ]; then
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
     remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
-    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. Cursor's
-    # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,
-    # not the station's.
-    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
+    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
+    # Cursor and sandbox bridges run in processes of their own.
+    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/claude-tui.mjs" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
@@ -568,9 +567,10 @@ if [ $full = 1 ]; then
   if part station-tests && touches "$station_paths"; then
     prep station deps station
     slice=${STILLFAIL_STATION_SHARD:-}
+    # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node --import ./test/setup-env.mjs --test ${STILLFAIL_NODE_TEST_JOBS:+--test-concurrency="$STILLFAIL_NODE_TEST_JOBS"} --test-timeout=600000 $files'
+    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

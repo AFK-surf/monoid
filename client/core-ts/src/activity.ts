@@ -318,7 +318,7 @@ export function told(tool: string, input: string, known: Known = {}): string | n
   const a = args(input);
   if (name.endsWith(" on Web")) {
     const q = typeof a?.query === "string" && a.query ? firstLine(a.query) : firstLine(name.slice(0, -7).replace(/^["']|["']$/g, ""));
-    return q ? `网页搜索「${q}」` : "网页搜索";
+    return q ? t("core-logic.activity.web.searchFor", { query: q }) : t("core-logic.activity.web.search");
   }
   if (!a) return null;
   if (name === "station_task" || name === "station_file") {
@@ -441,14 +441,17 @@ export function told(tool: string, input: string, known: Known = {}): string | n
   }
   if (name === "web__run") {
     if (Array.isArray(a.search_query) && a.search_query.length > 0) {
+      if (a.search_query.length > 1) return t("core-logic.activity.web.searchMany", { n: a.search_query.length });
       const q = typeof a.search_query[0]?.q === "string" ? firstLine(a.search_query[0].q) : "";
-      return q ? `网页搜索「${q}」` : "网页搜索";
+      return q ? t("core-logic.activity.web.searchFor", { query: q }) : t("core-logic.activity.web.search");
     }
     if (Array.isArray(a.open) && a.open.length > 0) {
+      if (a.open.length > 1) return t("core-logic.activity.web.openMany", { n: a.open.length });
       const u = typeof a.open[0]?.ref_id === "string" ? firstLine(a.open[0].ref_id) : "";
-      return u ? `打开网页 ${u}` : "打开网页";
+      // A ref_id can be a web tool's opaque reference (e.g. turn8search2), not a page title or URL.
+      return /^https?:\/\//i.test(u) ? t("core-logic.activity.web.openUrl", { url: u }) : t("core-logic.activity.web.open");
     }
-    return "网页操作";
+    return t("core-logic.activity.web.operation");
   }
   if (name === "clock__curr_time") return "查看当前时间";
   if (name === "list_agents") return "查看子 agent 列表";

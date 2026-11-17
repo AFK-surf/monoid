@@ -26,7 +26,7 @@ export interface OperationParams {
   "session.compact": { key: string };
   "session.clear": { key: string; readBack?: boolean | null | undefined };
   "session.delete": { key: string };
-  "session.settings": { key: string; runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; context?: number | null | undefined; repick?: boolean | null | undefined; afresh?: boolean | null | undefined };
+  "session.settings": { key: string; runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; tui?: boolean | null | undefined; context?: number | null | undefined; repick?: boolean | null | undefined; afresh?: boolean | null | undefined };
   "chat.archive": { archived?: boolean | null | undefined; session: string; thread?: number | null | undefined };
   "chat.keep": { kept?: boolean | null | undefined; thread: number };
   "chat.hide": { hidden: boolean; thread: number };
@@ -40,7 +40,7 @@ export interface OperationParams {
   "decision.dismiss": { thread: number; seq: number };
   "decision.close": { thread: number; seq: number; option: string };
   "chat.report": { thread: number; seq: number };
-  "session.new": { runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; context?: number | null | undefined; preset?: string | null | undefined };
+  "session.new": { runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; tui?: boolean | null | undefined; context?: number | null | undefined; preset?: string | null | undefined };
   "preset.add": { name: string; dirs: unknown; instructions?: string | null | undefined; autoStation?: boolean | null | undefined; stations?: string[] | null | undefined; model?: unknown };
   "preset.put": { id: string; name: string; dirs: unknown; instructions?: string | null | undefined; autoStation?: boolean | null | undefined; stations?: string[] | null | undefined; model?: unknown };
   "preset.delete": { id: string };
@@ -185,10 +185,15 @@ export interface OperationParams {
   "admin.removePending": { email: string };
   "admin.deleteWorkspace": { workspace: string };
   "admin.createWorkspace": { name: string; owners: string[]; members: number; stations: number };
-  "admin.setLimits": { workspace: string; members: number; stations: number };
+  "admin.setLimits": { workspace: string; members?: number | null | undefined; stations?: number | null | undefined; reset?: boolean | null | undefined };
+  "admin.addOwners": { workspace: string; emails: string[] };
+  "admin.removeAdded": { workspace: string; email: string };
   "admin.enroll": { workspace: string; name: string };
   "admin.feedbackStatus": { id: string; status?: string | null | undefined };
-  "admin.relayToken": { name: string; url?: string | null | undefined };
+  "admin.feedbackReply": { id: string; text: string };
+  "admin.relayToken": { name: string; url?: string | null | undefined; target?: string | null | undefined };
+  "admin.relayTokenRevoke": { id: string };
+  "admin.relayPut": { url: string; name: string; target?: string | null | undefined };
   "admin.relayRemove": { url: string };
 }
 
@@ -389,9 +394,14 @@ export function bindCloudOperations(call: Call) {
     adminDeleteWorkspace: <T = unknown>(params: OperationParams["admin.deleteWorkspace"]) => call("admin.deleteWorkspace", params) as Promise<T>,
     adminCreateWorkspace: <T = unknown>(params: OperationParams["admin.createWorkspace"]) => call("admin.createWorkspace", params) as Promise<T>,
     adminSetLimits: <T = unknown>(params: OperationParams["admin.setLimits"]) => call("admin.setLimits", params) as Promise<T>,
+    adminAddOwners: <T = unknown>(params: OperationParams["admin.addOwners"]) => call("admin.addOwners", params) as Promise<T>,
+    adminRemoveAdded: <T = unknown>(params: OperationParams["admin.removeAdded"]) => call("admin.removeAdded", params) as Promise<T>,
     adminEnroll: <T = unknown>(params: OperationParams["admin.enroll"]) => call("admin.enroll", params) as Promise<T>,
     adminFeedbackStatus: <T = unknown>(params: OperationParams["admin.feedbackStatus"]) => call("admin.feedbackStatus", params) as Promise<T>,
+    adminFeedbackReply: <T = unknown>(params: OperationParams["admin.feedbackReply"]) => call("admin.feedbackReply", params) as Promise<T>,
     adminRelayToken: <T = unknown>(params: OperationParams["admin.relayToken"]) => call("admin.relayToken", params) as Promise<T>,
+    adminRelayTokenRevoke: <T = unknown>(params: OperationParams["admin.relayTokenRevoke"]) => call("admin.relayTokenRevoke", params) as Promise<T>,
+    adminRelayPut: <T = unknown>(params: OperationParams["admin.relayPut"]) => call("admin.relayPut", params) as Promise<T>,
     adminRelayRemove: <T = unknown>(params: OperationParams["admin.relayRemove"]) => call("admin.relayRemove", params) as Promise<T>,
   };
 }

@@ -1,12 +1,15 @@
 // The sign-in pages drawn (Login.tsx), on the web's host and the admin's: their words, the browser's language.
 import { render } from "preact";
-import { addWords, I18nRoot, type Words } from "@stillfail/ui/i18n.ts";
+import { addWords, I18nRoot, setSaid, type Words } from "@stillfail/ui/i18n.ts";
+import { sayProduct } from "../channel.ts";
 import zhLogin from "../../../client/i18n/catalog/zh/web-login.json" with { type: "json" };
 import enLogin from "../../../client/i18n/catalog/en/web-login.json" with { type: "json" };
 import type { ComponentChildren } from "preact";
 import { Callback, SignIn } from "./Login.tsx";
 
 addWords({ zh: zhLogin as Words, en: enLogin as Words });
+// (the sign-in pages load no web/src/i18n.ts: another product's says its own name here too)
+setSaid(sayProduct);
 
 /** Whether `path` is one of the sign-in pages. */
 export const isSignIn = (path: string) => path === "/login" || path === "/auth/callback";

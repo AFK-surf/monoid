@@ -1597,9 +1597,7 @@ pub fn Viewer::part_params(self : Viewer, offset : Double, length : Int, keep : 
     None if self.named => named_params(self)
     None => {
       let p = file_params(self)
-      if keep == "played" {
-        chat_keep(p, self.file.size)
-      }
+      chat_keep(p, self.file.size)
       p
     }
   }
@@ -1691,12 +1689,10 @@ pub fn direct_part(call : String, p : Map[String, Json], size : Double) -> Strin
 ///|
 /// A chat's file read through the core kept on the device with its chat, and answered from there when it is kept (the
 /// core's drive-kept.ts `chat`), as Android keeps those its viewers open on the phone's disk (ChatFiles.kt toDisk,
-/// onDisk), by its size as its message says (none known: not kept).
+/// onDisk). A missing size is learned from the station.
 pub fn chat_keep(p : Map[String, Json], size : Double) -> Unit {
-  if size > 0.0 {
-    p["keep"] = Json::boolean(true)
-    p["size"] = Json::number(size)
-  }
+  p["keep"] = Json::boolean(true)
+  p["size"] = Json::number(if size > 0.0 { size } else { 0.0 })
 }
 
 ///|
@@ -1735,8 +1731,8 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
     None => {
       let p = file_params(self)
       p["progress"] = Json::boolean(true)
-      if self.kept_whole() {
-        chat_keep(p, self.file.size)
+      chat_keep(p, self.file.size)
+      if self.kept_whole() || self.asked {
         p["from"] = self.opened_from()
       }
       (src.read_going)(

@@ -147,7 +147,9 @@ export class Fill {
       const where = call === null ? {} : call.kind === "stationFilePart" ? { key: call.key } : { root: call.root, path: call.path };
       const name = call === null ? f.id : call.kind === "stationFilePart" ? call.name : (call.path.split("/").pop() ?? call.path);
       const from = this.#from.get(f.id);
-      out.push({ id: f.id, station, ...where, name, title: call?.kind === "stationFilePart" ? titleOf(name) : name, size: f.size, loaded, progress: f.size > 0 ? loaded / f.size : 0, state, statusText, ...(f.wanted ? { wanted: true } : {}), ...(from !== undefined ? { from } : {}) });
+      const original = get(get(from, "file"), "name");
+      const title = typeof original === "string" && original !== "" ? original : call?.kind === "stationFilePart" ? titleOf(name) : name;
+      out.push({ id: f.id, station, ...where, name, title, size: f.size, loaded, progress: f.size > 0 ? loaded / f.size : 0, state, statusText, ...(f.wanted ? { wanted: true } : {}), ...(from !== undefined ? { from } : {}) });
     }
     // what comes now first
     return out.sort((a, b) => Number(b.state === "going" || b.state === "yielding") - Number(a.state === "going" || a.state === "yielding"));

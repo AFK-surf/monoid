@@ -229,6 +229,7 @@ pub let notes : Array[(Int, String)] = [
   (172, "station_task `dir` now brings a repository's Git submodules too: the target checks each out in the mirror at the commit the source has before the command runs (its commit must be pushed, or in the target's own clones); see skill stillfail-jobs."),
   (173, "feedback_send takes desktopPlatform when the affected desktop app is known, so its fix is announced on that platform’s release."),
   (174, "Codex reports which models offer Ultrafast for each subscription. Use speed: ultrafast with one of those models."),
+  (175, "Skill stillfail-browser: Farview now has an authenticator of its own as Chrome does, so a site asking for a passkey stored in its sign-in signs with it automatically in either engine; no need to switch to Chrome for a passkey."),
 ]
 
 ///|

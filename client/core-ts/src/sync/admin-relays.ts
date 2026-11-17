@@ -1,7 +1,10 @@
-// The relays' load for the console's 中继 page (views/admin-relays.ts): still.fail cloud samples it every minute
-// (cloud/src/relay-load.ts) and tells the operator's devices it did (a `relays` event); while something shows it and a
-// page of the app is in view, it is read then, and as it is first shown. Nothing reads it otherwise (the operator's
-// other lists are read with the account: ADMIN_LISTS).
+// The operator's lists read only while a page shows them: the relays' load for the console's 中继 page
+// (views/admin-relays.ts), which still.fail cloud samples every minute (cloud/src/relay-load.ts) and tells the operator's
+// devices it did (a `relays` event); the operators' changes (`audit`, its 操作记录) and one bug report whole with its
+// logs (`feedback/<id or FB-n>`, a report's page: the list carries none), told as the cloud's `admin` event names
+// `audit` or `feedback` and as a write of the console's changes them. While something shows one and a page of the app is
+// in view, it is read then, and as it is first shown. Nothing reads them otherwise (the operator's other lists are read
+// with the account: ADMIN_LISTS).
 import { Effect, Fiber } from "effect";
 import type { Inner } from "../core.ts";
 import type { Owner } from "../core/routing.ts";
@@ -18,7 +21,7 @@ export class AdminRelays implements Owner {
   }
 
   owns(topic: Topic): boolean {
-    return topic.topic === "admin" && topic.list === "relays";
+    return topic.topic === "admin" && (topic.list === "relays" || topic.list === "audit" || (typeof topic.list === "string" && topic.list.startsWith("feedback/")));
   }
 
   start(topic: Topic): void {
@@ -28,9 +31,13 @@ export class AdminRelays implements Owner {
     this.#read(key);
   }
 
-  /// still.fail cloud sampled the relays (`sub`'s socket said so): each list of them shown for that account read again.
-  told(sub: string): void {
-    for (const [key, shown] of this.#live) if (shown.topic.account === sub) this.#read(key);
+  /// still.fail cloud said `prefix` changed (`relays`, `audit`; `feedback/`, any report's): each such list shown for
+  /// that account read again.
+  told(sub: string, prefix = "relays"): void {
+    for (const [key, shown] of this.#live) {
+      const list = String(shown.topic.list);
+      if (shown.topic.account === sub && (list === prefix || (prefix.endsWith("/") && list.startsWith(prefix)))) this.#read(key);
+    }
   }
 
   stop(topic: Topic): void {
@@ -48,7 +55,7 @@ export class AdminRelays implements Owner {
       return;
     }
     const inView = Effect.suspend(() => this.#core.attention?.attend.untilShown() ?? Effect.void);
-    const read = this.#core.cloudSync.adminList(shown.topic.account as string, "relays");
+    const read = this.#core.cloudSync.adminList(shown.topic.account as string, shown.topic.list as string);
     shown.fiber = this.#core.runner.fork(
       Effect.andThen(inView, read).pipe(
         Effect.ensuring(

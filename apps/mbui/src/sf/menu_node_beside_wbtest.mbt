@@ -1,11 +1,18 @@
 // A menu that is not modal (menu_node's `modal` false: a submenu's, beside the row that opened it): what is under it its
 // own, a press outside it closing it and going on to what it lands on, a press on what opened it not; the arrow key back
-// toward what opened it closing it. Beside the same menu modal, which takes all of them.
+// toward what opened it closing it. A modal menu takes a primary press outside, and hands a secondary press on after it
+// closes.
 
 ///|
 /// A window with a button 开 that opens a menu at its Right (`modal` or not), and a button 下面 under it, each counting its
 /// presses (`under`), the menu's closings unchosen counted in `cancels`.
-fn side_menu_tester(modal : Bool, open : @signals.Signal[Bool], cancels : Ref[Int], under : Ref[Int]) -> @ui.Tester {
+fn side_menu_tester(
+  modal : Bool,
+  open : @signals.Signal[Bool],
+  cancels : Ref[Int],
+  under : Ref[Int],
+  leave_open? : Bool = false,
+) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform=0)
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
@@ -25,6 +32,7 @@ fn side_menu_tester(modal : Bool, open : @signals.Signal[Bool], cancels : Ref[In
       .height(Is(Some(36.0)))
       .presses(Is(true))
       .on_press(fn() { under.val += 1 })
+      .on_menu(fn(_) { under.val += 1 })
       .says(Is(Some(@view.said(Button, label="下面"))))
       |> ignore
     })
@@ -44,7 +52,9 @@ fn side_menu_tester(modal : Bool, open : @signals.Signal[Bool], cancels : Ref[In
         fn(_) { open.set(false) },
         fn() {
           cancels.val += 1
-          open.set(false)
+          if !leave_open {
+            open.set(false)
+          }
         },
         side=Right,
         modal~,
@@ -82,6 +92,29 @@ test "a menu not modal: a press outside its panel closes it as it goes down, and
     t.run_for(@ui.move_most_ms)
     assert_eq((cancels.val, under.val, t.query(Menu) is None), (1, if modal { 0 } else { 1 }, true), msg="modal \{modal}")
   }
+}
+
+///|
+test "a modal menu: a secondary press inside leaves it open; outside closes it and goes to what is under it" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under)
+  let (x, y, w, h) = t.rect_of("一").unwrap()
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  assert_eq((cancels.val, under.val, t.query(Menu) is Some(_)), (0, 0, true))
+  let (x, y) = side_button("下面")
+  t.right_click(x, y)
+  assert_eq((cancels.val, under.val, t.query(Menu) is None), (1, 1, true))
+}
+
+///|
+test "a modal menu that stays open does not send its secondary press through" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under, leave_open=true)
+  let (x, y) = side_button("下面")
+  t.right_click(x, y)
+  assert_eq((cancels.val, under.val, t.query(Menu) is Some(_)), (1, 0, true))
 }
 
 ///|

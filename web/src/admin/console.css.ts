@@ -26,11 +26,19 @@ export const mid = style({});
 globalStyle(`${mid} > *`, { maxWidth: "760px", marginLeft: "auto", marginRight: "auto" });
 export const total = style({ marginLeft: "10px", fontSize: vars.textBody, fontWeight: "400", color: vars.subtle, fontVariantNumeric: "tabular-nums" });
 
-export const toolbar = style({ display: "flex", gap: "12px", alignItems: "center" });
-export const search = style({ position: "relative", flex: "1", minWidth: "0", display: "flex" });
+/** The search, then the area and the order; on a phone the search a line of its own over the two. */
+export const toolbar = style({
+  display: "flex", gap: "12px", alignItems: "center",
+  "@media": { [NARROW]: { flexWrap: "wrap", rowGap: "8px" } },
+});
+export const search = style({
+  position: "relative", flex: "1", minWidth: "0", display: "flex",
+  "@media": { [NARROW]: { flexBasis: "100%" } },
+});
 globalStyle(`${search} > svg`, { position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: vars.subtle, pointerEvents: "none" });
-globalStyle(`${search} > input`, { paddingLeft: "36px", borderColor: "transparent", background: vars.neutralBg });
+globalStyle(`${search} > input`, { paddingLeft: "36px", borderColor: "transparent", background: vars.neutralBg, textOverflow: "ellipsis" });
 export const sort = style({ flex: "none", display: "flex", alignItems: "center", gap: "6px", fontSize: vars.textUi });
+export const sortBy = style({ whiteSpace: "nowrap" });
 export const filters = style({ display: "flex", gap: "4px", flexWrap: "wrap", margin: "12px 0 16px" });
 export const filter = style({
   height: "28px", padding: "0 10px", border: "0", borderRadius: "999px", background: "none", color: vars.muted,
@@ -54,7 +62,15 @@ export const row = style({
   },
 });
 export const rowText = style({ flex: "1", minWidth: "0", display: "grid" });
-export const rowLine1 = style({ display: "flex", alignItems: "center", gap: "8px", minWidth: "0", fontSize: vars.textUi, lineHeight: "22px" });
+export const rowLine1 = style({
+  display: "flex", alignItems: "center", gap: "8px", minWidth: "0", fontSize: vars.textUi, lineHeight: "22px",
+  // (narrow, a title with its marks wraps them and the time under it, from the row's start, rather than being cut to a
+  // word: rowTail)
+  "@media": { [NARROW]: { flexWrap: "wrap", rowGap: "4px" } },
+});
+/** A row's marks and its time: after its title, the time at the line's end; where they do not fit beside the title
+ * (narrow), a line of their own. */
+export const rowTail = style({ flex: "1 0 auto", display: "flex", alignItems: "center", gap: "8px" });
 globalStyle(`${rowLine1} > b`, { fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 export const rowTime = style({
   marginLeft: "auto", flex: "none", display: "flex", alignItems: "center", gap: "6px", fontSize: vars.textMeta, color: vars.subtle, whiteSpace: "nowrap",
@@ -78,7 +94,7 @@ export const detail = style({
   background: vars.sidebar, fontSize: vars.textUi,
   "@media": { [NARROW]: { padding: "24px 18px 60px" } },
 });
-export const detailHead = style({ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" });
+export const detailHead = style({ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "18px" });
 export const detailTitle = style({ flex: "1", minWidth: "0", display: "grid" });
 globalStyle(`${detailTitle} > b`, { fontSize: vars.textTitle, fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis" });
 globalStyle(`${detailTitle} > span`, { fontSize: vars.textMeta, color: vars.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
@@ -92,16 +108,26 @@ globalStyle(`${kv} dt`, { color: vars.muted });
 globalStyle(`${kv} dd`, { margin: "0", minWidth: "0", overflowWrap: "anywhere" });
 export const group = style({ margin: "16px 0 4px", fontSize: vars.textMeta, color: vars.muted });
 export const line = style({
-  display: "flex", alignItems: "center", gap: "8px", minHeight: "36px", padding: "6px 12px", borderRadius: vars.rOption,
+  display: "flex", alignItems: "center", gap: "8px", minWidth: "0", minHeight: "36px", padding: "6px 12px", borderRadius: vars.rOption,
   background: vars.canvas, color: vars.text, cornerShape: vars.cornerShape,
   selectors: {
     "a&:hover": { background: vars.hover },
     "&[data-quiet]": { color: vars.muted },
+    // (a button at its end, 32px: centred where a chevron of a row of words is, the row as tall as one, 36px)
+    "&[data-tight]": { paddingTop: "2px", paddingBottom: "2px", paddingRight: "4px" },
   },
 });
 globalStyle(`${line} > svg`, { flex: "none", color: vars.subtle });
 export const grow = style({ flex: "1", minWidth: "0", display: "grid", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
-export const hint = style({ fontSize: vars.textMeta, color: vars.muted, whiteSpace: "normal" });
+export const hint = style({ fontSize: vars.textMeta, color: vars.muted, whiteSpace: "normal", overflowWrap: "anywhere" });
+/** A switch or buttons beside a title and its hint: on the title's line, however many lines the hint takes (never centred on them). */
+export const switchLine = style({
+  alignItems: "flex-start", paddingTop: "7px", paddingBottom: "7px",
+  selectors: { "&[data-tight]": { paddingTop: "7px", paddingBottom: "7px", paddingRight: "4px" } },
+});
+export const switchTitle = style({ lineHeight: "22px" });
+/** As tall as the title's line, so what it holds (a 32px button too) is centred on that line. */
+export const switchBox = style({ flex: "none", height: "22px", display: "flex", alignItems: "center", gap: "8px" });
 export const lineAside = style({ flex: "none", fontSize: vars.textMeta, color: vars.muted, whiteSpace: "nowrap" });
 globalStyle(`${lineAside} [data-off]`, { color: vars.amber });
 export const link = style({ color: vars.text, textDecoration: "underline", textDecorationColor: vars.lineStrong, textUnderlineOffset: "3px" });
@@ -119,6 +145,26 @@ export const fbLogs = style({
   margin: "0", maxHeight: "360px", overflow: "auto", padding: "10px 12px", borderRadius: vars.rOption, background: vars.canvas,
   cornerShape: vars.cornerShape, fontSize: vars.textMeta, lineHeight: "18px", whiteSpace: "pre", tabSize: 4,
 });
+
+// ── a bug report's replies: each its head (who, which side, delivered, when) over what it says ──
+export const replies = style({ display: "grid", gap: "6px" });
+export const reply = style({
+  display: "grid", gap: "2px", padding: "8px 12px", borderRadius: vars.rOption, background: vars.canvas, cornerShape: vars.cornerShape, minWidth: "0",
+});
+export const replyHead = style({ display: "flex", alignItems: "center", gap: "8px", minWidth: "0", lineHeight: "22px" });
+globalStyle(`${replyHead} > b`, { fontWeight: "600", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+export const replyDelivery = style({
+  flex: "none", fontSize: vars.textMeta, color: vars.muted, whiteSpace: "nowrap",
+  selectors: { "&[data-pending]": { color: vars.amber } },
+});
+export const replyTime = style({ marginLeft: "auto", flex: "none", fontSize: vars.textMeta, color: vars.subtle, whiteSpace: "nowrap" });
+export const replyText = style({ whiteSpace: "pre-wrap", overflowWrap: "anywhere" });
+export const replyForm = style({ display: "grid", gap: "8px", marginTop: "8px" });
+export const replyInput = style({ resize: "vertical", minHeight: "76px", fontFamily: "inherit", lineHeight: "20px" });
+export const replySend = style({ display: "flex", justifyContent: "flex-end" });
+
+/** Giving a workspace's limits back: what it does, then the button, each on its own line. */
+export const resetLimits = style({ display: "grid", justifyItems: "start", gap: "8px", marginTop: "4px" });
 
 // ── the overview ──
 export const stats = style({
@@ -183,6 +229,18 @@ globalStyle(`${relayNumbers} dt`, { fontSize: vars.textMeta, lineHeight: "18px",
 globalStyle(`${relayNumbers} dd`, { margin: "0", fontSize: vars.textHeading, lineHeight: "30px", fontWeight: "600", whiteSpace: "nowrap" });
 globalStyle(`${relayNumbers} dd[data-tone=amber]`, { color: vars.amber });
 globalStyle(`${relayNumbers} dd[data-tone=red]`, { color: vars.red });
+
+/** What the probes from China's carriers and Hong Kong found: a line of its own over the charts, each network's round
+ * trip and loss side by side, wrapping where the card is narrow. */
+export const probes = style({ display: "grid", gap: "6px", minWidth: "0" });
+export const probesHead = style({ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "4px 12px", fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted });
+globalStyle(`${probesHead} > b`, { fontSize: vars.textUi, fontWeight: "500", color: vars.text });
+globalStyle(`${probesHead} > span`, { marginLeft: "auto", color: vars.subtle, whiteSpace: "nowrap" });
+export const probeItems = style({ margin: "0", display: "flex", flexWrap: "wrap", gap: "8px 28px" });
+globalStyle(`${probeItems} dt`, { fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, whiteSpace: "nowrap" });
+globalStyle(`${probeItems} dd`, { margin: "0", fontSize: vars.textUi, lineHeight: "22px", fontWeight: "500", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" });
+globalStyle(`${probeItems} dd[data-tone=amber]`, { color: vars.amber });
+globalStyle(`${probeItems} dd[data-tone=red]`, { color: vars.red });
 
 // A series' colour, by its place in the chart (the first blue, the second the accent), for its line, wash and key.
 export const seriesFirst = style({ vars: { "--series": vars.blue } });

@@ -608,13 +608,19 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
+      # At the default rate the wide sweep was still running alongside the fourth group's pages after 150 s,
+      # and the group hit its five-minute limit. The first group finished in 148 s (44164320005).
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo 1 ;; *) echo 4 ;; esac ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
       # 124-243)
       "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
+      # At the default rate three kept-row ranges were still running at 150 s beside the third group's pages.
+      # It timed out at 316 s while the first finished in 158 (44161134705). Move two ranges onto the first.
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
+        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo 1; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its

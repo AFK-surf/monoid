@@ -13,6 +13,7 @@ pub fn run_shown(row : Json, named : (String) -> String?) -> Json {
     "effort": field(row, "effort").unwrap_or(Json::null()),
     "fast": field(row, "fast").unwrap_or(Json::null()),
   }
+  if field(row, "tui") == Some(Json::boolean(true)) { out["tui"] = Json::boolean(true) }
   match field(row, "speed") {
     Some(String(s)) if s != "" => out["speed"] = Json::string(s)
     _ => ()
@@ -25,7 +26,7 @@ pub fn run_shown(row : Json, named : (String) -> String?) -> Json {
 }
 
 ///|
-let run_parts : Array[String] = ["runtime", "model", "effort", "fast"]
+let run_parts : Array[String] = ["runtime", "model", "effort", "fast", "tui"]
 
 ///|
 fn part_differs(change : Json, k : String) -> Bool {
@@ -65,6 +66,7 @@ pub fn run_change_words(words : Words, change : Json, lang : String) -> String {
         Some(e) => e
         None => words.tr("station.notice.runDefaultEffort", lang~)
       }
+    "tui" => if field(r, "tui") == Some(Json::boolean(true)) { "TUI" } else { "Print" }
     "fast" =>
       match chosen_speed(r) {
         Some("ultrafast") => "Ultrafast"

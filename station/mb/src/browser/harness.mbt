@@ -1178,6 +1178,7 @@ fn pure_case(name : String, args : Array[J]) -> J raise {
         "look" => Look
         "eval" => Eval(text(at(o, "script")))
         "cookies" => Cookies(text(at(o, "verb")), text(at(o, "arg")))
+        "passkeys" => Passkeys(text(at(o, "verb")), text(at(o, "arg")))
         _ => Act(text(at(o, "verb")), text(at(o, "selector")), text(at(o, "text")))
       }
       js(@base64.encode(encode_ask(ask)))

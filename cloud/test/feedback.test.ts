@@ -88,8 +88,11 @@ test("a station's report is kept once, numbered, and listed in the console with 
     assert.equal(one.title, "chat_post 发不出去");
     assert.equal(one.reporter, "Ada, Slack #ops");
     assert.deepEqual(one.context, report().context);
-    assert.equal(one.logs, "ERROR chat_post: 500");
+    // The console's list carries no logs, only whether there are any; the report's own read has them.
+    assert.deepEqual([one.logs, one.has_logs, listed.feedback[0].has_logs], [null, true, true]);
     assert.equal(one.status, "new");
+    const whole = (await (await admin("GET", `/v1/admin/feedback/${one.id}`)).json()) as any;
+    assert.deepEqual([whole.item.id, whole.item.logs, whole.item.has_logs], [one.id, "ERROR chat_post: 500", true]);
 
     assert.equal((await admin("POST", `/v1/admin/feedback/${one.id}/status`, { status: "fixed" })).status, 200);
     assert.equal((await admin("POST", `/v1/admin/feedback/${one.id}/status`, { status: "gone" })).status, 400);
@@ -357,7 +360,9 @@ test("the team's reply is shown to the members of the chat's workspace, told on 
     assert.equal(reply.delivery, "pending");
     await h.settled();
     // (alice opened the console: its list of reports is read again too)
-    assert.deepEqual(await events.take(), [{ type: "feedback", workspace: home }, { type: "admin", lists: ["feedback"] }]);
+    // (and its 操作记录, which the reply is noted in: told apart, in no order of its own)
+    const told = (await events.take()).map((e) => JSON.stringify(e)).sort();
+    assert.deepEqual(told, [{ type: "admin", lists: ["audit"] }, { type: "admin", lists: ["feedback"] }, { type: "feedback", workspace: home }].map((e) => JSON.stringify(e)));
     assert.deepEqual(await carol.take(), [], "not a member");
     await socket.ping();
     assert.ok(!socket.frames.some((f) => f.type === "feedback" || JSON.stringify(f).includes("日志")), "nothing to the station");
@@ -410,7 +415,8 @@ test("a report from a chat of a workspace the station joined is that workspace's
     await h.settled();
     assert.deepEqual(await bobEvents.take(), [{ type: "feedback", workspace: lab }, { type: "feedback", workspace: lab }]);
     // (alice hears only that the console's reports changed, as she opened it)
-    assert.deepEqual(await aliceEvents.take(), [{ type: "admin", lists: ["feedback"] }, { type: "admin", lists: ["feedback"] }], "the home's members are not the chat's");
+    const reports = JSON.stringify({ type: "admin", lists: ["feedback"] }), audit = JSON.stringify({ type: "admin", lists: ["audit"] });
+    assert.deepEqual((await aliceEvents.take()).map((e) => JSON.stringify(e)).sort(), [audit, audit, reports, reports], "the home's members are not the chat's");
     const shown = ((await (await bob("GET", `/v1/workspaces/${lab}/feedback`)).json()) as any).feedback;
     assert.deepEqual(shown.map((f: any) => [f.number, f.session]), [[2, "chat:c-8"], [1, "chat:c-9"]]);
     assert.deepEqual(((await (await h.as(aliceTokens)("GET", `/v1/workspaces/${home}/feedback`)).json()) as any).feedback, []);

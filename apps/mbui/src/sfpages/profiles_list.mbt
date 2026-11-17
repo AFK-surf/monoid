@@ -74,7 +74,7 @@ pub fn profiles_list_node(
   // (the subscriptions' allowances shared as a picture, the workspace's list's: share_quota.mbt)
   let actions = fn(l : @view.View) {
     if only == "" {
-      accounts_share_node(l, core, here, fn() { !frame().named }, Some(tips))
+      profile_share_node(l, core, here, fn() { !frame().named }, Some(tips))
     }
     l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
   }
@@ -83,7 +83,7 @@ pub fn profiles_list_node(
       f(
         fn(l) {
           if only == "" {
-            accounts_share_node(l, core, here, fn() { true }, Some(tips), bar=true)
+            profile_share_node(l, core, here, fn() { true }, Some(tips), bar=true)
           }
           if bar_add {
             l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })

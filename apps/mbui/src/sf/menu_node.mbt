@@ -10,8 +10,8 @@
 // Shift) to the first whose words start with them (a second's worth together), shown, what holds them bringing it
 // into sight; the pointer moving onto one gives it the focus, unseen. Enter, Space, a tap or a click choose one (it
 // closes, then what it does goes on); a press on what of its panel cannot be chosen does nothing. Escape, back and a
-// press outside close it. Opened by the keyboard, the focus on its first row, shown; else on its panel, nothing lit,
-// till a key or the pointer moves it.
+// press outside close it; a secondary press outside goes on to what is under it. Opened by the keyboard, the focus on
+// its first row, shown; else on its panel, nothing lit, till a key or the pointer moves it.
 
 ///|
 /// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
@@ -156,6 +156,21 @@ pub fn menu_node(
         .on_drag(fn(d) {
           if d.kind == Down && @signals.untracked(live) {
             cancel()
+          }
+        })
+        // (a secondary press outside closes the menu and asks what is under it for its own menu at that same press)
+        .on_menu(fn(m) {
+          let inside = match panel.val {
+            Some(p) =>
+              match p.tree.target_at(m.wx, m.wy) {
+                Pressed(id) | Dragged(id) => p.tree.holds(p.id(), id)
+                _ => false
+              }
+            None => false
+          }
+          if @signals.untracked(live) && !inside {
+            cancel()
+            layer.menu_behind(m)
           }
         })
         |> ignore

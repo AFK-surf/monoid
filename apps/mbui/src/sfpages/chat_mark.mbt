@@ -132,7 +132,7 @@ pub fn state_line(
         @sf.theme().p.muted
       }
       // (read out whole: its aria-label)
-      c.box(style=state_lead_line, label=text, fn() {
+      c.box(style=state_lead_line(), label=text, fn() {
         let b = c.box(style=state_slot, id=slot, taps=false, points=true, fn() { lead_icon(c, lead, ink) })
         // (role="img": its words, the row pressed through it)
         c.semantics(b, Image, id=slot, label~)
@@ -275,10 +275,14 @@ fn lead_lit(f : Double) -> Double {
 let lit_stops : Array[(Double, Double)] = [(0.0, 0.3), (0.1, 1.0), (0.32, 0.3), (1.0, 0.3)]
 
 ///|
-/// The line led by an icon (leadLine): the icon's column, then what follows where the title starts (the head's gap,
-/// 6: navSessionMeta's --lead-gap).
+/// The line led by an icon: its words begin where a marked title's do, using the same gap for either native input.
+fn state_lead_line() -> @ui.Style {
+  state_lead_line_base.then(@ui.style(gap=@sf.theme().chat_list.head.base.gap.unwrap_or(S0)))
+}
+
+///|
 // kept across runs: a value (no field of it changes)
-let state_lead_line : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
+let state_lead_line_base : @ui.Style = @ui.css("row w=Full align=ACenter")
 
 ///|
 /// The title's mark's column: 10 wide, 14 high (leadSlot).

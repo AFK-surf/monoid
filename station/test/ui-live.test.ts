@@ -37,16 +37,25 @@ test("a real editor: its tree, a line set into its text by ref, read back from t
     const app = apps.slice(apps.indexOf(":") + 1).split(",").map((a) => a.trim()).find((a) => editor.app.test(a));
     assert.ok(app, apps);
     // An editor with several windows (documents it reopened) is refused with them to choose from, as an agent is: the
-    // first is taken.
+    // first is taken. On Windows Server 2025, WinUI Notepad's top-level window appears before its XAML edit subtree
+    // mounts (its first cold UIA walk can return complete=false with only the window node), so read again until its
+    // text field is mounted.
     const read = (window?: string) => computer.act("t", { screen: "desktop", action: "tree", app, ...(window ? { window } : {}) });
-    const tree = say(
-      await read().catch((error: Error) => {
+    const snapshot = () =>
+      read().catch((error: Error) => {
         const window = /"id":"([^"]+)"/.exec(error.message)?.[1];
         if (!/AMBIGUOUS_TARGET/.test(error.message) || !window) throw error;
         return read(window);
-      }),
-    );
-    const field = /^\s*(e\d+) (?:textfield|textarea|document|edit)\b/m.exec(tree);
+      });
+    const deadline = Date.now() + 30_000;
+    let tree = "";
+    let field: RegExpExecArray | null = null;
+    for (;;) {
+      tree = say(await snapshot());
+      field = /^\s*(e\d+) (?:textfield|textarea|document|edit)\b/m.exec(tree);
+      if (field || Date.now() >= deadline) break;
+      await new Promise<void>((resolve) => { timers.later(250, resolve); });
+    }
     assert.ok(field, `no text field in\n${tree}`);
     const line = `still.fail tree ${Date.now()}`;
     const after = say(await computer.act("t", { screen: "desktop", action: "set", ref: field[1], text: line }));

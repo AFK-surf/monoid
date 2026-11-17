@@ -627,12 +627,13 @@ test("with Cloudflare Access, everyone who opened the console hears its lists ch
     assert.deepEqual(await bob.take(), [JSON.stringify({ type: "relays" })]);
     // A code made, a report sent and marked: the console's lists read again.
     assert.equal((await bobConsole("POST", "/v1/admin/invite-codes", {})).status, 200);
-    assert.deepEqual(await bob.take(), [JSON.stringify({ type: "admin", lists: ["invite-codes"] })]);
+    // (and its 操作记录, which the change is noted in: told apart, in no order of the two)
+    assert.deepEqual((await bob.take()).sort(), [JSON.stringify({ type: "admin", lists: ["audit"] }), JSON.stringify({ type: "admin", lists: ["invite-codes"] })]);
     assert.equal((await h.as(carolTokens)("POST", "/v1/feedback", { key: "k1", title: "列表不动", body: "拉宽后页面没动", area: "station", reporter: "carol" })).status, 201);
     assert.deepEqual(await bob.take(), [JSON.stringify({ type: "admin", lists: ["feedback"] })]);
     const listed = (await (await bobConsole("GET", "/v1/admin/feedback")).json()) as { feedback: { id: string }[] };
     assert.equal((await bobConsole("POST", `/v1/admin/feedback/${listed.feedback[0]!.id}/status`, { status: "triaged" })).status, 200);
-    assert.deepEqual(await bob.take(), [JSON.stringify({ type: "admin", lists: ["feedback"] })]);
+    assert.deepEqual((await bob.take()).sort(), [JSON.stringify({ type: "admin", lists: ["audit"] }), JSON.stringify({ type: "admin", lists: ["feedback"] })]);
     assert.deepEqual(await carol.take(), [], "not an operator");
   } finally {
     await h.close();

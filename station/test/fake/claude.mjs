@@ -27,6 +27,12 @@ const args = process.argv.slice(2);
 const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const sessionId = flag("--session-id") || flag("--resume") || "none";
 
+if (process.stdin.isTTY && !args.includes("-p")) {
+  const { run } = await import("./claude-tui.mjs");
+  await run(JSON.parse(flag("--settings")), sessionId, dump, JSON.parse(flag("--mcp-config")).mcpServers.stillfail);
+  process.exit(0);
+}
+
 const say = (frame) => fs.writeSync(1, JSON.stringify(frame) + "\n");
 /// The token it runs on (CLAUDE_CODE_OAUTH_TOKEN), and its control requests to the station waiting for an answer.
 let token = process.env.CLAUDE_CODE_OAUTH_TOKEN;

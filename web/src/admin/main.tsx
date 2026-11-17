@@ -6,8 +6,14 @@ import "../styles/index.ts";
 import "@fontsource-variable/inter";
 import { isSignIn, show } from "../login/page.tsx";
 import { AdminSignIn } from "./signin.tsx";
+import { NAME } from "../channel.ts";
+import { t } from "@stillfail/ui/i18n.ts";
 
 const root = document.getElementById("app")!;
 const path = location.pathname.replace(/\/+$/, "");
-if (isSignIn(path)) show(root, path, <AdminSignIn />);
+if (isSignIn(path)) {
+  // (the sign-in page's words are given as show() loads them: its title said once they are)
+  show(root, path, <AdminSignIn />);
+  document.title = t("web-login.adminTitle", { name: NAME });
+}
 else void import("./app.tsx").then((m) => m.show(root));
