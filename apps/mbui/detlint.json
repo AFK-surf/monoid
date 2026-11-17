@@ -531,7 +531,23 @@
       "src/sfpages/board_node.mbt": 1
     },
     "shader-int": {},
-    "raw-hover-ground": {}
+    "raw-hover-ground": {},
+    "width-structure": {
+      "src/sf/seg_node.mbt": 5,
+      "src/sf/table_node.mbt": 1,
+      "src/sfpages/message_quotes_node.mbt": 2
+    },
+    "reused-untracked-key": {
+      "src/sfdesk/archive_side_node.mbt": 1,
+      "src/sfpages/sidebar_node.mbt": 1,
+      "src/sfpages/things.mbt": 1
+    },
+    "manual-fade-way": {
+      "src/sf/sync_key_node.mbt": 1,
+      "src/sf/table_node.mbt": 1,
+      "src/sfapp/sheets.mbt": 1,
+      "src/sfpages/message_media_node.mbt": 1
+    }
   },
   "excused": {
     "frame-request": {},
@@ -631,6 +647,11 @@
       "src/sf/menu_node.mbt": 1,
       "src/sf/panel_parts_node.mbt": 1,
       "src/sf/pick_node.mbt": 1
-    }
+    },
+    "width-structure": {
+      "src/sf/player_node.mbt": 1
+    },
+    "reused-untracked-key": {},
+    "manual-fade-way": {}
   }
 }

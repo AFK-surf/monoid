@@ -1,7 +1,9 @@
 // What makes a view do more than it must, found where it is written: a scoped computed or a bare effect where a node's
 // own watch would do (scoped-computed, raw-effect), rows made by a loop in what a pick or a show makes
 // (pick-loop), a list's row its least height said and no height (each-min-height), a list's row looking its item up in
-// a whole list (each-lookup), and a size of the layout read off a way as it is drawn (layout-drawn-while).
+// a whole list (each-lookup), a size of the layout read off a way as it is drawn (layout-drawn-while), a structure
+// switched by the width a room is given (width-structure), a reused block's key read once as it is made
+// (reused-untracked-key), and a fade out kept by hand (manual-fade-way).
 
 ///|
 /// A lambda written at `k` (its `fn`): its parameters' names (`_` as written) and its body's `{`
@@ -447,10 +449,7 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
     if under(f.rel, cfg.pages) || under(f.rel, cfg.library) {
       lint_raw_hover_ground(f, out)
     }
-    let made = made_by(f)
-    if made.is_empty() {
-      continue
-    }
+    lint_manual_fade_way(f, cfg, out)
     // each lambda given whole to a call: that call, and its label
     let given : Map[Int, (Call, String?)] = Map([])
     for c in f.calls {
@@ -459,6 +458,12 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
           given[a.1[0]] = (c, a.0)
         }
       }
+    }
+    lint_width_structure(f, given, out)
+    lint_reused_untracked_key(f, given, out)
+    let made = made_by(f)
+    if made.is_empty() {
+      continue
     }
     lint_pick_loop(f, made, given, out)
     lint_each_min_height(f, made, named, memo, out)
@@ -584,6 +589,257 @@ fn lint_raw_hover_ground(f : MbtFile, out : Array[Finding]) -> Unit {
     }
     if reads_hand && !reads_eased {
       out.push(finding("raw-hover-ground", f.rel, toks[c.at].line, f.line_text(c.at)))
+    }
+  }
+}
+
+
+///|
+/// Whether a call is of the method `name` on the name `recv` alone (`recv.name(…)`)
+fn MbtFile::called_on(self : MbtFile, c : Call, recv : String, name : String) -> Bool {
+  c.kind == "method" && !c.is_def && c.name == name && self.receiver_name(c.at) == Some(recv)
+}
+
+///|
+/// Whether the token at k names one of `names` as a value or a call of it: not a field or a method (`x.name`), not a
+/// label (`name=`, `name~`), not what a `let` binds
+fn MbtFile::names_one(self : MbtFile, k : Int, names : Map[String, Bool]) -> Bool {
+  let toks = self.toks
+  let t = toks[k]
+  t.kind == "ident" &&
+  names.contains(t.text) &&
+  !(k > 0 && toks[k - 1].kind == "op" && toks[k - 1].text == ".") &&
+  !(k > 0 && toks[k - 1].kind == "ident" && (toks[k - 1].text == "let" || toks[k - 1].text == "mut")) &&
+  !(k + 1 < toks.length() &&
+    toks[k + 1].kind == "op" &&
+    (toks[k + 1].text == "~" || (toks[k + 1].text == "=" && !(k > 0 && toks[k - 1].text == "let"))))
+}
+
+///|
+/// Whether a token from lo to hi names one of `names` (MbtFile::names_one)
+fn MbtFile::names_within(self : MbtFile, lo : Int, hi : Int, names : Map[String, Bool]) -> Bool {
+  for k in lo..=hi {
+    if self.names_one(k, names) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// The functions a lambda's body (from its `{` at open to its `}` at close) binds to a name of its own
+/// (`let room = fn() { … }`, `let fit : () -> Fitted? = fn() { … }`): each name, its body's `{`
+fn MbtFile::local_fns(self : MbtFile, open : Int, close : Int) -> Array[(String, Int)] {
+  let toks = self.toks
+  let out = []
+  for j in (open + 1)..<close {
+    if toks[j].kind != "ident" || toks[j].text != "let" {
+      continue
+    }
+    let mut n = j + 1
+    if n < close && toks[n].kind == "ident" && toks[n].text == "mut" {
+      n += 1
+    }
+    guard n + 1 < close && toks[n].kind == "ident" else { continue }
+    // (past its type, where it says one: to its `=`, a bracket in it passed whole)
+    let mut e = n + 1
+    if toks[e].kind == "op" && toks[e].text == ":" {
+      while e < close && !(toks[e].kind == "op" && toks[e].text == "=") {
+        if is_open(toks[e]) && toks[e].end >= 0 {
+          e = toks[e].end
+        }
+        e += 1
+      }
+    }
+    guard e + 1 < close && toks[e].kind == "op" && toks[e].text == "=" else { continue }
+    match self.lambda_at(e + 1) {
+      Some((_, b)) if toks[b].end < close => out.push((toks[n].text, b))
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+/// width-structure: in what a View::by_room makes (`fn(v, room) { … }`), a pick or a show whose condition reads the
+/// room's width (`room.width()`), itself or through a function of the room's body that does, called or handed on
+/// (`let room_w = fn() { given.width() - … }`, `let scale = fn() { … room_w() … }`, `show(menu, …)`): what is switched
+/// is a structure made and let go as the width crosses it, coming and going as the window or a column is dragged. What
+/// changes with the width is a binding (By). A pick or a show in another room's making of the same name is that one's;
+/// one in what runs later (a press, a handler) is no arrangement.
+fn lint_width_structure(f : MbtFile, given : Map[Int, (Call, String?)], out : Array[Finding]) -> Unit {
+  let toks = f.toks
+  // each room's making: its room's name and its body
+  let rooms : Array[(String, Int, Int)] = []
+  for c in f.calls {
+    if !(c.kind == "method" && c.name == "by_room") || c.is_def || f.in_test(c.at) {
+      continue
+    }
+    match arg_at(f, c, 0, "make") {
+      Some(a) if a.length() > 0 =>
+        match f.lambda_at(a[0]) {
+          Some((ps, b)) if ps.length() >= 2 && ps[1] != "_" => rooms.push((ps[1], b, toks[b].end))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  let seen : Map[Int, Bool] = Map([])
+  for r in rooms {
+    let (room, open, close) = r
+    // whether the tokens lo..=hi read the room's width: its own `width()`, or a function of its body that does
+    let wide : Map[String, Bool] = Map([])
+    let reads = fn(lo : Int, hi : Int) {
+      f.calls.iter().any(fn(d) { d.at >= lo && d.at <= hi && f.called_on(d, room, "width") }) ||
+      f.names_within(lo, hi, wide)
+    }
+    // the room's body's functions that read its width, themselves or through another of them (to a fixed point)
+    let fns = f.local_fns(open, close)
+    let mut more = true
+    while more {
+      more = false
+      for lf in fns {
+        let (name, b) = lf
+        if !wide.contains(name) && reads(b + 1, toks[b].end - 1) {
+          wide[name] = true
+          more = true
+        }
+      }
+    }
+    for c in f.calls {
+      if c.at <= open ||
+        c.at >= close ||
+        c.kind != "method" ||
+        c.is_def ||
+        (c.name != "pick" && c.name != "show") ||
+        seen.contains(c.at) {
+        continue
+      }
+      // (an Array's or an Option's, given one function, is no structure)
+      let said = c.args
+        .iter()
+        .filter(fn(a) { a.0 == Some("when") || a.0 == Some("then") || a.0 == Some("make") })
+        .count()
+      if positional(f, c.args).length() + said < 2 {
+        continue
+      }
+      // (in another room's making that names its room the same: that one's)
+      if rooms.iter().any(fn(o) { o.0 == room && o.1 > open && o.1 < c.at && c.at < o.2 }) {
+        continue
+      }
+      if later_between(f, given, open, c.at) {
+        continue
+      }
+      let cond = match arg_at(f, c, 0, "when") {
+        Some(a) if a.length() > 0 => a
+        _ => continue
+      }
+      if reads(cond[0], cond[cond.length() - 1]) {
+        seen[c.at] = true
+        out.push(finding("width-structure", f.rel, toks[c.at].line, f.line_text(c.at)))
+      }
+    }
+  }
+}
+
+///|
+/// reused-untracked-key: in what makes a page's list's block taken again for another key (View::scrolls_window's
+/// `make_reused=fn(v, key) { … }`), the key read untracked (`@signals.untracked(key)`, `untracked(fn() { … key() … })`,
+/// `key.untracked()`) as the block is made: what it reads stays the key it was made for, when the block shows another
+/// one now. A block reads its key through `key()` where it is bound (By, a pick's which); what runs later than it is
+/// made (a press, a handler) reads the key as it is then.
+fn lint_reused_untracked_key(f : MbtFile, given : Map[Int, (Call, String?)], out : Array[Finding]) -> Unit {
+  let toks = f.toks
+  let seen : Map[Int, Bool] = Map([])
+  for c in f.calls {
+    if !(c.kind == "method" && c.name == "scrolls_window") || c.is_def || f.in_test(c.at) {
+      continue
+    }
+    let (key, open, close) = match c.args.search_by(fn(a) { a.0 == Some("make_reused") }) {
+      Some(i) if c.args[i].1.length() > 0 =>
+        match f.lambda_at(c.args[i].1[0]) {
+          Some((ps, b)) if ps.length() >= 2 && ps[1] != "_" => (ps[1], b, toks[b].end)
+          _ => continue
+        }
+      _ => continue
+    }
+    let keys : Map[String, Bool] = Map([(key, true)])
+    for d in f.calls {
+      if d.at <= open || d.at >= close || d.is_def || seen.contains(d.at) {
+        continue
+      }
+      let hit = if f.called_on(d, key, "untracked") {
+        true
+      } else if d.name == "untracked" &&
+        ((d.kind == "pkg" && d.qual == "@signals") || d.kind == "bare") {
+        // (the key itself given it, or read in what it is given)
+        d.args.iter().any(fn(a) { a.1.iter().any(fn(k) { f.names_one(k, keys) }) })
+      } else {
+        false
+      }
+      if !hit || later_between(f, given, open, d.at) {
+        continue
+      }
+      seen[d.at] = true
+      out.push(finding("reused-untracked-key", f.rel, toks[d.at].line, f.line_text(d.at)))
+    }
+  }
+}
+
+///|
+/// manual-fade-way: a function of a page or of the library that fades a part out by hand: an `EdgeWay::new` it goes
+/// along, an `at_moment` whose callback sets a signal (`there.set(false)`) and a `show` whose condition reads that
+/// signal (`show(fn() { there.get() }, …)`): the part let go by a timer of its own as its own way ends, every such part
+/// its own state, timer and way out, where what comes and goes is a structure that leaves over its time
+/// (View::show's `leave`) and one fade is the framework's. Found once a function, at its first `EdgeWay::new`.
+fn lint_manual_fade_way(f : MbtFile, cfg : Config, out : Array[Finding]) -> Unit {
+  if !(under(f.rel, cfg.pages) || under(f.rel, cfg.library)) {
+    return
+  }
+  let toks = f.toks
+  for idx, it in f.items {
+    if it.kind != "fn" || f.in_test(it.start) {
+      continue
+    }
+    let mut way = -1
+    // what an at_moment's callback sets
+    let timed : Map[String, Bool] = Map([])
+    for c in f.calls {
+      if c.item != idx || c.is_def {
+        continue
+      }
+      if c.kind == "type" && c.qual == "EdgeWay" && c.name == "new" && way < 0 {
+        way = c.at
+      } else if c.kind == "method" && c.name == "at_moment" {
+        for a in c.args {
+          guard a.1.length() > 0 else { continue }
+          let (lo, hi) = (a.1[0], a.1[a.1.length() - 1])
+          for d in f.calls {
+            if d.at >= lo && d.at <= hi && d.kind == "method" && d.name == "set" && !d.is_def {
+              match f.receiver_name(d.at) {
+                Some(r) => timed[r] = true
+                None => ()
+              }
+            }
+          }
+        }
+      }
+    }
+    if way < 0 || timed.is_empty() {
+      continue
+    }
+    let shown = f.calls.iter().any(fn(c) {
+      c.item == idx &&
+      c.kind == "method" &&
+      c.name == "show" &&
+      !c.is_def &&
+      (match arg_at(f, c, 0, "when") {
+        Some(a) if a.length() > 0 => f.names_within(a[0], a[a.length() - 1], timed)
+        _ => false
+      })
+    })
+    if shown {
+      out.push(finding("manual-fade-way", f.rel, toks[way].line, f.line_text(way)))
     }
   }
 }

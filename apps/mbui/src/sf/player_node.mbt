@@ -1364,6 +1364,7 @@ fn timeline_node(
                 Some((x.to_double(), dmin(1.0, dmax(0.0, (x.to_double() - inset) / track))))
               }
             }
+            // det-ok(width-structure): shown while the pointer is over the track; the width only places it, never shows it
             v.show(at_once=true, fn() { at() is Some(_) }, fn(tip) {
               tip
               .over(Is(true))

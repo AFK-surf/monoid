@@ -112,7 +112,10 @@
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
-    "raw-hover-ground": {}
+    "raw-hover-ground": {},
+    "width-structure": {},
+    "reused-untracked-key": {},
+    "manual-fade-way": {}
   },
   "excused": {
     "frame-request": {},
@@ -190,6 +193,9 @@
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
-    "raw-hover-ground": {}
+    "raw-hover-ground": {},
+    "width-structure": {},
+    "reused-untracked-key": {},
+    "manual-fade-way": {}
   }
 }

@@ -104,8 +104,11 @@ yet and you can add one, add it.
   key once (`View::keyed_by`) is read by each row by its key and a choice of one (the one picked, the one in the hand)
   by member (`View::selected`), so a change tells the rows it is about alone (`src/view/keyed_by.mbt`); a size or a
   room of the layout worked out of a way as it is drawn (`layout-drawn-while`: `drawn_while`, `shown_on` in `width`,
-  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead. What
-  truly is so says why on its line (`det-ok`).
+  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead; a pick
+  or a show switched by the width its room is given (`width-structure`), where a binding follows the width; a reused
+  block reading its key untracked as it is made (`reused-untracked-key`), keeping the key it was first made for; a
+  part faded out by hand, its own `EdgeWay`, `at_moment` and `show` (`manual-fade-way`, an app's pages and library),
+  where a structure leaves over its time (`View::show`'s `leave`). What truly is so says why on its line (`det-ok`).
 - State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
   change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
   (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does

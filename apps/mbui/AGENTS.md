@@ -201,7 +201,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   key through `key()` as it is now, never one taken as it was made (a quote's place, what is picked of it, its flash,
   its menu's band, which block of a long message): `chat_body_reuse_wbtest.mbt` sets each row so taken beside one made
   for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a make holds made only as it is made (a
-  message's paths, its agent's card, the chat's thread) is part of the make.
+  message's paths, its agent's card, the chat's thread) is part of the make. detlint's `reused-untracked-key` counts a
+  `make_reused` reading its key untracked as it is made, and that count only falls.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`,
   `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
@@ -219,6 +220,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 - What changes with the width a row or a part is given is a binding (`By`: a gap's height, a margin, a size), never a
   structure switched by a value worked out of that width (`pick`, `show` on `width() <= …`): a structure switched makes
   its way in and out, and what the window or the system's bars do to the width is no motion of the thing's (#5767).
+  detlint's `width-structure` counts each in a `View::by_room`'s making (its room's `width()` read by a pick's or a
+  show's condition, itself or through a function of the room's body), and that count only falls.
 
 ## Motion
 
@@ -296,6 +299,11 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   frame given nothing, is held to its bar in `real_size_change_known_wbtest.mbt`, which only falls; a page that comes
   to hold another topic gets its rows by running the test, and a page moved from the old view onto nodes writes its
   rows again (what was built old is made).
+- Those bars, `real_size_bindings_known_wbtest.mbt`'s and `chat_nodes_open_budget_wbtest.mbt`'s only fall: a bar
+  raised, a key the bindings' table held to 0 now above it, or a new row without the screen or change it is of
+  (`src/sfapp/fixture_open.mbt`, `client/core-ts/test/real-size.ts`) is refused as a commit's message is written and in
+  CI (`scripts/mbui-budgets.ts`), unless its message says why on a line of its own, `Budget-raise: <why>`: only
+  something more shown, or an old view's build now made as nodes and counted.
 - What the core sends for what the app subscribes to, in each flow's trace, keeps to its bar
   (`src/sfreplay/topic_bytes.mbt`: KB of values sent whole, values sent whole again, messages for what was let go of;
   each topic's largest value). A page subscribes to what it shows, no more (the user, 2026-11-10); a trace recorded
