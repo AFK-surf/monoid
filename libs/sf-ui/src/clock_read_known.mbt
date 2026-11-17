@@ -4,7 +4,7 @@
 ///|
 fn init {
   @view.clock_read_known([
-    ("drawn_at", "stillfail/src/sf/tip_node.mbt", 2),
-    ("drawn_at", "stillfail/src/sf/viewer_head_node.mbt", 1),
+    ("drawn_at", "stillfail/sf/src/tip_node.mbt", 2),
+    ("drawn_at", "stillfail/sf/src/viewer_head_node.mbt", 1),
   ])
 }

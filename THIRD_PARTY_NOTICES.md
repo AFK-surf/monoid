@@ -32,7 +32,7 @@ still.fail Helper (macOS) carries `agent-desktop` and `agent-desktop-macos-helpe
 
 ## Model and runtime marks
 
-The AI model and runtime logos (`web/public/models/`, `design/mobile/assets/`, the Android `maker_*` drawables, their copies in `apps/mbui/src/sf/drawable_data.mbt` and the marks drawn in `web/src/ui.tsx`) are adapted from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0-1.0) and [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT). The names and logos are trademarks of their respective owners; their use here identifies the services and does not imply endorsement.
+The AI model and runtime logos (`web/public/models/`, `design/mobile/assets/`, the Android `maker_*` drawables, their copies in `libs/sf-ui/src/drawable_data.mbt` and the marks drawn in `web/src/ui.tsx`) are adapted from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0-1.0) and [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT). The names and logos are trademarks of their respective owners; their use here identifies the services and does not imply endorsement.
 
 LobeHub Icons is distributed under this notice:
 

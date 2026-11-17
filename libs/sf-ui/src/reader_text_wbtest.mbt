@@ -54,7 +54,7 @@ test "blocks: cut at paragraph ends within the budget, found again by offset" {
 /// The core's book of `text` (`reader.book`), as the real core answered it (src/sfkept).
 fn kept_book(text : String, markdown : Bool) -> ReadBook raise {
   let params : Json = { "markdown": Json::boolean(markdown), "tree": Json::boolean(markdown), "text": Json::string(text) }
-  let book = match @sfkept.answer("reader.book", params, None) {
+  let book = match (kept_call.val.unwrap())("reader.book", params, None) {
     Some(Ok((book, _))) => book
     _ => fail("the core's book of the text is not kept")
   }

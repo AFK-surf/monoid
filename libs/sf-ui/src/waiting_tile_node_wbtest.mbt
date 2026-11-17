@@ -62,10 +62,10 @@ test "waiting tile: the ring while it goes up, ↻ once it failed (pressed, trie
   failed.set(false)
   t.draw()
   assert_false(tile_veiled(t), msg="at rest: veiled")
-  assert_true(tile_middle(t).contains("sf/tool_node.mbt"), msg="video at rest: \{tile_middle(t)}")
+  assert_true(tile_middle(t).contains("stillfail/sf/src/tool_node.mbt"), msg="video at rest: \{tile_middle(t)}")
   video.set(false)
   t.draw()
-  assert_false(tile_middle(t).contains("sf/tool_node.mbt"), msg="an image's: \{tile_middle(t)}")
+  assert_false(tile_middle(t).contains("stillfail/sf/src/tool_node.mbt"), msg="an image's: \{tile_middle(t)}")
 }
 
 ///|

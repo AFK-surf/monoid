@@ -21,7 +21,7 @@ a sample of what mbui needs to carry a second design (the user, 2026-11-13: å…ˆå
   the button group (react-aria's ToggleButtonGroup choosing one) and the status indicator over `@headless.radio_group`;
   the slider over `@headless.slider`. A menu's rows and the dropdown's trigger have none yet and press by
   `src/cm/presses.mbt`; they move over once mbui has a menu and a select. How a look moves (`src/cm/eased.mbt`) is
-  still.fail's `EdgeWay` (`apps/mbui/src/sf`), copied: it belongs in mbui, shared by both libraries.
+  still.fail's `EdgeWay` (`libs/sf-ui/src`), copied: it belongs in mbui, shared by both libraries.
 - What floats (tooltip, menu, dropdown, popup, dialog, toast) is drawn in the layer `layer_node` makes in the window's root: mbui's `View::over_all` puts a node over all else only among what the root holds; made elsewhere it is drawn under the page.
 - mbui's rules hold here as in an app (`libs/mbui/AGENTS.md`): tests declare their moments, warnings are errors or off
   (`moon.mod`'s line), no Python.
