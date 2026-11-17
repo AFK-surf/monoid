@@ -343,7 +343,7 @@
       "src/sfbase/bars.mbt": 1,
       "src/sfdesk/chat_page.mbt": 1,
       "src/sfdesk/chat_talk.mbt": 1,
-      "src/sfdesk/lists.mbt": 7,
+      "src/sfdesk/lists.mbt": 6,
       "src/sfdesk/newchat.mbt": 2,
       "src/sfdesk/settings_frame.mbt": 1
     },
@@ -432,7 +432,6 @@
       "src/sfapp/entry_tree.mbt": 1,
       "src/sfapp/narrow_shell.mbt": 2,
       "src/sfapp/tape_shell.mbt": 4,
-      "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 1
     },
     "old-panel": {},
@@ -589,7 +588,9 @@
       "src/sfpages/station_node.mbt": 1,
       "src/sfpages/terminal_view_node.mbt": 3,
       "src/sfpages/vault.mbt": 1
-    }
+    },
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   },
   "excused": {
     "frame-request": {},
@@ -695,6 +696,8 @@
     },
     "reused-untracked-key": {},
     "manual-fade-way": {},
-    "page-at-moment": {}
+    "page-at-moment": {},
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   }
 }

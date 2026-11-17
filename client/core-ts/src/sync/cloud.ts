@@ -34,6 +34,20 @@ export { EVENTS_PROTOCOL } from "../account-provider.ts";
 /// still.fail cloud's operator lists.
 export const ADMIN_LISTS = ["users", "workspaces", "invite-codes", "feedback"];
 
+/// Which of an operator's lists a write to `/v1/admin/<at>` changes (its relays are read apart): a report's status its
+/// reports; a code its codes; someone pending, or one's leave to make workspaces, the users and the workspaces (it is
+/// given at once to one signed in, and so the plan of what they made); another user's mark the users; a workspace made,
+/// deleted or changed the workspaces and the users (who is in which). A path not known here reads them all.
+export function adminListsForWrite(at: string): string[] {
+  if (at === "/v1/admin/me") return [];
+  if (at.startsWith("/v1/admin/feedback")) return ["feedback"];
+  if (at.startsWith("/v1/admin/invite-codes")) return ["invite-codes"];
+  if (at.startsWith("/v1/admin/pending")) return ["users", "workspaces"];
+  if (at.startsWith("/v1/admin/users/")) return at.endsWith("/may-create") ? ["users", "workspaces"] : ["users"];
+  if (at.startsWith("/v1/admin/workspaces")) return ["workspaces", "users"];
+  return ADMIN_LISTS;
+}
+
 export class CloudSync {
   readonly #core: Inner;
   /// Whether each account's latest `/v1/me` answered this run (null), or why it failed.
@@ -151,11 +165,14 @@ export class CloudSync {
       const me = this.#core.data.record("me", sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       const scheduler = this.#core.scheduler;
-      for (const id of ids) if (this.#core.workspaces.owner(id) === sub) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
-      // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
-      if (this.#core.provider.supports("feedback")) for (const id of ids) if (this.#core.workspaces.owner(id) === sub) this.feedbackChanged(id);
-      // What only some providers have: login sessions, an operator's lists.
-      if (this.#core.provider.supports("loginSessions")) scheduler.enqueue("cloud", `sessions/${sub}`, Priority.background, this.#loginSessions(sub));
+      // (the console's origin serves none of these: only its operator's lists, `#isConsole`)
+      if (!this.#isConsole(sub)) {
+        for (const id of ids) if (this.#core.workspaces.owner(id) === sub) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
+        if (this.#core.provider.supports("feedback")) for (const id of ids) if (this.#core.workspaces.owner(id) === sub) this.feedbackChanged(id);
+        // What only some providers have: login sessions, an operator's lists.
+        if (this.#core.provider.supports("loginSessions")) scheduler.enqueue("cloud", `sessions/${sub}`, Priority.background, this.#loginSessions(sub));
+      }
       // (an operator's lists only where its `/v1/me` does not say it is none: a cloud from before says nothing)
       if (this.#core.provider.supports("admin") && pointer(me, "/operator") !== false) scheduler.enqueue("cloud", `admin/${sub}`, Priority.background, this.#admin(sub));
       else this.#admins.delete(sub);
@@ -170,6 +187,7 @@ export class CloudSync {
   #listed(sub: string): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       yield* this.#me(sub);
+      if (this.#isConsole(sub)) return;
       const me = this.#core.data.record("me", sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       for (const id of ids) {
@@ -226,7 +244,10 @@ export class CloudSync {
       if (at.startsWith("/v1/auth/") && core.provider.supports("loginSessions")) reads.push(Effect.ignore(scheduler.ask("cloud", `sessions/${sub}`, Priority.asked, this.#loginSessions(sub)), { log: "Unhandled", message: "login sessions read" }));
       // (the relays' page is read apart, while it shows: sync/admin-relays.ts)
       if (at.startsWith("/v1/admin/relays/")) this.onRelayLoad(sub);
-      else if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}`, Priority.asked, this.#admin(sub)), { log: "Unhandled", message: "admin read" }));
+      // (only the lists the write changed: each of the operator's lists is all of a kind, and `/v1/admin/me` changes by none)
+      else if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) {
+        for (const list of adminListsForWrite(at)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}/${list}`, Priority.asked, Effect.asVoid(this.adminList(sub, list))), { log: "Unhandled", message: "admin read" }));
+      }
       yield* Effect.all(reads, { concurrency: "unbounded", discard: true });
     });
   }
@@ -238,11 +259,20 @@ export class CloudSync {
       yield* Effect.ignore(scheduler.ask("cloud", `me/${sub}`, Priority.asked, this.#me(sub)), { log: "Unhandled", message: "me read" });
       const me = this.#core.data.record("me", sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
-      const reads = ids.filter((id) => this.#core.workspaces.owner(id) === sub).map((id) => Effect.ignore(scheduler.ask("cloud", `workspace/${id}`, Priority.asked, this.#workspace(id)), { log: "Unhandled", message: "workspace read" }));
-      if (this.#core.provider.supports("loginSessions")) reads.push(Effect.ignore(scheduler.ask("cloud", `sessions/${sub}`, Priority.asked, this.#loginSessions(sub)), { log: "Unhandled", message: "login sessions read" }));
+      const onConsole = this.#isConsole(sub);
+      const reads = onConsole ? [] : ids.filter((id) => this.#core.workspaces.owner(id) === sub).map((id) => Effect.ignore(scheduler.ask("cloud", `workspace/${id}`, Priority.asked, this.#workspace(id)), { log: "Unhandled", message: "workspace read" }));
+      if (!onConsole && this.#core.provider.supports("loginSessions")) reads.push(Effect.ignore(scheduler.ask("cloud", `sessions/${sub}`, Priority.asked, this.#loginSessions(sub)), { log: "Unhandled", message: "login sessions read" }));
       if (this.#admins.has(sub)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}`, Priority.asked, this.#admin(sub)), { log: "Unhandled", message: "admin read" }));
       yield* Effect.all(reads, { concurrency: "unbounded" });
     });
+  }
+
+  /// Whether the account is signed in on an operator's console (its `/v1/me` says `console`): its own origin serves
+  /// sign-in, `/v1/me`, `/v1/events` and `/v1/admin/*` alone, so nothing of its workspaces, its sign-ins or pushes is
+  /// asked of it (each a 404, every time the console opened, of the account's requests a minute). A cloud from before
+  /// says nothing: read as before.
+  #isConsole(sub: string): boolean {
+    return pointer(this.#core.data.record("me", sub), "/console") === true;
   }
 
   #me(sub: string): Effect.Effect<void, CoreError> {
@@ -429,6 +459,8 @@ export class CloudSync {
     for (const sub of [...this.mes.keys()]) if (!accounts.some((a) => a.sub === sub)) this.mes.delete(sub);
     const owners = new Map<string, string>();
     for (const account of accounts) {
+      // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
+      if (this.#isConsole(account.sub)) continue;
       const me = core.data.record("me", account.sub);
       for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
         if (isObject(w) && typeof w.id === "string" && !owners.has(w.id)) owners.set(w.id, account.sub);
@@ -641,7 +673,8 @@ export class CloudSync {
       if (!core.provider.supports("push")) return null;
       const raw = parseJson(yield* Effect.orElseSucceed(core.host.storageGet(PUSH_KEY), () => null));
       if (!isObject(raw) || !("registration" in raw)) return null;
-      const accounts = core.accounts.list();
+      // (a console's origin takes no push registration)
+      const accounts = core.accounts.list().filter((a) => !this.#isConsole(a.sub));
       let withSubs = (Array.isArray(raw.with) ? raw.with : []).filter((s): s is string => typeof s === "string" && accounts.some((a) => a.sub === s));
       let lang = typeof raw.lang === "string" ? raw.lang : null;
       const code = current();
@@ -709,13 +742,26 @@ export class CloudSync {
     const core = this.#core;
     const event = parseJson(text);
     if (!isObject(event)) return;
-    if (event.type === "workspaces") {
+    if (event.type === "release") this.onRelease();
+    else if (event.type === "relays") this.onRelayLoad(sub);
+    else if (event.type === "admin" && this.#admins.has(sub)) {
+      // An operator's lists changed (another operator's write, someone signed up, a report sent): those it names read
+      // again, each alone; all where it names none.
+      const lists = Array.isArray(event.lists) ? event.lists.filter((l): l is string => typeof l === "string" && ADMIN_LISTS.includes(l)) : ADMIN_LISTS;
+      for (const list of lists) {
+        core.scheduler.enqueue("cloud", `admin/${sub}/${list}`, Priority.shown, Effect.flatMap(this.adminList(sub, list), (e): Effect.Effect<void> => {
+          if (e !== null && passing(e)) this.#adminAgain(sub);
+          return Effect.void;
+        }));
+      }
+    }
+    // (a console's origin serves nothing of its workspaces: what they tell is not read there)
+    else if (this.#isConsole(sub)) return;
+    else if (event.type === "workspaces") {
       // The account's own entry of a workspace it stays in, told: in place, no request (every device of every member
       // read its `/v1/me` whole at each change of a workspace's people or stations, the locks' end to end, 2026-11-15).
       if (!this.#entered(sub, event.entry)) core.scheduler.enqueue("cloud", `me/${sub}`, Priority.shown, this.#listed(sub));
     }
-    else if (event.type === "release") this.onRelease();
-    else if (event.type === "relays") this.onRelayLoad(sub);
     else if (event.type === "feedback" && typeof event.workspace === "string") this.feedbackChanged(event.workspace);
     else if (event.type === "workspace" && typeof event.id === "string") {
       if (core.workspaces.owner(event.id) === null) return;

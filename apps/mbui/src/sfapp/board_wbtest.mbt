@@ -487,6 +487,62 @@ fn board_kept_drafts() -> Array[String] {
 }
 
 ///|
+test "⌘N on the board writes a 待派发 draft, including when grouped by station or a chat is open beside it" {
+  for w in [760.0, 1440.0] {
+    let (t, src) = board_at("board", w, 900.0)
+    if w == 1440.0 {
+      board_group_by(t, "按机器")
+    }
+    t.ctx().blur()
+    t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is Home, msg="\{w}: stays on the board")
+    assert_true(@sfbase.board_on_of(src, "ws1"), msg="\{w}: board still chosen")
+    assert_eq(@signals.untracked(fn() { @sfbase.board_group_of(src, "ws1") }), "state")
+    t.type_text("用快捷键")
+    // A second shortcut returns to the unfinished line without clearing it.
+    t.ctx().blur()
+    t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+    t.run_for(@ui.move_most_ms)
+    t.type_text("新建待办")
+    t.enter()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(board_kept_drafts()[0], "用快捷键新建待办", msg="\{w}: saved in 待派发")
+    assert_eq(board_faults(t), [])
+  }
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("查看对话时的新待办")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "查看对话时的新待办")
+  assert_true(@sfbase.board_pick.get() is Some(_))
+}
+
+///|
+test "the new action on 小屏 brings 待派发 into view; on the list it still opens a new chat" {
+  let (t, src) = board_at("board", 390.0, 844.0, platform=2)
+  @settings.ask_action("chat.new")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Home)
+  assert_true(@sfbase.board_on_of(src, "ws1"))
+  assert_eq(@sfbase.board_lane.get(), "draft")
+  t.type_text("小屏上的待办")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "小屏上的待办")
+  let (t, src) = board_at("board-list", 1440.0, 900.0)
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(app.nav.top() is NewChat)
+}
+
+///|
 test "待派发: a pasted picture is kept with an image-only task and sent after a refused start" {
   new_run()
   let sent : Array[Json] = []
@@ -1055,8 +1111,8 @@ test "大屏: 显示空列 off leaves the empty columns out, kept in the core's 
   t.run_for(@ui.move_most_ms)
   // (显示 on a ground of its own: the board not as it starts)
   assert_true(t.query(Button, label="显示") is Some(_))
-  // 新待办: 待派发 in while its line is open, out again as it is closed
-  t.click(Button, label="新待办")
+  // ⌘N: 待派发 in while its line is open, out again as it is closed
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
   t.run_for(@ui.move_most_ms)
   assert_true(board_words_at(t, "待派发") is Some(_))
   assert_eq(board_faults(t), [])

@@ -1492,7 +1492,6 @@ pub fn View::grid(Self, () -> Int32, min_col_w~ : Double, gap? : Double, row_gap
 pub fn View::ground(Self, Live[Int64], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::ground_drawn(Self, Live[GroundShape], loc~ : SourceLoc) -> Self
-pub fn View::ground_lit(Self, Live[(Int64, GroundShape)], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::grow(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::grows_now(Self) -> (Double, Double)

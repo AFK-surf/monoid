@@ -177,6 +177,7 @@ export const NOTES: [number, string][] = [
   [170, "Moving to another station is a test-channel feature of the station's: on a station updated on the stable channel there is no station_move tool and your instructions do not name skill stillfail-move."],
   [171, "Skill stillfail-browser now covers Farview (driven with its agent.exe, not DevTools) as well as Chrome, and `browser {engine}` to switch."],
   [172, "station_task `dir` now brings a repository's Git submodules too: the target checks each out in the mirror at the commit the source has before the command runs (its commit must be pushed, or in the target's own clones); see skill stillfail-jobs."],
+  [173, "feedback_send takes desktopPlatform when the affected desktop app is known, so its fix is announced on that platform’s release."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

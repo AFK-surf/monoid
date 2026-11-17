@@ -204,35 +204,42 @@ test "a node with no ground of its own, only an edge, round what it holds, turne
 }
 
 ///|
-test "a ground lit only now and then (View::ground_lit): nothing drawn while it says none, drawn in its colour and shape once lit, as laid out again once it says none" {
+test "a page's list's band (View::scrolls_window's `bands`): one ground from one block's top to another's foot, under them, on the host's pixels as their tops are, none while it lists none" {
   let t = Tester::new(fn(_c) {  })
-  let lit = @signals.signal(false)
+  t.set_rows_on_pixels(true)
+  let lit : @signals.Signal[Array[@view.ListBand[Int]]] = @signals.signal([], same=fn(a, b) { a == b })
+  let ink = 0x2050A01FL
+  let block = 0x10203040L
   set_view_app(fn(root) {
-    root.box(fn(n) {
-      n
-      .offset(Is((0.0, 100.0)))
-      .width(Is(Some(300.0)))
-      .height(Is(Some(40.0)))
-      .ground_lit(
-        By(fn() {
-          if lit.get() {
-            (0x2050A0FFL, { dx: 0.0, dy: -10.0, dw: 0.0, dh: 30.0, corners: None })
-          } else {
-            (0L, @view.ground_as_laid)
-          }
-        }),
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        @view.Scroll::list(),
+        fn() { Array::makei(8, fn(i) { i }) },
+        fn(b, _) { b.height(Is(Some(29.1))).ground(Is(block)) |> ignore },
+        bands=(fn() { lit.get() }, fn(v, _) { v.ground(Is(ink)) |> ignore }),
       )
       |> ignore
     })
     |> ignore
   })
   t.draw()
-  let blue = fn() { t.drawn_rects().filter(fn(r) { r.4 == 0x2050A0FFL }) }
-  assert_eq(blue().length(), 0, msg="none said")
-  lit.set(true)
+  let drawn = fn() { t.drawn_rects().filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) }) }
+  assert_eq(drawn(), [], msg="none listed")
+  // (blocks 2 to 5, from 3 under the first's top to 4 under the last's foot: each block's top on the pixels (2 a point),
+  // their heights not, the band one, its ends on them too)
+  lit.set([{ from: 2, upto: 5, top: 3.0, foot: 4.0 }])
   t.draw()
-  assert_eq(blue().map(fn(r) { (r.0, r.1, r.2, r.3) }), [(0.0, 90.0, 300.0, 70.0)], msg="lit")
-  lit.set(false)
+  // (where blocks 2 and 6 are drawn: the band from 3 under the one's top to 4 under the top of the one after 5, its
+  // last)
+  let tops = t.drawn_rects().filter(fn(r) { r.4 == block }).map(fn(r) { r.1 })
+  tops.sort()
+  let on = fn(y : Double) { (y * 2.0 + 0.5).floor() / 2.0 }
+  let top = on(tops[2] + 3.0)
+  let foot = on(tops[6] + 4.0)
+  assert_eq(drawn(), [(top, foot - top)], msg="lit: blocks at \{Repr(tops)}")
+  assert_true(tops.iter().all(fn(y) { y == on(y) }), msg="their tops on the pixels: \{Repr(tops)}")
+  lit.set([])
   t.draw()
-  assert_eq(blue().length(), 0, msg="none said again")
+  assert_eq(drawn(), [], msg="none listed again")
 }

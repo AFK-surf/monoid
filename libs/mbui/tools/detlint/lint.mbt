@@ -375,6 +375,111 @@ fn lint_mbt(
       add("empty-on-done", k, f.line_text(k))
     }
   }
+  // a structure said both along a row and at once (`.show(…)`, `.pick(…)`, `.each(…)` given `along_row=true` or
+  // `along_row~` and `at_once=true` or `at_once~` among its own arguments, not those of a call or a function written in
+  // them): a fault as it is made (view's along_row.mbt), seen only where it shows; not in the tests, which say it to
+  // hold that fault
+  for k, tk in toks {
+    if tk.kind == "ident" &&
+      (tk.text == "show" || tk.text == "pick" || tk.text == "each") &&
+      k > 0 &&
+      toks[k - 1].text == "." &&
+      k + 1 < toks.length() &&
+      toks[k + 1].text == "(" &&
+      toks[k + 1].end > k + 1 &&
+      !f.in_test(k) {
+      let close = toks[k + 1].end
+      let mut along = false
+      let mut at_once = false
+      let mut a = k + 2
+      while a < close {
+        if toks[a].end > a {
+          a = toks[a].end + 1
+          continue
+        }
+        if toks[a].kind == "ident" &&
+          (toks[a].text == "along_row" || toks[a].text == "at_once") &&
+          (toks[a - 1].text == "(" || toks[a - 1].text == ",") &&
+          a + 1 < close {
+          let said = toks[a + 1].text == "~" ||
+            (
+              toks[a + 1].text == "=" &&
+              a + 2 < close &&
+              toks[a + 2].text == "true" &&
+              (toks[a + 3].text == "," || a + 3 == close)
+            )
+          if said && toks[a].text == "along_row" {
+            along = true
+          } else if said {
+            at_once = true
+          }
+        }
+        a += 1
+      }
+      if along && at_once {
+        add("along-row-at-once", k, f.line_text(k))
+      }
+    }
+  }
+  // a dragging handler said on a headless component's node (`@headless.button(…)`, `toggle`, `disclosure`, `choice`):
+  // chained on the node it gives back (`@headless.button(…).on_drag(…)`), or on the node a function written among its
+  // own arguments is given (its look's, its press's `v`: `v.on_drag(…)`, `v.width(…).on_drag(…)`): the pointer is the
+  // drag's then and never reaches the component's on_press, the press lost without a word (headless.mbt's head)
+  for k, tk in toks {
+    if tk.kind == "at" &&
+      tk.text == "@headless" &&
+      k + 3 < toks.length() &&
+      toks[k + 1].text == "." &&
+      headless_pressed.contains(toks[k + 2].text) &&
+      toks[k + 3].text == "(" &&
+      toks[k + 3].end > k + 3 &&
+      !f.in_test(k) {
+      let close = toks[k + 3].end
+      if chain_drags(toks, close + 1) {
+        add("headless-on-drag", k, f.line_text(k))
+        continue
+      }
+      // (the functions among its own arguments, each by its first parameter's name)
+      let mut a = k + 4
+      let mut flagged = false
+      while a < close && !flagged {
+        if toks[a].kind == "ident" &&
+          toks[a].text == "fn" &&
+          toks[a + 1].text == "(" &&
+          toks[a + 1].end > a + 1 &&
+          (toks[a - 1].text == "(" || toks[a - 1].text == "," || toks[a - 1].text == "=") {
+          let params = toks[a + 1].end
+          let v = toks[a + 2]
+          let mut b = params + 1
+          while b < close && toks[b].text != "{" {
+            b += 1
+          }
+          if v.kind == "ident" && v.text != "_" && b < close && toks[b].end > b {
+            let body_end = toks[b].end
+            for j in (b + 1)..<body_end {
+              if toks[j].kind == "ident" &&
+                toks[j].text == v.text &&
+                toks[j - 1].text != "." &&
+                chain_drags(toks, j + 1) {
+                flagged = true
+                break
+              }
+            }
+            a = body_end + 1
+            continue
+          }
+        }
+        if toks[a].end > a {
+          a = toks[a].end + 1
+        } else {
+          a += 1
+        }
+      }
+      if flagged {
+        add("headless-on-drag", k, f.line_text(k))
+      }
+    }
+  }
   // a key read by a build (`c.key_pressed(code)`, `c.keys_came()`, `@settings.action_pressed(…)`: a Bool the frame
   // after it) outside mbui's ui and kit, which take keys, and outside the tests: what a key does is an action's
   // (View::on_action) or a node's own (View::on_key)
@@ -2633,4 +2738,25 @@ fn lint_reset_by_hand(files : Array[MbtFile], cfg : Config, out : Array[Finding]
       }
     }
   }
+}
+
+///|
+/// The headless components whose node takes a press (headless-on-drag).
+let headless_pressed : Array[String] = ["button", "toggle", "disclosure", "choice"]
+
+///|
+/// Whether the calls chained from token `j` on (`.name(…)` after `.name(…)`) say `.on_drag(…)`.
+fn chain_drags(toks : Array[Tok], j : Int) -> Bool {
+  let mut i = j
+  while i + 2 < toks.length() &&
+    toks[i].text == "." &&
+    toks[i + 1].kind == "ident" &&
+    toks[i + 2].text == "(" &&
+    toks[i + 2].end > i + 2 {
+    if toks[i + 1].text == "on_drag" {
+      return true
+    }
+    i = toks[i + 2].end + 1
+  }
+  false
 }

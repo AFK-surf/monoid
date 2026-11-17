@@ -8,7 +8,7 @@ import type { Viewer } from "../src/mesh/credential.ts";
 import { frame } from "../src/mesh/screens.ts";
 import type { Stream } from "../src/mesh/native.ts";
 import { TerminalLink, type Wire, pastScreen } from "../src/terminals/link.ts";
-import { KIND, MOST, TERMINAL_TYPE, Terminals, asked, controlOf, sizeOf } from "../src/terminals/terminals.ts";
+import { KIND, MOST, TERMINAL_TYPE, Terminals, asked, controlOf, oscCwd, sizeOf } from "../src/terminals/terminals.ts";
 import { given, settle } from "./hub-fakes.ts";
 
 /// A runner as its link sees it: what it was sent, and what it says.
@@ -97,13 +97,13 @@ const viewer = (name: string, over: Partial<Viewer> = {}): Viewer => ({ sub: nam
 function station() {
   const runners: FakeRunner[] = [];
   const gone: string[] = [];
-  let changes = 0;
+  const events: { workspace: string; live: number }[] = [];
   let n = 0;
   const terminals = new Terminals({
     home: "/home/a",
     chatDir: (chat) => (chat === "c1" ? "/work/c1" : undefined),
     newId: () => `term-${++n}`,
-    changed: () => void changes++,
+    changed: (workspace) => void events.push({ workspace, live: terminals.list(workspace).length }),
     gone: (id) => void gone.push(id),
     async start() {
       const r = new FakeRunner();
@@ -111,7 +111,7 @@ function station() {
       return new TerminalLink(r.wire);
     },
   });
-  return { terminals, runners, gone, changes: () => changes };
+  return { terminals, runners, gone, events };
 }
 
 const head = (id: string, terminal: Record<string, unknown>) => ({ method: "POST", path: `/admin/api/terminals/${id}/view`, terminal });
@@ -273,7 +273,7 @@ test("a workspace's terminals are its own", async () => {
 });
 
 test("ending one kills its program; it leaves the list once it ended and none looks", async () => {
-  const { terminals, runners, gone } = station();
+  const { terminals, runners, gone, events } = station();
   const a = new FakeStream();
   const ad = terminals.answer(a, Buffer.alloc(0), head("new", { cols: 80, rows: 24 }), viewer("ann"));
   await settle();
@@ -291,6 +291,7 @@ test("ending one kills its program; it leaves the list once it ended and none lo
   await given(ad, "the view ends");
   assert.deepEqual(terminals.list("w1"), []);
   assert.deepEqual(gone, ["term-1"]);
+  assert.deepEqual(events.at(-1), { workspace: "w1", live: 0 });
 });
 
 test("a station keeps so many terminals at most", async () => {
@@ -315,4 +316,29 @@ test("what a view asks is checked", () => {
   assert.equal(pastScreen({ at: 0, bytes: Buffer.from("abc") }, 3), null);
   assert.equal(pastScreen({ at: 0, bytes: Buffer.from("abcdef") }, 3)!.toString(), "def");
   assert.equal(pastScreen({ at: 5, bytes: Buffer.from("xy") }, 3)!.toString(), "xy");
+});
+
+test("shell OSC 7 and OSC 9;9 keep a terminal's folder live across chunks", async () => {
+  assert.deepEqual(oscCwd("\x1b]7;file://mac.local/Users/ann/%E6%96%87%E6%A1%A3\x07$ "), { cwd: "/Users/ann/文档", tail: "" });
+  assert.deepEqual(oscCwd('\x1b]9;9;"C:\\Users\\ann\\proj"\x1b\\PS> '), { cwd: "C:\\Users\\ann\\proj", tail: "" });
+  const half = oscCwd("out\x1b]7;file:///Users/ann/wo");
+  assert.equal(half.cwd, null);
+  assert.equal(half.tail, "\x1b]7;file:///Users/ann/wo");
+  assert.deepEqual(oscCwd(half.tail + "rk\x07$ "), { cwd: "/Users/ann/work", tail: "" });
+
+  const { terminals, runners } = station();
+  const a = new FakeStream();
+  const ad = terminals.answer(a, Buffer.alloc(0), head("new", { cols: 80, rows: 24 }), viewer("ann"));
+  await settle();
+  const r = runners[0]!;
+  r.screen("s");
+  await settle();
+  r.out("\x1b]7;file://host/Users/ann/monoid");
+  await settle();
+  r.out("/apps/mbui\x07$ ");
+  await settle();
+  assert.equal(terminals.list("w1")[0]!.cwd, "/Users/ann/monoid/apps/mbui");
+  assert.equal(a.states().at(-1).cwd, "/Users/ann/monoid/apps/mbui");
+  a.send(null);
+  await given(ad, "the view ends");
 });

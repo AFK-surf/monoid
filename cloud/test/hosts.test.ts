@@ -107,7 +107,8 @@ test("the console's host answers only the calls its core makes; other API paths 
     assert.equal((await admin("GET", "/v1/admin/users")).status, 200);
     for (const path of ["/v1/workspaces", "/v1/auth/sessions", "/v1/nothing-here"]) assert.equal((await admin("GET", path)).status, 404, path);
     assert.equal((await admin("POST", "/v1/workspaces", { name: "W" })).status, 404);
-    assert.equal((await h.fetchAdmin("/v1/events", { headers: { upgrade: "websocket" } })).status, 404);
+    // Its core's events socket is served there (admin.test.ts), with a token as anywhere.
+    assert.equal((await h.fetchAdmin("/v1/events", { headers: { upgrade: "websocket" } })).status, 401);
     assert.equal((await h.fetchAdmin("/v1/stations/enroll", { method: "POST" })).status, 404);
     // Refreshing and signing out work there, as the core does them.
     const refreshed = await h.fetchAdmin("/v1/auth/refresh", { method: "POST", headers: { authorization: `Bearer ${tokens.refresh_token}`, "content-type": "application/json" }, body: JSON.stringify({ request_id: "01J0000000000000000000000A" }) });

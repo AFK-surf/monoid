@@ -68,7 +68,6 @@ fn head_new(
   w : Double,
   platform? : Int = 0,
   made? : Ref[MessageRowNode?] = Ref(None),
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   width_now? : @signals.Signal[Double],
 ) -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
@@ -98,7 +97,7 @@ fn head_new(
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        made.val = Some(sent_elsewhere_node(f, src, here, "s:" + e.key, fn() { row_side((here.width)()) }, fn() { 0.0 }, fn() { e }, over~))
+        made.val = Some(sent_elsewhere_node(f, src, here, "s:" + e.key, fn() { row_side((here.width)()) }, fn() { 0.0 }, fn() { e }))
       })
       |> ignore
     },
@@ -304,14 +303,12 @@ test "the place pressed opens it where it has its link, its ground lit under the
 }
 
 ///|
-test "the row is found by its key: made in its row's room, what is laid over it told its node and key once" {
+test "the row is found by its key: made in its row's room" {
   let made : Ref[MessageRowNode?] = Ref(None)
-  let told : Array[String] = []
-  let t = head_new(head_said(), 760.0, made~, over=fn(_, key) { told.push(key()) })
+  let t = head_new(head_said(), 760.0, made~)
   t.run_for(@ui.move_most_ms)
   guard made.val is Some(row) else { fail("no row") }
   assert_eq((row.key)(), "s:e9")
-  assert_eq(told, ["s:e9"])
   assert_true(row.node.alive())
   let faults = t.audit()
   assert_true(faults.is_empty(), msg=faults.join(" | "))

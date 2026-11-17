@@ -38,6 +38,31 @@
 let screen_fix_mode : Ref[String] = Ref("")
 
 ///|
+/// Whether the fixture's screens stream by which screen is asked (远程's place-remote modes: its display, its
+/// simulator, its tabs, each opened from its list into the workbench), where no screen mode is said.
+let screen_fix_by_screen : Ref[Bool] = Ref(false)
+
+///|
+/// The screen mode `screen`'s view streams as where none is said (screen_fix_by_screen): a display's windows, a
+/// simulator, a person's own tab, the agent's pages.
+fn screen_fix_mode_of(screen : String) -> String {
+  if screen == "desktop" {
+    "screen-windows"
+  } else if screen.has_prefix("sim:") {
+    "screen-simulator"
+  } else if screen == "browser:u_mail" || screen == "browser:u_gh" {
+    "screen-user-pages"
+  } else if screen.has_prefix("browser:u_") {
+    // (a tab 远程's ＋ made: a person's own, blank)
+    "screen-new-tab"
+  } else if screen.has_prefix("browser:") {
+    "screen-pages"
+  } else {
+    ""
+  }
+}
+
+///|
 /// What the fixture's core says of its screen's view to, as it streams it (screen_fixture_stream): none before.
 let screen_fix_heard : Ref[((Json, Bytes?) -> Unit)?] = Ref(None)
 
@@ -60,6 +85,7 @@ let screen_fix_at : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-1", 
 ///|
 /// MBUI_FIXTURE=screen-…: the screen's viewer over the chats.
 pub fn open_screen_fixture(mode : String) -> Unit {
+  screen_fix_by_screen.val = mode.has_prefix("place-remote")
   // (a chat's side panel showing it, as fixture_tabs_shown keeps it)
   if mode == "chat-screen-tab" {
     screen_fix_mode.val = "screen-live"
@@ -127,9 +153,20 @@ pub fn screen_fixture_stream(
   on_value : (Json, Bytes?) -> Unit,
   done : (Result[Json, Json]) -> Unit,
 ) -> Int {
-  ignore(params)
   screen_fix_heard.val = Some(on_value)
-  let m = screen_fix_mode.val
+  let asked = match params {
+    Object(o) =>
+      match o.get("screen") {
+        Some(String(sc)) => sc
+        _ => ""
+      }
+    _ => ""
+  }
+  let m = if screen_fix_mode.val == "" && screen_fix_by_screen.val {
+    screen_fix_mode_of(asked)
+  } else {
+    screen_fix_mode.val
+  }
   let agent = "Agent「修登录」"
   let drop : Json = { "folder": "/Users/alice/Downloads", "reveal": true }
   let live = fn(
@@ -333,7 +370,8 @@ pub fn screen_fixture_stream(
         Object(m) => m.copy()
         _ => {}
       }
-      st["title"] = Json::string("iPhone Duo · iOS 27.1")
+      // (远程's own simulator by its own name, as its list and its tab name it)
+      st["title"] = Json::string(if asked == "sim:iphone" { "iPhone 17 Pro" } else { "iPhone Duo · iOS 27.1" })
       st["kind"] = Json::string("simulator")
       st["debug"] = Json::boolean(true)
       st["poses"] = Json::boolean(true)
@@ -387,6 +425,20 @@ pub fn screen_fixture_stream(
       if m == "screen-window" {
         st["window"] = Json::number(214.0)
       }
+      on_value({ "state": Json::object(st) }, None)
+    }
+    "screen-new-tab" => {
+      live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
+      let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, Some(["text", "png"]), Some(drop)) {
+        Object(o) => o.copy()
+        _ => {}
+      }
+      st["kind"] = Json::string("browser")
+      st["openUrl"] = Json::boolean(true)
+      st["userTab"] = Json::boolean(true)
+      st["address"] = Json::string("")
+      st["title"] = Json::string("新标签页")
+      st["line"] = Json::string("控制")
       on_value({ "state": Json::object(st) }, None)
     }
     "screen-pages" | "screen-user-pages" | "screen-user-tabs" => {

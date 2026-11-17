@@ -1221,6 +1221,7 @@ pub let said_paths : Map[String, Array[String]] = {
     "toName",
     "targets.*.name",
     "targets.*.free",
+    "targets.*.why",
     "moving.line",
     "moving.progress.text",
     "title",
@@ -1260,6 +1261,10 @@ pub let said_paths : Map[String, Array[String]] = {
     "items.*.text",
     "items.*.detail",
     "lines.*",
+  ],
+  "terminalCard": [
+    "title",
+    "line",
   ],
   "threads": [
     "*.channelName",

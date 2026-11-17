@@ -37,8 +37,10 @@ const MODELS_MINUTE = 7;
 // The admin's console has a host of its own, ADMIN_ORIGIN: its /v1/ calls come here too — the calls its client core
 // makes to sign in and stay signed in (the core talks to the page's origin), and the console's API; nothing else. A
 // sign-in starts on PUBLIC_ORIGIN all the same: the login's cookie belongs to the host that starts it, and Google
-// calls back to PUBLIC_ORIGIN, which then sends the browser on to the console's /auth/callback.
-const CONSOLE_CALLS = new Set(["/v1/auth/token", "/v1/auth/refresh", "/v1/auth/logout", "/v1/me"]);
+// calls back to PUBLIC_ORIGIN, which then sends the browser on to the console's /auth/callback. Its core keeps its events
+// socket there too (the console's lists read again when told: `admin`, `relays`), and a review account signs in with
+// its password there as anywhere.
+const CONSOLE_CALLS = new Set(["/v1/auth/token", "/v1/auth/refresh", "/v1/auth/logout", "/v1/auth/password", "/v1/me", "/v1/events"]);
 
 const notFound = () => new Response("Not found", { status: 404 });
 

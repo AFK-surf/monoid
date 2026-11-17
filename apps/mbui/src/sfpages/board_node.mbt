@@ -62,6 +62,8 @@ priv struct BoardOwn {
   mut columns : () -> Array[(String, String)]
   mut cards_of : (String) -> Array[BoardKey]
   field : @ui.Field
+  /// the line's node while made, for returning the focus to an unfinished draft
+  mut input : @view.View?
   /// The task currently being written, whose files have their own persisted composer.
   draft_id : @signals.Signal[String]
   station : @signals.Signal[String]
@@ -91,6 +93,26 @@ fn board_open_add(own : BoardOwn) -> Bool {
   } else {
     @sfbase.board_adding.set(true)
     true
+  }
+}
+
+///|
+/// New 待派发 from the bar or the new action: bring its column into view and write there.
+fn board_new(own : BoardOwn) -> Unit {
+  let was_adding = @sfbase.board_adding.untracked()
+  if board_open_add(own) {
+    if @signals.untracked(own.group) != "state" {
+      @sfbase.set_board_group(own.src, @signals.untracked(own.ws), "state")
+    }
+    @sfbase.board_lane.set("draft")
+    (own.reveal)("draft")
+    // An unfinished line is kept; the action brings the cursor back to it.
+    if was_adding {
+      match own.input {
+        Some(input) => @signals.after_flush(fn() { input.ask_focus() |> ignore })
+        None => ()
+      }
+    }
   }
 }
 
@@ -392,6 +414,7 @@ pub fn board_node(
     columns: fn() { [] },
     cards_of: fn(_) { [] },
     field: @ui.Field::new(),
+    input: None,
     draft_id: @signals.signal(@sfbase.board_next_id()),
     station: @signals.signal(""),
     archived: archive,
@@ -437,6 +460,11 @@ pub fn board_node(
       None => None
     }
   })
+  // The frame passes its new action here while Home is the board; the person's keymap still chooses its keys.
+  v.on_action("chat.new", fn(_) {
+    board_new(own)
+    true
+  }, can=fn() { @sfbase.board_on_now(src) && app.nav.top() is Home }) |> ignore
   v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(ground)) |> ignore
   // (the workspace's stations read as long as the board shows, as its opening asked them (sfbase's board_opens): the
   // line to write a draft in, and its choice of a station, whole as it comes, whichever column shows)
@@ -784,15 +812,7 @@ fn board_bar_items(bar : @view.View, own : BoardOwn, apart~ : Bool) -> Unit {
     }
     board_filter_key(row, own)
     board_display_key(row, own)
-    @sf.button_node(row, fn() { board_words("new") }, fn() {
-      if board_open_add(own) {
-        if @signals.untracked(own.group) != "state" {
-          @sfbase.set_board_group(own.src, @signals.untracked(own.ws), "state")
-        }
-        // (待派发 the first column: brought into sight where the columns had gone sideways)
-        (own.reveal)("draft")
-      }
-    }, icon="plus")
+    @sf.button_node(row, fn() { board_words("new") }, fn() { board_new(own) }, icon="plus")
     .drops(Is(1))
     |> ignore
   })
@@ -1406,6 +1426,13 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
           (th.fg, th.subtle, th.accent)
         },
       )
+      own.input = Some(typed)
+      typed.owns(fn() {
+        match own.input {
+          Some(input) if input.id() == typed.id() => own.input = None
+          _ => ()
+        }
+      }) |> ignore
       // (tall enough to be found by a finger, all of it the field's)
       typed.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_height(Is(Some(32.0))) |> ignore
       // (Escape puts it away, as × does)
