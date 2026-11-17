@@ -1979,6 +1979,55 @@ test("a_new_chat_stays_on_the_station_picked_while_it_is_down_and_says_so", asyn
   core.close();
 });
 
+// A new chat runs the model the person last ran one on with this device, whichever workspace and station that was, where
+// the station it starts on runs it (the user, 2026-11-17: 「为啥不是按用户自己上一次使用的模型？」「不要按 Workspace 切换」):
+// kept for each station alone, a station never picked on started on its first, Fable.
+test("a_new_chat_on_a_station_never_picked_on_runs_the_model_last_run_on_the_device", async () => {
+  const { host, core } = await started({
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile("p1", "claude", ["claude-fable-5-2", "claude-opus-5-5"], true, 10), profile("p2", "codex", ["gpt-6-astra"], true, 0)] },
+  }, 0, undefined, (x) => {
+    x.cloud.also = { stations: [{ id: "st", name: "studio", online: true, last_seen: null }, { id: "st2", name: "duo", online: true, last_seen: null }] };
+  });
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "newChat", scope: "ws" });
+  await host.time.pass(500);
+  await host.settle();
+  apply(host, values);
+  const shown = () => [v(values, 1).station.id, v(values, 1).model.model, v(values, 1).runtime];
+  // Nothing picked anywhere: the station's first.
+  assert.deepEqual(shown(), ["st", "claude-fable-5-2", "claude"]);
+  await ask(host, core, ui, 2, "newChat.pick", { scope: "ws", model: "claude-opus-5-5", effort: "high" });
+  await ask(host, core, ui, 3, "newChat.pick", { scope: "ws", station: "st2" });
+  apply(host, values);
+  // Another station, never picked on: what was last picked, with how hard it thinks, not its first.
+  assert.deepEqual(shown(), ["st2", "claude-opus-5-5", "claude"]);
+  assert.equal((core.inner.store.get({ topic: "newChat", scope: "ws" }) as J).effort, "high");
+  // Picked there: back on the first station, that one.
+  await ask(host, core, ui, 4, "newChat.pick", { scope: "ws", model: "gpt-6-astra", runtime: "codex" });
+  await ask(host, core, ui, 5, "newChat.pick", { scope: "ws", station: "st" });
+  apply(host, values);
+  assert.deepEqual(shown(), ["st", "gpt-6-astra", "codex"]);
+  // A chat made on one with what it ran: the latest too.
+  core.inner.choose.used("ws/st2", { model: "claude-opus-5-5", runtime: "claude" });
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual(shown(), ["st", "claude-opus-5-5", "claude"]);
+  // Run in another workspace: the latest here too.
+  core.inner.choose.used("other/st9", { model: "gpt-6-astra", runtime: "codex" });
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual(shown(), ["st", "gpt-6-astra", "codex"]);
+  // One the station does not run is passed over for what was picked on it (Opus, at the start).
+  core.inner.choose.used("ws/st2", { model: "gemini-4-carbon", runtime: "agy" });
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual(shown(), ["st", "claude-opus-5-5", "claude"]);
+  assert.equal((core.inner.store.get({ topic: "newChat", scope: "ws" }) as J).effort, "high");
+  core.close();
+});
+
 test("the_messages_a_few_words_find_are_those_of_the_chats_listed_newest_first_as_last_edited", async () => {
   const row = (id: string, thread: number, title: string) => ({ id, session: id, thread, title, agents: [], last: null, unread: false, mine: true, lastActiveAt: thread, connect: null, origin: null });
   const said = (thread: number, n: number, text: string, at: number) => ({ thread, n, kind: "message", ts: `${n}.0`, authorKind: "person", author: "a@x", authorName: "阿甲", text, at });

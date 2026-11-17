@@ -34,6 +34,8 @@ const TABLE = "choice";
 /// How many of the combinations used most a model control's panel keeps nearest what opened it.
 const NEAR = 4;
 const FIELDS = ["runtime", "model", "effort", "profile", "profiles", "fast", "speed", "context"];
+/// What of a choice goes with the model from one station to another (`latest`): not the accounts, each station's own.
+const LATEST = ["runtime", "model", "effort", "fast", "speed", "context"];
 /// How a model runs, apart from who runs it: what is set by hand in a control's panel (`Choose`'s `#hand`).
 const HOW = ["runtime", "effort", "fast", "speed", "context"];
 
@@ -426,10 +428,41 @@ export class Choose implements Owner {
     return this.#env.data.record(TABLE, key);
   }
 
-  #choice(scope: string, id: string): J {
-    const kept = this.#record(`ws:${scope}:station:${id}`) ?? this.#record(`station:${id}`) ?? {};
+  /// What a new chat on station `id` of `scope` runs, as last picked: the model the person last ran a new chat on with
+  /// this device (`latest`, the device's: whichever workspace and station that was), where `options` (the station's)
+  /// has it, else what was last picked on this station, else nothing (the station's first model, `resolve`). A model
+  /// kept for each station alone sent a station never picked on to its first, Fable, whatever the person runs (the
+  /// user, 2026-11-17: 「为啥不是按用户自己上一次使用的模型？」「不要按 Workspace 切换」). The accounts kept go with the
+  /// station they are of.
+  #choice(scope: string, id: string, options?: J[]): J {
+    const own = this.#record(`ws:${scope}:station:${id}`) ?? this.#record(`station:${id}`) ?? {};
+    const kept = options === undefined ? own : this.#latestOn(id, options, own);
     const pm = this.#bound(scope)?.model;
     return pm !== null && pm !== undefined ? boundChoice(pm, kept) : kept;
+  }
+
+  /// The person's latest choice as station `id` takes it (`own`, its own, where that runs the same model or the
+  /// station does not run the latest's).
+  #latestOn(id: string, options: J[], own: J): J {
+    const latest = this.#record("latest");
+    const m = text(get(latest, "model"));
+    if (m === null || get(latest, "station") === id) return own;
+    const on = (x: string | null) => optionOf(options, x) ?? matchTiered(options, x)?.entry;
+    const entry = on(m);
+    if (entry === undefined || on(text(get(own, "model"))) === entry) return own;
+    const taken: J = { profile: "", profiles: null };
+    for (const f of LATEST) if (get(latest, f) !== undefined) taken[f] = latest[f];
+    return taken;
+  }
+
+  #keepLatest(id: string, choice: J): void {
+    if (text(get(choice, "model")) === null) return;
+    const kept: J = { station: id };
+    for (const f of LATEST) {
+      const v = get(choice, f);
+      if (f === "speed" ? modelSpeed(v) !== null : v !== undefined) kept[f] = v;
+    }
+    this.#env.data.put(TABLE, "latest", kept, false);
   }
 
   /// What the preset picked for the scope's new chats binds them to (`presetBinds`), with its name; none for none. Every
@@ -537,7 +570,7 @@ export class Choose implements Owner {
     const raw: J = this.#env.store.get({ topic: "overview", station: addr });
     const served = servingIn(raw, scope, station.joined === true);
     const options = overview !== null ? models(served, this.#env.now()) : [];
-    const r = resolve(options, this.#choice(scope, id), raw !== undefined ? get(raw, "accountSubsets") === true : overview === null || get(overview, "accountSubsets") === true);
+    const r = resolve(options, this.#choice(scope, id, options), raw !== undefined ? get(raw, "accountSubsets") === true : overview === null || get(overview, "accountSubsets") === true);
     view.frequent = frequentCombos(arr(this.#record(`ws:${scope}:frequent`)), options, r);
     // A station this workspace joined runs its chats on the profiles open to it: with some, but
     // none open, one is turned on rather than added.
@@ -628,7 +661,7 @@ export class Choose implements Owner {
     const overview = this.#env.store.get({ topic: "overview", station: addr });
     const options = models(overview, this.#env.now());
     const subsets = overview === undefined || get(overview, "accountSubsets") === true;
-    return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr)), subsets)];
+    return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr), options), subsets)];
   }
 
   /// A new chat's model control as its page draws it closed (NewChatPick), on `station` of `options` (its models as
@@ -640,7 +673,7 @@ export class Choose implements Owner {
   #face(station: string, options: J[]): J {
     const overview = this.#env.store.get({ topic: "overview", station });
     if (overview === undefined) return null;
-    const r = resolve(options, this.#choice(ofAddress(station), stationId(station)), get(overview, "accountSubsets") === true);
+    const r = resolve(options, this.#choice(ofAddress(station), stationId(station), options), get(overview, "accountSubsets") === true);
     const value = picked(r);
     const multiRuntime = new Set(options.flatMap((o) => arr(o.runtimes))).size > 1;
     return {
@@ -848,6 +881,7 @@ export class Choose implements Owner {
       if (get(params, "fast") !== undefined && get(params, "speed") === undefined) delete next.speed;
       if (next.speed === "ultrafast" && (next.runtime !== "codex" || !ultrafastModel(next.model))) delete next.speed;
       this.#keepChoice(scope, id, next);
+      if (get(params, "model") !== undefined || get(params, "runtime") !== undefined) this.#keepLatest(id, next);
     }
     this.#changed();
   }
@@ -954,6 +988,7 @@ export class Choose implements Owner {
     const key = `ws:${ofAddress(station)}:frequent`;
     this.#env.data.put(TABLE, key, recordCombo(arr(this.#record(key)), choice, this.#env.now()), false);
     this.#keepUsual(ofAddress(station), choice);
+    this.#keepLatest(stationId(station), choice);
     this.#changed();
   }
 
