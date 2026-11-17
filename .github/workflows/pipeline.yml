@@ -1179,6 +1179,11 @@ jobs:
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
               tail -80 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
+              # (moon's build says nothing till it ends: what it had done, and what was running as it was cut)
+              echo "moon's build: $(find apps/mbui/_build/native/release/build -name '*.core' -newer apps/mbui/out/moon.start 2>/dev/null | wc -l | tr -d ' ') packages' .core made since it started, $(find apps/mbui/_build -name '*.o' -path '*.mbc/*' 2>/dev/null | wc -l | tr -d ' ') of mbc's units' objects there"
+              tail -20 apps/mbui/out/moon.log 2>/dev/null | sed 's/^/  moon.log: /' || true
+              cat apps/mbui/out/mbc.log 2>/dev/null | sed 's/^/  mbc.log: /' || true
+              ps -axo etime=,pcpu=,args= | grep -E 'moonc|moon |mbc|clang' | grep -v grep | cut -c1-200 | head -15 | sed 's/^/  running: /' || true
               bash .github/mac-release-prebuild.sh stop
               exit "$status"
             }
