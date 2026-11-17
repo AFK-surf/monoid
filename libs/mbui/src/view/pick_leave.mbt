@@ -1,8 +1,10 @@
 // A pick said to leave over a time (View::pick's `leave`): what it showed and what it shows now, one in the other's
 // place, never both seen. The place is one node, made once, its size making its way down its column or along its row
-// (View::comes) from as big as it was to as big as what it shows now; what it showed stays where and as big as it was
-// over it, taking no room, fading out over `leave`, the place at least as big across as that was laid till it is gone
-// (it moves and cuts nothing of it); what it shows now is seen only once that is gone and the place holds it whole,
+// (View::comes) from as big as it was to as big as what it shows now, laid out at once as the change has it (across:
+// as big as what it shows now, where its column puts that, never held as big as what showed: what is laid out is where
+// things rest, how they get there is drawn; the user, 2026-11-17); what it showed stays where and as big as it was,
+// out of the flow, drawn where it stood as the change came however the place moved across, taking no room, fading out
+// over `leave`; what it shows now is seen only once that is gone and the place holds it whole,
 // fading in over as long. A way to a smaller place waits for what is fading out to be gone (it cuts nothing seen), of
 // no way said with it in its column: it sets out then, in the one way of what still goes there; one to a bigger sets
 // out at once, what comes in waiting for it to be there. A side that makes nothing: the place closing to nothing, its
@@ -184,11 +186,8 @@ fn[K : Eq] View::pick_leaving(
   let had : Ref[(K, LeaveShown)?] = Ref(None)
   // (when what is fading out over the place is all gone: what comes is seen no sooner)
   let gone_by = Ref(-1.0 / 0.0)
-  // (how many times it changed, and faded what it showed: what a moment asked for by one change, or by one fade, finds
-  // no newer one took over; and how big across the place is held while what fades is there)
+  // (how many times it changed: what a moment asked for by one change finds no newer one took over)
   let changes = Ref(0)
-  let fades = Ref(0)
-  let held_across = Ref(0.0)
   // (told as its place's way is said and as the change's layout has measured where it goes: what is drawn by that way
   // (leave_held_progress) worked out again then, its way not read by the clock till it is known)
   let way_told = @signals.signal(0, same=fn(a, b) { a == b })
@@ -252,35 +251,10 @@ fn[K : Eq] View::pick_leaving(
         if old.seen_from.untracked() > at {
           p.leave(old.fader, 0.0)
         } else {
-          // (the place at least as big across as what fades was laid (its width down a column, its height along a row),
-          // till it is gone: what it shows now smaller across, or nothing, neither moves it nor cuts it)
+          // (where the place stands across in the window before the change: what fades is kept there, below)
           let row = tree.along_row_at(p.at)
           let laid = tree.nodes[old.fader.at].flex
-          let across = if row { laid.height } else { laid.width }
-          if across == across && across > 0.0 {
-            let held = if gone_by.val > at { dmax(held_across.val, across) } else { across }
-            held_across.val = held
-            fades.val = fades.val + 1
-            let fade = fades.val
-            let ps = tree.nodes[p.at].flex.style
-            if row {
-              ps.set_min_height(Pt(held))
-            } else {
-              ps.set_min_width(Pt(held))
-            }
-            tree.layout_marked_at(p.at)
-            p.at_moment(at + leave, fn() {
-              guard fades.val == fade && p.live() is Some(m) else { return }
-              if row {
-                m.flex.style.set_min_height(Auto)
-              } else {
-                m.flex.style.set_min_width(Auto)
-              }
-              held_across.val = 0.0
-              tree.layout_marked_at(p.at)
-            })
-            |> ignore
-          }
+          let (was_x, was_y, _, _) = p.laid_window_now()
           // (and as big as it was laid, out of the flow: not shrunk to what it holds, a ground stretched across its place
           // or words centred in it drawn where and as big as they were till it is gone)
           let st = tree.nodes[old.fader.at].flex.style
@@ -292,6 +266,23 @@ fn[K : Eq] View::pick_leaving(
           st.set_inset_left(Pt(0.0))
           st.set_inset_top(Pt(0.0))
           tree.layout_marked_at(old.fader.at)
+          // (the place laid out as the change has it at once, as big as what it shows now, standing where its column
+          // puts that: never held as big as what fades, so what comes is laid where it rests from the first (the user,
+          // 2026-11-17: 「81-82 帧」, 刚刚 laid from the start of a place held as wide as 处理中 and jumping to its end as
+          // that let go). What fades, out of the flow, is put back across where it stood as the change came, the place's
+          // move across taken off it once the change's layout has measured it (laid out where it rests, drawn where it
+          // was: as a view that leaves keeps its frame in SwiftUI, Framer's popLayout): it neither moves nor jumps.
+          let fading = old.fader
+          @signals.after_flush(fn() {
+            guard p.live() is Some(_) && fading.live() is Some(f) else { return }
+            let (now_x, now_y, _, _) = p.laid_window_now()
+            if row {
+              f.flex.style.set_inset_top(Pt(was_y - now_y))
+            } else {
+              f.flex.style.set_inset_left(Pt(was_x - now_x))
+            }
+            tree.layout_marked_at(fading.at)
+          })
           if in_list {
             // (drawn going as its place goes from its size, let go once that way is over at the longest)
             old.held.set(2)

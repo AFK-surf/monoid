@@ -2167,6 +2167,40 @@ export class AccountDb {
     return unknown;
   }
 
+  /// A job gone from its station (`job-removed`): its row let go of, off the open ones at once. Answers whether it was
+  /// among them.
+  dropJob(station: string, id: string): boolean {
+    let was = false;
+    this.#write(() => {
+      const r = this.sql.all("SELECT open FROM job WHERE station = ? AND id = ?", [station, id])[0];
+      if (!r) return;
+      was = r[0] === 1;
+      this.#run("DELETE FROM job WHERE station = ? AND id = ?", [station, id]);
+      this.#cache.delete(K("job", station, id));
+      this.#cache.delete(K("jobitem", station, id));
+      this.#loadedList(station, "jobs")?.delete(id);
+      if (was) this.#tell({ topic: "jobs", station });
+      this.#tell({ topic: "job", station, id });
+    });
+    return was;
+  }
+
+  /// A session gone from its station: its jobs no longer among the open ones (its station ends them with it), at once.
+  /// (`job_open`: the station's open ones are few, its jobs of before many.)
+  closeSessionJobs(station: string, session: string): void {
+    this.#write(() => {
+      const found = this.sql.all("SELECT id FROM job INDEXED BY job_open WHERE station = ? AND open = 1 AND session = ?", [station, session]);
+      if (found.length === 0) return;
+      for (const r of found) {
+        const id = String(r[0]);
+        this.#run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", [station, id]);
+        this.#cache.delete(K("jobitem", station, id));
+        this.#loadedList(station, "jobs")?.delete(id);
+      }
+      this.#tell({ topic: "jobs", station });
+    });
+  }
+
   // ── what was said ──
 
   /// The messages of these stations whose latest text has every one of `terms` (case aside), newest first.
@@ -2433,13 +2467,13 @@ export class AccountDb {
       const r = read.result;
       // Its call by its id, else the item just before it.
       const where = r.call !== null ? "call = ?" : "i = ?";
-      const row = this.sql.all(`SELECT i, dest, failed FROM slack_said WHERE station = ? AND session = ? AND out = 1 AND ${where}`, [station, session, r.call ?? n - 1])[0];
+      const row = this.sql.all(`SELECT i, dest, failed, refused FROM slack_said WHERE station = ? AND session = ? AND out = 1 AND ${where}`, [station, session, r.call ?? n - 1])[0];
       if (row === undefined) continue;
       const dest = String(row[1]);
       // A message of its own in a channel: Slack's answer says its thread.
       const to = r.ts !== null && !dest.includes("/") ? `${dest}/${r.ts}` : dest;
-      if (to === dest && (row[2] === 1) === r.failed) continue;
-      this.sql.run("UPDATE slack_said SET dest = ?, failed = ? WHERE station = ? AND session = ? AND i = ? AND out = 1", [to, r.failed ? 1 : 0, station, session, row[0] as number]);
+      if (to === dest && (row[2] === 1) === r.failed && (row[3] === 1) === r.refused) continue;
+      this.sql.run("UPDATE slack_said SET dest = ?, failed = ?, refused = ? WHERE station = ? AND session = ? AND i = ? AND out = 1", [to, r.failed ? 1 : 0, r.refused ? 1 : 0, station, session, row[0] as number]);
       changed = true;
     }
     return changed;
@@ -2469,10 +2503,11 @@ export class AccountDb {
   /// What a session said in Slack and heard from it, in the order of its transcript.
   slackSaid(station: string, session: string): Said[] {
     if (!this.#hasSlackSaid()) return [];
-    return this.sql.all("SELECT i, k, out, call, user, who, at, dest, text, failed FROM slack_said WHERE station = ? AND session = ? ORDER BY i, k", [station, session])
+    return this.sql.all("SELECT i, k, out, call, user, who, at, dest, text, failed, refused FROM slack_said WHERE station = ? AND session = ? ORDER BY i, k", [station, session])
       .map((r) => ({
         i: r[0] as number, k: r[1] as number, out: r[2] === 1, call: (r[3] as string | null) ?? null, user: (r[4] as string | null) ?? null,
         who: (r[5] as string | null) ?? null, at: r[6] as number, to: r[7] as string, text: r[8] as string, failed: r[9] === 1,
+        refused: r[10] === 1,
       }));
   }
 

@@ -2,13 +2,14 @@
 # cache_prune.mbt): the build caches saved each commit, run or content otherwise fill the repository's 10 GB, and GitHub
 # then evicts what is read seldom and needed (WARP, the emulator's images, MoonBit), which the jobs that need them fail
 # without. After main's runs of the workflows that save them went through, and each half hour: a branch's run, or one
-# that failed or was cancelled, started one each (a run every minute, 37% of the repository's runs, 2026-11-17), and a
-# newer one takes the place of one still waiting.
+# that failed or was cancelled, started one each (a run every minute, 37% of the repository's runs, 2026-11-17), its
+# job skipped; a newer prune takes the place of one still running.
 name: cache-prune
 on:
   workflow_run:
     workflows: [preview, preview-arch, next-mac-cache, mbui-ios, mbui-windows, mbui-check, pipeline]
     types: [completed]
+    branches: [main]
   schedule:
     - cron: "7,37 * * * *"
   workflow_dispatch:
@@ -17,10 +18,6 @@ permissions:
   actions: write
   contents: read
 
-concurrency:
-  group: cache-prune
-  cancel-in-progress: true
-
 env:
   # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
   # read by its deploy key)
@@ -28,6 +25,11 @@ env:
 jobs:
   prune:
     if: github.repository_owner == 'AFK-surf' && (github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success'))
+    # (the job's, not the workflow's: a workflow's concurrency is taken before its jobs' `if`, so each run the `if` left
+    # nothing to do cancelled the prune under way, none of them through since #6955, 44084525729 by 44084606362)
+    concurrency:
+      group: cache-prune
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -1954,11 +1954,16 @@ export const SHAPES: Record<string, Shape> = {
   RowPictureSetting: words(["auto","agents","people"], { doc: "Whose pictures lead a chat's row: by how many people the scope has (the default), or always the agents', or the\npeople's.", default: "auto" }),
   ListFilter: words(["all","mine","watching","hidden","archive"], { doc: "What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档).", default: "all" }),
   BoardGroup: words(["state","station","person"], { doc: "How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it." }),
+  BoardFile: struct([
+    ["id", "String"],
+    ["name", "String"],
+  ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
     ["station", "String"],
     ["stationName", "String"],
+    ["files", opt(vec("BoardFile"))],
   ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   KeptTabs: struct([
@@ -3685,8 +3690,11 @@ export const SHAPES: Record<string, Shape> = {
   LongJobsView: struct([
     ["groups", vec("LongJobsGroup")],
     ["lit", "bool", { default: true, doc: "They light the rail's bell: one is there it has not shown yet (`prefs.jobsSeen`), and the\nbell is lit by them (`badgeKinds.services`)." }],
-    ["ids", vec("String"), { default: true, doc: "Each of them as `<station>/<id>`: what to keep as shown (`prefs.set {jobsSeen: {<workspace>: ids}}`)\nonce the bell opens." }],
-  ], { doc: "The services and jobs left up a long while (an hour) on a scope's stations that are up (the `longJobs` view),\noldest first, in groups: web services, then background jobs; none while empty.", keepNone: true }),
+    ["ids", vec("String"), { default: true, doc: "Each of the viewer's as `<station>/<id>`: what to keep as shown (`prefs.set {jobsSeen: {<workspace>: ids}}`)\nonce the bell opens." }],
+    ["otherGroups", opt(vec("LongJobsGroup")), { skipNone: true, doc: "Those not the viewer's (where others are members: their chats' jobs and views, a shared station's\nsimulators), grouped as `groups` are; they light nothing. None (left out) while there are none." }],
+    ["otherCount", opt("u32"), { skipNone: true, doc: "How many `otherGroups` hold; absent with none." }],
+    ["otherText", opt("String"), { skipNone: true, doc: "Their fold's words: 其他运行中 · 3; absent with none." }],
+  ], { doc: "The services and jobs left up a long while (an hour) on a scope's stations that are up (the `longJobs` view),\noldest first, in groups: web services, then background jobs, simulators, views; the viewer's own (`groups`) apart from\nthe others' (`otherGroups`); none while empty.", keepNone: true }),
   LongJobsGroup: struct([
     ["key", "String", { doc: "services | jobs | simulators | views" }],
     ["head", "String", { doc: "开了很久的网页服务 · 3" }],

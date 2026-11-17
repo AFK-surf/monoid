@@ -1673,7 +1673,8 @@ let status_dot_side : Double = 7.0
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`
 /// for a screen reader; turned by a tap, a press held however long and let go on it, Space or Enter, a screen reader's
 /// press: `turn` told what it is to be (the caller says it so: `on` follows it), a light tick felt under a finger. Its
-/// knob slides to its side (switch_ms, eased out) and its track's colour with it, from where it is at that moment;
+/// knob springs to its side (@motion.knob_spring) and its track's colour with it, from where it is at that moment, the knob
+/// drawn longer as fast as it goes (@motion.velocity_capsule), round at rest;
 /// held by a finger, the knob a lens growing as a lift does. In the room a finger's press takes round it, up and down.
 /// `small`: 26 by 16 (switch_size's). While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
 /// What the keys' focus and a screen reader find is one node, its room: a switch by its name, on or off.
@@ -1715,7 +1716,9 @@ pub fn switch_node(
       v.min_height(By(fn() { Some(theme().items.least) })).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
       let knob = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
       let held = @motion.NodeWay::new(0.0)
-      v.reacts(on, fn(now) { knob.go_ms(v, if now { 1.0 } else { 0.0 }, @kit.switch_ms) })
+      // (sent to its side by a crisp spring from where it is then and as fast: a turn told again mid-way goes on from
+      // there, never from a stop; still within switch_settle_ms)
+      v.reacts(on, fn(now) { knob.go(v, if now { 1.0 } else { 0.0 }, @motion.knob_spring) })
       v.reacts(fn() { sw.pressed() && @ui.pointing() is Finger }, fn(down) {
         held.go(v, if down { 1.0 } else { 0.0 }, @motion.lift_spring)
       })
@@ -1728,7 +1731,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(p.line_strong, p.accent, knob.shown(track))
+          @kit.blend(p.line_strong, p.accent, dmin(1.0, dmax(0.0, knob.shown(track))))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1747,6 +1750,13 @@ pub fn switch_node(
             .ground(Is(0xFFFFFFFFL))
             .shadow(Is((2.0, 1.0, 0x00000033L)))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            // (drawn longer along its way as fast as it flies, a capsule, round again as it comes to rest: its way's
+            // speed at the moment drawn, its ground alone; none while a finger holds it as a lens)
+            .ground_drawn(By(fn() {
+              let (_, speed) = knob.motion(track)
+              let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
+              @motion.velocity_capsule(d(), d(), speed * travel() * calm, 0.0)
+            }))
             .alpha(By(fn() { 1.0 - dmin(1.0, lens()) }))
             |> ignore
           })

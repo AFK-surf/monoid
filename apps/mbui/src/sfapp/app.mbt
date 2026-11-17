@@ -210,6 +210,12 @@ fn open_where(src : Source, p : Page) -> Unit {
     Chat(r) => if @sfdesk.station_page_beside(src, r, p) { return }
     _ => ()
   }
+  // (a chat put in the page pane's place from the board (待处理's, ⌘K's, ⌘N, a row of the list beside it): the list
+  // again, so that the board shows as Home again only as 看板 is pressed; on the tape over the board in use, back
+  // coming to it again: page_goes_on's)
+  if (p is Chat(_) || p is NewChat) && !@sfdesk.page_goes_on() && @sfbase.board_on_now(src) {
+    @sfbase.board_set(src, false)
+  }
   match p {
     Chat(r) => open_chat_beside(r)
     NewChat => new_chat_beside()

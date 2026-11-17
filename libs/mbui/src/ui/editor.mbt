@@ -687,8 +687,8 @@ fn EditorState::key_edit(self : EditorState, code : Int, mods : Int, now : Doubl
         }
       }
   }
-  // kept to undo (editor_undo.mbt): a cut a step of its own, a deletion or a new line typing
-  self.edited(t, anchor, caret, code != key_cut)
+  // kept to undo (editor_undo.mbt): a cut a step of its own
+  self.edited(t, anchor, caret, code != key_cut, now)
 }
 
 ///|
@@ -708,7 +708,7 @@ fn EditorState::submit_told(self : EditorState) -> Unit {
 
 ///|
 /// What the host's text event `kind` does to the field (put_text), kept to undo (editor_undo.mbt): a paste a step of
-/// its own, all else typing.
+/// its own, all else typing. A composition's first change and its commit are one step; each candidate is its own.
 fn EditorState::text_input(
   self : EditorState,
   kind : Int,
@@ -718,8 +718,16 @@ fn EditorState::text_input(
   now : Double,
 ) -> Unit {
   let (text, anchor, caret) = (self.text, self.anchor, self.caret)
+  let was_marked = self.marked != ""
   self.put_text(kind, s, a, b, now)
-  self.edited(text, anchor, caret, kind != text_paste)
+  let starts_composing = !was_marked && self.marked != ""
+  if starts_composing {
+    self.typed = None
+  }
+  self.edited(text, anchor, caret, kind != text_paste, now, composing=was_marked || starts_composing)
+  if was_marked && self.marked == "" {
+    self.typed = None
+  }
   self.words_told()
   self.typed_told(text, anchor, caret, if kind == text_paste { Pasted } else { Typed })
 }

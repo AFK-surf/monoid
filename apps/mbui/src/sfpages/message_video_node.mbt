@@ -35,8 +35,6 @@ fn message_video_node(
     @sfbase.thumb_place(station() + "/" + owner() + "/" + a().path, station(), (place.session)(), at())
   }
   let held_menu : @signals.Signal[Int?] = @signals.signal(None)
-  // (said the one its thumbnail's id names as it is pressed: note_thumb_node's)
-  let chosen : Ref[() -> Unit] = Ref(fn() {  })
   // (its capsule seen once it is here, where it flies here from the composer's tile: none of it on the way, coming in
   // over dur_ms from its landing, as the old page's video_item's marks; at once otherwise)
   let marks = @motion.Way::new(1.0)
@@ -124,7 +122,6 @@ fn message_video_node(
       f,
       fn() {
         if !going_up() {
-          (chosen.val)()
           open_file(place.here(), a(), at=at())
         }
       },
@@ -142,21 +139,15 @@ fn message_video_node(
       file_lift_scale,
     )
     |> ignore
-    // (what the preview flies from and back into, by its thumbnail's id: hidden while the preview shows it, its still
-    // flown from here and back here by the viewer, its capsule with it, under the page's bar while it is under it)
-    chosen.val = @sfbase.note_thumb_node(
-      f,
-      thumb,
-      radius=corner,
-      letterbox~,
-      picture=fn() {
-        match still() {
-          "!" => ""
-          k => k
-        }
-      },
-      duration=fn() { a().duration },
-    )
+    // (the end of the preview's flight that stays, by its thumbnail's id: drawn nowhere while the preview shows it,
+    // its still flown from here and back here, View::shared's `stays`, drawn on its way as here: covering its box, a
+    // letterboxed one contained)
+    // (contained said, covering it whatever else is said where it is no letterboxed one: one binding for both)
+    f
+    .image_contains(Is(true))
+    .image_covers(By(fn() { !letterbox() }))
+    .shared(By(thumb), @motion.flight_by(@motion.moved()), stays=true)
+    |> ignore
     // the black and its still drawn as one, its edge cut once (the black under a picture cut apart from it left a rim
     // at their rounded edge): the black round a letterboxed one (contained in its own proportions, in the middle) and
     // all of it while it is decoded

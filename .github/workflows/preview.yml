@@ -880,13 +880,6 @@ jobs:
           Z=$RUNNER_TEMP/zip
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'while [ ! -s "$0/signed" ]; do sleep 1; done; [ "$(cat "$0/signed")" = 0 ] && bash apps/mbui/scripts/beta.sh publish win >> "$0/log" 2>&1; echo $? > "$0/status"' "$Z" > /dev/null 2>&1 &
-      # main's core.hbc kept (HBC_CACHE: the newest 8, some 370 MB, its save ~45 s) while the e2e flow runs, not
-      # before the app's put, which the flow waits for (it held the put back 44 s, 2026-10-28, 40642305618)
-      - if: github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
-        uses: actions/cache/save@v4
-        with:
-          path: .ci/hbc
-          key: ${{ env.HBC_KEY }}
       # (main's and a branch's, however the build ended: one cut short keeps what it compiled, nothing taken out, so
       # the next run goes on from there, as the Linux jobs' do; what it left running (moon, mbc, clang-cl) stopped first
       # and their locks taken out, so the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847)
@@ -909,6 +902,14 @@ jobs:
         with:
           path: .ci/mbc-store
           key: ${{ env.STORE_KEY }}
+      # main's core.hbc kept (HBC_CACHE: the newest 8, beside the put and the e2e flow, and after mbc-store when a
+      # build was cut short so the next push finds core.hbc kept and skips pnpm + Hermes instead of rebuilding both:
+      # 44100344729, 44101911655, 44108899153, 2026-11-17)
+      - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/hbc
+          key: ${{ env.HBC_KEY }}
       - name: The Windows app's installer signed, put, checked, then its feed
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |

@@ -10,6 +10,9 @@
 ///
 /// It rises only where the measure came truer (the coordinator of the migration, 2026-11-11), never for the app: each
 /// flow so added shows the app unchanged and the split a device's already, and the migration's coordinator agrees.
+/// A cause mended takes flows out too: 2026-11-17 (the owner: 「不登记，去改框架」), a press between two frames on what
+/// the old view drew has it drawn at the press's moment first (ui's frame_at_press), so a sheet's button coming in is
+/// where it is then, not where a sparser display's frame before it drew it: 22 flows out at 7 a second.
 /// Once so: #5519 (the fake host tells what is posted at the moment it is posted, as a device's host does, no longer as
 /// the next frame begins; not a line of what a device runs changed) took 120 a second from 10 flows to 11: share and
 /// station-files out, glass, settings-run-settings and wide-answer-reply in (each says why where it is).
@@ -19,30 +22,14 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // (the first tap on a chat's row comes before the frame that builds Home's list and sends its reads (they go
   // out as a frame is built): at 7 a second it falls on the bar under it, Station's tab (glass: Home's
   // subscriptions at 1159 here, 1033-1050 in the strict pass; the tap at 1150))
-  "agent-reply": [7],
-  "answer-option": [7],
-  "bar-going-down": [7],
   "card-motion": [7],
-  "close-option": [7],
   "delete-failed": [7],
-  "glass": [7],
-  "history": [7],
-  "markdown": [7],
-  "open-link": [7],
   "pick-words": [7],
   "quote": [7],
-  "send-flying": [7],
-  "send-paced": [7],
   "service-page": [7],
-  "station-file-sent": [7],
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
   "drive-lend": [7],
   "drive-play": [7],
-  // 6: unsub {"topic":"status"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
-  "dismiss": [7],
-  "paste-long": [7],
-  "paste-short": [7],
-  "station-files": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
   "settings-station-settings": [7],
@@ -74,13 +61,8 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "lock-wait": [7],
   // 1: sub {"scope":…,"topic":"stations"} | strict sub {"scope":…,"topic":"newChat"}
   "new-chat": [7],
-  // 1: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call notify.permission
-  "notice-cancel": [7],
   // 1: - | strict call link.parse {"url":…}
   "notice-failed": [7],
-  // 1: - | strict sub {"topic":"stationNet","station":…}
-  // 1: unsub {"topic":"doing"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
-  "settings-run-settings": [7],
   // 1: - | strict call composer.starting {"key":…,"starting":true}
   "wide-new-chat": [7],
   // 1: - | strict call session.warm {"key":…,"station":…}
@@ -89,8 +71,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "wide-places": [7],
   // 1: sub {"topic":"workspaceMarks","workspace":…} | strict sub {"scope":…,"topic":"longJobs"}
   "wide-resize": [7, 120],
-  // 1: - | strict call chat.pin {"pinned":true,"session":…,"station":…}
-  "wide-row-menu": [7],
   // 1: sub {"query":…,"scope":…,"topic":"search"} | strict call notify.permission {"state":"unknown"}
   "wide-switcher": [7],
 }

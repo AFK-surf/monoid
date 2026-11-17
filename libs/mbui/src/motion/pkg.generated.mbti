@@ -45,6 +45,8 @@ pub fn default_easing(Int32, easing? : (Double) -> Double) -> Array[(Double) -> 
 
 pub fn default_offset(Int32) -> Array[Double]
 
+pub let digit_spring : Spec
+
 pub fn ease_in(Double) -> Double
 
 pub fn ease_in_out(Double) -> Double
@@ -73,9 +75,14 @@ pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, v
 
 pub fn grown_shown(@ui.Ctx, String) -> Double?
 
+#callsite(autofill(loc))
+pub fn hold_way(@view.View, Double, () -> Unit, live? : () -> Bool, recoil_ms? : Double, loc~ : SourceLoc) -> HoldWay
+
 pub fn inertia_generator(Double, velocity? : Double, power? : Double, time_constant? : Double, bounce_damping? : Double, bounce_stiffness? : Double, modify_target? : (Double) -> Double, min? : Double, max? : Double, rest_delta? : Double, rest_speed? : Double) -> Generator
 
 pub fn inertia_to(power? : Double, time_constant? : Double, bounce_damping? : Double, bounce_stiffness? : Double, modify_target? : (Double) -> Double, min? : Double, max? : Double, rest_delta? : Double, rest_speed? : Double, delay? : Double) -> Spec
+
+pub let hand_spring : Spec
 
 pub fn interpolate(Array[Double], Array[Double], clamp? : Bool, ease? : (Double) -> Double, eases? : Array[(Double) -> Double], mixer? : (Double, Double) -> (Double) -> Double) -> (Double) -> Double
 
@@ -84,6 +91,8 @@ pub fn keyed(@ui.Ctx, Int32, String, exit? : Trans, by? : String) -> Unit
 pub fn keyframes_generator(Array[Double], duration? : Double, times? : Array[Double], ease? : (Double) -> Double, eases? : Array[(Double) -> Double]) -> Generator
 
 pub fn keyframes_to(Array[Double], duration? : Double, times? : Array[Double], ease? : (Double) -> Double, eases? : Array[(Double) -> Double], delay? : Double) -> Spec
+
+pub let knob_spring : Spec
 
 pub fn layout(@ui.Ctx, Int32, String, spec? : Spec, by? : String, enter? : Trans, exit? : Trans, drive? : Double, screen? : Bool, cut? : Bool, whole? : Bool) -> Unit
 
@@ -167,6 +176,9 @@ pub fn pregenerate_keyframes(Generator) -> (Array[Double], Double)
 
 pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double) -> @ui.Look?
 
+#callsite(autofill(loc))
+pub fn press_feel(@view.View, live? : () -> Bool, sink_px? : Double, sink_most? : Double, hover_ms? : Double, hovers? : Bool, scale_node? : Bool, size? : (Double, Double), loc~ : SourceLoc) -> PressFeel
+
 pub let press_sink : Double
 
 pub fn pressing(@ui.Ctx, Int32) -> Double
@@ -235,6 +247,8 @@ pub fn tween(Double, ease~ : @ui.Ease, delay? : Double) -> Spec
 
 pub fn tween_to(duration? : Double, ease? : (Double) -> Double, delay? : Double) -> Spec
 
+pub fn velocity_capsule(Double, Double, Double, Double, gain? : Double, most? : Double) -> @view.GroundShape
+
 pub fn velocity_per_second(Double, Double) -> Double
 
 pub fn visual_to_compose(Double, Double) -> (Double, Double)
@@ -294,6 +308,31 @@ pub fn Generator::retarget(Self, Double, Double, Double) -> Unit
 pub fn Generator::to_css(Self) -> String
 pub fn Generator::velocity(Self, Double, initial? : Double) -> Double
 
+pub struct HandPart {
+  // private fields
+}
+pub fn HandPart::came(Self, Double, Spec, takes? : Bool) -> Double?
+pub fn HandPart::draws(Self, @view.View, carries? : @view.View) -> Unit
+pub fn HandPart::gone(Self) -> Unit
+pub fn HandPart::is_last(Self) -> Bool
+pub fn HandPart::left(Self, Double) -> Unit
+pub fn HandPart::other_near(Self, Double) -> Bool
+pub fn HandPart::still(Self) -> Unit
+
+pub struct Handoff {
+  // private fields
+}
+pub fn Handoff::new(within? : Double) -> Self
+pub fn Handoff::part(Self, (Double) -> Double, tag? : Int32, gave? : () -> Unit) -> HandPart
+
+pub struct HoldWay {
+  // private fields
+}
+pub fn HoldWay::at(Self, Double) -> Double
+pub fn HoldWay::end(Self) -> Double
+pub fn HoldWay::holding(Self) -> Bool
+pub fn HoldWay::progress_on(Self, @view.View) -> Double
+
 pub struct MeasuredCorners {
   // private fields
 }
@@ -308,6 +347,14 @@ pub fn Moves::ground_over(Self) -> Double
 pub fn Moves::moves_with(Self, @view.View) -> Unit
 pub fn Moves::over(Self) -> Bool
 pub fn Moves::reshapes(Self, @view.View, carry? : () -> Bool, foot? : Bool) -> Unit
+
+pub struct PressFeel {
+  // private fields
+}
+pub fn PressFeel::down(Self, @view.Drag) -> Unit
+pub fn PressFeel::hovered_on(Self, @view.View) -> Double
+pub fn PressFeel::pressed_on(Self, @view.View) -> Double
+pub fn PressFeel::scale_on(Self, @view.View) -> Double
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Spec {
@@ -366,6 +413,7 @@ pub fn Way::get(Self, @ui.Ctx) -> Double
 #callsite(autofill(loc))
 pub fn Way::go(Self, Double, Spec, at~ : Double, velocity? : Double, loc~ : SourceLoc) -> Unit
 pub fn Way::goes_at(Self, Double) -> Bool
+pub fn Way::motion_on(Self, @view.View) -> (Double, Double)
 pub fn Way::new(Double) -> Self
 #callsite(autofill(loc))
 pub fn Way::put(Self, Double, loc~ : SourceLoc) -> Unit

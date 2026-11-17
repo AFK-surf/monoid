@@ -168,24 +168,24 @@ export const CHAT_READS = {
     of: (c: ChatKeys): ReadKey[] => (listed(c) && c.clientKey !== null ? [[c.station, c.clientKey]] : []),
   } satisfies ChatRead<{ station: string; key: string }>,
   /// The chat a link names (its id, else its agent's session), listed before archived, by its id before its session;
-  /// with its title.
+  /// with its title and whether it is the viewer's own (`mine`).
   named: {
     name: "$chat-named", bound: "one", records: true,
     // (by its id, listed or archived, through the primary key, and by its session through `chat_session`: the two found
     // apart, so that neither walks the station's rows; one found both ways is the same first either way)
-    sql: `SELECT station, archived, id, title FROM (
-        SELECT station, archived, id, title, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
-        UNION ALL SELECT station, archived, id, title, ord FROM chat WHERE station = ? AND session = ?)
+    sql: `SELECT station, archived, id, title, mine FROM (
+        SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND archived IN (0, 1) AND id = ?
+        UNION ALL SELECT station, archived, id, title, mine, ord FROM chat WHERE station = ? AND session = ?)
       ORDER BY archived, id IS NOT ?, ord, id LIMIT 1`,
     params: (p: { station: string; id: string }) => [p.station, p.id, p.station, p.id, p.id],
     keys: (p: { station: string; id: string }): ReadKey[] => [[p.station, p.id]],
     of: (c: ChatKeys): ReadKey[] => [[c.station, c.id], ...(c.session !== null && c.session !== c.id ? [[c.station, c.session] as ReadKey] : [])],
   } satisfies ChatRead<{ station: string; id: string }>,
   /// The listed chat an agent's session is among the agents of, the first in the list's order (`chat_agent`), with its
-  /// title.
+  /// title and whether it is the viewer's own (`mine`).
   agent: {
     name: "$chat-agent", bound: "one", records: true,
-    sql: "SELECT c.station, c.archived, c.id, c.title FROM chat_agent AS a JOIN chat AS c ON c.station = a.station AND c.archived = a.archived AND c.id = a.id WHERE a.station = ? AND a.session = ? AND a.archived = 0 ORDER BY c.ord, c.id LIMIT 1",
+    sql: "SELECT c.station, c.archived, c.id, c.title, c.mine FROM chat_agent AS a JOIN chat AS c ON c.station = a.station AND c.archived = a.archived AND c.id = a.id WHERE a.station = ? AND a.session = ? AND a.archived = 0 ORDER BY c.ord, c.id LIMIT 1",
     params: (p: { station: string; session: string }) => [p.station, p.session],
     keys: (p: { station: string; session: string }): ReadKey[] => [[p.station, p.session]],
     of: (c: ChatKeys): ReadKey[] => (listed(c) ? c.agents.map((k) => [c.station, k] as ReadKey) : []),

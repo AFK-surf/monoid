@@ -19,7 +19,7 @@
   // the numbers of an instance (src/ui/scene.mbt)
   const INST = 60;
   let f32 = new Float32Array(INST * 4096);
-  let pending = false;
+  let pending = false, pendingRaf = 0;
   window.__logs = [];
 
   // ---- frames ----
@@ -37,6 +37,7 @@
   let frames = 0, inFrame = false;
   function tick() {
     pending = false;
+    pendingRaf = 0;
     resize();
     inFrame = true;
     const t = shotAt >= 0 ? clock : performance.now();
@@ -70,9 +71,22 @@
   H.requestFrame = () => {
     if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
       pending = true;
-      requestAnimationFrame(tick);
+      pendingRaf = requestAnimationFrame(tick);
     }
   };
+  // The frame a touch asked for, drawn while the browser still handles that touch rather than at the display's next:
+  // iOS brings its soft keyboard up for a field focused (setIme's focus) only while a person's gesture is handled, and
+  // a requestAnimationFrame later is out of it, so a field tapped took the focus with no keyboard, which came up only on
+  // a second tap (its pointerdown's focus, setupInput). The display's frame asked for is called off: drawn once.
+  function frameInGesture() {
+    if (!pending || !pendingRaf || shotAt >= 0) return;
+    cancelAnimationFrame(pendingRaf);
+    tick();
+  }
+  // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
+  // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
+  // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
+  H.framesPaced = (_hz) => H.requestFrame();
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
@@ -915,29 +929,35 @@
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
-        float gr = max(min(v_rect.z, v_rect.w) * 1.65, 44.0);
-        spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));
+        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
+        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
       }
       float ndl = dot(n2, vec2(-0.6, -0.8));
       float rim = v_c2.x;
       // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
       float body_ring = r2 * (1.0 - 0.35 * r);
       c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,
-      // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of
-      // white, so a light ground does not swallow it
-      float rim_lit = rim * (1.0 + 0.42 * spot);
+      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
+      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
+      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
+      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
+      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
+      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
+      // where white on white would not show; less towards the rim, where the ridge lights)
+      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
+      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
       float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
       spec_band *= spec_band;
       float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
-      float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
-                              0.28 * fresnel * max(ndl + 0.3, 0.0)) +
-                   0.14 * spot * (0.45 + 0.55 * r);
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
+      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
+                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
+      // pointer lights the edge
       float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
       edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
       c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
@@ -2194,8 +2214,17 @@
   let generation = 0;
   // the glyph drawn last (H.glyph), its picture until it is put in the atlas (H.glyphPut)
   let held = null;
+  // where a glyph is drawn to be read back: one canvas, grown and never shrunk, each glyph drawn in its top left
+  // corner and only that much of it cleared and read. Sizing it to each glyph (as till 2026-11-17) gave the canvas a
+  // new backing store per glyph: on a phone's CPU an issue's page of Han opened in one 300 ms frame, two thirds of it
+  // that (clearRect 138 ms, getImageData 36 ms of a 4x slowed Chrome).
   const rc = document.createElement('canvas');
   const rctx = rc.getContext('2d', { willReadFrequently: true });
+  rc.width = rc.height = 0;
+  // a canvas's font set only as it changes: the setter parses the CSS font each time, set or not (mctxFont, rctxFont:
+  // what each was last set to; forgotten as a face comes or goes, so the new one is found)
+  let mctxFont = '', rctxFont = '';
+  const setMFont = (f) => { if (f !== mctxFont) { mctx.font = f; mctxFont = f; } };
   // the faces given (faceAdd, style.mbt), loaded: each a family of its own ahead of the place's own
   const faces = new Set();
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
@@ -2244,6 +2273,7 @@
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
   const textChanged = () => {
+    mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
@@ -2292,7 +2322,7 @@
   };
 
   H.fontMetrics = (size, weight, style, out) => {
-    mctx.font = font(size, weight, style);
+    setMFont(font(size, weight, style));
     const m = mctx.measureText('Hg国');
     out[0] = m.fontBoundingBoxAscent;
     out[1] = m.fontBoundingBoxDescent;
@@ -2333,7 +2363,7 @@
 
   H.shape = (text, size, weight, style, out) => {
     const f = font(size, weight, style);
-    mctx.font = f;
+    setMFont(f);
     const cap = out.length / 4;
     const segs = [...seg.segment(text)];
     // the canvas says no more of a cluster than its width alone; within a word, a cluster starts where the word up
@@ -2399,7 +2429,7 @@
     held = null;
     const sc = dpr;
     const sub = (fullKey >>> 26) & 7;
-    mctx.font = font(e.size, e.weight, e.style);
+    setMFont(font(e.size, e.weight, e.style));
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
@@ -2417,15 +2447,20 @@
     const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
-    rc.width = pw;
-    rc.height = ph;
+    if (pw > rc.width || ph > rc.height) {
+      // (grown by 64 px steps, to the largest glyph yet: a canvas sized anew forgets its state, set again here)
+      rc.width = Math.max(rc.width, Math.ceil(pw / 64) * 64);
+      rc.height = Math.max(rc.height, Math.ceil(ph / 64) * 64);
+      rctxFont = '';
+      // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
+      // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
+      // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
+      rctx.fillStyle = '#000';
+      rctx.textBaseline = 'alphabetic';
+    }
     rctx.clearRect(0, 0, pw, ph);
-    rctx.font = font(e.size * sc, e.weight, e.style);
-    // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
-    // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
-    // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
-    rctx.fillStyle = '#000';
-    rctx.textBaseline = 'alphabetic';
+    const rf = font(e.size * sc, e.weight, e.style);
+    if (rf !== rctxFont) { rctx.font = rf; rctxFont = rf; }
     rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
@@ -2538,6 +2573,38 @@
     if (!active && document.activeElement === ta) ta.blur();
   };
 
+  // The input method's keyboard for the field about to type (@hostapi.ime_action, said before setIme: 0 none, 1 a
+  // search's, 2 an address's, 3 a number's, 4 a secret's, 5 an email address's, 6 words taken as typed), as the phones'
+  // hosts ask theirs (ios_app.m's keyboardType, MBView's EditorInfo): the textarea's inputmode, its Enter key's word,
+  // whether the keyboard corrects, spells or capitalises. A keyboard up for another field takes them only as it comes up
+  // again, so the textarea focused is let go and focused again by setIme after (the tap that moved the field still
+  // handled, frameInGesture: iOS keeps its keyboard up).
+  const imeKinds = [
+    {},
+    { inputmode: 'search', enterkeyhint: 'search' },
+    { inputmode: 'url', enterkeyhint: 'go', autocorrect: 'off' },
+    { inputmode: 'numeric', enterkeyhint: 'done', autocorrect: 'off' },
+    { autocorrect: 'off' },
+    { inputmode: 'email', autocorrect: 'off' },
+    { autocorrect: 'off' },
+  ];
+  let imeKind = 0, imeRefocus = false;
+  H.imeAction = (k) => {
+    const kind = imeKinds[k] ? k : 0;
+    if (kind === imeKind) return;
+    imeKind = kind;
+    const want = imeKinds[kind];
+    for (const name of ['inputmode', 'enterkeyhint', 'autocorrect']) {
+      if (want[name]) ta.setAttribute(name, want[name]);
+      else ta.removeAttribute(name);
+    }
+    if (document.activeElement === ta) {
+      imeRefocus = true;
+      ta.blur();
+      imeRefocus = false;
+    }
+  };
+
   // What an edit changed of the textarea's words `was`, to `now` with the caret at `caret`: [from, to, put], the words
   // of `was` from `from` to `to` replaced by `put`. What is after the caret is what it left alone, where `was` ends so
   // (an "a" put in before "aa" is put in there, though "aaa" could be read as it after them); the halves of a surrogate
@@ -2581,13 +2648,16 @@
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
-        if (touch(e)) ptr(10, e, e.pointerId);
+        if (touch(e)) { ptr(10, e, e.pointerId); frameInGesture(); }
         else ptr(0, e, e.button);
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
       el.addEventListener('pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
-      el.addEventListener('pointerup', (e) => (touch(e) ? ptr(12, e, e.pointerId) : ptr(2, e, e.button === 2 ? 2 : 0)));
+      el.addEventListener('pointerup', (e) => {
+        if (touch(e)) { ptr(12, e, e.pointerId); frameInGesture(); }
+        else ptr(2, e, e.button === 2 ? 2 : 0);
+      });
       el.addEventListener('pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
@@ -2687,7 +2757,7 @@
     // the phones' apps' do (or setIme would take the focus back and the keyboard come up again). (The page sent behind
     // blurs the textarea too, and leaves it the focused element.)
     ta.addEventListener('blur', () => {
-      if (imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
+      if (!imeRefocus && imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
         cb.text(7, '', 0, 0);
         H.requestFrame();
       }
