@@ -7,7 +7,12 @@ D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
 # MBUI_APP_MOD: an app of a module outside this repository (its moon.work naming mbui; scripts/android.sh says more)
 ROOT=$(cd "$D/.." && pwd)
+# (MBUI_OUT: what the build says and makes, the bundle, out/ of the module built otherwise; the tools it runs built
+# under MBUI_TOOLS_OUT, scripts/mbc, for an app of another module its out/mbui-tools: mbui left as it is)
+O=out; [ -z "${MBUI_OUT:-}" ] || O=$(mkdir -p "$MBUI_OUT" && cd "$MBUI_OUT" && pwd)
 cd "${MBUI_APP_MOD:-$ROOT}"
+if [ -n "${MBUI_OUT:-}" ]; then export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$O/tools}
+elif [ -n "${MBUI_APP_MOD:-}" ]; then export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$PWD/out/mbui-tools}; fi
 MODE=${MODE:-release}
 FLAG=""; [ "$MODE" = release ] && FLAG=--release
 PKG=${APP:-demo}
@@ -24,19 +29,19 @@ case "${1:-build}" in
     # app took 35-75 s with no unit compiled, the rest not told apart, 2026-11-01)
     # (and the packages it compiled again, by their .core made: a release's 51 tasks where one page had changed, main
     # 85827dca, 2026-11-02, the rest not told apart)
-    mkdir -p out && rm -f out/mbc.log && touch out/moon.start
+    mkdir -p $O && rm -f $O/mbc.log && touch $O/moon.start
     t0=$SECONDS
-    PATH="$("$D/mbc" shim "$PWD/out/mbc/bin"):$PATH" MBC_LOG=$PWD/out/mbc.log \
-      moon build --target native $FLAG src/$PKG 2>&1 | tee out/moon.log | "$D/chk" errs
-    echo "mac.sh: moon's build in $((SECONDS - t0)) s: $(grep -E '^Finished' out/moon.log | tail -1)"
-    echo "mac.sh: compiled again: $(find _build/native/$MODE/build -name '*.core' -newer out/moon.start 2>/dev/null |
+    PATH="$("$D/mbc" shim "$(cd $O && pwd)/mbc/bin"):$PATH" MBC_LOG=$(cd $O && pwd)/mbc.log \
+      moon build --target native $FLAG src/$PKG 2>&1 | tee $O/moon.log | "$D/chk" errs
+    echo "mac.sh: moon's build in $((SECONDS - t0)) s: $(grep -E '^Finished' $O/moon.log | tail -1)"
+    echo "mac.sh: compiled again: $(find _build/native/$MODE/build -name '*.core' -newer $O/moon.start 2>/dev/null |
       sed -E 's#.*/build/##; s#/[^/]+[.]core$##' | sort | tr '\n' ' ')"
-    cat out/mbc.log 2>/dev/null || true
+    cat $O/mbc.log 2>/dev/null || true
     if type app_postbuild >/dev/null 2>&1; then app_postbuild; fi
     ls -la $EXE ;;
   bundle)
     if [ "${MBUI_SKIP_BUILD:-0}" != 1 ] || [ ! -f "$EXE" ]; then bash "$D/mac.sh" build; fi
-    OUT=out/mac
+    OUT=$O/mac
     NAME=${MBUI_MAC_NAME:-$PKG}
     ID=${MBUI_APP_ID:-dev.mbui.$PKG}
     N=${MBUI_BUILD:-1}
@@ -63,11 +68,11 @@ case "${1:-build}" in
   run)
     on_screen ./$EXE ;;
   script)
-    mkdir -p out/$2
-    MBUI_SCRIPT=$2 MBUI_SHOT_DIR=$PWD/out/$2 on_screen ./$EXE ;;
+    mkdir -p $O/$2
+    MBUI_SCRIPT=$2 MBUI_SHOT_DIR=$(cd $O/$2 && pwd) on_screen ./$EXE ;;
   shot)
-    mkdir -p out/shot
-    MBUI_SCRIPT=shot MBUI_SHOT_DIR=$PWD/out/shot on_screen ./$EXE ;;
+    mkdir -p $O/shot
+    MBUI_SCRIPT=shot MBUI_SHOT_DIR=$(cd $O/shot && pwd) on_screen ./$EXE ;;
   bench)
     MBUI_BENCH=1 on_screen ./$EXE ;;
   *)

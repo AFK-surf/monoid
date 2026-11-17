@@ -481,7 +481,7 @@ pub(all) struct TerminalDeps {
   start : async (String, Opening, String, TerminalMeta) -> TerminalLink
   home : String
   chat_dir : (String) -> String?
-  changed : () -> Unit
+  changed : (String) -> Unit
   gone : (String) -> Unit
   new_id : () -> String
   offered : (() -> Bool)?

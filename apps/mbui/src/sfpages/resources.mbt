@@ -355,9 +355,10 @@ let rs_head_row_stacked : @ui.Style = rs_row.then(@ui.css("justify=JEnd"))
 let rs_stack : @ui.Style = @ui.style(w=@sf.grow, min_w=S0)
 
 ///|
-/// A stacked row's figures, at its end under their heads.
+/// A stacked row's figures, under their heads: short of the row's end by its end's cell (rs_end_cell's 32), which is on
+/// the line over them, as the heads leave it.
 // kept across runs: a value (no field of it changes)
-let rs_figures_line : @ui.Style = @ui.css("row w=Full justify=JEnd")
+let rs_figures_line : @ui.Style = @ui.css("row w=Full pr=S8 justify=JEnd")
 
 ///|
 /// Beside the figures, the least each column of names keeps (a chat's title its first words, what it is and how many

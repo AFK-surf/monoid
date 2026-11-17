@@ -81,8 +81,7 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     }
   }
   // (the page on top switched, as the stack is told it, before any page of it is built; none while what waits in the
-  // safe mode is in the pages' place. What the page's bars and the sidebar's parts work out from, where the block's
-  // move has got, each of them works out as it is built: pane_page_one, pane_block_built)
+  // safe mode is in the pages' place. An old page works out its bars from the block's move as it is built (pane_page_one).
   page_switch_said(v, fn() { @sfbase.workspace_in_view(src).0 is Some(_) && !gated() })
   // (what waits in its place giving back the focus as it goes, to what had it as it came: the page under it kept, laid
   // out nowhere meanwhile (none of it built, pressed or read out), the focus in it let go of then, after it is kept)

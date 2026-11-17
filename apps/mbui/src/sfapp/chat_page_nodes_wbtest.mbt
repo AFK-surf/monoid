@@ -82,6 +82,9 @@ fn chat_nodes_calling(
   long? : @signals.Signal[Array[(Double, Array[String])]] = @signals.signal([]),
   at? : Double,
   said? : Bool = false,
+  long_md? : Bool = false,
+  scale? : Double = 2.0,
+  on_pixels? : Bool = false,
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
@@ -102,6 +105,17 @@ fn chat_nodes_calling(
         m.remove("placed")
         if mine && i == n - 1 {
           m["mine"] = Json::boolean(true)
+        }
+        // (the long answer as the core reads it, its tree with it: a block of the list a piece)
+        if long_md && m.get("text") == Some(Json::string(@sffixture.long_reply)) {
+          match (@sf.kept_call.val).bind(fn(k) { k("markdown", { "text": Json::string(@sffixture.long_reply) }, None) }) {
+            Some(Ok((Object(a), _))) =>
+              match a.get("md") {
+                Some(t) => m["md"] = t
+                None => ()
+              }
+            _ => ()
+          }
         }
         Json::object(m)
       })
@@ -147,7 +161,10 @@ fn chat_nodes_calling(
     },
   }
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, scale~)
+  if on_pixels {
+    t.set_rows_on_pixels(true)
+  }
   t.run_for(@ui.move_most_ms)
   (t, src)
 }
@@ -1601,18 +1618,6 @@ fn row_bands(t : @ui.Tester, c : Int64) -> Array[(Double, Double)] {
 }
 
 ///|
-/// Whether `bands` lie one on another from the first to the last, nothing between them, and hold all of `from` to `to`.
-fn bands_hold(bands : Array[(Double, Double)], from : Double, to : Double) -> Bool {
-  guard bands.length() > 0 else { return false }
-  for i in 1..<bands.length() {
-    if (bands[i].0 - bands[i - 1].1).abs() > 0.5 {
-      return false
-    }
-  }
-  bands[0].0 <= from && bands[bands.length() - 1].1 >= to
-}
-
-///|
 test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands of rows gone to one after another meet, from the middle of the room over each to the middle of the room over the next, whatever room that is" {
   for s in long_screens {
     let (name, _, _, _) = s
@@ -1646,32 +1651,45 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands 
 }
 
 ///|
-test "a chat's page made with its inside nodes, 大屏: a long answer in pieces gone to, or right clicked in a piece after its first, is lit as one band from its head to its foot" {
-  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, [])
+test "a chat's page made with its inside nodes, 大屏, its rows on the pixels: a long answer in pieces (a block of its words a row) gone to, right clicked in a piece after its first, or its ⋯ opened is lit by one band from its head to its foot" {
+  let (t, _) = chat_nodes_calling(1237.0, 800.0, 0, [], long_md=true, on_pixels=true)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   @signals.start_batch()
   @sfbase.go_to(r, 3.0)
   @signals.end_batch()
   t.run_for(@sfbase.flash_in_ms + 100.0)
-  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
-    fail("its head and its last line not drawn")
+  let one = fn(bands : Array[(Double, Double)], name : String) raise {
+    guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+      fail("\{name}: its head and its last line not drawn")
+    }
+    guard bands is [(top, foot)] else { fail("\{name}: \{Repr(bands)}") }
+    assert_true(top <= head.1 && foot >= last.1 + last.3, msg="\{name}: \{top}…\{foot}, \{head.1}…\{last.1 + last.3}")
   }
-  let flashed = row_bands(t, @sf.theme().flash_bg())
-  assert_true(bands_hold(flashed, head.1, last.1 + last.3), msg="gone to: \{Repr(flashed)}, \{head.1}…\{last.1 + last.3}")
+  one(row_bands(t, @sf.theme().flash_bg()), "gone to")
   t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
   assert_eq(row_bands(t, @sf.theme().flash_bg()), [], msg="at rest")
-  // (right clicked in a piece after its first, over the composer)
+  // (right clicked in a piece after its first)
   guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("a line of a later piece not drawn") }
   t.move_to(x + 8.0, y + 8.0)
   t.frame()
   t.right_click(x + 8.0, y + 8.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("复制消息链接") is Some(_), msg="its menu")
-  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
-    fail("its head and its last line not drawn, its menu open")
-  }
-  let lit = row_bands(t, @ui.tree_theme().color(Hover))
-  assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}, \{head.1}…\{last.1 + last.3}")
+  one(row_bands(t, @ui.tree_theme().color(Hover)), "right clicked")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="its menu gone")
+  // (its ⋯, the first piece's, shown with the pointer on a later piece)
+  t.move_to(x + 8.0, y + 8.0)
+  t.frame()
+  t.frame()
+  t.click(Button, label="更多操作")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息链接") is Some(_), msg="its ⋯'s menu")
+  one(row_bands(t, @ui.tree_theme().color(Hover)), "its ⋯")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="its ⋯'s menu gone")
 }
 
 ///|

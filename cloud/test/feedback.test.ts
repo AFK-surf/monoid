@@ -249,11 +249,32 @@ test("a cloud whose bucket holds no station release reads it upstream (RELEASES_
   }
 });
 
+test("each desktop report waits for its platform, and a legacy report for both", async () => {
+  const h = await harness();
+  try {
+    const { station } = await workspace(h);
+    for (const [key, context] of Object.entries({ win: { desktopPlatform: "windows" }, mac: { desktopPlatform: "macos" }, old: { os: "windows" } })) {
+      assert.equal((await send(h, station, report({ key, area: "desktop", context }))).status, 201);
+    }
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1330, commit: "a", at: 1, text: ["fix"], fixes: [1, 2, 3], parts: ["desktop"] }]));
+    await bucket.put("win/latest.json", JSON.stringify({ versionCode: 1335 }));
+    await bucket.put("mac/latest.json", JSON.stringify({ versionCode: 1329 }));
+    const first = await fixed(h, station);
+    assert.deepEqual(first.map((f) => [f.number, f.released.desktop]), [[1, 1335]]);
+    await bucket.put("mac/latest.json", JSON.stringify({ versionCode: 1340 }));
+    const next = await fixed(h, station, [first[0].id]);
+    assert.deepEqual(next.map((f) => [f.number, f.released.desktop]), [[2, 1340], [3, 1335]]);
+  } finally {
+    await h.close();
+  }
+});
+
 test("the changelog is anyone's to read, with what each part has out on the host's channel", async () => {
   const h = await harness();
   try {
     const empty = (await (await h.fetch("/v1/changelog")).json()) as any;
-    assert.deepEqual(empty, { entries: [], released: { station: null, android: null, desktop: null, web: null } });
+    assert.deepEqual(empty, { entries: [], released: { station: null, android: null, desktop: null, macos: null, windows: null, web: null } });
     const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
     await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "b", at: 2, text: ["新功能：更新日志"], fixes: [], parts: ["web", "android"] }]));
     await bucket.put("web.json", JSON.stringify({ build: 1338 }));
@@ -261,7 +282,7 @@ test("the changelog is anyone's to read, with what each part has out on the host
     await bucket.put("mac/latest.json", JSON.stringify({ versionCode: 1300, file: "desktop/stillfail-0.1.1300-arm64-mac.zip" }));
     const stable = (await (await h.fetch("/v1/changelog")).json()) as any;
     assert.equal(stable.entries[0].text[0], "新功能：更新日志");
-    assert.deepEqual(stable.released, { station: null, android: null, desktop: 1300, web: 1338 });
+    assert.deepEqual(stable.released, { station: null, android: null, desktop: null, macos: 1300, windows: null, web: 1338 });
     const beta = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
     assert.equal(beta.released.web, 1340);
   } finally {
