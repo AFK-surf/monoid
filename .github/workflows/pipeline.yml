@@ -1023,6 +1023,11 @@ jobs:
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
+      # A branch's (release_smoke: the bundle, its signature, its symbols and the macOS it is linked for checked, nothing
+      # published or measured): the app's C compiled without optimising (mbc's MBC_LIGHT_TESTS, -O0), so that it is
+      # built within the job's five minutes on GitHub's three cores with no unit of main's store taken (its units are
+      # main's -O2). Main's release stays -O2.
+      MBC_LIGHT_TESTS: ${{ github.ref != 'refs/heads/main' && 'stillfail/stillfail' || '' }}
     steps:
       # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh;
       # less the 1-5 s of "Set up job" before this step)
@@ -1132,7 +1137,22 @@ jobs:
       - run: |
           bash apps/mbui/scripts/moon-mtimes.sh
           bash .github/mac-release-prebuild.sh ready
-      - uses: ./.github/actions/setup
+      # pnpm and its store only where the core's bytecode is not kept (HBC_CACHE): only a core made here installs the
+      # packages (13-15 s of the job; the Node it needs is the first setup's). Asked with the PostHog project the build
+      # makes it with (mac-release-prebuild.sh's), so that the key is the build's.
+      - id: hbc
+        env:
+          POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
+        run: |
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog-kept.json")
+            export STILLFAIL_POSTHOG="$RUNNER_TEMP/posthog-kept.json"
+          fi
+          unset POSTHOG_JSON
+          if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+          rm -f "$RUNNER_TEMP/posthog-kept.json"
+      - if: steps.hbc.outputs.kept != 'true'
+        uses: ./.github/actions/setup
       - run: bash .github/mac-release-prebuild.sh packages
       - uses: actions/cache@v4
         with:
@@ -1157,6 +1177,7 @@ jobs:
           fi
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
+        id: bundle
         env:
           POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
         run: |
@@ -1186,7 +1207,9 @@ jobs:
       - name: The cache's key, by what it holds
         if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome != 'skipped'
         run: |
-          if [ "${{ steps.finish.outcome }}" = success ]; then
+          # (what the build did not use taken out only of a whole build: one cut in its bundling left compilers writing
+          # units as used.sh took out all it had not seen used yet, and main's store was 24 MB after, 2026-11-17)
+          if [ "${{ steps.finish.outcome }}" = success ] && [ "${{ steps.bundle.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
@@ -1203,7 +1226,8 @@ jobs:
             .ci/mbc-store
             .ci/hbc
           key: ${{ env.STORE_KEY }}
-      - if: github.ref == 'refs/heads/main' && steps.moon.outputs.cache-hit != 'true'
+      # (moon's build once it is done, whatever came after it: cut in its bundling, the next run built it all again)
+      - if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome == 'success' && steps.moon.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |

@@ -91,11 +91,22 @@ bash "$script" wait
 [ -f "$RUNNER_TEMP/app-built" ]
 [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo 'core bytecode was not prepared before packaging' >&2; exit 1; }
 
-case_dir uncached
-bash "$script" start
-bash "$script" ready
-bash "$script" wait
-[ ! -e "$RUNNER_TEMP/app-built" ]
+# No Moon build for this macOS restored (none, or another's): what was built for another goes, the marker is written,
+# the core just built is kept, and the app is built here all the same.
+for before in none 11.0; do
+  case_dir "uncached-$before"
+  mkdir -p "$GITHUB_WORKSPACE/apps/mbui/out/mbc"
+  touch "$GITHUB_WORKSPACE/apps/mbui/_build/old-unit" "$GITHUB_WORKSPACE/apps/mbui/out/mbc/old-object"
+  [ "$before" = none ] || echo "$before" > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+  bash "$script" start
+  bash "$script" ready
+  bash "$script" packages
+  bash "$script" wait
+  [ "$(cat "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min")" = 12.0 ] || { echo "uncached-$before: no marker for 12.0" >&2; exit 1; }
+  [ ! -e "$GITHUB_WORKSPACE/apps/mbui/_build/old-unit" ] && [ ! -e "$GITHUB_WORKSPACE/apps/mbui/out/mbc/old-object" ] || { echo "uncached-$before: another macOS's build kept" >&2; exit 1; }
+  [ -d "$GITHUB_WORKSPACE/apps/mbui/out/core" ] && [ -f "$RUNNER_TEMP/core-finished" ] || { echo "uncached-$before: the core built was taken away" >&2; exit 1; }
+  [ -f "$RUNNER_TEMP/app-built" ] && [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo "uncached-$before: the app was not built" >&2; exit 1; }
+done
 
 case_dir core_failure
 export FAIL_CORE=1
