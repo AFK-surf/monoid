@@ -59,8 +59,8 @@ export async function harness(
     /** REVIEW_ACCOUNTS: who signs in with a password (password.ts). */
     reviewAccounts?: string;
     relayUrl?: string;
-    /** RELAY_URLS and RELAY_NAMES: the list of relays beside it the Directory starts with, and what they are called
-     * (relays.ts listedFromConfig, the console's 中继 page). */
+    /** The cloud's list of relays beside its own (comma-separated) and what they (its own too) are called, put there by
+     * its operator as the harness starts (src/relay-registry.ts, the console's 中继 page). */
     relayUrls?: string;
     relayNames?: Record<string, string>;
     /** STATUS_PAGES: the pages the cron checks for still.fail/status; answered by `push` (they are outside). */
@@ -205,8 +205,6 @@ export async function harness(
         ...(options.upstream ? { RELEASES_UPSTREAM: "https://upstream.test/releases" } : {}),
         GRANT_SIGNING_JWK: JSON.stringify(grantJwk),
         ...(options.relayUrl ? { RELAY_URL: options.relayUrl } : {}),
-        ...(options.relayUrls ? { RELAY_URLS: options.relayUrls } : {}),
-        ...(options.relayNames ? { RELAY_NAMES: options.relayNames } : {}),
         ...(options.statusPages ? { STATUS_PAGES: options.statusPages } : {}),
         ...(options.statusRepoId ? { STATUS_REPO_ID: options.statusRepoId } : {}),
         ...(options.vapid ? { VAPID_PUBLIC_KEY: options.vapid.publicKey, VAPID_PRIVATE_KEY: options.vapid.privateKey, VAPID_SUBJECT: "mailto:ops@example.test" } : {}),
@@ -435,6 +433,13 @@ export async function harness(
       headers: { authorization: `Bearer ${tokens.access_token}`, ...(value === undefined ? {} : { "content-type": "application/json" }) },
       ...(value === undefined ? {} : { body: JSON.stringify(value) }),
     });
+  // The relays' list, as its operator puts it (ADMIN_TOKEN).
+  const listed = (options.relayUrls ?? "").split(",").map((u) => u.trim()).filter(Boolean);
+  for (const url of [...Object.keys(options.relayNames ?? {}).filter((u) => !listed.includes(u)), ...listed]) {
+    if (!listed.includes(url) && url !== (options.relayUrl ?? origin)) continue;
+    const put = await fetch("/v1/admin/relays/put", { method: "POST", headers: { authorization: `Bearer ${adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ url, name: options.relayNames?.[url] ?? "" }) });
+    if (put.status !== 200) throw new Error(`relay ${url} not put: ${put.status}`);
+  }
   return {
     mf,
     now,

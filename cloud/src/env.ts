@@ -59,12 +59,6 @@ export interface Env {
   RELAY_URL?: string;
   /** "globalping": the relays are probed from China's networks every half hour (probes.ts). */
   RELAY_PROBES?: string;
-  /** What a deploy's config said of the relays before the cloud kept its list (relays.ts `listedFromConfig`): taken as
-   * the list once, the first time the Directory opens without one, and read no more; to be taken out of the configs. */
-  RELAY_URLS?: string;
-  RELAY_ENTRIES?: string;
-  RELAY_ENTRY_TARGETS?: Record<string, string>;
-  RELAY_NAMES?: Record<string, string>;
   /** How loaded the relays are, for the console (relay-load.ts). */
   RELAY_LOAD: DurableObjectNamespace<RelayLoad>;
   /** What was last found of each service, for still.fail/status (status.ts). */

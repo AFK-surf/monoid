@@ -23,7 +23,7 @@ import { grantKeys } from "./grants";
 import { langOf, setCloud, type Lang } from "./i18n.ts";
 import { isIconUrl } from "./icons";
 import { showsOf, type Shows } from "./noticeText";
-import { listedFromConfig, MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl, WAY_KINDS, waysOf, type Listed, type Relays } from "./relays";
+import { MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl, WAY_KINDS, waysOf, type Listed, type Relays } from "./relays";
 import { RELAY_TABLES, RELAY_TOKEN_TTL_SEC, relayPut, relayTokenOf, type RelayListed, type RelayTokenInput } from "./relay-registry";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
@@ -216,16 +216,9 @@ export class Directory extends DurableObject<Env> {
     for (const table of ["station_members", "enrollments"]) {
       if (!this.#rows(`PRAGMA table_info(${table})`).some((r) => r.name === "rig")) this.#run(`ALTER TABLE ${table} ADD COLUMN rig INTEGER`);
     }
-    // The cloud's list of relays (relay-registry.ts), and the tokens made for relays to put themselves on it; the list
-    // the deploy's config said (RELAY_URLS and the rest) taken as its first, once.
+    // The cloud's list of relays (relay-registry.ts), and the tokens made for relays to put themselves on it. (What a
+    // deploy's config said before was taken as the list once, 2026-11-17: the `relays-listed` migration.)
     ctx.storage.sql.exec(RELAY_TABLES);
-    if (!this.#one("SELECT 1 AS x FROM migrations WHERE name = 'relays-listed'")) {
-      this.ctx.storage.transactionSync(() => {
-        const now = nowSeconds();
-        for (const l of listedFromConfig(env)) this.#run("INSERT OR IGNORE INTO relays (url, name, target, added_at, added_by) VALUES (?, ?, ?, ?, 'config')", l.url, l.name, l.target, now);
-        this.#run("INSERT INTO migrations (name, at) VALUES ('relays-listed', ?)", now);
-      });
-    }
     if (sockets.where(env) === "objects") this.handOff();
     // What deliveries a restart cut short still owe.
     if (this.#one("SELECT 1 AS x FROM outbox LIMIT 1")) void ctx.blockConcurrencyWhile(() => this.#arm());

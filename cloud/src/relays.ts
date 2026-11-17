@@ -5,7 +5,6 @@
 // token the operator made for it. Each endpoint has all of them in its map: a station homes on the nearest, and a
 // device dials it on every one (client/core-ts mesh.ts). A listed relay's name is what people see a connection go
 // through (经中继北京).
-import { originList } from "./compat";
 import type { WayView } from "./types";
 
 /** One relay of the cloud's list: a relay, or (`target`) a way into the relay at `target` for devices alone, through a
@@ -50,30 +49,6 @@ export function relays(r: Relays, device = false): { relay_url: string; relay_ur
 
 /** What a relay is called: its name on the list, else its host. */
 export const relayName = (r: Relays, url: string): string => r.listed.find((l) => sameUrl(l.url) === sameUrl(url) && l.name !== "")?.name ?? new URL(url).host;
-
-/** The list as a deploy's config said it before the cloud kept one (RELAY_URLS, RELAY_ENTRIES, RELAY_ENTRY_TARGETS,
- * RELAY_NAMES): what the Directory takes as its list once, the first time it opens without one (relay-registry.ts). A
- * name of the cloud's own relay is kept too, as a row of its own. */
-export function listedFromConfig(env: { PUBLIC_ORIGIN: string; RELAY_URL?: string; RELAY_URLS?: string; RELAY_ENTRIES?: string; RELAY_ENTRY_TARGETS?: Record<string, string>; RELAY_NAMES?: Record<string, string> }): Listed[] {
-  const own = ownRelay(env);
-  const nameOf = (url: string) => Object.entries(env.RELAY_NAMES ?? {}).find(([u]) => sameUrl(u) === sameUrl(url))?.[1] ?? "";
-  const out: Listed[] = [];
-  const add = (url: string, target: string | null) => {
-    if (out.some((l) => sameUrl(l.url) === sameUrl(url))) return;
-    out.push({ url, name: nameOf(url), target });
-  };
-  if (nameOf(own) !== "") add(own, null);
-  for (const url of originList("", env.RELAY_URLS)) if (sameUrl(url) !== sameUrl(own)) add(url, null);
-  const relaysNow = [own, ...out.map((l) => l.url)];
-  for (const url of originList("", env.RELAY_ENTRIES)) {
-    if (relaysNow.some((u) => sameUrl(u) === sameUrl(url))) continue;
-    const target = Object.entries(env.RELAY_ENTRY_TARGETS ?? {}).find(([u]) => sameUrl(u) === sameUrl(url))?.[1];
-    const relay = target === undefined ? undefined : relaysNow.find((u) => sameUrl(u) === sameUrl(target));
-    // (an entry into no relay of the list is no way into anything)
-    if (relay !== undefined) add(url, relay);
-  }
-  return out;
-}
 
 /** At most this many relays of a workspace's own (directory.ts setRelays). */
 export const MAX_RELAYS = 4;

@@ -66,7 +66,7 @@ export function routes(): Route[] {
   return all.sort((a, b) => Number(a.path === "*") - Number(b.path === "*"));
 }
 
-/** The names a Worker reads from the environment: its string vars (an object var, RELAY_NAMES say, is not: the
+/** The names a Worker reads from the environment: its string vars (an object var, STATUS_PAGES say, is not: the
  * environment holds text) and, for the API, the secrets. */
 export function fromEnvironment(config: Wrangler, secrets: boolean): string[] {
   const vars = Object.entries(config.vars ?? {}).filter(([, v]) => typeof v === "string").map(([k]) => k);

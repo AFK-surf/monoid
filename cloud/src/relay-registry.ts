@@ -1,6 +1,6 @@
 // The cloud's list of relays (relays.ts), kept by the Directory (directory.ts `relayEnrolled` and the rest) and told to
 // every station in its state frame and every device in its `/v1/me` as it changes: what a deploy's config used to say
-// (RELAY_URLS and the rest), which the Directory took as its list once (`listedFromConfig`). Its operator keeps it, on
+// (RELAY_URLS and the rest), which the Directory took as its list once (2026-11-17). Its operator keeps it, on
 // the console or with ADMIN_TOKEN (api.ts `relayAdmin`): a relay put on it, a name changed, one taken off.
 //
 // A relay of another's is never put on it by deploying one (the user, 2026-11-17): only the operator puts one, or a

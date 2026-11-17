@@ -21,8 +21,8 @@
 // cloud with a new grant key (what the workspace lock's tests swap). With RESUME=1 as well, a restart is the same cloud
 // again (apps/mbui's e2e: a run's starting point restored, scripts/e2e-local.sh restore): its grant key and its "Dev"
 // workspace kept in PERSIST/dev.json at the first start, nothing made anew (no workspace, no enrollments).
-// RELAY_URLS (comma-separated) and RELAY_NAMES (JSON) are taken as the cloud's list of relays beside RELAY the first time it
-// starts (src/relay-registry.ts; a PERSIST that has one keeps it), as a deploy's config once was (the console's 中继 page:
+// RELAY_URLS (comma-separated) and RELAY_NAMES (JSON) are put on the cloud's list of relays beside RELAY as it starts, as
+// its operator puts them (src/relay-registry.ts, the console's 中继 page:
 // what they send to /v1/relays/load is believed with a cf-connecting-ip of their address, as Cloudflare would set it).
 // LOGIN_LIMIT_TIMES=<n> lets an address start n times the sign-ins the cloud allows (env.ts): apps/mbui's end to end signs
 // every device of a run in from 127.0.0.1, runs in a row within the same minute and day.

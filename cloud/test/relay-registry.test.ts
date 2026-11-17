@@ -1,6 +1,5 @@
-// The cloud's list of relays (src/relay-registry.ts): taken once from what the deploy's config said, kept by its
-// operator after (the console, ADMIN_TOKEN), a relay putting itself on it only with a token the operator made for it,
-// and every station and device told as it changes.
+// The cloud's list of relays (src/relay-registry.ts): kept by its operator (the console, ADMIN_TOKEN), a relay putting
+// itself on it only with a token the operator made for it, and every station and device told as it changes.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { harness } from "./harness.ts";
@@ -45,7 +44,7 @@ async function listen(h: Harness, token: string) {
 const BEIJING = "https://203.0.113.7";
 const NEW = "https://203.0.113.9";
 
-test("the list is taken once from the deploy's config; a relay puts itself on it only with the operator's token, and every station and device is told", async () => {
+test("a relay puts itself on the cloud's list only with the operator's token, and every station and device is told", async () => {
   const h = await harness({ relayUrls: BEIJING, relayNames: { [BEIJING]: "北京" } });
   try {
     const tokens = { alice: await h.login("alice"), bob: await h.login("bob") };
@@ -60,7 +59,7 @@ test("the list is taken once from the deploy's config; a relay puts itself on it
     const events = await listen(h, tokens.alice.access_token);
 
     const listed = (await (await console_("POST", "/v1/admin/relays/list", {})).json()) as any;
-    assert.deepEqual(listed.relays.map((r: any) => [r.url, r.name, r.added_by, r.enrolled]), [[BEIJING, "北京", "config", false]]);
+    assert.deepEqual(listed.relays.map((r: any) => [r.url, r.name, r.added_by, r.enrolled]), [[BEIJING, "北京", "admin-token", false]]);
     // Only the operator keeps it.
     assert.equal((await bob("POST", "/v1/admin/relays/token", { name: "x" })).status, 404);
     assert.equal((await h.fetch("/v1/admin/relays/list", { method: "POST", headers: { authorization: "Bearer wrong" } })).status, 401);
