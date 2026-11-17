@@ -875,6 +875,8 @@ fn main {
         { "thread": Number(thread, ..), .. } => Some(@lookups.people_step(db, thread.to_int64()))
         _ => None
       }))
+    (Some("harness-store-threads"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => @store_threads.harness(host, db))
     (Some("legacy-edits"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "legacy edits", (db, ask) => match ask {
         { "thread": Number(_, ..), .. } => Some(@legacy.edits_step(db))
