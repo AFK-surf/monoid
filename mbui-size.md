@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.86 | 120.08 |
 | [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 2.46 | 3.44 | 14.66 | 35.84 | 57.36 | 31.42 | 64.78 | 100.16 | 122.45 |
 | [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
-| [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 2.45 | 3.44 | 14.63 | 35.79 | 57.11 | 31.41 | 64.73 | 100.29 | 116.13 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [6604bd209](https://github.com/AFK-surf/monoid/commit/6604bd209e1b26a942e5d417aa0ed68c87af7ad0) app: a paragraph with no link holds no room for it | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
-| [8d9f488fe](https://github.com/AFK-surf/monoid/commit/8d9f488fe69d068074884211267e8d13a4069873) mbui: 对话框全部改为节点（open_dialog 删除），密钥、密钥详情、共享调试、本机缓存、 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.55 | 4.13 | 57.46 |
