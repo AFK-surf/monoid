@@ -115,13 +115,16 @@ for rt,ds in d.items():
     if x['name']=='$DEV_NAME' and x.get('isAvailable'): print(x['udid']); sys.exit()
 ")
   if [ -z "$id" ]; then
-    # (an iPhone Pro of those the runtime itself supports, the oldest: a runtime drops the oldest types as it comes,
-    # iOS 27.1 the iPhone 11 Pro the whole list's last one was, its create refused as an incompatible device)
+    # (an iPhone Pro of those a runtime itself supports, the oldest, of the newest runtime that supports one: a
+    # runtime drops the oldest types as it comes (iOS 27.1 the iPhone 11 Pro, the whole list's last, made before),
+    # and one newer than this Xcode supports none at all; what each skipped supports said)
     local rt_dt=$(xcrun simctl list runtimes -j | python3 -c "
 import json,re,sys
-r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']][-1]
-t=sorted((x for x in r['supportedDeviceTypes'] if re.fullmatch(r'iPhone \\d+ Pro',x['name'])),key=lambda x:int(x['name'].split()[1]))
-print(r['identifier'],t[0]['identifier'])")
+for r in reversed([x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]):
+  t=sorted((x for x in r.get('supportedDeviceTypes',[]) if re.fullmatch(r'iPhone \\d+ Pro',x['name'])),key=lambda x:int(x['name'].split()[1]))
+  if t: print(r['identifier'],t[0]['identifier']); sys.exit()
+  print('ios: runtime',r['identifier'],'supports no iPhone Pro:',[x['name'] for x in r.get('supportedDeviceTypes',[])],file=sys.stderr)
+sys.exit(1)")
     local rt=${rt_dt% *} dt=${rt_dt#* }
     id=$(xcrun simctl create "$DEV_NAME" "$dt" "$rt")
   fi
