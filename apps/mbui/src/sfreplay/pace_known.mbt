@@ -114,11 +114,8 @@ let pace_splits_known : Map[String, Array[Int]] = {
 /// moment and its strict pass the run's steps at the run's moments (the replay's rig, the coordinator of the migration,
 /// 2026-11-12): a split each, untraced yet, found where a stop before it had hidden it or where the measure came truer.
 /// Held as pace_splits_known is, and only falls: each is traced in turn and goes with its cause.
-// kept across runs: a value
-let pace_splits_untraced : Map[String, Array[Int]] = {
-  // (each split as PACE says it in the flow's run)
-  "wide-switcher": [120],
-}
+// kept across runs: a value (each split as PACE says it in the flow's run: none left)
+let pace_splits_untraced : Map[String, Array[Int]] = Map([])
 
 ///|
 /// The flows whose strict pass asks what their run did not, known, by trace: each ask exactly, in its order, at its
@@ -286,6 +283,13 @@ let strict_known : Map[String, (String, String)] = Map([
     (
       "its motion at rest at 2817.304931640625 ms, 66.697021484375 ms after the run's next step (2750.60791015625 ms; its timeline 37.575927734375 ms later from its first step); said since the last step that acted: ",
       "untraced: a motion at rest 66.7 ms after the run's next step, nothing said since the last step that acted (50 ms later since #5953: the add panel's note a line longer, its sheet taller)",
+    ),
+  ),
+  (
+    "wide-switcher",
+    (
+      "src/sfreplay/flows/wide_switcher_test.mbt:15:5-15:17@stillfail: not so at 1185.19140625 ms, the run's moment for it (its timeline 37.46728515625 ms later from its first step): so at 1201.19140625 ms, 16 ms later",
+      "untraced: ⌘K's panel goes as the chat its Enter opened comes on top, which waits for the face its page shows (`picture` with `kept`, sfbase's pictures_in): the replay gives that answer a frame after the run's moment for the panel gone (the trace recorded again 2026-11-17, ⌘K made as nodes)",
     ),
   ),
   (

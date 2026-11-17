@@ -65,12 +65,17 @@ fn dialog_layer_node(
   dims? : () -> Bool = fn() { true },
   covered? : () -> Bool = fn() { false },
   within? : () -> Bool = fn() { false },
+  back_within? : () -> Bool,
   first_stop? : () -> Bool = fn() { false },
   first_takes? : (@view.Said) -> Bool,
   scrim? : () -> Int64 = fn() { @ui.tree_theme().scrim },
   ground_ms? : Double = confirm_ground_ms,
   night_with_ground? : Bool = false,
   top_share? : Double = 0.0,
+  come? : @motion.Trans = @kit.dialog_in,
+  come_ms? : Double = @kit.dialog_ms,
+  go? : @motion.Trans = @kit.pop_out,
+  go_ms? : Double = @kit.pop_out_ms,
 ) -> Unit {
   parent.show(
     open,
@@ -90,11 +95,11 @@ fn dialog_layer_node(
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
-          shown.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
-          dim.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          shown.go(layer, 0.0, go_ms, ease=Leave)
+          dim.go(layer, 0.0, go_ms, ease=Leave)
         } else {
           gate.go(layer, fn() {
-            shown.go(layer, 1.0, @kit.dialog_ms)
+            shown.go(layer, 1.0, come_ms)
             dim.go(layer, 1.0, ground_ms)
           })
         }
@@ -102,9 +107,9 @@ fn dialog_layer_node(
       let look = fn() {
         let p = shown.shown(layer)
         if layer.leaving() {
-          @kit.pop_out.at(p, p)
+          go.at(p, p)
         } else {
-          @kit.dialog_in.at(p, p)
+          come.at(p, p)
         }
       }
       let live = fn() { !layer.leaving() }
@@ -154,7 +159,7 @@ fn dialog_layer_node(
         }
       })
       .takes_back(fn() {
-        if @signals.untracked(live) && !within() {
+        if @signals.untracked(live) && !back_within.unwrap_or(within)() {
           cancel()
         }
       })
@@ -193,8 +198,33 @@ fn dialog_layer_node(
       gate.seal(layer)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=go_ms,
   )
+}
+
+///|
+/// A panel over the whole window as a dialog of the presenters' is (dialog_layer_node's), in `parent` while `open()`: a
+/// modal layer, what is under it dimmed by the theme's scrim as far as its ground has come in (over `ground_ms`), its
+/// panel (`panel`: made in the row across the window, `top_share` of the window's height over it, given the layer and
+/// its look as it comes and goes; the node given the focus as it opens) coming in as `come` says over `come_ms` and
+/// going as `go` over `go_ms` (0: at once); Escape, back and a press outside its panel close it (`cancel`), Escape
+/// offered to `within` first (true where it took it: a step back within it), back to `back_within` (none: `within`).
+pub fn over_panel_node(
+  parent : @view.View,
+  open : () -> Bool,
+  cancel : () -> Unit,
+  panel : (@view.View, @view.View, () -> @ui.Look) -> @view.View,
+  within? : () -> Bool = fn() { false },
+  back_within? : () -> Bool,
+  top_share? : Double = 0.0,
+  come? : @motion.Trans = @kit.dialog_in,
+  come_ms? : Double = @kit.dialog_ms,
+  ground_ms? : Double = confirm_ground_ms,
+  go? : @motion.Trans = @kit.pop_out,
+  go_ms? : Double = @kit.pop_out_ms,
+) -> Unit {
+  // (its layer over all else in `parent` itself: dialog_layer_node's; nothing made while it is closed but that)
+  dialog_layer_node(parent, open, cancel, fn(across, layer, look, _) { panel(across, layer, look) }, outside=true, within~, back_within?, top_share~, come~, come_ms~, ground_ms~, go~, go_ms~)
 }
 
 ///|

@@ -177,11 +177,16 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
       }
     },
   )
+  // ⌘K's search over a page other than the lists (sfdesk's keys.mbt, sfpages' search.mbt), under the bars: on the
+  // page's ground, nothing of the page under it seen
+  v.show(at_once=true, @sfpages.search_over_on, fn(k) {
+    k.over(Is(true)) |> ignore
+    @sfpages.search_over_ground_node(k)
+    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
+  })
   @ui.old(v, fn(c) {
     match workspace_in_view(src).0 {
       Some(w) => {
-        // ⌘K's search over a page other than the lists (sfdesk's keys.mbt, sfpages' search.mbt), under the bars
-        @sfpages.search_over(c, src, w, status_top())
         narrow_over(c, src, w)
         signed_in_over(c, src, w)
       }
@@ -192,6 +197,8 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // (a press where it has nothing of its own its pages', a page made once as nodes among them: entry_tree's over's)
   |> @ui.old_takes_own
   |> ignore
+  // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
+  @sfdesk.switcher_node(v, src)
   // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
   // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
   bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
@@ -356,7 +363,7 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 
 ///|
 /// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
-/// the settings put up, ⌘K and ⌘/, the presenters, the toasts, the loupe.
+/// the settings put up, ⌘/, the presenters, the toasts, the loupe.
 fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
   // : put up when no other sheet is
@@ -365,9 +372,8 @@ fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   @settings.vault_prompts(settings_core(src, w), !sheet_open())
   // (the core what the settings put up over a page draws with, put up by what has none at hand)
   @settings.panels_frame(settings_core(src, w), w.id)
-  // ⌘K's panel and ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's switcher.mbt,
-  // shortcuts.mbt)
-  @sfdesk.switcher(c, src, w)
+  // ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's shortcuts.mbt; ⌘K's panel the
+  // shells' own as nodes, sfdesk's switcher_node)
   @sfdesk.keys_dialog(c, src)
   // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)

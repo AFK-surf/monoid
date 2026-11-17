@@ -27,6 +27,7 @@ pub(all) struct Offered {
 
 ///|
 /// A command as the list shows it: its part, its part's heading, its name, as the core says.
+#derive(Eq)
 priv struct Listed {
   id : String
   group : String
@@ -55,15 +56,31 @@ priv enum FindLine {
 }
 
 ///|
-/// The search as it stands: the kind looked at alone ("" every kind); the row chosen (a signal: the rows it was built
-/// into, kept as their nodes, built again as it changes), and whether it is shown so (a mouse's lines mark it; a
-/// finger's mark none, so its keyboard's search key opens nothing); its field and what is
-/// typed; the view last read (kept while the next words are looked up) and whether reading it failed; what was last
-/// asked of `commands.find`, its last answer and what it answered (kept: the list opened again with the same words has
-/// it at once; for other words none until the core has answered them); the lines as last drawn (what Enter opens); the
-/// list to go back to its top (into one kind or out of it).
+/// Two lines the same: what they show, a command by what it is offered as (its id; what it runs is the frame's now).
+impl Eq for FindLine with equal(a, b) {
+  match (a, b) {
+    (Head(x), Head(y)) | (More(x), More(y)) | (Note(x), Note(y)) | (Said(x), Said(y)) => x == y
+    (Back, Back) => true
+    (Command(l, o), Command(m, p)) => l == m && o.id == p.id && o.icon == p.icon && o.keys == p.keys
+    (Chat(x), Chat(y)) => x == y
+    (Message(x), Message(y)) => x == y
+    (Item(x), Item(y)) => x == y
+    (Wait(x, e), Wait(y, f)) => x == y && e == f
+    _ => false
+  }
+}
+
+///|
+/// The search as it stands: the kind looked at alone ("" every kind); the row chosen (its place among those to choose),
+/// and whether it is shown so (where the screen has keys: a finger's mark none, so its keyboard's search key opens
+/// nothing); its field and what is typed; the view last read (kept while the next words are looked up) and whether
+/// reading it failed; what was last asked of `commands.find`, its last answer and what it answered (kept: the list
+/// opened again with the same words has it at once; for other words none until the core has answered them); the lines
+/// as last shown (what Enter opens) and those of them to choose; how many times ↑ ↓ chose a line (the one chosen
+/// brought into view then) and the list was sent back to its top (into one kind or out of it). Each a signal: what
+/// shows it follows it.
 priv struct Finder {
-  mut kind : String
+  kind : @signals.Signal[String]
   chosen : @signals.Signal[Int]
   mut chosen_shown : Bool
   field : @ui.Field
@@ -76,10 +93,8 @@ priv struct Finder {
   listed_for : @signals.Signal[String]
   lines : @signals.Signal[Array[FindLine]]
   picks : @signals.Signal[Array[Int]]
-  mut to_top : Bool
-  /// how many times ↑ ↓ chose a line (Ctx::on_key's), and as of which the line chosen was last brought into view
   keyed : @signals.Signal[Int]
-  mut keyed_shown : Int
+  to_top : @signals.Signal[Int]
   /// the `search` topic read last (its params), let go of as the next words are read or the search closes: one read
   /// and kept is shown to the core, which asks its stations again with each change of theirs (each a search of the
   /// machine's files there)
@@ -88,7 +103,7 @@ priv struct Finder {
 
 ///|
 let finder : Finder = {
-  kind: "",
+  kind: @signals.signal("", same=fn(a, b) { a == b }),
   chosen: @signals.signal(0, same=fn(a, b) { a == b }),
   chosen_shown: false,
   field: @ui.Field::new(),
@@ -102,9 +117,8 @@ let finder : Finder = {
   // (by the one array: a command's line holds the function it runs)
   lines: @signals.signal_ref([]),
   picks: @signals.signal([]),
-  to_top: false,
   keyed: @signals.signal(0, same=fn(a, b) { a == b }),
-  keyed_shown: 0,
+  to_top: @signals.signal(0, same=fn(a, b) { a == b }),
   held: None,
 }
 
@@ -121,7 +135,8 @@ fn finder_reset() -> Unit {
 }
 
 ///|
-/// What one opening of the search leaves behind, put back as it closes (its frame says when).
+/// What one opening of the search leaves behind, put back as it closes (its frame says when): the `search` topic it
+/// read last let go of.
 pub fn finder_cleared() -> Unit {
   match finder_leave.val {
     Some(leave) => leave()
@@ -129,7 +144,7 @@ pub fn finder_cleared() -> Unit {
   }
   finder_leave.val = None
   finder.held = None
-  finder.kind = ""
+  finder.kind.set("")
   finder.chosen.set(0)
   finder.query = ""
   finder.field.set("")
@@ -147,9 +162,6 @@ pub fn finder_cleared() -> Unit {
   })
   finder.kept_of.set((-1, "", ""))
   finder.failed.set(false)
-  finder.to_top = false
-  finder.keyed.set(0)
-  finder.keyed_shown = 0
 }
 
 ///|
@@ -158,7 +170,7 @@ pub fn finder_start(words : String, kind? : String = "") -> Unit {
   finder_cleared()
   finder.query = words
   finder.field.set(words)
-  finder.kind = kind
+  finder.kind.set(kind)
 }
 
 ///|
@@ -170,7 +182,7 @@ pub fn finder_field() -> @ui.Field {
 ///|
 /// The kind looked at alone ("" every kind).
 pub fn finder_kind() -> String {
-  finder.kind
+  finder.kind.untracked()
 }
 
 ///|
@@ -184,7 +196,7 @@ pub fn finder_query() -> String {
 pub fn finder_typed(words : String) -> Unit {
   if words != finder.query {
     finder.query = words
-    finder.chosen.set(if finder.kind != "" { 1 } else { 0 })
+    finder.chosen.set(if finder.kind.untracked() != "" { 1 } else { 0 })
   }
 }
 
@@ -203,12 +215,12 @@ pub fn finder_escape() -> Bool {
 ///|
 /// In one kind's list, back to all of them (全部结果, back, and Esc with nothing typed). Whether it went back.
 pub fn finder_back() -> Bool {
-  if finder.kind == "" {
+  if finder.kind.untracked() == "" {
     return false
   }
-  finder.kind = ""
+  finder.kind.set("")
   finder.chosen.set(0)
-  finder.to_top = true
+  finder.to_top.set(finder.to_top.untracked() + 1)
   true
 }
 
@@ -216,118 +228,63 @@ pub fn finder_back() -> Bool {
 /// Enter: the line chosen opened where it is shown chosen (`close` first, where the frame closes the search as one
 /// opens).
 pub fn finder_enter(close : () -> Unit) -> Unit {
-  match finder.picks.get().get(finder.chosen.untracked()) {
-    Some(k) if finder.chosen_shown => finder_go(finder.lines.get()[k], close)
+  match finder.picks.untracked().get(finder.chosen.untracked()) {
+    Some(k) if finder.chosen_shown => finder_go(finder.lines.untracked()[k], close)
     _ => ()
   }
 }
 
 ///|
-/// What of `offered` the core lists for `query` (`commands.find`: by name, id or other words, part by part; with nothing
-/// typed all but what is only found by typing), each with its name; none until it has answered these words. Asked once
-/// the frame is built, when what is asked changes.
-fn commands_of(c : @ui.Ctx, src : Source, query : String, offered : Array[Offered]) -> Array[(Listed, Offered)] {
-  let out : Array[(Listed, Offered)] = []
-  if offered.is_empty() {
-    return out
+/// What the `search` topic is asked for `query` over workspace `scope`, of the kind looked at alone where there is one.
+fn search_params(scope : String, query : String) -> Map[String, Json] {
+  let params : Map[String, Json] = { "scope": Json::string(scope), "query": Json::string(query) }
+  let kind = finder.kind.untracked()
+  if kind != "" {
+    params["kind"] = Json::string(kind)
   }
-  let params : Json = {
-    "query": Json::string(query),
-    "offered": Json::array(
-      offered.map(fn(o) {
-        let m : Map[String, Json] = { "id": Json::string(o.id) }
-        if o.label != "" {
-          m["label"] = Json::string(o.label)
-        }
-        if o.group != "" {
-          m["group"] = Json::string(o.group)
-        }
-        if o.words != "" {
-          m["words"] = Json::string(o.words)
-        }
-        if o.typed {
-          m["typed"] = Json::boolean(true)
-        }
-        if o.version != "" {
-          m["version"] = Json::string(o.version)
-        }
-        if o.station != "" {
-          m["station"] = Json::string(o.station)
-        }
-        Json::object(m)
-      }),
-    ),
-  }
-  let asked = params.stringify()
-  if asked != finder.asked.get() {
-    c.after_build("switcher/commands.find", fn() {
-      if finder.asked.get() != asked {
-        finder.asked.set(asked)
-        (src.call)("commands.find", params, fn(res) {
-          match res {
-            Ok(v) if finder.asked.get() == asked => {
-              let listed : Array[Listed] = []
-              for g in items(Some(v), "groups") {
-                let g = Some(g)
-                for f in items(g, "commands") {
-                  listed.push({
-                    id: text(Some(f), "id"),
-                    group: text(g, "group"),
-                    heading: text(g, "title"),
-                    label: text(Some(f), "label"),
-                  })
-                }
-              }
-              finder.listed.replace(listed)
-              finder.listed_for.set(asked)
-            }
-            _ => ()
-          }
-        })
-      }
-    })
-  }
-  if finder.listed_for.get() != asked {
-    return out
-  }
-  for l in finder.listed {
-    for o in offered {
-      if o.id == l.id {
-        out.push((l, o))
-        break
-      }
-    }
-  }
-  out
+  params
 }
 
 ///|
-/// What the words find (the `search` topic over the workspace: with none, the latest chats), the last view read while
-/// the next is looked up; whether reading it failed.
-fn search_of(src : Source, scope : String, query : String) -> SearchView? {
-  let params : Map[String, Json] = { "scope": Json::string(scope), "query": Json::string(query) }
-  if finder.kind != "" {
-    params["kind"] = Json::string(finder.kind)
-  }
+/// The `search` topic asked with `params` held from now: the one held before let go of where it was asked otherwise,
+/// this one as the search closes (finder_cleared).
+fn search_hold(src : Source, params : Map[String, Json]) -> Unit {
   match finder.held {
     Some(before) if before != params => (src.leave)("search", before, @sfbase.TopicLeave::Legacy)
-    _ => ()
+    Some(_) => return
+    None => ()
   }
   finder.held = Some(params)
   finder_leave.val = Some(fn() { (src.leave)("search", params, @sfbase.TopicLeave::Legacy) })
-  let topic = src.topic("search", params).get().snapshot()
+}
+
+///|
+/// What the search's `topic` says of `query` taken: whether reading it failed; its value the view kept, the last read
+/// kept while the next is looked up.
+fn search_took(topic : @sfbase.TopicState, query : String) -> Unit {
   finder.failed.set(topic.error is Some(_))
   match topic.value {
     Some(v) => {
-      let of = (topic.version, query, finder.kind)
-      if finder.kept_of.get() != of || finder.kept.get() is None {
+      let of = (topic.version, query, finder.kind.untracked())
+      if finder.kept_of.untracked() != of || finder.kept.untracked() is None {
         finder.kept.set(Some(search_view(v)))
         finder.kept_of.set(of)
       }
     }
     None => ()
   }
-  finder.kept.get()
+}
+
+///|
+/// What the words find (the `search` topic over the workspace: with none, the latest chats) read now, held
+/// (search_hold) and taken (search_took): the last view read while the next is looked up. (Held by its tests,
+/// finder_held_wbtest.mbt: the list made once holds and takes it as it reads it, finder_list_node.)
+#warnings("-unused_value")
+fn search_of(src : Source, scope : String, query : String) -> SearchView? {
+  let params = search_params(scope, query)
+  search_hold(src, params)
+  search_took(src.topic("search", params).get(), query)
+  finder.kept.untracked()
 }
 
 ///|
@@ -337,7 +294,7 @@ fn search_of(src : Source, scope : String, query : String) -> SearchView? {
 /// chats where `idle_chats` (⌘K's), then what can be done.
 fn lines_of(view : SearchView?, typed : Bool, idle_chats : Bool, commands : Array[(Listed, Offered)]) -> Array[FindLine] {
   let lines : Array[FindLine] = []
-  let kind = finder.kind
+  let kind = finder.kind.get()
   let actions = if kind != "" { [] } else { commands }
   let add_actions = fn() {
     for k, x in actions {
@@ -422,16 +379,16 @@ fn lines_of(view : SearchView?, typed : Bool, idle_chats : Bool, commands : Arra
 /// A line picked (Enter, a press): a command done, a chat opened (a message at it, its words marked), something else
 /// where the core says it opens, each after `close`; 查看更多 its kind alone, 全部结果 all again.
 fn finder_go(line : FindLine, close : () -> Unit) -> Unit {
-  let words = match finder.kept.get() {
+  let words = match finder.kept.untracked() {
     Some(v) => v.words
     None => []
   }
   match line {
     Back => ignore(finder_back())
     More(kind) => {
-      finder.kind = kind
+      finder.kind.set(kind)
       finder.chosen.set(1)
-      finder.to_top = true
+      finder.to_top.set(finder.to_top.untracked() + 1)
     }
     Command(_, o) => {
       close()
@@ -463,128 +420,6 @@ fn pickable(l : FindLine) -> Bool {
 }
 
 ///|
-/// The search's list in the box it is given, for workspace `w`: what the words in the field find and what of `offered`
-/// can be done by them; with nothing typed the latest chats where `idle_chats`. `most`: as tall as its lines up to so
-/// much (⌘K's panel), else the box's height. `close`: what the frame does as a line opens (⌘K closes; the phone's page
-/// stays under the chat). ↑ / ↓ choose a line; a line says who, where and when under its words where the box it is
-/// drawn into is narrow (found_stacked). `at`: where its list stands (a panel's, ⌘K's, as a side column's; the
-/// phone's search across the whole screen), its lines in and rounded so. `foot_in`: room after its last line, which
-/// also sets the distance over which what scrolls past its foot fades away (⌘K's panel).
-pub fn finder_list(
-  c : @ui.Ctx,
-  src : Source,
-  w : Workspace,
-  offered : Array[Offered],
-  close : () -> Unit,
-  idle_chats? : Bool = false,
-  most? : Double,
-  at? : @sf.ListAt = Side,
-  foot_in? : Double = 0.0,
-) -> Unit {
-  let f = @sf.theme().chat_list
-  // (the words as the field has them, followed: built again as they are typed, whatever field it is)
-  finder_typed(finder.field.text())
-  let query = finder.query.trim(chars=" \t\n\r\u{3000}").to_owned()
-  let typed = query != ""
-  let commands = commands_of(c, src, query, offered)
-  let view = search_of(src, w.id, query)
-  let lines = lines_of(view, typed, idle_chats, commands)
-  let picks : Array[Int] = []
-  let pick_of : Array[Int] = []
-  for i, l in lines {
-    if pickable(l) {
-      pick_of.push(picks.length())
-      picks.push(i)
-    } else {
-      pick_of.push(-1)
-    }
-  }
-  finder.lines.set(lines)
-  finder.picks.set(picks)
-  // (chosen by the keys where the screen has them: shown so, Enter opens it)
-  finder.chosen_shown = f.keys
-  // (read by the rows it shows in, not by what builds them: the rows alone built again as it changes)
-  let mut chosen = finder.chosen.untracked()
-  if chosen >= picks.length() {
-    chosen = if picks.length() > 0 { picks.length() - 1 } else { 0 }
-  }
-  finder.chosen.set(chosen)
-  // ↑ ↓ choose a line, each as it comes to the field with the focus, before it sees it (Ctx::on_key); the line chosen
-  // by them brought into view as it is built after
-  let count = picks.length()
-  c.on_key(c.focused_id(), fn(code, mods) {
-    guard mods == 0 && (code == @ui.key_code_down || code == @ui.key_code_up) else { return false }
-    let at = finder.chosen.get() + (if code == @ui.key_code_down { 1 } else { -1 })
-    if at >= 0 && at < count {
-      finder.chosen.set(at)
-      finder.keyed.set(finder.keyed.get() + 1)
-    }
-    true
-  })
-  let keyed = finder.keyed.get() != finder.keyed_shown
-  finder.keyed_shown = finder.keyed.get()
-  let key = "switcher/list"
-  if keyed {
-    match picks.get(chosen) {
-      Some(k) => c.list_scroll_to(key, if k > switcher_lead { k - switcher_lead } else { 0 })
-      None => ()
-    }
-  }
-  if finder.to_top {
-    finder.to_top = false
-    c.list_scroll_to(key, 0)
-  }
-  // (several stations: what is found says which it is on)
-  let several = @sfbase.station_marks(src, w.id).length() > 1
-  let stacked = found_stacked(c.width)
-  // (as high as its lines come to at the system's size of words: theirs grown by their words, @sf.found_grown)
-  let scale = @ui.font_scale()
-  let two_grown = @sf.found_grown(f.found, scale, two=true)
-  let head_grown = @sf.found_grown(f.found, scale, two=false)
-  let est = lines.fold(init=foot_in, fn(h, l) {
-    let line_h = finder_h(l, f.found, stacked)
-    h +
-    line_h +
-    (match l {
-      Head(_) => head_grown
-      _ if finder_two(l, stacked) => two_grown
-      _ => 0.0
-    })
-  })
-  let h : @ui.Size = match most {
-    Some(m) => Px(dmin(m, est))
-    None => Fill(1.0)
-  }
-  let list = c.list(
-    key,
-    lines.length() + (if foot_in > 0.0 { 1 } else { 0 }),
-    f.found.row_h,
-    fn(i) {
-      if i == lines.length() {
-        c.box(style=@ui.style(h=Fixed(foot_in)), fn() {  }) |> ignore
-        return
-      }
-      let line = lines[i]
-      let lk = "switcher/row/" + finder_key(line)
-      let k = pick_of[i]
-      if k < 0 {
-        quiet_line(c, line, at)
-        return
-      }
-      let id = c.id(lk)
-      c.on_press(id, fn() { finder_go(line, close) })
-      // (the pointer over a line chooses it, as the keys do)
-      if f.keys && c.hand_on(id) {
-        finder.chosen.set(k)
-      }
-      found_line(c, lk, id, line, f.keys && k == finder.chosen.get(), several, at, stacked)
-    },
-    h~,
-  )
-  c.fade_to(list, list, foot=foot_in)
-}
-
-///|
 /// How many lines stay over the one the keys chose as the list scrolls to it.
 let switcher_lead : Int = 3
 
@@ -600,7 +435,8 @@ fn finder_key(line : FindLine) -> String {
     Message(m) => "m/" + m.station + "/" + m.chat.session + "/" + m.seq.to_string()
     Item(it) => "i/" + it.key
     Note(w) => "note/" + w
-    Wait(w, _) => "wait/" + w
+    // (waiting and failed apart: a block of its own each, a spinner's or the words in red: quiet_line_node)
+    Wait(w, e) => (if e { "wait!/" } else { "wait/" }) + w
     Said(w) => "said/" + w
   }
 }
@@ -629,173 +465,6 @@ fn finder_two(l : FindLine, stacked : Bool) -> Bool {
 }
 
 ///|
-/// What is not chosen: a kind's heading, none found, the stations still answering, what the core says.
-fn quiet_line(c : @ui.Ctx, line : FindLine, at : @sf.ListAt) -> Unit {
-  let f = @sf.theme().chat_list.found
-  let inn = @sf.found_line_in(at)
-  match line {
-    Head(words) =>
-      c.box(style=f.head.then(@sf.found_head_in(at)), fn() { c.text(words, style=f.head_words) |> ignore }) |> ignore
-    Note(words) => c.box(style=f.quiet.then(inn), fn() { c.text(words, style=f.quiet_words) |> ignore }) |> ignore
-    Wait(words, error) =>
-      c.box(style=(if error { f.wait_failing } else { f.wait }).then(inn), fn() {
-        @sf.wait_line(c, words, key="search", error~)
-      })
-      |> ignore
-    Said(words) => c.box(style=f.wait.then(inn), fn() { c.text(words, style=f.said_words) |> ignore }) |> ignore
-    _ => ()
-  }
-}
-
-///|
-/// A line of what was found (Finder's rows, SearchPage's): its mark, then what it is, or the words found in it (they
-/// bold, stroked under), with who, where and when at its end; where it is under that (its chat; an item's line with the
-/// words) where it says one. A chat its agent's maker, a message its chat's; a station its mark; something else its
-/// kind's icon; a command its icon, its keys at its end; 全部结果 and 查看更多 in the link's ink. `chosen`: by the keys,
-/// on the words' tint; pressed, rippled where a finger presses. `several`: more than one station, so where is said.
-/// `list_at`: where its list stands, the line in and rounded so (@sf.found_row_in). `narrow`: its list too narrow for
-/// who, where and when beside its words (found_stacked).
-fn found_line(
-  c : @ui.Ctx,
-  key : String,
-  id : Int,
-  line : FindLine,
-  chosen : Bool,
-  several : Bool,
-  list_at : @sf.ListAt,
-  narrow : Bool,
-) -> Unit {
-  let t = @sf.theme()
-  let f = t.chat_list.found
-  // who, where and when (`meta`), said at the end of its words
-  let meta_all : Array[String] = match line {
-    Chat(ch) =>
-      [
-        if ch.archived { @sf.t("web-main.switcher.archived") } else { "" },
-        if ch.item.hidden == Some(true) { @sf.t("web-main.filter.hidden") } else { "" },
-        if several { ch.item.station_name } else { "" },
-        ch.item.ago,
-      ]
-    Message(m) => [m.by, m.ago]
-    Item(it) => [if it.kind != "station" && several { it.station_name } else { "" }, it.ago]
-    _ => []
-  }
-  let parts = meta_all.filter(fn(p) { p != "" })
-  let meta = @sf.join_meta(parts)
-  // where the line is narrow, who, where and when go under its words, its first line all theirs (found_stacked)
-  let stacked = meta != "" && narrow
-  let two = stacked ||
-    (match line {
-      Message(_) => true
-      Item(it) => it.text != ""
-      Chat(ch) => ch.found is Some(_)
-      _ => false
-    })
-  // (a line of two: its mark as high as its first line, on its middle however large its words, @sf.found_mark_h)
-  let mark_h = if two { @sf.found_mark_h(f, @ui.font_scale()) } else { 0.0 }
-  let mark_look = if mark_h > 0.0 { f.mark.then(@ui.style(min_h=Fixed(mark_h))) } else { f.mark }
-  let mark = fn(icon : String) {
-    c.box(style=mark_look, fn() { @sf.icon(c, icon, size=f.icon, color=t.p.muted) |> ignore }) |> ignore
-  }
-  // a chat's picture (ChatPicture): its first agent's maker's mark
-  let picture = fn(item : ChatItem) {
-    match item.agents.get(0) {
-      Some(a) => c.box(style=mark_look, fn() { @sf.maker_mark(c, a.maker, a.runtime, f.logo) |> ignore }) |> ignore
-      None => mark("chat")
-    }
-  }
-  // its words: the first line (`first`), and under it `under` where there is one; who, where and when (`meta`) at the
-  // first line's end where the line is wide enough to leave the words theirs, else at the end of the line under it,
-  // beside where it is (`stacked`)
-  let words = fn(first : () -> Unit, meta : String, under : () -> Unit) {
-    let said = fn() {
-      if meta != "" && stacked && parts.length() > 1 && meta == @sf.join_meta(parts) {
-        // (beside where it is, who and where leave the line before its name is cut to fewer than four of its
-        // size; when stays)
-        for i, part in parts {
-          if i + 1 < parts.length() {
-            c.box(drop=1, fn() { c.text(part + " ·", style=f.meta) |> ignore }) |> ignore
-          } else {
-            c.text(part, style=f.meta) |> ignore
-          }
-        }
-      } else if meta != "" {
-        c.text(meta, style=f.meta) |> ignore
-      }
-    }
-    c.box(style=f.column, fn() {
-      c.box(style=f.first, fn() {
-        first()
-        if !stacked {
-          said()
-        }
-      })
-      |> ignore
-      if stacked {
-        c.box(style=f.second, fn() {
-          under()
-          said()
-        })
-        |> ignore
-      } else {
-        under()
-      }
-    })
-    |> ignore
-  }
-  c.box(style=(if two { f.two } else { f.row }).then(@sf.found_row_in(list_at)), selected=chosen, id~, fn() {
-    match line {
-      Back => {
-        mark("chevron-left")
-        c.text(@sf.t("web-main.switcher.back"), style=f.link) |> ignore
-      }
-      More(_) => {
-        mark("more")
-        c.text(@sf.t("web-main.switcher.more"), style=f.link) |> ignore
-      }
-      Command(l, o) => {
-        mark(o.icon)
-        words(fn() { c.text(l.label, style=f.title) |> ignore }, o.keys, fn() {  })
-      }
-      Chat(ch) => {
-        picture(ch.item)
-        match ch.found {
-          Some(found) =>
-            words(fn() { @sf.found_line(c, "sw/" + key, found, ch.marks, f.words, t.p.text) }, meta, fn() {
-              @sf.name_words(c, ch.item.title, f.under) |> ignore
-            })
-          None => words(fn() { @sf.name_words(c, ch.item.title, f.title) |> ignore }, meta, fn() {  })
-        }
-      }
-      Message(m) => {
-        picture(m.chat)
-        words(fn() { @sf.found_line(c, "sw/" + key, m.text, m.marks, f.words, t.p.text) }, meta, fn() {
-          @sf.name_words(c, m.chat.title, f.under) |> ignore
-        })
-      }
-      Item(it) => {
-        if it.kind == "station" {
-          c.box(style=mark_look, fn() {
-            @sf.station_mark(c, it.station_emoji, it.station_icon, f.icon, t.p.muted, none="server")
-          })
-          |> ignore
-        } else {
-          mark(if it.kind == "file" && it.dir { "folder" } else { @sf.kind_icon(it.kind) })
-        }
-        words(fn() { @sf.name_words(c, it.title, f.title) |> ignore }, meta, fn() {
-          if it.text != "" {
-            @sf.found_line(c, "sw/i/" + key, it.text, it.marks, f.under_words, t.p.text)
-          }
-        })
-      }
-      Head(_) | Note(_) | Wait(_, _) | Said(_) => ()
-    }
-    @sf.row_ripple(c, id)
-  })
-  |> ignore
-}
-
-///|
 /// Narrower than this, a line says who, where and when under its first line (beside where it is, where it says one):
 /// its first line all its words' (a chat's title, the words found), one line or two (as a file's row puts its size and
 /// time under its name narrower than its row_stack_below).
@@ -803,6 +472,676 @@ let found_stack_below : Double = 440.0
 
 ///|
 /// Whether a line in a list `width` wide says who, where and when under its words.
-fn found_stacked(width : Double) -> Bool {
+pub fn found_stacked(width : Double) -> Bool {
   width < found_stack_below
 }
+
+// ── made once ──────────────────────────────────────────────────────────
+
+///|
+/// ↓ and ↑ in node `v`, which holds the search's field and its list (⌘K's panel, the search's page): each chooses the
+/// line after or before the one chosen, at its key's moment, and brings it into view (finder_list_node).
+pub fn finder_keys_node(v : @view.View) -> Unit {
+  let step = fn(by : Int) -> Bool {
+    let at = finder.chosen.untracked() + by
+    if at >= 0 && at < finder.picks.untracked().length() {
+      finder.chosen.set(at)
+      finder.keyed.set(finder.keyed.untracked() + 1)
+    }
+    true
+  }
+  v.key_context("Finder").on_action("finder.down", fn(_) { step(1) }).on_action("finder.up", fn(_) { step(-1) }) |> ignore
+}
+
+///|
+/// The search's list (finder_list's, made once) in node `v`, for the workspace in view (`workspace()`): what the words
+/// in the field find and what of `offered()` can be done by them; with nothing typed the latest chats where
+/// `idle_chats`. `most()`: as tall as its lines up to so much (⌘K's panel), else the room it is given. `close`: what the
+/// frame does as a line opens (⌘K closes; the phone's page stays under the chat). A line chosen by ↑ / ↓
+/// (finder_keys_node, on what holds its field) or by the pointer over it where the screen has keys, shown so, opened by
+/// Enter or a press. `stacked()`: who, where and when said under a line's words (its list narrow: found_stacked). `at`:
+/// where its list stands (a panel's, ⌘K's, as a side column's; the phone's search across the whole screen), its lines
+/// in and rounded so. `foot_in`: room after its last line (⌘K's panel). Each line a block of the list by its key, made
+/// only while it shows (View::scrolls_window), what it shows told it by that key (View::keyed_by).
+pub fn finder_list_node(
+  v : @view.View,
+  src : Source,
+  workspace : () -> Workspace?,
+  offered : () -> Array[Offered],
+  close : () -> Unit,
+  stacked : () -> Bool,
+  idle_chats? : Bool = false,
+  most? : () -> Double? = fn() { None },
+  at? : @sf.ListAt = Side,
+  foot_in? : Double = 0.0,
+) -> Unit {
+  let theme = fn() { @sf.theme().chat_list }
+  // (the words as the field has them, as they are typed: the first line chosen again as they change)
+  v.reacts(fn() { finder.field.text() }, fn(words) { finder_typed(words) })
+  let query = @signals.computed(fn(_) { finder.field.text().trim(chars=" \t\n\r\u{3000}").to_owned() })
+  // what can be done by its name: the core's `commands.find` of what is offered, asked as what is asked changes; none
+  // until it has answered these words
+  let asked = @signals.computed(fn(_) { commands_params(query.get(), offered()).stringify() })
+  v.reacts(fn() { asked.get() }, fn(a) {
+    if offered().is_empty() || finder.asked.untracked() == a {
+      return
+    }
+    finder.asked.set(a)
+    let params = @json.parse(a) catch { _ => Json::null() }
+    (src.call)("commands.find", params, fn(res) {
+      match res {
+        Ok(v) if finder.asked.untracked() == a => {
+          let listed : Array[Listed] = []
+          for g in items(Some(v), "groups") {
+            let g = Some(g)
+            for f in items(g, "commands") {
+              listed.push({ id: text(Some(f), "id"), group: text(g, "group"), heading: text(g, "title"), label: text(Some(f), "label") })
+            }
+          }
+          finder.listed.replace(listed)
+          finder.listed_for.set(a)
+        }
+        _ => ()
+      }
+    })
+  })
+  let commands = @signals.computed_by(
+    fn(_) {
+      let out : Array[(Listed, Offered)] = []
+      let all = offered()
+      if all.is_empty() || finder.listed_for.get() != asked.get() {
+        return out
+      }
+      for l in finder.listed {
+        for o in all {
+          if o.id == l.id {
+            out.push((l, o))
+            break
+          }
+        }
+      }
+      out
+    },
+    // (by the one array: a command holds the function it runs)
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  // what the words find: the `search` topic over the workspace (with none, the latest chats), the last view read kept
+  // while the next is looked up; the one read held, the one before let go of (search_hold)
+  v.reacts(
+    fn() {
+      match workspace() {
+        Some(w) => {
+          finder.kind.get() |> ignore
+          let params = search_params(w.id, query.get())
+          Some((params, src.topic("search", params).get()))
+        }
+        None => None
+      }
+    },
+    fn(now) {
+      match now {
+        Some((params, topic)) => {
+          search_hold(src, params)
+          search_took(topic, query.untracked())
+        }
+        None => ()
+      }
+    },
+  )
+  // its lines, by their keys, each told what it is by its key; those to choose, and the one chosen
+  let lines = @signals.computed_by(
+    fn(_) { lines_of(finder.kept.get(), query.get() != "", idle_chats, commands.get()) },
+    // (made anew as anything it is made of changes: a command's line holds the function it runs)
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  v.reacts(fn() { lines.get() }, fn(ls) {
+    let picks : Array[Int] = []
+    for i, l in ls {
+      if pickable(l) {
+        picks.push(i)
+      }
+    }
+    finder.lines.set(ls)
+    finder.picks.set(picks)
+    // (the one chosen kept among them)
+    let n = picks.length()
+    if finder.chosen.untracked() >= n {
+      finder.chosen.set(if n > 0 { n - 1 } else { 0 })
+    }
+  })
+  let keys = @signals.computed(fn(_) {
+    let ks = lines.get().map(finder_key)
+    if foot_in > 0.0 {
+      ks.push(finder_foot)
+    }
+    ks
+  })
+  let of_key = @signals.computed_by(
+    fn(_) {
+      let m : Map[String, (FindLine, Int)] = Map([])
+      let mut k = 0
+      for l in lines.get() {
+        let pick = if pickable(l) { k } else { -1 }
+        if pickable(l) {
+          k = k + 1
+        }
+        m[finder_key(l)] = (l, pick)
+      }
+      m
+    },
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  // (chosen by the keys where the screen has them: shown so, Enter opens it)
+  v.reacts(fn() { theme().keys }, fn(on) { finder.chosen_shown = on })
+  let chosen_key = @signals.computed(fn(_) {
+    match finder.picks.get().get(finder.chosen.get()) {
+      Some(i) => finder.lines.get().get(i).map(finder_key)
+      None => None
+    }
+  })
+  // (several stations: what is found says which it is on)
+  let several = @signals.computed(fn(_) {
+    match workspace() {
+      Some(w) => @sfbase.station_marks(src, w.id).length() > 1
+      None => false
+    }
+  })
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  // ↑ ↓: the line chosen brought into view, so many lines over it; into one kind or out of it: back to its top
+  v.reacts(fn() { finder.keyed.get() }, at_start=false, fn(_) {
+    let ls = finder.lines.untracked()
+    match finder.picks.untracked().get(finder.chosen.untracked()) {
+      Some(i) => {
+        let top = if i > switcher_lead { i - switcher_lead } else { 0 }
+        match ls.get(top) {
+          Some(l) => place.bring(finder_key(l))
+          None => ()
+        }
+      }
+      None => ()
+    }
+  })
+  v.reacts(fn() { finder.to_top.get() }, at_start=false, fn(_) {
+    match finder.lines.untracked().get(0) {
+      Some(l) => place.bring(finder_key(l))
+      None => ()
+    }
+  })
+  v.box(fn(l) {
+    // (as high as its lines come to at the system's size of words, `most` at most; else the room it is given)
+    l
+    .grow(By(fn() { if most() is None { 1.0 } else { 0.0 } }))
+    .min_height(Is(Some(0.0)))
+    .height(By(fn() {
+      match most() {
+        Some(m) => {
+          let f = theme().found
+          let scale = l.words_scale()
+          let two_grown = @sf.found_grown(f, scale, two=true)
+          let head_grown = @sf.found_grown(f, scale, two=false)
+          let narrow = stacked()
+          let est = lines.get().fold(init=foot_in, fn(h, line) {
+            h +
+            finder_h(line, f, narrow) +
+            (match line {
+              Head(_) => head_grown
+              _ if finder_two(line, narrow) => two_grown
+              _ => 0.0
+            })
+          })
+          Some(dmin(m, est))
+        }
+        None => None
+      }
+    }))
+    |> ignore
+    // (what scrolls past its foot fading out over the room after its last line: ⌘K's panel's curve)
+    if foot_in > 0.0 {
+      l.fades(Is((0.0, 0.0, 0.0, foot_in))) |> ignore
+    }
+    let lit = l.selected(fn() { chosen_key.get() })
+    l.scrolls_window(
+      @view.Scroll::list(),
+      fn() { keys.get() },
+      est=@signals.untracked(fn() { theme().found.row_h }),
+      slop=@ui.touch_slop(),
+      bar=@ui.tree_scroll_bar(),
+      place~,
+      // (what the words find stands there as it is found, each line there or gone at once, as the words are typed: no
+      // line making its way in or out under the hand at each key)
+      comes=fn(_) { false },
+      goes=fn(_) { false },
+      fn(b, k) {
+        if k == finder_foot {
+          b.height(Is(Some(foot_in))) |> ignore
+          return
+        }
+        let held = @signals.computed_by(fn(_) { of_key.get().get(k) }, same=fn(a, b) {
+          match (a, b) {
+            (Some(x), Some(y)) => physical_equal(x.0, y.0) && x.1 == y.1
+            (None, None) => true
+            _ => false
+          }
+        })
+        let line = fn() { held.get() }
+        match @signals.untracked(line) {
+          Some((first, pick)) if pick >= 0 =>
+            found_line_node(b, first, line, k, close, lit, several, at, stacked)
+          Some((first, _)) => quiet_line_node(b, first, line, at)
+          None => ()
+        }
+      },
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The key of the room under the search's last line (finder_list_node's `foot_in`).
+let finder_foot : String = "\u{2}foot"
+
+///|
+/// What `commands.find` is asked for `query` of `offered` (by name, id or other words, part by part; with nothing typed
+/// all but what is only found by typing).
+fn commands_params(query : String, offered : Array[Offered]) -> Json {
+  {
+    "query": Json::string(query),
+    "offered": Json::array(
+      offered.map(fn(o) {
+        let m : Map[String, Json] = { "id": Json::string(o.id) }
+        if o.label != "" {
+          m["label"] = Json::string(o.label)
+        }
+        if o.group != "" {
+          m["group"] = Json::string(o.group)
+        }
+        if o.words != "" {
+          m["words"] = Json::string(o.words)
+        }
+        if o.typed {
+          m["typed"] = Json::boolean(true)
+        }
+        if o.version != "" {
+          m["version"] = Json::string(o.version)
+        }
+        if o.station != "" {
+          m["station"] = Json::string(o.station)
+        }
+        Json::object(m)
+      }),
+    ),
+  }
+}
+
+///|
+/// What is not chosen (quiet_line's, as nodes) in block `b`: a kind's heading, none found, the stations still
+/// answering (or one that could not be searched, in red), what the core says; `first` the line it was made for, `line()`
+/// it as it is now.
+fn quiet_line_node(b : @view.View, first : FindLine, line : () -> (FindLine, Int)?, at : @sf.ListAt) -> Unit {
+  let f = fn() { @sf.theme().chat_list.found }
+  let words = fn() {
+    match line() {
+      Some((Head(w) | Note(w) | Wait(w, _) | Said(w), _)) => w
+      _ => ""
+    }
+  }
+  b.box(fn(q) {
+    match first {
+      Head(_) => {
+        @sf.style_node(q, fn() { f().head.then(@sf.found_head_in(at)) })
+        @sf.words_node(q, words, fn() { f().head_words }) |> ignore
+      }
+      Note(_) => {
+        @sf.style_node(q, fn() { f().quiet.then(@sf.found_line_in(at)) })
+        @sf.words_node(q, words, fn() { f().quiet_words }) |> ignore
+      }
+      Wait(_, false) => {
+        @sf.style_node(q, fn() { f().wait.then(@sf.found_line_in(at)) })
+        @sf.wait_line_node(q, words) |> ignore
+      }
+      Wait(_, true) => {
+        @sf.style_node(q, fn() { f().wait_failing.then(@sf.found_line_in(at)) })
+        @sf.words_node(q, words, fn() { f().quiet_words.then(@sf.bad) }) |> ignore
+      }
+      Said(_) => {
+        @sf.style_node(q, fn() { f().wait.then(@sf.found_line_in(at)) })
+        @sf.words_node(q, words, fn() { f().said_words }) |> ignore
+      }
+      _ => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// A line of what was found (found_line's, as nodes) in block `b`, by key `k`, `first` the line it was made for and
+/// `line()` it as it is now: its mark, then what it is, or the words found in it (they bold, stroked under:
+/// @sf.found_words_node), with who, where and when at its first line's end, or under it where `stacked()`; where it is
+/// under that (its chat; an item's line with the words) where it says one. A chat its agent's maker, a message its
+/// chat's; a station its mark; something else its kind's icon; a command its icon, its keys at its end; 全部结果 and
+/// 查看更多 in the link's ink. Chosen (`lit(k)`, where the screen has keys: the pointer over it chooses it too), on the
+/// words' tint; pressed, rippled, `close` then what it opens (finder_go). `several()`: more than one station, so where
+/// is said.
+fn found_line_node(
+  b : @view.View,
+  first : FindLine,
+  line : () -> (FindLine, Int)?,
+  k : String,
+  close : () -> Unit,
+  lit : (String) -> Bool,
+  several : @signals.Computed[Bool],
+  at : @sf.ListAt,
+  stacked : () -> Bool,
+) -> Unit {
+  let f = fn() { @sf.theme().chat_list.found }
+  let keys = fn() { @sf.theme().chat_list.keys }
+  let now = fn() {
+    match line() {
+      Some((l, _)) => l
+      None => first
+    }
+  }
+  // who, where and when (`meta`), said at the end of its words
+  let parts = @signals.computed(fn(_) {
+    let all : Array[String] = match now() {
+      Chat(ch) =>
+        [
+          if ch.archived { @sf.t("web-main.switcher.archived") } else { "" },
+          if ch.item.hidden == Some(true) { @sf.t("web-main.filter.hidden") } else { "" },
+          if several.get() { ch.item.station_name } else { "" },
+          ch.item.ago,
+        ]
+      Message(m) => [m.by, m.ago]
+      Item(it) => [if it.kind != "station" && several.get() { it.station_name } else { "" }, it.ago]
+      Command(_, o) => [o.keys]
+      _ => []
+    }
+    all.filter(fn(p) { p != "" })
+  })
+  // (where the line is narrow, who, where and when under its words, its first line all theirs)
+  let under_meta = fn() { stacked() && parts.get().length() > 0 }
+  let has_under = fn() {
+    match now() {
+      Message(_) => true
+      Item(it) => it.text != ""
+      Chat(ch) => ch.found is Some(_)
+      _ => false
+    }
+  }
+  let two = @signals.computed(fn(_) { under_meta() || has_under() })
+  let label = fn() {
+    match now() {
+      Back => @sf.t("web-main.switcher.back")
+      More(_) => @sf.t("web-main.switcher.more")
+      Command(l, _) => l.label
+      Chat(ch) => ch.item.title
+      Message(m) => m.text
+      Item(it) => it.title
+      _ => ""
+    }
+  }
+  b.box(fn(row) {
+    // (in from its list's sides as found_row_in has it; in a side column round as a row of it is, @sf.row_corner)
+    @sf.style_node(row, fn() {
+      (if two.get() { f().two } else { f().row }).then(match at {
+        Whole => @sf.found_row_in(Whole)
+        Side | Tape => found_side_in_node
+      })
+    })
+    if !(at is Whole) {
+      row.radius(Is(@sf.row_corner)) |> ignore
+    }
+    // (chosen by the keys: on the words' tint)
+    row.ground(By(fn() { if keys() && lit(k) { @ui.tree_theme().color(Tint) } else { 0L } })) |> ignore
+    @sf.rippled_node(row, fn() { finder_go(@signals.untracked(now), close) }, @sf.row_corner, label)
+    // (the pointer moving onto it chooses it, as the keys do)
+    row.on_pointer_moved(fn() {
+      if @signals.untracked(keys) {
+        match @signals.untracked(line) {
+          Some((_, pick)) if pick >= 0 => finder.chosen.set(pick)
+          _ => ()
+        }
+      }
+    })
+    |> ignore
+    // its mark: as high as its first line, on its middle however large its words, in a line of two (found_mark_h)
+    row.box(fn(m) {
+      @sf.style_node(
+        m,
+        fn() {
+          let h = if two.get() { @sf.found_mark_h(f(), m.words_scale()) } else { 0.0 }
+          if h > 0.0 {
+            f().mark.then(@ui.style(min_h=Fixed(h)))
+          } else {
+            f().mark
+          }
+        },
+        in_row=true,
+      )
+      let icon = fn(name : String) {
+        @sf.icon_node(m, name, @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted })) |> ignore
+      }
+      // a chat's picture: its first agent's maker's mark, as the line now says it (the agent changed while it shows)
+      let picture = fn() {
+        let made = fn() {
+          let item = match now() {
+            Chat(ch) => Some(ch.item)
+            Message(msg) => Some(msg.chat)
+            _ => None
+          }
+          match item {
+            Some(i) => i.agents.get(0).map(fn(a) { (a.maker, a.runtime) })
+            None => None
+          }
+        }
+        m.pick(at_once=true, made, fn(p, mk) {
+          match mk {
+            Some((maker, runtime)) => @sf.maker_mark_node(p, maker, runtime, @sf.theme().chat_list.found.logo) |> ignore
+            None => @sf.icon_node(p, "chat", @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted })) |> ignore
+          }
+        })
+      }
+      match first {
+        Back => icon("chevron-left")
+        More(_) => icon("more")
+        Command(_, o) => icon(o.icon)
+        Chat(_) | Message(_) => picture()
+        Item(it) =>
+          if it.kind == "station" {
+            if @sf.has_station_mark(it.station_emoji, it.station_icon) {
+              // (its emoji and icon as the line now says them)
+              let station = fn() {
+                match now() {
+                  Item(i) => i
+                  _ => it
+                }
+              }
+              @sf.station_mark_node(m, fn() { station().station_emoji }, fn() { station().station_icon }, @sf.theme().chat_list.found.icon, fn() {
+                @sf.theme().p.muted
+              }, fn() { 0 })
+            } else {
+              icon("server")
+            }
+          } else {
+            icon(if it.kind == "file" && it.dir { "folder" } else { @sf.kind_icon(it.kind) })
+          }
+        _ => ()
+      }
+    })
+    |> ignore
+    // its words: the first line, and under it where there is one; who, where and when at the first line's end where
+    // the line is wide enough to leave the words theirs, else at the end of the line under it
+    row.box(fn(col) {
+      @sf.style_node(col, fn() { f().column }, in_row=true)
+      col.min_width(Is(Some(0.0))) |> ignore
+      let said = fn(p : @view.View) {
+        // (who and where leave the line before its words are cut to fewer than four of their size; when stays)
+        p.box(fn(s) {
+          // (as wide as they are; beside where it is as far apart as what its line holds, at the first line's end one
+          // line of words, a space after each `·`, as the old view said them joined: @sf.join_meta)
+          @sf.style_node(s, fn() { f().second.then(if under_meta() { said_hug } else { said_joined }) }, in_row=true)
+          s.fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          s.each(fn() { Array::makei(parts.get().length(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(e, i) {
+            let i = i.untracked()
+            let words = fn() {
+              let ps = parts.get()
+              match ps.get(i) {
+                Some(w) =>
+                  if i + 1 >= ps.length() {
+                    w
+                  } else if under_meta() {
+                    w + " ·"
+                  } else {
+                    w + " · "
+                  }
+                None => ""
+              }
+            }
+            e.drops(By(fn() { if i + 1 < parts.get().length() { 1 } else { 0 } })) |> ignore
+            @sf.words_node(e, words, fn() { f().meta }) |> ignore
+          })
+        })
+        |> ignore
+      }
+      col.box(fn(top) {
+        @sf.style_node(top, fn() { f().first })
+        top.min_width(Is(Some(0.0))) |> ignore
+        match first {
+          Back | More(_) =>
+            @sf.words_node(top, label, fn() { f().link }) |> ignore
+          Command(_, _) =>
+            name_words_node(top, label, fn() { f().title })
+          Chat(_) => {
+            // (what it says of the chat follows the words typed: found in its words, or its name alone)
+            let found = fn() {
+              match now() {
+                Chat({ found: Some(_), .. }) => true
+                _ => false
+              }
+            }
+            top.show(at_once=true, found, fn(fw) {
+              fw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.found_words_node(
+                fw,
+                fn() {
+                  match now() {
+                    Chat({ found: Some(w), .. }) => w
+                    _ => ""
+                  }
+                },
+                fn() {
+                  match now() {
+                    Chat(c) => c.marks
+                    _ => []
+                  }
+                },
+                fn() { f().words },
+                fn() { @sf.theme().p.text },
+              )
+              |> ignore
+            })
+            top.show(at_once=true, fn() { !found() }, fn(nw) {
+              nw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              name_words_node(nw, label, fn() { f().title })
+            })
+          }
+          Message(_) =>
+            @sf.found_words_node(top, label, fn() {
+              match now() {
+                Message(msg) => msg.marks
+                _ => []
+              }
+            }, fn() { f().words }, fn() { @sf.theme().p.text })
+            |> ignore
+          Item(_) => name_words_node(top, label, fn() { f().title })
+          _ => ()
+        }
+        top.show(at_once=true, fn() { !under_meta() && parts.get().length() > 0 }, said)
+      })
+      |> ignore
+      col.show(at_once=true, fn() { two.get() }, fn(u) {
+        u.box(fn(second) {
+          @sf.style_node(second, fn() { f().second })
+          second.min_width(Is(Some(0.0))) |> ignore
+          let under = fn() {
+            match now() {
+              Chat(ch) if ch.found is Some(_) => ch.item.title
+              Message(msg) => msg.chat.title
+              _ => ""
+            }
+          }
+          match first {
+            Chat(_) | Message(_) =>
+              second.show(at_once=true, fn() { under() != "" }, fn(n) {
+                n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                name_words_node(n, under, fn() { f().under })
+              })
+            Item(_) =>
+              second.show(at_once=true, fn() {
+                match now() {
+                  Item(it) => it.text != ""
+                  _ => false
+                }
+              }, fn(n) {
+                n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                @sf.found_words_node(
+                  n,
+                  fn() {
+                    match now() {
+                      Item(it) => it.text
+                      _ => ""
+                    }
+                  },
+                  fn() {
+                    match now() {
+                      Item(it) => it.marks
+                      _ => []
+                    }
+                  },
+                  fn() { f().under_words },
+                  fn() { @sf.theme().p.text },
+                )
+                |> ignore
+              })
+            _ => ()
+          }
+          second.show(at_once=true, fn() { under_meta() }, said)
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A name (a chat's, a file's, a station's: name_words', as a node) in `parent`, taking what its line leaves the rest of
+/// what is on it, cut short there.
+fn name_words_node(parent : @view.View, words : () -> String, style : () -> @ui.TextStyle) -> Unit {
+  parent.box(fn(n) {
+    n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    @sf.words_node(n, words, fn() { style().then(name_cut_node) }).min_width(Is(Some(0.0))) |> ignore
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let name_cut_node : @ui.TextStyle = @ui.text_style(wrap=false, w=Cut)
+
+///|
+/// Who, where and when on a line: as wide as they are.
+// kept across runs: a value (no field of it changes)
+let said_hug : @ui.Style = @ui.css("w=Hug")
+
+///|
+/// Who, where and when at a first line's end: as wide as they are, the words' own spaces between them.
+// kept across runs: a value (no field of it changes)
+let said_joined : @ui.Style = @ui.css("w=Hug gap=S0")
+
+///|
+/// A line of what is found in a side column (found_row_in's, as nodes: its corner the node's own, a row's).
+// kept across runs: a value (no field of it changes)
+let found_side_in_node : @ui.Style = @ui.css("px=S3")

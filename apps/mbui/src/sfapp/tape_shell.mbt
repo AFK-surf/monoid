@@ -26,6 +26,8 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
+  // ⌘K's panel over the frame (sfdesk's switcher.mbt)
+  @sfdesk.switcher_node(v, src)
   wide_page(v, src)
   wide_viewer(v, src)
   // a workspace switched shows once all its rail, sidebar and the page its pane lands on open on is answered (sfdesk's
@@ -47,6 +49,8 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
   viz_full_layer_node(v, src)
+  // ⌘K's panel over the frame (sfdesk's switcher.mbt)
+  @sfdesk.switcher_node(v, src)
   wide_page(v, src)
   wide_viewer(v, src)
   // (a workspace switched: as taped_shell's)

@@ -30,9 +30,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-17: the shells' two layers for the chat shared as a picture and a visualization over the whole screen made as
   // nodes, sfpages publish_layer_node and sfbase viz_full_layer_node: phone cold 788 made and 856 laid before it, wide
   // cold 2570 made and 2750 bindings)
-  "phone cold": (793, 38, 859, 148, 784),
+  // (made 2 more, 795, and wide cold 1 more, 2573, 2026-11-17: each shell holds ⌘K's panel, and a phone's the search
+  // over its page, as a closed `show` made as the shell is, sfdesk switcher_node and sfpages search_page_node)
+  "phone cold": (795, 38, 859, 148, 784),
   "phone again": (342, 26, 245, 29, 301),
-  "wide cold": (2572, 483, 3682, 560, 2662),
+  "wide cold": (2573, 483, 3682, 560, 2662),
   "wide again": (897, 130, 882, 124, 1202),
   "phone up": (667, 762, 644, 92, 0),
   "wide up": (973, 795, 966, 129, 0),

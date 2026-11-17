@@ -1,25 +1,23 @@
 // The search at the top of the chats' lists (still.fail web/src/mobile/Home.tsx SearchField, SearchPage;
 // apps/android chat/screens/Search.kt), in every tier, with a finger or a mouse (⌘K's panel too where there are keys):
-// a field at a list's top, out of view till the list is pulled down past its first row; tapped, the lists go up and away with their bar, the field comes up from where it was to
+// a field at a list's top, out of view till the list is pulled down past its first row; tapped, the lists go up and away
+// with their bar, the field comes up from where it was to
 // the top of the lists' box (narrowing as 取消 comes in beside it), and under it what the words find (the finder,
 // switcher.mbt: the same as ⌘K's). Back goes from one kind to all of them first; 取消 (or back) puts the field back
 // in the list. A row opened goes where the shell has it, the search left open in the lists' box.
 
 ///|
 /// The search's page as it stands (what it finds is sfpages' finder: switcher.mbt): open (its field off the list: `from`,
-/// its top in the window when tapped, and `wide`, its width there), going back (`leaving`); the field to take the
-/// focus as it opens. Opened by the keys (⌘K laid out Small: `summoned`), what can be done here among what it finds
-/// (`offered`, worked out where what it finds is built), and whether over another page than the lists (`over`: the
-/// shell's, search_over).
+/// its top in the window when tapped), going back (`leaving`). Opened by the keys (⌘K laid out Small: `summoned`), what
+/// can be done here among what it finds (`offered`, read where what it finds is made), and whether over another page
+/// than the lists (`over`: the shell's, search_over_on).
 priv struct Search {
   mut open : Bool
   mut leaving : Bool
   mut from : Double
-  mut wide : Double
-  mut focus : Bool
   mut summoned : Bool
   mut over : Bool
-  mut offered : (@ui.Ctx) -> Array[Offered]
+  mut offered : () -> Array[Offered]
   /// how its page is to come up as it is next built, opened where that page is not (a list made once: search_open_from,
   /// search_start_now): 1 from its field, 2 up at once; 0 as it is
   mut fly : Int
@@ -33,11 +31,9 @@ let search : Search = {
   open: false,
   leaving: false,
   from: 0.0,
-  wide: 0.0,
-  focus: false,
   summoned: false,
   over: false,
-  offered: fn(_) { [] },
+  offered: fn() { [] },
   fly: 0,
   said: @signals.signal(0),
 }
@@ -76,11 +72,9 @@ fn search_reset() -> Unit {
   search.open = false
   search.leaving = false
   search.from = 0.0
-  search.wide = 0.0
-  search.focus = false
   search.summoned = false
   search.over = false
-  search.offered = fn(_) { [] }
+  search.offered = fn() { [] }
   search.fly = 0
   search_told()
 }
@@ -89,14 +83,6 @@ fn search_reset() -> Unit {
 /// How far the list goes up as the field comes up; the field's way up and back a Move as long as
 /// it is far (from where it stood in the list to the top: search_way).
 pub let search_list_rise : Double = 56.0
-
-///|
-/// The search's way up: 0 its field in the list, 1 at the top. Let go
-/// while not drawn (a chat opened from it over Home a while), it is where the search rests: up while open.
-fn search_up(c : @ui.Ctx) -> @motion.Anim {
-  search_read() |> ignore
-  @motion.anim(c, "search/up", if search.open && !search.leaving { 1.0 } else { 0.0 }, global=true)
-}
 
 ///|
 /// The bottom bar out of the search's way while it is open: from the tap until it starts back.
@@ -108,15 +94,13 @@ pub fn search_bar_away() -> Bool {
 ///|
 /// The field at the top of a list made once pressed (search_field_node: its top in the window, its width): the search
 /// opens from it, its page coming up from there as it is first built.
-fn search_open_from(from : Double, wide : Double) -> Unit {
+fn search_open_from(from : Double) -> Unit {
   if search.open {
     return
   }
   search.open = true
   search.leaving = false
   search.from = from
-  search.wide = wide
-  search.focus = true
   search.fly = 1
   search_told()
 }
@@ -161,7 +145,7 @@ pub fn search_away_node(v : @view.View) -> () -> Double {
 /// with the keys in it, up at once as its page is built, what can be done here (`offered`, as what it finds is built)
 /// among what it finds; `over` another page than the lists (a chat), drawn over it by the shell (search_over). Open
 /// already, closed.
-pub fn search_summon(offered : (@ui.Ctx) -> Array[Offered], over : Bool) -> Unit {
+pub fn search_summon(offered : () -> Array[Offered], over : Bool) -> Unit {
   if search.open {
     search_close_now()
     return
@@ -170,31 +154,12 @@ pub fn search_summon(offered : (@ui.Ctx) -> Array[Offered], over : Bool) -> Unit
   search.open = true
   search.leaving = false
   search.from = 0.0
-  search.wide = 0.0
-  search.focus = true
   search.summoned = true
   search.over = over
   search.offered = offered
   // (up at once, what goes away under it gone at once too: search_away_node, search_page)
   search.fly = 2
   search_told()
-}
-
-///|
-/// 取消, back or Esc: the keyboard goes and the field goes back to the list; opened by the keys, there
-/// is no field in the list to go back to: gone at once, the page under it as it was.
-fn search_close(c : @ui.Ctx) -> Unit {
-  if !search.open || search.leaving {
-    return
-  }
-  c.blur()
-  if search.summoned {
-    search_gone()
-    return
-  }
-  search.leaving = true
-  search_told()
-  search_up(c).animate(c, 0.0, search_way())
 }
 
 ///|
@@ -212,25 +177,25 @@ fn search_gone() -> Unit {
   search.leaving = false
   search.summoned = false
   search.over = false
-  search.offered = fn(_) { [] }
+  search.offered = fn() { [] }
   finder_cleared()
   search_told()
 }
 
 ///|
-/// The search over another page than the lists (⌘K laid out Small in a chat: search_summon), in the box the shell
-/// gives it over that page, `inset` from its top; nothing while there is none.
-pub fn search_over(c : @ui.Ctx, src : Source, w : Workspace, inset : Double) -> Unit {
-  search_read() |> ignore
-  if search.over {
-    search_page(c, src, w, inset, Whole)
-  }
+/// Whether the search is open over another page than the lists (⌘K laid out Small in a chat: search_summon): the shell
+/// puts its page there (search_page_node, on the page's ground: search_over_ground_node).
+pub fn search_over_on() -> Bool {
+  let s = search_read()
+  s.open && s.over
 }
 
 ///|
-/// The page over Home: all of it, nothing under it touched through it.
-// kept across runs: a value (no field of it changes)
-let search_page_box : @ui.Style = @ui.css("w=Full h=Full")
+/// The search's page over another page than the lists in `v` (search_over_on's): on the page's ground, nothing of the
+/// page under it seen.
+pub fn search_over_ground_node(v : @view.View) -> Unit {
+  @sf.style_node(v, fn() { search_over_box })
+}
 
 ///|
 /// Over another page than the lists (search_over): on the page's ground, nothing of the page under it seen.
@@ -241,11 +206,6 @@ let search_over_box : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 /// Its bar: under the status bar 8 (the home bar's top), 16 either side, 8 under; 取消 12 after the field.
 // kept across runs: a value (no field of it changes)
 let search_bar_row : @ui.Style = @ui.css("row w=Full pl=S4 pr=S4 pt=S2 pb=S2 gap=S3 align=ACenter")
-
-///|
-/// Where the field rests at the top: the room 取消 leaves it (as high as the field: search_page).
-// kept across runs: a value (no field of it changes)
-let search_slot : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 /// The field's ground (SearchPage's): a capsule of the ink at 6%.
@@ -286,17 +246,9 @@ let tucked_foot : Double = 6.0
 let search_field_words : @ui.TextStyle = @ui.text_style(color=Muted)
 
 ///|
-// kept across runs: a value (no field of it changes)
-let search_grow : @ui.Style = @ui.style(w=@sf.grow)
-
 ///|
 // kept across runs: a value (no field of it changes)
 let search_cancel : @ui.TextStyle = @ui.text_style(size=Title, color=Link, wrap=false)
-
-///|
-/// What the words find, under the field: its lines where its list's are (@sf.list_line), the rest of its height.
-// kept across runs: a value (no field of it changes)
-let search_list_box : @ui.Style = @ui.style(w=Full, h=@sf.grow)
 
 // ── Home's field ───────────────────────────────────────────────────────
 
@@ -324,8 +276,8 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
       @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
       f.alpha(By(fn() { if search_read().open { 0.0 } else { 1.0 } })) |> ignore
       @sf.presses_node(f, fn() {
-        let (_, y, w, _) = f.placed_window_now()
-        search_open_from(y, w)
+        let (_, y, _, _) = f.placed_window_now()
+        search_open_from(y)
       })
       f.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.search.field"))) })) |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
@@ -345,160 +297,6 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
 }
 
 // ── the page ───────────────────────────────────────────────────────────
-
-///|
-/// The search over Home, while it is open, over lists that stand `at` (its lines stand so).
-fn search_page(c : @ui.Ctx, src : Source, w : Workspace, inset : Double, at : @sf.ListAt) -> Unit {
-  search_read() |> ignore
-  if !search.open {
-    return
-  }
-  let up = search_up(c)
-  // (opened where this page was not: from a list's field made once, or as the app starts)
-  match search.fly {
-    1 => {
-      search.fly = 0
-      up.snap(c, 0.0)
-      up.animate(c, 1.0, search_way())
-    }
-    2 => {
-      search.fly = 0
-      up.snap(c, 1.0)
-    }
-    _ => ()
-  }
-  // back (and Esc): from one kind to every kind first, then the search away
-  if !search.leaving && (app.nav.depth() == 1 || search.over) {
-    c.take_back(fn() { if !finder_back() { search_close(c) } })
-    // (Esc: the keymap's search.escape where the search is up, at its key's moment)
-    c.key_context("Search")
-    c.on_action("search.escape", fn() {
-      if !finder_escape() {
-        search_close(c)
-      }
-      true
-    })
-  }
-  if !search.open {
-    return
-  }
-  let u = up.get(c)
-  // gone back: the field is the list's again
-  // (at the end its going back declared as it set out)
-  if search.leaving && up.over(c) {
-    search_gone()
-    return
-  }
-  // a row opened from over another page: the search goes as its page comes (as ⌘K's panel does), its field's focus with
-  // it at that press (the page come takes it as it takes it on coming: the composer's)
-  let close = fn() {
-    if search.over {
-      c.blur()
-      search_gone()
-    }
-  }
-  let t = @sf.theme()
-  // (the list's field come up: as high, its mark and its words as big, not changing as it goes up or comes back)
-  let band = t.chat_list
-  let tall = @ui.style(h=Fixed(band.band_h))
-  let (size, line) = c.style_size(band.band_words)
-  c.layer(fn() {
-    c.box(style=if search.over { search_over_box } else { search_page_box }, id=c.id("search/page"), fn() {
-      // under what is over the lists' box (a phone's status bar: Search.kt windowInsetsPadding(statusBars); the
-      // sidebar's top row)
-      if inset > 0.0 {
-        c.box(style=@ui.style(w=Full, h=Fixed(inset)), fn() {  }) |> ignore
-      }
-      c.box(style=search_bar_row, fn() {
-        // as wide as the list's while there, narrowing to its room as it comes up (and back as it goes): 取消 comes
-        // in with its right edge, not the field jumping between the two widths
-        let slot = c.id("search/slot")
-        let (room, rest_y) = match c.laid_rect(slot) {
-          Some((_, y, rw, _)) => (rw, y)
-          None => (search.wide, search.from)
-        }
-        let dy = (search.from - rest_y) * (1.0 - u)
-        c.box(style=search_slot.then(tall), id=slot, fn() {
-          c.layer(fn() {
-            let now = dmax(if search.wide > 0.0 { search.wide + (room - search.wide) * u } else { room }, 0.0)
-            let ground = c.box(style=search_field_ground.then(@ui.style(w=Fixed(now), h=Fixed(band.band_h))), fn() {  })
-            c.look(ground, { ..@ui.still_look, dy })
-          })
-          |> ignore
-          // what it holds laid out where it rests from the first, over its ground on its way there: its words said
-          // the way that fits there (search_field_shorter) all the way up, not changed on the way
-          c.layer(fn() {
-            let f = c.box(style=search_field_in.then(search_field_room(band, at)), fn() {
-              @sf.icon(c, "search", size=band.band_icon, color=t.p.muted) |> ignore
-              c.box(style=search_grow, fn() {
-                let res = c.editor(
-                  "search-field",
-                  placeholder=@sf.t("android-chat.search.field"),
-                  shorter=search_field_shorter(),
-                  font_size=size,
-                  line~,
-                  max_lines=1,
-                  // the keyboard's search key, giving the words up as a keyboard's
-                  // Enter does: the line chosen opened where one is shown chosen (finder_enter)
-                  ime_action=@hostapi.ime_action_search,
-                  plain=true,
-                  color=t.p.text,
-                  placeholder_color=t.p.muted,
-                  caret_color=t.p.accent,
-                  field=finder_field(),
-                  on_submit=fn(typed) {
-                    finder_typed(typed)
-                    finder_enter(close)
-                  },
-                )
-                finder_typed(res.text)
-                // (given the focus till it has it: a page come up in a view made as it opens, built more than once
-                // before it is drawn)
-                if search.focus {
-                  let field = c.id("search-field")
-                  if c.has_focus(field) {
-                    search.focus = false
-                  } else {
-                    c.focus_on(field)
-                  }
-                }
-              })
-              |> ignore
-            })
-            c.look(f, { ..@ui.still_look, dy })
-          })
-          |> ignore
-        })
-        |> ignore
-        let cancel = c.id("search/cancel")
-        c.on_press(cancel, fn() {
-          if !search.leaving {
-            search_close(c)
-          }
-        })
-        let cw = match c.laid_rect(cancel) {
-          Some((_, _, cw, _)) => cw
-          None => 0.0
-        }
-        let cb = c.box(id=cancel, fn() {
-          c.text(@sf.t("android-chat.search.cancel"), style=search_cancel) |> ignore
-        })
-        c.look(cb, { ..@ui.still_look, alpha: u, dx: (cw + 12.0) * (1.0 - u) })
-      })
-      |> ignore
-      // what the words find (sfpages' finder): a row opened, its page over this one, back to it
-      let lb = c.box(style=search_list_box.then(@sf.list_line(at)), fn() {
-        // (its lines as wide as the line they stand on: what they go by)
-        c.sized(c.width - 2.0 * @sf.list_line_in(at), c.height, fn() {
-          finder_list(c, src, w, (search.offered)(c), close, idle_chats=search.summoned, at~)
-        })
-      })
-      c.look(lb, { ..@ui.still_look, alpha: u })
-    })
-    |> ignore
-  })
-  |> ignore
-}
 
 ///|
 /// Whether the search is open over the lists (and whether it is going back to its field).
@@ -639,24 +437,30 @@ pub fn search_page_node(
     |> ignore
   })
   |> ignore
-  // what the words find (sfpages' finder: its old view): a row opened, its page over this one, back to it
+  // what the words find (sfpages' finder: finder_list_node): a row opened, its page over this one, back to it; ↑ ↓
+  // choose a line with the cursor in its field (finder_keys_node)
+  finder_keys_node(v)
   v.box(fn(l) {
     // (coming in from half way, the lists under it gone by then: search_away_node's readers)
     l.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { dmax(0.0, 2.0 * u() - 1.0) })) |> ignore
-    @ui.old(l, fn(c) {
-      match workspace() {
-        Some(w) =>
-          c.box(style=search_list_box.then(@sf.list_line(at)), fn() {
-            c.sized(c.width - 2.0 * @sf.list_line_in(at), c.height, fn() {
-              finder_list(c, src, w, (search.offered)(c), close, idle_chats=search.summoned, at~)
-            })
-          })
-          |> ignore
-        None => ()
-      }
-    })
-    .grow(Is(1.0))
-    |> ignore
+    @sf.style_node(l, fn() { @sf.list_line(at) })
+    finder_list_node(
+      l,
+      src,
+      workspace,
+      fn() { (search.offered)() },
+      close,
+      // (who, where and when under a line's words where the list is narrow: a side column's always, across a
+      // phone's screen by its width)
+      fn() {
+        match at {
+          Whole => found_stacked(l.window().0 - 2.0 * @sf.list_line_in(at))
+          Side | Tape => true
+        }
+      },
+      idle_chats=search.summoned,
+      at~,
+    )
   })
   |> ignore
 }

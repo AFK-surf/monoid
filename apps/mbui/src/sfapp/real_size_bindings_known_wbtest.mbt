@@ -45,6 +45,9 @@
 // Added 2026-11-17: 文件's place in a wide window made once as nodes (its sidebar, sfdesk files_side_node.mbt, and the
 // files' page, sfpages files_page_node.mbt): a member of the workspace come or gone runs what of them reads the
 // workspace's stations' rows (17), where the old view built it again uncounted.
+// Added 2026-11-17: ⌘K's panel and the search page made once as nodes (sfpages switcher.mbt finder_list_node, sfdesk
+// switcher.mbt switcher_node, sfpages search.mbt): a change of what it finds runs the bindings of the rows its list
+// window holds (each row its own words, marks and time), where the old view built them again uncounted.
 ///|
 let real_size_bindings_known : Map[String, Int] = {
   "wide place workspace/member": 17,
@@ -1365,4 +1368,24 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-profile-account profiles/down": 6,
   "wide settings-profiles-station stationPart part=profiles/quota": 47,
   "wide settings-profiles-station profiles/down": 6,
+  "phone switcher search/renamed": 46,
+  "phone switcher search/down": 18,
+  "phone switcher search/card": 46,
+  "phone switcher search/archived": 18,
+  "phone switcher-found search/renamed": 46,
+  "phone switcher-found search/down": 24,
+  "phone switcher-found search/card": 46,
+  "phone switcher-found search/archived": 23,
+  "phone search-results search/renamed": 59,
+  "phone search-results search/down": 41,
+  "phone search-results search/card": 59,
+  "phone search-results search/archived": 64,
+  "wide switcher search/renamed": 50,
+  "wide switcher search/down": 25,
+  "wide switcher search/card": 50,
+  "wide switcher search/archived": 25,
+  "wide switcher-found search/renamed": 48,
+  "wide switcher-found search/down": 30,
+  "wide switcher-found search/card": 48,
+  "wide switcher-found search/archived": 29,
 }

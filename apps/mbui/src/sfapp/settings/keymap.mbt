@@ -184,6 +184,8 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
   bindings.push({ keys: [stroke(@ui.key_code_enter, @ui.mod_shift_key)], action: "find.prev", when: In("Find") })
   // (what a field offers as it is typed in, where it is open: sf's offers_node.mbt)
   bindings.append(@sf.offers_bindings())
+  // (↓ ↑ in the search's list, with the cursor in its field: ⌘K's and the search's page's, sfpages' switcher.mbt)
+  bindings.append(@sf.finder_bindings())
   // (Escape where a search is up, with the cursor in a field too, or a picture's old viewer, not in a field: sfpages'
   // search.mbt, sfbase's viewer.mbt)
   bindings.push({ keys: [stroke(@ui.key_escape, 0)], action: "search.escape", when: In("Search") })

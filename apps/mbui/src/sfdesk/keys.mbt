@@ -30,7 +30,7 @@ pub fn frame_actions(v : @view.View, src : Source) -> Unit {
       switcher_toggle(blur)
       attention_set(false)
     } else {
-      @sfpages.search_summon(fn(c) { switcher_offered(c, src, w) }, app.nav.top() != Home)
+      @sfpages.search_summon(fn() { switcher_offered(src, w, false) }, app.nav.top() != Home)
     }
     true
   })

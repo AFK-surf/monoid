@@ -311,8 +311,7 @@ test "⌘K laid out Medium and Large: its panel, room round it on every side" {
     t.frame()
     assert_true(@sfdesk.switcher_open(), msg=w.to_string())
     assert_false(@sfpages.search_opened(), msg=w.to_string())
-    let c = t.ctx()
-    let (x, y, pw, _) = c.rect_of(c.id("switcher")).unwrap()
+    let (x, y, pw, _) = switcher_panel_rect(t)
     assert_true(x >= 16.0 && x + pw <= w - 16.0 && y > 0.0, msg="\{w}: \{x} \{pw}")
   }
 }
@@ -327,9 +326,8 @@ test "⌘K's scrolling results reach its curved foot and fade towards it" {
     t.draw()
     t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
     t.run_for(@ui.move_most_ms)
-    let c = t.ctx()
-    let (px, py, pw, ph) = c.rect_of(c.id("switcher")).unwrap()
-    let lists = t.boxes().filter(fn(b) { b.kind == "list" && b.w > pw * 0.8 && b.x >= px && b.x + b.w <= px + pw && b.y >= py && b.y < py + ph })
+    let (px, py, pw, ph) = switcher_panel_rect(t)
+    let lists = switcher_lists(t, (px, py, pw, ph))
     assert_eq(lists.length(), 1, msg="\{width}: lists")
     let list = lists[0]
     let foot = list.y + list.h
@@ -341,7 +339,7 @@ test "⌘K's scrolling results reach its curved foot and fade towards it" {
     // The viewport reaches the panel's edge; the panel itself cuts its contents to its outline.
     assert_true((foot - (py + ph)).abs() < 0.5, msg="\{width}: list ends at \{foot}, panel at \{py + ph}")
     assert_true(corner_cover(row, list.x + list.w / 2.0, foot - 2.0, 2.0) > 0.9, msg="\{width}: middle")
-    let panels = t.boxes().filter(fn(b) { (b.x - px).abs() < 0.5 && (b.y - py).abs() < 0.5 && (b.w - pw).abs() < 0.5 && b.border_w > 0.0 })
+    let panels = t.boxes_held().filter(fn(b) { (b.x - px).abs() < 0.5 && (b.y - py).abs() < 0.5 && (b.w - pw).abs() < 0.5 && b.border_w > 0.0 })
     assert_eq(panels.length(), 1, msg="\{width}: panel")
     let inset = list.x - px
     // (cut at the panel's own edge: its line takes no room and is drawn over what it holds)
@@ -371,9 +369,8 @@ test "⌘K: the pointer going down its rows leaves only the one under it shown c
   t.draw()
   t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
   t.run_for(@ui.move_most_ms)
-  let c = t.ctx()
-  let (px, py, pw, ph) = c.rect_of(c.id("switcher")).unwrap()
-  let lists = t.boxes().filter(fn(b) { b.kind == "list" && b.w > pw * 0.8 && b.x >= px && b.x + b.w <= px + pw && b.y >= py && b.y < py + ph })
+  let (px, py, pw, ph) = switcher_panel_rect(t)
+  let lists = switcher_lists(t, (px, py, pw, ph))
   assert_eq(lists.length(), 1, msg="lists")
   let list = lists[0]
   // the grounds drawn as wide as the list: the rows shown chosen, each at its top
@@ -400,14 +397,13 @@ test "⌘K at its end leaves its last result as far from the foot as from the si
     t.draw()
     t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
     t.run_for(@ui.move_most_ms)
-    let c = t.ctx()
-    let (px, py, pw, ph) = c.rect_of(c.id("switcher")).unwrap()
-    let lists = t.boxes().filter(fn(b) { b.kind == "list" && b.w > pw * 0.8 && b.x >= px && b.x + b.w <= px + pw && b.y >= py && b.y < py + ph })
+    let (px, py, pw, ph) = switcher_panel_rect(t)
+    let lists = switcher_lists(t, (px, py, pw, ph))
     assert_eq(lists.length(), 1, msg="\{width}: list")
     let list = lists[0]
     t.wheel(list.x + list.w / 2.0, list.y + list.h / 2.0, 3000.0)
     t.run_for(@ui.move_most_ms)
-    let children = t.boxes().filter(fn(b) { b.parent == list.index })
+    let children = switcher_blocks(t, list)
     assert_true(children.length() >= 2, msg="\{width}: last row and its foot")
     let last = children[children.length() - 2]
     let blank = children[children.length() - 1]
@@ -645,4 +641,39 @@ test "a phone's Home: its search tucked under the top bar out of sight takes no 
   tap_search_field(t)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfpages.search_opened(), msg="the field in sight, pressed")
+}
+
+///|
+/// ⌘K's panel where it is drawn (x, y, w, h): the dialog of the window's tree's its search names (sfdesk switcher.mbt's
+/// switcher_node, read out as a dialog named 搜索全部内容和操作).
+fn switcher_panel_rect(t : @ui.Tester) -> (Double, Double, Double, Double) raise {
+  t.get(Dialog, label=@sf.t("web-main.switcher.search")).rect
+}
+
+///|
+/// ⌘K's list in its panel `panel` (x, y, w, h): what scrolls of the window's tree's there as wide as the panel's words
+/// (View::scrolls_window's node: the one box holding what it scrolls, taller than it or as tall), each such box.
+fn switcher_lists(t : @ui.Tester, panel : (Double, Double, Double, Double)) -> Array[@ui.Laid] {
+  let (px, py, pw, ph) = panel
+  let boxes = t.boxes_held()
+  boxes.filter(fn(b) {
+    b.w > pw * 0.8 &&
+    b.x >= px &&
+    b.x + b.w <= px + pw &&
+    b.y >= py &&
+    b.y < py + ph &&
+    b.h > 0.0 &&
+    boxes.iter().any(fn(c) { c.parent == b.index && c.h > b.h && c.y <= b.y })
+  })
+}
+
+///|
+/// What ⌘K's list `list` holds in its order, as it scrolls: its lines and the room under its last (the blocks of what
+/// it scrolls, none of what stands for those not made: View::scrolls_window's spacers, as tall as nothing at its ends).
+fn switcher_blocks(t : @ui.Tester, list : @ui.Laid) -> Array[@ui.Laid] {
+  let boxes = t.boxes_held()
+  match boxes.iter().find_first(fn(c) { c.parent == list.index && c.h > list.h }) {
+    Some(content) => boxes.filter(fn(b) { b.parent == content.index && b.h > 0.0 })
+    None => []
+  }
 }

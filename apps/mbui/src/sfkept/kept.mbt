@@ -760,6 +760,7 @@ let kept_answers : String =
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"从切换器打开后发出 082939\",\"here\":\"01M6T502CRMSACN0CQS09P2GXN/b404f4a6caf175c8dd4bab71b8d9f22e7f7ac9a9fb45a38c50e4342b94ea1a2a\"}",{"refs":[]}]
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"从切换器打开后发出 082939\",\"here\":\"01M6W7MX9939WQ8P2HTPWPP34D/8c8a3c2fe2cc4b745167ab7afb7b270d888367b5a464bd980614386ec96e4e34\"}",{"refs":[]}]
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"从切换器打开后发出 082939\",\"here\":\"01M76MEFEDEK7WQXSA17VY6B4T/8ea1fd1325414c13523a1442772e0839fd48d2f2c8cf749f3f64770e4ecbe1b1\"}",{"refs":[]}]
+  #|["words","{\"call\":\"ref.pasted\",\"text\":\"从切换器打开后发出 082939\",\"here\":\"01M7JVHTB1J0T3JFX0GF5FYC9P/a1cff597dbf2c6b4d07c36a83b7bcc88762bde2613ffd487b258b86dba9709e8\"}",{"refs":[]}]
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"作为文件\",\"here\":\"ws1/st1\"}",{"refs":[]}]
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"作为文件发送 082940\",\"here\":\"01M5NEWCK7VZFZXN5ZH42RYEKN/7710e91f13e406d019abd027b98c52395463a89e8e038613830587ecb1e3a9fb\"}",{"refs":[]}]
   #|["words","{\"call\":\"ref.pasted\",\"text\":\"作为文件发送 082940\",\"here\":\"01M5P6X0QG9YXN9CVA0XCR4DM4/c909a728a72b4f3640d0f0f89906af1307406f23b71e5865c64e599b229a8922\"}",{"refs":[]}]

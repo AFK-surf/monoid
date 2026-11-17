@@ -63,98 +63,114 @@ pub fn switcher_open_with(words : String) -> Unit {
 }
 
 ///|
-/// How ⌘K's panel comes (140 ms on the ease-out).
+/// How ⌘K's panel comes (140 ms on the ease-out), grown out of 97% and faded in, its ground first.
 // kept across runs: a value (no field of it changes)
 let switcher_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, oy=0.0, spec=@motion.tween(@kit.pop_ms, ease=Out), ground_first=true)
 
 ///|
-/// How ⌘K goes: at once, as the web's (unmounted).
-// kept across runs: a value (no field of it changes)
-let gone_at_once : @motion.Trans = @motion.trans(fade=0.0, spec=@motion.Snap(0.0))
+/// How its scrim comes: over 120 ms (tip_in's).
+let switcher_ground_ms : Double = 120.0
 
 ///|
-/// ⌘K over the page (ChatSwitcher): over a scrim, 14% down the window, 560 wide at most (32 short of the window), 480
-/// high at most (72% of the window); its search, then sfpages' list of what is found and what can be done (finder_list),
-/// the latest chats with nothing typed. Drawn each frame; nothing while closed. It comes in as the web's:
-/// its scrim faded in over 120 ms, the panel grown out of 97% from its top and faded in over 140 ms; it goes at once.
-pub fn switcher(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  // (asked closed too: opened again, it comes in again)
-  let shows = @motion.presence(c, "\u{2}switcher", switching.get(), initial=true, enter=switcher_in, exit=gone_at_once)
-  let ground = @motion.presence(c, "\u{2}switcher-ground", switching.get(), initial=true, enter=@kit.tip_in, exit=gone_at_once)
-  if !switching.get() {
-    return
-  }
-  let offered = switcher_offered(c, src, w)
-  let t = @sf.theme()
+/// ⌘K over the page (ChatSwitcher), as nodes of the window's tree over a shell's (narrow_shell's, the wide frames'), in
+/// `v`: while open, a modal layer over a scrim (@sf.over_panel_node: Escape, back or a press outside close it, Escape
+/// in one kind's list back to all of them first and words typed cleared before that, finder_escape), the panel 14% down
+/// the window in its middle, 560 wide at most (32 short of the window), 480 high at most (72% of the window); its
+/// search (the keys in it as it opens), then sfpages' list of what is found and what can be done (finder_list_node), the
+/// latest chats with nothing typed. Its scrim faded in over 120 ms, the panel grown out of 97% and faded in over 140 ms;
+/// it goes at once.
+pub fn switcher_node(v : @view.View, src : Source) -> Unit {
+  let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   let close = fn() {
     switching.set(false)
     switcher_closed()
-    c.blur()
   }
-  let most = dmin(switcher_most_h, c.height * switcher_most_share) - switcher_panel_rest + switcher_edge
-  let panel = c.id("switcher")
-  // mbui's layer over the page (modal: its scrim takes the presses outside, Tab stays in it; Esc, back or a press
-  // outside dismiss it, closed at that moment; Esc in one kind's list back to all of them first, within it), the panel
-  // 14% down the window in its middle
-  let scrim = @sf.alpha(t.p.overlay, ground.map(fn(l) { l.alpha }).unwrap_or(1.0))
-  c.with_dismissed(fn(_) { close() }, fn() {
-    c.overlay("switcher-layer", modal=true, scrim~, initial_focus=0, on_escape=@sfpages.finder_escape, fn() {
+  @sf.over_panel_node(
+    v,
+    fn() { switching.get() && workspace() is Some(_) },
+    close,
+    within=fn() { @sfpages.finder_escape() },
+    // (back closes it, whatever is typed or looked at alone)
+    back_within=fn() { false },
+    top_share=switcher_top_share,
+    come=switcher_in,
+    come_ms=@kit.pop_ms,
+    ground_ms=switcher_ground_ms,
+    go_ms=0.0,
+    fn(across, layer, look) {
+      let field : Ref[@view.View?] = Ref(None)
       // (32 short of the window at most: room round it however narrow the frame is)
-      let room = dmin(switcher_w, c.width - switcher_side - switcher_side)
-      let i = c.box(
-        style=switcher_panel.then(@ui.style(max_w=Fixed(room))),
-        bg=@sf.panel_ground(),
-        shadow=@sf.dialog_shadow,
-        shadow_y=@sf.dialog_shadow_y,
-        shadow_color=t.p.shadow,
-        id=panel,
-        fn() {
-          c.box(style=switcher_search_box, fn() {
-            let res = c.editor(
-              "switcher/field",
-              placeholder=@sf.t("web-main.switcher.search"),
-              font_size=switcher_search_size,
-              line=switcher_search_line,
-              max_lines=1,
-              plain=true,
-              color=t.p.text,
-              placeholder_color=t.p.subtle,
-              caret_color=t.p.accent,
-              enter_sends=true,
-              field=@sfpages.finder_field(),
-              // Enter: the line chosen opened, as it is pressed
-              on_submit=fn(typed) {
-                @sfpages.finder_typed(typed)
-                @sfpages.finder_enter(close)
-              },
-            )
-            // (modal, its search the only field: it has the keys while it is open, the composer's given up as it opens)
-            if !res.focused {
-              c.focus_editor("switcher/field")
-            }
-            @sfpages.finder_typed(res.text)
-          })
-          |> ignore
-          if switching.get() {
-            // The list reaches into the panel's foot padding, so the panel cuts what scrolls past to its own curve.
-            // At its end the list gives that room back under its last row, and fades what goes past its foot.
-            c.box(style=@ui.style(w=Full).then(@sf.outset_bottom(switcher_edge)), fn() {
-              c.sized(room - 2.0 * switcher_edge, c.height, fn() {
-                @sfpages.finder_list(c, src, w, offered, close, idle_chats=true, most~, foot_in=switcher_edge)
-              })
-            })
-            |> ignore
-          }
-        },
-      )
-      c.place_by_size(i, fn(pw, _) { ((c.width - pw) / 2.0, c.height * switcher_top_share) })
-      match shows {
-        Some(l) => c.look(i, l)
-        None => ()
-      }
-    })
-    |> ignore
-  })
+      let room = fn() { dmin(switcher_w, layer.window().0 - switcher_side - switcher_side) }
+      across.box(fn(p) {
+        @sf.style_node(p, fn() { switcher_panel.then(@ui.style(w=Fixed(room()))) }, in_row=true)
+        p
+        .ground(By(fn() { @sf.panel_ground() }))
+        .shadow(By(fn() { (@sf.dialog_shadow, @sf.dialog_shadow_y, @sf.theme().p.shadow) }))
+        .alpha(By(fn() { look().alpha }))
+        .scale(By(fn() { look().sx }))
+        .offset(By(fn() { (look().dx, look().dy) }))
+        .says(Is(Some(@view.said(Dialog, label=@signals.untracked(fn() { @sf.t("web-main.switcher.search") })))))
+        |> ignore
+        // (↑ ↓ choose a line with the cursor in its field)
+        @sfpages.finder_keys_node(p)
+        // (what it holds as far in as its look says, past its own ground, edge and shadow: Look's `words`, its ground
+        // first)
+        let words_in = fn() { look().words }
+        p.box(fn(b) {
+          @sf.style_node(b, fn() { switcher_search_box })
+          b.alpha(By(words_in)) |> ignore
+          let f = @ui.field(
+            b,
+            @sfpages.finder_field(),
+            placeholder=@sf.t("web-main.switcher.search"),
+            font_size=switcher_search_size,
+            line=switcher_search_line,
+            max_lines=1,
+            enter_sends=true,
+            colors_by=fn() {
+              let t = @sf.theme().p
+              (t.text, t.subtle, t.accent)
+            },
+            // Enter: the line chosen opened, as it is pressed
+            submitted=fn(typed) {
+              @sfpages.finder_typed(typed)
+              @sfpages.finder_enter(close)
+            },
+          )
+          f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          field.val = Some(f)
+        })
+        |> ignore
+        // The list reaches into the panel's foot padding, so the panel cuts what scrolls past to its own curve; at its
+        // end the list gives that room back under its last row.
+        p.box(fn(l) {
+          @sf.style_node(l, fn() { @ui.style(w=Full).then(@sf.outset_bottom(switcher_edge)) })
+          l.alpha(By(words_in)) |> ignore
+          @sfpages.finder_list_node(
+            l,
+            src,
+            workspace,
+            fn() {
+              match workspace() {
+                Some(w) => switcher_offered(src, w, !(@sf.layout(layer.window().0) is Small) || @sf.native_able())
+                None => []
+              }
+            },
+            close,
+            fn() { @sfpages.found_stacked(room() - 2.0 * switcher_edge) },
+            idle_chats=true,
+            most=fn() {
+              Some(dmin(switcher_most_h, layer.window().1 * switcher_most_share) - switcher_panel_rest + switcher_edge)
+            },
+            foot_in=switcher_edge,
+          )
+        })
+        |> ignore
+      })
+      |> ignore
+      field.val.unwrap()
+    },
+  )
 }
 
 ///|
@@ -220,7 +236,7 @@ fn action_offered(id : String, icon : String, version? : String = "", station? :
 /// relayed, its station updated: as its keys and its bar's offer them now), the app's newer build or looking for one, the app's (a new
 /// chat, the sidebar, settings, the shortcuts), settings' pages (only found by typing). The core names the keys'
 /// actions and finds what was typed among them (sfdesk/switcher.mbt).
-fn switcher_offered(c : @ui.Ctx, src : Source, w : Workspace) -> Array[@sfpages.Offered] {
+fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sfpages.Offered] {
   // an action's first keys as shown (as kept on this device: settings' 快捷键)
   let prefs = src.topic("prefs", {}).get().value
   let keys = fn(action : String) { @settings.key_label(prefs, action) }
@@ -237,8 +253,7 @@ fn switcher_offered(c : @ui.Ctx, src : Source, w : Workspace) -> Array[@sfpages.
         // of a run from before the outline, whose app offered none: Source's `asks_outline`)
         match view {
           Some(v) if (src.asks_outline)() => {
-            let stint = c.page_stint()
-            offer(action_offered("chat.outline", "list", fn() { @sfpages.outline_open_keys(src, r, v, stint~) |> ignore }))
+            offer(action_offered("chat.outline", "list", fn() { @sfpages.outline_open_keys(src, r, v) |> ignore }))
           }
           _ => ()
         }
@@ -252,10 +267,10 @@ fn switcher_offered(c : @ui.Ctx, src : Source, w : Workspace) -> Array[@sfpages.
           let chat = src.topic("chat", chat_params(r)).get().value
           let open = !v.archived && !v.offline
           if open {
-            offer(action_offered("chat.archive", "archive", fn() { c.tell("chat/archive", fn() { archive_asked(src, w, r, v, chat) }) }))
+            offer(action_offered("chat.archive", "archive", fn() { archive_asked(src, w, r, v, chat) }))
           }
           if v.agents.length() > 0 {
-            offer(action_offered("chat.history", "thread", fn() { c.tell("chat/history", fn() { history_toggle(src, r, v) }) }))
+            offer(action_offered("chat.history", "thread", fn() { history_toggle(src, r, v) }))
           }
           if agents_working(v) {
             offer(action_offered("chat.stop", "stop", fn() { stop_agents(src, r, v) }))
@@ -298,7 +313,7 @@ fn switcher_offered(c : @ui.Ctx, src : Source, w : Workspace) -> Array[@sfpages.
   }
   offer(action_offered("chat.new", "compose", fn() { new_chat() }))
   // (the wide frame's alone)
-  if is_wide(c) {
+  if wide_frame {
     offer(action_offered("sidebar.toggle", "panel-open", fn() { sidebar_toggle() }))
   }
   offer(action_offered("settings", "settings", fn() { open_settings() }))
