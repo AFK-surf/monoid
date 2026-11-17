@@ -319,29 +319,24 @@ pub fn composer(
   let held_lines = composer_held_lines(c, spec.draft)
   let held_extras = composer_held_extras(c, spec.draft)
   composing.emptied = (spec.draft, w.field.text() == "")
-  let multiline = spec.roomy ||
-    focused ||
-    held ||
-    held_lines > 0 ||
-    w.text.get() != "" ||
-    w.files.get().length() > 0 ||
-    w.quotes.get().length() > 0
+  // (words sent from it still holding it: laid out opened for them too)
+  let multiline = composer_wants_open(w, roomy=spec.roomy, focused~, lingers=held) || held_lines > 0
   // ready as the core says, or as soon as there are words in the field: the core's say comes a moment after them (its
   // topic), and send pressed meanwhile is not lost (what goes is the core's to take: composer.take, nothing taken
   // nothing sent)
-  let ready_now = fn() { (w.ready.get() || (w.field.text().trim() != "" && !w.starting.get())) && !spec.locked }
+  let ready_now = fn() { composer_ready(w, locked=spec.locked) }
   let ready = ready_now()
   let quote_had = quote_has_focus(c, w)
   // (asked again as send is pressed or Enter taken, of the field: words typed since this build, a frame not drawn yet,
   // told to the core first and go with it; sent once what it refers to can be read in this workspace, sfbase's
   // outside.mbt: at once when it refers to nothing of another workspace, else as the core or the viewer says so)
   let submit = fn() {
+    // (the line of a quote it takes had the focus: the words' field has it from here, as Enter in that line gives it,
+    // not lost with the line as its card sets out)
     if ready_now() {
-      writing_text(src, w, w.field.text())
-      // (the line of a quote it takes had the focus: the words' field has it from here, as Enter in that line gives
-      // it, not lost with the line as its card sets out)
       quote_focus_to_words(c, w, quote_had)
-      @sfbase.send_sharing(src, w.key, spec.station, w.text.get().trim(chars=" \n\t").to_owned(), fn() { send(w) })
+    }
+    if composer_submit(src, w, spec.station, locked=spec.locked, send) {
       // (sent in this build, after its field was built: their field's hint and caret gone with them from now, not
       // shown once over them as they set out)
       if @sfbase.flight_hint_away(c, w.key) {
