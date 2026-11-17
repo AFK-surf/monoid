@@ -67,7 +67,7 @@ pub fn log(level : String, part : String, words : String, with_ : Json) -> Unit 
 ///|
 /// A view's bytes as bytes of their own.
 pub fn own(v : BytesView) -> Bytes {
-  let b = @buffer.Buffer(size_hint=v.length())
+  let b = @buffer.Buffer(capacity=v.length())
   b.write_bytesview(v)
   b.to_bytes()
 }
@@ -76,7 +76,7 @@ pub fn own(v : BytesView) -> Bytes {
 /// Several pieces as one.
 pub fn concat(parts : Array[Bytes]) -> Bytes {
   let size = parts.fold(init=0, (n, p) => n + p.length())
-  let b = @buffer.Buffer(size_hint=size)
+  let b = @buffer.Buffer(capacity=size)
   for p in parts {
     b.write_bytes(p)
   }

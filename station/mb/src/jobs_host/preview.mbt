@@ -165,7 +165,7 @@ fn concat(a : Bytes, b : Bytes) -> Bytes {
   if a.length() == 0 {
     return b
   }
-  let buf = @buffer.new(size_hint=a.length() + b.length())
+  let buf = @buffer.new(capacity=a.length() + b.length())
   buf.write_bytes(a)
   buf.write_bytes(b)
   buf.to_bytes()
@@ -487,7 +487,7 @@ let socket_headers : Array[String] = ["sec-websocket-protocol", "cookie", "user-
 ///|
 /// One frame on a preview's socket stream.
 pub fn frame(kind : Int, payload : Bytes) -> Bytes {
-  let buf = @buffer.new(size_hint=5 + payload.length())
+  let buf = @buffer.new(capacity=5 + payload.length())
   buf.write_byte(kind.to_byte())
   let n = payload.length()
   buf.write_byte((n >> 24).to_byte())
@@ -578,7 +578,7 @@ fn ServiceSocket::is_open(self : ServiceSocket) -> Bool {
 /// A frame to the service, masked as a client's are.
 async fn ServiceSocket::send_frame(self : ServiceSocket, opcode : Int, payload : Bytes) -> Unit raise {
   let mask = @hex.decode(random_hex(self.conn.host, 4)) catch { _ => b"\x01\x02\x03\x04" }
-  let buf = @buffer.new(size_hint=payload.length() + 14)
+  let buf = @buffer.new(capacity=payload.length() + 14)
   buf.write_byte((0x80 | opcode).to_byte())
   let n = payload.length()
   if n < 126 {
