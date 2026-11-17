@@ -1104,6 +1104,9 @@ pub struct Tree {
   mut points_hover : NodeId?
   /// what scrolls in each node that does (View::scrolls), by the node: what it holds finds it (View::scroll_holding)
   scrolls_at : Map[Int, Scroll]
+  /// a page's list's blocks put by and taken for another key (View::scrolls_window's `reused`), by the block's node:
+  /// what its parts keep of each key (reused_state.mbt)
+  priv reused_slots : Map[Int, ReusedSlot]
   /// the columns that scroll whose bars come out where the pointer is along their edge (View::bar_near), and which
   /// the pointer is along now (told as withins are: Tree::bars_near_told)
   bar_cols : Array[(Int, Int)]
@@ -1574,6 +1577,7 @@ pub fn Tree::new(
     old_there: fn(_, _, _) { true },
     points_hover: None,
     scrolls_at: {},
+    reused_slots: {},
     bar_cols: [],
     drawn_marks: [],
     bars_due: false,
@@ -2607,6 +2611,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.free.clear()
   self.free.shrink_to_fit()
   self.scrolls_at.clear()
+  self.reused_slots.clear()
   self.shows_due.clear()
   self.focus_holds.clear()
   self.laid_waits.clear()

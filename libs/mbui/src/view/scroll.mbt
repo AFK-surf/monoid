@@ -157,6 +157,9 @@ pub struct Scroll {
   /// Tester's judges: its bar's thumb, where the reader is in what the list holds, changes with them in that frame
   /// (Tree::scroll_keys_at)
   priv mut keys_at : Double
+  /// scrolled beside another as one (Scroll::beside, either of them): what it is scrolled to is theirs together, so
+  /// what a list's block taken for another key keeps by its key keeps nothing of it (reused_state.mbt)
+  priv mut shared : Bool
 }
 
 ///|
@@ -196,8 +199,10 @@ pub fn Scroll::list() -> Scroll {
 /// it holds and the node it scrolls in its own (all of them as wide, each goes as far). Each host takes its own, one
 /// node each; `self` itself may be scrolled by none of them (only what they share).
 pub fn Scroll::beside(self : Scroll) -> Scroll {
+  self.shared = true
   {
     ..Scroll::made(self.as_list, across=self.across),
+    shared: true,
     x: self.x,
     fling: self.fling,
     hand_on: self.hand_on,
@@ -260,6 +265,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     put_at: -1.0e9,
     wheel_at: -1.0e9,
     keys_at: -1.0e9,
+    shared: false,
   }
 }
 
@@ -974,6 +980,9 @@ pub fn View::scrolls(
   }
   // (found by what it holds: View::scroll_holding)
   self.tree.scrolls_at[self.at] = s
+  // (in a page's list's block taken for other keys: how far it is scrolled the key's, kept and put back by the list,
+  // reused_state.mbt)
+  self.tree.reused_scroll(self, s)
   let across = s.across
   // (how tall it is, as it is asked: what shows past its ends is in its heights; across, how wide)
   s.tall = fn() { if self.live() is Some(n) { if across { n.flex.width } else { n.flex.height } } else { 0.0 } }

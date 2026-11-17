@@ -740,6 +740,40 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
   // rest let go; all let go with the list)
   let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
+  // (what the parts of those blocks keep of each key, kept by it as a block leaves it and given back as a block is
+  // taken for it or made anew for it: reused_state.mbt)
+  let kept : ReusedKept[K] = ReusedKept::new()
+  let kept_keys = fn() { kept.length() }
+  // (block `v` leaving key `k` (put by, let go, or taken for another): what its parts keep now kept by `k`)
+  let keep_from = fn(v : View, k : K) {
+    guard v.alive() && self.tree.reused_slots.get(v.at) is Some(rs) else { return }
+    let (xs, bools) = rs.taken(self.tree, v.at)
+    kept.keep(k, xs, bools)
+  }
+  // (block `v` taken for another key, `was` the one it leaves, `k` the one it comes to (View::scrolls_window's
+  // `reused`): what its parts kept of `was` kept, what they kept of `k` given back, each at once (answering.mbt), as
+  // were it made anew for `k`; `wake` waking what it binds, `key` saying its key)
+  let taken_for = fn(v : View, was : K, k : K, wake : () -> Unit, key : @signals.Signal[K]) {
+    guard was != k && v.alive() && self.tree.reused_slots.get(v.at) is Some(rs) else {
+      answering(within=v, fn() {
+        wake()
+        key.set(k)
+      })
+      return
+    }
+    // (what its parts kept of `was` kept as it left `was`, put by: nothing of it changes out of sight; kept again here it
+    // would bring back a key let go of since, past those kept last)
+    rs.kept_x = fn(path) { kept.x_of(k, path) }
+    rs.kept_bool = fn(path) { kept.bool_of(k, path) }
+    answering(within=v, fn() {
+      rs.told_reused()
+      wake()
+      key.set(k)
+    })
+    // (its switches then, what they make or let go settled at once as well, where each is in the block as it is now)
+    answering(within=v, fn() { rs.put_bools(self.tree, v.at) })
+    rs.put_scrolls(self.tree, v.at)
+  }
   let spare_let_go = fn() {
     for _, all in spare {
       for b in all {
@@ -2051,11 +2085,23 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let window_short = Ref(false)
   // (the slots that hold `need` (what shows) and as much round it as where the column shows from `top`, `vh` tall,
   // asks; a block put by in a slot that leaves them taken out of it first, held by no node (View::park), kept)
+  // (a block that shows a key whose slot leaves the slots, `ks` those kept: let go with its slot (what it holds before
+  // it), never through its leaving what shows (its keys changed: what is filtered out), what its parts keep kept by its
+  // key first, while it lives: reused_state.mbt)
+  let keep_leaving = fn(ks : Array[K]) {
+    for bl in blocks {
+      let bk = @signals.untracked(bl.1)
+      if bl.0.alive() && showing.contains(bk) && !ks.contains(bk) {
+        keep_from(bl.0, bk)
+      }
+    }
+  }
   let slots_cover = fn(all : Places[K], need : Array[K], top : Double, vh : Double) {
     let n = all.length()
     if n == 0 {
       slots_found.val = None
       if slot_keys.untracked().length() > 0 {
+        keep_leaving([])
         slot_keys.set([])
       }
       return
@@ -2178,6 +2224,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     for i in a..=b {
       ks.push(all.key(i))
     }
+    keep_leaving(ks)
     slots_found.val = if a <= b { Some((all.col, all.col.refills, a)) } else { None }
     slot_keys.set(ks)
   }
@@ -4691,11 +4738,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                   Some((v, key, wake, Some(was_in))) if v.alive() && physical_equal(was_in, slot) => {
                     showing[k] = true
                     // (a block given another key, woken: what that makes or lets go in it so at once, as were the
-                    // block made anew, answering.mbt)
-                    answering(within=v, fn() {
-                      wake()
-                      key.set(k)
-                    })
+                    // block made anew, answering.mbt; what its parts keep that key's: reused_state.mbt)
+                    taken_for(v, key.untracked(), k, wake, key)
                     mine.val = Some((v, key))
                   }
                   // (in another's slot, out of sight there, or held by no node since that slot left what has slots: taken
@@ -4708,16 +4752,17 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                     slot.take_in(v)
                     showing[k] = true
                     // (a block given another key, woken: what that makes or lets go in it so at once, as were the
-                    // block made anew, answering.mbt)
-                    answering(within=v, fn() {
-                      wake()
-                      key.set(k)
-                    })
+                    // block made anew, answering.mbt; what its parts keep that key's: reused_state.mbt)
+                    taken_for(v, key.untracked(), k, wake, key)
                     mine.val = Some((v, key))
                   }
                   _ => {
                     let key = @signals.signal(k, same=fn(a, b) { a == b })
-                    let v = slot.box(fn(v) { block(v, fn() { key.get() }, fn(v) { make_by(v, fn() { key.get() }) }) })
+                    let v = slot.box(fn(v) {
+                      // (what its parts keep of its key: what was kept of it given back as each is made, reused_state.mbt)
+                      self.tree.reused_made(v, fn(path) { kept.x_of(k, path) }, fn(path) { kept.bool_of(k, path) }, kept_keys)
+                      block(v, fn() { key.get() }, fn(v) { make_by(v, fn() { key.get() }) })
+                    })
                     mine.val = Some((v, key))
                   }
                 }
@@ -4726,6 +4771,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                 slot.tree.work.structure = slot.tree.work.structure + 1
                 mine.val = None
                 unshow(k, v.at)
+                // (what its parts keep kept by its key, put by or let go: stopped where they are, nothing going on by
+                // itself out of sight; given back as a block shows that key again, reused_state.mbt)
+                keep_from(v, key.untracked())
                 let all = match spare.get(kind) {
                   Some(all) => all
                   None => {

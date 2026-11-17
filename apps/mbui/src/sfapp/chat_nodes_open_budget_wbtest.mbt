@@ -52,13 +52,16 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-17: the first frame lays out and measures its words once, in the faces and lines they are drawn in, mbui
   // ui's on_frame and app_tree's app_looks_told, not in the system's and then all again: before it phone cold 830 laid,
   // 146 measured, 776 bindings, wide cold 3531, 557 and 2634, the same made)
+  // (2026-11-17: a table in a block taken for another message's row the same nodes, scrolled across as that message has
+  // it, what a code block or a formula keeps the same, mbui reused_state.mbt, sf md_block_node made again for none:
+  // before it phone up 566 made, 618 laid and a frame 142, 126, wide up 699 and 910, the same at 60, 120, 24 and 7)
   "phone cold": (757, 29, 532, 73, 763),
   "phone again": (327, 17, 242, 28, 301),
   "wide cold": (2443, 483, 2011, 217, 2446),
   "wide again": (882, 130, 881, 123, 1049),
-  "phone up": (566, 366, 618, 96, 0),
-  "wide up": (699, 382, 910, 125, 0),
-  "phone up frame": (142, 102, 126, 28, 0),
+  "phone up": (564, 366, 617, 96, 0),
+  "wide up": (697, 382, 909, 125, 0),
+  "phone up frame": (140, 102, 125, 28, 0),
   "wide up frame": (137, 105, 130, 28, 0),
 }
 

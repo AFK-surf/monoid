@@ -689,6 +689,11 @@ priv struct ChatBodyKeeps {
 }
 
 ///|
+/// How many long tables a chat's page keeps what their pieces scroll across beside (ChatBodyKeeps' `tables`): those
+/// asked of last, the rest let go (a table come back to then at its start).
+let chat_tables_most : Int = 64
+
+///|
 /// A chat's messages (chat_list's rows, at rest) in `v`, taking the room it is given: the chat `here` is (its view as
 /// it changes, the list's width as it changes: narrow or wide by it), its rows the entries `entries` says as they
 /// change (view_of_chat's) with what was sent from here and not in the chat yet (`sending`: sfbase's sending_now),
@@ -1448,11 +1453,23 @@ fn chat_body_row(
       KAgent =>
         more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
           // (by the message it is of now, followed: a block taken for another's row scrolls that one's table across)
+          // (a long table's alone, cut a few rows a piece: one in a block scrolls across on its own, the list's)
           let tk = whole_key() + "#" + b.to_string()
           match keeps.tables.get(tk) {
-            Some(s) => s
+            Some(s) => {
+              // (the last asked of them last: those asked longest ago let go first)
+              keeps.tables.remove(tk)
+              keeps.tables[tk] = s
+              s
+            }
             None => {
               let s = @view.Scroll::across()
+              if keeps.tables.length() >= chat_tables_most {
+                match keeps.tables.keys().head() {
+                  Some(first) => keeps.tables.remove(first)
+                  None => ()
+                }
+              }
               keeps.tables[tk] = s
               s
             }
