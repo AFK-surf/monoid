@@ -1074,6 +1074,9 @@ let pa_why_panel_first : String = "the side panel set off and come to rest: as n
 let pa_why_panel_mine : String = "words at the column's right and middle on the side panel's way (one's own, a notice's pill, their time): as nodes going with the edge and the middle drawn (chat_body_node's KMine by - 2·across, KNotice by/2 - across); the old list_shift steps them to where they go in its first frame (181 pt, 90 pt)"
 
 ///|
+let pa_why_room_way : String = "the composer's room under it going where the page goes from the frame the side panel sets off, on both pages (composer_foot_in, the user 2026-11-17: 「很 q 弹的垃圾」), no more held at the narrower end to go on by itself once the page is there: the rows over it go up with it as the panel closes, the old page's on the old list's way and the page made as nodes' on its own, so what crosses the bar's edge then crosses it a frame apart, and the panel's switch's tip under the still pointer comes as the page made as nodes is at rest, a frame before the old page's way ends"
+
+///|
 let pa_why_tip : String = "the panel's switch under the still pointer after its press: as nodes the bar's switch is a node whose tip comes up under the hand (the library's tip); the old bar shows none after a press"
 
 ///|
@@ -1200,6 +1203,11 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-right-panel-toggle", what: Key("old alone 「先不换」"), from: 5267.0, to: 5267.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-right-panel-toggle", what: Key("old alone 「等 林 决定」"), from: 5267.0, to: 5283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-right-panel-toggle", what: Key("nodes alone 「先不换」"), from: 5300.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
+  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「先不换」"), from: 5283.0, to: 5283.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「这次只改列表，截图下次再说」"), from: 5350.0, to: 5350.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "desk-right-panel-toggle", what: Key("ground nodes alone"), from: 5833.0, to: 5833.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「打开侧栏」"), from: 5850.0, to: 5850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "desk-right-panel-toggle", what: Key("nodes alone 「⇧⌘H」"), from: 5850.0, to: 5850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
   { drive: "desk-right-panel-toggle", what: Key("old alone 「这次只改列表，截图下次再说」"), from: 5300.0, to: 5317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-right-panel-toggle", what: Key("words 「刚刚」"), from: 5267.0, to: 5417.0, dx: 83.0, dy: 5.4, dw: 8.2, why: pa_why_panel_mine },
   { drive: "desk-right-panel-toggle", what: Key("old alone 「Claude」"), from: 5667.0, to: 5667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float },
@@ -1937,6 +1945,14 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-side-panel", what: Key("old alone 「40 分钟前」"), from: 3383.0, to: 3450.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 3383.0, to: 3567.0, dx: 81.5, dy: 3.5, dw: 0.2, why: pa_why_panel_mine },
   { drive: "wide-side-panel", what: Key("old alone 「还有深色模式也看一下」"), from: 3400.0, to: 3417.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_mine },
+  { drive: "wide-side-panel", what: Key("ground nodes alone"), from: 1783.0, to: 1783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("ground nodes alone"), from: 3617.0, to: 3617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("nodes alone 「打开侧栏」"), from: 1800.0, to: 1800.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("nodes alone 「⇧⌘H」"), from: 1800.0, to: 1800.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("nodes alone 「打开侧栏」"), from: 3633.0, to: 3633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("nodes alone 「⇧⌘H」"), from: 3633.0, to: 3633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("alpha 「打开侧栏」"), from: 1817.0, to: 1817.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_room_way },
+  { drive: "wide-side-panel", what: Key("alpha 「打开侧栏」"), from: 3650.0, to: 3650.0, dx: 0.2, dy: 0.2, dw: 0.6, why: pa_why_room_way },
   { drive: "send-long", what: Key("nodes alone 「帮我看一下登录按钮在深色模式下的颜色是不是不对，还有注册页输入框的边框也要再核对一遍」"), from: 1917.0, to: 1917.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-long", what: Key("composer"), from: 1933.0, to: 2033.0, dx: 0.2, dy: 24.7, dw: 25.0, why: pa_why_send },
   { drive: "send-long", what: Key("old alone 「帮我看一下登录按钮在深色模式下的颜色是不是不对，还有注册页输入框的边框也要再核对一遍」"), from: 1933.0, to: 2350.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },

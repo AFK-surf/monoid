@@ -41,26 +41,55 @@ pub fn chat_composer_node(parent : @view.View, src : Source, r : ChatRef, tips :
     offline: fn() { head().map(fn(v) { v.offline }).unwrap_or(false) },
     warm_agent: fn() { !head().map(fn(v) { v.archived }).unwrap_or(false) },
   }
+  let chat = r.station + "\u{1}" + r.session
   parent.by_room(fn(foot, room) {
-    foot
-    .lies_along(Is(@view.Lies::End))
-    .lines_up(Is(Some(@view.Along::Middle)))
-    .padding(By(fn() { (0.0, 12.0, 0.0, composer_foot_at(room.width())) }))
-    // (never less than it takes opened with one line: its being opened or let go moves none of the messages, as
-    // composer_open_room keeps for the old one)
-    .min_height(By(fn() {
-      Some(composer_open_box_at(node_field_line(foot), @sf.composer_corner()) + 12.0 + composer_foot_at(room.width()))
-    }))
-    |> ignore
-    foot.box(fn(at) {
-      at.width(By(fn() { Some(composer_width(room.width())) })) |> ignore
-      composer_node(at, src, ws, spec, fn(w) { send_in_chat_node(src, r, w) }, fn() {
-        if apart {
-          composer_place_at(room.width(), node_field_line(at))
-        } else {
-          composer_alone
+    // (its room under it as wide as the chat's column is laid out, as its rows are: on the page's way to another width (a
+    // side panel opened or shut beside it), as where it goes from the frame it sets off, its height going there on the
+    // list's way from that moment as the rows' rooms do (sfbase's column_sets_off), never stepped in the frame the width
+    // it is drawn at crosses composer_across's, nor going on its own after the rows rest (the user, 2026-11-17: 「很 q 弹
+    // 的垃圾」); where nothing says how it is laid out (no such way: 小屏, a tabletop), as wide as its room)
+    let across = fn() {
+      let laid = @sfbase.column_laid(chat, foot).laid
+      composer_foot_at(if laid > 0.0 { laid } else { room.width() })
+    }
+    foot.box(fn(col) {
+      // (its room under it come to another height as the page sets off: the list's foot placed at once as tall as it
+      // comes out, so what it holds drawn from where it stood, on the page's way there from that moment (a Move, as the
+      // rows' laid out anew go), never a step of 8 in the frame it sets off)
+      let room_off = @motion.Way::new(0.0)
+      let set_off_at = Ref(@double.neg_infinity)
+      let was = Ref(@signals.untracked(across))
+      @sfbase.column_set_off_each(col, fn() { if col.alive() { set_off_at.val = col.cause_at() } })
+      col.reacts(at_start=false, across, fn(now) {
+        let at = col.cause_at()
+        if at == set_off_at.val {
+          let (x, _) = room_off.at(at)
+          room_off.put(x + now - was.val)
+          room_off.go(0.0, @motion.moved(), at~)
         }
-      }, tips)
+        was.val = now
+      })
+      |> ignore
+      col
+      .lies_along(Is(@view.Lies::End))
+      .lines_up(Is(Some(@view.Along::Middle)))
+      .padding(By(fn() { (0.0, 12.0, 0.0, across()) }))
+      // (never less than it takes opened with one line: its being opened or let go moves none of the messages, as
+      // composer_open_room keeps for the old one)
+      .min_height(By(fn() { Some(composer_open_box_at(node_field_line(col), @sf.composer_corner()) + 12.0 + across()) }))
+      .moved_by(fn(_, _, t) { (0.0, room_off.value_at(t)) }, fn(_, _) { room_off.ends_at() })
+      |> ignore
+      col.box(fn(at) {
+        at.width(By(fn() { Some(composer_width(room.width())) })) |> ignore
+        composer_node(at, src, ws, spec, fn(w) { send_in_chat_node(src, r, w) }, fn() {
+          if apart {
+            composer_place_at(room.width(), node_field_line(at))
+          } else {
+            composer_alone
+          }
+        }, tips)
+      })
+      |> ignore
     })
     |> ignore
   })

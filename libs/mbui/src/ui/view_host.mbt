@@ -56,8 +56,8 @@ priv struct OldIsland {
   fits : (Double, @signals.Signal[Double?])?
   mut held_box : Int
   /// told, a `natural` one's, as what it holds comes to another height after it was first laid out, as tall as it was
-  /// before (old's `reshaped`)
-  reshaped : ((Double) -> Unit)?
+  /// before and as it is now (old's `reshaped`)
+  reshaped : ((Double, Double) -> Unit)?
   /// what it holds drawn past it, not cut to it (old's `over`)
   over : Bool
 }
@@ -1736,10 +1736,14 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     }
     // (on its way in or out: cut to itself before it draws its own, so its words go no further than its way has got,
     // over nothing beside it; pushed once, for what it holds too, below. Content::clips_self)
-    if c.clips_self {
+    // (and a leaf grown in a block of a page's list as that block's way goes: cut as tall as it is drawn, down alone,
+    // opened from its top: Tree::grown_cut_of)
+    let grown_cut = tree.grown_cut_of(c.id)
+    if c.clips_self || grown_cut > 0.0 {
       let r = c.radius * s
       // (cut along its way alone, open across: Content::clips_way)
-      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, c.h * s)
+      let way = if c.clips_self { c.clips_way } else { 1 }
+      let (cx, cy, cw, ch) = clip_way_box(way, x, y, c.w * s, dmax(0.0, c.h - grown_cut) * s)
       match c.corners {
         Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
         None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
@@ -1839,9 +1843,11 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if c.clips && !c.clips_self {
       let r = c.radius * s
       let ch = dmax(0.0, c.h + tree.clips_past_of(c.id)) * s
+      // (said down alone: open across, Content::clips_way)
+      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, ch)
       match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, ch, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(x, y, c.w * s, ch, r, r, r, r)
+        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
+        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
     }
@@ -3812,7 +3818,7 @@ let words_edge_ways : Array[(Double, Double)] = [
 /// in itself): its node held shorter than what it holds asks (its holder short of room), nothing of it cut off; what it
 /// asks never the height it was given. Not with `fits` (not yet: one that fits laid out as a `natural` one is,
 /// cut where its node is shorter).
-/// `reshaped`, a `natural` one's: told, as how tall it was, as what it holds comes to another height once it was laid
+/// `reshaped`, a `natural` one's: told, as how tall it was and is now, as what it holds comes to another height once it was laid
 /// out, at that cause (laid out again in the same frame after it: what it said there laid out with it), for what holds
 /// it to go from that height to the new one as it holds no motion of its own (a sheet's height).
 /// `unlaid`, a `natural` one's: how tall it is taken to be till first laid out (in a list: as tall as a screen, the rows
@@ -3828,7 +3834,7 @@ pub fn old(
   gives? : Bool = false,
   fits? : (Double, @signals.Signal[Double?]),
   unlaid? : () -> Double,
-  reshaped? : (Double) -> Unit,
+  reshaped? : (Double, Double) -> Unit,
   over? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -5962,7 +5968,7 @@ fn old_natural_after_layout(c : Ctx) -> Unit {
           let was = s.untracked()
           s.set(Some(h))
           match (was, o.reshaped) {
-            (Some(w), Some(f)) => f(w)
+            (Some(w), Some(f)) => f(w, h)
             _ => ()
           }
           c.read_changed("an old view's height, what it holds laid out")

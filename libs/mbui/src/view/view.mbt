@@ -212,7 +212,8 @@ pub(all) struct Content {
   /// on its way in or out (View::comes), cut to itself as well: its own words drawn within it, not past it over what
   /// is beside it, as what it holds is (clips with it, its way's while it goes)
   clips_self : Bool
-  /// where cut to itself on its way (clips_self), which of its sides cut it: 0 all four (what said it clips: View::clips);
+  /// where cut to itself on its way (clips_self), or where it says it clips, which of its sides cut it: 0 all four (what
+  /// said it clips: View::clips, but `down`);
   /// 1 its top and its foot, down a column; 2 its two ends, along a row. A way goes down its column or along its row:
   /// what it holds is cut where the way has got, never across, where nothing goes (a pick's what fades as wide as it
   /// was over a narrower place it left, drawn whole: pick_leave.mbt; the user, 2026-11-17)
@@ -332,7 +333,8 @@ pub(all) struct Drawn {
   /// on its way in or out (View::comes), cut to itself as well: its own words drawn within it, not past it over what
   /// is beside it, as what it holds is (clips with it, its way's while it goes)
   clips_self : Bool
-  /// where cut to itself on its way (clips_self), which of its sides cut it: 0 all four (what said it clips: View::clips);
+  /// where cut to itself on its way (clips_self), or where it says it clips, which of its sides cut it: 0 all four (what
+  /// said it clips: View::clips, but `down`);
   /// 1 its top and its foot, down a column; 2 its two ends, along a row. A way goes down its column or along its row:
   /// what it holds is cut where the way has got, never across, where nothing goes (a pick's what fades as wide as it
   /// was over a narrower place it left, drawn whole: pick_leave.mbt; the user, 2026-11-17)
@@ -731,6 +733,8 @@ struct Node {
   mut come_wake : (() -> Unit)?
   /// whether it is said to cut what it draws at its edges (View::clips), as it is cut too while it makes its way
   mut clips_said : Bool
+  /// where it says it cuts (clips_said), only its top and its foot, open across (View::clips' `down`)
+  mut clips_down : Bool
   /// on its way whole (a page's list's key said `comes_whole`, View::scrolls_window): not cut to its room as it makes
   /// its way, nor what it holds; cut as what holds it cuts it
   mut come_uncut : Bool
@@ -1981,6 +1985,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.come_off = fn() {  }
       n.come_wake = None
       n.clips_said = false
+      n.clips_down = false
       n.come_uncut = false
       n.list_key_way = false
       n.inert = false
@@ -2154,6 +2159,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         come_off: fn() {  },
         come_wake: None,
         clips_said: false,
+        clips_down: false,
         come_uncut: false,
         list_key_way: false,
         inert: false,
@@ -4553,12 +4559,16 @@ pub fn View::over_at(self : View, edges : Live[(Double?, Double?, Double?, Doubl
 ///|
 /// Whether what it holds is cut to it, its corners round as its own (View::radius), as an old view's box that clips is
 /// (a progress bar's track cutting its part at its round ends), as it changes: paint's. How it is drawn only: where a
-/// finger or the pointer is taken is as it was (what is past it still takes them), unlike an old view's clip.
+/// finger or the pointer is taken is as it was (what is past it still takes them), unlike an old view's clip. `down`:
+/// cut at its top and its foot alone, open across (Content::clips_way 1): a block of a page's list cut to its room down
+/// its column as it goes on the list's way, what of it is moved past its sides (a column on its way to another width,
+/// what stands at its right with the edge drawn) drawn there.
 #callsite(autofill(loc))
-pub fn View::clips(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+pub fn View::clips(self : View, on : Live[Bool], down? : Bool = false, loc~ : SourceLoc) -> View {
   self.bind(loc~, Clips, on, Paint, fn(on) {
     let n = self.tree.nodes[self.at]
     n.clips_said = on
+    n.clips_down = down
     n.look.clips = on || (n.coming && !n.come_uncut)
   })
   self
@@ -5777,6 +5787,34 @@ pub fn Tree::ground_drawn_of(self : Tree, id : NodeId) -> GroundShape {
     }
   } else {
     ground_as_laid
+  }
+}
+
+///|
+/// How much shorter than it is laid out node `id` is cut as it is drawn: a leaf grown inside a block of a page's list
+/// said `flips` (View::scrolls_window's flip_in), drawn at its size from the first frame and cut as tall as its way has
+/// it, opened from its top, never drawn over what is under it in its block as that comes down; none for any other.
+pub fn Tree::grown_cut_of(self : Tree, id : NodeId) -> Double {
+  guard self.alive_id(id) else { return 0.0 }
+  self.grown_cut_at(id.at)
+}
+
+///|
+/// Tree::grown_cut_of's, of the node at `at`: one that draws something (words, pieces, a picture, shapes); a ground
+/// alone (a box that holds nothing, its ground its look) is drawn as tall as it is grown, its ground shorter
+/// (Tree::ground_drawn_of), cut by nothing.
+fn Tree::grown_cut_at(self : Tree, at : Int) -> Double {
+  let n = self.nodes[at]
+  let less = n.flip_in.1
+  if less > 0.0 &&
+    (n.look.words.length() > 0 ||
+    n.look.runs.length() > 0 ||
+    n.look.image is Some(_) ||
+    n.look.shapes.length() > 0) &&
+    !n.kids.iter().any(fn(k) { self.nodes[k].live }) {
+    less
+  } else {
+    0.0
   }
 }
 
@@ -12159,7 +12197,11 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     clips: n.look.clips,
     clips_self: n.look.clips && n.coming && !n.come_uncut,
     clips_way: if n.clips_said {
-      0
+      if n.clips_down {
+        1
+      } else {
+        0
+      }
     } else if self.along_row_at(at) {
       2
     } else {
@@ -12800,10 +12842,10 @@ fn Tree::each_drawn_in_order(
         } else {
           n.grid_put = 0.0
         }
-      } else if n.flip_in.2 != 1.0 && rows_at >= 0 {
-        // (grown from its top on its block's way (flip_in's): where that way has it, its row's put on the grid taken
-        // back, so that its foot, which the way holds where it is, is not seen to shake by half a pixel as its row is
-        // put on the grid frame by frame against its growth)
+      } else if (n.flip_in.2 != 1.0 || self.grown_cut_at(self.order.unsafe_get(i)) > 0.0) && rows_at >= 0 {
+        // (grown from its top on its block's way (flip_in's), or cut as tall as that way has it (Tree::grown_cut_of):
+        // where that way has it, its row's put on the grid taken back, so that its foot, which the way holds where it
+        // is, is not seen to shake by half a pixel as its row is put on the grid frame by frame against its growth)
         // (never over the top of what cuts it as it is drawn, its row's or one in it: cut there as it opens)
         let (r, cut) = self.grid_row_of(self.order.unsafe_get(i), rows_at, wy)
         if r >= 0 {
@@ -12928,7 +12970,7 @@ pub fn Tree::drawn_one(
       } else if rows_kids {
         row_put = 0.0
         cut_y = @double.neg_infinity
-      } else if n.flip_in.2 != 1.0 {
+      } else if n.flip_in.2 != 1.0 || self.grown_cut_at(self.order[path[k]]) > 0.0 {
         // (as Tree::each_drawn_in_order: its row's put on the grid taken back, never over what cuts it)
         ny = dmax(ny - row_put, dmin(ny, cut_y))
       }
@@ -13051,7 +13093,13 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
 /// The scene unfolded, in order (a new array: for a test, or a host taking the window whole).
 pub fn Tree::drawn(self : Tree) -> Array[Drawn] {
   let out = []
-  self.each_drawn_scaled(fn(c, x, y, a, s) { out.push(unfolded(c, x, y, a, s)) })
+  // (a leaf grown in a block of a page's list on that block's way as tall as it is cut, as much of it as is seen:
+  // Tree::grown_cut_of)
+  self.each_drawn_scaled(fn(c, x, y, a, s) {
+    let cut = self.grown_cut_of(c.id)
+    let d = unfolded(c, x, y, a, s)
+    out.push(if cut > 0.0 { { ..d, h: dmax(0.0, c.h - cut) * s } } else { d })
+  })
   out
 }
 
@@ -13083,9 +13131,13 @@ pub fn Tree::drawn_held(self : Tree, scales? : Array[Double]) -> Array[(Drawn, I
       h = self.order_holder[h]
     }
     at_out[i] = out.length()
-    // (its corners as big as it is drawn, as its size is: where the window draws it, in the window's points)
+    // (its corners as big as it is drawn, as its size is: where the window draws it, in the window's points; a leaf
+    // grown in a block of a page's list on that block's way as tall as it is cut, as much of it as is seen:
+    // Tree::grown_cut_of)
+    let cut = self.grown_cut_of(c.id)
     let d = {
       ..unfolded(c, x, y, a, s),
+      h: if cut > 0.0 { dmax(0.0, c.h - cut) * s } else { c.h * s },
       radius: c.radius * s,
       corners: c.corners.map(fn(k) { (k.0 * s, k.1 * s, k.2 * s, k.3 * s) }),
     }

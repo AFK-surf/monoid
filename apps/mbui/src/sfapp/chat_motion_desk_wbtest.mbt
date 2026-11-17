@@ -26,13 +26,18 @@ let dk_into_slide_ms : Double = 100.0
 let dk_frame_ms : Double = 1000.0 / 60.0
 
 ///|
-/// The fixture's chat on `screen` (`h` high, else the screen's), made as nodes, its rows on the host's pixels, at rest
-/// at its end.
-fn dk_open(screen : (String, Double, Double, Int), h? : Double) -> (@ui.Tester, Source) {
+/// The fixture's chat on `screen` (`h` high, else the screen's), made as nodes (its composer too where `composer_nodes`
+/// says), its rows on the host's pixels, at rest at its end.
+fn dk_open(
+  screen : (String, Double, Double, Int),
+  h? : Double,
+  composer_nodes? : Bool = false,
+) -> (@ui.Tester, Source) {
   let (_, w, sh, platform) = screen
   let h = h.unwrap_or(sh)
   new_run()
   @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(composer_nodes)
   fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
   let src = fixture("chat")
   open_chat(dk_chat)
@@ -193,6 +198,117 @@ test "大屏: the side panel opened and closed by its switch pressed, one's own 
       (steps[1].1[steps[1].1.length() - 1] - steps[1].1[0]).abs() > 30.0,
       msg="\{at}: the composer kept its width (\{steps[1].1[0]})",
     )
+  }
+}
+
+///|
+test "大屏, either composer: one's own words broken anew as the side panel opens and closes are drawn at their size every frame, never squeezed and sprung back; the rows and the composer's room under it go the page's one way, never a step nor a way of their own after" {
+  for nodes in [true, false] {
+  let (t, _) = dk_open(dk_screens[0], composer_nodes=nodes)
+  let which = if nodes { "composer made as nodes" } else { "old composer" }
+  // (lines enough that its bubble is as wide as one may be, at either width: wider where the panel is gone than the
+  // column is drawn as it sets off closing, and fewer lines there than beside the panel)
+  let mine = "侧栏打开的时候这一段会在气泡里多折几行，收起的时候又少几行，字的大小每一帧都不变才对；这段话故意写得很长，让气泡在窄栏和宽栏里都撑到最宽，收起侧栏的那一刻它按宽栏排好、比当时画出来的栏还宽，开头的字也不能被栏的左边裁掉。"
+  guard composer_field(t) is Some((x, y, w, h)) else { fail("no composer's field") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.type_text(mine)
+  t.run_for(@ui.move_most_ms)
+  tap_send(t)
+  t.run_for(fix_deliver_ms + fix_answer_ms + fix_turn_end_ms + @ui.move_most_ms * 3.0)
+  // (how tall its words are drawn, and how wide)
+  let size = fn(t : @ui.Tester) -> (Double, Double)? {
+    for wd in t.words() {
+      let (txt, _, _, ww, wh, a) = wd
+      if a > 0.05 && txt == mine {
+        return Some((ww, wh))
+      }
+    }
+    None
+  }
+  // (where its words start across, as the page goes: and where the composer's field stands)
+  let left = fn(t : @ui.Tester) -> Double {
+    let mut at = @double.infinity
+    for wd in t.words() {
+      let (txt, wx, _, _, _, a) = wd
+      if a > 0.05 && txt == mine && wx < at {
+        at = wx
+      }
+    }
+    at
+  }
+  let field_y = fn(t : @ui.Tester) -> Double {
+    match composer_field(t) {
+      Some((_, y, _, _)) => y
+      None => 0.0
+    }
+  }
+  for open in [true, false] {
+    let at = if open { "opening" } else { "closing" }
+    guard size(t) is Some(from) else { fail("\{at}: 「\{mine}」 not drawn") }
+    let seen = []
+    let lefts = []
+    let fields = []
+    let script = if open { "tap icon:panel-open\nwait 1200\nexit\n" } else { "tap icon:panel-close\nwait 1200\nexit\n" }
+    // (from the frame before the press, at rest: where its words start at that end is where they start before it)
+    seen.push(size(t))
+    lefts.push(left(t))
+    fields.push(field_y(t))
+    t.drive(script, each=fn(t) {
+      seen.push(size(t))
+      lefts.push(left(t))
+      fields.push(field_y(t))
+    })
+    |> ignore
+    // (the composer's field goes with the rows on the page's one way: no step in a frame, and at rest by the frame the
+    // page is, never going on by itself after)
+    let last_moved = fn(xs : Array[Double]) -> Int {
+      let mut k = 0
+      for i in 1..<xs.length() {
+        if (xs[i] - xs[i - 1]).abs() > 0.05 {
+          k = i
+        }
+      }
+      k
+    }
+    for i in 1..<fields.length() {
+      assert_true(
+        (fields[i] - fields[i - 1]).abs() < 4.0,
+        msg="\{which}, \{at}, frame \{i}: its field stepped \{fields[i - 1]} to \{fields[i]}\n\{Repr(fields)}",
+      )
+    }
+    assert_true(
+      last_moved(fields) <= last_moved(lefts) + 1,
+      msg="\{which}, \{at}: its field still going at frame \{last_moved(fields)}, the page at rest at \{last_moved(lefts)}\n\{Repr(fields)}",
+    )
+    // (its words' start never past where it starts at either end, the chat's column standing still at its left: a
+    // bubble laid out wider than the column is drawn at cut at its right as the panel's edge goes, never at its start)
+    let n = lefts.length()
+    if n > 1 {
+      let least = @cmp.minimum(lefts[0], lefts[n - 1])
+      for i in 0..<n {
+        assert_true(
+          lefts[i] >= least - 4.0,
+          msg="\{which}, \{at}, frame \{i}: its words start at \{lefts[i]}, at either end \{least}\n\{Repr(lefts)}",
+        )
+      }
+    }
+    guard size(t) is Some(to) else { fail("\{at}: 「\{mine}」 not drawn at rest") }
+    assert_true(
+      (to.0 - from.0).abs() > 10.0 || (to.1 - from.1).abs() > 10.0,
+      msg="\{at}: its words not broken anew (\{Repr(from)} to \{Repr(to)}): the panel took too little of the chat",
+    )
+    // (laid out anew at once as the page sets off, as the window made another size has it: drawn at where it was or
+    // where it goes, whole, never between, as words grown from their top are)
+    for i, s in seen {
+      guard s is Some(s) else { fail("\{at}, frame \{i}: 「\{mine}」 not drawn") }
+      let whole = fn(e : (Double, Double)) { (s.0 - e.0).abs() < 0.5 && (s.1 - e.1).abs() < 0.5 }
+      assert_true(
+        whole(from) || whole(to),
+        msg="\{at}, frame \{i}: its words drawn \{Repr(s)}, at rest \{Repr(from)} and \{Repr(to)}\n\{Repr(seen)}",
+      )
+    }
+  }
   }
 }
 

@@ -116,6 +116,44 @@ fn mine_bubble_node(
         |> ignore
       None => ()
     }
+    // (on the page's way to a wider column (a side panel sliding out), laid out as wide as where it goes, as long as it
+    // is wider than it may be at the width the column is drawn at: drawn in from the column's right by as much, its words'
+    // start where a bubble that wide starts at that width, what is past the column's right cut there by the page as
+    // the panel's edge goes, never its start cut at the column's left (the user, 2026-11-17, its words cut at their
+    // start as the panel closed); none at rest, or drawn as wide as laid out: sfbase's column_laid. Bound only once a
+    // chat's column has first set off on such a way, at that cause, as the list's clip is (chat_body_node): a chat's page
+    // opened binds nothing for it, chat_nodes_open_budget)
+    let chat = here.station + "\u{1}" + here.session
+    let bind = fn() {
+      b.moved_by(
+        fn(w, _, _) {
+          // (the room it has as drawn, between the rows' sides: the column as wide as it is drawn (where it is laid out,
+          // less as much narrower), less a row's side at each end where it is laid out, less what its right edge and the
+          // words at the column's left are each moved in by, across: chat_body_node's offset of a message of one's own,
+          // the column's own; so its start never further left than the others' words start)
+          let c = @sfbase.column_laid(chat, b)
+          if c.by < 0.0 {
+            let laid = (here.width)()
+            (@sf.dmax(0.0, w - (laid + c.by - 2.0 * row_side(laid) - 2.0 * c.across)), 0.0)
+          } else {
+            (0.0, 0.0)
+          }
+        },
+        fn(_, _) { 0.0 },
+      )
+      |> ignore
+    }
+    if @signals.untracked(fn() { @sfbase.column_set_off_count() > 0 }) {
+      bind()
+    } else {
+      let bound = Ref(false)
+      @sfbase.column_set_off_each(b, fn() {
+        if !bound.val && b.alive() {
+          bound.val = true
+          bind()
+        }
+      })
+    }
     person_words_node(b, m, found~, found_at~, lit~, cards?) |> ignore
   })
   |> ignore

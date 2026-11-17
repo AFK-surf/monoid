@@ -814,6 +814,13 @@ fn chat_rail_node(
       o.box(fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
         press
+        // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
+        // placed on the composer's ground's way, never stepped by half of that in a frame, the user 2026-11-17:
+        // @sfbase.chat_foot_dropped)
+        .moved_by(
+          fn(_, _, t) { (0.0, @sfbase.chat_foot_dropped_off(r.station + ":" + r.session, t).0) },
+          fn(_, _) { @sfbase.chat_foot_dropped_off(r.station + ":" + r.session, 0.0).1 },
+        )
         .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.outline.title"))) }))
         .cursor(Is(Some(Hand)))
         // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)

@@ -230,3 +230,121 @@ test "flips: a part come in the middle of a block, the list at its top: what is 
   assert_true((was - tail0 - 30.0).abs() < 0.5, msg="尾3 down \{was - tail0}, 30 wanted")
   assert_eq(tree.work().computes - laid0, 0, msg="laid out on the way")
 }
+
+///|
+/// What block 9 of lf_anew's list says, broken into more lines the narrower its list is laid out.
+let lf_anew_words : String = "一段在列表变窄时要折成更多行的长字，变宽时又回到少几行，字的大小每一帧都不该变。"
+
+///|
+/// A page's list 400 tall of rows 0 to 9 following its foot, said `flips`, as wide as `w`; block 9 a room over it (12
+/// over 200 wide with few words, else 8), put in `gap` as it is made, then `words` as they are, broken by the width.
+fn lf_anew(
+  w : @signals.Signal[Double],
+  words : @signals.Signal[String],
+  gap : Ref[@view.View?],
+) -> @view.Tree {
+  let scroll = @view.Scroll::list()
+  let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(By(fn() { Some(w.get()) })).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+        if k == 9 {
+          // (the room over it, declared on the list's way as what changes it comes, as a chat's row's is)
+          b.box(fn(g) {
+            gap.val = Some(g)
+            g.height(By(fn() { Some(if w.get() > 200.0 && words.get().length() < 60 { 12.0 } else { 8.0 }) })).shrink(Is(0.0)) |> ignore
+          })
+          |> ignore
+          b.box(fn(t) { t.words(By(fn() { words.get() })) |> ignore }) |> ignore
+        } else {
+          b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  tree
+}
+
+///|
+/// How the words that start as `start` are drawn in `tree`: how wide, and how big against as they are laid out (its
+/// scale; how tall it is drawn is how much of it is cut into sight as its block opens, Tree::grown_cut_of).
+fn lf_words_size(tree : @view.Tree, start : String) -> (Double, Double) {
+  let scales : Array[Double] = []
+  let held = tree.drawn_held(scales~)
+  for i, e in held {
+    if e.0.words.has_prefix(start) {
+      return (e.0.w, scales[i])
+    }
+  }
+  (rc_none, rc_none)
+}
+
+///|
+/// How tall the words that start as `start` are laid out in `tree`.
+fn lf_words_tall(tree : @view.Tree, start : String) -> Double {
+  match tree.laid_held().filter(fn(e) { e.0.words.has_prefix(start) }) {
+    [e, ..] => e.0.h
+    _ => rc_none
+  }
+}
+
+///|
+/// Each of `got` (how wide, its scale) the last one, at 1: its words drawn whole at their size from the frame of the
+/// cause (`at`: the scene), come to more lines (`from` and `to` how tall they are laid out before and after).
+fn lf_whole(
+  got : Array[(Double, Double)],
+  from : Double,
+  to_tall : Double,
+  looks : Array[Double],
+  at : String,
+) -> Unit raise {
+  assert_true((to_tall - from).abs() > 10.0, msg="\{at}: no more lines: \{from} to \{to_tall} tall")
+  let to = got.last().unwrap()
+  for i, s in got {
+    assert_true(
+      (s.0 - to.0).abs() < 0.01 && (s.1 - 1.0).abs() < 0.0001,
+      msg="\{at}, at \{looks[i]}: the words drawn \{Repr(s)} (wide, scale), \{Repr(to)} at rest\n\{Repr(got)}",
+    )
+  }
+}
+
+///|
+test "flips: a block laid out at another width as its column sets off on a way to it (its words broken anew, its room over it declared on the list's way): its words drawn whole at their size from the first frame, never grown from their top" {
+  let looks = rc_looks(rc_at + 600.0)
+  for rate in rc_rates {
+    for narrower in [true, false] {
+      let w = @signals.signal(if narrower { 300.0 } else { 160.0 }, same=fn(a, b) { a == b })
+      let words = @signals.signal(lf_anew_words, same=fn(a, b) { a == b })
+      let gap : Ref[@view.View?] = Ref(None)
+      let tree = lf_anew(w, words, gap)
+      let from = lf_words_tall(tree, "一段")
+      let got = rc_walk(tree, [(rc_at, fn() {
+        gap.val.unwrap().resizes() |> ignore
+        w.set(if narrower { 160.0 } else { 300.0 })
+      })], looks, rate, fn() { lf_words_size(tree, "一段") })
+      let at = "at \{rate} a second, \{if narrower { "narrower" } else { "wider" }}"
+      lf_whole(got, from, lf_words_tall(tree, "一段"), looks, at)
+    }
+  }
+}
+
+///|
+test "flips: a block's words come to more lines as the room over it is declared on the list's way (more words streamed in): drawn whole at their size from the first frame, opened as the block is, never grown from their top" {
+  let looks = rc_looks(rc_at + 600.0)
+  for rate in rc_rates {
+    let w = @signals.signal(300.0, same=fn(a, b) { a == b })
+    let words = @signals.signal(lf_anew_words, same=fn(a, b) { a == b })
+    let gap : Ref[@view.View?] = Ref(None)
+    let tree = lf_anew(w, words, gap)
+    let from = lf_words_tall(tree, "一段")
+    let got = rc_walk(tree, [(rc_at, fn() {
+      gap.val.unwrap().resizes() |> ignore
+      words.set(lf_anew_words + lf_anew_words + lf_anew_words)
+    })], looks, rate, fn() { lf_words_size(tree, "一段") })
+    lf_whole(got, from, lf_words_tall(tree, "一段"), looks, "at \{rate} a second")
+  }
+}

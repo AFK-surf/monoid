@@ -557,7 +557,7 @@ pub fn[P] Nav::page_island(
   natural? : Bool = false,
   gives? : Bool = false,
   over? : Bool = false,
-  reshaped? : (Double) -> Unit,
+  reshaped? : (Double, Double) -> Unit,
 ) -> @view.View {
   let nav = self
   old(

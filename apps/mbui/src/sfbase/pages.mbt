@@ -356,7 +356,7 @@ pub fn chat_page_made(
                       // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
                       // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
                       over=true,
-                      reshaped=fn(_was) { foot_resizes(island.val, r) },
+                      reshaped=fn(was, now) { foot_resizes(island.val, r, was, now) },
                     )
                     // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
                     // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
@@ -472,13 +472,51 @@ pub fn chat_page_made(
 pub let composer_set_out : Ref[(String, Double, () -> (Double, Double, (Double) -> Double)?)?] = Ref(None)
 
 ///|
+/// How far the old composer's foot in a chat's list came down at once as words were sent from it (foot_resizes: the
+/// list takes that in the change their key comes), the chat's draft, the moment they were sent and by how much: what
+/// stands beside the list by that foot (对话目录's rail, sfpages' chat_rail_node) drawn from where it stood, down to
+/// where it is laid out on the ground's way (chat_foot_dropped_off), never stepped by half of it in a frame.
+pub let chat_foot_dropped : @signals.Signal[(String, Double, Double)?] = @signals.signal(None)
+
+///|
+/// How far from where chat `chat`'s foot lays out what stands in the middle over it that is drawn at moment `t`, as
+/// its foot came down at once at words sent (chat_foot_dropped): half as far as the foot came down, less as much as
+/// the composer's ground has come down since on its way (held as it was for sent_out_hold_ms, then on their flight's
+/// curve till move_most_ms, as sfpages' composer shapes it); none past that. And when that is over.
+pub fn chat_foot_dropped_off(chat : String, t : Double) -> (Double, Double) {
+  match chat_foot_dropped.get() {
+    Some((c, at, by)) if c == chat => {
+      let x = t - at
+      let share = if x <= sent_out_hold_ms {
+        0.0
+      } else if x >= @ui.move_most_ms {
+        1.0
+      } else {
+        @ui.Ease::Flight.at((x - sent_out_hold_ms) / (@ui.move_most_ms - sent_out_hold_ms))
+      }
+      (-by / 2.0 * (1.0 - share), at + @ui.move_most_ms)
+    }
+    _ => (0.0, 0.0)
+  }
+}
+
+///|
 /// The old view `island` holding chat `r`'s composer in its list's foot come to another height: where its composer's
 /// ground set out on a way for that (composer_set_out), its height goes that very way (View::resizes, kept to its foot:
 /// the composer grows from it): from when the ground set out, as long as its way is declared, at each moment as far on
 /// as the ground is drawn then (its own way read, not one worked out beside it), so the room under the last row and
 /// what stands on the foot go with the ground in the same frames, one way, as the old list's foot went with it
 /// (sfpages' composer_way_for_list). Otherwise at once.
-fn foot_resizes(island : @view.View?, r : ChatRef) -> Unit {
+fn foot_resizes(island : @view.View?, r : ChatRef, was : Double, now : Double) -> Unit {
+  // (words just sent from it: down at once, what the list takes in the change their key comes; what stands beside the
+  // list by it told how far, and from when, chat_foot_dropped)
+  let chat = r.station + ":" + r.session
+  if now < was && !(composer_set_out.val is Some((draft, _, _)) && draft == chat) {
+    match sent_out_at.get(chat) {
+      Some(at) => chat_foot_dropped.set(Some((chat, at, was - now)))
+      None => ()
+    }
+  }
   guard composer_set_out.val is Some((draft, _, declared)) &&
     draft == r.station + ":" + r.session &&
     island is Some(v) else {
@@ -1455,6 +1493,7 @@ pub fn reset() -> Unit {
   // words sent flying (flight.mbt)
   flights_reset()
   composer_set_out.val = None
+  chat_foot_dropped.set(None)
   sent_from_at.clear()
   sent_quotes_from_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)

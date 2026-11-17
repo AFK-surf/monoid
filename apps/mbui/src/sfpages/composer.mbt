@@ -234,7 +234,6 @@ let composing : Composing = {
 ///|
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
-  composer_set_off.val = ("", 0.0)
   composing.let_go.set(false)
   composing.had_focus = false
   composing.let_go_at = @double.neg_infinity
@@ -3318,31 +3317,16 @@ pub fn composer_open_room(c : @ui.Ctx, pane : Double, corner? : Double = @sf.com
 /// page's): where it reaches across it, as far as from its sides (composer_side), the four sides of what it stands in
 /// alike (a phone's screen, a panel of its own: there in its corners, InnerOr); in a pane wider than it (a wide column,
 /// the composer 804 at most in its middle) the web's 16. On the page's way to another width (a side panel sliding
-/// beside a chat, the sidebar opening or folding: @sfbase.page_way) across the width it reaches across at, as at the
-/// narrower of where the pane set off and where it goes, as the chat's list is laid out then (chat_list's laid_w): from
-/// one to the other on the way the page goes (moved or reshaped, sf/motion.mbt) from the frame it sets off, or from the
-/// moment it is there (page_way's `ends`, whichever frame finds it so), not at once: what it holds under it and the
-/// chat's rows standing over its room (composer_room) going with it, not stepped 8 in one frame (rows_steady.mbt). The
-/// window taking the pane across with no way going: there at once.
+/// beside a chat, the sidebar opening or folding: @sfbase.page_way) as where the page goes, from the frame it sets off,
+/// on the way the page goes (moved or reshaped, sf/motion.mbt): what it holds under it and the chat's rows standing over
+/// its room (composer_room) going with it, not stepped 8 in one frame (rows_steady.mbt) nor going on once the rows are
+/// at rest. The window taking the pane across with no way going: there at once.
 pub fn composer_foot_in(c : @ui.Ctx, pane : Double) -> Double {
   let way = @sfbase.page_way
-  let w = if way.id == "" {
-    pane
-  } else {
-    let from = match composer_set_off.val {
-      (id, w) if id == way.id => w
-      _ => {
-        composer_set_off.val = (way.id, pane)
-        pane
-      }
-    }
-    // (across that width on the way, as at the narrower of where it set off and where it goes; else as it is)
-    if composer_across(from) != composer_across(way.to) {
-      dmin(dmin(from, way.to), pane)
-    } else {
-      pane
-    }
-  }
+  // (on the way, as where it goes from the frame it sets off: the rows over it go there on that way from then, so its
+  // room under it does too, never held as at the narrower end and going on by itself once the page is there, the user,
+  // 2026-11-17: 「很 q 弹的垃圾」)
+  let w = if way.id == "" { pane } else { way.to }
   let to = composer_foot_at(w)
   match composer_foot_way.val {
     None if way.id == "" => to
@@ -3386,10 +3370,6 @@ fn composer_foot_at(pane : Double) -> Double {
 /// How far under the composer its room is since a page's way set it off (composer_foot_in), and the way it was on as it
 /// was last asked ("" none) and when that is there: none till then, and none once the window takes the pane across with no way going.
 let composer_foot_way : Ref[(@motion.Anim, String, Double)?] = Ref(None)
-
-///|
-/// The page's way the composer's pane is on, and how wide it was as it set off (composer_foot_in).
-let composer_set_off : Ref[(String, Double)] = Ref(("", 0.0))
 
 ///|
 /// Whether a chat's composer reaches across a pane `pane` wide, as far from its sides as from its foot

@@ -59,7 +59,11 @@ yet and you can add one, add it.
   `clips_way`). What is laid out is where things rest; how they get there is drawn: no structure holds a size while it
   changes (a pick's place is laid out at once as the change has it, what it showed drawn where it stood as it fades:
   `src/view/pick_leave.mbt`; the user, 2026-11-17, after 刚刚 came in from the start of a place held as wide as what it
-  took the place of and jumped to its end).
+  took the place of and jumped to its end). Only what comes or goes is drawn as big as it is open: what stays and
+  comes to another size on a way (its words broken anew at another width, more words streamed into it) is drawn at its
+  size from the frame of its cause, its place alone on the way, cut as tall as the way has it, opened from its top
+  (`Tree::grown_cut_of`), never drawn smaller and grown back (the user, 2026-11-17: 「这种动效不是从原则上禁止存在吗」, after a page's
+  list did so to a chat's words as a side panel slid: `src/view/list_flip_test.mbt`).
 - A structure can keep what it switches off, at rest: `View::each`'s `keeps` puts a row whose key left by
   (`View::park`: held by no node, so not laid out, drawn, pressed, focused or read out; what it binds `@signals.rest`ed)
   and takes the same nodes in again as the key comes back, at once, no way in (`src/view/each_kept.mbt`); a stack's

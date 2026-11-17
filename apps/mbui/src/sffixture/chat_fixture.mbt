@@ -1328,7 +1328,30 @@ pub fn fix_deliver(session : String, id : String) -> Unit {
     if !words.contains("进度") {
       reply["ending"] = Json::string("all_done")
     }
-    fix_chat(session).sent.push(msg(100 + fix_serial.val, "agent", by_agent("anthropic", "claude", session), said, "刚刚", reply))
+    let seq = 100 + fix_serial.val
+    let by = by_agent("anthropic", "claude", session)
+    // (words with 「慢慢说」 answered as an agent streams its answer: a line more of it every 400 ms, the same message told
+    // longer each time, as a station tells one being written)
+    if words.contains("慢慢说") {
+      let more = [
+        said,
+        said + "先看了侧栏打开时对话列表怎么重新排版：每条消息按新宽度折行，变高的那一条只跟着列表走位置。",
+        said + "先看了侧栏打开时对话列表怎么重新排版：每条消息按新宽度折行，变高的那一条只跟着列表走位置。" +
+        "字从第一帧起就是排版大小，多出来的几行从上往下随着这一块打开露出来，不会先挤小再弹回去。",
+        said + "先看了侧栏打开时对话列表怎么重新排版：每条消息按新宽度折行，变高的那一条只跟着列表走位置。" +
+        "字从第一帧起就是排版大小，多出来的几行从上往下随着这一块打开露出来，不会先挤小再弹回去。" +
+        "下面的时间和别的消息跟着同一条动效往下让，不会被字盖住。",
+      ]
+      let sent = fix_chat(session).sent
+      sent.push(msg(seq, "agent", by, more[0], "刚刚", reply))
+      let at = sent.length() - 1
+      for i in 1..<more.length() {
+        let words = more[i]
+        fix_later(400.0 * i.to_double(), fn() { sent[at] = msg(seq, "agent", by, words, "刚刚", reply) })
+      }
+      return
+    }
+    fix_chat(session).sent.push(msg(seq, "agent", by, said, "刚刚", reply))
   })
 }
 
