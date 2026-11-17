@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [914d1b53e](https://github.com/AFK-surf/monoid/commit/914d1b53ede0af04f93dc6845317b0916a65b663) mbui: quick inner-loop builds, an external module' | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [d4e786633](https://github.com/AFK-surf/monoid/commit/d4e7866332c0abe006a91e00a26eddfae533cc2f) mbui web host: a field's keyboard by its kind (inp | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [e2f266eaa](https://github.com/AFK-surf/monoid/commit/e2f266eaa7003268079c73aef00655862446d1c1) station: a rig's mesh that stops is started again  | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.34 | 68.4 | 96.03 | 124.92 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fbd27db4d](https://github.com/AFK-surf/monoid/commit/fbd27db4db8f6009ffdee1e138e903ba825e96a1) app: the catching-up key's tip shows again as the  | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
 | [ddde8e227](https://github.com/AFK-surf/monoid/commit/ddde8e2278ae1af2dffce25f72b9f80a46a13acc) app, core: a new chat's first words not sent come  | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
 | [ed4765de2](https://github.com/AFK-surf/monoid/commit/ed4765de2ee69b1e82333679084396fd295ffa04) mbui iOS: read the scale, light or dark and idiom  | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
-| [f5d3b641f](https://github.com/AFK-surf/monoid/commit/f5d3b641f66a8cbcefff71f654467fbaf74a3547) cloud: the relays' list no longer comes from the d | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.63 |
 | [914d1b53e](https://github.com/AFK-surf/monoid/commit/914d1b53ede0af04f93dc6845317b0916a65b663) mbui: quick inner-loop builds, an external module' | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
 | [d4e786633](https://github.com/AFK-surf/monoid/commit/d4e7866332c0abe006a91e00a26eddfae533cc2f) mbui web host: a field's keyboard by its kind (inp | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
 | [e2f266eaa](https://github.com/AFK-surf/monoid/commit/e2f266eaa7003268079c73aef00655862446d1c1) station: a rig's mesh that stops is started again  | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fbd27db4d](https://github.com/AFK-surf/monoid/commit/fbd27db4db8f6009ffdee1e138e903ba825e96a1) app: the catching-up key's tip shows again as the  | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.41 |
 | [ddde8e227](https://github.com/AFK-surf/monoid/commit/ddde8e2278ae1af2dffce25f72b9f80a46a13acc) app, core: a new chat's first words not sent come  | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.48 |
 | [ed4765de2](https://github.com/AFK-surf/monoid/commit/ed4765de2ee69b1e82333679084396fd295ffa04) mbui iOS: read the scale, light or dark and idiom  | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.02 |
-| [f5d3b641f](https://github.com/AFK-surf/monoid/commit/f5d3b641f66a8cbcefff71f654467fbaf74a3547) cloud: the relays' list no longer comes from the d | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.28 |
