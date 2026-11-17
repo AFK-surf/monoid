@@ -35,8 +35,9 @@ function keptBeside(kept: { type: string; bytes: string }): Beside {
   return new Beside({ type: kept.type, held: true }, fromBase64(kept.bytes) ?? new Uint8Array());
 }
 
-/// A whole file being read from its station, and those waiting for it: each told how far it has come.
-type Going = { done: Deferred.Deferred<Beside, CoreError>; heard: Set<Progress>; last: unknown };
+/// A whole file being read from its station, and those waiting for it: each told how far it has come. `waiting`: how
+/// many wait for it still.
+type Going = { done: Deferred.Deferred<Beside, CoreError>; heard: Set<Progress>; last: unknown; waiting: number };
 const goingOf = new WeakMap<Inner, Map<string, Going>>();
 
 /// `read` once for every asker of the same file at once: one asked again while it is coming (its preview closed and
@@ -50,7 +51,7 @@ function once(inner: Inner, key: string, progress: Progress, read: (progress: Pr
     const going = all;
     let g = going.get(key);
     if (g === undefined) {
-      const made: Going = { done: Deferred.makeUnsafe<Beside, CoreError>(), heard: new Set([progress]), last: undefined };
+      const made: Going = { done: Deferred.makeUnsafe<Beside, CoreError>(), heard: new Set([progress]), last: undefined, waiting: 0 };
       g = made;
       going.set(key, made);
       const tell: Progress = (value) => {
@@ -70,7 +71,14 @@ function once(inner: Inner, key: string, progress: Progress, read: (progress: Pr
       if (g.last !== undefined) progress(g.last);
     }
     const it = g;
-    return Effect.ensuring(Deferred.await(it.done), Effect.sync(() => it.heard.delete(progress)));
+    it.waiting++;
+    // (what goes beside an answer is the UI's, moved away on the web (its worker's toPage) as it is answered: each that
+    // wakes while others wait still takes a copy, the last the bytes read)
+    const mine = Effect.map(Deferred.await(it.done), (b) => (it.waiting > 1 ? new Beside(b.value, b.bytes.slice()) : b));
+    return Effect.ensuring(mine, Effect.sync(() => {
+      it.waiting--;
+      it.heard.delete(progress);
+    }));
   });
 }
 
@@ -332,7 +340,8 @@ export function install(): void {
         // kept once answered at that size.
         const [size, id] = [c.keep, chatKeptId(c.station, c.key, c.name)];
         const whole = Effect.map(read, ([type, bytes]) => {
-          if (bytes.length === size) inner.runner.fork(inner.driveKept.keep(id, "chat", 0, size, type, 0, bytes));
+          // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+          if (bytes.length === size) inner.runner.fork(inner.driveKept.keep(id, "chat", 0, size, type, 0, bytes.slice()));
           return new Beside({ type }, bytes);
         });
         return Effect.gen(function* () {

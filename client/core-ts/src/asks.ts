@@ -79,7 +79,11 @@ export class Asks {
         // (youdid.wtf's builds are its platform's beta feed; an app of its own on the test channel names its feed whole)
         return this.update(ask.platform, ask.version, ask.now, brand.testApp(), ask.keys);
       case "picture":
-        return Effect.map(ask.kept ? this.pictureKept(ask.url) : this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes));
+        // (what goes beside the answer is the UI's, moved away on the web (its worker's toPage): `picture`'s bytes are
+        // shared by everyone asking and kept for the next (#pictures), so each answer is a copy of them)
+        return ask.kept
+          ? Effect.map(this.pictureKept(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes))
+          : Effect.map(this.picture(ask.url), ([kind, bytes]) => new Beside({ type: kind }, bytes.slice()));
       case "buddies":
         return Effect.succeed(buddies());
       case "devSignIn":
