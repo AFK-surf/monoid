@@ -1492,36 +1492,83 @@ jobs:
       run:
         shell: bash
     env:
+      # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token)
+      GH_TOKEN: ${{ github.token }}
       MSYS: winsymlinks:nativestrict
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
       # (main's units, preview.yml's windows job's and this job's: what a build cut short compiled, kept below)
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
+    # As preview.yml's windows job: the app built in the background from as early as it can be, the core's bytecode,
+    # the installer's program and (only for a core not kept) pnpm and the packages made beside it; then packed (setup.c
+    # --pack, its files on all the cores, its raw form written as it packs), signed and put. One after another, the
+    # setup's store, the packages and a core made anew (never kept: this job's has PostHog's in it, which preview's has
+    # not, and none was saved) were 95-126 s before the build began (main 134069744686, cut at 333 s, 2026-11-17).
     steps:
       # (the natives' keys are git's blobs: the checkout as git has it; when the job began, for monoid's deadline below,
-      # and when it is cut, for the build's own limit to the second, scripts/with-timeout.sh)
+      # and when it is cut, for the build's own limit to the second, scripts/with-timeout.sh: first, before pwsh's start)
       - run: |
           git config --global core.autocrlf false
           echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
           # (less the 3-5 s of "Set up job" before this step: preview's windows, 43998071944)
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+      # Defender's real-time scan kept off what the job writes and runs (preview.yml's windows: 12-25 s of MoonBit's put
+      # in, 2026-10-30)
+      - shell: pwsh
+        run: |
+          $t = Get-Date
+          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+          "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
-      - uses: ./.github/actions/setup
+      # Node alone first, the image's (or the Actions cache's) as preview.yml's windows job takes it: the setup's pnpm and
+      # its store only for a core.hbc not kept, below
+      - id: node-keep
+        run: |
+          v=$(tr -d 'v[:space:]' < .node-version); d="$RUNNER_TOOL_CACHE/node/$v/x64"
+          echo "dir=$d" >> "$GITHUB_OUTPUT"
+          echo "key=node-win32-x64-$v" >> "$GITHUB_OUTPUT"
+          [ ! -x "$(cygpath -u "$d")/node.exe" ] || echo "kept=true" >> "$GITHUB_OUTPUT"
+      - if: steps.node-keep.outputs.kept != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.node-keep.outputs.dir }}
+            ${{ steps.node-keep.outputs.dir }}.complete
+          key: ${{ steps.node-keep.outputs.key }}
+      - id: node
+        run: |
+          d="$(cygpath -u "$RUNNER_TOOL_CACHE")/node/$(tr -d 'v[:space:]' < .node-version)/x64"
+          [ -x "$d/node.exe" ] || exit 0
+          cygpath -w "$d" >> "$GITHUB_PATH"
+          echo "kept=true" >> "$GITHUB_OUTPUT"
+          # (the natives' keys, the three the app links, made beside MSVC's and MoonBit's setup)
+          K=$RUNNER_TEMP/native-keys; mkdir -p "$K"
+          nohup bash -c 'PATH="$1:$PATH"; k="natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)-$(node scripts/native.ts key ghostty-vt win32-x64)" && printf %s "$k" > "$0/key"; echo $? > "$0/status"' "$K" "$d" > /dev/null 2>&1 &
+      - if: steps.node.outputs.kept != 'true'
+        uses: actions/setup-node@v5
+        with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
       - uses: ./.github/actions/mbui-moonbit
       - name: The Windows natives' keys
         id: native-keys
-        run: echo "key=natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+        run: |
+          K=$RUNNER_TEMP/native-keys
+          if [ -d "$K" ]; then while [ ! -f "$K/status" ]; do sleep 0.2; done; fi
+          if [ "$(cat "$K/status" 2>/dev/null)" = 0 ]; then echo "key=$(cat "$K/key")" >> "$GITHUB_OUTPUT"
+          else echo "key=natives-win32-x64-$(node scripts/native.ts key shell win32-x64)-$(node scripts/native.ts key engine win32-x64)-$(node scripts/native.ts key ghostty-vt win32-x64)" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/cache@v4
         with:
           path: ~/AppData/Local/stillfail-native
           key: ${{ steps.native-keys.outputs.key }}
-      - name: The Windows engine and shell, prebuilt
+      # (ghostty-vt's too: win.sh found it missing and fetched it itself, never kept)
+      - name: The Windows engine, shell and ghostty-vt, prebuilt
         run: |
           node scripts/native.ts fetch shell win32-x64
           node scripts/native.ts fetch engine win32-x64
-      # (preview.yml's windows job saves them, main's; read here, never saved)
+          node scripts/native.ts fetch ghostty-vt win32-x64
+      # (main's build, preview.yml's windows job's or this job's, saved below)
       - uses: actions/cache/restore@v4
+        id: build-cache
         with:
           path: |
             libs/mbui/_build
@@ -1529,36 +1576,91 @@ jobs:
           key: mbui-win-build-mono-${{ github.sha }}
           restore-keys: mbui-win-build-mono-
       - uses: actions/cache/restore@v4
-        with:
-          path: .ci/hbc
-          key: mbui-win-hbc-${{ github.sha }}
-          restore-keys: mbui-win-hbc-
-      - uses: actions/cache/restore@v4
         id: store
         with:
           path: .ci/mbc-store
           key: mbui-win-store-m-${{ github.sha }}
           restore-keys: mbui-win-store-m-
-      - run: touch "$RUNNER_TEMP/start"
-      # (stopped by its own limit, 35 s before the job's end (JOB_END), so what it compiled is kept (the units' step,
-      # last): cut at the job's 5 minutes, it kept none, the next run as far behind. Its step's timeout-minutes, 3, began
-      # some 68 s in and cut it at 180 s with 42-50 s of the job unused, main 43989081015 and 43989980382, 2026-11-17)
+      # The beta app built in the background from here on (MBUI_WIN_CORE=0: its core put beside it below), as the
+      # release builds it (MBUI_VARIANT, MBUI_BUILD: release.sh takes it as built, MBUI_WIN_BUILT); "Build, pack and sign"
+      # waits for it
+      - name: Build (the beta Windows app), started
+        id: started
+        run: |
+          touch "$RUNNER_TEMP/start"
+          moon version --all
+          build=$(git rev-list --count HEAD)
+          B=$RUNNER_TEMP/build; mkdir -p "$B"
+          printf '%s' "$build" > "$B/build"
+          nohup bash -c 'MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" > /dev/null 2>&1 &
+          # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
+          cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
+      # core.hbc by its inputs (HBC_CACHE), PostHog's project in its key: this job's own, saved below, apart from
+      # preview.yml's (mbui-win-hbc-, none of PostHog's), which it falls back to (monoid's beta, below, has none either)
+      - uses: actions/cache/restore@v4
+        id: hbc-cache
+        with:
+          path: .ci/hbc
+          key: mbui-win-posthog-hbc-${{ github.sha }}
+          restore-keys: |
+            mbui-win-posthog-hbc-
+            mbui-win-hbc-
+      # Whether pnpm, its store and the core's packages are needed: only for a core.hbc not kept (the release's scripts
+      # after need Node's own modules alone, and release-put.sh its curl). monoid's beta's (no PostHog) is asked too
+      # where it is packed below.
+      - name: The core's bytecode, kept?
+        id: hbc
+        env:
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
+        run: |
+          # the PostHog project its core sends what people use to (apps/mbui/scripts/core.sh posthog_define)
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog.json")
+            echo "POSTHOG_FILE=$RUNNER_TEMP/posthog.json" >> "$GITHUB_ENV"
+          fi
+          unset POSTHOG_JSON
+          export HERMESC=$(cygpath -m "$(node scripts/native.ts path engine win32-x64)/hermesc.exe")
+          STILLFAIL_POSTHOG=$([ ! -s "$RUNNER_TEMP/posthog.json" ] || echo "$RUNNER_TEMP/posthog.json") bash apps/mbui/scripts/core.sh hermes-kept || exit 0
+          [ "${{ vars.MONOID_CI }}" != on ] || bash apps/mbui/scripts/core.sh hermes-kept || exit 0
+          echo "kept=true" >> "$GITHUB_OUTPUT"
+      - if: steps.hbc.outputs.kept != 'true'
+        uses: ./.github/actions/setup
+      - name: The core's packages
+        if: steps.hbc.outputs.kept != 'true'
+        run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only > "$RUNNER_TEMP/packages.log" 2>&1) || { cat "$RUNNER_TEMP/packages.log"; exit 1; }
+      # (beside the build: kept, a copy; else made on the cores cl leaves)
+      - name: The core's bytecode (Hermes) and the installer's own program
+        run: |
+          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
+          bash apps/mbui/scripts/win.sh core
+          [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
+          bash apps/mbui/scripts/win.sh setup-bare
+      # (the build waited for till what follows it still fits before the job's end (JOB_END): the core put beside it,
+      # the installer packed, signed and its raw form zstd'd, its files put, 45 s; release.sh stopped by its own limit,
+      # 35 s before the job's end, so the caches are saved after it)
       - name: Build, pack and sign the beta Windows app
         id: build
         env:
           # The installer's signature (its .sig): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           RELEASE_DIR: ${{ runner.temp }}/release
-          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
         run: |
-          # the PostHog project its core sends what people use to (apps/mbui/scripts/core.sh posthog_define)
-          if [ -n "${POSTHOG_JSON:-}" ]; then
-            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog.json")
-            export STILLFAIL_POSTHOG="$RUNNER_TEMP/posthog.json"
-          fi
-          unset POSTHOG_JSON
-          (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          bash scripts/with-timeout.sh @$((JOB_END - 35)) sh scripts/release.sh --beta desktop-win
+          B=$RUNNER_TEMP/build
+          wait=$(( JOB_END - $(date +%s) - 45 )); [ "$wait" -ge 20 ] || wait=20
+          t0=$SECONDS
+          while [ ! -s "$B/status" ]; do
+            [ $((SECONDS - t0)) -lt $wait ] || { echo "::error::the build not done after $wait s"; tail -60 "$B/log"; exit 1; }
+            sleep 1
+          done
+          echo "(waited $((SECONDS - t0)) s for it)"
+          cat "$B/log"
+          [ "$(cat "$B/status")" = 0 ] || exit 1
+          bash apps/mbui/scripts/win.sh put
+          # the build cache's key: the app's C by its content (one as the restored one was is not saved again)
+          d=$(sh apps/mbui/scripts/mbui.sh)
+          echo "BUILD_KEY=mbui-win-build-mono-$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)" >> "$GITHUB_ENV"
+          export STILLFAIL_POSTHOG=${POSTHOG_FILE:-}
+          MBUI_WIN_BUILT="beta:$(cat "$B/build")" bash scripts/with-timeout.sh @$((JOB_END - 35)) sh scripts/release.sh --beta desktop-win
       - name: Put its files (named by its version, nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1587,26 +1689,49 @@ jobs:
       - if: steps.monoid.outputs.packed == '1'
         uses: actions/upload-artifact@v4
         with: { name: "monoid-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1 }
-      # (main's units, however the build ended, last: after the release is put, never holding it back; one cut short
+      # (main's caches, however the build ended, last: after the release is put, never holding it back. One cut short
       # keeps what it compiled, what it left running (moon, mbc, clang-cl) stopped first and their locks taken out, so
-      # the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847)
-      - name: The units, by what they hold
-        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
+      # the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847; and the app's C moonc wrote
+      # whole (mbc had split it), as mbui-win-build-mono-moon-<its key>: the next run, preview's or this, restores it
+      # and goes on from that C, moonc's ~60 s not done again, and its build whole is saved under the key without
+      # -moon-)
+      - name: The units, the core's bytecode and the build, by what they hold
+        if: always() && github.ref == 'refs/heads/main' && steps.started.outcome == 'success'
         run: |
+          B=$RUNNER_TEMP/build
           if [ "${{ steps.build.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
           else
+            [ ! -s "$B/winpid" ] || taskkill //F //T //PID "$(cat "$B/winpid")" > /dev/null 2>&1 || true
             taskkill //F //IM moon.exe //IM moonc.exe //IM mbc.exe //IM clang-cl.exe //IM cl.exe //IM link.exe > /dev/null 2>&1 || true
             sleep 1
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            d=$(sh apps/mbui/scripts/mbui.sh)
+            c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
+            if [ -z "${BUILD_KEY:-}" ] && [ -s "$c" ] && grep -q '^mbc: stillfail\.c: .* units in ' "$d/out/mbc.log" 2>/dev/null; then
+              echo "BUILD_KEY=mbui-win-build-mono-moon-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_ENV"
+            fi
           fi
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
           echo "STORE_KEY=mbui-win-store-m-$(sh apps/mbui/scripts/held.sh .ci/mbc-store)" >> "$GITHUB_ENV"
+          [ ! -d .ci/hbc ] || echo "HBC_KEY=mbui-win-posthog-hbc-$(ls .ci/hbc | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: .ci/mbc-store
           key: ${{ env.STORE_KEY }}
+      - if: always() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/hbc
+          key: ${{ env.HBC_KEY }}
+      - if: always() && github.ref == 'refs/heads/main' && env.BUILD_KEY != '' && env.BUILD_KEY != steps.build-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: ${{ env.BUILD_KEY }}
     outputs:
       monoid: ${{ steps.monoid.outputs.packed }}
 

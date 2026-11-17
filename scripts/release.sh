@@ -245,18 +245,23 @@ for platform in $platforms; do
         [ -z "$beta" ] || program=monoid.zone
       fi
       exe="$product${beta:+-beta}-0.1.$build-x64-win.exe"
-      MBUI_VARIANT=$variant MBUI_BUILD=$build bash "$root/apps/mbui/scripts/win.sh" build
-      MBUI_VARIANT=$variant MBUI_BUILD=$build MBUI_SETUP_NAME=$exe bash "$root/apps/mbui/scripts/win.sh" setup
+      # (MBUI_WIN_BUILT, <variant>:<build>: the app built so already, the core's bytecode, the engine and the shell put
+      # beside it (CI's desktop-win, its build begun in the background before this): not built again)
+      [ "${MBUI_WIN_BUILT:-}" = "$variant:$build" ] || MBUI_VARIANT=$variant MBUI_BUILD=$build bash "$root/apps/mbui/scripts/win.sh" build
       setup_out=$root/apps/mbui/out/setup
+      # (its raw form written as it is packed, from the files as read: win.sh setup's MBUI_SETUP_RAW; setup takes
+      # out/setup away first, so no raw form of before is left there)
+      MBUI_VARIANT=$variant MBUI_BUILD=$build MBUI_SETUP_NAME=$exe MBUI_SETUP_RAW="$setup_out/$exe.raw" bash "$root/apps/mbui/scripts/win.sh" setup
       # what is in it checked before anything is uploaded: the app it replaces (its id, its program), its build
       grep -qx "APP_ID=$id" "$setup_out/setup.env" && grep -qx "EXE=$program" "$setup_out/setup.env" &&
         grep -qx "VERSION=0.1.$build" "$setup_out/setup.env" || { echo "release.sh: $exe is not $id 0.1.$build: not released" >&2; cat "$setup_out/setup.env" >&2; exit 1; }
-      rm -f "$setup_out/$exe.sig" "$setup_out/$exe.raw" "$setup_out/$exe.raw.zst"
+      rm -f "$setup_out/$exe.sig" "$setup_out/$exe.raw.zst"
       # its raw form (what it carries stored: setup.c --raw), what deltas to it make and later ones are made from; its hash
       # in the signed words (the apps' core takes it from there alone), it beside the installer zstd'd (a few seconds of
-      # this job's: the deltas are made after, elsewhere). Without it the release goes out all the same, with no deltas.
+      # this job's: the deltas are made after, elsewhere). Made by setup above; by --raw, which unpacks the installer
+      # again, where an older setup.c made none. Without it the release goes out all the same, with no deltas.
       raw=""
-      if "$setup_out/$exe" --raw "$setup_out/$exe.raw" && [ -s "$setup_out/$exe.raw" ]; then raw="$setup_out/$exe.raw"
+      if [ -s "$setup_out/$exe.raw" ] || { "$setup_out/$exe" --raw "$setup_out/$exe.raw" && [ -s "$setup_out/$exe.raw" ]; }; then raw="$setup_out/$exe.raw"
       else echo "release.sh: warning: $exe --raw made nothing: released without its raw form (no deltas to it)" >&2; fi
       node "$root/scripts/release-sign.ts" file "$setup_out/$exe" --kind stillfail-desktop-win --build "$build" ${raw:+--raw "$raw"} ${RELEASE_DIR:+--unsigned-ok}
       put "$setup_out/$exe" "desktop/$exe" application/vnd.microsoft.portable-executable

@@ -826,8 +826,9 @@ jobs:
           c=$(sha256sum "$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c" | cut -c1-16)
           echo "BUILD_KEY=mbui-win-build-mono-$c" >> "$GITHUB_ENV"
           # the installer (apps/mbui/windows/setup.c) made of the app as built (out/setup, made anew: rm -rf), here, so
-          # that the release's signing (beta.sh win, which only reads it) starts as soon as the app is built
-          bash apps/mbui/scripts/win.sh setup
+          # that the release's signing (beta.sh win, which only reads it) starts as soon as the app is built; its raw
+          # form as --pack writes it beside it, which e2e/win/setup.sh holds to the bytes --raw makes (the release's)
+          MBUI_SETUP_RAW="$PWD/apps/mbui/out/setup/stillfail-setup-0.1.$(git rev-list --count HEAD).exe.raw" bash apps/mbui/scripts/win.sh setup
       # (main's push: the installer signed and its raw form made while what is below runs, on this machine alone:
       # beta.sh win reads out/setup's installer, copies it and writes only its own folders (MBUI_CACHE's), nothing
       # put anywhere; its put is started only once the checks below passed. One after another the signing began at
@@ -925,6 +926,26 @@ jobs:
         with:
           path: .ci/hbc
           key: ${{ env.HBC_KEY }}
+      # (main's build cut short: the app's C moonc wrote whole (mbc had split it) kept as mbui-win-build-mono-moon-<its
+      # key>, so the next run, this job's or the pipeline's desktop-win, goes on from it without moonc's ~60 s again; a
+      # build whole saves under the key without -moon- above. Cut, the C and moon's .core were thrown away with the
+      # rest, and each run after began moonc again from the last build saved, 2026-11-17)
+      - name: The app's C, of a build cut short
+        id: moon-key
+        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome == 'failure'
+        run: |
+          d=$(sh apps/mbui/scripts/mbui.sh)
+          c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
+          if [ -s "$c" ] && grep -q '^mbc: stillfail\.c: .* units in ' "$d/out/mbc.log" 2>/dev/null; then
+            echo "key=mbui-win-build-mono-moon-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          fi
+      - if: always() && steps.moon-key.outputs.key != '' && steps.moon-key.outputs.key != steps.build-cache.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libs/mbui/_build
+            libs/mbui/out
+          key: ${{ steps.moon-key.outputs.key }}
       - name: The Windows app's installer signed, put, checked, then its feed
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
