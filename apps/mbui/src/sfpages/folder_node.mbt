@@ -592,7 +592,7 @@ pub fn folder_actions_node(
       items.push(None)
       items.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.copyPath"), icon="copy", fn() { copy_path(dv_absolute(root, at.path)) })))
       match f.go_to {
-        Some(g) => items.push(Some(@sf.menu_item_of(@sf.t("web-pages.files.goTo"), icon="search", g)))
+        Some(g) => items.push(Some(@sf.menu_item_of(@sf.t("web-pages.files.goTo"), icon="search", further=true, g)))
         None => ()
       }
       @sf.menu(items, from=Node(m), along=End)

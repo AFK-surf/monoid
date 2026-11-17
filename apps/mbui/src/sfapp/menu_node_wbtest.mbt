@@ -19,7 +19,7 @@ fn menu_tester(w : Double, h : Double, platform : Int) -> @ui.Tester {
 /// Items `labels` (`off` the indices not to be chosen now), each counting into `chosen` by its index as chosen.
 fn menu_items_counting(labels : Array[String], chosen : Array[Int], off? : Array[Int] = []) -> Array[@sf.MenuItem?] {
   labels.mapi(fn(i, l) {
-    Some({ label: l, icon: "", danger: false, disabled: off.contains(i), chosen: None, heading: false, select: fn() { chosen.push(i) } })
+    Some({ label: l, icon: "", danger: false, disabled: off.contains(i), chosen: None, heading: false, further: false, select: fn() { chosen.push(i) } })
   })
 }
 
@@ -131,10 +131,10 @@ test "大屏, keyboard and mouse: a menu with a heading, a line and an item not 
   let t = menu_tester(1280.0, 800.0, 0)
   let chosen = []
   let items : Array[@sf.MenuItem?] = [
-    Some({ label: "一组", icon: "", danger: false, disabled: false, chosen: None, heading: true, select: fn() { chosen.push(-1) } }),
-    Some({ label: "复制", icon: "", danger: false, disabled: false, chosen: None, heading: false, select: fn() { chosen.push(0) } }),
+    Some({ label: "一组", icon: "", danger: false, disabled: false, chosen: None, heading: true, further: false, select: fn() { chosen.push(-1) } }),
+    Some({ label: "复制", icon: "", danger: false, disabled: false, chosen: None, heading: false, further: false, select: fn() { chosen.push(0) } }),
     None,
-    Some({ label: "删除", icon: "", danger: true, disabled: true, chosen: None, heading: false, select: fn() { chosen.push(1) } }),
+    Some({ label: "删除", icon: "", danger: true, disabled: true, chosen: None, heading: false, further: false, select: fn() { chosen.push(1) } }),
   ]
   @sf.menu(items, from=@sf.at_point(600.0, 300.0))
   t.run_for(@ui.move_most_ms)
@@ -508,7 +508,7 @@ test "大屏, keyboard and mouse: a menu presented beside what was never drawn: 
 /// An item of a menu called `label` (`off` not to be chosen now, `heading` a heading), its words pushed into `done` as
 /// it is chosen.
 fn menu_item_doing(label : String, done : Array[String], off? : Bool = false, heading? : Bool = false) -> @sf.MenuItem? {
-  Some({ label, icon: "", danger: false, disabled: off, chosen: None, heading, select: fn() { done.push(label) } })
+  Some({ label, icon: "", danger: false, disabled: off, chosen: None, heading, further: false, select: fn() { done.push(label) } })
 }
 
 ///|
@@ -523,4 +523,27 @@ test "大屏, keyboard and mouse: a menu's rows go round as a Mac's: Up from the
   t.key(@ui.key_code_enter)
   t.run_for(@ui.move_most_ms)
   assert_eq((up, down, chosen), (Some("三项"), Some("一项"), [0]))
+}
+
+///|
+test "大屏, keyboard and mouse: an item that asks more first (further): its chevron at the row's end, as wide as the menu is, not after its words; one that does not, none" {
+  let t = menu_tester(1280.0, 800.0, 0)
+  let done = []
+  let items : Array[@sf.MenuItem?] = [
+    Some(@sf.menu_item_of("复制会话链接到剪贴板", fn() { done.push(0) })),
+    Some(@sf.menu_item_of("分享", fn() { done.push(1) }, further=true)),
+  ]
+  @sf.menu(items, from=@sf.at_point(600.0, 300.0))
+  t.run_for(@ui.move_most_ms)
+  let (lx, ly, lw, lh) = t.query(MenuItem, label="复制会话链接到剪贴板").unwrap().rect
+  let (sx, sy, sw, sh) = t.query(MenuItem, label="分享").unwrap().rect
+  // (both rows as wide as the menu; at the end of 分享's, its chevron; at the end of the other, nothing of its own)
+  let end_of_share = t.sources_at(sx + sw - 24.0, sy + sh / 2.0)
+  let end_of_long = t.sources_at(lx + lw - 24.0, ly + lh / 2.0)
+  let (wx, _, ww, _) = t.rect_of("分享").unwrap()
+  assert_true(sw == lw, msg="\{sw} \{lw}")
+  assert_true(end_of_share.contains("tool_node.mbt"), msg=end_of_share)
+  assert_true(!end_of_long.contains("tool_node.mbt"), msg=end_of_long)
+  // (its words where they were: the chevron is not right after them)
+  assert_true(sx + sw - 24.0 > wx + ww + 40.0, msg="\{wx} \{ww} \{sx} \{sw}")
 }

@@ -1817,7 +1817,7 @@ let en : Map[String, String] = {
   "web-pages.screen.none": "No screens yet",
   "web-pages.screen.agentPages": "Agent pages",
   "web-pages.screen.openBrowserWhat": "open a new tab",
-  "web-pages.screen.goUrl": "Go to address…",
+  "web-pages.screen.goUrl": "Go to address",
   "web-pages.screen.goUrlShort": "Address",
   "web-pages.screen.goUrlAction": "Go",
   "web-pages.screen.goUrlWhat": "open the address",

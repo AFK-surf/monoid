@@ -1,5 +1,5 @@
 // Moving a station's things to another, module by module (sfpages station_move_node.mbt, the core's `stationMove`): its
-// ⋯'s 迁移到另一台… only where it is online and offers moving, its page a step further in; the station it goes to chosen
+// ⋯'s 迁移到另一台 station only where it is online and offers moving, its page a step further in; the station it goes to chosen
 // in one row before anything else shows; the modules that have items in their order with their needs and their counts;
 // one open by itself, its items each in its state with its action at its end, why under it; nothing but 停止 while a
 // turn runs; each press the core's call with what it needs (the settings' fixture refuses one without it), a refusal
@@ -107,7 +107,7 @@ fn move_calls(calls : Array[Made], name : String) -> Array[Json] {
 }
 
 ///|
-test "its ⋯: 迁移到另一台… only while the station offers moving; pressed, its page a step further in" {
+test "its ⋯: 迁移到另一台 station only while the station offers moving; pressed, its page a step further in" {
   // (a station that does not offer it: no such row, nothing asked of it)
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station")
@@ -115,7 +115,7 @@ test "its ⋯: 迁移到另一台… only while the station offers moving; press
   t.run_for(@ui.move_most_ms)
   move_audit(t, "")
   assert_true(move_said(t, "从 workspace 移除"), msg=move_all_words(t))
-  assert_true(!move_said(t, "迁移到另一台…"), msg=move_all_words(t))
+  assert_true(!move_said(t, "迁移到另一台 station"), msg=move_all_words(t))
   // one that offers it
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-offered")
@@ -123,8 +123,8 @@ test "its ⋯: 迁移到另一台… only while the station offers moving; press
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
   move_audit(t, "")
-  assert_true(move_said(t, "迁移到另一台…"), msg=move_all_words(t))
-  move_press(t, "迁移到另一台…")
+  assert_true(move_said(t, "迁移到另一台 station"), msg=move_all_words(t))
+  move_press(t, "迁移到另一台 station")
   move_audit(t, "")
   assert_true(move_said(t, "迁移 · Willow") || move_said(t, "迁移"), msg=move_all_words(t))
   assert_true(move_said(t, "迁到"), msg=move_all_words(t))
@@ -135,7 +135,7 @@ test "its ⋯: 迁移到另一台… only while the station offers moving; press
   t.draw()
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
-  assert_true(!move_said(t, "迁移到另一台…"), msg=move_all_words(t))
+  assert_true(!move_said(t, "迁移到另一台 station"), msg=move_all_words(t))
 }
 
 ///|

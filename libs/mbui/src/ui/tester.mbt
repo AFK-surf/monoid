@@ -68,7 +68,7 @@ let host_outside : Ref[&@hostapi.Host?] = Ref(None)
 /// then (a page a fixture opens over its made-up core, its words) asks the host outside every Tester, as the first
 /// run's did, never the run before's fake, whose environment said that test's language and window (main b80ec9fc's
 /// day's run, 43674422230: xshare_wbtest's chat menu made in English after station_peek_wbtest's last screen in
-/// English, its 分享… not there, the program stopped). A Tester of that run read after it says it was ended.
+/// English, its 分享 not there, the program stopped). A Tester of that run read after it says it was ended.
 ///
 /// A run begun as a Tester's window's tree is first made (its source made then, its fake host in place:
 /// ask_focus_back_wbtest's), before it has drawn a frame, is that Tester's own: its fake stays.

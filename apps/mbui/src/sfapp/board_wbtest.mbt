@@ -1097,9 +1097,9 @@ test "小屏: a card held by a finger lifts over its menu's scrim, clear of its 
   // (lower on the screen than the sheet lets it be: brought up over it)
   assert_true(up.1 + up.3 < laid.1 + laid.3, msg="its foot \{up.1 + up.3} from \{laid.1 + laid.3}")
   assert_eq(board_faults(t), [])
-  // (a step further in, 分享…: lifted still, over the sheet that takes the menu's place)
-  board_tap_words(t, "分享…")
-  board_lifted_over(t, "分享…") |> ignore
+  // (a step further in, 分享: lifted still, over the sheet that takes the menu's place)
+  board_tap_words(t, "分享")
+  board_lifted_over(t, "分享") |> ignore
   @sf.close_presented_of(@sf.last_presented())
   // (back down on its spring from the moment the menu went)
   t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))

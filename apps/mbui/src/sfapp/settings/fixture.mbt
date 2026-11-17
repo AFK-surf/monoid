@@ -665,7 +665,7 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/station/ws1/st1", -1)
     }
     // Willow retired from the workspace, its chats moved to another station (station_retire_node.mbt): its ⋯'s
-    // 迁走聊天并移出… there (-retire: Maple the one other station up); its panel opened over its page, what goes and
+    // 迁走聊天并移出工作区 there (-retire: Maple the one other station up); its panel opened over its page, what goes and
     // what stays as Willow counts them (-panel: Maple chosen; -panel-pick: Maple and Cedar up, none chosen; -panel-none:
     // none up; -panel-joined: a workspace Willow only joined, its accounts staying; -panel-long: the one up named long);
     // then 迁移 at the top of its page, its steps as it goes: sending (取消), its chats paused (取消), failed as Maple

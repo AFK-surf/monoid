@@ -910,7 +910,7 @@ let panel_row_gap : Double = 10.0
 let panel_icon : Double = 18.0
 
 ///|
-let panel_end_icon : Double = 14.0
+pub let panel_end_icon : Double = 14.0
 
 ///|
 /// A menu item's icon, out of a panel's column (16).
@@ -1411,6 +1411,9 @@ pub(all) struct MenuItem {
   disabled : Bool
   chosen : Bool?
   heading : Bool
+  /// what it does needs more asked first (a menu, a dialog, a page a step further in): a chevron at its end, in place
+  /// of words that end in … (the user, 2026-11-17: 「改成用图标来表达，然后文字说全」)
+  further : Bool
   select : () -> Unit
 }
 
@@ -1423,8 +1426,9 @@ pub fn menu_item_of(
   disabled? : Bool = false,
   chosen? : Bool,
   heading? : Bool = false,
+  further? : Bool = false,
 ) -> MenuItem {
-  { label, icon, danger, disabled, chosen, heading, select }
+  { label, icon, danger, disabled, chosen, heading, further, select }
 }
 
 ///|
@@ -1562,6 +1566,7 @@ fn menu_items(
   let entries : Array[@kit.Entry] = []
   let icons : Map[String, String] = Map([])
   let danger : Array[String] = []
+  let further : Array[String] = []
   for i, x in items {
     match x {
       None => entries.push(@kit.menu_separator())
@@ -1579,8 +1584,21 @@ fn menu_items(
         if item.danger {
           danger.push(v)
         }
+        if item.further {
+          further.push(v)
+        }
       }
     }
+  }
+  // (one that asks more first: its chevron at its end)
+  let row_end = if further.is_empty() {
+    None
+  } else {
+    Some(fn(c : @ui.Ctx, s : @kit.MenuItemState) {
+      if further.contains(s.entry.value) {
+        draw_icon(c, "chevron-right", panel_end_icon, theme().p.subtle)
+      }
+    })
   }
   // (dismissed, closed at the moment of what dismissed it: Escape, a press beside it)
   let menu : Ref[@kit.Menu?] = Ref(None)
@@ -1593,7 +1611,7 @@ fn menu_items(
     }
   }
   c.with_dismissed(fn(_) { menu_close(key) }, fn() {
-    menu.val = Some(dropdown(c, key, open, trigger, entries, icons, menu_w, submenu~, side~, along~, offset~, at?, danger~, on_pick=picked))
+    menu.val = Some(dropdown(c, key, open, trigger, entries, icons, menu_w, submenu~, side~, along~, offset~, at?, row_end?, danger~, on_pick=picked))
   })
   let m = menu.val.unwrap()
   // (a submenu's Left, its own back, is a key taken as it is built)

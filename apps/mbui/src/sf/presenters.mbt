@@ -265,7 +265,7 @@ priv struct Presented {
   in_place : Double?
   /// the serial of the one presented in its place (`in_place`'s; 0 none): drawn no more once that one is a sheet in it
   mut taken_by : Int
-  /// a menu on a sheet whose item opened a menu (分享…): that one a level of this, in the same sheet (menu_level), as
+  /// a menu on a sheet whose item opened a menu (分享): that one a level of this, in the same sheet (menu_level), as
   /// a panel's steps are (a stack's: each slides in over the one before, its back key, Escape, the system's back and
   /// its left edge swiped take it off); the first its own. None: no level gone to yet
   mut levels : @ui.Nav[PanelStep]?
@@ -1989,7 +1989,7 @@ fn done_with(p : Presented, f : () -> Unit) -> Unit {
 
 ///|
 /// A menu (`title`, `items`, `gone` as menu's) presented by what was chosen in menu `p` on a sheet: a level of `p`, in
-/// the same sheet (a row held and its 分享…: the menu sank as the next rose across it, the scrim gone and back, and back
+/// the same sheet (a row held and its 分享: the menu sank as the next rose across it, the scrim gone and back, and back
 /// closed both). `p`, closed as it was chosen in, is open again, what opened it marked still; back from the level is
 /// back to the one before.
 fn menu_level(p : Presented, title : String, items : Array[MenuItem?], gone : () -> Unit) -> Unit {
@@ -3040,6 +3040,7 @@ fn menu_rows(c : @ui.Ctx, key : String, p : Presented, items : Array[MenuItem?])
               on=item.chosen == Some(true),
               danger=item.danger,
               disabled=item.disabled,
+              further=item.further,
               on_press=fn() { done_with(p, item.select) },
             )
           }
@@ -3162,7 +3163,7 @@ fn sheet_title(c : @ui.Ctx, title : String) -> Unit {
 ///|
 /// A row of a sheet: its icon, its words (15), the note under them
 /// (12, muted), a check in the accent on the one chosen (`on`); in red when `danger`, quiet when `disabled`; the
-/// ripple under the finger. Whether it was tapped.
+/// ripple under the finger; a chevron at its end where it asks more first (`further`). Whether it was tapped.
 fn sheet_row(
   c : @ui.Ctx,
   key : String,
@@ -3174,6 +3175,7 @@ fn sheet_row(
   on? : Bool = false,
   danger? : Bool = false,
   disabled? : Bool = false,
+  further? : Bool = false,
   on_press~ : () -> Unit,
 ) -> Unit {
   let th = theme()
@@ -3210,6 +3212,9 @@ fn sheet_row(
       }
       if on {
         draw_icon(c, "check", sheet_row_check, th.p.accent)
+      }
+      if further {
+        draw_icon(c, "chevron-right", panel_end_icon, th.p.subtle)
       }
     }
     if note == "" {

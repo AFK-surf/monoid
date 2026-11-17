@@ -24,7 +24,7 @@ fn relay_via_at_right(t : @ui.Tester) -> Unit raise {
 }
 
 ///|
-test "wide: 接力到频道… from a row's menu: the dialog lists the bot's places, one picked shows who replies there, 接力 relays it (chat.relay)" {
+test "wide: 接力到频道 from a row's menu: the dialog lists the bot's places, one picked shows who replies there, 接力 relays it (chat.relay)" {
   new_run()
   let calls : Array[Made] = []
   let base = fixture("home")
@@ -40,7 +40,7 @@ test "wide: 接力到频道… from a row's menu: the dialog lists the bot's pla
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  t.tap_text("接力到频道…")
+  t.tap_text("接力到频道")
   t.frame()
   assert_eq(named(calls, "chat.relayPlaces").length(), 1)
   t.frame()
@@ -113,7 +113,7 @@ test "wide: an @ typed in the relay's note offers the people there in a popover 
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  t.tap_text("接力到频道…")
+  t.tap_text("接力到频道")
   t.frame()
   t.frame()
   t.tap_text("#dev")

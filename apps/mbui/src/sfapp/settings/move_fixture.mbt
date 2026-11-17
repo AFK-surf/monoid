@@ -3,7 +3,7 @@
 // chosen, some of each module there and nothing under way (its modules closed); -chats: one chat moving, one stopped
 // waiting for a connect, one failed and one that cannot move, saying why (聊天 open by itself); -ended: that turn
 // ended, the chat moved, each row's action at its end; -empty: every module empty; -none: no station chosen yet;
-// -all: 全部迁移 asked; -section: Willow's own page with its 迁移; -offered: its ⋯ with 迁移到另一台….
+// -all: 全部迁移 asked; -section: Willow's own page with its 迁移; -offered: its ⋯ with 迁移到另一台 station.
 // Every word here is made up.
 
 ///|

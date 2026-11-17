@@ -6,8 +6,8 @@
 // checked, someone else's picked among them with whose it is; 编辑 the one picked or, someone else's, 复制「X」为我的预设;
 // 新预设; 其他成员的预设, a level further in, asked of the core at that press). A preset is made or changed in a dialog
 // of nodes (what it is read of the core's `preset`): its folders
-// first (each a row with its ×; 添加目录 a step further in: the folders the stations found, searched by name, 浏览文件夹…
-// the folder picker a step further still, 从 Git 克隆… a repository cloned onto a station, its row 正在克隆… till it is
+// first (each a row with its ×; 添加目录 a step further in: the folders the stations found, searched by name, 浏览文件夹
+// the folder picker a step further still, 从 Git 克隆 a repository cloned onto a station, its row 正在克隆… till it is
 // there), its name (the first folder's till one is typed), what people want of its chats.
 
 ///|
@@ -842,9 +842,12 @@ fn preset_row(
 
 ///|
 /// A row that does something in node `v`, as a folder's row stands: a neutral tile with `icon` in it where a folder's
-/// mark stands, its `words` on one line; pressed whole, `press`.
+/// mark stands, its `words` on one line, a chevron at its end (each asks more first: a step further in, a picker; the
+/// user, 2026-11-17: an icon, not words ending in …); pressed whole, `press`.
 fn preset_action_row(v : @view.View, icon : String, words : () -> String, press : () -> Unit, opens? : Bool = false) -> Unit {
-  preset_row(v, fn(l) { preset_action_tile(l, icon) }, words, fn() { "" }, press~, opens~)
+  preset_row(v, fn(l) { preset_action_tile(l, icon) }, words, fn() { "" }, press~, opens~, tail=fn(e) {
+    @sf.icon_node(e, "chevron-right", @sf.panel_end_icon, By(fn() { @sf.theme().p.subtle })) |> ignore
+  })
 }
 
 ///|
@@ -988,7 +991,7 @@ fn preset_foot(
 }
 
 ///|
-/// 添加目录, a step further in from the dialog: a line to find one by name, then 浏览文件夹… and 从 Git 克隆… first
+/// 添加目录, a step further in from the dialog: a line to find one by name, then 浏览文件夹 and 从 Git 克隆 first
 /// whatever is typed, then the folders the workspace's stations found and not in the preset yet, as they come (each
 /// station's said as it is; those read before shown meanwhile), by station, those their chats worked in first, each
 /// where it is and how many chats used it. One picked, back to the dialog with it among the folders.
@@ -1321,7 +1324,7 @@ fn repo_mark(c : @ui.Ctx, name : String, repo : String, icon : String, size : Do
 let preset_dir_mark : Double = 38.0
 
 ///|
-/// The icon in a neutral tile of a row that does something (浏览文件夹…, 从 Git 克隆…, 添加目录).
+/// The icon in a neutral tile of a row that does something (浏览文件夹, 从 Git 克隆, 添加目录).
 let preset_action_icon : Double = 20.0
 
 ///|

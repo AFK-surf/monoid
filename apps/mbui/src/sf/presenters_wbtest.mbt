@@ -677,7 +677,7 @@ fn scrim_alpha(t : @ui.Tester, at : (Int, Double, Double)) -> Int64 {
 }
 
 ///|
-/// A menu (重命名, 归档, 固定, 分享…) whose 分享… opens a menu from the same place, 分享 (复制链接, 分享图片): each said as
+/// A menu (重命名, 归档, 固定, 分享) whose 分享 opens a menu from the same place, 分享 (复制链接, 分享图片): each said as
 /// it is chosen, `gone` and `level gone` as each is let go of with nothing chosen.
 fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
   fn(from) {
@@ -688,7 +688,7 @@ fn menu_with_more(said : Array[String]) -> (Anchor) -> Unit {
         Some(menu_item_of("归档", fn() { said.push("archive") })),
         Some(menu_item_of("固定", fn() { said.push("pin") })),
         Some(
-          menu_item_of("分享…", fn() {
+          menu_item_of("分享", fn() {
             menu(
               [
                 Some(menu_item_of("复制链接", fn() { said.push("copy") })),
@@ -719,7 +719,7 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
   let (top0, _) = one_sheet(t)
   let dim = scrim_alpha(t, phone)
   assert_true(dim > 0L)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   // (the frame it was chosen in: the menu's sheet where it stood, the window as dim; nothing let go of)
   assert_eq(presented_how, [AsSheet])
   assert_true((one_sheet(t).0 - top0).abs() < 0.5, msg="\{Repr(one_sheet(t))} \{top0}")
@@ -755,7 +755,7 @@ test "a menu's item that opens a menu, with a finger at Small: a level of the sa
   assert_eq(said, ["level gone", "gone"])
   // chosen in the level: done, all of it closed, nothing let go of unsaid
   open_it(t)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   t.run_for(@ui.move_most_ms)
   t.tap_text("复制链接")
   assert_true(!presenting())
@@ -768,7 +768,7 @@ test "a menu's item that opens a menu, with a mouse at Large: the next menu besi
   let said : Array[String] = []
   let t = presenting_tester(desk, menu_with_more(said))
   open_it(t)
-  t.tap_text("分享…")
+  t.tap_text("分享")
   t.run_for(@kit.presence_in_ms)
   assert_eq(presented_how, [AsPopover])
   assert_true(t.find("复制链接") is Some(_))

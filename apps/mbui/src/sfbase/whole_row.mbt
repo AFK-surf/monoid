@@ -1,6 +1,6 @@
 // A chat's whole row (the core's `chatRow {station, session}`, ChatItem): what a row of the list (the core's ListedChat)
 // is made without, read only as the row is pressed, held, swiped or pointed at, and by the chat's page's "…": its
-// menu's (固定, 保留, 静音, 分享…, its links in Slack and Feishu), its swipe's question, its time in words. It is asked
+// menu's (固定, 保留, 静音, 分享, its links in Slack and Feishu), its swipe's question, its time in words. It is asked
 // as the gesture begins (a pointer down on the row, the pointer coming to rest over it, a swipe setting out: ask_whole),
 // so that what it opens finds it answered, held while that is open and let go after; where it is not answered yet, what
 // opens waits for it and opens whole the frame it is (whole_answered), never on the list's row and then filled. The

@@ -1194,7 +1194,7 @@ export const SHAPES: Record<string, Shape> = {
     ["permissions", opt("StationPermissions"), { doc: "As Overview's." }],
     ["elevation", opt("StationElevation"), { doc: "As Overview's." }],
     ["copies", opt("StationCopies"), { doc: "As Overview's." }],
-    ["move", opt("StationMoveOffer"), { doc: "As Overview's: its ⋯'s 迁移到另一台… while it says so." }],
+    ["move", opt("StationMoveOffer"), { doc: "As Overview's: its ⋯'s 迁移到另一台 station while it says so." }],
   ], { doc: "A station's overview as its page reads it (`StationView.overview`: station_node.mbt, station_page.mbt, a profile's\npage, the pages of its archiving and its archive policy, a new profile's). The rest of an Overview is not sent there:\nwho is looking, its mesh, its Slack people, teams and apps, its Feishu bots, Comma, its disk, the sign-ins under way\nand the console's (`viewer`, `mesh`, `slackUsers`, `slackTeams`, `slackApps`, `feishuRegistrations`, `comma`, `disk`,\n`logins`, `consoleSignIn`); a connect's page asks `connect`, a part shown of every station `stationPart`." }),
   StationConnect: struct([
     ["id", "String"],

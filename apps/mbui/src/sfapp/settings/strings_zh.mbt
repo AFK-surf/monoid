@@ -1784,7 +1784,7 @@ let zh : Map[String, String] = {
   "web-pages.screen.none": "暂无屏幕",
   "web-pages.screen.agentPages": "Agent 页面",
   "web-pages.screen.openBrowserWhat": "打开新标签页",
-  "web-pages.screen.goUrl": "前往网址…",
+  "web-pages.screen.goUrl": "前往网址",
   "web-pages.screen.goUrlShort": "前往网址",
   "web-pages.screen.goUrlAction": "前往",
   "web-pages.screen.goUrlWhat": "前往网址",

@@ -1760,7 +1760,7 @@ fn card_ground(
 
 ///|
 /// A card held by a finger for its menu (board_chat_card's, draft_card's): lifted toward the finger a little while it
-/// is held, all the way while the menu that hold put up is drawn (presented_drawn_of: a step further in, its 分享…,
+/// is held, all the way while the menu that hold put up is drawn (presented_drawn_of: a step further in, its 分享,
 /// too), back down as that goes, over the menu's scrim and clear of its sheet (@sf.lift_node, as a row of Home's list
 /// is, chat_row_node's); a menu put up by a right click lifts nothing.
 priv struct CardLift {

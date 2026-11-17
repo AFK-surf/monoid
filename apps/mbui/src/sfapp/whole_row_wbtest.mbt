@@ -69,7 +69,7 @@ fn whole_from(frames : Array[(Double, Array[String])], words : Array[String], la
 let whole_cases : Array[(Double, Double, Int)] = [(390.0, 844.0, 2), (1280.0, 800.0, 0)]
 
 ///|
-test "a row's menu over a core answering its whole row 1 s late: held on 小屏, right clicked wide, it opens whole as that is answered, every item it has, its 分享… too" {
+test "a row's menu over a core answering its whole row 1 s late: held on 小屏, right clicked wide, it opens whole as that is answered, every item it has, its 分享 too" {
   let late = 1000.0
   for case in whole_cases {
     let (w, h, platform) = case
@@ -87,7 +87,7 @@ test "a row's menu over a core answering its whole row 1 s late: held on 小屏,
       t.frame()
       t.right_click(x, y)
     }
-    let items = ["重命名", "归档", "分享…"]
+    let items = ["重命名", "归档", "分享"]
     whole_from(words_over(t, start, late + 400.0, items), items, late, late, at)
     // not opened by the hold
     assert_false(app.nav.top() is Chat({ title: "夜里的构建又失败了", .. }), msg=at)

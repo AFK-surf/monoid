@@ -34,7 +34,7 @@ test("with_nothing_typed_the_list_offers_what_can_be_done_by_part_but_what_only_
   assert.equal(label("chat.new"), "新建对话");
   assert.equal(label("update.station"), "更新 station · studio");
   assert.equal(label("update.app"), "更新到 0.1.2000");
-  assert.equal(label("chat.relay"), "接力到频道…");
+  assert.equal(label("chat.relay"), "接力到频道");
 });
 
 test("what_is_typed_finds_a_command_by_its_name_its_id_or_its_other_words", () => {

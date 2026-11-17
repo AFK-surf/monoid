@@ -11,9 +11,9 @@ fn preset_fields(t : @ui.Tester) -> Bool {
 }
 
 ///|
-/// Whether 添加目录's step shows (its folders, 浏览文件夹… last).
+/// Whether 添加目录's step shows (its folders, 浏览文件夹 last).
 fn preset_adding(t : @ui.Tester) -> Bool {
-  shows(t, "浏览文件夹…")
+  shows(t, "浏览文件夹")
 }
 
 ///|
@@ -70,7 +70,7 @@ test "wide, a dialog: Escape goes back a step, then closes it" {
 ///|
 test "two steps in: back from 浏览文件夹 goes back to 添加目录, not out of the dialog" {
   let t = preset_add(false, wide=true)
-  t.click(Button, label="浏览文件夹…")
+  t.click(Button, label="浏览文件夹")
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "选择文件夹") && !preset_adding(t), msg=runs(t))
   t.key(@ui.key_escape)
@@ -162,7 +162,7 @@ test "a folder picked in 添加目录 goes back to the fields with it among the 
 test "a folder chosen in the picker, two steps in, goes back to the dialog with it among the preset's folders" {
   for wide in [false, true] {
     let t = preset_add(false, wide~)
-    t.click(Button, label="浏览文件夹…")
+    t.click(Button, label="浏览文件夹")
     t.run_for(@ui.move_most_ms)
     t.click(Button, label="项目")
     t.run_for(@ui.move_most_ms)

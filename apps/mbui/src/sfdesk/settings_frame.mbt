@@ -58,7 +58,7 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
         [copy, ..] => @sfpages.copies_restore_confirm(core, "ws1/st1", Some(copy))
         _ => ()
       }
-    // (Willow's retirement asked: its ⋯'s 迁走聊天并移出…'s panel, what it would take along as Willow says it)
+    // (Willow's retirement asked: its ⋯'s 迁走聊天并移出工作区's panel, what it would take along as Willow says it)
     "retire-panel" =>
       @sfpages.station_retire_panel(
         core,

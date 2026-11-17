@@ -58,6 +58,11 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   those words do, never between (2026-11-15, a profile's row: 「感觉这个对齐有点问题」): mbui's
   `Tester::line_start_faults`, on every screen the same way, counted in `corners_line_start_known`.
 
+- Words never end in … to say that more is asked before it is done (a menu, a dialog, a step further in): they say it
+  whole, and a chevron at the row's end says the rest (the user, 2026-11-17: 「改成用图标来表达，然后文字说全」): a
+  menu's item `further=true` (`@sf.menu_item_of`, every menu and sheet draws it), a row of its own its own chevron.
+  … stays for what is under way (正在…) and for a Mac's own menu bar, where the system's way is the ellipsis.
+
 - A named style (a top-level `let`, and a `.then(…)` of one) whose properties are all tokens and numbers is written
   as its text, `@ui.css("w=Full px=S2 hovered{bg=Hover}")`; `@ui.style(…)` is for one that names a variable or is
   worked out (`w=@sf.grow`, `Fixed(side_w)`), and inside functions (mbui's ui/style.mbt). Why (2026-10-24): moonc made
@@ -157,7 +162,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     stays as it was (the page, the workspace, nothing else put up) and lets go of what it asked when it stops
     (`src/sfapp/press_waits_wbtest.mbt`).
   - A step further in is the presenters', never a page's (弹层里往里走: the user, 2026-11-02, and 2026-11-10 「系统性
-    全修一下」 once the chat's own sheet and a menu's 分享… were found never to have had it). A page says `close()` and
+    全修一下」 once the chat's own sheet and a menu's 分享 were found never to have had it). A page says `close()` and
     opens the next, and keeps no step number and no 返回 button of its own; `src/sf/presenters.mbt` does the rest on
     every screen: a panel that closes for another panel is a step further in from it (a back key before its title;
     back, Escape and the system's back go back to the one before, a press outside, × or the sheet dragged down closes

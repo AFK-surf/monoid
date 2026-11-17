@@ -1,7 +1,7 @@
 // Moving a station's things to another station of its workspace, module by module (the core's `stationMove` topic,
 // client/core-ts/src/move.ts, of the station's move/: each module on its own, its needs first, progress inside it,
 // everything undoable: the owner, 2026-11-14). Rarely used and risky, so no row of the station's page offers it: its ⋯
-// has 迁移到另一台… while it is online and offers moving, which opens this page, a step further in from it; its station's
+// has 迁移到另一台 station while it is online and offers moving, which opens this page, a step further in from it; its station's
 // page shows one row of it only while something of it is moved, moving, stopped or failed (station_move_section).
 // No sentence explains it (the owner, 2026-11-14: 「字太多了，应该用更结构化更所见即所得的方式设计 UI」). Its first card
 // the station it goes to, chosen in one row (a chevron after its name while there is one to choose) and remembered for
@@ -15,7 +15,7 @@
 // a press is a call to the core, a refusal said on the row it was pressed on.
 
 ///|
-/// Station `address`'s 迁移 (its ⋯'s 迁移到另一台…) made once in node `v`, as wide as `width` gives it.
+/// Station `address`'s 迁移 (its ⋯'s 迁移到另一台 station) made once in node `v`, as wide as `width` gives it.
 pub fn station_move_node(
   v : @view.View,
   core : Core,
@@ -555,9 +555,9 @@ fn station_move_section(b : @view.View, core : Core, address : String) -> Unit {
 }
 
 ///|
-/// Its ⋯'s 迁移到另一台… (station_menu_items'), while it is online and offers moving; None otherwise.
+/// Its ⋯'s 迁移到另一台 station (station_menu_items'), while it is online and offers moving; None otherwise.
 fn station_move_item(core : Core, s : Json?) -> @sf.MenuItem? {
   guard (core.move_on)() && @settings.move_offered(s) else { return None }
   let address = text(s, "station")
-  Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", fn() { (core.push)(StationMove(address)) }))
+  Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", further=true, fn() { (core.push)(StationMove(address)) }))
 }

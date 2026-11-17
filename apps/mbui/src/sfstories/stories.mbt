@@ -765,7 +765,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
                 @sf.menu(
                   [
                     Some(@sf.menu_item_of("复制", fn() { @sfbase.toast_later("已复制") }, icon="copy")),
-                    Some(@sf.menu_item_of("分享…", fn() {  }, icon="share")),
+                    Some(@sf.menu_item_of("分享", fn() {  }, icon="share", further=true)),
                     None,
                     Some(@sf.menu_item_of("删除", fn() {  }, icon="trash", danger=true)),
                   ],

@@ -446,7 +446,7 @@ fn hold_row(t : @ui.Tester, title : String) -> Unit {
 }
 
 ///|
-test "a row held long: its menu (固定, 重命名, 归档, 分享…), the chat not opened; 重命名 its sheet" {
+test "a row held long: its menu (固定, 重命名, 归档, 分享), the chat not opened; 重命名 its sheet" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, w=390.0, h=844.0, platform=2)
   hold_row(t, "夜里的构建又失败了")
@@ -454,7 +454,7 @@ test "a row held long: its menu (固定, 重命名, 归档, 分享…), the chat
   // felt as it opened, once
   assert_eq(t.haptics(), [@ui.Haptic::LongPress])
   assert_true(t.find("重命名") is Some(_))
-  assert_true(t.find("分享…") is Some(_))
+  assert_true(t.find("分享") is Some(_))
   // just below the row
   let (_, row_y) = t.find("夜里的构建又失败了").unwrap()
   let (_, menu_y) = t.find("重命名").unwrap()
@@ -476,7 +476,7 @@ fn sheet_tops(t : @ui.Tester) -> Array[Double] {
 }
 
 ///|
-test "a row held long, its 分享…: the next level in the menu's sheet, one sheet all the way, the row lifted still; back is back to its menu" {
+test "a row held long, its 分享: the next level in the menu's sheet, one sheet all the way, the row lifted still; back is back to its menu" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, w=390.0, h=844.0, platform=2)
   let (_, ry) = t.find("夜里的构建又失败了").unwrap()
@@ -487,7 +487,7 @@ test "a row held long, its 分享…: the next level in the menu's sheet, one sh
   assert_eq(top0.length(), 1)
   // (every rule the screen is held to, as the menu has it: its next level adds no fault)
   let held = t.audit()
-  t.tap_text("分享…")
+  t.tap_text("分享")
   for _ in 0..<40 {
     t.run_for(@ui.frame_period_default)
     assert_eq(sheet_tops(t).length(), 1)

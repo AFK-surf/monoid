@@ -388,6 +388,7 @@ let menu_none : MenuItem = {
   disabled: true,
   chosen: None,
   heading: false,
+  further: false,
   select: fn() {  },
 }
 
@@ -520,6 +521,12 @@ fn menu_row_node(
         })
         |> ignore
       }
+      // (one that asks more first: its chevron at its end, after its value where it has one)
+      // (what it is shown in stretches to the row's end, as the menu is wide)
+      into.show(fn() { item().further }, fn(at) {
+        at.grow(Is(1.0)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+        icon_node(at, "chevron-right", 14.0, By(fn() { library_theme().p.subtle })) |> ignore
+      })
     }
     if extra.note == "" {
       first_line(r)

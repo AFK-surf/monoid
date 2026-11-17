@@ -683,7 +683,7 @@ let row_icon : Double = 16.0
 ///|
 /// A row's menu, from row `id` at (`x`, `y`): 固定 / 取消固定 (a
 /// station from before pins says nothing: none), 重命名, 保留 / 取消保留 (a chat of its own: a thread; pinned, none: a
-/// pin keeps it out of the archive already), 归档; 打开「…」 (one an agent opened: the chat it opened it from), 分享…
+/// pin keeps it out of the archive already), 归档; 打开「…」 (one an agent opened: the chat it opened it from), 分享
 /// (chat_menu_items): two groups, a line between. Held by a finger, felt as it opens and from the row (a sheet, or under
 /// it); right clicked, at the pointer.
 fn row_menu(c : @ui.Ctx, src : Source, item : ChatItem, id : Int, x : Double, y : Double) -> Unit {
@@ -699,7 +699,7 @@ fn row_menu(c : @ui.Ctx, src : Source, item : ChatItem, id : Int, x : Double, y 
 /// What a chat's menu offers (a row's, and the "…" of the chat's page, one and the same, 2026-11-06 Peng Xiao: 「这里的...和
 /// 侧边栏右键点击 chat，我感觉需要统一一下」). `page`: the page's own of share_items (chat_extra_items, from its view, which it
 /// has read already), in place of the row's. What shares it or takes it elsewhere (复制会话链接, 接力到频道 for a thread with an
-/// agent, and share_items: 分享给其他 workspace, 分享图片, 在 Slack／飞书打开) is one item, 分享…, its own menu from
+/// agent, and share_items: 分享给其他 workspace, 分享图片, 在 Slack／飞书打开) is one item, 分享, its own menu from
 /// `share_from` (where the menu was opened), where there are two or more of them (左子健, 2026-11-09: 菜单有点太多了，只把分享收进一个).
 /// `here`: a row's of a list made once, its 归档 said where the row was (archive_row's `here`). `asks_rename`: 重命名
 /// asked over the page on every input, where its chat shows no title of a row's to be its field (a board's card);
@@ -850,7 +850,7 @@ fn chat_menu_items(
       )
     None => ()
   }
-  // what shares it or takes it elsewhere: one 分享… where there are two or more
+  // what shares it or takes it elsewhere: one 分享 where there are two or more
   let shared : Array[@sf.MenuItem?] = []
   let link = @sfbase.chat_link(item.station, item.session)
   if link != "" {
@@ -867,7 +867,7 @@ fn chat_menu_items(
     Some(th) if item.agents.length() > 0 =>
       shared.push(
         Some(
-          @sf.menu_item_of(@sf.t("web-main.relay.action"), icon="arrow-up-right", fn() {
+          @sf.menu_item_of(@sf.t("web-main.relay.action"), icon="arrow-up-right", further=true, fn() {
             open_relay(src, r, th, from=Unanchored)
           }),
         ),
@@ -1467,7 +1467,7 @@ fn chat_menu_whole(
 }
 
 ///|
-/// What shares a chat or takes it elsewhere (`shared`), in its menu: one item, 分享…, its own menu from `share_from`, where
+/// What shares a chat or takes it elsewhere (`shared`), in its menu: one item, 分享, its own menu from `share_from`, where
 /// there are two or more; else as they are.
 fn share_menu(shared : Array[@sf.MenuItem?], share_from : () -> @sf.Beside) -> Array[@sf.MenuItem?] {
   if shared.length() < 2 {
@@ -1475,7 +1475,7 @@ fn share_menu(shared : Array[@sf.MenuItem?], share_from : () -> @sf.Beside) -> A
   }
   [
     Some(
-      @sf.menu_item_of(@sf.t("web-main.chat.share"), icon="share", fn() {
+      @sf.menu_item_of(@sf.t("web-main.chat.share"), icon="share", further=true, fn() {
         @sf.menu(shared, from=share_from(), title=@sf.t("web-main.chat.share.title"))
       }),
     ),

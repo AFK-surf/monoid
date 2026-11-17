@@ -16,10 +16,17 @@ fn lists_tester(calls : Array[Made], w : Double, platform : Int, regular : Bool)
 }
 
 ///|
-/// The chat's menu up: its 分享… opened (复制会话链接, 接力到频道, 分享给其他 workspace, 分享图片, 在 Slack／飞书打开 in it),
+/// The chat's menu up: its 分享 opened (复制会话链接, 接力到频道, 分享给其他 workspace, 分享图片, 在 Slack／飞书打开 in it),
 /// at rest.
 fn open_share(t : @ui.Tester) -> Unit {
-  t.tap_text("分享…")
+  // (its row by its whole name: 分享 alone, words that 分享给其他 workspace and 分享图片 begin with too)
+  match t.query(MenuItem, label="分享") {
+    Some(n) => {
+      let (x, y, w, h) = n.rect
+      t.tap(x + w / 2.0, y + h / 2.0)
+    }
+    None => t.tap_text("分享")
+  }
   t.frame()
   let rest = @sf.presented_rest()
   t.run_for(if rest > t.time() && rest < 1.0e12 { rest - t.time() } else { @ui.move_most_ms })
@@ -61,14 +68,14 @@ test "a row's menu at each width and with either hand: held by a finger, right c
     t.frame()
     // not opened by the hold
     assert_false(app.nav.top() is Chat({ title: "夜里的构建又失败了", .. }), msg=at)
-    for item in ["重命名", "分享…"] {
+    for item in ["重命名", "分享"] {
       assert_true(t.find(item) is Some(_), msg="\{at}: \{item}")
     }
     assert_true(t.find("复制 session 文件路径") is None, msg=at)
     // 归档 with the chat's own state, not last (a sheet's last row is where a thumb going home lands)
     let (_, archive_y) = t.find("归档").unwrap()
-    let (_, share_y) = t.find("分享…").unwrap()
-    assert_true(archive_y < share_y, msg="\{at}: 归档 at \{archive_y}, 分享… at \{share_y}")
+    let (_, share_y) = t.find("分享").unwrap()
+    assert_true(archive_y < share_y, msg="\{at}: 归档 at \{archive_y}, 分享 at \{share_y}")
     // (复制会话链接 in it, with the rest of what shares it)
     open_share(t)
     t.tap_text("复制会话链接")

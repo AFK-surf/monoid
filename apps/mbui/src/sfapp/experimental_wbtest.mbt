@@ -213,14 +213,14 @@ test "Farview 原生标签页渲染 off by default: a Farview tab is its station
 }
 
 ///|
-test "a stable app: a station's page has no terminals (屏幕与浏览器) and no 迁移 row or 迁移到另一台…; the test channel's has them" {
+test "a stable app: a station's page has no terminals (屏幕与浏览器) and no 迁移 row or 迁移到另一台 station; the test channel's has them" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-terminals")
   assert_true(t.find("屏幕、浏览器与终端") is Some(_), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-terminals-stable")
   assert_true(t.find("屏幕与浏览器") is Some(_), msg="stable: " + move_all_words(t))
   assert_true(t.find("屏幕、浏览器与终端") is None, msg="stable: " + move_all_words(t))
-  // 迁移: its page's row while a move runs, its ⋯'s 迁移到另一台…
+  // 迁移: its page's row while a move runs, its ⋯'s 迁移到另一台 station
   let t = move_tester(calls, "settings-station-move-section")
   assert_true(move_said(t, "迁移到 Maple"), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-move-section-stable")
@@ -228,11 +228,11 @@ test "a stable app: a station's page has no terminals (屏幕与浏览器) and n
   let t = move_tester(calls, "settings-station-move-offered")
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
-  assert_true(move_said(t, "迁移到另一台…"), msg="beta: " + move_all_words(t))
+  assert_true(move_said(t, "迁移到另一台 station"), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-move-offered-stable")
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
-  assert_true(!move_said(t, "迁移到另一台…"), msg="stable: " + move_all_words(t))
+  assert_true(!move_said(t, "迁移到另一台 station"), msg="stable: " + move_all_words(t))
   assert_true(move_said(t, "从 workspace 移除"), msg="stable: its ⋯ as ever: " + move_all_words(t))
 }
 

@@ -147,7 +147,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
   assert_true(t.find("重命名") is Some(_))
-  assert_true(t.find("分享…") is Some(_))
+  assert_true(t.find("分享") is Some(_))
   match t.find("固定") {
     Some(_) => {
       t.tap_text("固定")
@@ -160,7 +160,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   // (closed: nothing of it read out at once, drawn back over pop_out_ms)
   assert_true(t.query(Menu) is None)
   t.run_for(@kit.pop_out_ms)
-  assert_true(t.find("分享…") is None)
+  assert_true(t.find("分享") is None)
 }
 
 ///|
@@ -169,7 +169,7 @@ test "wide: a row's menu offers what its page's \"…\" does besides (分享给�
   let t = wide_tester(calls, mode="home-share")
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
-  // (in its 分享…, with the rest of what shares it)
+  // (in its 分享, with the rest of what shares it)
   open_share(t)
   assert_true(t.query(MenuItem, label="分享给其他 workspace") is Some(_), msg=t.drawn_text())
   assert_true(t.query(MenuItem, label="在 Slack 中打开") is Some(_), msg=t.drawn_text())
@@ -1581,7 +1581,7 @@ test "wide: ⌘⇧G goes to a folder by its path (~ the home: the core's files.g
   t.run_for(@ui.move_most_ms)
   t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   t.frame()
-  assert_true(t.find("前往文件夹…") is Some(_))
+  assert_true(t.find("前往文件夹") is Some(_))
   t.type_text("~/项目")
   t.frame()
   assert_true(t.find("Willow › /Users/lin/项目") is Some(_), msg="where it goes")
@@ -1593,7 +1593,7 @@ test "wide: ⌘⇧G goes to a folder by its path (~ the home: the core's files.g
     Drive(at) => assert_eq(at.root, Some("/Users/lin/项目"))
     _ => fail("no folder open")
   }
-  assert_true(t.find("前往文件夹…") is None, msg="closed")
+  assert_true(t.find("前往文件夹") is None, msg="closed")
   // its station's button: the stations
   t.click(Button, label="换 station")
   t.frame()
@@ -2985,13 +2985,13 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   assert_true(@sfpages.find_chat() != "")
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
-  assert_true(t.find("分享…") is Some(_))
+  assert_true(t.find("分享") is Some(_))
   // the menu closed (drawn back over pop_out_ms), the bar still open
   t.key(@ui.key_escape)
   t.frame()
   assert_true(t.query(Menu) is None)
   t.run_for(@kit.pop_out_ms)
-  assert_true(t.find("分享…") is None)
+  assert_true(t.find("分享") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar
   t.key(@ui.key_escape)
