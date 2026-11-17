@@ -538,8 +538,8 @@ test "待派发: removing a pasted picture leaves the words and sends no file" {
   t.type_text("只保留文字")
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
-  t.frame()
-  t.frame()
+  // (its strip's room open over the words)
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 image.png")
   t.frame()
   t.click(Button, label="添加")
@@ -547,6 +547,52 @@ test "待派发: removing a pasted picture leaves the words and sends no file" {
   let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
   assert_eq((draft.title, draft.files.length()), ("只保留文字", 0))
   assert_eq(board_faults(t), [])
+}
+
+///|
+/// The entry's words and 添加, where they are (the field by what it asks, 要做什么？).
+fn board_entry_at(t : @ui.Tester) -> ((Double, Double, Double, Double), (Double, Double, Double, Double)) raise {
+  guard t.query(TextField, label="要做什么？") is Some(f) else { fail("no field in 待派发") }
+  guard t.query(Button, label="添加") is Some(a) else { fail("no 添加 in 待派发") }
+  (f.rect, a.rect)
+}
+
+///|
+test "待派发: a pasted picture's strip comes over the words, the last one removed takes it away; the words and 添加 as they were" {
+  for screen in [(1440.0, 900.0, 0), (390.0, 844.0, 2)] {
+    let (w, h, platform) = screen
+    let (t, _) = board_at("board", w, h, platform~)
+    if platform == 2 {
+      t.click(Tab, label="待派发 2")
+      t.run_for(@ui.move_most_ms)
+      t.click(TextField, label="要做什么？")
+    } else {
+      t.click(Button, label="新待办")
+    }
+    t.run_for(@ui.move_most_ms)
+    t.type_text("看一下这张图")
+    t.run_for(@ui.move_most_ms)
+    // (nothing over the words while it has no picture: no hint, no room kept)
+    let (words0, add0) = board_entry_at(t)
+    assert_true(board_words_at(t, "可粘贴图片") is None)
+    t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+    t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+    t.run_for(@ui.move_most_ms)
+    // (its picture over the words, the words and 添加 gone down together by its room, no further apart)
+    guard t.query(Button, label="移除 image.png") is Some(x) else { fail("no picture over the words at \{w}") }
+    let (words1, add1) = board_entry_at(t)
+    assert_true(x.rect.1 + x.rect.3 <= words1.1)
+    assert_true(words1.1 > words0.1)
+    assert_eq((words1.0, words1.2, words1.3), (words0.0, words0.2, words0.3))
+    assert_eq((add1.0, add1.1 - words1.1), (add0.0, add0.1 - words0.1))
+    // (the last one removed: its strip gone, the words and 添加 where they were before it came)
+    t.click(Button, label="移除 image.png")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Button, label="移除 image.png") is None)
+    assert_eq(board_entry_at(t), (words0, add0))
+    assert_true(t.query(TextField, label="要做什么？") is Some(_))
+    assert_eq(board_faults(t), [])
+  }
 }
 
 ///|
