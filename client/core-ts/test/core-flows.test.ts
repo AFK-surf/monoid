@@ -1125,6 +1125,27 @@ async function choosing(speed = false, profileFast = false, sessionFast: boolean
   });
 }
 
+// The chat a new chat's page became is named by the key it was sent under (`new:…`) all along: what is named by its
+// session answers that key as the session its station made it under, once made (routing.ts OF_A_SESSION).
+test("a_new_chats_topics_named_by_its_key_answer_as_its_made_session", async () => {
+  const { host, core } = await choosing();
+  const ui = core.connect();
+  const local = core.inner.views.local;
+  const key = local.pendingNew("ws/st", {}, "new:made-key");
+  local.pendingQueue(key, { text: "你好" });
+  subscribe(core, ui, 1, { topic: "chatRow", station: "ws/st", session: key });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  assert.equal(v(values, 1)?.id, key);
+  local.pendingMade(key, "k2", 9);
+  core.inner.data.set({ topic: "chatRows", station: "ws/st" }, [{ id: "k2", session: "k2", thread: 9, title: "新对话", agents: [], last: null, unread: false, mine: true, lastActiveAt: 1, connect: null, origin: null, clientKey: key }]);
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual([v(values, 1)?.id, v(values, 1)?.session, v(values, 1)?.thread], ["k2", "k2", 9]);
+  core.close();
+});
+
 test("a disabled unchecked profile is checked only once it is enabled", async () => {
   const p = profile("p1", "claude", ["claude-opus-5-5"], false, 0, { enabled: false });
   const { host, core } = await started({

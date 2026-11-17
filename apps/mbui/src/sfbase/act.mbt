@@ -173,9 +173,15 @@ pub fn core_doing(src : Source, calls : Array[String], on : Array[(String, Strin
 /// Why one of `calls` about what `on` names failed a moment ago (the core keeps it a few seconds: doing.ts
 /// useDoingFailed), if it did.
 pub fn core_failed(src : Source, calls : Array[String], on : Array[(String, String)]) -> String? {
+  core_failed_of(src, fn(d) { doing_of(d, calls, on) })
+}
+
+///|
+/// Why a call `of` takes (one of the core's `doing`, whole) failed a moment ago, if one did (core_failed's).
+pub fn core_failed_of(src : Source, of : (Json) -> Bool) -> String? {
   let mut why : String? = None
   for d in items(doing_now(src), "doing") {
-    if text(Some(d), "stage") == "failed" && doing_of(d, calls, on) {
+    if text(Some(d), "stage") == "failed" && of(d) {
       why = Some(
         match text(Some(d), "error") {
           "" => @sf.t("android-misc.failed")

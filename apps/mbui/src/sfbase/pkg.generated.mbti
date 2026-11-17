@@ -248,6 +248,8 @@ pub fn core_doing(Source, Array[String], Array[(String, String)]) -> Bool
 
 pub fn core_failed(Source, Array[String], Array[(String, String)]) -> String?
 
+pub fn core_failed_of(Source, (@json.Json) -> Bool) -> String?
+
 pub fn core_topic_params(String, Map[String, @json.Json]) -> Map[String, @json.Json]
 
 pub fn count(@json.Json?, String) -> Int32

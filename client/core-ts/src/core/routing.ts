@@ -46,6 +46,14 @@ const OF_A_CHAT = new Set(["chat", "thread", "letters", "chatLetters", "chatThin
 /// The prefix of the keys of chats asked for here and not made yet (views/local.ts PENDING_PREFIX): none moved.
 const PENDING = "new:";
 
+/// The topics named by a chat's session (`session`) that answer it only by the session its station made it under: a
+/// chat a new chat's page became is named by the key it was sent under (`new:…`) all along, so once its station made it
+/// each is that session's (`#madeTo`), the page's own topic all along. `chat` and what is made of it (`chatJobs`,
+/// `imageNear`) follow the key themselves (views.ts `pendingThread`); a topic of `TOPICS` named by `session` is one of
+/// the two (test/made-key.test.ts).
+export const OF_A_SESSION = new Set(["chatRow", "chatFeedback"]);
+export const SESSION_FOLLOWS_KEY = new Set(["chat", "chatJobs", "imageNear"]);
+
 export class Router implements Source {
   readonly #core: Inner;
   readonly owners: Owner[] = [];
@@ -140,8 +148,10 @@ export class Router implements Source {
     }
     // A chat's page's topic whose chat went to another station: its copy's there, nothing of the one it left.
     const moved = this.#movedTo(topic);
-    this.#aim(topic, moved?.topic ?? null);
+    const ofMade = moved === null ? this.#madeTo(topic) : null;
+    this.#aim(topic, moved?.topic ?? ofMade);
     if (moved !== null) return this.after(topic, asHere(core.store.value(moved.topic), moved));
+    if (ofMade !== null) return this.after(topic, core.store.value(ofMade));
     const owner = this.owners.find((o) => o.owns(topic));
     if (!this.attends(topic)) return this.after(topic, owner?.compute?.(topic));
     // (made in a computed of its own: what `after` alone reads, a UI's focus, puts it through again as it was made)
@@ -171,6 +181,14 @@ export class Router implements Source {
     if (now === null) return null;
     const there: Topic = now.thread !== null ? { ...topic, station: now.station, thread: now.thread, session: null } : { ...topic, station: now.station };
     return { topic: there, here: data.moved(topic.station, session)?.thread ?? null, there: now.thread };
+  }
+
+  /// The same topic of the session its station made a chat under, where `topic` names it by the key it was asked for
+  /// here by (OF_A_SESSION); null where it names none so, or that chat is not made yet.
+  #madeTo(topic: Topic): Topic | null {
+    if (!OF_A_SESSION.has(topic.topic) || typeof topic.station !== "string" || typeof topic.session !== "string" || !topic.session.startsWith(PENDING)) return null;
+    const pending = this.#core.views.local.pending(topic.session);
+    return pending?.station === topic.station && pending.made !== null ? { ...topic, session: pending.made[0] } : null;
   }
 
   /// The topic a moved one is shown of held while it is (`target`; null: none), so the sync keeps it current.

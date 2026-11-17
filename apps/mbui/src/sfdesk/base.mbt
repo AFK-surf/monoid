@@ -26,6 +26,7 @@ using @sfbase {
   chat_screens_driven,
   core_doing,
   core_failed,
+  core_failed_of,
   type Station,
   error_words,
   toast_later,

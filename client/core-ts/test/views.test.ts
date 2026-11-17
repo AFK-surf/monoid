@@ -2353,26 +2353,6 @@ for (const omitted of [false, true]) test(`a_new_chat_shows_when_made_with_${omi
   } finally { t.store.runner.shutdown(); }
 });
 
-// The chat a new chat's page became keeps the key it was sent under (the newChat topic's `next`): its "…" reads its whole
-// row by that key once its station has made and listed it too, not only while it waits to be made.
-test("a_new_chats_whole_row_is_found_by_its_key_once_its_station_lists_it", async () => {
-  const t = setup();
-  const u = ui();
-  try {
-    t.set(workspace(), oneStation());
-    t.set(rows("ws/st"), []);
-    const key = t.views.local.pendingNew("ws/st", {}, "new:test");
-    t.views.local.pendingQueue(key, { text: "你好" });
-    t.subscribe(1, { topic: "chatRow", station: "ws/st", session: key });
-    await t.read(u, 1);
-    assert.equal(u.value?.id, key);
-    t.views.local.pendingMade(key, "k", 7);
-    t.set(rows("ws/st"), [{ ...row("k", t.host.nowMs()), thread: 7, clientKey: key }]);
-    await t.read(u, 1);
-    assert.deepEqual([u.value?.id, u.value?.session, u.value?.thread], ["k", "k", 7]);
-  } finally { t.store.runner.shutdown(); }
-});
-
 test("hidden_letters_keep_the_loaded_entry_cursors_advancing", async () => {
   const t = setup();
   const u = ui();

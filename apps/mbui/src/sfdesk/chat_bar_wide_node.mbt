@@ -263,14 +263,23 @@ fn wide_bar_title(
   across : () -> Double,
   tips : @sf.TipLayer,
 ) -> Unit {
-  let on = [("station", r.station), ("session", r.session)]
+  // (a rename of this chat: by the session the page names it by, or by its thread, as its "…" names it by its row's:
+  // a chat a new chat's page became is named by the key it was sent under all along, its row by its station's session)
+  let ours = fn(d : Json?) {
+    let p = field(d, "params")
+    text(d, "call") == "chat.rename" &&
+    text(p, "station") == r.station &&
+    (text(p, "session") == r.session ||
+    (match (opt_number(p, "thread"), view()) {
+      (Some(th), Some(v)) => v.thread == Some(th)
+      _ => false
+    }))
+  }
   let renaming = fn() {
     let mut renaming = ""
     for d in items(src.topic("doing", {}).get().value, "doing") {
       let dv = Some(d)
-      if text(dv, "call") == "chat.rename" &&
-        text(dv, "stage") != "failed" &&
-        on.iter().all(fn(kv) { text(field(dv, "params"), kv.0) == kv.1 }) {
+      if text(dv, "stage") != "failed" && ours(dv) {
         renaming = text(field(dv, "params"), "title")
       }
     }
@@ -287,7 +296,7 @@ fn wide_bar_title(
       now => now
     }
   }
-  let failed = fn() { core_failed(src, ["chat.rename"], on) }
+  let failed = fn() { core_failed_of(src, fn(d) { ours(Some(d)) }) }
   row.box(fn(t) {
     // (42% of the bar at most, 80 at least; giving way with ⌘F's field once the people have left, down to 4 of its
     // letters)
