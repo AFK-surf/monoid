@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.47 | 123.22 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.49 | 123.22 |
 | [00b57b6f0](https://github.com/AFK-surf/monoid/commit/00b57b6f0c2fbd56ae6d735f9db4be3c01b5b797) sf-ui: a slider's knob glides to a key's step inst | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.62 | 123.22 |
 | [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.62 | 123.22 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.5 | 68.98 | 96.21 | 126.98 |
 | [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 | [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
-| [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [00b57b6f0](https://github.com/AFK-surf/monoid/commit/00b57b6f0c2fbd56ae6d735f9db4be3c01b5b797) sf-ui: a slider's knob glides to a key's step inst | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 0.43 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
 | [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
 | [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.77 |
-| [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
