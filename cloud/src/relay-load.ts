@@ -6,7 +6,7 @@
 // devices' and stations' records of the same minutes.
 import { DurableObject } from "cloudflare:workers";
 import { bearerToken, digest, nowSeconds, reply } from "./auth";
-import type { DirectoryLoad } from "./directory";
+import type { Directory, DirectoryLoad } from "./directory";
 import type { Env } from "./env";
 import { LIMITS } from "./limits";
 import { relayConns, relayLoad, type Load } from "./relay-metrics";
@@ -123,17 +123,21 @@ export async function sampleOwnRelay(env: Env): Promise<string[]> {
   return full;
 }
 
+type RelayRegistry = ReturnType<Directory["relayList"]>;
+
 /**
  * The console's 中继 page: every relay, named, still.fail's own with the budget it is held to (relay.ts); and how loaded
  * the Directory itself is (directory.ts adminLoad), which the same minute's event has the page read again.
  */
-export async function relaysLoad(env: Env): Promise<{ relays: (RelayLoadView & { name: string; limits?: { bytes: number; frames: number } })[]; directory: DirectoryLoad }> {
+export async function relaysLoad(env: Env): Promise<{ relays: (RelayLoadView & { name: string; limits?: { bytes: number; frames: number } })[]; directory: DirectoryLoad; registry: RelayRegistry }> {
   const dir = env.DIRECTORY.getByName("primary");
   const listed = await dir.relaysNow();
   const urls = relayUrls(listed);
-  const [views, directory] = await Promise.all([env.RELAY_LOAD.getByName("primary").view(urls), dir.adminLoad()]);
+  const [views, directory, registry] = await Promise.all([env.RELAY_LOAD.getByName("primary").view(urls), dir.adminLoad(), dir.relayList()]);
   return {
     directory,
+    // The list as its operator keeps it (relay-registry.ts), for the page to put relays on it and take them off.
+    registry,
     relays: views.map((v, i) => ({
       ...v,
       name: relayName(listed, v.url),

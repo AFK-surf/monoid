@@ -4,7 +4,7 @@
 // the page is (a list's words, filter and sort, the item open) is in its URL, so a link shows the same.
 import { useTopic } from "../core/react.ts";
 import type { CoreError, Topic } from "../core/client.ts";
-import { Boxes, ChevronRight, Close, Copy, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
+import { Boxes, ChevronRight, Close, Copy, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Trash, Users } from "@stillfail/ui/icons.tsx";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "preact/compat";
 import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRoute, useSearchParams } from "wouter-preact";
 import { Wordmark } from "../brand.tsx";
@@ -86,9 +86,15 @@ type RelaysView = {
   range: Range;
   ranges: { id: Range; label: string }[];
   relays: Relay[];
+  /** Whether the cloud's list can be kept from here (a still.fail cloud from before says none; a core from before neither). */
+  manage?: boolean;
+  /** The tokens made for relays not used yet. */
+  tokens?: { key: string; name: string; line: string }[];
 };
 type Relay = {
   url: string; name: string;
+  /** Whether it can be taken off the list (the cloud's own cannot), how it came onto it, the ways into it. */
+  removable?: boolean; how?: string[] | null; entries?: { url: string; name: string; host: string }[];
   state: "online" | "offline" | "error";
   /** When it was last heard from, said for people ("1 分钟前更新"). */
   seen: string;
@@ -258,7 +264,11 @@ const SAMPLE_FEEDBACK: FeedbackPage = {
 
 /** still.fail's relays, a card each: how each stands, its numbers, and its load over the range picked (in the URL). */
 function RelaysPage({ account }: { account: Account }) {
+  const toast = useToast();
   const [params, setParams] = useSearchParams();
+  const [issuing, setIssuing] = useState(false);
+  const [removing, setRemoving] = useState<{ url: string; name: string; entry: boolean } | null>(null);
+  const remove = useAction((url: string) => admin.relayRemove(account.sub, url), () => toast(t("web-pages.admin.relays.removed")));
   const range = params.get("range") === "week" ? "week" : undefined;
   const { value: view, error } = useKept<RelaysView>({ topic: "adminRelays", account: account.sub, ...(range ? { range } : {}) });
   const pick = (to: Range) => setParams((p) => { const next = new URLSearchParams(p); if (to === "day") next.delete("range"); else next.set("range", to); return next; }, { replace: true });
@@ -269,26 +279,55 @@ function RelaysPage({ account }: { account: Account }) {
       <MobileBack to="/" label={t("web-pages.admin.title")} />
       <header className={pagesCss.pageHead}>
         <div><h1>{t("web-pages.admin.relays")}</h1></div>
-        {view && view.ranges.length > 1 && (
-          <Segmented<Range> label={t("web-pages.admin.relays.range")} value={view.range} onChange={pick} options={view.ranges.map((r) => ({ value: r.id, label: r.label }))} />
-        )}
+        <div className={css.relaysTools}>
+          {view && view.ranges.length > 1 && (
+            <Segmented<Range> label={t("web-pages.admin.relays.range")} value={view.range} onChange={pick} options={view.ranges.map((r) => ({ value: r.id, label: r.label }))} />
+          )}
+          {view?.manage && <Button icon={Plus} variant="primary" onClick={() => setIssuing(true)}>{t("web-pages.admin.relays.issue")}</Button>}
+        </div>
       </header>
       {none ? <p className={css.relaysNone}>{t("web-pages.admin.relays.none")}</p> : <Failed error={error} />}
-      {!view ? !error && <Waiting sample={<div className={css.relays}>{SAMPLE_RELAYS.map((r) => <RelayCard key={r.url} relay={r} />)}</div>} /> : !none && (
-        <div className={css.relays}>{view.relays.map((r) => <RelayCard key={r.url} relay={r} />)}</div>
+      {view?.tokens && view.tokens.length > 0 && (
+        <section className={`${pagesCss.card} ${css.relayTokens}`} aria-label={t("web-pages.admin.relays.waiting")}>
+          <b>{t("web-pages.admin.relays.waiting")}</b>
+          {view.tokens.map((k) => (
+            <div key={k.key} className={css.line}><span className={css.grow}>{k.name}</span><span className={css.lineAside}>{k.line}</span></div>
+          ))}
+        </section>
       )}
+      {!view ? !error && <Waiting sample={<div className={css.relays}>{SAMPLE_RELAYS.map((r) => <RelayCard key={r.url} relay={r} />)}</div>} /> : !none && (
+        <div className={css.relays}>{view.relays.map((r) => <RelayCard key={r.url} relay={r} onRemove={(url, name, entry) => setRemoving({ url, name, entry })} />)}</div>
+      )}
+      {issuing && <RelayTokenDialog account={account} onClose={() => setIssuing(false)} />}
+      <Confirm open={removing !== null} onClose={() => setRemoving(null)} onConfirm={() => { const r = removing!; setRemoving(null); void remove.run(r.url); }}
+        title={t(removing?.entry ? "web-pages.admin.relays.removeEntryConfirm" : "web-pages.admin.relays.removeConfirm", { name: removing?.name ?? "" })}
+        action={t("web-pages.admin.relays.remove")}
+        description={t(removing?.entry ? "web-pages.admin.relays.removeEntryBody" : "web-pages.admin.relays.removeBody")} />
     </div>
   );
 }
 
-function RelayCard({ relay }: { relay: Relay }) {
+function RelayCard({ relay, onRemove }: { relay: Relay; onRemove?: (url: string, name: string, entry: boolean) => void }) {
   return (
     <section className={`${pagesCss.card} ${css.relay}`} aria-label={relay.name}>
       <div className={css.relayHead}>
         <StatusDot state={relay.state} />
         <b>{relay.name}</b>
         <span className={css.relaySeen}>{relay.seen}</span>
+        {relay.removable && onRemove && <IconButton label={t("web-pages.admin.relays.remove")} icon={Trash} onClick={() => onRemove(relay.url, relay.name, false)} />}
       </div>
+      {(relay.how || (relay.entries && relay.entries.length > 0)) && (
+        <div className={css.relayKept}>
+          {relay.how && <span className={css.relayHow}>{relay.how.map((part, i) => <Fragment key={i}>{i > 0 && " · "}<span>{part}</span></Fragment>)}</span>}
+          {relay.entries?.map((e) => (
+            <div key={e.url} className={css.line}>
+              <span className={css.grow}>{t("web-pages.admin.relays.entry", { name: e.name })}</span>
+              <span className={css.lineAside}>{e.host}</span>
+              {onRemove && <IconButton label={t("web-pages.admin.relays.removeEntry")} icon={Close} onClick={() => onRemove(e.url, e.name, true)} />}
+            </div>
+          ))}
+        </div>
+      )}
       {relay.numbers.length > 0 && (
         <dl className={css.relayNumbers}>
           {relay.numbers.map((n) => (
@@ -866,6 +905,49 @@ function LimitsDialog({ account, workspace, limits, onClose }: { account: Accoun
       </>}>
       <LimitFields members={members} setMembers={setMembers} submit={submit} />
       {save.error && <p className={controlsCss.fieldError} role="alert">{save.error.message}</p>}
+    </Dialog>
+  );
+}
+
+// ── a relay onto the cloud's list ───────────────────────────────────────
+
+/** What the cloud says of a token it would not make, in words. */
+const RELAY_ERRORS = (): Record<string, string> => ({
+  invalid_name: t("web-pages.admin.relays.errors.name"),
+  invalid_relay: t("web-pages.admin.relays.errors.url"),
+  too_many_relays: t("web-pages.admin.relays.errors.full"),
+});
+
+/** A token for a relay to put itself on the cloud's list with: what it is called and, if said, the URL it must have;
+ * then the command its machine runs (cloud/relay-enroll.sh). */
+function RelayTokenDialog({ account, onClose }: { account: Account; onClose(): void }) {
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const make = useAction(() => admin.relayToken(account.sub, name.trim(), url.trim()));
+  const made = make.result;
+  const ready = name.trim() !== "" && !make.busy;
+  const enter = (e: React.KeyboardEvent<HTMLElement>) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); };
+  const failed = make.error && (RELAY_ERRORS()[(make.error as { code?: string }).code ?? ""] ?? make.error.message);
+  return (
+    <Dialog open onClose={onClose} wide title={made ? t("web-pages.admin.relays.issued") : t("web-pages.admin.relays.issue")}
+      description={made ? t("web-pages.admin.relays.issuedLead") : t("web-pages.admin.relays.issueLead")}
+      footer={made ? <Button variant="primary" onClick={onClose}>{t("common.done")}</Button> : <>
+        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="primary" busy={make.busy} disabled={!ready} onClick={() => make.run()}>{t("web-pages.admin.relays.issueShort")}</Button>
+      </>}>
+      {made ? (
+        <Field label={t("web-pages.admin.relays.run")} hint={t("web-pages.admin.relays.runHint")}><div className={css.command}><CopyCommand text={made.command} /></div></Field>
+      ) : (
+        <>
+          <Field label={t("web-pages.admin.relays.name")} htmlFor="relay-name" hint={t("web-pages.admin.relays.nameHint")}>
+            <input id="relay-name" className={controlsCss.input} value={name} autoFocus maxLength={40} placeholder={t("web-pages.admin.relays.namePlaceholder")} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={enter} />
+          </Field>
+          <Field label={t("web-pages.admin.relays.url")} htmlFor="relay-url" hint={t("web-pages.admin.relays.urlHint")}>
+            <input id="relay-url" className={controlsCss.input} type="url" inputMode="url" autoComplete="off" spellcheck={false} value={url} placeholder="https://relay.example.com:8443" onChange={(e) => setUrl(e.currentTarget.value)} onKeyDown={enter} />
+          </Field>
+        </>
+      )}
+      {failed && <p className={controlsCss.fieldError} role="alert">{failed}</p>}
     </Dialog>
   );
 }

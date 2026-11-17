@@ -27,7 +27,7 @@ export const RELAY_TOKEN_TTL_SEC = 86_400;
 /** At most this long a name. */
 const NAME_MOST = 40;
 
-/** A relay on the list as the console shows it: when it was put there and by whom (an email, `config` for one the
+/** A relay on the list as the console shows it: when it was put there and by whom (an email, `admin-token` by ADMIN_TOKEN, `config` for one the
  * deploy's config listed, `token` for one that came with a token), and whether it has a secret of its own. */
 export type RelayListed = Listed & { added_at: number; added_by: string; enrolled: boolean };
 /** What the operator says of a relay to put on the list, or of a token to make for one. */

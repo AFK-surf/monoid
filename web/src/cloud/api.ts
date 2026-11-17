@@ -81,6 +81,11 @@ export const admin = {
     operations(sub).adminEnroll<{ token: string; expires_at: number; install: string; installWindows?: string; command: string }>({ workspace, name }),
   /** Where a bug report stands. */
   feedbackStatus: (sub: string, id: string, status: FeedbackStatus) => operations(sub).adminFeedbackStatus<{ ok: true }>({ id, status }),
+  /** A token for a relay to put itself on the cloud's list with, and the command its machine runs. */
+  relayToken: (sub: string, name: string, url: string) =>
+    operations(sub).adminRelayToken<{ token: string; name: string; url: string | null; expires_at: number; command: string }>({ name, ...(url ? { url } : {}) }),
+  /** A relay, or a way into one, taken off the cloud's list. */
+  relayRemove: (sub: string, url: string) => operations(sub).adminRelayRemove<{ removed: true }>({ url }),
 };
 
 // still.fail cloud's invite-code errors in words; the core passes their codes through (see CoreError).

@@ -84,7 +84,7 @@ test("a relay puts itself on the cloud's list only with the operator's token, an
     await s.heard();
     assert.deepEqual(s.state().relay_urls, [h.origin, BEIJING, NEW], "the station sent its state again");
     assert.deepEqual(s.state().stillfail_relays, [h.origin, BEIJING, NEW]);
-    assert.deepEqual(await events.take(), ["workspaces"], "every device told to read its /v1/me again");
+    assert.deepEqual(await events.take(), ["workspaces", "relays"], "every device told to read its /v1/me again, the operator's console its 中继 page");
 
     // Its counters come with its secret; not by its address alone any more. Beijing's, with none, by its address.
     const load = (headers: Record<string, string>) => h.fetch("/v1/relays/load", { method: "POST", headers, body: "iroh_relay_accepts_total 1\n" });
@@ -94,6 +94,10 @@ test("a relay puts itself on the cloud's list only with the operator's token, an
     assert.equal((await load({ "x-stillfail-relay": BEIJING, "cf-connecting-ip": "203.0.113.7" })).status, 200);
     const shown = (await (await console_("GET", "/v1/admin/relays")).json()) as any;
     assert.deepEqual(shown.relays.map((r: any) => [r.url, r.name]), [[h.origin, new URL(h.origin).host], [BEIJING, "北京"], [NEW, "东京"]]);
+    // The page keeps the list too: who put each on it, which came with a token, the tokens not used yet.
+    assert.equal(shown.registry.own, h.origin);
+    assert.deepEqual(shown.registry.relays.map((r: any) => [r.url, r.enrolled]), [[BEIJING, false], [NEW, true]]);
+    assert.deepEqual(shown.registry.tokens, []);
 
     // A token naming no URL: the relay says its own.
     const open = (await (await console_("POST", "/v1/admin/relays/token", { name: "首尔" })).json()) as { token: string; command: string };

@@ -1897,6 +1897,8 @@ export class Directory extends DurableObject<Env> {
     }
     for (const station of stations) this.#sendState(station);
     this.tellAll({ type: "workspaces" }, null);
+    // (the operator's console shows the list: its 中继 page read again, as the minute's sample has it)
+    if (this.env.ADMIN_EMAIL) this.#tell(this.#byEmail(this.env.ADMIN_EMAIL), { type: "relays" });
   }
 
   // ── the admin's console ─────────────────────────────────────────────────

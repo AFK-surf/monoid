@@ -255,6 +255,8 @@ export const PARAMS: Record<string, string> = {
   "admin.setLimits": "workspace:string members:number stations:number",
   "admin.enroll": "workspace:string name:string",
   "admin.feedbackStatus": "id:string status?:string",
+  "admin.relayToken": "name:string url?:string",
+  "admin.relayRemove": "url:string",
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
@@ -879,6 +881,12 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/enrollments`, p.pick(["name"]));
     case "admin.feedbackStatus":
       return op("POST", () => `/v1/admin/feedback/${p.at("id")}/status`, p.pick(["status"]));
+    // The cloud's list of relays (cloud/src/relay-registry.ts): a token for a relay to put itself on it with, and the
+    // command its machine runs; one taken off it, the ways into it with it.
+    case "admin.relayToken":
+      return op("POST", () => "/v1/admin/relays/token", p.pick(["name", "url"]));
+    case "admin.relayRemove":
+      return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
     default:
       return null;
   }
