@@ -41,7 +41,7 @@ pub fn window_zoom_keys(c : @ui.Ctx, src : Source) -> Unit {
     if @signals.untracked(fn() { @settings.keys_recording.get() }) != "" {
       return false
     }
-    // Let the visible side panel take ⌘W before the Mac's close-window menu; otherwise the system keeps it.
+    // Let the visible side panel or board chat take ⌘W before the Mac's close-window menu; otherwise the system keeps it.
     if @ui.platform() == 0 && code == @ui.key_of_char('w') && mods == @ui.mod_cmd {
       return @ui.view_action("window.close_panel")
     }
