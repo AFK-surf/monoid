@@ -2250,6 +2250,30 @@ fn flying_quotes(c : @ui.Ctx, src : Source, w : Writing, station : String) -> Ar
 }
 
 ///|
+/// Where what composer `w` holds stands as it is sent (SentFrom: sent_local's `from`), for its row on a chat's page made
+/// as nodes to fly from, None with motion reduced: its words where they stand in the field now (the field an old
+/// view's, so where they stand is told its row), each quote's card where it is laid out in the composer
+/// (message_quotes_node's: where it stands at rest, over the field's words, even while it still comes in, as it does a
+/// moment after it is quoted), each file from its tile and each quote's own picture from its square in its card, as
+/// the old flight takes them (flying_files, flying_quotes' quote_picture_key).
+fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) -> @sfbase.SentFrom? {
+  if @ui.reduced_motion() {
+    return None
+  }
+  let parts = flying_files(c, src, w).map(fn(f) { (f.key, f.from) })
+  for f in flying_quotes(c, src, w, station) {
+    if @sfbase.is_quote_picture_key(f.key) {
+      parts.push((f.key, f.from))
+    }
+  }
+  Some({
+    words: w.field.words_at().map(fn(at) { at.0 }),
+    quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
+    parts,
+  })
+}
+
+///|
 /// What is written sent into chat `r` (`v` its view: its thread, what is in it now; sendDraft): in the
 /// list and flying there in the frame it is sent, before the core has it (sent_local: the rule), the composer empty at
 /// once; then what the core took (`composer.take`: the words with the links and the paths after them, the files up,
@@ -2271,15 +2295,19 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
   let runs = @sfbase.refs_sent_runs(w.key, words)
   // (what is in it now whole: its head and its messages by key where it holds them so, what the core's row taking
   // these over is told apart from: sent_before, `newest`)
-  let row = sent_local(rk, Some(chat_whole(src, r, v)), words, up_files(w), going=going_files(w), quotes=sent_quotes(w), runs~, now=(src.now)())
+  // (where its words, cards and files stood, as part of what is sent: on a chat's page made as nodes its row flies from
+  // there, sent_from_composer)
+  let nodes = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
+  let from = if nodes { sent_from_composer(c, src, w, r.station) } else { None }
+  let row = sent_local(rk, Some(chat_whole(src, r, v)), words, up_files(w), going=going_files(w), quotes=sent_quotes(w), runs~, from~, now=(src.now)())
   // its words take off from the field as they are (before it is emptied), the composer held as it is laid out for them
   // till they let go of it (theirs: composer_held_lines); on its way to another shape (a line more just typed), it
   // slows to rest from as fast as it went as they are sent (composer_view's @motion.stop_for), its room with it.
   // On a chat's page made as nodes no old flight is started (nothing there lets one go: its list is no old list,
   // flight_placed, flight_frame): the composer is back at its one line in the press's frame, which its list takes as its
   // foot giving back room in the change its sent key comes, and the row's bubble flies from where the words stood
-  // (sent_from_said, message_words_node's mine_bubble_node: mbui's View::flies_in).
-  if !@signals.untracked(fn() { @sfbase.chat_page_nodes.get() }) {
+  // (sent_local's `from`, message_words_node's mine_bubble_node: mbui's View::flies_in).
+  if !nodes {
     let room = composer_room(c, w.key)
     // its quotes fly too, each from its card, and its files that are up, each from its tile
     let flying = flying_quotes(c, src, w, r.station) + flying_files(c, src, w)
@@ -2299,28 +2327,7 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       marks~,
       runs~,
     )
-  } else if !@ui.reduced_motion() {
-    // (on a chat's page made as nodes its bubble flies from where its words stand in the field now: View::flies_in, as
-    // its row is made in the list; the field an old view's, so where they stand is told it: sent_from_said)
-    match w.field.words_at() {
-      Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
-      None => ()
-    }
-    // (each quote's card from where it is laid out in the composer, message_quotes_node's: where it stands at rest,
-    // over the field's words, even while it still comes in, as it does a moment after it is quoted)
-    @sfbase.sent_quotes_from_said(row, w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }))
-    // (and each of its files from its tile there, as the old flight takes them: flying_files; each flying from where
-    // its own stood)
-    for f in flying_files(c, src, w) {
-      @sfbase.sent_part_said(row, f.key, f.from)
-    }
-    // (and each quote's own picture from its square in its card there, as the old flight takes it: flying_quotes'
-    // quote_picture_key; the card itself from where it stood, sent_quotes_from_said)
-    for f in flying_quotes(c, src, w, r.station) {
-      if @sfbase.is_quote_picture_key(f.key) {
-        @sfbase.sent_part_said(row, f.key, f.from)
-      }
-    }
+  } else if from is Some(_) {
     // (its field's hint and caret away till they are out of it, as the old flight's: flight_hint_away)
     @sfbase.sent_out_said(c, w.key)
   }

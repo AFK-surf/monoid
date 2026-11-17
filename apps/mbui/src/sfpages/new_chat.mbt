@@ -973,29 +973,14 @@ fn new_send(
       runs~,
     )
   }
-  let row = sent_local(rk, None, words, up, going~, quotes~, runs~, now=(src.now)())
+  // (the chat's page made as nodes: its row's bubble flies from where the words stand in this page's field, each
+  // quote's card from its card and each of its files from its tile, as the chat's own composer tells them
+  // (sent_from_composer, as send_in_chat's; mbui's View::flies_in), as the page becomes the chat in this change)
+  let from = if carried { None } else { sent_from_composer(c, src, d, station) }
+  let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
   if carried {
     @sfbase.flight_carry_into(c, d.key, draft, rk, row)
-  } else if !@ui.reduced_motion() {
-    // (the chat's page made as nodes: its row's bubble flies from where the words stand in this page's field, each
-    // quote's card from its card and each of its files from its tile, as the chat's own composer tells them
-    // (send_in_chat's: sent_from_said, sent_quotes_from_said, sent_part_said; mbui's View::flies_in), as the page
-    // becomes the chat in this change)
-    match d.field.words_at() {
-      Some(((x, y), _)) => @sfbase.sent_from_said(row, x, y)
-      None => ()
-    }
-    @sfbase.sent_quotes_from_said(row, d.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }))
-    for f in flying_files(c, src, d) {
-      @sfbase.sent_part_said(row, f.key, f.from)
-    }
-    // (and each quote's own picture from its square in its card there, as the old flight takes it: flying_quotes'
-    // quote_picture_key; the card itself from where it stood, sent_quotes_from_said)
-    for f in flying_quotes(c, src, d, station) {
-      if @sfbase.is_quote_picture_key(f.key) {
-        @sfbase.sent_part_said(row, f.key, f.from)
-      }
-    }
+  } else if from is Some(_) {
     // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
     @sfbase.sent_out_said(c, station + ":" + key)
   }

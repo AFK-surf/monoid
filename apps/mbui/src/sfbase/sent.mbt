@@ -189,12 +189,27 @@ fn going_up(going : Array[Json]) -> (Array[Json], Array[(String, Int, Int)]) {
 }
 
 ///|
+/// Where what is sent from here stood in the composer as it was sent, in the window: its words (the top left of their
+/// first line), each quote's card (x, y, w, h, in the order the composer held them; None where one was not drawn) and
+/// each other part (a file's tile, a quote's picture: by its key in the row, file_key, quote_picture_key). On a chat's
+/// page made as nodes its row flies from there (mbui's View::flies_in): the composer is an old view hosted in the list's
+/// foot, none of the window's tree to pair with, so where they stood is part of what is sent, never said after it.
+pub(all) struct SentFrom {
+  words : (Double, Double)?
+  quotes : Array[(Double, Double, Double, Double)?]
+  parts : Array[(String, (Double, Double, Double, Double))]
+}
+
+///|
 /// Words sent from chat `rk` (its station and session; `v` its view, None for one just made) are in its list now,
 /// before the core has them (LocalSent), with its files up (`files`, each one put up from here naming its upload as the
 /// core's row will: file_key), those still going up (`going`: going_up) and what it quotes (`quotes`, as the core's row
 /// will have them), its words in the runs the core read them in (`runs`: refs_sent_runs). Its key, for what flies there
 /// (flight.mbt). `now`, the core's time (its source's): close under the viewer's own row before it while the core says
-/// it would be (sent_joins), as its row will say.
+/// it would be (sent_joins), as its row will say. `from`: where they stood in the composer, for its row to fly from
+/// (SentFrom), kept by its key before the row is in the list: whatever makes its row, at whatever moment, finds it there
+/// (2026-11-17: said after, by Enter as the composer's old view was built and nothing batched, the row's bubble was made
+/// first and came in at its place).
 pub fn sent_local(
   rk : String,
   v : ChatView?,
@@ -203,10 +218,27 @@ pub fn sent_local(
   going? : Array[Json] = [],
   quotes? : Array[Json] = [],
   runs? : Json? = None,
+  from? : SentFrom? = None,
   now~ : Double,
 ) -> String {
   local_sent_n.val += 1
   let id = "local:\{local_sent_n.val}"
+  let key = "o:" + id
+  match from {
+    Some(f) => {
+      match f.words {
+        Some(at) => sent_from_at[key] = at
+        None => ()
+      }
+      if !f.quotes.is_empty() {
+        sent_quotes_from_at[key] = f.quotes
+      }
+      if !f.parts.is_empty() {
+        sent_parts_at[key] = Map::from_array(f.parts)
+      }
+    }
+    None => ()
+  }
   let (images, cards) = going_up(going)
   let joined = sent_joins(rk, v, now)
   sending_kept(rk).push({
@@ -240,7 +272,7 @@ pub fn sent_local(
   })
   sending_changed()
   sent_here_told(rk)
-  "o:" + id
+  key
 }
 
 ///|
@@ -306,6 +338,10 @@ pub fn sent_local_gone(rk : String, key : String) -> Unit {
   match sending.search_by(fn(l) { "o:" + l.row.id == key }) {
     Some(i) => {
       sending.remove(i) |> ignore
+      // (where it stood, if its row never took it: nothing flies from there now)
+      sent_from_at.remove(key)
+      sent_quotes_from_at.remove(key)
+      sent_parts_at.remove(key)
       sending_changed()
     }
     None => ()
@@ -393,12 +429,6 @@ pub fn sent_picture_told(station : String, a : Attachment) -> String? {
 let sent_from_at : Map[String, (Double, Double)] = Map([])
 
 ///|
-/// The words of what was sent from here as `key` (sent_local's) stood at (`x`, `y`) in the composer's field.
-pub fn sent_from_said(key : String, x : Double, y : Double) -> Unit {
-  sent_from_at[key] = (x, y)
-}
-
-///|
 /// Where the quotes' cards of what was sent from here stood in the composer as it was sent (each one's place and size
 /// in the window, in the order the composer held them; None where one was not drawn), by the key its row has in its
 /// chat's list, till that row's cards take them to fly from there (sent_quotes_from_take): the composer an old view's,
@@ -406,13 +436,7 @@ pub fn sent_from_said(key : String, x : Double, y : Double) -> Unit {
 let sent_quotes_from_at : Map[String, Array[(Double, Double, Double, Double)?]] = Map([])
 
 ///|
-/// The quotes' cards of what was sent from here as `key` (sent_local's) stood at `at` in the composer.
-pub fn sent_quotes_from_said(key : String, at : Array[(Double, Double, Double, Double)?]) -> Unit {
-  sent_quotes_from_at[key] = at
-}
-
-///|
-/// Where the quotes' cards of what was sent from here as `key` stood as it was sent (sent_quotes_from_said), taken:
+/// Where the quotes' cards of what was sent from here as `key` stood as it was sent (sent_local's `from`), taken:
 /// told once.
 pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Double)?] {
   let at = sent_quotes_from_at.get(key).unwrap_or([])
@@ -428,7 +452,7 @@ pub fn sent_from_waits(key : String) -> Bool {
 }
 
 ///|
-/// Where the words of what was sent from here as `key` stood as they were sent (sent_from_said), taken: told once.
+/// Where the words of what was sent from here as `key` stood as they were sent (sent_local's `from`), taken: told once.
 pub fn sent_from_take(key : String) -> (Double, Double)? {
   let at = sent_from_at.get(key)
   sent_from_at.remove(key)
@@ -445,16 +469,7 @@ pub fn sent_from_take(key : String) -> (Double, Double)? {
 let sent_parts_at : Map[String, Map[String, (Double, Double, Double, Double)]] = Map([])
 
 ///|
-/// Part `part` of what was sent from here as `key` (sent_local's) stood at `at` in the composer (x, y, w, h).
-pub fn sent_part_said(key : String, part : String, at : (Double, Double, Double, Double)) -> Unit {
-  match sent_parts_at.get(key) {
-    Some(m) => m[part] = at
-    None => sent_parts_at[key] = Map([(part, at)])
-  }
-}
-
-///|
-/// Where part `part` of what was sent from here as `key` stood as it was sent (sent_part_said), taken: told once.
+/// Where part `part` of what was sent from here as `key` stood as it was sent (sent_local's `from`), taken: told once.
 pub fn sent_part_take(key : String, part : String) -> (Double, Double, Double, Double)? {
   guard sent_parts_at.get(key) is Some(m) else { return None }
   let at = m.get(part)
