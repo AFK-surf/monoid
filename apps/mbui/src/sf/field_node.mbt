@@ -5,21 +5,7 @@
 // what changes it (Enter, a key, its words) told by callbacks at that input's moment; let go with its node.
 
 ///|
-/// A line to type in in `parent` (input's look: a capsule as tall as the theme's controls, `small` as high as a small
-/// panel's rows with a mouse, its ends round; 16 in, the strong grey's line, on the surface, its words the
-/// body's), editing `field`: `placeholder` while empty (`shorter` ways of saying it where it has less room), as
-/// dots where `secret`; Enter gives its words to `submitted`, once, at that key's moment (none: Enter presses the default
-/// of the layer it is in, as a dialog's field does, @view.View::default_press); `leaves`: the keys it leaves
-/// to what it offers as it is typed in; `edited`: its words as the person's edit changes them (ui's field's), never
-/// as the app puts words in it; `placeholder_by`: its placeholder as it is now, followed (in place of
-/// `placeholder`); `label`: what a screen reader calls it, where no placeholder does (it shows none). While
-/// `disabled()`, faded, taking no press nor the focus (losing it then). `solid`: on a card's ground (input's
-/// `solid`, field_solid): on the canvas's ground, its line the canvas's too, the field's hover grey while it is pointed
-/// at or written in. `end`: what stands in the capsule after what is typed (a search's count), made in a box at its
-/// end; `lead`: what stands in it before what is typed (a search's mark), made in a box at its start. `card_words`:
-/// in a card's foot corners (over its buttons there), its words where the card's begin (button_node's,
-/// card_foot_words's: as far in at its sides as that corner leaves a button's). The field's node (what the focus is
-/// given to).
+/// A line to type in in `parent`, a small one a mouse's row high (input_bar_node, which says the rest).
 pub fn input_node(
   parent : @view.View,
   field : @ui.Field,
@@ -38,6 +24,44 @@ pub fn input_node(
   lead? : (@view.View) -> Unit,
   card_words? : Bool = false,
 ) -> @view.View {
+  input_bar_node(parent, field, placeholder~, label~, shorter~, secret~, placeholder_by?, disabled~, small~, solid~, leaves~, submitted?, edited?, end?, lead?, card_words~)
+}
+
+///|
+/// A line to type in in `parent` (input's look: a capsule as tall as the theme's controls, `small` as high as a small
+/// panel's rows with a mouse (`high` where it stands among keys of another height), its ends round; 16 in, the strong grey's line, on the surface, its words the
+/// body's), editing `field`: `placeholder` while empty (`shorter` ways of saying it where it has less room), as
+/// dots where `secret`; Enter gives its words to `submitted`, once, at that key's moment (none: Enter presses the default
+/// of the layer it is in, as a dialog's field does, @view.View::default_press); `leaves`: the keys it leaves
+/// to what it offers as it is typed in; `edited`: its words as the person's edit changes them (ui's field's), never
+/// as the app puts words in it; `placeholder_by`: its placeholder as it is now, followed (in place of
+/// `placeholder`); `label`: what a screen reader calls it, where no placeholder does (it shows none). While
+/// `disabled()`, faded, taking no press nor the focus (losing it then). `solid`: on a card's ground (input's
+/// `solid`, field_solid): on the canvas's ground, its line the canvas's too, the field's hover grey while it is pointed
+/// at or written in. `end`: what stands in the capsule after what is typed (a search's count), made in a box at its
+/// end; `lead`: what stands in it before what is typed (a search's mark), made in a box at its start. `card_words`:
+/// in a card's foot corners (over its buttons there), its words where the card's begin (button_node's,
+/// card_foot_words's: as far in at its sides as that corner leaves a button's). The field's node (what the focus is
+/// given to).
+pub fn input_bar_node(
+  parent : @view.View,
+  field : @ui.Field,
+  placeholder? : String = "",
+  label? : String = "",
+  shorter? : Array[String] = [],
+  secret? : Bool = false,
+  placeholder_by? : () -> String,
+  disabled? : () -> Bool = fn() { false },
+  small? : Bool = false,
+  high? : Double = menu_row_min,
+  solid? : Bool = false,
+  leaves? : Array[Int] = [],
+  submitted? : (String) -> Unit,
+  edited? : (String) -> Unit,
+  end? : (@view.View) -> Unit,
+  lead? : (@view.View) -> Unit,
+  card_words? : Bool = false,
+) -> @view.View {
   let line = @signals.untracked(fn() { theme().t.body_line })
   let x = if card_words { card_foot_words_in(button_height()) } else { @ui.Space::px(S4) }
   field_frame(parent, disabled, row=true, solid~, fn(f) {
@@ -45,8 +69,9 @@ pub fn input_node(
     .padding(Is((x, @ui.Space::px(S1_5), x, @ui.Space::px(S1_5))))
     |> ignore
     if small {
-      // (input_box_small: a small panel's row's height, a mouse's (menu_row_min), its ends round)
-      f.height(Is(Some(menu_row_min))).radius(Is(1.0e6)) |> ignore
+      // (input_box_small: a small panel's row's height, a mouse's (menu_row_min), its ends round; `high` where it stands
+      // among keys of another height, as tall as they are)
+      f.height(Is(Some(high))).radius(Is(1.0e6)) |> ignore
     } else {
       f.min_height(By(fn() { Some(theme().control_h) })).radius(By(fn() { field_round() })) |> ignore
     }

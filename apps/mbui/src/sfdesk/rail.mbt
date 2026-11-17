@@ -724,6 +724,7 @@ fn rail_icon(place : String) -> String {
     "hidden" => "eye-off"
     "archive" => "archive"
     "files" => "folder"
+    "remote" => "monitor"
     "profiles" => "quota"
     "connects" => "plug"
     "usage" => "chart"

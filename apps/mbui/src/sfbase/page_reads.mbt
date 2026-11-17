@@ -298,6 +298,28 @@ pub fn page_reads(src : Source, ws : String, p : Page, wide : Bool) -> OpenReads
     // (小屏's Profile place on 概览: its pools as well)
     Place("profiles") if !wide && @signals.untracked(fn() { @settings.profiles_place_overview.get() }) =>
       reads_of([stations, ("profiles", { "scope": of }), ("profilesOverview", { "scope": of })])
+    Place("remote") => {
+      let terms_on = (src.asks_terminals)()
+      {
+        asks: [stations, ..if wide { [("prefs", {})] } else { [] }],
+        then: Some(fn(read) {
+          let out : Array[(String, Map[String, Json])] = []
+          match read(stations) {
+            Some(Array(all)) =>
+              for s in all {
+                if field(Some(s), "online") == Some(Json::boolean(true)) && field(Some(s), "station") is Some(String(address)) {
+                  out.push(("screens", { "station": Json::string(address) }))
+                  if terms_on {
+                    out.push(("terminals", { "station": Json::string(address) }))
+                  }
+                }
+              }
+            _ => ()
+          }
+          out
+        }),
+      }
+    }
     Place(name) =>
       match @settings.route_of(name) {
         Some(r) => route_reads(src, ws, r)

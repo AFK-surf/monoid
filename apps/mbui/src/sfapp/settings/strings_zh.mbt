@@ -2029,4 +2029,9 @@ let zh : Map[String, String] = {
   "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表",
   "core-views.move.why.offline": "离线：它上线后可选",
   "core-views.move.why.stable": "正式版：在它的「软件与更新」里打开「测试版」后可选",
+  "android-misc.bar.place.remote": "远程",
+  "web-main.rail.remote": "远程",
+  "web-pages.remote.openTerminal": "终端",
+  "web-pages.remote.openBrowser": "浏览器",
+  "web-pages.remote.openDesktop": "桌面",
 }

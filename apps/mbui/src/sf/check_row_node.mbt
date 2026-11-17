@@ -177,7 +177,7 @@ pub fn check_mark_node(
     }))
     |> ignore
     check_tick_node(b, fn() { on() && !mixed() }, side, fn() { if dimmed() { theme().p.muted } else { @ui.tree_theme().on_primary } })
-    b.show(mixed, fn(bar) {
+    b.show(mixed, at_once=true, fn(bar) {
       bar
       .width(By(fn() { Some((side() * 0.52).round()) }))
       .height(Is(Some(2.0)))

@@ -416,6 +416,7 @@ fn narrow_made(src : Source, page : Page) -> (String, (@view.View, () -> Page, P
   match page {
     // (a place of the bottom bar's whose page is one of those: that page under the place's top bar, place_page's, made
     // under its own kind)
+    Place("remote") => narrow_made_as(src, Place("remote"), true)
     Place(name) =>
       match @settings.route_of(name) {
         // (those whose old view is gone: every frame makes them once, as a page or a place)
@@ -790,9 +791,19 @@ fn narrow_made_as(
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>
       made("terminal/" + at.station + "/" + at.terminal, fn(p, core, _here, frame, _stint, _acts) {
-        @sfpages.terminal_node(p, src, at, back=fn() { frame().back.unwrap_or(@sf.t("common.back")) }, on_back=core.pop, top=fn() {
-          frame().top
-        })
+        @sfpages.terminal_pane_node(
+          p,
+          src,
+          at,
+          back=fn() { frame().back.unwrap_or(@sf.t("common.back")) },
+          on_back=core.pop,
+          top=fn() { frame().top },
+          on_switch_page=fn(next) { app.nav.replace(next) },
+        )
+      })
+    Place("remote") =>
+      made("place/remote", fn(p, _core, here, frame, stint, _acts) {
+        @sfpages.remote_page_node(p, src, fn() { here().workspace }, frame~, stint~)
       })
     // (by its station: another station's another page, not this one become it)
     Setting(Station(address)) =>
@@ -828,7 +839,15 @@ fn narrow_made_as(
           fn() { @sfbase.go_back() |> ignore },
           top=fn() { frame().top },
         )
-        @sfpages.farview_tab_node(p, src, at.station, at.screen)
+        @sfpages.farview_pane_node(
+          p,
+          src,
+          at.station,
+          at.screen,
+          title=at.title,
+          on_switch=fn(next) { app.nav.replace(next) },
+          on_close=fn() { @sfbase.go_back() |> ignore },
+        )
       })
     // a station's screen (sfpages' screen_node): its bar, its picture and what drives it its own, inside the room the
     // stack's frame keeps over and under it (but in 全屏); let go as the page leaves (app.mbt's page_left: screen_left),

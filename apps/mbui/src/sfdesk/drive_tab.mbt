@@ -77,6 +77,7 @@ fn ftab_place_of(ws : String) -> DriveAt?? {
 ///|
 fn tab_reset() -> Unit {
   panel_screen_pages.clear()
+  panel_terminal_pages.clear()
   ftab.building = false
   ftab.places.clear()
   ftab_places_said.each(fn(_, s) { s.set(None) })
@@ -385,6 +386,11 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
       @sf.icon_button(c, "copy", key="files-tab/copy", label=@sf.t("web-pages.drive.copyPath"), on_press=fn() {
         @sfpages.copy_path(here)
       }) |> ignore
+      if @sfpages.terminals_here() && (src.asks_terminals)() && here != "" {
+        @sf.icon_button(c, "terminal", key="files-tab/terminal", label=@sf.t("web-pages.remote.openHereTerminal"), on_press=fn() {
+          @sfbase.open_terminal(at.station, "new", here, "")
+        }) |> ignore
+      }
       @sf.icon_button(c, "refresh", key="files-tab/refresh", label=@sf.t("web-pages.drive.refresh"), on_press=fn() {
         c.tell("files-tab/refresh", fn() { @sfpages.refresh_folder(src, at) })
       }) |> ignore
@@ -435,6 +441,11 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
           out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.download"), icon="download", fn() { @sfpages.save_entry(src, in_, e) })))
         }
         if e.dir {
+          if @sfpages.terminals_here() && (src.asks_terminals)() && abs != "" {
+            out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openHereTerminal"), icon="terminal", fn() {
+              @sfbase.open_terminal(in_.station, "new", abs, "")
+            })))
+          }
           let path = dv_join(in_.path, e.name)
           let saved = @sfpages.favorite_has(favs, at.station, root, path)
           out.push(Some(@sf.menu_item_of(@sf.t(if saved { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", e.name)]), icon="star", fn() {
