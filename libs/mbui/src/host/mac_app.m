@@ -55,6 +55,7 @@ static void go_back(void) {
 @property(nonatomic) NSRange sel;
 @property(nonatomic) NSUInteger markedLen;
 @property(nonatomic, strong) CADisplayLink *link;
+@property(nonatomic) CFTimeInterval linkAskedAt;  // when the link was asked for a frame and has not ticked since
 @property(nonatomic) BOOL wantFrame;
 @property(nonatomic) CFTimeInterval drawnWithWindowAt;  // drawWithWindow's last frame (CACurrentMediaTime)
 @property(nonatomic) int wid;  // its window of the run's (0 the first: win_open)
@@ -195,11 +196,45 @@ static int down_secondary;
 static bool down_dragged, last_down_dragged;
 static const char *shot_path;
 static void tell_state(void);
+static void tell_state_with_rebind(BOOL already_rebound);
 static void bring_back(void);  // the window out again (below: the app's life on the Mac)
+static void pause_all_links(void);
+static void rebind_all_links(void);
+static void trim_all_renders(void);
+static void clear_stale_sleep_if_active(NSWindow *w);
+static void screen_changed(NSWindow *w);
 // Whether the window can be seen now (tell_state's `shown`: not hidden, minimized, covered or asleep).
 static int window_seen = 1;
+static uint64_t put_away_at;  // CLOCK_MONOTONIC's ns as the window was closed (0: it is out)
+static uint64_t asleep_at;    // as the Mac went to sleep (0: awake)
+static uint64_t woke_said_at; // when say_shown was already said on wake (0: none)
+static int screens_asleep;    // 1 while the displays are asleep
 static int looked_at_run(void);
+static BOOL displays_off(void) { return asleep_at != 0 || screens_asleep != 0; }
+static BOOL sleep_holds_links(void) { return displays_off() && !looked_at_run(); }
 static const char *script;
+
+#ifndef MB_HOST_MEDIA_TIME
+#define MB_HOST_MEDIA_TIME() CACurrentMediaTime()
+#endif
+#ifndef MB_HOST_MONO_NS
+#define MB_HOST_MONO_NS() clock_gettime_nsec_np(CLOCK_MONOTONIC)
+#endif
+#ifndef MB_MAKE_DISPLAY_LINK
+#define MB_MAKE_DISPLAY_LINK(view, target, sel) [(view) displayLinkWithTarget:(target) selector:(sel)]
+#endif
+#ifndef MB_APP_IS_ACTIVE
+#define MB_APP_IS_ACTIVE() (NSApp.isActive)
+#endif
+#ifndef MB_HOST_DISPLAY_ACTIVE
+static BOOL mb_default_display_active(NSWindow *w) {
+  NSScreen *s = w.screen ?: NSScreen.mainScreen;
+  NSNumber *num = s.deviceDescription[@"NSScreenNumber"];
+  CGDirectDisplayID did = num ? (CGDirectDisplayID)num.unsignedIntValue : CGMainDisplayID();
+  return did ? CGDisplayIsActive(did) != 0 : YES;
+}
+#define MB_HOST_DISPLAY_ACTIVE(w) mb_default_display_active(w)
+#endif
 
 // A scripted run in stable mode (MBUI_SCRIPT with MBUI_BENCH=-1: screenshots) is settled, not paced: its frames are
 // not the display's but drawn one after another as fast as they are made, on a clock of their own (1/60 s a frame,
@@ -222,7 +257,7 @@ static void script_next(void);
 static int settled_run(void);
 static void set_ground(void);
 
-double mb_now_ms(void) { return CACurrentMediaTime() * 1000.0; }
+double mb_now_ms(void) { return MB_HOST_MEDIA_TIME() * 1000.0; }
 
 CTFontRef mb_platform_font(double size, int weight, int mono) {
   NSFontWeight w = weight >= 700 ? NSFontWeightBold
@@ -413,18 +448,24 @@ static double paced_hz, link_hz = -1;
 
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
+  [self.link invalidate];
+  self.link = nil;
+  self.linkAskedAt = 0;
   if (!self.window) return;
   if (!settle) {
-    self.link = [self displayLinkWithTarget:self selector:@selector(tick:)];
+    self.link = MB_MAKE_DISPLAY_LINK(self, self, @selector(tick:));
     [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    self.link.paused = YES;
   }
-  [self addTrackingArea:[[NSTrackingArea alloc]
-                            initWithRect:NSZeroRect
-                                 options:NSTrackingMouseMoved | NSTrackingActiveAlways |
-                                         NSTrackingInVisibleRect | NSTrackingMouseEnteredAndExited |
-                                         NSTrackingCursorUpdate
-                                   owner:self
-                                userInfo:nil]];
+  if (self.trackingAreas.count == 0) {
+    [self addTrackingArea:[[NSTrackingArea alloc]
+                              initWithRect:NSZeroRect
+                                   options:NSTrackingMouseMoved | NSTrackingActiveAlways |
+                                           NSTrackingInVisibleRect | NSTrackingMouseEnteredAndExited |
+                                           NSTrackingCursorUpdate
+                                     owner:self
+                                  userInfo:nil]];
+  }
   [self requestFrame];
 }
 
@@ -436,6 +477,25 @@ static double paced_hz, link_hz = -1;
     pump_soon();
     return;
   }
+  if (sleep_holds_links()) {
+    self.link.paused = YES;
+    self.linkAskedAt = 0;
+    return;
+  }
+  if (!self.link && self.window) {
+    rebind_all_links();
+    return;
+  }
+  CFTimeInterval now = MB_HOST_MEDIA_TIME();
+  // A display link wedged across display wake or monitor hotplug never ticks again on its old CALocalDisplay: replace
+  // all links in the process (so their shared CA::Display::DisplayLink drops to zero) and draw the waiting frame now.
+  if (self.linkAskedAt > 0 && now - self.linkAskedAt > 0.25 && !in_app_frame && self.window.isVisible &&
+      (self.wid > 0 || window_seen || looked_at_run())) {
+    rebind_all_links();
+    [self drawFrame];
+    return;
+  }
+  if (self.linkAskedAt <= 0) self.linkAskedAt = now;
   self.link.paused = NO;
 }
 
@@ -479,9 +539,10 @@ static double record_t0 = -1;
   double scale = self.window.backingScaleFactor ?: 2.0;
   ((CAMetalLayer *)self.layer).contentsScale = scale;
   mb_text_set_scale(scale * window_content_zoom);
-  if (window_seen || looked_at_run())
+  if (self.wid > 0 || window_seen || looked_at_run())
     mb_render_set_size(s.width / window_content_zoom, s.height / window_content_zoom, scale * window_content_zoom);
   self.wantFrame = NO;
+  self.linkAskedAt = 0;
   lat_frame_begins();
   if (record_dir) {
     if (record_t0 < 0) {
@@ -531,7 +592,7 @@ static double record_t0 = -1;
   l.presentsWithTransaction = YES;
   [self drawFrame];
   l.presentsWithTransaction = NO;
-  self.drawnWithWindowAt = CACurrentMediaTime();
+  self.drawnWithWindowAt = MB_HOST_MEDIA_TIME();
   last_tick = -1;
 }
 
@@ -599,7 +660,19 @@ static void pump(void) {
 // each one's frame waited for a drawable the two held till the screen's next refresh (CAMetalLayer nextDrawable), and
 // the resize with it.
 - (void)tick:(CADisplayLink *)l {
-  if (CACurrentMediaTime() - self.drawnWithWindowAt < l.targetTimestamp - l.timestamp) return;
+  if (l != self.link) {
+    [l invalidate];
+    return;
+  }
+  if (sleep_holds_links()) {
+    l.paused = YES;
+    self.linkAskedAt = 0;
+    last_tick = -1;
+    return;
+  }
+  CFTimeInterval now = MB_HOST_MEDIA_TIME();
+  if (self.wantFrame) self.linkAskedAt = now;
+  if (now - self.drawnWithWindowAt < l.targetTimestamp - l.timestamp) return;
   link_period = (l.targetTimestamp - l.timestamp) * 1000.0;
   // the rate the frames want told the display link where it changed: the display's own, or that of what moves on by
   // the clock alone (paced_hz), so a ProMotion screen refreshes as slowly (ios_app.m's link_rate)
@@ -623,6 +696,7 @@ static void pump(void) {
   }
   if (!self.wantFrame) {
     l.paused = YES;
+    self.linkAskedAt = 0;
     last_tick = -1;
     return;
   }
@@ -636,6 +710,7 @@ static void pump(void) {
   if (script) run_script_step(frames_drawn);
   if (!self.wantFrame) {
     l.paused = YES;
+    self.linkAskedAt = 0;
     last_tick = -1;
   }
 }
@@ -730,6 +805,7 @@ static void mouse_button(int kind, NSPoint p, NSEvent *e, int button) {
   event_time = -1;
 }
 - (void)mouseDown:(NSEvent *)e {
+  clear_stale_sleep_if_active(self.window);
   NSPoint p = [self pt:e];
   [self.window makeFirstResponder:self];
   // Ctrl-click is the secondary click (a context menu's)
@@ -775,6 +851,7 @@ static void mouse_button(int kind, NSPoint p, NSEvent *e, int button) {
   mouse(2, [self pt:e], e);
 }
 - (void)rightMouseDown:(NSEvent *)e {
+  clear_stale_sleep_if_active(self.window);
   mouse_button(0, [self pt:e], e, 2);
 }
 - (void)rightMouseUp:(NSEvent *)e {
@@ -818,6 +895,7 @@ static NSCursor *cursor_of(int kind) {
   else if (e.buttonNumber == 4) mb_cb.key(40, 0);
 }
 - (void)scrollWheel:(NSEvent *)e {
+  clear_stale_sleep_if_active(self.window);
   NSPoint p = [self pt:e];
   // a mouse wheel's notch: 40 points, as a browser scrolls by one, eased in by the app (phase 4); a trackpad's
   // as it comes (1 the fingers on it, 3 its momentum)
@@ -887,6 +965,7 @@ static NSCursor *cursor_of(int kind) {
 - (void)redo:(id)sender { mb_cb.key(1000 + 'z', 9); }
 
 - (void)keyDown:(NSEvent *)e {
+  clear_stale_sleep_if_active(self.window);
   // a key catcher's focus (apple_device.h): its keys (a composition under way keeps them)
   if (key_catching && self.imeActive && self.markedLen == 0 && catch_key_down(e)) return;
   NSEventModifierFlags m = e.modifierFlags;
@@ -1359,7 +1438,7 @@ static double buttons_way(double t) {
     [link invalidate];
     return;
   }
-  double t = (CACurrentMediaTime() - slot.buttonsT0) * 1000 / slot.buttonsMs;
+  double t = (MB_HOST_MEDIA_TIME() - slot.buttonsT0) * 1000 / slot.buttonsMs;
   slot.buttonsDown = slot.buttonsFrom + (slot.buttonsTo - slot.buttonsFrom) * buttons_way(t);
   if (t >= 1) {
     slot.buttonsDown = slot.buttonsTo;
@@ -1370,6 +1449,18 @@ static double buttons_way(double t) {
 }
 @end
 
+// (every window's spring of its buttons ended where it was going: its link let go with the rest, rebind_all_links)
+static void finish_buttons_move(void) {
+  for (NSNumber *k in win_slots) {
+    MBWinSlot *slot = win_slots[k];
+    if (!slot.buttonsLink) continue;
+    slot.buttonsDown = slot.buttonsTo;
+    [slot.buttonsLink invalidate];
+    slot.buttonsLink = nil;
+    buttons_tile(slot);
+  }
+}
+
 void mb_host_window_buttons_down(double by, double ms) {
   MBWinSlot *slot = slot_now();
   if (!slot) return;
@@ -1379,7 +1470,7 @@ void mb_host_window_buttons_down(double by, double ms) {
   slot.buttonsLink = nil;
   slot.buttonsTo = by;
   BOOL held = slot.wid == 0 ? window_held && !window_shown : slot.view.held;
-  if (ms <= 0 || !w || !w.visible || held) {
+  if (ms <= 0 || !w || !w.visible || sleep_holds_links() || held) {
     slot.buttonsDown = by;
     buttons_tile(slot);
     return;
@@ -1387,9 +1478,9 @@ void mb_host_window_buttons_down(double by, double ms) {
   MBButtonsMove *mover = [MBButtonsMove new];
   mover.slot = slot;
   slot.buttonsFrom = slot.buttonsDown;
-  slot.buttonsT0 = CACurrentMediaTime();
+  slot.buttonsT0 = MB_HOST_MEDIA_TIME();
   slot.buttonsMs = ms;
-  slot.buttonsLink = [slot.view displayLinkWithTarget:mover selector:@selector(tick:)];
+  slot.buttonsLink = MB_MAKE_DISPLAY_LINK(slot.view, mover, @selector(tick:));
   [slot.buttonsLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 
@@ -1690,13 +1781,23 @@ static int win_open(NSString *what) {
   // (seen again, uncovered or out of the Dock: drawn as it is now, the app told whether any window is seen; the view
   // not held by what is told)
   __weak MBView *seen = v;
+  __weak NSWindow *weak_win = w;
   for (NSNotificationName name in @[ NSWindowDidChangeOcclusionStateNotification, NSWindowDidDeminiaturizeNotification,
                                      NSWindowDidMiniaturizeNotification ])
     [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:name object:w queue:nil
                                                                             usingBlock:^(NSNotification *n) {
+                                                                              NSWindow *ww = weak_win;
+                                                                              if ([n.name isEqualToString:NSWindowDidChangeOcclusionStateNotification] &&
+                                                                                  (ww.occlusionState & NSWindowOcclusionStateVisible) != 0)
+                                                                                clear_stale_sleep_if_active(ww);
                                                                               [seen requestFrame];
                                                                               tell_state();
                                                                             }]];
+  [slot.observers addObject:[[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeScreenNotification
+                                                                              object:w queue:nil
+                                                                          usingBlock:^(NSNotification *n) {
+                                                                            screen_changed(weak_win);
+                                                                          }]];
   // (out of sight till its first frame is drawn, on the screen so that it is drawn at its size and scale there: a
   // frame of the window on its own, as soon as the app has said what it shows, the run's frames not waited for; never
   // in the call that opens it, from the app's own handler or frame, which has not yet said what the window shows)
@@ -1793,13 +1894,109 @@ static void window_ends_with_opener(void) {
   if (kill(pid, 0) != 0 && errno == ESRCH) exit(0);
 }
 
-static uint64_t put_away_at;  // CLOCK_MONOTONIC's ns as the window was closed (0: it is out)
-static uint64_t asleep_at;    // as the Mac went to sleep (0: awake)
-static int screens_asleep;    // 1 while the displays are asleep
+static void trim_all_renders(void) {
+  if (win_slots.count < 2) {
+    mb_render_trim();
+    return;
+  }
+  int back = win_active;
+  for (NSNumber *k in win_slots) {
+    mb_render_use(k.intValue);
+    mb_render_trim();
+  }
+  mb_render_use(back);
+}
+
+static void pause_all_links(void) {
+  finish_buttons_move();
+  if (win_slots.count == 0) {
+    the_view.link.paused = YES;
+    the_view.linkAskedAt = 0;
+    last_tick = -1;
+    return;
+  }
+  for (NSNumber *k in win_slots) {
+    MBView *v = win_slots[k].view;
+    v.link.paused = YES;
+    v.linkAskedAt = 0;
+  }
+  last_tick = -1;
+}
+
+// Replace every display link in the process: all old links are invalidated before any new one is made, so QuartzCore's
+// per-(CALocalDisplay, CFRunLoop) shared CA::Display::DisplayLink drops to zero and is never reused across display
+// wake (where _idle_countdown stuck at 5 ignores setPaused:NO) or external monitor hotplug (where CALocalDisplay is
+// recreated under the same CGDirectDisplayID).
+static void rebind_all_links(void) {
+  finish_buttons_move();
+  if (win_slots.count == 0) {
+    [the_view.link invalidate];
+    the_view.link = nil;
+    the_view.linkAskedAt = 0;
+  } else {
+    for (NSNumber *k in win_slots) {
+      MBView *v = win_slots[k].view;
+      [v.link invalidate];
+      v.link = nil;
+      v.linkAskedAt = 0;
+    }
+  }
+  link_hz = -1;
+  last_tick = -1;
+  if (settle) return;
+  CFTimeInterval now = MB_HOST_MEDIA_TIME();
+  BOOL hold = sleep_holds_links();
+  if (win_slots.count == 0) {
+    if (the_view && the_view.window) {
+      the_view.link = MB_MAKE_DISPLAY_LINK(the_view, the_view, @selector(tick:));
+      [the_view.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+      BOOL active = !hold && (the_view.wantFrame || wake_for >= 0);
+      the_view.link.paused = !active;
+      the_view.linkAskedAt = active ? now : 0;
+    }
+    return;
+  }
+  for (NSNumber *k in win_slots) {
+    MBView *v = win_slots[k].view;
+    if (!v || !v.window) continue;
+    v.link = MB_MAKE_DISPLAY_LINK(v, v, @selector(tick:));
+    [v.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    BOOL active = !hold && (v.wantFrame || wake_for >= 0);
+    v.link.paused = !active;
+    v.linkAskedAt = active ? now : 0;
+  }
+}
 
 static void say_shown(uint64_t since) {
-  double away = (clock_gettime_nsec_np(CLOCK_MONOTONIC) - since) / 1e6;
+  double away = (MB_HOST_MONO_NS() - since) / 1e6;
   say_system(@{@"shown" : @{@"away" : @(away)}});
+}
+
+static void clear_stale_sleep_if_active(NSWindow *w) {
+  if (!displays_off()) return;
+  NSWindow *check = w ?: win_slots[@0].win ?: the_view.window;
+  if (check && !MB_HOST_DISPLAY_ACTIVE(check)) return;
+  uint64_t since = asleep_at;
+  asleep_at = 0;
+  screens_asleep = 0;
+  trim_all_renders();
+  if (since) {
+    say_shown(since);
+    woke_said_at = MB_HOST_MONO_NS() ?: 1;
+  }
+  rebind_all_links();
+  tell_state_with_rebind(YES);
+  mb_host_request_frame();
+}
+
+static void screen_changed(NSWindow *w) {
+  if (displays_off()) {
+    clear_stale_sleep_if_active(w);
+    return;
+  }
+  rebind_all_links();
+  tell_state_with_rebind(YES);
+  mb_host_request_frame();
 }
 
 static void bring_back(void) {
@@ -1813,6 +2010,7 @@ static void bring_back(void) {
     say_shown(put_away_at);
     put_away_at = 0;
   }
+  clear_stale_sleep_if_active(w);
   tell_state();
 }
 
@@ -1831,7 +2029,7 @@ static void bring_back(void) {
   if (window_run()) return YES;
   if (in_bundle()) {
     [w orderOut:nil];
-    if (!put_away_at) put_away_at = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    if (!put_away_at) put_away_at = MB_HOST_MONO_NS() ?: 1;
     tell_state();
     return NO;
   }
@@ -1907,28 +2105,44 @@ static void watch_sleep(void) {
   NSNotificationCenter *ws = NSWorkspace.sharedWorkspace.notificationCenter;
   [ws addObserverForName:NSWorkspaceWillSleepNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification *n) {
-                asleep_at = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+                if (!asleep_at) asleep_at = MB_HOST_MONO_NS() ?: 1;
+                woke_said_at = 0;
+                pause_all_links();
                 tell_state();
               }];
   [ws addObserverForName:NSWorkspaceDidWakeNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification *n) {
-                uint64_t since = asleep_at ? asleep_at : clock_gettime_nsec_np(CLOCK_MONOTONIC) - 60000000000ull;
+                uint64_t now = MB_HOST_MONO_NS();
+                BOOL already_said = !asleep_at && woke_said_at && now >= woke_said_at && now - woke_said_at < 5000000000ull;
+                uint64_t since = asleep_at ? asleep_at : now - 60000000000ull;
                 asleep_at = 0;
-                mb_render_trim();
-                say_shown(since);
-                tell_state();
-                mb_host_request_frame();
+                woke_said_at = 0;
+                NSWindow *w = win_slots[@0].win ?: the_view.window;
+                if (screens_asleep && (!w || MB_HOST_DISPLAY_ACTIVE(w))) screens_asleep = 0;
+                trim_all_renders();
+                if (!already_said) say_shown(since);
+                rebind_all_links();
+                tell_state_with_rebind(YES);
+                if (!sleep_holds_links()) mb_host_request_frame();
               }];
   [ws addObserverForName:NSWorkspaceScreensDidSleepNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification *n) {
                 screens_asleep = 1;
+                pause_all_links();
                 tell_state();
               }];
   [ws addObserverForName:NSWorkspaceScreensDidWakeNotification object:nil queue:NSOperationQueue.mainQueue
               usingBlock:^(NSNotification *n) {
+                uint64_t since = asleep_at;
+                asleep_at = 0;
                 screens_asleep = 0;
-                mb_render_trim();
-                tell_state();
+                trim_all_renders();
+                if (since) {
+                  say_shown(since);
+                  woke_said_at = MB_HOST_MONO_NS() ?: 1;
+                }
+                rebind_all_links();
+                tell_state_with_rebind(YES);
                 mb_host_request_frame();
               }];
 }
@@ -2458,12 +2672,25 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
                                                       if ([n.name isEqualToString:NSWindowDidBecomeKeyNotification] ||
                                                           [n.name isEqualToString:NSWindowDidResignKeyNotification])
                                                         window_modifiers(0, [n.name isEqualToString:NSWindowDidBecomeKeyNotification]);
+                                                      if ([name isEqualToString:NSWindowDidBecomeKeyNotification] ||
+                                                          ([name isEqualToString:NSWindowDidChangeOcclusionStateNotification] &&
+                                                           (w.occlusionState & NSWindowOcclusionStateVisible) != 0))
+                                                        clear_stale_sleep_if_active(w);
                                                       tell_state();
                                                     }];
     }
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeScreenNotification object:w queue:nil
+                                                  usingBlock:^(NSNotification *n) { screen_changed(w); }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationDidChangeScreenParametersNotification
+                                                      object:nil queue:nil
+                                                  usingBlock:^(NSNotification *n) { screen_changed(nil); }];
     for (NSNotificationName name in @[ NSApplicationDidBecomeActiveNotification, NSApplicationDidResignActiveNotification ]) {
       [[NSNotificationCenter defaultCenter] addObserverForName:name object:nil queue:nil
-                                                    usingBlock:^(NSNotification *n) { tell_state(); }];
+                                                    usingBlock:^(NSNotification *n) {
+                                                      if ([name isEqualToString:NSApplicationDidBecomeActiveNotification])
+                                                        clear_stale_sleep_if_active(nil);
+                                                      tell_state();
+                                                    }];
     }
     // the system's appearance switched (light, dark, auto at dusk): a frame, which asks it again (mb_host_system_dark)
     [[NSDistributedNotificationCenter defaultCenter] addObserverForName:@"AppleInterfaceThemeChangedNotification"
@@ -2538,6 +2765,44 @@ static void mb_post_wake(void) {
   });
 }
 
+static void wake_view_link(MBView *v) {
+  if (!v) return;
+  if (!v.link && v.window && !settle) rebind_all_links();
+  CFTimeInterval now = MB_HOST_MEDIA_TIME();
+  if (v.linkAskedAt > 0 && now - v.linkAskedAt > 0.25 && !in_app_frame && v.window.isVisible &&
+      (v.wid > 0 || window_seen || looked_at_run())) {
+    wake_for = -1;
+    [v requestFrame];
+    return;
+  }
+  if (v.linkAskedAt <= 0) v.linkAskedAt = now;
+  v.link.paused = NO;
+}
+
+static void wake_after_due(double at) {
+  // (a wake asked later since, or met already: not this one's)
+  if (wake_for != at) return;
+  if (sleep_holds_links()) {
+    wake_for = -1;
+    if (win_slots.count < 2) {
+      the_view.wantFrame = YES;
+      the_view.link.paused = YES;
+      the_view.linkAskedAt = 0;
+    } else {
+      for (NSNumber *k in win_slots) {
+        MBView *v = win_slots[k].view;
+        v.wantFrame = YES;
+        v.link.paused = YES;
+        v.linkAskedAt = 0;
+      }
+    }
+    return;
+  }
+  if (win_slots.count < 2) wake_view_link(the_view);
+  else
+    for (NSNumber *k in win_slots) wake_view_link(win_slots[k].view);
+}
+
 void mb_host_wake_after(double ms) {
   if (settle) {
     double at = settle_clock + ms;
@@ -2552,12 +2817,7 @@ void mb_host_wake_after(double ms) {
   wake_for = at;
   double lead = at - mb_now_ms() - 2.0 * link_period;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(lead, 0) * 1e6)), dispatch_get_main_queue(), ^{
-    // (a wake asked later since, or met already: not this one's)
-    if (wake_for == at) {
-      if (win_slots.count < 2) the_view.link.paused = NO;
-      else
-        for (NSNumber *k in win_slots) win_slots[k].view.link.paused = NO;
-    }
+    wake_after_due(at);
   });
 }
 
@@ -2731,12 +2991,14 @@ moonbit_string_t mb_host_env(moonbit_string_t name) {
 // window; told as any of that changes, and only then.
 static void (*state_cb)(int32_t);
 void mb_host_set_app_state(void (*f)(int32_t)) { state_cb = f; }
-static void tell_state(void) {
+static int told_state = -1;
+static void tell_state_with_rebind(BOOL already_rebound) {
   // (the pointer held by a window out of focus, or the app gone behind: let go of at once, the pointer seen again)
-  if (lock_on && !(NSApp.isActive && NSApp.keyWindow)) lock_set(0);
-  if (!state_cb || !win_slots.count) return;
+  if (lock_on && !(MB_APP_IS_ACTIVE() && NSApp.keyWindow)) lock_set(0);
+  if (!win_slots.count) return;
+  int was_shown = window_seen;
   int shown = 0, key = 0;
-  if (!asleep_at && !screens_asleep)
+  if (!displays_off())
     for (NSNumber *k in win_slots) {
       NSWindow *w = win_slots[k].win;
       if (!w.isVisible || w.isMiniaturized || (w.occlusionState & NSWindowOcclusionStateVisible) == 0) continue;
@@ -2744,17 +3006,22 @@ static void tell_state(void) {
       if (w.isKeyWindow) key = 1;
     }
   window_seen = shown;
-  int front = shown && NSApp.isActive && key;
+  int front = shown && MB_APP_IS_ACTIVE() && key;
   // (not shown: what drawing holds given back, the frame shown kept; a frame after makes what it needs again)
-  if (!shown) mb_render_trim();
+  if (!shown) trim_all_renders();
+  else if (!was_shown && !already_rebound) rebind_all_links();
+  if (!state_cb) {
+    if (shown && !was_shown) mb_host_request_frame();
+    return;
+  }
   // (told only as it changes: the same said again tells the app nothing, and draws nothing)
-  static int told = -1;
   int s = (shown ? 1 : 0) | (front ? 2 : 0);
-  if (s == told) return;
-  told = s;
+  if (s == told_state) return;
+  told_state = s;
   state_cb(s);
-  mb_host_request_frame();
+  if (shown) mb_host_request_frame();
 }
+static void tell_state(void) { tell_state_with_rebind(NO); }
 
 // Whether the system's appearance is dark (@hostapi.system_dark): the app's own (NSApp.appearance is never set, so this is
 // the system's even while the window is made to look otherwise below).
