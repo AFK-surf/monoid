@@ -1376,9 +1376,11 @@ fn chat_body_row(
       _ => Some(-1)
     }
   }
-  // (as tall as its block, which a host's list sets on whole pixels, and so is what it is made as, down to its row's
-  // own node: a row's band (chat_row_band_node) reaches the next row's where that row starts, not short of it by what its
-  // block was put up by, a line of the list's ground between two pieces of a long message lit as one)
+  // (as tall as its block, which a host's list sets on whole pixels, and so is what it is made as, which holds its band
+  // (chat_row_band_node, `over` below): that reaches the next row's where that row starts, not short of it by what its
+  // block was put up by, a line of the list's ground between two pieces of a long message lit as one. The row's own node
+  // keeps its own height, never grown: its room opens on the list's way as an answer comes out (agent_out_room's
+  // View::resizes, which a grown node's height can never make))
   slot.grow(Is(1.0)) |> ignore
   slot.pick(fn() { chat_body_made_as(row()) }, fn(p, made_as) {
     let kind = made_as.0
@@ -1407,9 +1409,10 @@ fn chat_body_row(
     // clicked or its ⋯'s), each by the message's key, so every piece of a long one is lit as one (chat_row_band_node);
     // down to the middle of the room over the row under it, as the list has that row)
     let more : Ref[() -> Bool] = Ref(fn() { false })
-    let over = fn(row : @view.View, _key : () -> String) {
-      let band = message_menu_band_way(row, whole_key, more)
-      chat_row_band_node(row, whole_key, jump, top, fn() {
+    // (hung on what it is made as, as tall as its block, not on the row's own node it is told: chat_body_row's slot)
+    let over = fn(_row : @view.View, _key : () -> String) {
+      let band = message_menu_band_way(p, whole_key, more)
+      chat_row_band_node(p, whole_key, jump, top, fn() {
         (under)(key()).bind(fn(k) { (rows.row)(k) }).map(fn(r) { chat_body_gap_room(r.gap, (here.width)()) })
       }, flash, band)
     }
