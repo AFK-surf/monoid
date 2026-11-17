@@ -93,6 +93,21 @@ async function turns(n = 30) {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
 }
 
+/// The test's clock moved on by `ms`, stopping at each of the program's timers due on the way until what its fire set
+/// going here and there has come to rest: the program is a process of its own, so a clock moved on past its fire in
+/// one adjust would be later by the time it asks what the TypeScript asked at the fire's own time.
+async function stepClock(p: Program, ms: number) {
+  const end = clockFibers.now() + ms;
+  for (;;) {
+    const now = clockFibers.now();
+    const next = Math.min(end, ...[...p.due.values()].filter((at) => at > now));
+    await t.adjust(next - now);
+    if (next >= end) return;
+    await turns();
+    await p.quiet();
+  }
+}
+
 type World = Record<string, (...args: Json[]) => unknown>;
 
 /// The program, started once: commands asked of it, its asks of the test's worlds answered.
@@ -103,6 +118,8 @@ class Program {
   /// Each instance's world, by its name: what the program asks of it.
   readonly worlds = new Map<string, World>();
   readonly #timers = new Map<number, () => void>();
+  /// When each of its timers fires next on the test's clock (none for an `every` while its fire is answered).
+  readonly due = new Map<number, number>();
   /// What the program asked and is not answered yet.
   readonly #inflight = new Set<Promise<unknown>>();
   /// How many asks the program made so far.
@@ -144,9 +161,16 @@ class Program {
     }
     if (typeof m.tell === "string") {
       this.told.push(m);
-      if (m.tell === "after") this.#timers.set(m.timer, clockFibers.after(m.ms, () => void this.cmd("fire", { timer: m.timer, once: true }))); // timer: the program's own, armed on the test's clock
-      else if (m.tell === "every") this.#timers.set(m.timer, clockFibers.every(m.ms, () => this.cmd("fire", { timer: m.timer }))); // timer: the program's own, on the test's clock
-      else if (m.tell === "cancel") (this.#timers.get(m.timer)?.(), this.#timers.delete(m.timer));
+      if (m.tell === "after") {
+        this.due.set(m.timer, clockFibers.now() + m.ms);
+        this.#timers.set(m.timer, clockFibers.after(m.ms, () => (this.due.delete(m.timer), void this.cmd("fire", { timer: m.timer, once: true })))); // timer: the program's own, armed on the test's clock
+      } else if (m.tell === "every") {
+        this.due.set(m.timer, clockFibers.now() + m.ms);
+        // (its next wait begins as this fire is answered)
+        this.#timers.set(m.timer, clockFibers.every(m.ms, () => (this.due.delete(m.timer), this.cmd("fire", { timer: m.timer }).finally(() => {
+          if (this.#timers.has(m.timer)) this.due.set(m.timer, clockFibers.now() + m.ms);
+        })))); // timer: the program's own, on the test's clock
+      } else if (m.tell === "cancel") (this.#timers.get(m.timer)?.(), this.#timers.delete(m.timer), this.due.delete(m.timer));
       return;
     }
     if (typeof m.call === "string") {
@@ -654,10 +678,10 @@ test("told: a step asked of another station, under way, told how it goes and its
   // (told how it goes, then nothing for a silence: asked again; then its end told)
   assert.deepEqual(await s.told("heard", "B", { told: "k1", progress: { done: 1 } }), s.tsT.heard("B", { told: "k1", progress: { done: 1 } }));
   await s.settle();
-  await t.adjust(16_000);
+  await stepClock(s.p, 16_000);
   await s.settle();
   assert.deepEqual(s.asks.mb, s.asks.ts, "asked again after the silence");
-  await t.adjust(11_000);
+  await stepClock(s.p, 11_000);
   s.tsT.reached("B");
   await s.told("reached", "B");
   await s.settle();
@@ -712,14 +736,14 @@ test("told: a step run for another station: under way at once, the same asked ag
   await rest();
   assert.deepEqual(await runMb("measured", "s1", "place"), await run("measured", "s1", "place"), "under way, asked again");
   assert.deepEqual(s.holds()[1], s.holds()[0], "the update held while it runs");
-  await t.adjust(5_000);
+  await stepClock(s.p, 5_000);
   await rest();
   assert.deepEqual(s.asks.mb, s.asks.ts, "a beat");
   release.ts();
   release.mb();
   await s.settle();
   for (const step of [10_000, 20_000]) {
-    await t.adjust(step);
+    await stepClock(s.p, step);
     await s.settle();
   }
   assert.deepEqual(s.asks.mb, s.asks.ts, "its end told until answered, with the backoff");
