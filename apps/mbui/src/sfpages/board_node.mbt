@@ -2199,8 +2199,15 @@ fn draft_edit_card(
       },
     )
     typed.min_height(Is(Some(32.0))) |> ignore
+    // (the cursor in it as it is made, once what made it is done; and again as it comes to take input, the change that
+    // put it in the card's place committed whole (View::takes_input): where the host gives the focus by where it is
+    // (a browser's), or where what was pressed still holds it, as soon as it can have it)
     @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-    typed.at_moment(typed.cause_at() + 1.0, fn() { if !done.val { typed.ask_focus() |> ignore } }) |> ignore
+    typed.reacts(fn() { typed.takes_input() }, fn(takes) {
+      if takes && !done.val && !@signals.untracked(fn() { typed.focused() }) {
+        typed.ask_focus() |> ignore
+      }
+    })
     let opened = @signals.untracked(fn() { card.window_downs() })
     card.reacts(fn() { card.window_downs() }, fn(count) {
       if count > opened && !done.val {
