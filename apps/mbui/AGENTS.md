@@ -41,7 +41,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
   over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
-  `@headless.split`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
+  `@headless.split`; a Markdown table's and 进程's table over `@headless.table`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
   that may or may not be a button (`own_head_node`, `quote_card_node`, `station_choice_node`, `viewer_steps_node`) are
   counted (detlint's `button-by-hand`) so no new hand-rolled button is added. What only still.fail wants of a control
   stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press
@@ -201,9 +201,12 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   of their make (sfpages' `chat_body_shape`, `View::scrolls_window`'s `reused`), so what a row's block holds reads its
   key through `key()` as it is now, never one taken as it was made (a quote's place, what is picked of it, its flash,
   its menu's band, which block of a long message): `chat_body_reuse_wbtest.mbt` sets each row so taken beside one made
-  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a make holds made only as it is made (a
-  message's paths, its agent's card, the chat's thread) is part of the make. detlint's `reused-untracked-key` counts a
-  `make_reused` reading its key untracked as it is made, and that count only falls.
+  for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a part in it keeps of its own (a code block
+  wrapped or copied, how far a table, code or a formula is scrolled across) is its key's by mbui's (`View::reused_bool`,
+  `View::on_reused`, what scrolls in it: `libs/mbui/src/view/reused_state.mbt`), never the part made again for the key.
+  What a make holds made only as it is made (a message's paths, its agent's card, the chat's thread) is part of the make.
+  detlint's `reused-untracked-key` counts a `make_reused` reading its key untracked as it is made, and that count only
+  falls.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
   `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`,
   `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.

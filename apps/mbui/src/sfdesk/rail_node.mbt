@@ -263,14 +263,14 @@ fn rail_key_node(
   parent.box(fn(item) {
     made.val = Some(item)
     @sf.style_node(item, fn() { if square { rail_sq } else { rail_item } })
-    let hover = @sf.EdgeWay::new(0.0)
-    let chosen = @sf.EdgeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
-    let ink = @sf.EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    item.reacts(fn() { @sf.lit_node(item) }, fn(h) { hover.go(item, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hover = @motion.NodeWay::new(0.0)
+    let chosen = @motion.NodeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
+    let ink = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    item.reacts(fn() { @sf.lit_node(item) }, fn(h) { hover.go_ms(item, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
     if lit {
-      item.reacts(on, fn(o) { chosen.go(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+      item.reacts(on, fn(o) { chosen.go_ms(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
     }
-    item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go_ms(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
     item
     .presses(Is(true))
     .focusable(Is(true))

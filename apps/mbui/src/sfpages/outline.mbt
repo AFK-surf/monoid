@@ -1105,7 +1105,7 @@ fn outline_float(
   lift : Double,
 ) -> Unit {
   let p = @sf.theme().p
-  let look = match @motion.presence(c, "chat-outline", shown, enter=float_trans(), exit=float_trans()) {
+  let look = match chat_float_look(c, r, "chat-outline", shown) {
     Some(l) => l
     None => return
   }

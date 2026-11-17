@@ -71,26 +71,7 @@ pub fn appearance(c : @ui.Ctx, src : Source, page_dark : Bool?) -> Unit {
   let prefs = src.topic("prefs", {}).get().value
   // the words' language too, the core's (its `lang`: as chosen, else the device's), I18n.kt's follow
   language_said(src)
-  // motion as this device is set (the prefs' `motion`: reduce, full), else as the system's
-  @ui.set_motion_chosen(match text(prefs, "motion") {
-    "reduce" => Some(true)
-    "full" => Some(false)
-    _ => None
-  })
-  // haptics as this device is set (the prefs' `haptics`: off), else on
-  @ui.set_haptics(text(prefs, "haptics") != "off")
-  // the chat page as chosen here (the prefs' `chatPage`: 试用新对话页)
-  chat_page_from_prefs(prefs)
-  let dark = @settings.dark(prefs, @ui.system_dark())
-  @sf.set_dark(Some(dark))
-  // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange
-  @sf.set_accent(@settings.pref_from(prefs, "accent"))
-  // (the host told once the prefs are read: not the system's first, then the one chosen)
-  if prefs is Some(_) && told_dark.val != Some(dark) {
-    told_dark.val = Some(dark)
-    // (said on the log for scripted runs: e2e/flows checks the theme was taken)
-    @hostapi.log(if dark { "theme: dark" } else { "theme: light" })
-  }
+  let dark = appearance_from_prefs(prefs, @ui.system_dark())
   // the system bars follow the page under them: the player's and a picture's or a video's in the viewer are dark
   // whatever the theme, a reader's as dark as its paper
   let bars = match page_dark {
@@ -113,6 +94,34 @@ let told_bars : Ref[Bool?] = Ref(None)
 
 ///|
 let told_dark : Ref[Bool?] = Ref(None)
+
+///|
+/// What the prefs say of how the app looks and moves (`prefs`, as read), with the system dark or not (`system_dark`):
+/// motion, haptics, the experimental switches, light or dark and the accent, told as the frame (appearance) and the
+/// app's tree tell them, before any page of nodes is made and laid out in what they were before; whether dark.
+pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
+  // motion as this device is set (the prefs' `motion`: reduce, full), else as the system's
+  @ui.set_motion_chosen(match text(prefs, "motion") {
+    "reduce" => Some(true)
+    "full" => Some(false)
+    _ => None
+  })
+  // haptics as this device is set (the prefs' `haptics`: off), else on
+  @ui.set_haptics(text(prefs, "haptics") != "off")
+  // the chat page as chosen here (the prefs' `chatPage`: 试用新对话页)
+  chat_page_from_prefs(prefs)
+  let dark = @settings.dark(prefs, system_dark)
+  @sf.set_dark(Some(dark))
+  // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange
+  @sf.set_accent(@settings.pref_from(prefs, "accent"))
+  // (the host told once the prefs are read: not the system's first, then the one chosen)
+  if prefs is Some(_) && told_dark.val != Some(dark) {
+    told_dark.val = Some(dark)
+    // (said on the log for scripted runs: e2e/flows checks the theme was taken)
+    @hostapi.log(if dark { "theme: dark" } else { "theme: light" })
+  }
+  dark
+}
 
 ///|
 /// What this app last told the core of its attention (`client.focus`): shown, in front, the workspace in view, whether

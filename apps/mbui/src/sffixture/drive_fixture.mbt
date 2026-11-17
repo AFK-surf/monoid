@@ -396,7 +396,7 @@ pub fn fixture_drive_read(name : String, params : Json) -> Result[(Json, Bytes),
   let length = number(p, "length").to_int()
   let end = if offset + length < whole.length() { offset + length } else { whole.length() }
   let part = if offset >= end {
-    Bytes::new(0)
+    Bytes::make(0, b'\x00')
   } else {
     Bytes::makei(end - offset, fn(i) { whole[offset + i] })
   }

@@ -430,3 +430,79 @@ test "a table's cell with a link, as nodes: tapped on its link, where it leads t
   tt.run_for(@ui.move_most_ms)
   assert_eq((before, led), ([], ["https://still.fail"]))
 }
+
+///|
+/// How long after one notch of the wheel the next comes (a list of tables scrolled through): a hand turning it.
+let tn_notch_ms : Double = 100.0
+
+///|
+test "a table's copy key in a list's block taken for another key's table: copied of the one before said of none of it, not shown where the pointer is not, its moment calling nothing off of the one it shows now" {
+  // (a page's list of twenty tables, each its own words and its own block of one make, 150 tall in a window 300 tall:
+  // scrolled far, the block of the first taken for another's)
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=600.0, h=300.0, platform=0)
+  let list = @view.Scroll::list()
+  let blocks : Array[(@view.View, () -> Int)] = []
+  let text_of = fn(i : Int) { "| 模型 | 输入 |\n| --- | --- |\n| 行 \{i} | \{i} |" }
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(o) {
+      o.width(Is(Some(600.0))).height(Is(Some(300.0))) |> ignore
+      o.scrolls_window(
+        list,
+        fn() { Array::makei(20, fn(i) { i }) },
+        est=150.0,
+        fn(_, _) { @halt.saying("every block is of a kind another may take") },
+        reused=fn(_) { Some(0) },
+        make_reused=fn(v, key) {
+          blocks.push((v, key))
+          v.height(Is(Some(150.0))) |> ignore
+          table_node(v, fn() { text_of(key()) }, tree=fn() { Some(tn_tree(row=("行 \{key()}", key().to_string()))) })
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+    @ui.old(root, fn(c) { presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
+  tt.draw()
+  tt.draw()
+  // (the first table's copied as Markdown, its key saying so)
+  tt.move_to(20.0, 15.0)
+  tt.run_for(@ui.move_most_ms)
+  tt.act(Button, Activate, label=t("web-main.prose.copyTable"))
+  tt.run_for(@ui.move_most_ms)
+  tt.act(MenuItem, Activate, label=t("web-main.prose.copyMarkdown"))
+  tt.run_for(@ui.move_most_ms)
+  let copied_first = tt.all(Button, label=t("common.copied")).length()
+  let first = blocks.search_by(fn(b) { (b.1)() == 0 }).map(fn(i) { blocks[i].0 }).unwrap()
+  // (scrolled far down, the pointer at the window's side, past every table and its key, before the check would go)
+  for _ in 0..<4 {
+    tt.wheel(590.0, 150.0, 900.0)
+    tt.run_for(tn_notch_ms)
+  }
+  let key_now = blocks.search_by(fn(b) { physical_equal(b.0, first) }).map(fn(i) { (blocks[i].1)() }).unwrap()
+  // (what of a key is drawn in the block taken for another's: none, at once, no fade of the one before's)
+  let key_drawn = fn() {
+    let (x0, y0, w, h) = first.placed_window_now()
+    @ui.view_tree()
+    .unwrap()
+    .drawn()
+    .filter(fn(d) { d.w == 32.0 && d.h == 32.0 && d.alpha > 0.0 && d.x >= x0 && d.x < x0 + w && d.y >= y0 && d.y < y0 + h })
+    .length()
+  }
+  let taken = (tt.all(Button, label=t("common.copied")).length(), key_drawn())
+  // (past when the first's check would have gone: nothing of it said of the one it shows now)
+  tt.run_for(copied_ms + 100.0)
+  let after = (tt.all(Button, label=t("common.copied")).length(), key_drawn())
+  // (back to the first: its key as any, saying it copied no more)
+  for _ in 0..<4 {
+    tt.wheel(590.0, 150.0, -900.0)
+    tt.run_for(tn_notch_ms)
+  }
+  tt.move_to(20.0, 15.0)
+  tt.run_for(@ui.move_most_ms)
+  let back = (tt.all(Button, label=t("common.copied")).length(), tt.all(Button, label=t("web-main.prose.copyTable")).length())
+  assert_true(first.alive() && key_now != 0, msg="the first's block taken for another's: \{key_now}")
+  assert_eq((copied_first, taken, after, back), (1, (0, 0), (0, 0), (0, 1)))
+}

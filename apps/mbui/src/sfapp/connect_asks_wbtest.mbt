@@ -40,8 +40,14 @@ fn connect_asked(said : Array[String], page : String) -> @ui.Tester {
     said.push(topic + " " + Json::object(Map::from_array(rest)).stringify())
   }
   let src = round_trip_again(connect_candidates_said(fixture("settings")), place_core_soon_ms, heard~)
+  // (the page on top as the run starts, put there in place over Home (nothing sliding), what it asks heard from its first
+  // frame: not pushed past the gate a press goes through, sfbase's open_answered, which this source does not open by)
+  match @settings.route_of(page) {
+    Some(@settings.Route::Home) => app.nav.replace_above(1, [Settings])
+    Some(r) => app.nav.replace_above(1, [Settings, Setting(r)])
+    None => ()
+  }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=4000.0)
-  open_setting(page)
   t.draw()
   t.run_for(@ui.move_most_ms)
   t.run_for(place_core_soon_ms * 4.0)

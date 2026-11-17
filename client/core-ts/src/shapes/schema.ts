@@ -2102,6 +2102,8 @@ export const SHAPES: Record<string, Shape> = {
     ["pair", opt("LockPair"), { doc: "Its try to be approved face to face (or made one that signs), once it began (`lock.pair`)." }],
     ["outText", opt("String"), { said: true, doc: "Its person taken out of an upgraded workspace: by whom and when, and whom to ask to be added again\n(views/lock.ts `outOf`)." }],
     ["needsAppText", opt("String"), { said: true, doc: "A web page left out of an upgraded workspace whose person has no app in it: nobody can approve it there, so\nit says to install an app first, and it is not offered to ask (`waiting` false, no `pair`; views/lock.ts `needsAppIn`)." }],
+    ["stateText", opt("String"), { said: true, doc: "On its person's own lock that lets it in here, without saying this device's signer there (personal-lock.ts\n`signerUnsaid`): why it does not sign yet, ended by `confirmText` (`unsigned` false: no approval helps)." }],
+    ["confirmText", opt("String"), { said: true, doc: "With `stateText`: the button that says this device's signer on its person's own lock (`lock.confirmSigner`),\nasking once." }],
   ], { doc: "This device in the workspace's lock." }),
   LockPending: struct([
     ["id", "String", { doc: "Which one (`lock.pendingDismiss`, `adb.personalPendingDismiss`); in a workspace's `lock`, one of the person's own lock begins `own:`." }],
@@ -2160,7 +2162,7 @@ export const SHAPES: Record<string, Shape> = {
     ["label", "String", { said: true }],
     ["code", "String", { doc: "The code to type on the new device: shown here only, never sent." }],
     ["deviceText", "String", { said: true, doc: "Its name as people know it (LockDevice `fullText`)." }],
-    ["roleText", opt("String"), { doc: "Someone's first device in an upgraded workspace: the role approving lets them in as (批准后以管理员身份加入;\nviews/pair.ts `admitOf`), each workspace's by its name where it asks in several." }],
+    ["roleText", opt("String"), { said: true, doc: "Someone's first device in an upgraded workspace: the role approving lets them in as (批准后以管理员身份加入;\nviews/pair.ts `admitOf`), each workspace's by its name where it asks in several." }],
     ["workspaces", vec("LockPromptWorkspace"), { doc: "Where it asks to be let in and this device approves it." }],
     ["created_at", "i64", { client: "I54", doc: "When it asked." }],
     ["time", opt(map("Stamp")), { doc: "Its times in words (`created_at`)." }],

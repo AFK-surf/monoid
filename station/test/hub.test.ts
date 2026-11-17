@@ -2572,6 +2572,33 @@ test("a deleted profile's sessions go on on another, and stop when no other can 
   await r.close();
 });
 
+test("a deleted profile moves no session nobody is using: it picks another at its next turn, said then", async () => {
+  const r = new Rig();
+  try {
+    const old = say("<@UBOT> long ago");
+    await r.accept(old);
+    await settle();
+    const oldKey = sessionKey("cl", "C1", old.threadTs);
+    await r.call(oldKey, "chat_state", { kind: "all_done", done: "answered" });
+    r.claude.last().complete();
+    await settle();
+    await r.hub.evict(oldKey);
+    await settle();
+    r.edit(withProfile("cc2", "another", ["opus"]));
+    r.edit((raw) => (raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc")));
+    await r.hub.profileGone("cc");
+    await settle();
+    assert.equal(r.session(oldKey).profile, "cc", "left where it was");
+    assert.deepEqual(r.chat.texts().filter((t) => t.startsWith("已切换")), [], r.chat.texts().join("\n"));
+    // Someone writes in it again: it goes on on the other one, and says so there.
+    await r.accept({ ...say("<@UBOT> again"), threadTs: old.threadTs });
+    await settle();
+    assert.equal(r.session(oldKey).profile, "cc2");
+    assert.equal(r.claude.last().options.profile.id, "cc2");
+    assert.equal(r.chat.texts().filter((t) => t.startsWith("已切换账号：")).length, 1, r.chat.texts().join("\n"));
+  } finally { await r.close(); }
+});
+
 test("a disabled profile cannot run a new or pinned session, and its existing session moves", async () => {
   const r = new Rig();
   try {

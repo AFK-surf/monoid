@@ -110,6 +110,11 @@ fn side_change_from(src : Source, r : ChatRef, action : String, tab : String?, n
     _ => false
   }
   side_changing(chat_key(r), tabs, front, any)
+  // a tab opened or brought to the front beside the chat shown while its panel was open already: on the tape, the panel
+  // brought over (none open yet: tape_settle's, once the core says it)
+  if tabs.length() > 0 && (action == "open" || action == "front") {
+    tape_bring_side(r)
+  }
   // a web service's or a visualization's tab closed lets its page go
   match (action, tab) {
     ("close", Some(t)) => tab_let_go(src, r, t)

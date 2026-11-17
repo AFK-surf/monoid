@@ -65,6 +65,10 @@ pub(all) struct Reading {
   mut put_there : Bool
   mut put_place : (Int, Double)?
   mut put : Bool
+  /// the moment it was put in place (-1 not yet): what floats over it (the way to the newest, the bell, the outline's
+  /// button) stands as it is found from the frame after, coming and going from then, never set out by the list coming
+  /// to its place as it opens (floats_settled)
+  mut put_at : Double
   /// the unread line shown: put at once it is (it may come after the chat opened, what came while the app was away
   /// read from the station after it)
   mut lined : Bool
@@ -122,6 +126,10 @@ pub(all) struct Reading {
   /// lingering; let go as each build begins, linger_tick)
   mut shown : Bool
   mut was_shown : Bool
+  /// the moment its list was last shown again after it did not show (this visit's first: floats_settled), and the
+  /// first moment on this visit it was found laid out where it is (floats_laid)
+  mut shown_from : Double
+  mut laid_from : Double
   mut played : Bool
   mut ticked : Bool
   /// the rows new to it, by key, until they show
@@ -249,6 +257,7 @@ pub fn reading_of(key : String) -> Reading {
         put_there: false,
         put_place: None,
         put: false,
+        put_at: -1.0,
         lined: false,
         asked: @signals.signal(-1.0),
         asked_newer: @signals.signal(-1.0, same=fn(a, b) { a == b }),
@@ -277,6 +286,8 @@ pub fn reading_of(key : String) -> Reading {
         acts: {},
         shown: false,
         was_shown: false,
+        shown_from: -1.0,
+        laid_from: -1.0,
         played: false,
         ticked: false,
         fresh: {},
@@ -2286,6 +2297,9 @@ pub fn list_frame(
   let em = emits_of(ek)
   // (shown each frame its list is: built, or kept as its build left it and drawn again, as what a build marks used is
   // marked again: linger_tick plays it on then)
+  if !rd.was_shown && !rd.shown {
+    rd.shown_from = c.moment()
+  }
   rd.shown = true
   @ui.built_used(fn() { rd.shown = true })
   chat_tick(c, ek, rd, v, shown=true, in_front~)
@@ -2426,6 +2440,7 @@ pub fn list_after(
     let mut put_now = false
     if rd.placed && !rd.put && !at_end_asked() {
       rd.put = true
+      rd.put_at = c.moment()
       // where it was left here this run: unless at its end with nothing new since, then at its end
       let newest = match v.messages.last() {
         Some(m) => m.seq
@@ -2732,6 +2747,29 @@ pub fn list_after(
       None => false
     })
   { info, ask_rows, away }
+}
+
+///|
+/// Whether what floats over chat list `rd` (the way to the newest, the bell, the outline's button) is past its opening:
+/// put in place, and shown on this visit, in a frame before this one, so what shows of it is where the reader is, not
+/// where the list stood before it came there nor another chat's. Till then each stands as it is found, coming and going
+/// by nothing, its motion first asked from the frame after, as it is then (sfpages' chat_float_look).
+pub fn floats_settled(c : @ui.Ctx, rd : Reading) -> Bool {
+  rd.put &&
+  rd.put_at < c.moment() &&
+  rd.shown_from < c.moment() &&
+  rd.laid_from >= rd.shown_from &&
+  rd.laid_from < c.moment()
+}
+
+///|
+/// Chat list `rd` found laid out as it is built now (`laid`: what its list said of itself as last laid out, a row in
+/// view): the first such moment of its visit kept (floats_settled), so what floats over it stands as it is found till
+/// the frame after, not set out by the list coming to show where it is (a chat's page shown once its view came).
+pub fn floats_laid(c : @ui.Ctx, rd : Reading, laid : Bool) -> Unit {
+  if laid && rd.laid_from < rd.shown_from {
+    rd.laid_from = c.moment()
+  }
 }
 
 ///|

@@ -2380,6 +2380,8 @@ static void a11y_ask(MBA11yNode *n, NSString *action, NSString *text) {
       @"Combobox" : NSAccessibilityComboBoxRole, @"Toolbar" : NSAccessibilityToolbarRole,
       @"Image" : NSAccessibilityImageRole, @"TextField" : NSAccessibilityTextFieldRole,
       @"ScrollArea" : NSAccessibilityScrollAreaRole,
+      @"Table" : NSAccessibilityTableRole, @"Row" : NSAccessibilityRowRole,
+      @"ColumnHeader" : NSAccessibilityCellRole, @"Cell" : NSAccessibilityCellRole,
     };
   return roles[self.node.role] ?: NSAccessibilityGroupRole;
 }
@@ -2439,6 +2441,27 @@ static void a11y_ask(MBA11yNode *n, NSString *action, NSString *text) {
 }
 - (NSArray *)accessibilityChildren {
   return a11y_elements_of(a11y_shown_kids(self.nid));
+}
+// a table's rows, and a table's or a row's header cells, as AppKit asks a table for them (its kids said so)
+- (NSArray *)a11y_kids_said:(NSString *)role {
+  NSMutableArray *out = [NSMutableArray array];
+  for (NSNumber *k in a11y_shown_kids(self.nid)) {
+    MBA11yNode *kid = a11y_nodes[k];
+    MBA11yElement *e = [kid.role isEqualToString:role] ? a11y_element(k.intValue) : nil;
+    if (e) [out addObject:e];
+  }
+  return out;
+}
+- (NSArray *)accessibilityRows {
+  return [self.node.role isEqualToString:@"Table"] ? [self a11y_kids_said:@"Row"] : nil;
+}
+- (NSArray *)accessibilityColumnHeaderUIElements {
+  NSString *r = self.node.role;
+  if ([r isEqualToString:@"Row"]) return [self a11y_kids_said:@"ColumnHeader"];
+  if (![r isEqualToString:@"Table"]) return nil;
+  NSMutableArray *out = [NSMutableArray array];
+  for (MBA11yElement *row in [self a11y_kids_said:@"Row"]) [out addObjectsFromArray:[row a11y_kids_said:@"ColumnHeader"]];
+  return out;
 }
 // what may be asked of it: what its node takes
 - (BOOL)isAccessibilitySelectorAllowed:(SEL)sel {

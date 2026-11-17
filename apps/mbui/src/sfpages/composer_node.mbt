@@ -135,7 +135,7 @@ fn composer_node(
     // foot corners' composer_round_in)
     let pad_shut = fn() { place().capsule_pad + capsule_extra_at(line()) }
     let shut_h = fn() { dmax(side(), line()) + 2.0 * place().capsule_pad }
-    let shown_open = @sf.EdgeWay::new(if @signals.untracked(open) { 1.0 } else { 0.0 })
+    let shown_open = @motion.NodeWay::new(if @signals.untracked(open) { 1.0 } else { 0.0 })
     cap
     .glass(Is(Some(@sf.glass_floating())))
     .cursor(Is(Some(@view.Cursor::IBeam)))
@@ -179,7 +179,7 @@ fn composer_node(
     |> ignore
     cap.reacts(open, fn(on) {
       // det-ok(motion-length): the field opening past ＋ and send kept off them on this clock, as the old one's
-      shown_open.go(cap, if on { 1.0 } else { 0.0 }, composer_shape_ms, ease=Move)
+      shown_open.go_ms(cap, if on { 1.0 } else { 0.0 }, composer_shape_ms, ease=Move)
     }, at_start=false)
     // (a press on it beside its field: the field's, the focus given it)
     cap.on_press(fn() { if !(spec.locked)() { w.field.focus() } }) |> ignore

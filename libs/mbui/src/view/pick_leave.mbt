@@ -375,10 +375,9 @@ fn[K : Eq] View::pick_leaving(
                 })
               })
               |> ignore
-            } else if goal > from && !in_list {
-              // (to a bigger: what comes seen once the place holds it whole)
-              now.seen_from.set(dmax(waits, st.come_ends))
             }
+            // (to a bigger: what comes is seen from the moment what faded out is gone (waits, said as it was made), its
+            // place, cut to itself, still opening round it: no time between with neither seen)
             rests_nowhere(dmax(st.come_ends, waits))
           })
         }

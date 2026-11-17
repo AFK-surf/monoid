@@ -13,11 +13,12 @@ let rule_names : Array[String] = [
   "click-read", "key-read", "submitted-read", "part-place", "button-by-hand", "layout-told", "abort-unsaid", "empty-on-done", "panic-test", "read-before-run", "reset-by-hand",
   "app-word", "frame-walk", "scoped-computed", "raw-effect", "pick-loop", "each-min-height",
   "each-lookup", "layout-drawn-while", "shader-int", "raw-hover-ground", "width-structure",
-  "reused-untracked-key", "manual-fade-way",
+  "reused-untracked-key", "manual-fade-way", "page-at-moment",
 ]
 
 ///|
 let rule_words : Map[String, String] = {
+  "page-at-moment": "a page asks a moment of its own (View::at_moment) to put its coming and going or a switch of what it shows together by hand: what comes and goes, and one thing in another's place, is a structure's (View::show's `leave`, View::pick's `leave_of`), how it looks on the way @motion.presence's; a page's own timing (what is typed looked for that much later) says why on its line (det-ok). Counted so the ones left only fall",
   "scoped-computed": "a scoped computed made outside the parts said to keep one (@signals.computed_scoped; detlint.json `signals.scoped_ok`): it holds what it reads up whoever reads it (holds_up), so a part put by at rest (View::park) lets go of all it read and works it out whole again as it wakes; what a node works out is a plain @signals.computed(…, same=…), let go of with its last reader and resting with it. Only what is read with no reader at all (active_sub() is None: Scroll's at_foot_now) is scoped",
   "raw-effect": "a bare effect made outside the parts said to keep one (@signals.effect, effect_cleanup; detlint.json `signals.effect_ok`): it does not rest as what made it is put by (View::park), runs as soon as it is made, in the middle of making a view, and is let go of only by whoever keeps its stop: what a node answers is its own binding (By, View::reacts, show, pick, each, owns), what reaches outside a source's managed by the app's base",
   "pick-loop": "a loop that makes nodes as it goes round in what a pick or a show makes (View::pick's make, View::show's then): every node it made is let go and made again whenever what it picks by changes, all at once, none of them a list's row (none left out of sight, none kept); what is made one for each of a collection is a View::each (in what scrolls, View::scrolls_window; a page, page_node), each row by its key. What only comes once (a fixed few, made by the same change as the rest) says why on its line (det-ok)",

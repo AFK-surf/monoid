@@ -1,0 +1,294 @@
+// src/host/apple_text.m's tests, on Core Text itself: a glyph drawn at each of its four quarter-pixel phases (text.mbt
+// glyph_col_sub) has its ink that far right of where it is drawn at none; a line moved across a tenth of a pixel at a
+// time keeps the room between its letters as it was, where whole pixels alone (as glyphs were put before the phases)
+// made it grow and shrink by a pixel; digits of words said to be one width (style.mbt style_tabular) are, in the
+// system's face and in a face given by its file (the first argument, as an app gives Inter: its tnum); and an ellipsis
+// that cuts Latin words in a CJK face (ui's shape_widths: the piece with it shaped narrow, style_proportional) leaves
+// the letters before it as wide as they were.
+//   cc -Wall -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/apple_text_test.m -framework Foundation \
+//     -framework AppKit -framework CoreText -framework CoreGraphics -framework ImageIO -o out/apple_text_test &&
+//     out/apple_text_test [face.ttf]
+#include <stdio.h>
+#import <AppKit/AppKit.h>
+#import "apple_text.m"
+
+// (what apple_text.m asks of the rest of the host: the Mac's system face, as mac_app.m gives it; an atlas and a
+// snapshot it is not asked for here)
+CTFontRef mb_platform_font(double size, int weight, int mono) {
+  NSFontWeight w = weight >= 700 ? NSFontWeightBold
+                   : weight >= 600 ? NSFontWeightSemibold
+                   : weight >= 500 ? NSFontWeightMedium
+                                   : NSFontWeightRegular;
+  NSFont *f = mono ? [NSFont monospacedSystemFontOfSize:size weight:w] : [NSFont systemFontOfSize:size weight:w];
+  return (CTFontRef)CFBridgingRetain(f);
+}
+void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
+  (void)color, (void)x, (void)y, (void)w, (void)h, (void)px;
+}
+int mb_render_snapshot(const char *path) {
+  (void)path;
+  return 0;
+}
+// (a string MoonBit's runtime makes, mb_string_from_ns's: not asked for here, no runtime linked)
+moonbit_string_t moonbit_make_string_raw(int32_t n) {
+  (void)n;
+  return NULL;
+}
+
+static int failed;
+
+#define CHECK(c, ...)                                                   \
+  do {                                                                  \
+    if (!(c)) {                                                         \
+      fprintf(stderr, "%s:%d: failed: %s: ", __FILE__, __LINE__, #c);   \
+      fprintf(stderr, __VA_ARGS__);                                     \
+      fprintf(stderr, "\n");                                            \
+      failed = 1;                                                       \
+    }                                                                   \
+  } while (0)
+
+// `s` shaped as mb_host_shape shapes it: its clusters (start, length, advance, key), how many
+static int shape(NSString *s, double size, int weight, int style, double *out, int cap) {
+  unichar buf[512];
+  NSUInteger n = s.length < 512 ? s.length : 512;
+  [s getCharacters:buf range:NSMakeRange(0, n)];
+  return shape_line((moonbit_string_t)buf, (int32_t)n, size, weight, style, out, cap);
+}
+
+static double width_of(NSString *s, double size, int style) {
+  double out[4 * 128];
+  int k = shape(s, size, 400, style, out, 128);
+  double w = 0;
+  for (int i = 0; i < k; i++) w += out[i * 4 + 2];
+  return w;
+}
+
+// text.mbt glyph_col_sub, the same numbers
+static void col_sub(double tx, double *col, int *sub) {
+  double qf = floor(tx * 4.0 + 0.5);
+  double c = floor((qf + 2.0) * 0.25);
+  int r = (int)(qf - c * 4.0);
+  *col = c;
+  *sub = r == 1 ? 1 : r == -2 ? 2 : r == -1 ? 3 : 0;
+}
+
+// Where the ink of glyph `full_key` drawn at text_scale is across (its cover's centre), in pixels from the column its
+// quad is put on (its own offset's pixels and the centre in its picture); NAN where it draws nothing.
+static double ink_centre(int full_key) {
+  double out[8];
+  mb_host_glyph(full_key, out);
+  MBDrawn *d = held;
+  if (!d || !d.px || d.color) return NAN;
+  double sum = 0, at = 0;
+  for (int y = 0; y < d.ph; y++)
+    for (int x = 0; x < d.pw; x++) {
+      double a = d.px[(size_t)y * d.pw + x];
+      sum += a;
+      at += a * (x + 0.5);
+    }
+  if (sum <= 0) return NAN;
+  return round(out[4] * text_scale) + at / sum;
+}
+
+// The key of the one cluster `c` in the face of `style`.
+static int key_of(NSString *c, double size, int style) {
+  double out[4 * 8];
+  int k = shape(c, size, 400, style, out, 8);
+  return k > 0 ? (int)out[3] : -1;
+}
+
+// Face `face` set in the family installed here named `family` (mb_host_face_add_family's way, from an NSString).
+static int face_family(int face, NSString *family) {
+  NSDictionary *attrs = @{(id)kCTFontFamilyNameAttribute : family};
+  CTFontDescriptorRef base = CTFontDescriptorCreateWithAttributes((__bridge CFDictionaryRef)attrs);
+  CFArrayRef ds = CTFontDescriptorCreateMatchingFontDescriptors(base, NULL);
+  CFRelease(base);
+  if (!ds) return 0;
+  NSMutableArray *descs = [NSMutableArray new];
+  NSMutableArray<NSNumber *> *weights = [NSMutableArray new];
+  for (CFIndex i = 0; i < CFArrayGetCount(ds); i++) {
+    CTFontDescriptorRef d = (CTFontDescriptorRef)CFArrayGetValueAtIndex(ds, i);
+    NSDictionary *traits = (__bridge_transfer NSDictionary *)CTFontDescriptorCopyAttribute(d, kCTFontTraitsAttribute);
+    if ([traits[(id)kCTFontSymbolicTrait] unsignedIntValue] & kCTFontItalicTrait) continue;
+    [descs addObject:(__bridge id)d];
+    [weights addObject:@(css_weight([traits[(id)kCTFontWeightTrait] doubleValue]))];
+  }
+  CFRelease(ds);
+  if (descs.count == 0) return 0;
+  face_descs[face] = descs;
+  face_weights[face] = weights;
+  faces_changed();
+  return 1;
+}
+
+// Face `face` from a font file (mb_host_face_add's way, from a C path): every weight of it (0: a variable file).
+static int face_file(int face, const char *path) {
+  NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+  CFArrayRef ds = CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url);
+  if (!ds || CFArrayGetCount(ds) == 0) {
+    if (ds) CFRelease(ds);
+    return 0;
+  }
+  face_descs[face] = [NSMutableArray arrayWithObject:(__bridge id)CFArrayGetValueAtIndex(ds, 0)];
+  face_weights[face] = [NSMutableArray arrayWithObject:@0];
+  CFRelease(ds);
+  faces_changed();
+  return 1;
+}
+
+static void face_none(int face) {
+  [face_descs[face] removeAllObjects];
+  [face_weights[face] removeAllObjects];
+  faces_changed();
+}
+
+// Digits one width in the face set now (style_tabular, 32), and not without it where `proportional` (the face's own
+// digits are not one width).
+static void tabular(const char *face, BOOL proportional) {
+  NSArray *pairs = @[ @[ @"1111", @"8888" ], @[ @"0:01", @"0:48" ], @[ @"11:11", @"40:08" ] ];
+  for (NSArray *p in pairs) {
+    for (double size = 11; size <= 17; size += 2) {
+      double a = width_of(p[0], size, 32), b = width_of(p[1], size, 32);
+      printf("tnum %s %g: %s %.4f %s %.4f\n", face, size, [p[0] UTF8String], a, [p[1] UTF8String], b);
+      CHECK(fabs(a - b) < 1e-6, "%s at %g: \"%s\" %.4f, \"%s\" %.4f with tabular digits", face, size, [p[0] UTF8String], a,
+            [p[1] UTF8String], b);
+    }
+  }
+  if (proportional) {
+    double a = width_of(@"1111", 15, 0), b = width_of(@"8888", 15, 0);
+    printf("tnum %s off: 1111 %.4f 8888 %.4f\n", face, a, b);
+    CHECK(a < b - 0.5, "%s: \"1111\" %.4f not narrower than \"8888\" %.4f without tabular digits", face, a, b);
+  }
+}
+
+// Each of a few glyphs drawn at each phase: its ink that far right of where it is at phase 0. Core Text's coverage of a
+// thin stem is not its area to the byte (a hairline "l" at 15 moved 0.082 for a half pixel's 0.5): each within a tenth
+// of a pixel, and all of them within three hundredths on average.
+static void phases(void) {
+  NSArray *cs = @[ @"l", @"I", @"H", @"o", @"n", @"1", @"中", @"字" ];
+  double sum = 0, worst = 0;
+  int n = 0;
+  for (NSString *c in cs) {
+    for (double size = 13; size <= 15; size += 2) {
+      int key = key_of(c, size, 0);
+      CHECK(key >= 0, "no key for %s", c.UTF8String);
+      if (key < 0) continue;
+      double c0 = ink_centre(key);
+      for (int s = 1; s < 4; s++) {
+        double cs_ = ink_centre(key | (s << 26));
+        double moved = cs_ - c0, off = fabs(moved - sub_dx(s));
+        printf("phase %s %g sub %d: %+.4f (want %+.2f)\n", c.UTF8String, size, s, moved, sub_dx(s));
+        CHECK(off <= 0.1, "%s at %g, phase %d: ink moved %+.4f px, not %+.2f", c.UTF8String, size, s, moved, sub_dx(s));
+        sum += off;
+        n++;
+        if (off > worst) worst = off;
+      }
+    }
+  }
+  printf("phases: %d off by %.4f px on average, %.4f at most\n", n, sum / n, worst);
+  CHECK(sum / n <= 0.03, "phases off by %.4f px on average", sum / n);
+}
+
+// A line moved right a tenth of a pixel at a time (0.05 pt at 2): how far apart each two letters' ink is on the screen,
+// most less least over the moves, with the phases (now) and with whole pixels alone (before them: each glyph at its
+// pen rounded, drawn at none). Said, and held to a third of before's at most (a quarter were Core Text's coverage the
+// area to the byte: phases).
+static double spread(NSString *line, double size, BOOL phased) {
+  double out[4 * 128];
+  int k = shape(line, size, 400, 0, out, 128);
+  double most = 0;
+  double *lo = calloc(k, sizeof(double)), *hi = calloc(k, sizeof(double));
+  for (int i = 0; i < k; i++) lo[i] = 1e9, hi[i] = -1e9;
+  for (int m = 0; m < 40; m++) {
+    double pen = 10.0 + m * 0.05;
+    double prev = NAN;
+    int prev_i = -1;
+    for (int i = 0; i < k; i++) {
+      int key = (int)out[i * 4 + 3];
+      double x = pen;
+      pen += out[i * 4 + 2];
+      if (key < 0) continue;
+      double tx = x * text_scale, col;
+      int sub;
+      if (phased) {
+        col_sub(tx, &col, &sub);
+      } else {
+        col = round(tx);
+        sub = 0;
+      }
+      double at = col + ink_centre(key | (sub << 26));
+      if (isnan(at)) continue;
+      if (!isnan(prev)) {
+        double gap = at - prev;
+        if (gap < lo[prev_i]) lo[prev_i] = gap;
+        if (gap > hi[prev_i]) hi[prev_i] = gap;
+      }
+      prev = at;
+      prev_i = i;
+    }
+  }
+  for (int i = 0; i < k; i++)
+    if (hi[i] >= lo[i] && hi[i] - lo[i] > most) most = hi[i] - lo[i];
+  free(lo);
+  free(hi);
+  return most;
+}
+
+static void moving(void) {
+  NSArray *lines = @[ @"Rendering text spacing", @"文字渲染 status 11s", @"Tick apps · Chat sidebar" ];
+  for (NSString *l in lines) {
+    double before = spread(l, 13, NO), now = spread(l, 13, YES);
+    printf("moving \"%s\": letters' gaps vary by %.4f px with whole pixels alone, %.4f px with the phases (%.1fx)\n",
+           l.UTF8String, before, now, now > 0 ? before / now : 0);
+    CHECK(now <= 0.32, "\"%s\": gaps vary by %.4f px with the phases", l.UTF8String, now);
+    CHECK(now * 3.0 <= before, "\"%s\": %.4f px with the phases against %.4f px before", l.UTF8String, now, before);
+  }
+}
+
+// The letters of "Hello" in "中文 Hello world" (shaped whole) and in "Hello…" (the piece an ellipsis that cut it is in,
+// shaped narrow: ui's shape_widths), each as wide.
+static void cut_cjk(NSString *family) {
+  if (!face_family(1, family)) {
+    printf("cut %s: not installed here\n", family.UTF8String);
+    return;
+  }
+  for (double size = 13; size <= 15; size += 2) {
+    double whole[4 * 64], piece[4 * 64], cut[4 * 64];
+    int kw = shape(@"中文 Hello world", size, 400, 0, whole, 64);
+    int kp = shape(@"Hello…", size, 400, 64, piece, 64);
+    int kc = shape(@"中文 Hello…", size, 400, 0, cut, 64);
+    CHECK(kw >= 8 && kp >= 6 && kc >= 9, "%s: clusters %d %d %d", family.UTF8String, kw, kp, kc);
+    if (kw < 8 || kp < 6 || kc < 9) continue;
+    double most = 0;
+    for (int i = 0; i < 5; i++) {
+      double a = whole[(3 + i) * 4 + 2], b = piece[i * 4 + 2], c = cut[(3 + i) * 4 + 2];
+      printf("cut %s %g: %c whole %.4f, narrow piece %.4f (%+.4f), cut whole %.4f (%+.4f)\n", family.UTF8String, size,
+             "Hello"[i], a, b, b - a, c, c - a);
+      if (fabs(b - a) > most) most = fabs(b - a);
+    }
+    printf("cut %s %g: ellipsis %.4f in the narrow piece, %.4f whole\n", family.UTF8String, size, piece[5 * 4 + 2],
+           cut[8 * 4 + 2]);
+    CHECK(most < 1e-6, "%s at %g: a letter of \"Hello\" %.4f wider or narrower cut by an ellipsis", family.UTF8String,
+          size, most);
+  }
+  face_none(1);
+}
+
+int main(int argc, char **argv) {
+  @autoreleasepool {
+    text_scale = 2.0;
+    tabular("system", NO);
+    if (argc > 1) {
+      CHECK(face_file(1, argv[1]), "no face in %s", argv[1]);
+      tabular(argv[1], YES);
+      face_none(1);
+    }
+    phases();
+    moving();
+    cut_cjk(@"PingFang SC");
+    cut_cjk(@"Hiragino Sans");
+  }
+  if (failed) return 1;
+  printf("apple_text_test: ok\n");
+  return 0;
+}

@@ -2,7 +2,7 @@
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
 // the endpoint and every connection and loop it started.
 import { closePeerRelays } from "./peer-relays.ts";
-import { Cause, Effect, FiberSet, Layer, Option, Stream } from "effect";
+import { Cause, Effect, FiberSet, Layer, Option, Schedule, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
@@ -255,9 +255,15 @@ export const MeshLive = Layer.effectDiscard(
         closing: STOPPING,
       });
     });
-    yield* Effect.forkScoped(Effect.scoped(run).pipe(Effect.tapCause((cause) => Effect.sync(() => {
-      if (!Cause.hasInterruptsOnly(cause)) log.error("mesh", "mesh stopped", { error: Cause.pretty(cause) });
-    }))));
+    // A failed start (including a synchronous database error) must not leave a live station without its mesh. Close
+    // everything the attempt acquired before binding again, and never retry an interruption from station shutdown.
+    const attempt = Effect.scoped(run).pipe(Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+      log.error("mesh", "mesh stopped; trying again", { error: Cause.pretty(cause) });
+      return Effect.fail(cause);
+    }));
+    const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]); // timer: backoff after a mesh failure
+    yield* Effect.forkScoped(attempt.pipe(Effect.retry(backoff)));
   }),
 );
 

@@ -126,28 +126,24 @@ fn file_link_card(
 
 ///|
 /// A chat's card (chat_peek's) of link `l` to `href`, read in a chat of station `here` (`linked`, the chat as its
-/// message says it): the chat it names asked of the core as the pointer comes onto it, and its whole row (when it was
-/// last active) held from then where the list has it and not whole.
+/// message says it): the chat it names asked of the core as the pointer comes onto it, and its whole row held from
+/// then where it is of this workspace.
 fn chat_link_card(l : @sf.LinkOf, src : Source, here : String, href : String, linked : LinkedChat?) -> @sf.LinkCard {
   peek_cards.val = peek_cards.val + 1
   let scope = "chat-peek-node/" + peek_cards.val.to_string()
   l.node.reacts(l.pointed, at_start=false, fn(on) { if on { chat_named(src, here, href) |> ignore } })
-  // (its whole row's (its station, its session) while the pointer is on it and the list has it, not whole)
+  // (its whole row's (its station, its key) while the pointer is on it, of this workspace)
   l.node.reacts(
     fn() {
       guard (l.pointed)() else { return None }
       match chats_named.get(here + "\u{1}" + href) {
-        Some(Chat(station, key, _, _)) =>
-          match peek_listed(src, here, station, key) {
-            Some(i) if !@sfbase.whole_already(src, i) => Some((i.station, i.session))
-            _ => None
-          }
+        Some(Chat(station, key, _, _)) if peek_ours(here, station) => Some((station, key))
         _ => None
       }
     },
     fn(p) {
       match p {
-        Some((station, session)) => @sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(station, session)) |> ignore
+        Some((station, key)) => @sfbase.hold(src, scope, "chatRow", @sfbase.whole_params(station, key)) |> ignore
         None => ()
       }
     },

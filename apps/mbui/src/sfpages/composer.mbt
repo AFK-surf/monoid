@@ -38,6 +38,9 @@ pub(all) struct ComposerSpec {
 /// cursor put in it), the archived chats being restored and why restoring one failed (by their drafts).
 priv struct Composing {
   let_go : @signals.Signal[Bool]
+  /// whether the cursor was in it since let_go was last set: a box held for a cursor asked that has not come (kept for
+  /// a modal layer over it, or on its way) hides nothing of it that a box it had the cursor in hides
+  mut had_focus : Bool
   /// the moment the box it stayed after the cursor left was last let go of (let_go's end): a change of its own then
   mut let_go_at : Double
   warmed : Map[String, Int]
@@ -103,8 +106,13 @@ priv struct Composing {
   /// whether it is a box or a capsule and how roomy: the moment that last changed, what it was till then and what it is
   /// as built now (composer_opening)
   mut opened : (Double, String, String)
-  /// the cursor asked into it as it is next drawn, on any screen (composer_take_focus)
+  /// the cursor asked into it as it is next drawn, on any screen (composer_take_focus), and whose: the drafts that
+  /// begin so ("" any)
   mut wanted : Bool
+  mut wanted_for : String
+  /// the workspace in view as it was last built: in another, how it was laid out before is another workspace's page's,
+  /// nothing it goes on from
+  mut ws : String
   /// each quote's card's colour as it was last drawn, by quote: where its ground sets out from as it is sent
   /// (flying_quotes)
   grounds : Map[String, Int64]
@@ -118,15 +126,33 @@ priv struct Composing {
 }
 
 ///|
+/// A page come on top that draws no composer (设置, a place, another page of the pane): how the composer was last laid
+/// out is no page's it goes on from as it is built again (a new chat's in the page, gone to 设置 and then to a chat, is
+/// not flown from), laid out where it is at once (sfdesk's page_switch_to), its hint there as it is (no shape it had
+/// before to come back from: composer_hint), and as at rest: the box it kept a moment after the cursor left let go of
+/// (the cursor went with the page; no box held for it on a page with none, to fold to a capsule later on the next).
+pub fn composer_page_left() -> Unit {
+  composing.roomy = None
+  composing.roomy_was = (-1.0, None, None, None)
+  composing.hint_shape = ""
+  composing.let_go.set(false)
+  composing.had_focus = false
+}
+
+///|
 /// The cursor into the composer as it is next drawn, with touch too (its keyboard up): what opened it is for
-/// writing (新建对话: pengxiao, 2026-10-25).
-pub fn composer_take_focus() -> Unit {
+/// writing (新建对话: pengxiao, 2026-10-25). `drafts`: only into one whose draft begins so (a new chat's, "new:"), not
+/// into the one still drawn while the page it was asked for waits to come: that one opened then, to be let go of as the
+/// new one came, was a box set out for nothing.
+pub fn composer_take_focus(drafts? : String = "") -> Unit {
   composing.wanted = true
+  composing.wanted_for = drafts
 }
 
 ///|
 let composing : Composing = {
   let_go: @signals.signal(false, same=fn(a, b) { a == b }),
+  had_focus: false,
   let_go_at: @double.neg_infinity,
   warmed: {},
   typed: false,
@@ -159,6 +185,8 @@ let composing : Composing = {
   hint_shape: "",
   opened: (-1.0, "", ""),
   wanted: false,
+  wanted_for: "",
+  ws: "",
   grounds: {},
   pictures: {},
   shaped: None,
@@ -170,6 +198,7 @@ fn composing_reset() -> Unit {
   composer_foot_way.val = None
   composer_set_off.val = ("", 0.0)
   composing.let_go.set(false)
+  composing.had_focus = false
   composing.let_go_at = @double.neg_infinity
   composing.warmed.clear()
   composing.typed = false
@@ -203,6 +232,8 @@ fn composing_reset() -> Unit {
   composing.hint_shape = ""
   composing.opened = (-1.0, "", "")
   composing.wanted = false
+  composing.wanted_for = ""
+  composing.ws = ""
   composing.hint_shown.set("")
   composing.taking.set(false)
   composing.corners.clear()
@@ -248,12 +279,25 @@ pub fn composer(
   take_in(c, src, spec, w, no_files)
   // switched to another chat (Chat.tsx: its thread another; a new chat's has none, whichever station): the cursor in
   // it with keyboard and mouse (its keyboard at hand), before it is first drawn; not taken from a field in use (the switcher's, a dialog's)
-  let whose = "\u{1}" + spec.session
+  // (whose by its draft, one of its own for each chat and each workspace's new chat: a chat's station and session, a new
+  // chat's workspace; by its session alone, every new chat's was the same and two stations' chats of one key were one)
+  let whose = composer_whose(spec.draft)
   // (switched to another chat or laid out for another page: recorded as it is first built so, with its moment and what
   // it was till then; what each build and frame at that moment starts from, frame_body building it again)
   composing.switching = whose != composing.draft
   if composing.switching {
     composing.draft_was = (c.moment(), composing.draft)
+  }
+  // (in another workspace than it was last built in: no page of its it goes on from, laid out where it is at once; a
+  // new chat left in one is not flown from into a chat of the other)
+  // (built the first time in a run: nothing it was laid out as before, nothing to let go of; the box it holds for a
+  // cursor asked as it is opened is its own)
+  if ws.id != composing.ws {
+    let first = composing.ws == ""
+    composing.ws = ws.id
+    if !first {
+      composer_page_left()
+    }
   }
   if composing.roomy != Some(spec.roomy) {
     composing.roomy_was = (c.moment(), composing.roomy, composing.toolbar, composing.keys_up)
@@ -284,7 +328,7 @@ pub fn composer(
   // asked for (a new chat: composer_take_focus), with touch too, its keyboard up
   // (asked again till it is found held as a frame begins: the page it was asked from let go of as the new one comes,
   // its field's focus with it, nav.mbt forget)
-  if composing.wanted && !spec.locked {
+  if composing.wanted && !spec.locked && spec.draft.has_prefix(composing.wanted_for) {
     if w.field.focused() {
       composing.wanted = false
     } else {
@@ -295,15 +339,23 @@ pub fn composer(
     }
   }
   let focused = w.field.focused()
+  // (the cursor given to it in this build, switched to: its field's focus is told only as the field is built, below, so
+  // `focused` is false in this frame and true in the next; taken as having it already, what it is laid out as then is
+  // what it stays, no capsule this frame to open into a box the next)
+  let taking = composing.taking.get()
+  let active_focus = focused || taking
   // The cache choice takes focus into its menu. Keep an already open composer in place while that menu is open, so
   // the notice and its menu do not move under the pointer. A composer that was a capsule stays one.
   let choosing_cache = composing.cold_open.get() == notice_choice_key(spec.draft, "wait")
-  // a box while it has the cursor; lost, a capsule a moment later (LET_GO_MS)
+  // a box while it has the cursor; lost, a capsule a moment later (LET_GO_MS). Held so only once the cursor has come:
+  // one asked that never came (something put up over it as it was asked, a picture opened from the chat) holds no box
+  // to let go of later, folding then
   if focused {
     composing.let_go.set(true)
+    composing.had_focus = true
   }
-  let lost_long = @kit.after(c, "composer/let-go", !focused && !w.field.parked() && !choosing_cache, let_go_ms)
-  let held = composing.let_go.get() && !focused && !lost_long
+  let lost_long = @kit.after(c, "composer/let-go", !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
+  let held = composing.let_go.get() && !active_focus && !lost_long
   // (the box it stayed a moment after the cursor left, let go of now: a change of its own, at this moment, whatever
   // words sent from it are doing meanwhile)
   if lost_long && composing.let_go.get() {
@@ -313,6 +365,7 @@ pub fn composer(
   let let_go_now = lost_long && composing.let_go_at == c.moment()
   if lost_long {
     composing.let_go.set(false)
+    composing.had_focus = false
   }
   // words just sent from it still in it: laid out as for them, as many lines as they took (composer_held_lines), so it
   // goes on to the shape it was on its way to and nothing in it moves until it comes down; its shape for the field's
@@ -321,7 +374,7 @@ pub fn composer(
   let held_extras = composer_held_extras(c, spec.draft)
   composing.emptied = (spec.draft, w.field.text() == "")
   // (words sent from it still holding it: laid out opened for them too)
-  let multiline = composer_wants_open(w, roomy=spec.roomy, focused~, lingers=held) || held_lines > 0
+  let multiline = composer_wants_open(w, roomy=spec.roomy, focused=active_focus, lingers=held) || held_lines > 0
   // ready as the core says, or as soon as there are words in the field: the core's say comes a moment after them (its
   // topic), and send pressed meanwhile is not lost (what goes is the core's to take: composer.take, nothing taken
   // nothing sent)
@@ -431,7 +484,8 @@ pub fn composer(
     c,
     spec,
     w,
-    focused || held,
+    // (its hint hidden while it has the cursor or holds the box it had it in: not for a cursor only asked)
+    active_focus || (held && composing.had_focus),
     moved,
     laid_anew,
     "\{spec.roomy}|\{multiline}|\{w.files.get().length()}|\{w.quotes.get().length()}|\{w.error.get() != ""}",
@@ -909,7 +963,8 @@ fn composer_text(
 /// with the composer's shape. Gone at once as the field takes the cursor (`hidden`: or keeps the box a moment after),
 /// and while words sent leave the emptied field, still over it (flight.mbt); back over 200 ms
 /// once they are out of it, or, the composer changing `shape` (its box let go to a capsule, a file put in it, `moved`
-/// to another page), once it is there (by `going`, the shape's motion).
+/// to another page), once it is there (by `going`, the shape's motion). Built anew (no shape it had before: a page come
+/// on top, another workspace), there at once.
 fn composer_hint(
   c : @ui.Ctx,
   spec : ComposerSpec,
@@ -926,10 +981,15 @@ fn composer_hint(
   let reshaped = shape != composing.hint_shape &&
     composing.hint_shape != "" &&
     !laid_anew &&
-    ("\u{1}" + spec.session == composing.draft_before || moved)
+    (composer_whose(spec.draft) == composing.draft_before || moved)
+  // (no shape it had before: built anew on a page come on top, or another workspace's, after one with none; its hint
+  // there as it is, not coming back from where the composer last left it)
+  let anew = composing.hint_shape == ""
   composing.hint_shape = shape
   if hidden || @sfbase.flight_hint_away(c, w.key) {
     hint.snap(c, 0.0)
+  } else if anew {
+    hint.snap(c, 1.0)
   } else if reshaped {
     hint.snap(c, 0.0)
     hint.animate(c, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=going.duration(0.0, 1.0, 0.0)))
@@ -2414,8 +2474,14 @@ fn composer_opening(c : @ui.Ctx, head : String) -> Bool {
 }
 
 ///|
+/// Whose a composer is, by its draft (composing.draft).
+fn composer_whose(draft : String) -> String {
+  "\u{1}" + draft
+}
+
+///|
 /// The chat the composer was for before it was switched to the one it is for now, at this moment; else the one it is
-/// for (as last built).
+/// for (as last built): composer_whose.
 fn composer_was(c : @ui.Ctx) -> String {
   let (at, was) = composing.draft_was
   if at == c.moment() {
@@ -2785,7 +2851,7 @@ fn chat_notices(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, width : Do
   let key = r.station + ":" + r.session
   // (built before its composer: whether this chat's composer was drawn before, not switched to at this moment, as the
   // composer has it once it is built, or as it left it)
-  let whose = "\u{1}" + r.session
+  let whose = composer_whose(key)
   composing.notices_new = composer_was(c) == whose
   if v.archived {
     let restore = c.id("composer/restore")
@@ -3328,7 +3394,8 @@ fn composer_foot_told(
   sent : Bool,
 ) -> Unit {
   composing.shaped = Some((holds, shape))
-  if holds != "" && holds != composer_shaped_by.val && !carried && !sent {
+  // (shaped for nothing before, as it was switched to or laid anew: what it is shaped for now is where it is, no set-out)
+  if holds != "" && composer_shaped_by.val != "" && holds != composer_shaped_by.val && !carried && !sent {
     @sfbase.composer_set_out.val = Some((draft, c.moment(), fn() {
       match (@motion.reshape_way(c, "composer/box"), @motion.reshape_share(c, "composer/box")) {
         (Some((start, dur)), Some(share)) => Some((start, dur, share))

@@ -150,9 +150,14 @@ fn full_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
     pg,
     fn() { "landscape" },
     fn() { @sf.t(if u.full.get() { "android-misc.screen.unfull" } else { "android-misc.screen.full" }) },
+    // (lit, out of it; else as 控制中心's 全屏)
     fn(_) {
-      screen_panels_close(u)
-      u.full.set(!u.full.untracked())
+      if u.full.untracked() {
+        screen_panels_close(u)
+        screen_unfull(u)
+      } else {
+        full_asked(u)
+      }
     },
     lit=fn() { u.full.get() },
   )

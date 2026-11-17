@@ -29,7 +29,7 @@
 //   bytes N BASE64                those bytes, when the list is to carry them (Tester::drawlist(bytes=true)): a list a
 //                                 renderer draws by itself, with no files beside it
 //   i N0 … N31                    an instance (scene.mbt: its 32 numbers, 36, 40, 52, 56 or 60), in drawing order, but a glyph's 12 its
-//                                 glyph's N (13 0) and an image's 20 its image's N; 16-19 and 24-27 the rounded
+//                                 glyph's N (13 its phase, 0 to 3) and an image's 20 its image's N; 16-19 and 24-27 the rounded
 //                                 rect it is cut to (its rect, its corners' radii: top left, top right, bottom right,
 //                                 bottom left), 28-31 how smooth those corners are (smooth.mbt)
 
@@ -283,18 +283,24 @@ fn drawlist_of(c : Ctx, bytes? : Bool = false) -> String {
   dl_num(sb, b)
   sb.write_char('\n')
   // the glyphs drawn, by what they are: their atlas places to their keys
-  let key_at = glyph_keys()
+  let key_at = glyph_full_keys()
   let names = glyph_names()
   // each glyph drawn, numbered as first drawn, by its name (one name, one number)
   let glyph_no : Map[String, Int] = Map([])
-  let inst_glyph : Map[Int, Int] = Map([])
+  let inst_glyph : Map[Int, (Int, Int)] = Map([])
   for k in 0..<c.ninst {
     let o = k * inst_size
     let kind = c.inst[o + 5]
     if kind == 1.0 || kind == 3.0 || kind == 7.0 {
-      let name = match key_at.get("\{c.inst[o + 12]} \{c.inst[o + 13]}") {
-        Some(key) =>
-          match names.get(key) {
+      let full_key = key_at.get("\{c.inst[o + 12]} \{c.inst[o + 13]}")
+      // named by its cluster, whatever its phase (one name for the four); the phase rides on the instance
+      let sub = match full_key {
+        Some(key) if key >= 0 => (key >> 26) & 3
+        _ => 0
+      }
+      let name = match full_key {
+        Some(full_key) =>
+          match names.get(if full_key >= 0 { full_key & 0x03FFFFFF } else { full_key }) {
             Some(((size, weight, style), cluster, text)) => {
               let s = StringBuilder()
               dl_num(s, size)
@@ -314,7 +320,7 @@ fn drawlist_of(c : Ctx, bytes? : Bool = false) -> String {
           n
         }
       }
-      inst_glyph[k] = n
+      inst_glyph[k] = (n, sub)
     }
   }
   // each image drawn, numbered as first drawn
@@ -338,8 +344,8 @@ fn drawlist_of(c : Ctx, bytes? : Bool = false) -> String {
     let o = k * inst_size
     for j in 0..<numbers {
       let v = match (j, inst_glyph.get(k)) {
-        (12, Some(n)) => n.to_double()
-        (13, Some(_)) => 0.0
+        (12, Some((n, _))) => n.to_double()
+        (13, Some((_, sub))) => sub.to_double()
         _ =>
           if j == 20 && c.inst[o + 5] == 4.0 {
             image_no.get(c.inst[o + 20].to_int()).unwrap_or(-1).to_double()

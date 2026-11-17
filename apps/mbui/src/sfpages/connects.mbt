@@ -897,11 +897,13 @@ fn cn_waiting_app_node(
 }
 
 ///|
-/// A waiting app's ⋯ (an icon button: 32, its corner 12, the hover's ground under the pointer): pressed, its menu by
-/// it, at its end, of one thing, taking it away (`drop`, asked first).
+/// A waiting app's ⋯ (an icon button 32 across, the hover's ground under the pointer): pressed, its menu by it, at its
+/// end, of one thing, taking it away (`drop`, asked first). Last on its card's first row's first line, its ground
+/// grown into the card's corner, concentric with it (row_corner_key_look: the corner rule's).
 fn cn_more_node(parent : @view.View, drop : () -> Unit) -> Unit {
   parent.box(fn(m) {
     @sf.style_node(m, fn() { cn_more })
+    @sf.row_corner_key_look(m, cn_more_w) |> ignore
     @sf.hover_ground_node(m)
     m.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.connects.removeHere"))) })) |> ignore
     @sf.presses_node(m, fn() {
@@ -1095,7 +1097,10 @@ let cn_actions : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 ///|
 /// ⋯ (an icon button: 32, round).
 // kept across runs: a value (no field of it changes)
-let cn_more : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justify=JCenter hovered{bg=Hover}")
+let cn_more : @ui.Style = @ui.css("align=ACenter justify=JCenter hovered{bg=Hover}")
+
+///|
+let cn_more_w : Double = 32.0
 
 
 ///|

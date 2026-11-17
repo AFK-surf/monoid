@@ -242,7 +242,7 @@ fn style_bound(l : @ui.Len?, name : String, loc : SourceLoc) -> Double? {
 /// as though it had not said it.
 fn style_wrong(loc : SourceLoc, name : String, l : @ui.Len?) -> Unit {
   let said = match l {
-    Some(l) => l.to_string()
+    Some(l) => Show::to_string(l)
     None => "none"
   }
   @view.fault("style_node at \{loc}: \{name}=\{said} is laid on no node")
