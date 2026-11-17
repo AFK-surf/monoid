@@ -3,10 +3,13 @@ package "base/shell"
 
 import {
   "mbui/effect",
+  "moonbitlang/core/debug",
   "moonbitlang/core/json",
 }
 
 // Values
+pub fn claim_tab(String, (TabState) -> Unit) -> TabClaim
+
 pub fn now() -> Int64
 
 pub fn random(Int32) -> Bytes
@@ -40,6 +43,19 @@ pub fn Shell::start(@effect.Runtime, String) -> Self raise ShellError
 pub fn Shell::stood_in(@effect.Runtime, calls~ : (Int64, String, @json.Json, Bytes?) -> Unit, asks~ : (String, @json.Json) -> @json.Json raise ShellError, draws~ : (Int32) -> Bytes) -> Self
 pub fn Shell::tell(Self, String, @json.Json, bytes? : Bytes) -> Unit
 pub fn Shell::turn(Self) -> Int64?
+
+pub struct TabClaim {
+  // private fields
+}
+pub fn TabClaim::release(Self) -> Unit
+pub fn TabClaim::take_over(Self) -> Unit
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TabState {
+  Held
+  Busy
+  Yielded
+}
 
 // Type aliases
 

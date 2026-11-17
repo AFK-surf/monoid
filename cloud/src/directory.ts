@@ -2421,7 +2421,7 @@ export class Directory extends DurableObject<Env> {
   #fixesMarked: string | null = null;
 
   /** A station's reports that are fixed and it has not told of yet, with where it reported each. */
-  fixedUntold(station: string): { id: string; number: number; title: string; channel: "stable" | "beta"; version: number; parts: Part[]; session: string | null; thread: string | null }[] {
+  fixedUntold(station: string): { desktopPlatform: string | null; id: string; number: number; title: string; channel: "stable" | "beta"; version: number; parts: Part[]; session: string | null; thread: string | null }[] {
     return this.#rows("SELECT id, number, title, channel, fixed_in, fixed_parts, context FROM feedback WHERE station = ? AND fixed_in IS NOT NULL AND told_at IS NULL AND status = 'fixed' ORDER BY number", station).map((r) => {
       let context: Record<string, unknown> = {};
       let parts: Part[] = [];
@@ -2436,7 +2436,7 @@ export class Directory extends DurableObject<Env> {
         parts = [];
       }
       const said = (v: unknown) => (typeof v === "string" && v ? v : null);
-      return { id: r.id as string, number: r.number as number, title: r.title as string, channel: r.channel === "beta" ? "beta" : "stable", version: r.fixed_in as number, parts, session: said(context.session), thread: said(context.thread) };
+      return { desktopPlatform: said(context.desktopPlatform), id: r.id as string, number: r.number as number, title: r.title as string, channel: r.channel === "beta" ? "beta" : "stable", version: r.fixed_in as number, parts, session: said(context.session), thread: said(context.thread) };
     });
   }
 

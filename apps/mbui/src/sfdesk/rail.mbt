@@ -73,7 +73,7 @@ fn board_rail_key(ws : String) -> String {
 
 ///|
 /// Where 看板 stands among workspace `ws`'s rail's other places `places` (the core's): as kept (board_rail_key), else
-/// after 对话 (first where 对话 is out); None where it was taken out, or 实验性功能's 对话列表看板视图 is off.
+/// after 对话 (board_rail_default); None where it was taken out, or 实验性功能's 对话列表看板视图 is off.
 fn board_rail_at(src : Source, ws : String, places : Array[String]) -> Int? {
   guard @sfbase.board_feature.get() else { return None }
   match text(field(src.topic("prefs", {}).get().value, "sidebars"), board_rail_key(ws)) {
@@ -87,11 +87,17 @@ fn board_rail_at(src : Source, ws : String, places : Array[String]) -> Int? {
 }
 
 ///|
-/// Where 看板 stands among the rail's other places `places` where nothing else is said: after 对话, else first.
+/// Where 看板 stands among the rail's other places `places` where nothing else is said: after 对话, else after the
+/// first of the chats' lists the rail has (我参与的 in 对话's place: the board is one of the chats' views), else first.
 fn board_rail_default(places : Array[String]) -> Int {
+  let list = fn(p) { p is ("chats" | "mine" | "watching" | "hidden" | "archive") }
   match places.search_by(fn(p) { p == "chats" }) {
     Some(i) => i + 1
-    None => 0
+    None =>
+      match places.search_by(list) {
+        Some(i) => i + 1
+        None => 0
+      }
   }
 }
 

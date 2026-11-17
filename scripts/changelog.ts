@@ -16,7 +16,7 @@
 // into main; `--stable` joins them for the stable channel, and check.sh reads them as CI does. A release is the day
 // before's main commit (version: its commit count) and, when there are any, the serious fixes since, the commits saying
 // `Stable: yes` (the user, 2026-11-09), cherry-picked onto it in a branch (`branch: release/<…>`, `base: <the main
-// commit's count>`; version: the branch's, which a main commit may have too): .github/stable-plan.py.
+// commit's SHA or count>`; version: the branch's, which a main commit may have too): .github/stable-plan.py.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -259,9 +259,12 @@ export function lastBase(root: string): number {
   const newest = (existsSync(dir) ? readdirSync(dir) : [])
     .filter((f) => /^0\.\d+\.\d+\.md$/.test(f))
     .map((f) => readFileSync(join(dir, f), "utf8"))
-    .map((file) => ({ version: readRelease(file).version, base: Number(/^base:\s*(\d+)\s*$/m.exec(/^---\n([\s\S]*?)\n---/.exec(file)?.[1] ?? "")?.[1] ?? 0) }))
+    .map((file) => ({ version: readRelease(file).version, base: /^base:[ \t]*(\S+)[ \t]*$/m.exec(/^---\n([\s\S]*?)\n---/.exec(file)?.[1] ?? "")?.[1] }))
     .sort((a, b) => b.version - a.version)[0];
-  return newest ? newest.base || newest.version : 0;
+  if (!newest?.base) return newest?.version ?? 0;
+  if (/^[0-9a-f]{40}$/i.test(newest.base)) return Number(execFileSync("git", ["rev-list", "--count", newest.base], { cwd: root, encoding: "utf8" }).trim());
+  if (/^\d+$/.test(newest.base)) return Number(newest.base);
+  throw new Error(`Invalid release base: ${newest.base}`);
 }
 
 /** The next release's notes are written from these: the test channel's entries after the last release's base, oldest first (excluding `Changelog-channel: beta`). */

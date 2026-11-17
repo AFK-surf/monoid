@@ -423,6 +423,19 @@ fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
 }
 
 ///|
+/// A ground a page's list draws under its blocks (View::scrolls_window's `bands`), one whole: from the top of block
+/// `from` (`top` further down) to the foot of block `upto` (`foot` further down), its look its page's. What lights a
+/// thing the list holds in several blocks (a long message a block a piece) is drawn once, never a piece of it by each
+/// block: those, each placed on the host's pixels as its top is, meet only where their heights are on them too.
+#derive(Eq)
+pub(all) struct ListBand[K] {
+  from : K
+  upto : K
+  top : Double
+  foot : Double
+}
+
+///|
 /// A page's list (`s`: Scroll::list, what it holds above moved with it as it grows: Scroll::grew_above) scrolling up and
 /// down in it (View::scrolls, `slop` and `bar` as there) holding the
 /// blocks `keys` names, in their order, one under another from its top, nothing else: each made by `make` in a node of
@@ -499,7 +512,10 @@ fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
 /// one way, as what comes and goes does (View::each_by's `splits`; the user, 2026-10-31: 「原地缩下去再从目标点挤出来更合
 /// 理」), so only where it is seen as ever (not at once, nor an answer's, nor with motion reduced, nor as it is first
 /// laid out); else it is simply where it is now (none: every list till it says so). Never what the layout comes to
-/// otherwise (a width, the words' size): a key moved is a change of its keys alone.
+/// otherwise (a width, the words' size): a key moved is a change of its keys alone. `bands`: grounds drawn under its
+/// blocks, each from one block's top to another's foot as they are placed (ListBand), and what makes each one's look
+/// in the node drawing it (its ground, the ways it is lit by, by its band as it is now): what is lit across several
+/// blocks drawn once.
 pub fn[K : Hash + Eq] View::scrolls_window(
   self : View,
   s : Scroll,
@@ -529,6 +545,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   head? : (View) -> Unit,
   foot? : (View) -> Unit,
   foot_clear? : () -> Double = fn() { 0.0 },
+  bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
 ) -> View {
   guard self.live() is Some(_) else { return self }
   // (its head and its foot, once made, and how tall the foot is as its fill last measured it: the room kept under its
@@ -4493,6 +4510,42 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       if head is None {
         held.lies_along(Is(Lies::End)) |> ignore
       }
+    }
+    // (its bands, under all its blocks (drawn first): each one ground from where its first block's top is to where its
+    // last's foot is, as the blocks are placed when it is drawn (Places, read where it is placed: View::shown_by),
+    // nothing laid out for it, nothing of it pressed; placed again as what it says or the column's blocks change)
+    match bands {
+      Some((bs, look)) =>
+        held.each(bs, fn(b) { b.from }, at_once=true, fn(v, b) {
+          v.over(Is(true)).points(Is(false)) |> ignore
+          look(v, fn() { b.get() })
+          v.reacts(
+            fn() {
+              laid.get() |> ignore
+              (b.get(), laid_rev.val)
+            },
+            fn(_) { if v.alive() { self.tree.place_marked_at(v.at) } },
+            at_start=false,
+          )
+          v.shown_by(held, fn(tall) {
+            let band = b.untracked()
+            let all = places(laid.untracked())
+            let n = all.length()
+            match (laid_at.get(band.from), laid_at.get(band.upto)) {
+              (Some(i), Some(j)) if i <= j && j < n => {
+                let g = all.col.grid
+                let on = fn(y : Double) { if g > 0.0 { (y * g + 0.5).floor() / g } else { y } }
+                let top = on(all.top(i) + band.top)
+                let foot = on(all.top(j) + all.h(j) + band.foot)
+                { dx: 0.0, dy: top, dw: 0.0, dh: foot - top - tall, corners: None }
+              }
+              // (one of its blocks not among the keys now: none drawn)
+              _ => { dx: 0.0, dy: 0.0, dw: 0.0, dh: -tall, corners: None }
+            }
+          })
+          |> ignore
+        })
+      None => ()
     }
     // (its head, over its keys' blocks, as tall as what the page builds in it: where its keys start, its fill measuring it)
     match head {

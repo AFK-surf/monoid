@@ -90,6 +90,10 @@ yet and you can add one, add it.
   in a pass that can do it as asked: one that cannot make the rows that show there, or that a way still going under
   it would leave short, keeps the ask for the next pass. Asked back to its foot, the list ends at its foot as the foot
   is when it gets there (`src/view/list_to_end_lands_test.mbt`).
+- What lights a thing a page's list holds in several blocks (a long message a block a piece, gone to or its menu
+  open) is one ground the list draws under them (`View::scrolls_window`'s `bands`), never a piece of it each block's:
+  blocks are set on the host's pixels by their tops, not their heights, so pieces drawn by each part a pixel apart
+  (the user, 2026-11-17: 「一个消息的高亮能分几段」).
 - A page's list (`View::scrolls_window`) is not made in a row of another: its rows are put on the host's grid by the
   list the tree's walk last came to, so the outer's after it would not be; it is a fault, said as the inner is made
   (`Tree::rows_list_nested_said`).
