@@ -103,7 +103,7 @@ pub fn choice_row_node(
         } else if part.list {
           list_row_corner(r)
         } else {
-          @ui.tree_theme().corner(Xl2)
+          @signals.untracked(fn() { @ui.tree_theme().corner(Xl2) })
         }
         r
         .row(Is(true))

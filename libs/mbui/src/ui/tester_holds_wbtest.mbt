@@ -266,3 +266,80 @@ test "HoldGate Tester: explicit feedback acknowledges one round unless set on th
     }
   }
 }
+///|
+test "Tester records box reads and resets diagnostics between runs" {
+  let snapshot = @signals.signal(1)
+  let made = hold_test_loc()
+  let t = hold_test_window(fn(v) {
+    v.box(loc=made, fn(_) { snapshot.get() |> ignore }) |> ignore
+  })
+  let faults = t.untracked_read_faults()
+  assert_eq(faults.length(), 1)
+  assert_true(faults[0].has_prefix("[STRICT_READ_UNTRACKED]"), msg=faults[0])
+  assert_true(faults[0].contains(@view.source_place(made)), msg=faults[0])
+  let tree = view_tree().unwrap()
+  let next = hold_test_window(fn(_) {  })
+  assert_eq(next.untracked_read_faults(), [])
+  assert_eq(tree.untracked_read_faults(), [])
+  assert_false(@view.untracked_read_marks_left())
+}
+
+///|
+test "Tester detects list and selection broadcasts while keyed rows stay below the threshold" {
+  for keyed in [false, true] {
+    let items = @signals.signal([(0, "a"), (1, "b"), (2, "c"), (3, "d")])
+    let selection = @signals.signal(Some(0))
+    let t = hold_test_window(fn(v) {
+      let item = if keyed {
+        let rows = v.keyed_by(fn() { items.get() }, fn(row) { row.0 })
+        fn(i) { rows.get(i).unwrap().1 }
+      } else {
+        fn(i) { items.get()[i].1 }
+      }
+      let selected = if keyed {
+        v.selected(fn() { selection.get() })
+      } else {
+        fn(i) { selection.get() == Some(i) }
+      }
+      for i in 0..<4 {
+        v.box(fn(row) {
+          row.words(By(fn() { item(i) })) |> ignore
+          row.box(fn(mark) {
+            mark.words(By(fn() { if selected(i) { "Selected \{i}" } else { "" } })) |> ignore
+          }) |> ignore
+        }) |> ignore
+      }
+    })
+    let list_write = hold_test_loc()
+    let selection_write = hold_test_loc()
+    t.set_fanout_limit(4)
+    items.set([(0, "a"), (1, "b"), (2, "changed"), (3, "d")], loc=list_write)
+    selection.set(Some(2), loc=selection_write)
+    let faults = t.fanout_faults()
+    t.set_fanout_limit(0)
+    assert_eq(t.fanout_faults(), [])
+    t.draw()
+    assert_true(t.find("changed") is Some(_))
+    assert_true(t.find("Selected 2") is Some(_))
+    assert_true(t.find("Selected 0") is None)
+    if keyed {
+      assert_eq(faults, [])
+    } else {
+      assert_eq(faults.length(), 2, msg="\{Repr(faults)}")
+      for i, loc in [list_write, selection_write] {
+        let fault = faults[i]
+        assert_true(
+          fault.has_prefix("[FAN_OUT] Signal write at \{@view.source_place(loc)} notified 4 subscribers (>= 4). Fix:"),
+          msg=fault,
+        )
+      }
+    }
+    t.set_fanout_limit(1)
+    items.set([(0, "a"), (1, "b"), (2, "c"), (3, "d")])
+    assert_false(t.fanout_faults().is_empty())
+    let next = hold_test_window(fn(_) {  })
+    assert_eq(next.fanout_faults(), [])
+    assert_eq(@signals.fanout_limit.val, 0)
+    assert_true(@signals.on_fanout.val is None)
+  }
+}

@@ -266,6 +266,8 @@ fn reset_globals() -> Unit {
   reset_drawing()
   let left = leaked_state()
   @view.hold_reset()
+  @view.untracked_read_reset()
+  tester_fanout_reset()
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -306,6 +308,7 @@ fn leaked_state() -> Array[String] {
   check("inst_owners", inst_owners.owner.length())
   check("answering", if @view.answer_marks_left() { 1 } else { 0 })
   check("hold collection", if @view.hold_marks_left() { 1 } else { 0 })
+  check("untracked read making", if @view.untracked_read_marks_left() { 1 } else { 0 })
   out
 }
 

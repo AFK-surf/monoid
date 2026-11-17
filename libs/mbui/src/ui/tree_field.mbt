@@ -179,7 +179,11 @@ pub fn field(
         })
       None => ()
     }
-    st.enter_sends = enter_sends.unwrap_or(enter_sends_by(@signals.untracked(most), ime_action))
+    match enter_sends {
+      Some(sends) => st.enter_sends = sends
+      None if ime_action != 0 || (max_lines_by is None && max_lines <= 1) => st.enter_sends = true
+      None => f.reacts(fn() { enter_sends_by(most(), ime_action) }, fn(sends) { st.enter_sends = sends })
+    }
     st.command_sends = command_sends
     st.leaves = leaves
     st.ime_action = ime_action
@@ -228,7 +232,7 @@ pub fn field(
     // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger (Ctx::editor's
     // scroll_state), how far the layout's (Ctx::lay_out_field))
     if max_lines_by is Some(_) || max_lines > 1 {
-      let sw = g().scroll_state(tree_said_id(id), true)
+      let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
       sw.field = true
     }
     f

@@ -103,11 +103,10 @@ pub fn hold_button_node(
     }))
     .alpha(By(fn() { seen.shown(v) }))
     |> ignore
-    let look = fn() -> @view.WordsLook {
-      { size: theme().t.ui, weight: if theme().touch { 600 } else { 500 }, line: theme().t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-    }
+    let th = @signals.untracked(theme)
+    let look : @view.WordsLook = { size: th.t.ui, weight: if th.touch { 600 } else { 500 }, line: th.t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
-    let said = v.box(fn(w) { w.words(By(words), look=look()).ink(By(words_ink)) |> ignore })
+    let said = v.box(fn(w) { w.words(By(words), look~).ink(By(words_ink)) |> ignore })
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     // (the fill: over all of it, slid in from its start as far as the hold has come, what it holds slid back as far so it
     // stays where it is laid out: its edge the fill's, the words under it in the ground's ink; by its own width at the
@@ -128,7 +127,7 @@ pub fn hold_button_node(
         .moved_by(fn(w, _h, at) { (w * (1.0 - dmin(1.0, dmax(0.0, hold.at(at)))), 0.0) }, fn(_w, _h) { hold.end() })
         |> ignore
         inner.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
-        inner.box(fn(w) { w.words(By(label), look=look()).ink(By(ink_on_fill)) |> ignore }) |> ignore
+        inner.box(fn(w) { w.words(By(label), look~).ink(By(ink_on_fill)) |> ignore }) |> ignore
         inner.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       })
       |> ignore

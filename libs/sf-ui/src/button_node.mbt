@@ -270,8 +270,9 @@ fn button_by(
       |> ignore
     }
     let words = v.box(fn(w) {
+      let th = @signals.untracked(theme)
       w
-      .words(By(label), look={ size: theme().t.ui, weight: if theme().touch { 600 } else { 500 }, line: theme().t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 })
+      .words(By(label), look={ size: th.t.ui, weight: if th.touch { 600 } else { 500 }, line: th.t.ui_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 })
       .ink(By(fn() { looks().2 }))
       |> ignore
     })

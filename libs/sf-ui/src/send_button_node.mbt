@@ -34,7 +34,7 @@ pub fn send_button_node(
       on_cancel=fn() { if tip.val is Some(h) { (h.cancel)() } },
     ),
     fn(v, b) {
-      let side = theme().round.side
+      let side = @signals.untracked(fn() { theme().round.side })
       // (able: whether it can go; lit: the hand on it while it can; each eased as a control answers, from its change)
       let able = @motion.NodeWay::new(if @signals.untracked(ready) { 1.0 } else { 0.0 })
       v.reacts(ready, fn(on) { able.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })

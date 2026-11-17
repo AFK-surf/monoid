@@ -220,11 +220,15 @@ pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.Text
   .words_look(By(fn() { @ui.style_words(style()) }))
   .ink(By(fn() { @ui.style_ink(style()) }))
   |> ignore
-  let said = @signals.untracked(style)
-  if @ui.style_cut(said) {
+  let (cut, ellipsis) = @signals.untracked(fn() {
+    let said = style()
+    let cut = @ui.style_cut(said)
+    (cut, !cut && @ui.style_fills(said) && !@ui.style_words(said).wrap)
+  })
+  if cut {
     // (cut short where their line has not the room across: given way along a row, never squeezed down, View::cuts)
     w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-  } else if @ui.style_fills(said) && !@ui.style_words(said).wrap {
+  } else if ellipsis {
     // (its say alone, not how it is laid out: how wide it is is what holds it lays out, as it was)
     w.allow_ellipsis(Is(true)) |> ignore
   }

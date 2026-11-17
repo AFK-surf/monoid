@@ -144,7 +144,7 @@ pub fn composer_notice_node(
         Some(d) =>
           line.box(fn(at) {
             on_head(at)
-            icon_button_node(at, "close", d.name, d.press, tips~, size=side(), icon_size=notice_mark, disabled=d.off) |> ignore
+            icon_button_node(at, "close", d.name, d.press, tips~, size=@signals.untracked(side), icon_size=notice_mark, disabled=d.off) |> ignore
           })
           |> ignore
         None => ()

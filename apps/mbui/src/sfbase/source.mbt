@@ -215,12 +215,15 @@ fn Source::topic_said(
   said : String,
 ) -> @signals.Computed[TopicState] {
   // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
-  if @sf.open_gate_collecting() && (src.gates_opens)() {
-    let sig = topic_read_by(src, name, params, said)
+  let legacy_collecting = @sf.open_gate_collecting() && (src.gates_opens)()
+  let sig = topic_read_by(src, name, params, said)
+  if legacy_collecting {
     @sf.open_gate_note(fn() { topic_told(sig.get()) })
-    return sig
   }
-  topic_read_by(src, name, params, said)
+  if @view.hold_collecting() {
+    @view.hold_note(fn() { topic_told(sig.get()) })
+  }
+  sig
 }
 
 ///|

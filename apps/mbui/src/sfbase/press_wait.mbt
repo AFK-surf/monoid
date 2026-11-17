@@ -42,8 +42,8 @@ fn PressWait::still(self : PressWait) -> Bool {
 /// as it was; once that is no longer so (the page left, the workspace switched, something else put up), it waits no
 /// more, does nothing and lets go of what it asked (`let_go`). Made in a press's handler (a system bar's choice is told
 /// once the frame's builds are over: sfdesk rail_native.mbt) or before any frame (a fixture's ask), never as a view
-/// builds, since `go` may run at once (a build asks through Ctx::after_build, as model_triple.mbt's does); what waits
-/// is owned by nothing and read outside what reads now. `most`: it waits that long at most (a moment of the window's
+/// builds, since `go` may run at once (a build asks through Ctx::after_build, as model_triple.mbt's does). A wait
+/// outlives the pressed node and keeps its own read. `most`: it waits that long at most (a moment of the window's
 /// tree's timeline from now), then does `go` as it is, while what it was pressed in stays as it was: what opens where
 /// a card or a panel waits for what it reads of the device (@sf.open_hold_ms), never held longer than they are.
 /// `holds`: pressed as a menu's item, that menu held open as it was while it waits (@sf.choice_held), what it opens
@@ -73,6 +73,35 @@ pub fn press_wait(
   }
   // (pressed as a menu's item: the menu held open as it was while it waits)
   w.held = if holds { @sf.choice_held() } else { None }
+  if (most, @ui.view_tree()) is (Some(ms), Some(tree)) {
+    let gate = @view.HoldGate::new(acknowledged=w.held is Some(_))
+    let answered = Ref(false)
+    w.stop = Some(fn() { gate.stop(give_up=false) })
+    gate.open_when(
+      tree.root(),
+      most=ms,
+      fn() {
+        answered.val = ready()
+        answered.val
+      },
+      while_still=fn() {
+        // The deadline checks only whether the press still holds, without reading readiness again.
+        answered.val = false
+        w.waiting && w.still()
+      },
+      on_give_up=fn() { w.give_up() },
+      fn() {
+        guard w.waiting else { return }
+        if answered.val {
+          w.answered()
+        } else {
+          w.end()
+          go()
+        }
+      },
+    )
+    return w
+  }
   let owner = @signals.set_owner(None)
   let stop = @signals.untracked(fn() {
     @signals.effect(fn() {
@@ -87,26 +116,7 @@ pub fn press_wait(
   })
   @signals.set_owner(owner) |> ignore
   if w.waiting {
-    // (`most` gone by, still waiting: done as it is, where what it was pressed in stays as it was)
-    let cap = match (most, @ui.view_tree()) {
-      (Some(ms), Some(tree)) => {
-        let root = tree.root()
-        root.at_moment(root.cause_at() + ms, fn() {
-          guard w.waiting else { return }
-          if @signals.untracked(fn() { w.still() }) {
-            w.end()
-            go()
-          } else {
-            w.give_up()
-          }
-        })
-      }
-      _ => fn() {  }
-    }
-    w.stop = Some(fn() {
-      cap()
-      stop()
-    })
+    w.stop = Some(stop)
   } else {
     stop()
   }
@@ -175,6 +185,8 @@ pub fn PressWait::end(self : PressWait) -> Unit {
 /// It waits no more and lets go of what it asked (what it was pressed in is gone, or what holds it is): nothing opens.
 pub fn PressWait::give_up(self : PressWait) -> Unit {
   guard self.waiting else { return }
+  // Closing the held menu can tell the signal graph before end stops the wait.
+  self.waiting = false
   // (the menu it held closed unsaid: nothing comes in its place)
   match self.held {
     Some(h) => h.close(chosen=false)

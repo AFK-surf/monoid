@@ -1406,7 +1406,8 @@ pub fn code_block_node(
       }, Is(code_key_h / 2.0), Button, fn() { md_copy_words(copied.get()) })
       icon_node(k, "copy", 12.0, By(fn() { web().muted }), name_now=fn() { if copied.get() { "check" } else { "copy" } }) |> ignore
       k.box(fn(n) {
-        n.words(By(fn() { md_copy_words(copied.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
+        let look = @signals.untracked(fn() { md_plain_look(theme().t.caption, 0.0) })
+        n.words(By(fn() { md_copy_words(copied.get()) }), look~).ink(By(fn() { web().muted })) |> ignore
       })
       |> ignore
     })
@@ -1449,7 +1450,8 @@ pub fn code_block_node(
       // (floating over the code: on a capsule of its own as the keys are, so the code under it does not show through)
       let size = if over { code_lang_wide } else { 10.0 }
       l.box(fn(n) {
-        n.words(By(fn() { if lang() == "" { "text" } else { lang() } }), look=md_plain_look(size, 0.0)).ink(By(fn() { web().subtle })) |> ignore
+        let look = @signals.untracked(fn() { md_plain_look(size, 0.0) })
+        n.words(By(fn() { if lang() == "" { "text" } else { lang() } }), look~).ink(By(fn() { web().subtle })) |> ignore
       })
       |> ignore
     })
@@ -1468,7 +1470,8 @@ pub fn code_block_node(
         md_wrap_words(wrapped.get())
       })
       k.box(fn(n) {
-        n.words(By(fn() { md_wrap_words(wrapped.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
+        let look = @signals.untracked(fn() { md_plain_look(theme().t.caption, 0.0) })
+        n.words(By(fn() { md_wrap_words(wrapped.get()) }), look~).ink(By(fn() { web().muted })) |> ignore
       })
       |> ignore
     })

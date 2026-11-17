@@ -39,7 +39,7 @@ fn reveal_pair(on : @signals.Signal[Bool], node : Bool) -> @ui.Tester {
         b.width(Is(Some(300.0))) |> ignore
         @motion.reveal_node(b, fn() { on.get() }, fn(h) {
           // (as the old one's words are set: the meta's size and its own line)
-          let (size, line) = @ui.tree_theme().text_size(Meta)
+          let (size, line) = @signals.untracked(fn() { @ui.tree_theme().text_size(Meta) })
           h
           .words(Is(reveal_words), look={ size, weight: 400, line, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 })
           .ink(By(fn() { @ui.tree_theme().color(Muted) }))
@@ -102,7 +102,7 @@ fn node_room(
       b.width(By(fn() { Some(width.get()) })) |> ignore
       room_at.val = Some(
         @motion.reveal_node(b, fn() { on.get() }, fn(h) {
-          let (size, line) = @ui.tree_theme().text_size(Meta)
+          let (size, line) = @signals.untracked(fn() { @ui.tree_theme().text_size(Meta) })
           h.box(fn(w) {
             w.words(By(fn() { words.get() }), look={ size, weight: 400, line, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }).words_centered(Is(true)) |> ignore
           })

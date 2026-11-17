@@ -2220,7 +2220,14 @@ fn View::owning(self : View, f : () -> Unit) -> Unit {
   guard self.live() is Some(n) else { return }
   let was = @signals.set_active_sub(None)
   let was_owner = @signals.set_owner(n.owner)
-  f()
+  let making = making_box.val
+  if making is Some(_) {
+    making_box.val = None
+    f()
+    making_box.val = making
+  } else {
+    f()
+  }
   @signals.set_active_sub(was) |> ignore
   @signals.set_owner(was_owner) |> ignore
 }
@@ -2682,7 +2689,12 @@ pub fn View::box(
     self.tree.top_last()
   }
   self.box_appended(v.at)
-  v.owning(fn() { make(v) })
+  // A structure runs its slot maker through box as a structural callback.
+  if self.tree.sources && !n.slot {
+    v.owning(fn() { v.make_with_read_diagnostics(make) })
+  } else {
+    v.owning(fn() { make(v) })
+  }
   v
 }
 

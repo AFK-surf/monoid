@@ -2779,9 +2779,12 @@ fn step_node(v : @view.View, src : Source, station : String, key : String, rk : 
   let step_said = if raw_said != "" { raw_said } else { fallback_said }
   let step_hint = if raw_hint != "" { raw_hint } else { fallback_hint }
   let render_summary = fn(sum : @view.View) {
-    let label = step_label(text(step, "name"))
-    let show_secondary_hint = label == "读取" || label == "编辑" || label == "新建" || label == "搜索"
-    steps_words(sum, fn() { label }, if failed { h_step_name_red } else { h_step_name })
+    let label = fn() { step_label(text(step, "name")) }
+    let show_secondary_hint = match @signals.untracked(label) {
+      "读取" | "编辑" | "新建" | "搜索" => true
+      _ => false
+    }
+    steps_words(sum, label, if failed { h_step_name_red } else { h_step_name })
     steps_box_node(sum, h_grow_clip, fn(c) {
       match (step_said, step_hint) {
         ("", hint) => steps_run(c, fn() { hint }, h_step_hint_line, mono=true)
