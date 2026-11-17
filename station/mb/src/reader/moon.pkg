@@ -60,6 +60,7 @@ import {
   "station/cursor",
   "station/acp",
   "station/pi",
+  "station/comma",
   "station/api_routes",
   "station/pieces",
   "station/jobs_host",

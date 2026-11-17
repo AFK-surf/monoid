@@ -1112,6 +1112,8 @@ fn main {
           }
         })
       })
+    (Some("harness-comma"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @comma.harness(host))
     (Some("recent-chat"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => {
         let preparation : Ref[@recent.Preparation?] = Ref(None)
