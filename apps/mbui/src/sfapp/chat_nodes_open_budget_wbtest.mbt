@@ -73,7 +73,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "phone cold": (1015, 29, 673, 79, 941),
   "phone again": (326, 17, 239, 27, 319),
   "wide cold": (2443, 483, 2011, 217, 2447),
-  "wide again": (882, 130, 881, 123, 1050),
+  // (5 made, 4 laid, 1 measured and 9 bindings more in 大屏's again, 2026-11-17: the agent at work's 停止 chip before
+  // 只看收发 in its history's head beside the chat; before it 881, 878, 122, 1048)
+  "wide again": (886, 130, 882, 123, 1057),
   "phone up": (564, 366, 617, 96, 0),
   "wide up": (721, 382, 911, 125, 0),
   "phone up frame": (140, 102, 125, 28, 0),

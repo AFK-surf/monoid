@@ -26,7 +26,7 @@ export { RelayLoad } from "./relay-load";
 export { ServiceStatus } from "./status";
 export { Station } from "./station";
 import { sampleOwnRelay } from "./relay-load";
-import { checkServices } from "./status";
+import { checkServices, stageNative } from "./status";
 import { checkModels } from "./models";
 import { PROBE_EVERY_MIN, probeRelays } from "./probes";
 import { relayUrls } from "./relays";
@@ -127,6 +127,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   const onPublic = publicOrigins(env).includes(url.origin);
   const onBeta = url.origin === betaOrigin(env);
+  if (onPublic && !env.RELEASES_UPSTREAM && path.startsWith("/releases/ci-natives")) {
+    if (path === "/releases/ci-natives" && request.method === "PUT") return stageNative(request, env);
+    const receipt = /^\/releases\/ci-natives\/(\d{10}-[0-9a-f]{40}\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(path);
+    if (receipt && request.method === "GET") return serveRelease(request, env.RELEASES, `staged/ci-natives/${receipt[1]}`, "application/octet-stream");
+    return notFound();
+  }
   // Installing a station: the installer, and the releases it gets; the apps' builds, for their updaters. The installer
   // gets the test channel's release with ?channel=beta (or STILLFAIL_CHANNEL=beta where it runs), and by default when
   // fetched from the test channel's host; either way the station joins PUBLIC_ORIGIN.

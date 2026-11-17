@@ -119,6 +119,11 @@ test("staged files after two days; the web archives as before", () => {
   assert.deepEqual(doomed, [`staged/${NOW - 3 * 86400}-abc/x.tar.gz`, "desktop/web/stillfail-beta-web-0.1.3.tar.gz", "desktop/web/stillfail-beta-web-0.1.2.tar.gz", "desktop/web/stillfail-beta-web-0.1.1.tar.gz"].sort((x, y) => keys.indexOf(x) - keys.indexOf(y)));
 });
 
+test("native CI chunks expire with their seven-day receipts", () => {
+  const keys = [6, 8].map((days) => `staged/ci-natives/${NOW - days * 86400}-abc/chunk`);
+  assert.deepEqual(doomedOf(keys, {}, null, NOW), [keys[1]]);
+});
+
 test("an Android release's symbols: older than 30 days by when the bucket says they were put go, nothing else by it", () => {
   const sym = (n: number) => `symbols/android/stillfail-beta-${n}.syms.xz`;
   const apk = (n: number) => `android/stillfail-beta-${n}.apk`;
