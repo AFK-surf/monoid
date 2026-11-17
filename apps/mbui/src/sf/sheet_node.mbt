@@ -164,6 +164,16 @@ let sheet_title_room : @ui.Style = @ui.css("w=Full align=AStart")
 let sheet_capped_at : @ui.Style = @ui.style(w=Full, pb=room(sheet_panel_foot))
 
 ///|
+/// A sheet's column flush with its sides (PanelNodes' `flush`) opened by a press: sheet_held's room under it alone.
+// kept across runs: a value (no field of it changes)
+let sheet_flush_held : @ui.Style = @ui.css("w=Full pb=S6")
+
+///|
+/// A sheet's column flush with its sides opened by nothing: sheet_panel's room under it and between its parts alone.
+// kept across runs: a value (no field of it changes)
+let sheet_flush_panel : @ui.Style = @ui.css("w=Full gap=S2_5").then(@ui.style(pb=room(sheet_panel_foot)))
+
+///|
 /// An old panel's foot in a sheet's page (`f`, given `close`): its buttons across it, each its share, under its rule
 /// where it is `ruled` (sheet_step's).
 fn sheet_old_foot(c : @ui.Ctx, ruled : Bool, f : (@ui.Ctx, () -> Unit) -> Unit, close : () -> Unit) -> Unit {
@@ -195,7 +205,8 @@ fn sheet_old_foot(c : @ui.Ctx, ruled : Bool, f : (@ui.Ctx, () -> Unit) -> Unit, 
 /// scrim whole as that one's was, on a Move to its own height from there, not from below (@kit.sheet's `in_place`).
 /// `step_back`: a step further in from a panel (the presenters' `under`): what its back key before its title, the system's
 /// back and Escape do in `cancel`'s place. `stands_by`: given what says how tall it stands over the window's foot (where
-/// it was last placed), asked as it closes: where what comes in its place starts. `taken`: whether, closed, another
+/// it was last placed), asked as it closes: where what comes in its place starts. `rises`: told how tall it is laid out
+/// as it begins to rise (a sheet under it pushed up out of its way so far: covered_by's for that one). `taken`: whether, closed, another
 /// sheet is presented in its place: it is drawn no more then, that one there, its scrim that one's. `dims`: whether its
 /// scrim dims what is under it, as it is now (presenters' scrim_owner: one scrim however many sheets are over one
 /// another, whichever draws each).
@@ -208,6 +219,7 @@ fn sheet_node(
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
   covered_by? : () -> Double? = fn() { None },
+  rises? : (Double) -> Unit = fn(_) {  },
   in_place? : Double,
   step_back? : () -> Unit,
   page_back? : () -> Bool = fn() { false },
@@ -516,6 +528,8 @@ fn sheet_node(
           let_go_speed.val = None
         } else {
           let rise = fn() {
+            // (how tall it rises, for a sheet under it to step back out of its way: covered_by's there)
+            rises(own_now())
             dim.go(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
             below.go(sheet_box, layer, 0.0, reach.untracked(), late=@signals.untracked(fn() { top().nodes is None }))
           }
@@ -633,8 +647,31 @@ fn sheet_node(
         step_placed.val = true
         placed.set(Some((stood, at, dur, stood_at_v)))
       })
+      // (where it stands as what is drawn is drawn, as tall as it was laid out when last drawn, for what is lifted over
+      // the scrim to keep clear of: tree_sheet_place, asked as the scrim is drawn, before the sheet; not where another
+      // is in its place)
+      let place = fn() -> (Double, Double)? {
+        let (_, own, _) = drawn.val
+        guard own > 0.0 && !vanished() else { return None }
+        let t = layer.drawn_at()
+        let off = match placed.untracked() {
+          Some((stood, at, least, v)) => placed_path(own, stood, v, t - at, least).0
+          None => 0.0
+        }
+        Some((layer.window().1 - own + below.shown(own, t) + off, own))
+      }
+      tree_sheet_place.val = Some(place)
+      layer.owns(fn() {
+        if tree_sheet_place.val is Some(f) && physical_equal(f, place) {
+          tree_sheet_place.val = None
+        }
+      })
+      |> ignore
       layer
       .over(Is(true))
+      // (its ground its scrim: what is lifted over the scrim (a row held for its menu: lift_node) drawn over it, under
+      // the sheet)
+      .scrim_under()
       .margin(By(fn() { (0.0, 0.0, 0.0, -ime_under()) }))
       // (modal while open: closing, what is under it its own again as it begins to go)
       .modal(By(live))
@@ -717,6 +754,8 @@ fn sheet_node(
         // (another in its place: none of it drawn from then, where it is, till its layer is let go; none of it drawn
         // either while it waits under the window for what it reads (OpenGate's holding): nothing of it till it rises)
         .alpha(By(fn() { if vanished() || gate.holding() { 0.0 } else { 1.0 } }))
+        // (another in its place: laid out, drawn and read out nowhere from then, nothing of it found where that one is)
+        .laid_nowhere(By(vanished))
         // (below its place by its own height as it comes and goes, over the time that height takes, as tall as it is
         // laid out in the frame drawing it; down where a finger has its top, or going back)
         // (what is leaving with it, its layer, kept till it has sunk away, however tall: as the host's is, gone once it
@@ -1016,7 +1055,21 @@ fn sheet_node(
                     at.box(fn(l) {
                       style_node(l, fn() { dialog_title_line })
                       l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                      words_node(l, fn() { now().0 }, fn() { sheet_title_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                      // (a part of it in the accent where it is marked so: title_accent.mbt, a menu's title)
+                      if title_marked(@signals.untracked(fn() { now().0 })) {
+                        l.box(fn(w) {
+                          w
+                          .words_runs(By(fn() { title_runs(now().0, theme().p.accent_text) }))
+                          .words_look(By(fn() { @ui.style_words(sheet_title_words) }))
+                          .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
+                          .shrink(Is(1.0))
+                          .min_width(Is(Some(0.0)))
+                          |> ignore
+                        })
+                        |> ignore
+                      } else {
+                        words_node(l, fn() { now().0 }, fn() { sheet_title_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                      }
                       l.show(fn() { now().1 != "" }, fn(n) { words_node(n, fn() { now().1 }, fn() { dialog_step }) |> ignore })
                     })
                     |> ignore
@@ -1171,10 +1224,15 @@ fn sheet_node(
                         said(s)
                         // (in from its sides as the host's sheet has a panel's: a form a share of the window tall laying
                         // out its own sides, its words as far in as a sheet's, whatever opened it (sheet_old_body's
-                        // full_width); opened by a press as far in as a pick's rows, else as its words)
-                        let own_sides = x.tall > 0.0
-                        let room = if own_sides {
+                        // full_width), and so one said flush (PanelNodes' `flush`: a menu's, a pick's, a confirm's, a
+                        // question's), the room under it as the rest's; opened by a press as far in as a pick's rows,
+                        // else as its words)
+                        let flush = pg.nodes is Some({ flush: true, .. })
+                        let own_sides = x.tall > 0.0 || flush
+                        let room = if x.tall > 0.0 || (flush && footed) {
                           full_width
+                        } else if flush {
+                          if pressed { sheet_flush_held } else { sheet_flush_panel }
                         } else if pressed {
                           if footed { sheet_held_sides } else { sheet_held }
                         } else {

@@ -38,19 +38,15 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
   "drive-lend": [7],
   "drive-play": [7],
-  "drive-rename": [7],
-  "drive-zip": [7],
   // 6: unsub {"topic":"status"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "dismiss": [7],
   "paste-long": [7],
   "paste-short": [7],
-  "pin": [7],
   "station-files": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
   "settings-station-settings": [7],
   "settings-workspace-people": [7],
-  "station-rename": [7],
   // 4: - | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "notice-looking": [7],
   // wide-answer-reply at 120 (#5519): the new chat page sends its composer, machineSessions.list and status's
@@ -62,8 +58,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub
   // {"topic":"chat","compact":true,"session":…,"station":…}
   "viewer": [7],
-  // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
-  "settings-connect": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.
   // shareIn is read by the share sheet's old view as its frame builds (src/sfapp/share.mbt:445, share_parts,
@@ -97,14 +91,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "wide-resize": [7, 120],
   // 1: - | strict call chat.pin {"pinned":true,"session":…,"station":…}
   "wide-row-menu": [7],
-  // 1: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub {"limit":60,"scope":…,"topic":"archive"}
-  // (the replay's rig, not the app (#5589, measured): the strict pass's tap on the filter key at 1983.3 ms draws the
-  // frames it leaves owed at once, its clock on to 2016.7, the pace pass's draws none till the display's next; at 7 a
-  // second the menu is not up where 已归档 was at 2150, the tap on it falls on nothing, 已归档 never opens and 还原's at
-  // 2733.3 falls on Home's chat row. The menu itself stands the same at every rate a moment after its press (the
-  // library's presenters and Home's own, 60, 120, 24, 7). Taken out by the PR that gives the strict pass its inputs as
-  // the pace pass's are given, at their moments, frames drawn only as the clock passes them)
-  "archive-restore": [7],
   // 1: sub {"query":…,"scope":…,"topic":"search"} | strict call notify.permission {"state":"unknown"}
   "wide-switcher": [7],
 }

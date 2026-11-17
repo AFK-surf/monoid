@@ -1724,7 +1724,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       raise_close(None)
       paint_layers_under(stack)
     }
-    if raising.val is None && !dr.scrims.is_empty() && tree.over_scrim_of(c.id) {
+    if raising.val is None && (!dr.scrims.is_empty() || tree.scrims_up()) && tree.over_scrim_of(c.id) {
       ride_spoil()
       // (its instances moved among the frame's after it is drawn: no list round it drawn whole as one)
       match list_riding.val {
@@ -1909,6 +1909,21 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if ring_at >= 0 && ring_at < self.ninst {
       let (held, by) = self.view_ring_take(ring_at)
       rings.push((c.id, held, by))
+    }
+    // (its ground a scrim of the tree's (View::scrim_under): what of the tree is drawn over a scrim put over it now, under
+    // what it holds, as an old scrim has it as it is painted (scene.mbt's))
+    if dr.mode != mode_hits && tree.scrim_of(c.id) {
+      // (and what an old view put over a scrim (Stratum's OverScrim), as an old scrim paints it: Ctx::paint_raised)
+      if !dr.raised.is_empty() {
+        self.paint_raised()
+      }
+      raise_close(None)
+      if !tree_over_scrim.is_empty() {
+        self.tree_over_scrim_clear()
+        self.raise_ranges(tree_over_scrim)
+        tree_over_scrim.clear()
+        tree_over_scrim_cut.clear()
+      }
     }
     false
   }, draws=view_draws, offsets~, draws_rev=tree_fields_rev.val + tree_natives_rev.val + tree_streams_rev.val + tree_terminals_rev.val)

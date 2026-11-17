@@ -169,8 +169,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     all of it), a menu a menu's item opens is a level of the same sheet, and on 小屏 whatever a sheet closes for comes
     in its place, one sheet all along and the scrim as it was, never one sheet sinking as the next rises
     (presenters_wbtest's every pair of kinds holds it). On 小屏 a panel's step further in is a page of the same sheet
-    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own): it slides in as
-    the one before slides off, and that one is kept as it was left for back.
+    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own; a confirm, a
+    question, a menu and a pick are sheets of it too, `sheet_shows_node.mbt`, a menu's level a page of its sheet): it
+    slides in as the one before slides off, and that one is kept as it was left for back.
 
 - Text files (Markdown, plain text, code, CSV and HTML) open in the chat's side panel by default where one is available;
   otherwise in the whole-window preview. An explicit 全屏 still opens the whole window (the user, 2026-11-17).

@@ -220,11 +220,14 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone newchat-preset-new-browse-repos": (545, 601, 106),
   "phone newchat-preset-new-clone": (545, 601, 106),
   "phone newchat-preset-new-clones": (579, 627, 111),
-  "phone newchat-preset": (451, 509, 92),
-  "phone newchat-preset-others": (451, 509, 92),
-  "phone newchat-preset-others-none": (451, 509, 92),
-  "phone newchat-preset-theirs": (451, 509, 92),
-  "phone newchat-preset-theirs-long": (451, 509, 92),
+  // Raised 2026-11-17: on 小屏 what this screen opens with up (a menu, a pick, a confirm or a question) is a sheet of
+  // the window's tree (sf sheet_shows_node.mbt), what the old view built of it before now made, laid out and measured in
+  // the tree's count, nothing more shown; the wide one's was so already.
+  "phone newchat-preset": (548, 552, 98),
+  "phone newchat-preset-others": (616, 596, 117),
+  "phone newchat-preset-others-none": (616, 596, 117),
+  "phone newchat-preset-theirs": (548, 552, 98),
+  "phone newchat-preset-theirs-long": (548, 552, 98),
   // (written again, 2026-11-17: the drive's film and song played as nodes, @sf.player_node, over 文件 made as nodes:
   // what the old player built as it opened now made, laid out and measured by the window's tree, nothing more shown)
   "phone player-audio": (409, 457, 66),
@@ -388,7 +391,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-vault-plain": (582, 689, 124),
   "phone settings-vault-waits": (582, 689, 124),
   "phone settings-vault-words": (537, 715, 164),
-  "phone settings-vault-add": (545, 629, 102),
+  // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
+  "phone settings-vault-add": (680, 794, 126),
   "phone settings-vault-editor": (661, 782, 138),
   "phone settings-vault-recover": (628, 752, 136),
   "phone settings-lock-prompt": (767, 873, 155),
@@ -398,7 +402,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-policy": (407, 467, 84),
   "phone settings-policy-text": (451, 529, 94),
   "phone settings-policy-option": (456, 525, 92),
-  "phone settings-security-join": (446, 524, 76),
+  // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
+  "phone settings-security-join": (504, 594, 84),
   "phone settings-security-off": (519, 626, 94),
   "phone settings-security-pending": (446, 524, 76),
   "phone settings-security-upgrade-station": (446, 524, 76),
@@ -905,7 +910,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-station-move-ended": (754, 898, 184),
   "phone settings-station-move-empty": (426, 505, 112),
   "phone settings-station-move-none": (411, 483, 110),
-  "phone settings-station-move-all": (638, 761, 156),
+  // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
+  "phone settings-station-move-all": (706, 845, 164),
   "phone settings-station-move-section": (607, 720, 152),
   "phone settings-station-move-offered": (607, 720, 152),
   "wide settings-station-move": (724, 1567, 324),

@@ -740,6 +740,9 @@ struct Node {
   mut over_all : Bool
   /// drawn, with what it holds, over the scrim of a modal layer of the old frame's up (View::over_scrim)
   mut over_scrim : Bool
+  /// its ground a modal layer's scrim: what of the tree is drawn over a scrim drawn over it, under what it holds
+  /// (View::scrim_under)
+  mut scrim : Bool
   /// where it is in the window's stack of layers, the old frame's among them (View::stacked); -1 none
   mut stack : Int
   /// where in the source it was made and its properties said, where the tree keeps that (Tree::new's `sources`;
@@ -1242,6 +1245,8 @@ pub struct Tree {
   /// how many ask for where things stand as each change comes, before it is taken (View::laid_before_causes): what is
   /// laid out otherwise by a change before it laid out and placed as that one comes, whether a frame came or not
   mut before_causes : Int
+  /// how many of its nodes alive have a modal layer's scrim for a ground (View::scrim_under)
+  mut scrims : Int
   /// laying out where things stand before a change (Tree::stand_before_cause): not again inside it
   mut standing : Bool
   /// a move of a system's batch of a finger's samples after its first being taken (Tree::moves_unlaid): found as the
@@ -1627,6 +1632,7 @@ pub fn Tree::new(
     pending: [],
     drawn_due: false,
     before_causes: 0,
+    scrims: 0,
     standing: false,
     moves_unlaid: false,
     settle_asked: false,
@@ -1944,6 +1950,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.leaves_typing = false
       n.over_all = false
       n.over_scrim = false
+      n.scrim = false
       n.stack = -1
       n.source = None
       n.share = None
@@ -2112,6 +2119,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         leaves_typing: false,
         over_all: false,
         over_scrim: false,
+        scrim: false,
         stack: -1,
         source: None,
         share: None,
@@ -4483,8 +4491,8 @@ pub fn View::bounds_input(self : View, on : Live[Bool], loc~ : SourceLoc) -> Vie
 
 ///|
 /// Drawn, with what it holds, over the scrim of the modal layer the old frame has up while `on` says so (a row held for
-/// its menu, lifted toward the finger: an old view's Stratum OverScrim), under what that layer holds; where no scrim is
-/// up, in its place. Cut as where it is; found by a press as ever (the scrim's layer takes what lands on it). Paint's.
+/// its menu, lifted toward the finger: an old view's Stratum OverScrim), or of a layer of the tree's whose ground is one
+/// (View::scrim_under), under what that layer holds; where no scrim is up, in its place. Cut as where it is; found by a press as ever (the scrim's layer takes what lands on it). Paint's.
 #callsite(autofill(loc))
 pub fn View::over_scrim(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
   self.bind(loc~, OverScrim, on, Paint, fn(on) { self.tree.nodes[self.at].over_scrim = on })
@@ -4495,6 +4503,30 @@ pub fn View::over_scrim(self : View, on : Live[Bool], loc~ : SourceLoc) -> View 
 /// Whether node `id` is drawn over the old frame's scrim (View::over_scrim).
 pub fn Tree::over_scrim_of(self : Tree, id : NodeId) -> Bool {
   self.alive_id(id) && self.nodes[id.at].over_scrim
+}
+
+///|
+/// Its ground is a modal layer's scrim (a sheet's layer of the tree's, dimming what is under it), as the old frame's
+/// layers' are: what of the tree is drawn over a scrim (View::over_scrim, a row held for its menu) is drawn over its
+/// ground and under what it holds, as over an old one's. Said as it is made, for as long as it lives. Paint's.
+pub fn View::scrim_under(self : View) -> View {
+  guard self.live() is Some(n) && !n.scrim else { return self }
+  n.scrim = true
+  self.tree.scrims = self.tree.scrims + 1
+  self.owns(fn() { self.tree.scrims = self.tree.scrims - 1 }) |> ignore
+  self
+}
+
+///|
+/// Whether node `id`'s ground is a modal layer's scrim (View::scrim_under).
+pub fn Tree::scrim_of(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].scrim
+}
+
+///|
+/// Whether any node alive has a modal layer's scrim for a ground (View::scrim_under).
+pub fn Tree::scrims_up(self : Tree) -> Bool {
+  self.scrims > 0
 }
 
 ///|

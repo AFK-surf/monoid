@@ -4,8 +4,8 @@
 
 ///|
 /// What the modes of the cards and words set going as the chat opens: chat-answering's option under way, chat-pick's
-/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's and
-/// chat-menu-choice's menu presented.
+/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's,
+/// chat-menu-choice's and chat-menu-levels' menu presented, chat-confirm's confirm.
 pub fn open_cards_fixture(mode : String) -> Unit {
   match mode {
     "chat-answering" => acting.doing["answer/" + seq_key("ws1/st1", 7.0, 8.0) + "/一起换"] = true
@@ -46,6 +46,37 @@ pub fn open_cards_fixture(mode : String) -> Unit {
         ],
         from=@sf.at_point(700.0, 300.0),
       )
+    // a menu whose item opens a menu (分享: on 小屏 a level of the same sheet, back to the first)
+    "chat-menu-levels" =>
+      @sf.menu(
+        [
+          Some(@sf.menu_item_of("复制链接", fn() {  }, icon="copy")),
+          Some(
+            @sf.menu_item_of("分享", fn() {
+              @sf.menu(
+                [
+                  Some(@sf.menu_item_of("发到 Slack", fn() {  }, icon="send")),
+                  Some(@sf.menu_item_of("发到飞书", fn() {  }, icon="send")),
+                  None,
+                  Some(@sf.menu_item_of("生成图片", fn() {  }, icon="photo")),
+                ],
+                title="分享到",
+                from=@sf.at_point(700.0, 300.0),
+              )
+            }, icon="share", further=true),
+          ),
+          None,
+          Some(
+            @sf.menu_item_of("删除", fn() {
+              @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true)
+            }, icon="trash", danger=true, further=true),
+          ),
+        ],
+        from=@sf.at_point(700.0, 300.0),
+      )
+    // a confirm over the chat (the presenters'), one that cannot be undone, its warning under its words
+    "chat-confirm" =>
+      @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true, warning="删除后不能恢复。")
     "chat-menu-choice" =>
       @sf.menu(
         [

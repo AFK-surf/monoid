@@ -1308,6 +1308,8 @@ test "a row's tray parked: its ground the slot's whole, 撤销 inside it in from
       hold_row(t, title)
       let (lx, ly) = t.find_last("归档").unwrap()
       t.tap(lx, ly)
+      // (the menu's sheet sunk away, the row held for it coming back down only then: lift_node's)
+      t.run_for(@sf.presented_rest() - t.time())
     }
     t.run_for(@ui.move_most_ms)
     let msg = "\{wide}"

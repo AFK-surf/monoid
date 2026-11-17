@@ -93,8 +93,10 @@ test "a filling Seg whose options do not fit side by side even at the system's o
   let chosen = Ref(4)
   presenters_reset()
   // 260 wide: 224 in the track for options whose words with the least either side need 243
+  // (what it presents on 小屏 a sheet of the window's tree: presented_tree)
   let t = @ui.Tester::new(
-    fn(c) {
+    @ui.old_views_here,
+    tree=presented_tree(fn(c) {
       begin(c) |> ignore
       c.with_theme(ui_theme(), fn() {
         c.box(style=seg_test_room, fn() {
@@ -103,7 +105,7 @@ test "a filling Seg whose options do not fit side by side even at the system's o
         |> ignore
         presented(c)
       })
-    },
+    }),
     w=260.0,
     h=700.0,
     platform=2,
@@ -173,14 +175,16 @@ test "segmented whose options do not fit side by side even at the system's own s
   let parts = ["Overview", "Software and devices", "Settings"]
   let chosen = Ref(0)
   presenters_reset()
+  // (what it presents on 小屏 a sheet of the window's tree: presented_tree)
   let t = @ui.Tester::new(
-    fn(c) {
+    @ui.old_views_here,
+    tree=presented_tree(fn(c) {
       begin(c) |> ignore
       c.with_theme(ui_theme(), fn() {
         c.box(style=seg_test_room, fn() { chosen.val = segmented(c, "parts", parts, chosen.val) }) |> ignore
         presented(c)
       })
-    },
+    }),
     w=220.0,
     h=700.0,
   )
