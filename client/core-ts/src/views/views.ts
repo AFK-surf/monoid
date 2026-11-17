@@ -2859,7 +2859,10 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
+    // (a chat a new chat's page became is named by the key it was sent under (local.ts PENDING_PREFIX) all along: its
+    // station's row once listed, by that key)
     const raw: J = data.chatOfSession(station, session) ?? data.chat(station, session)
+      ?? (session.startsWith(PENDING_PREFIX) ? data.chatOfClientKey(station, session) : undefined)
       ?? this.local.pendingRows(station).find((r) => get(r, "session") === session || get(r, "clientKey") === session);
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
