@@ -847,6 +847,8 @@ fn main {
       @host.run(shell_dir=beside(db, "shell"), host => @store_schema.harness(host, db))
     (Some("session-bindings"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session binding", all(db => @bindings.step(db))))
+    (Some("harness-vault-service"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_service.harness(host))
     (Some("session-up-jobs"), Some(db), _) =>
       // (`first`: the first member of that own chat of the session's, for its job's name: Readers.prepareJobNameFirst)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session up jobs", (db, ask) => match ask {

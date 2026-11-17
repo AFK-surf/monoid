@@ -5,6 +5,7 @@ import {
   "station/mcp_tools",
   "station/store_schema",
   "station/marks",
+  "station/vault_service",
   "station/bindings",
   "station/upjobs",
   "station/widgets",
