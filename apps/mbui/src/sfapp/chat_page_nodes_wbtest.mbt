@@ -76,6 +76,7 @@ fn chat_nodes_calling(
   mine? : Bool = false,
   fixture_mode? : String = "chat",
   came? : @signals.Signal[Int] = @signals.signal(0),
+  alter? : (Map[String, Json]) -> Unit = fn(_) {  },
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
@@ -94,6 +95,7 @@ fn chat_nodes_calling(
         let m = was.copy()
         m.remove("attachments")
         m.remove("placed")
+        alter(m)
         if mine && i == n - 1 {
           m["mine"] = Json::boolean(true)
         }
@@ -1645,4 +1647,63 @@ test "a chat's page made with its inside nodes, 大屏: a long answer in pieces 
   }
   let lit = row_bands(t, @ui.tree_theme().color(Hover))
   assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}, \{head.1}…\{last.1 + last.3}")
+}
+
+///|
+/// Paragraphs of words as a message's text and the blocks the core reads of it (its `md`), one paragraph a block.
+fn paragraphs_md(paragraphs : Array[String]) -> (String, Json) {
+  let text = StringBuilder()
+  let blocks : Array[Json] = []
+  for i, p in paragraphs {
+    if i > 0 {
+      text.write_string("\n\n")
+    }
+    let from = text.to_string().length()
+    text.write_string(p)
+    blocks.push([Json::string("p"), [[Json::number(from.to_double()), Json::number((from + p.length()).to_double())]]])
+  }
+  (text.to_string(), Json::array(blocks))
+}
+
+///|
+test "a chat's page made with its inside nodes, 大屏: a long answer in pieces right clicked is lit as one band, its pieces' grounds meeting on the device's pixels with no seam between them" {
+  // (an answer of paragraphs of uneven lengths, a piece each, whose heights fall between the device's pixels)
+  let (text, md) = paragraphs_md([
+    "先说结论：这一段讲为什么要拆成块。", "第二段稍微长一点，说明每一块各自是列表里的一行，只在看得见的时候才建出来，滚走了就放回去复用，这样很长的回答也不会一次建出几百个节点。",
+    "第三段短。", "第四段再长一些，用来让每一块的高度都不一样，落在两个像素之间的地方也就各不相同，接缝如果有就会在这里出现。",
+    "最后一段收尾。",
+  ])
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, [], alter=fn(m) {
+    if m.get("text") == Some(Json::string(@sffixture.long_reply)) {
+      m["text"] = Json::string(text)
+      m["md"] = md
+    }
+  })
+  // (its rows set on the device's pixels, as every host sets them)
+  t.set_rows_on_pixels(true)
+  // (gone to, its band let go of as its flash ends)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @signals.start_batch()
+  @sfbase.go_to(r, 3.0)
+  @signals.end_batch()
+  t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
+  guard t.rect_of("第三段短") is Some((x, y, _, _)) else { fail("a piece after the first not drawn") }
+  t.move_to(x + 8.0, y + 8.0)
+  t.frame()
+  t.right_click(x + 8.0, y + 8.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息链接") is Some(_), msg="its menu")
+  guard (t.rect_of("先说结论"), t.rect_of("最后一段收尾")) is (Some(head), Some(last)) else {
+    fail("its first and last pieces not drawn")
+  }
+  // (its bands: those down to the room under its last piece, not another's ground under the pointer further down)
+  let lit = row_bands(t, @ui.tree_theme().color(Hover)).filter(fn(b) { b.0 < last.1 + last.3 })
+  assert_true(lit.length() > 1, msg="in pieces: \{Repr(lit)}")
+  assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}")
+  // (one band's foot where the next one's top is, to a 64th of a device pixel at the Tester's 2 a point: a band short of
+  // the next leaves the list's ground between them, one past it lays the pointer's ground twice there, a line either way)
+  for i in 1..<lit.length() {
+    let seam = (lit[i].0 - lit[i - 1].1) * 2.0
+    assert_true(seam.abs() < 1.0 / 64.0, msg="a seam of \{seam} pixels between pieces \{i - 1} and \{i}: \{Repr(lit)}")
+  }
 }

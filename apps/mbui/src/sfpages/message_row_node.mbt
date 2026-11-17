@@ -54,9 +54,10 @@ fn message_row_frame_node(
   over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let node = parent.box(fn(root) {
-    // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never
-    // changes)
-    root.fills_across(Is(true)) |> ignore
+    // (across all of the list, as the old row's column (row_column), and as tall as what it is made in (a list's
+    // block, on a host's pixels whole pixels tall: chat_body_row), so its band meets the next row's: its look said once,
+    // no binding for what never changes)
+    root.fills_across(Is(true)).grow(Is(1.0)) |> ignore
     over(root, key)
     // (the room over it, as the row before it says: one kind of room in the other's place as that changes (none, a
     // joined one's, the gap between messages), the row's own structure, its way the column's; the list's way of it with

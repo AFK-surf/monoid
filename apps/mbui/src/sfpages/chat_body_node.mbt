@@ -1376,8 +1376,13 @@ fn chat_body_row(
       _ => Some(-1)
     }
   }
+  // (as tall as its block, which a host's list sets on whole pixels, and so is what it is made as, down to its row's
+  // own node: a row's band (chat_row_band_node) reaches the next row's where that row starts, not short of it by what its
+  // block was put up by, a line of the list's ground between two pieces of a long message lit as one)
+  slot.grow(Is(1.0)) |> ignore
   slot.pick(fn() { chat_body_made_as(row()) }, fn(p, made_as) {
     let kind = made_as.0
+    p.grow(Is(1.0)) |> ignore
     // (told what holds it as it is made, and again as it is taken for another key)
     made(@signals.untracked(key), p)
     p.reacts(key, fn(k) { made(k, p) }, at_start=false)
