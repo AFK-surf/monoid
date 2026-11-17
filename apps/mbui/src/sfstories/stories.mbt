@@ -159,6 +159,121 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
+      key: "send-button",
+      group: "按钮",
+      name: "发送 SendButton",
+      file: "send_button_node.mbt",
+      api: [("send_button_node.mbt", "send_button_node")],
+      play: None,
+      about: "输入框的发送：能发时实心，不能发时变淡、按不动；新对话正在建时转圈。",
+      cases: [
+        (
+          "能发 · 不能发 · 新对话建中",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              @sf.send_button_node(r, fn() { "发送" }, fn() { true }, fn() { false }, fn() {  }, tips~) |> ignore
+              @sf.send_button_node(r, fn() { "发送" }, fn() { false }, fn() { false }, fn() {  }, tips~) |> ignore
+              @sf.send_button_node(r, fn() { "发送" }, fn() { false }, fn() { true }, fn() {  }, tips~) |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    {
+      key: "composer-notice",
+      group: "输入框",
+      name: "输入框上的通知 ComposerNotice",
+      file: "composer_notice_node.mbt",
+      api: [("composer_notice_node.mbt", "composer_notice_node")],
+      play: None,
+      about: "输入框上方的一条通知：图标对准输入框的＋，右端是它提供的操作、关闭，或几个选项；操作失败时原因写在下面。",
+      cases: [
+        (
+          "操作 · 关闭 · 选项",
+          fn(card) {
+            @sf.composer_notice_node(card, tips, fn() { "archive" }, fn() { "这个对话已归档" }, fn() { 24.5 }, offer={
+              words: fn() { "还原对话" },
+              name: fn() { "还原对话" },
+              off: fn() { false },
+              press: fn() {  },
+            })
+            |> ignore
+            @sf.composer_notice_node(card, tips, fn() { "message" }, fn() { "有新的回复" }, fn() { 24.5 }, dismiss={
+              words: fn() { "" },
+              name: fn() { "关闭" },
+              off: fn() { false },
+              press: fn() {  },
+            })
+            |> ignore
+            @sf.composer_notice_node(
+              card,
+              tips,
+              fn() { "clock" },
+              fn() { "缓存已过期，接着聊会重新读一遍" },
+              fn() { 24.5 },
+              choices=fn() { [("keep", "接着聊"), ("fresh", "换新上下文")] },
+              chosen=fn() { "keep" },
+              choose=fn(_) {  },
+            )
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "composer-quote",
+      group: "输入框",
+      name: "待发引用 ComposerQuoteCard",
+      file: "quote_card_node.mbt",
+      api: [("quote_card_node.mbt", "composer_quote_card_node")],
+      play: None,
+      about: "输入框里等着发出去的引用：谁说的、说了什么，下面一行写对它的话，右上角 ✕ 移除。",
+      cases: [
+        (
+          "引用 · 带评论行",
+          fn(card) {
+            let f = @ui.Field::new()
+            @sf.composer_quote_card_node(
+              card,
+              tips,
+              fn() { "agent" },
+              fn() { "把发布说明写一下，先列改动再写影响" },
+              fn() { "" },
+              fn(b) { @ui.field(b, f, placeholder="说点什么", max_lines=1, enter_sends=true) |> ignore },
+              fn() {  },
+              fn() { "移除引用" },
+            )
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "waiting-tile",
+      group: "输入框",
+      name: "待发图片 WaitingTile",
+      file: "waiting_tile_node.mbt",
+      api: [("waiting_tile_node.mbt", "waiting_tile_node")],
+      play: None,
+      about: "输入框里等着发出去的图片或视频：上传中蒙一层并显示进度环，失败时红边加重试，视频显示播放标记。",
+      cases: [
+        (
+          "上传中 · 失败 · 视频",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              let swatch = fn(p : @view.View) { p.ground(Is(0x8899AAFFL)) |> ignore }
+              @sf.waiting_tile_node(r, swatch, fn() { true }, fn() { Some(0.4) }, fn() { false }, fn() {  }, fn() { "重试" })
+              |> ignore
+              @sf.waiting_tile_node(r, swatch, fn() { false }, fn() { None }, fn() { true }, fn() {  }, fn() { "重试" })
+              |> ignore
+              @sf.waiting_tile_node(r, swatch, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "重试" }, video=fn() { true })
+              |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    {
       key: "float-button",
       group: "按钮",
       name: "浮动按钮 FloatButton",
