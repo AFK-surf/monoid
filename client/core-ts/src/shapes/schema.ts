@@ -3071,6 +3071,7 @@ export const SHAPES: Record<string, Shape> = {
     ["fastPlan", opt("bool"), { doc: "How fast it runs where none is picked (the draft's `fast` null): its account's own, true Fast." }],
     ["fastText", opt("String")],
     ["options", vec("ModelOption")],
+    ["otherStations", opt("bool"), { doc: "Other stations have models this station could borrow: false until `pick.set {otherStations:true}` asks to show them. Omitted when there are none; reset each time the panel opens." }],
     ["runtimeFixed", "bool"],
     ["showRuntime", opt("bool"), { doc: "Show the short runtime name even when this model has one runtime, because the station runs more than one runtime." }],
     ["value", "Picked"],

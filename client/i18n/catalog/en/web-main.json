@@ -782,6 +782,7 @@
   "web-main.model.fastNote": "Fast uses more quota or credits",
   "web-main.model.models": "Model",
   "web-main.model.allModels": "All models",
+  "web-main.model.otherStations": "Show models on other stations",
   "web-main.model.likeModel": "Star {model}",
   "web-main.model.forgetCombo": "Remove {name} from frequent",
   "web-main.model.noMatch": "No models match",

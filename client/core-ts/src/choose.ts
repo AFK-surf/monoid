@@ -374,6 +374,9 @@ export class Choose implements Owner {
   /// What its pages read of what is chosen here (drafts, choices, what is being added): made again as it changes.
   readonly #chosen = new Marks();
   readonly #drafts = new Map<string, Record<string, J>>();
+  /// Other stations' models are offered only after the panel asks for them. This is a panel's filter, never a saved
+  /// model choice; changing how a model runs keeps it, opening the panel anew starts with this station again.
+  readonly #otherStations = new Set<string>();
   /// A model borrowed from a control's panel (`pick.borrow`), by its topic's key: how it was picked there, saved as
   /// it comes to run on the station (`lentNow`), and shown as that control's model meanwhile (the user, 2026-11-16:
   /// 借用完毕后应该选中借用的模型，而不是回到老的模型). Picking another model in that control drops it.
@@ -401,6 +404,7 @@ export class Choose implements Owner {
 
   stop(topic: Topic): void {
     this.#drafts.delete(topicKey(topic));
+    this.#otherStations.delete(topicKey(topic));
     this.#hand.delete(topicKey(topic));
     this.#handWas.delete(topicKey(topic));
   }
@@ -1278,9 +1282,11 @@ export class Choose implements Owner {
       };
       return took.runtime === null && took.effort === null && took.fast === null && took.speed === undefined && took.context === null ? undefined : took;
     };
-    const multiRuntime = !fixed && new Set(options.flatMap((opt: J) => arr(opt.runtimes))).size > 1;
-    work.annotated += options.length;
-    const annotated = options.map((opt: J) => {
+    const otherStations = this.#otherStations.has(topicKey(topic));
+    const shown = otherStations ? options : options.filter((opt: J) => opt.availability !== "borrowable");
+    const multiRuntime = !fixed && new Set(shown.flatMap((opt: J) => arr(opt.runtimes))).size > 1;
+    work.annotated += shown.length;
+    const annotated = shown.map((opt: J) => {
       const id = typeof opt.model === "string" ? opt.model : "";
       const ran = id === m || id === panelOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
       const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), context: ran.context });
@@ -1368,6 +1374,10 @@ export class Choose implements Owner {
         fastPlan,
         fastText: value.speed === "ultrafast" ? "Ultrafast" : effectiveFast ? "Fast" : null,
         options: annotated,
+        ...(options.some((opt: J) => opt.availability === "borrowable") ? { otherStations } : {}),
+        // The borrow call needs the drafted option even after the list is filtered back to this station. Internal
+        // to the core (not in PickView's shape); filtering what is listed never changes the draft or its checks.
+        borrowOption: borrow !== null ? option : null,
         combos,
         liked,
         makers,
@@ -1494,7 +1504,8 @@ export class Choose implements Owner {
   }
 
   /// `pick.set`: picks in a control's panel. `open`: from what it runs on now again (`open: false` drops an incomplete
-  /// zero-account draft back to the saved accounts); `clear`: starts over too.
+  /// zero-account draft back to the saved accounts); `clear`: starts over too. `otherStations` includes models that
+  /// still need borrowing in this panel's list; every newly opened panel starts with those already available here.
   set(station: string, oName: string, params: J): void {
     const o = of(oName);
     const key = topicKey({ topic: "pick", station, of: oName });
@@ -1502,6 +1513,7 @@ export class Choose implements Owner {
     if (get(params, "clear") === true && o.kind === "connectNew") this.#adding.delete(`${station}\u0001${o.form}`);
     if (get(params, "open") === true || get(params, "clear") === true) {
       this.#drafts.delete(key);
+      this.#otherStations.delete(key);
       this.#hand.delete(key);
       this.#handWas.delete(key);
     } else if (get(params, "open") === false || (get(params, "model") !== undefined && get(params, "profiles") === undefined && get(params, "profile") === undefined)) {
@@ -1512,6 +1524,8 @@ export class Choose implements Owner {
         if (Object.keys(cur).length === 0) this.#drafts.delete(key);
       }
     }
+    if (get(params, "otherStations") === true) this.#otherStations.add(key);
+    else if (get(params, "otherStations") === false) this.#otherStations.delete(key);
     const fields = FIELDS.filter((f) => get(params, f) !== undefined);
     if (fields.length > 0) {
       const draft = this.#drafts.get(key) ?? {};
@@ -1732,7 +1746,7 @@ export class Choose implements Owner {
     if (view === undefined) throw CoreError.invalid(t("core-logic.choose.error.no_options_yet"));
     if ("err" in view) throw view.err;
     const v = view.ok as J;
-    const option = optionOf(arr(v.options), text(v.option));
+    const option = v.borrowOption;
     const b = get(option, "borrow");
     if (!isObject(b) || v.borrow === null) throw CoreError.invalid(t("core-logic.choose.borrow.nothing"));
     if (v.borrow.allowed !== true) throw CoreError.invalid(v.borrow.why ?? t("core-logic.choose.borrow.managers"));

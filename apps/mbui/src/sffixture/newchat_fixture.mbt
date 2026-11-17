@@ -56,6 +56,11 @@ pub(all) struct NewFix {
   mut providers : Bool
   /// MBUI_FIXTURE=settings-connect-borrow: the model drafted another station's, borrowed first (the pick's `borrow`)
   mut borrow : Bool
+  /// MBUI_FIXTURE=newchat-station-models: a model available only on another station, hidden until asked for.
+  mut station_models : Bool
+  mut other_stations : Bool
+  /// MBUI_FIXTURE=newchat-station-empty: no model available here, with the same way to the other station's.
+  mut station_empty : Bool
   /// The other members' presets (the `otherPresets` topic, fix_others; `preset` of each), and whether the stations are
   /// still being asked for them (its `reading`)
   others : Array[Json]
@@ -92,6 +97,9 @@ pub let new_fix : NewFix = {
   liked: [],
   providers: false,
   borrow: false,
+  station_models: false,
+  other_stations: false,
+  station_empty: false,
   others: fix_others(),
   others_reading: false,
 }
@@ -535,7 +543,15 @@ pub fn fix_runtime_of(model : String) -> String {
 /// The models the model control offers, in the core's order.
 fn fix_shown_models() -> Array[Json] {
   let n = new_fix
-  if n.tall {
+  if n.station_models {
+    let sourced = fn(model : String, availability : String) -> Json {
+      let o = fix_model(model)
+      if o is Object(m) { m["availability"] = Json::string(availability) }
+      o
+    }
+    let local = if n.station_empty { [] } else { [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")] }
+    if n.other_stations { local + [sourced("gpt-6", "borrowable")] } else { local }
+  } else if n.tall {
     fix_crowded_models.map(fix_model) + fix_tall_models.map(fix_model)
   } else if n.providers {
     fix_crowded_models.map(fix_model) + fix_providers.map(fn(p) { fix_model(p.0) })
@@ -581,6 +597,7 @@ fn fix_combo_key(model : String, runtime : String, effort : String, context : St
 /// fix_forgotten) left out, at most four of them, a fifth coming in the place of one taken out. Each `selected` while it is exactly what is drafted.
 fn fix_combos() -> Json {
   let n = new_fix
+  if n.station_models { return Json::array([]) }
   let effort_word = fn(e : String) {
     match e {
       "low" => "低"
@@ -669,7 +686,7 @@ pub fn fix_pick() -> Json {
     }
     Json::object(o)
   }
-  {
+  let result : Json = {
     "options": fix_pick_options(fix_shown_models()),
     // (the configurations used most, starred or not)
     "combos": fix_combos(),
@@ -701,7 +718,7 @@ pub fn fix_pick() -> Json {
       Json::null()
     },
     "value": picked(n.model, n.runtime, n.effort, "", [], false),
-    "valueOption": fix_model(n.model),
+    "valueOption": if n.station_empty { Json::null() } else { fix_model(n.model) },
     "draft": picked(n.d_model, n.d_runtime, n.d_effort, n.d_profile, n.d_profiles, n.d_none),
     "option": Json::string(n.d_model),
     // (all the drafted model runs on, crowded; else the one it runs on)
@@ -789,6 +806,10 @@ pub fn fix_pick() -> Json {
     "accountWarn": false,
     "saveText": "",
   }
+  if n.station_models && result is Object(o) {
+    o["otherStations"] = Json::boolean(n.other_stations)
+  }
+  result
 }
 
 ///|
@@ -1186,6 +1207,7 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
           n.d_profile = ""
           n.d_profiles.clear()
           n.d_none = false
+          n.other_stations = false
         }
         Some(False) =>
           if n.d_none {
@@ -1202,6 +1224,11 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       })
       take("runtime", fn(s) { n.d_runtime = s })
       take("effort", fn(s) { n.d_effort = s })
+      match field(p, "otherStations") {
+        Some(True) => n.other_stations = true
+        Some(False) => n.other_stations = false
+        _ => ()
+      }
       match field(p, "profiles") {
         Some(Null) => {
           n.d_none = false

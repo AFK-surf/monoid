@@ -11,6 +11,52 @@ fn model_pop(mode : String) -> @ui.Tester {
 }
 
 ///|
+test "the station's own and shared models are shown first; other stations are asked for and hidden again on reopening" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    for scale in [1.0, 1.3] {
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let held = screen_in("newchat", win, "zh", font_scale=scale).audit().map(bare)
+      let t = screen_in("newchat-station-models", win, "zh", font_scale=scale)
+      let label = "显示其他 station 的模型"
+      assert_eq(t.get(Switch, label~).check, Some(Off))
+      assert_true(t.query(Button, label="Opus 5.5") is Some(_))
+      assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="already shared here")
+      assert_true(t.query(Button, label="GPT-6") is None)
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+      t.click(Switch, label~)
+      t.run_for(squeeze_opening)
+      assert_eq(t.get(Switch, label~).check, Some(On))
+      assert_true(t.query(Button, label="GPT-6") is Some(_))
+      assert_eq(new_fix.model, "claude-opus-5-5", msg="the filter never selects a model")
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+      t.click(Button, label="Opus 5.5")
+      t.run_for(squeeze_opening)
+      t.tap_text("Opus 5.5")
+      t.run_for(squeeze_opening)
+      assert_eq(t.get(Switch, label~).check, Some(Off))
+      assert_true(t.query(Button, label="GPT-6") is None)
+    }
+  }
+}
+
+///|
+test "a model panel with no locally available models can still show those another station could lend" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    let t = screen_in("newchat-station-empty", win, "zh")
+    let label = "显示其他 station 的模型"
+    assert_eq(t.get(Switch, label~).check, Some(Off))
+    assert_true(t.query(Button, label="Opus 5.5") is None && t.query(Button, label="GPT-6") is None)
+    t.click(Switch, label~)
+    t.run_for(squeeze_opening)
+    assert_true(t.query(Button, label="GPT-6") is Some(_))
+    t.click(Switch, label~)
+    t.run_for(squeeze_opening)
+    assert_true(t.query(Button, label="GPT-6") is None)
+    assert_eq(t.get(Switch, label~).check, Some(Off))
+  }
+}
+
+///|
 test "wide, short names: the model's panel as wide as what it holds, not as wide as it may be" {
   let t = model_pop("newchat-model")
   let (px, _, pw, _) = t.get(@ui.Role::Dialog).rect

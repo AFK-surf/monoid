@@ -60,7 +60,7 @@ test("a_station_offers_its_own_models_says_which_are_borrowed_and_lists_what_oth
 
 /// A model control on the first station of `ws`, its core's store and records stood in for (`values`, `records`).
 function control(ws: J[], role: string, values = new Map<string, unknown>(), records = new Map<string, unknown>()) {
-  values.set(`overview ws/${HERE}`, ws[0].overview);
+  for (const s of ws) values.set(`overview ${s.station}`, s.overview);
   values.set("stations", ws);
   values.set("stationsWhole", ws);
   const keyOf = (t: Topic) => (t.topic === "overview" ? `overview ${t.station}` : String(t.topic));
@@ -69,10 +69,65 @@ function control(ws: J[], role: string, values = new Map<string, unknown>(), rec
   return new Choose({ store, data, now: () => 0, agent: () => null });
 }
 
+test("a_model_panel_defaults_to_its_station_including_shared_models_and_filters_stars_and_makers_too", () => {
+  const choose = control(workspace(), "admin");
+  const at = `ws/${HERE}`;
+  choose.like(at, "gpt-6-astra", true);
+  choose.like(at, "kimi-k3", true);
+  const pick = (): J => (choose.compute({ topic: "pick", station: at, of: "new" }) as J).ok;
+  const here = pick();
+  assert.deepEqual(here.options.map((o: J) => [o.model, o.availability]), [
+    ["claude-opus-5-5", "here"], ["kimi-k3", "borrowed"],
+  ]);
+  assert.equal(here.otherStations, false);
+  assert.ok(here.liked.includes("kimi-k3"));
+  assert.ok(!here.liked.includes("gpt-6-astra"));
+  assert.ok(!here.makers.some((m: J) => m.id === "openai" || m.id === "deepseek"));
+  choose.set(at, "new", { otherStations: true });
+  const all = pick();
+  assert.equal(all.otherStations, true);
+  assert.ok(all.options.some((o: J) => o.model === "gpt-6-astra" && o.availability === "borrowable"));
+  assert.ok(all.liked.includes("gpt-6-astra"));
+  assert.ok(all.makers.some((m: J) => m.id === "openai"));
+  assert.deepEqual(all.value, here.value, "showing other stations does not change the selected model");
+  choose.save(at, "new", { effort: "low" });
+  assert.equal(pick().otherStations, true, "saving an effort keeps the panel's filter");
+  choose.set(at, "new", { otherStations: false });
+  assert.deepEqual(pick().options.map((o: J) => o.model), here.options.map((o: J) => o.model));
+  choose.set(at, "new", { otherStations: true });
+  choose.set(at, "new", { open: true });
+  assert.equal(pick().otherStations, false, "each opening starts with this station");
+  choose.set(at, "new", { otherStations: true });
+  choose.stop({ topic: "pick", station: at, of: "new" });
+  assert.equal(pick().otherStations, false, "a closed subscription releases the filter");
+});
+
+test("a_model_panels_station_filter_stays_with_its_station_and_can_expand_an_empty_local_list", () => {
+  const ws = workspace();
+  const choose = control(ws, "admin");
+  const at = `ws/${HERE}`;
+  const pick = (station: string): J => (choose.compute({ topic: "pick", station, of: "new" }) as J).ok;
+  choose.set(at, "new", { otherStations: true });
+  const office = pick(`ws/${STUDIO}`);
+  assert.ok(office.options.some((o: J) => o.model === "gpt-6-astra"));
+  assert.ok(office.options.every((o: J) => o.availability !== "borrowable"));
+  assert.equal(office.otherStations, undefined, "no expansion control without additional models");
+
+  ws[0].overview.profiles = [];
+  const empty = control(ws, "admin");
+  const emptyPick = (): J => (empty.compute({ topic: "pick", station: at, of: "new" }) as J).ok;
+  assert.deepEqual(emptyPick().options, []);
+  assert.equal(emptyPick().otherStations, false, "the empty list still offers the borrowing entry");
+  empty.set(at, "new", { otherStations: true });
+  assert.ok(emptyPick().options.length > 0);
+  assert.ok(emptyPick().options.every((o: J) => o.availability === "borrowable"));
+});
+
 test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_with_this_station", () => {
   const of = "connect-new:f";
   const at = `ws/${HERE}`;
   const choose = control(workspace(), "admin");
+  choose.set(at, of, { otherStations: true });
   choose.set(at, of, { model: "deepseek-v4-pro" });
   const v: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
   assert.equal(v.option, "deepseek-v4-pro");

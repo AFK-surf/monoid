@@ -564,6 +564,10 @@ pub fn open_mode(mode : String) -> Unit {
   }
   if mode.has_prefix("newchat") {
     app.nav.rise(NewChat)
+    if mode == "newchat-station-models" || mode == "newchat-station-empty" {
+      @sffixture.new_fix.station_models = true
+      @sffixture.new_fix.station_empty = mode == "newchat-station-empty"
+    }
     if mode.has_prefix("newchat-crowded") || mode.has_prefix("newchat-providers") || mode == "newchat-tall-model" {
       // (it starts on the model that runs on three runtimes, on the one of them its combination names)
       let n = @sffixture.new_fix
@@ -664,7 +668,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-station-models" | "newchat-station-empty" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }

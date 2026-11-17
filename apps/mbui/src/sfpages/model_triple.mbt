@@ -226,6 +226,13 @@ fn pick_params(station : String, of : String) -> Map[String, Json] {
 }
 
 ///|
+/// The core offers models another station could lend, with a filter off each time the panel opens. A station with
+/// no models of its own still opens the panel so those models can be shown and borrowed.
+fn triple_other_stations(v : Json?) -> Bool {
+  field(v, "otherStations") is Some(True) || field(v, "otherStations") is Some(False)
+}
+
+///|
 /// What the panel picked changed (`pick.set`): only what is given.
 fn pick_draft(src : Source, station : String, of : String, patch : Map[String, Json]) -> Unit {
   let p = pick_params(station, of)
@@ -372,7 +379,7 @@ pub fn model_triple(
   guard v is Some(Object(_)) else { return }
   let value = field(v, "value")
   // (a face is drawn only of a control that runs on a model: there are models to pick)
-  let offers = face is Some(_) || items(v, "options").length() > 0
+  let offers = face is Some(_) || items(v, "options").length() > 0 || triple_other_stations(v)
   let vo = field(v, "valueOption")
   let account = field(v, "account")
   let me = station + "\u{1}" + of
@@ -568,7 +575,7 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
       .min_width(Is(Some(0.0)))
       |> ignore
       @sf.hover_ground_node(b, extra=fn() { opened.get() })
-      let can = fn() { items(v(), "options").length() > 0 && !doing(dkey) }
+      let can = fn() { (items(v(), "options").length() > 0 || triple_other_stations(v())) && !doing(dkey) }
       @sf.presses_node(b, fn() {
         guard @signals.untracked(can) && triple.open != me else { return }
         triple.asked = ""
@@ -962,6 +969,7 @@ fn triple_body_node(
       let foot_two_lines = (foot_chips >= 2 && ww < 340.0) || (foot_chips >= 3 && ww < 440.0) || foot_chips >= 4
       let sheet_rest = (if at == "" { 60.0 } else { 72.0 }) +
         (if at == "" && options().length() > 8 { 42.0 } else { 0.0 }) +
+        (if triple_other_stations(vv) { @sf.theme().items.least } else { 0.0 }) +
         (if all_efforts().length() > 0 { 50.0 } else { 0.0 }) +
         (if field(vv, "borrow") is Some(Object(_)) { 30.0 } else { 0.0 }) +
         85.0 +
@@ -1510,6 +1518,14 @@ fn triple_body_node(
         })
         |> ignore
       }
+    })
+    all_of.show(fn() { !side_mode() && triple_other_stations(v()) }, fn(row) {
+      @sf.panel_switch_row_node(
+        row,
+        fn() { @sf.t("web-main.model.otherStations") },
+        fn() { flag(v(), "otherStations") },
+        fn(on) { pick_draft(src, station, of, { "otherStations": Json::boolean(on) }) },
+      )
     })
     // the model picked is another station's: said over the foot, which borrows it rather than confirming
     all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(bw) {
