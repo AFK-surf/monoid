@@ -253,41 +253,40 @@ fn md_table_body_node(
     outer.margin(by_bleed(fn(b) { (-b, 0.0, -b, 0.0) })) |> ignore
     // (its columns by the room it is given, laid out in that same layout)
     outer.by_room(fn(outer, given) {
-      let room = fn() {
-        outer.words_redone() |> ignore
-        given.width() - 2.0 * bleed_now()
-      }
-      // (each cell's extent and the columns' widths, as Md::table works them out: table_widths)
-      let widths_for = fn(t : MdTable) {
-        table_widths_worked.val += 1
+      let room = fn() { given.width() - 2.0 * bleed_now() }
+      // (each cell as it is drawn: its pieces at its look, or its images' row at their width; the head's row first)
+      let cells_of = fn(t : MdTable) -> Array[Array[@view.TrackCell]] {
         let rows = [t.head]
         rows.append(t.rows)
-        let extents = rows.mapi(fn(r, row) {
-          row.map(fn(cell) {
+        rows.mapi(fn(r, row) {
+          row.map(fn(cell) -> @view.TrackCell {
             match cell_images.bind(fn(f) { f(cell) }) {
               // (a cell of images as wide as their row: Md::table's)
-              Some(images) => {
-                let w = cell_images_node_width(images)
-                (w, w, true)
-              }
-              None => {
-                let (lo, hi) = table_words_extent(cell, r == 0, fn(x) { node_sp(outer, x) })
-                (lo, hi, false)
-              }
+              Some(images) => Wide(cell_images_node_width(images))
+              None => Said(table_cell_runs(cell), table_words_look(r == 0, 1.0), table_runs_look())
             }
           })
         })
-        table_widths(extents, room(), fit, fn(x) { node_sp(outer, x) })
       }
-      // (worked out once as the table or its room changes, what reads them (its frame, each row's columns, each
-      // cell's width and sides, each rule) reading that: every cell's words measured once, not once for each of those)
-      let widths_now = @signals.computed(fn(_) {
-        match table() {
-          Some(t) => widths_for(t)
-          None => ([], 0.0)
-        }
-      })
-      let widths = fn() { widths_now.get() }
+      // (its cells measured as the tree measures what they draw, once as the table changes; the room shared out among
+      // its columns as Md::table shares it, again as the room or they change: View::tracks)
+      let tracks = outer.tracks(
+        fn() {
+          match table() {
+            Some(t) => cells_of(t)
+            None => []
+          }
+        },
+        room,
+        fn(extents, avail) {
+          table_widths_worked.val += 1
+          table_widths(extents.map(fn(row) { row.map(fn(e) { (e.least, e.whole, e.wide) }) }), avail, fit, fn(x) {
+            node_sp(outer, x)
+          })
+        },
+      )
+      let widths = tracks.widths
+      let widths_for = fn(t : MdTable) { (tracks.of)(cells_of(t)) }
       // (its head's row's height, as it comes to in its room: where its copy key's middle is)
       let head_h : Ref[@view.View?] = Ref(None)
       // (its own key, whatever its words: two tables of the same each their own menu, copy and picture)
@@ -375,8 +374,24 @@ fn md_table_body_node(
 }
 
 ///|
-/// How many times a table's columns' widths were worked out (md_table_body_node's, each of its cells' words measured):
-/// what its tests count.
+/// How a table's cell's words are set (its head's, muted, smaller and medium; the rest the words' own), at `scale` of
+/// their size: what it is drawn and measured at (table_frame_node, md_table_body_node's tracks).
+fn table_words_look(head : Bool, scale : Double) -> @view.WordsLook {
+  let size = (if head { 12.0 } else { 13.0 }) * scale
+  {
+    size,
+    weight: if head { 500 } else { 400 },
+    line: (Float::from_double(size) * (1.65 : Float)).to_double(),
+    wrap: true,
+    tracking: @view.letters_own,
+    balance: false,
+    max_lines: 0,
+  }
+}
+
+///|
+/// How many times a table's room was shared out among its columns (md_table_body_node's tracks' `share`): what its tests
+/// count.
 // kept across runs: it goes on counting
 let table_widths_worked : Ref[Int] = Ref(0)
 
@@ -457,18 +472,7 @@ fn table_frame_node(
             // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
             let runs_now = @signals.computed(fn(_) { table_cell_runs(words()) })
             let runs = fn() { runs_now.get() }
-            let look = fn() -> @view.WordsLook {
-              let size = (if head { 12.0 } else { 13.0 }) * scale()
-              {
-                size,
-                weight: if head { 500 } else { 400 },
-                line: (Float::from_double(size) * (1.65 : Float)).to_double(),
-                wrap: true,
-                tracking: @view.letters_own,
-                balance: false,
-                max_lines: 0,
-              }
-            }
+            let look = fn() { table_words_look(head, scale()) }
             let w = cell.box(fn(w) {
               // (its pieces first: saying them says the words' look and ink plain, what follows says them)
               w.words_runs(By(runs)) |> ignore
@@ -487,19 +491,25 @@ fn table_frame_node(
             words_links_node(cell, w, runs, on_link, hold=on_link_hold)
           }
           // its images in a row where it is only the message's images (CellImageRow: 6 apart, 4 over and under, each
-          // cell_image_width wide), else its words, made again only as it comes to hold another number of them; where
+          // cell_image_width wide), else its words, made again only as it comes to hold images or no longer does; where
           // it is given no images (`cell_images` none: every table but one of a message that places its files), its
           // words alone, nothing made for the choice
           match cell_images {
             None => words_box(cell)
             Some(of_cell) => {
               let images = fn() { of_cell(words()) }
-              cell.pick(at_once=true, fn() { images().map_or(0, fn(ims) { ims.length() }) }, fn(cell, n) {
-                if n > 0 {
+              // (made again only as it comes to hold images or no longer does; its images each a row of the row's
+              // own, by their place, made and let go as their number changes)
+              cell.pick(at_once=true, fn() { images().map_or(0, fn(ims) { ims.length() }) > 0 }, fn(cell, held) {
+                if held {
                   cell.box(fn(row) {
                     row.row(Is(true)).gap(By(fn() { 6.0 * scale() })).padding(By(fn() { (0.0, 4.0 * scale(), 0.0, 4.0 * scale()) })) |> ignore
-                    for i in 0..<n {
-                      row.box(fn(im) {
+                    row.each(
+                      fn() { Array::makei(images().map_or(0, fn(ims) { ims.length() }), fn(i) { i }) },
+                      fn(i) { i },
+                      at_once=true,
+                      fn(im, i) {
+                        let i = i.untracked()
                         let width = fn() {
                           cell_image_width(images().bind(fn(ims) { ims.get(i) }).map_or(1.0, fn(x) { x.0 })) * scale()
                         }
@@ -508,9 +518,8 @@ fn table_frame_node(
                           Some((_, draw)) => draw(im, width)
                           None => ()
                         }
-                      })
-                      |> ignore
-                    }
+                      },
+                    )
                   })
                   |> ignore
                   return

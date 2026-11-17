@@ -1447,7 +1447,8 @@ fn chat_body_row(
         more.val = person_said_node(p, src, here, key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
       KAgent =>
         more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
-          let tk = @signals.untracked(whole_key) + "#" + b.to_string()
+          // (by the message it is of now, followed: a block taken for another's row scrolls that one's table across)
+          let tk = whole_key() + "#" + b.to_string()
           match keeps.tables.get(tk) {
             Some(s) => s
             None => {

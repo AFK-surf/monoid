@@ -349,6 +349,7 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
     measure_runs=view_runs_measure,
     measure_kept=view_words_measure_kept,
     measure_runs_kept=view_runs_measure_kept,
+    measure_runs_least=view_runs_least,
     measure_shorter=view_shorter_measure,
     time=fn() { h_event_time() },
     sources=@hostapi.keeps_sources(),
@@ -833,6 +834,17 @@ fn view_runs_measure_set(
   let lay = if runs_past(r, lay) { layout_rich(cut_rich(r, lay, w), w) } else { lay }
   // (broken where the width ran out: as wide as it, as leaf_size has an old view's)
   (if width >= 0.0 && look.wrap && soft_wrapped(lay.line_end, lay.cu) { width } else { lay.w }, lay.h)
+}
+
+///|
+/// How narrow a node's words in pieces may wrap, measured as they are drawn (view_runs_measure): the tree's
+/// `measure_runs_least`.
+fn view_runs_least(runs : Array[@text.Run], look : @view.WordsLook, set : @view.RunsLook, scale : Double) -> Double {
+  // (on one line where they do not wrap: as wide as that line)
+  if !look.wrap {
+    return view_runs_measure(runs, look, set, -1.0, scale).0
+  }
+  rich_least_w(view_rich(runs, look, set, scale, false))
 }
 
 ///|

@@ -678,7 +678,9 @@ fn md_block_node(
       |> ignore
     6 => p.height(Is(Some(md_rule_h))).ground(By(fn() { web().line })) |> ignore
     7 =>
-      p.box(fn(outer) {
+      // (made again as what it scrolls across with is another's: a block taken for another message's row)
+      // (the box the pick makes for it its own: no box of its own in that)
+      p.pick(at_once=true, fn() { (md.across_of)(md.block_at).serial() }, fn(outer, _) {
         md_table_body_node(
           outer,
           fn() {
@@ -693,7 +695,7 @@ fn md_block_node(
           md.on_link_hold,
           fit=md.fit,
           rows=md.table_rows,
-          across=(md.across_of)(md.block_at),
+          across=@signals.untracked(fn() { (md.across_of)(md.block_at) }),
           cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
         )
       })

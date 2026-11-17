@@ -803,6 +803,9 @@ pub struct Tree {
   /// theirs (the same two where none is given)
   measure_kept : (String, WordsLook, Double, Double) -> (Double, Double)
   measure_runs_kept : (Array[@text.Run], WordsLook, RunsLook, Double, Double) -> (Double, Double)
+  /// how narrow words in pieces may be laid out wrapped (the widest of what lies between two places a line may break:
+  /// a browser's min-content), at a size of words: what a table's columns are sized by (View::tracks)
+  measure_runs_least : (Array[@text.Run], WordsLook, RunsLook, Double) -> Double
   /// whether each node keeps where in the source it was made and its properties said (source.mbt): a Tester's tree
   sources : Bool
   nodes : Array[Node]
@@ -1392,7 +1395,8 @@ pub struct View {
 
 ///|
 /// A tree whose root `make` makes (as the root's own: its bindings, its nodes), its words measured by `measure` (in
-/// pieces set their own way: `measure_runs`; said a shorter way where too wide: `measure_shorter`), each told the size
+/// pieces set their own way: `measure_runs`; how narrow they may wrap: `measure_runs_least`; said a shorter way where too
+/// wide: `measure_shorter`), each told the size
 /// of words of the node whose words they are (View::words_scale's), keeping where in the source each node was made
 /// where `sources` (source.mbt).
 pub fn Tree::new(
@@ -1402,6 +1406,7 @@ pub fn Tree::new(
   measure_shorter? : (String, Array[String], WordsLook, Double, Double) -> Double,
   measure_kept? : (String, WordsLook, Double, Double) -> (Double, Double),
   measure_runs_kept? : (Array[@text.Run], WordsLook, RunsLook, Double, Double) -> (Double, Double),
+  measure_runs_least? : (Array[@text.Run], WordsLook, RunsLook, Double) -> Double = runs_least_measure,
   time? : () -> Double,
   sources? : Bool = false,
 ) -> Tree {
@@ -1443,6 +1448,7 @@ pub fn Tree::new(
     },
     measure_kept: measure_kept.unwrap_or(measure),
     measure_runs_kept: measure_runs_kept.unwrap_or(measure_runs),
+    measure_runs_least,
     sources,
     nodes: [],
     free: [],

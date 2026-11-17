@@ -42,14 +42,21 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // each make to come before one of it has left, a long message's pieces most)
   // (again once Home's list's faces are fewer boxes, sfpages row_aside_node: the ground round them and who started it
   // ringed rings of the face's own; phone cold 779 made and 852 laid before, wide cold 2557 and 3674)
+  // (2026-11-17: a table's cells measured by the tree's own measurer as they are drawn, mbui View::tracks, each counted
+  // as a measure: before, @ui.text_advance measured them outside the tree, counted nowhere, the same work (instrbench's
+  // chatreal: 3,328.9K a frame weighted before, 3,329.3K after). Scrolling up before it phone 84 measured, a frame 17,
+  // wide 113 and 17. And a table in a block taken for another message's row made again for it, scrolled across as
+  // that one's (sf md_block_node's pick: its node), phone up 565 made and a frame 141, wide up 698 before it; a Scroll
+  // following that one's as it changes instead, its every read looked up, ran more (instrbench's table 1,743.3K a
+  // frame weighted before, 1,762.0K with it, 1,744.0K with the node))
   "phone cold": (757, 29, 830, 146, 776),
   "phone again": (327, 17, 242, 28, 301),
   "wide cold": (2443, 483, 3531, 557, 2634),
   "wide again": (882, 130, 881, 123, 1049),
-  "phone up": (565, 366, 618, 84, 0),
-  "wide up": (698, 382, 910, 113, 0),
-  "phone up frame": (141, 102, 126, 17, 0),
-  "wide up frame": (137, 105, 130, 17, 0),
+  "phone up": (566, 366, 618, 96, 0),
+  "wide up": (699, 382, 910, 125, 0),
+  "phone up frame": (142, 102, 126, 28, 0),
+  "wide up frame": (137, 105, 130, 28, 0),
 }
 
 ///|

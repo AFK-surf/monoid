@@ -162,6 +162,13 @@ pub struct Scroll {
 let scrolls_made : Ref[Int] = Ref(0)
 
 ///|
+/// Which scroll it is (each made its own number; one `beside` another its own too): what tells two apart, where
+/// what is made in one is made again for another (a block of a page's list taken for another row).
+pub fn Scroll::serial(self : Scroll) -> Int {
+  self.serial
+}
+
+///|
 /// A column's scroll, at its top: as an old view's box kept to a height scrolls (ui's Ctx::capped).
 pub fn Scroll::new() -> Scroll {
   Scroll::made(false)

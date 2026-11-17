@@ -312,6 +312,27 @@ pub fn words_run(text : String, weight? : Int = 0, ink? : Int64 = 0L) -> @text.R
 }
 
 ///|
+/// How narrow words in pieces may wrap as a test measures them (runs_measure): their longest word, 7 a character,
+/// words parted by spaces.
+pub fn runs_least_measure(runs : Array[@text.Run], _look : WordsLook, _set : RunsLook, _scale : Double) -> Double {
+  let mut widest = 0
+  let mut word = 0
+  for r in runs {
+    for ch in r.text {
+      if ch == ' ' || ch == '\n' {
+        word = 0
+      } else {
+        word = word + 1
+        if word > widest {
+          widest = word
+        }
+      }
+    }
+  }
+  widest.to_double() * 7.0
+}
+
+///|
 /// Words in pieces measured as a test's are: as their words one after another (words_measure).
 pub fn runs_measure(
   runs : Array[@text.Run],

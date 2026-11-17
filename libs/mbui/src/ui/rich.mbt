@@ -308,23 +308,7 @@ fn torn_outline(w : Double, h : Double, corner : Double, from : Bool, on : Bool)
 /// the same way and its faces measured the same (rich_kept), in a width that gives it the same lines; else what any
 /// width shares of it as it was (its text, where it breaks, its bidi levels), laid out in this one.
 fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
-  let sc = g().scale
-  let web = web_lines.val
-  let gen = text_cache.generation
-  let key = rich_key(r)
-  let k = match rich_kept.get(key) {
-    Some(k) if k.sc == sc && k.web == web && k.gen == gen && k.r == r => k
-    _ => {
-      if !rich_kept.contains(key) && rich_kept.length() >= rich_kept_most {
-        rich_kept_thin()
-      }
-      // (its runs as they are now: what it was given may be changed in place after)
-      let k = { r: { ..r, runs: r.runs.copy() }, sc, web, gen, prep: rich_prep(r), lays: [], used: 0 }
-      rich_kept[key] = k
-      k
-    }
-  }
-  k.used = text_cache.frame
+  let k = rich_kept_of(r)
   // (greedy wrapping gives the same lines in any width from the widest line up to the one they were made in, a label
   // kept whole in it too: what is not wrapped, in any)
   for i, e in k.lays {
@@ -343,6 +327,54 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     k.lays.pop() |> ignore
   }
   lay
+}
+
+///|
+/// What is kept of paragraph `r` as it is laid out now (layout_rich's: at the scale, the lines' way and the faces
+/// measured in now), made as it is first asked for, said used this frame.
+fn rich_kept_of(r : Rich) -> RichKept {
+  let sc = g().scale
+  let web = web_lines.val
+  let gen = text_cache.generation
+  let key = rich_key(r)
+  let k = match rich_kept.get(key) {
+    Some(k) if k.sc == sc && k.web == web && k.gen == gen && k.r == r => k
+    _ => {
+      if !rich_kept.contains(key) && rich_kept.length() >= rich_kept_most {
+        rich_kept_thin()
+      }
+      // (its runs as they are now: what it was given may be changed in place after)
+      let k = { r: { ..r, runs: r.runs.copy() }, sc, web, gen, prep: rich_prep(r), lays: [], used: 0 }
+      rich_kept[key] = k
+      k
+    }
+  }
+  k.used = text_cache.frame
+  k
+}
+
+///|
+/// How narrow paragraph `r` may be laid out wrapped: the widest of what lies between two places its lines may break
+/// (UAX #14, as rich_lines breaks them), the blanks a piece ends in left out: a browser's min-content.
+fn rich_least_w(r : Rich) -> Double {
+  let p = rich_kept_of(r).prep
+  let n = p.starts.length()
+  let mut widest = 0.0
+  let mut w = 0.0
+  // (the piece so far without the blanks it ends in)
+  let mut inked = 0.0
+  for i in 0..<n {
+    if i > 0 && p.brk[i] != 0 {
+      widest = dmax(widest, inked)
+      w = 0.0
+      inked = 0.0
+    }
+    w = w + p.adv[i]
+    if p.cu[i] != 32 && !is_nl(p.cu[i]) {
+      inked = w
+    }
+  }
+  dmax(widest, inked)
 }
 
 ///|
