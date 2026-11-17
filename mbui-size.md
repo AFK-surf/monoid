@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [2a690a24c](https://github.com/AFK-surf/monoid/commit/2a690a24c1d279c850706f58b9eb198e9d0c707d) Show workflow progress and step logs on GitHub Act | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 2.57 | 3.63 | 15.93 | 37.27 | 63.38 | 32.51 | 68.98 | 96.26 | 123.64 |
 | [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 2.57 | 3.63 | 15.92 | 37.26 | 63.36 | 32.51 | 68.98 | 96.26 | 120.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
-| [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [2a690a24c](https://github.com/AFK-surf/monoid/commit/2a690a24c1d279c850706f58b9eb198e9d0c707d) Show workflow progress and step logs on GitHub Act | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [78e0e3bc4](https://github.com/AFK-surf/monoid/commit/78e0e3bc45acac13f84ba9f1517239a74e428f0f) app: open notified chats in the current board or c | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
 | [d18bcc13b](https://github.com/AFK-surf/monoid/commit/d18bcc13b15f9a3f38d781ec07eb38d7d9c29ae9) mbui: what a chat's composer made as nodes asks of | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.63 |
 | [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
-| [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.53 |
