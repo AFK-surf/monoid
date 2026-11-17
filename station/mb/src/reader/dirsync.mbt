@@ -382,8 +382,18 @@ async fn Actors::apply_plan(
 
 ///|
 /// sync.commit, its last part (remote.ts `syncCommit` as it was): the plan checked against what the mirror has (a
-/// task's output changed meanwhile is never overwritten) and carried out; the manifest written.
-async fn Actors::sync_commit(self : Actors, work : String, mirror : String, syncing : String, manifest_path : String, version0 : Json, dir : String) -> Json raise {
+/// task's output changed meanwhile is never overwritten) and carried out; the manifest written, with the submodules
+/// the source named (`submodules_part`), whose checkouts the mirror no longer has a submodule for removed first.
+async fn Actors::sync_commit(
+  self : Actors,
+  work : String,
+  mirror : String,
+  syncing : String,
+  manifest_path : String,
+  version0 : Json,
+  dir : String,
+  submodules : Array[(String, String, String)],
+) -> Json raise {
   let manifest = self.read_manifest(manifest_path)
   let version = match manifest {
     Some(m) => num_of(m.value("version")).unwrap_or(0.0)
@@ -424,6 +434,24 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
     _ => {}
   }
   let root = self.rjoin([work, mirror])
+  // A submodule the source no longer has: its checkout goes (its files were never the manifest's), so that what is
+  // synced in its place, if anything, finds nothing there.
+  if self.there(root) {
+    let kept : Map[String, Bool] = {}
+    for s in submodules {
+      kept[s.0] = true
+    }
+    for path in submodules_of_manifest(manifest) {
+      if kept.contains(path) {
+        continue
+      }
+      let abs = try self.file_path(root, path, false) catch { _ => continue }
+      match (try self.lstat(abs) catch { _ => None }) {
+        Some(st) if kind_of_stat(st) == "dir" => self.remove(abs, recursive=true)
+        _ => ()
+      }
+    }
+  }
   // Read again at commit: a task's output may have changed while the source sent its files.
   let verify : Map[String, Bool] = {}
   for s in set {
@@ -486,8 +514,11 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
         next_base.remove(path)
       }
     }
-    let m : Json = { "dir": jstr(dir), "name": jstr(mirror), "version": jnum(version + 1.0), "files": Json::object(next_base) }
-    self.write_whole(manifest_path, js_text(m))
+    let m : Map[String, Json] = { "dir": jstr(dir), "name": jstr(mirror), "version": jnum(version + 1.0), "files": Json::object(next_base) }
+    if submodules.length() > 0 {
+      m["submodules"] = Json::array(submodules.map(s => Json::array([jstr(s.0), jstr(s.1), jstr(s.2)])))
+    }
+    self.write_whole(manifest_path, js_text(Json::object(m)))
   }
   let (written, removed) = try {
     self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
@@ -622,4 +653,133 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
     }
   }
   pieces.length()
+}
+
+///|
+/// Whether `path` names a place inside the mirror for a submodule: relative, / between its parts, none of them empty,
+/// `.`, `..` or `.git`, nothing a shell or Git would take otherwise.
+fn submodule_path_ok(path : String) -> Bool {
+  if path == "" || path.has_prefix("/") || path.has_prefix("-") {
+    return false
+  }
+  for c in path {
+    if c.to_int() < 0x20 || c == '\\' || c == ':' {
+      return false
+    }
+  }
+  path.split("/").map(p => p.to_string()).all(p => p != "" && p != "." && p != ".." && p != ".git")
+}
+
+///|
+/// The submodules a sync's last part names (dirsync_source.mbt `submodules_of`): [path, commit, URL] each, checked; none
+/// from a source from before.
+fn submodules_part(request : Json) -> Array[(String, String, String)] raise {
+  let out : Array[(String, String, String)] = []
+  match field_of(request, "submodules") {
+    Null => ()
+    Array(a) =>
+      for s in a {
+        guard s is Array([String(path), String(id), String(url), ..]) &&
+          submodule_path_ok(path) &&
+          is_blob_id(id) &&
+          url != "" &&
+          !url.has_prefix("-") &&
+          !url.iter().any(c => c.to_int() < 0x20) else {
+          raise refusal("bad submodule")
+        }
+        out.push((path, id, url))
+      }
+    _ => raise refusal("bad submodule")
+  }
+  out
+}
+
+///|
+/// The submodules a mirror's manifest keeps: path, commit, URL.
+fn submodules_kept(manifest : Json?) -> Array[(String, String, String)] {
+  let out : Array[(String, String, String)] = []
+  guard manifest is Some(m) && field_of(m, "submodules") is Array(a) else { return out }
+  for s in a {
+    if s is Array([String(path), String(id), String(url), ..]) && submodule_path_ok(path) && is_blob_id(id) {
+      out.push((path, id, url))
+    }
+  }
+  out
+}
+
+///|
+fn submodules_of_manifest(manifest : Json?) -> Array[String] {
+  submodules_kept(manifest).map(s => s.0)
+}
+
+///|
+/// A word for sh, as it is.
+fn sh_word(s : String) -> String {
+  "'" + s.replace_all(old="'", new="'\\''") + "'"
+}
+
+///|
+/// Where this station may have a submodule's commits already, by its URL's last parts: its shared clones
+/// (`<data>/repos/<owner>/<name>`, `<data>/repos/<name>`, as sessions keep them).
+fn Actors::submodule_clones(self : Actors, url : String) -> Array[String] {
+  let mut u = url
+  while u.has_suffix("/") {
+    u = u.view(end_offset=u.length() - 1).to_string()
+  }
+  if u.has_suffix(".git") {
+    u = u.view(end_offset=u.length() - 4).to_string()
+  }
+  let parts = u.replace_all(old=":", new="/").split("/").map(p => p.to_string()).filter(p => p != "").collect()
+  let ok = (p : String) => p != "." && p != ".." && !p.contains("\\")
+  if parts.length() == 0 || !ok(parts[parts.length() - 1]) {
+    return []
+  }
+  let name = parts[parts.length() - 1]
+  let repos = self.rjoin([self.rdirname(self.remote.root), "repos"])
+  let out : Array[String] = []
+  if parts.length() >= 2 && ok(parts[parts.length() - 2]) {
+    out.push(self.rjoin([repos, parts[parts.length() - 2], name]))
+  }
+  out.push(self.rjoin([repos, name]))
+  out
+}
+
+///|
+/// What checks out a submodule in the mirror, as a task's command's first lines (sh, in the mirror): its path, its
+/// commit and URL, then the clones where it may be already. Nothing done where it is at that commit already (its
+/// build output kept); else its commit fetched (only it, `--depth 1`) from a clone that has it, or from its URL, and
+/// checked out over what is there. One that cannot be leaves the task running without it, said in its log.
+let submodule_fn : String =
+  #|sf_submodule() {
+  #|  p=$1 id=$2 url=$3; shift 3
+  #|  if [ -e "$p/.git" ] && [ "$(git -C "$p" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" = "$id" ]; then return 0; fi
+  #|  { mkdir -p "$p" && { [ -e "$p/.git" ] || git -C "$p" init -q; }; } || { echo "still.fail: submodule $p could not be made here; the task runs without it" >&2; return 0; }
+  #|  for r in "$@"; do
+  #|    if [ -d "$r" ] && git -C "$r" cat-file -e "$id^{commit}" 2>/dev/null && git -C "$p" -c protocol.ext.allow=never -c uploadpack.allowAnySHA1InWant=true fetch -q --no-tags --depth 1 "$r" "$id" 2>/dev/null; then url=; break; fi
+  #|  done
+  #|  if [ -n "$url" ] && ! git -C "$p" -c protocol.ext.allow=never fetch -q --no-tags --depth 1 "$url" "$id"; then
+  #|    echo "still.fail: submodule $p could not be fetched at $id from $url; the task runs without it" >&2; return 0
+  #|  fi
+  #|  if git -C "$p" -c advice.detachedHead=false checkout -q -f --detach "$id"; then echo "still.fail: submodule $p checked out at $id"
+  #|  else echo "still.fail: submodule $p could not be checked out at $id; the task runs without it" >&2; fi
+  #|}
+
+///|
+/// A task's command in a mirror with submodules (its manifest's): first their checkout (`submodule_fn`), then it as
+/// it was. None where the mirror has none.
+async fn Actors::with_submodules(self : Actors, manifest_path : String, command : String) -> String? raise {
+  let kept = submodules_kept(self.read_manifest(manifest_path))
+  if kept.length() == 0 {
+    return None
+  }
+  // (in a subshell of their own: nothing they set is the command's)
+  let lines = ["# still.fail: the mirror's Git submodules first (station_task dir)", "(", submodule_fn]
+  for s in kept {
+    let words = [sh_word(s.0), sh_word(s.1), sh_word(s.2)]
+    words.append(self.submodule_clones(s.2).map(sh_word))
+    lines.push("sf_submodule " + words.join(" "))
+  }
+  lines.push(")")
+  lines.push(command)
+  Some(lines.join("\n"))
 }
