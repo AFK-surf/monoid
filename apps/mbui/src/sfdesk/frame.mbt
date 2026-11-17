@@ -66,8 +66,6 @@ pub(all) struct Wide {
   mut bar_pl : Double
   mut bar_ml : Double
   mut bar_mr : Double
-  /// where the page starts (the column the block takes, where its move has got)
-  mut page_from : Double
   /// the chat last opened here by the frame (the core's last chat taken once per workspace)
   landed : @signals.Signal[String]
   /// the rail's menu (from its right click): the place right clicked ("" the rail), where; a place dragged to another
@@ -136,7 +134,6 @@ pub let wide : Wide = {
   bar_pl: 0.0,
   bar_ml: 0.0,
   bar_mr: 0.0,
-  page_from: 0.0,
   landed: @signals.signal("", same=fn(a, b) { a == b }),
   rail_menu: @signals.signal(None, same=fn(a, b) { a == b }),
   rail_drag: @signals.signal(None, same=fn(a, b) { a == b }),
@@ -220,7 +217,6 @@ fn wide_reset() -> Unit {
   wide.bar_pl = 0.0
   wide.bar_ml = 0.0
   wide.bar_mr = 0.0
-  wide.page_from = 0.0
   wide.landed.set("")
   wide.rail_menu.set(None)
   rail_menu_drawn.val = None

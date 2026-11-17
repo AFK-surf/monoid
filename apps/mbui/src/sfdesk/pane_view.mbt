@@ -171,15 +171,19 @@ fn init {
 
 ///|
 fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
+  // (one read outside any reader (pane_under's island, a press) works it out on its own: through the held computed it
+  // would leave that following what it read with nobody reading it, the lock's topic among them, kept after the last
+  // of the wide frame's nodes has gone: 66-wide-resize. So what the held one reads is let go of with its last reader.)
+  if @signals.active_sub() is None {
+    return pane_room_now(src, w, ww)
+  }
   let room = match room_held.val {
     Some(h) if physical_equal(h.src, src) &&
       h.ww == ww &&
       (physical_equal(h.w, w) || h.w == w) &&
       same_board(h.board, board_frame_src.val) => h.room
     _ => {
-      // (scoped: read one-off outside the graph too (pane_under's), it keeps none of what it read after, the lock's
-      // topic among them, so the narrow window lets that go once the wide frame's readers are gone: 66-wide-resize)
-      let room = @signals.untracked(fn() { @signals.computed_scoped(fn(_) { pane_room_now(src, w, ww) }) })
+      let room = @signals.untracked(fn() { @signals.computed(fn(_) { pane_room_now(src, w, ww) }) })
       room_held.val = Some({ src, board: board_frame_src.val, w, ww, room })
       room
     }
@@ -869,7 +873,6 @@ fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
   wide.brand_h = f.brand
   wide.band = f.band
   wide.mark = f.mark
-  wide.page_from = f.col
   // (the page's width on the block's way: where the block's column goes, the window's less it)
   match (fold_goes.to, fold_goes.node) {
     (Some(b), Some(v)) if fold_going(c.moment()) =>
