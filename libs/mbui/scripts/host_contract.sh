@@ -123,13 +123,14 @@ ADB="$SDK/platform-tools/adb -s $SERIAL"
 # 2026-10-21); what the app itself does is told by its log (android_end.py), not by a dialog
 if [ "$H" = android ]; then $ADB shell settings put global hide_error_dialogs 1 2>/dev/null || true; fi
 
-# (iOS) the simulator's id and state (Booted, Shutdown), "" when there is none of that name
+# (iOS) the simulator's id and state (Booted, Shutdown), "" when there is none of that name: an available one (one of
+# that name on a runtime since taken away stays, unavailable, beside the one made anew)
 ios_device() {
   xcrun simctl list devices -j | "$PY" -c "
 import json,sys
 for ds in json.load(sys.stdin)['devices'].values():
   for x in ds:
-    if x['name']=='$MBUI_IOS_DEVICE': print(x['udid'], x['state']); sys.exit()
+    if x['name']=='$MBUI_IOS_DEVICE' and x.get('isAvailable'): print(x['udid'], x['state']); sys.exit()
 "
 }
 # (iOS) the apps running on simulator $1 (launchd's UIKitApplication:<bundle id>[…] jobs that have a pid), the system's

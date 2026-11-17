@@ -1887,7 +1887,7 @@ test "wide: 文件 from the computer held over the folder say where they go; let
   t.frame()
   assert_true(t.find("松开上传到「文档」") is Some(_), msg="where they go")
   t.drop_files(at.0, at.1, [
-    ("新的/", Bytes::new(0)),
+    ("新的/", Bytes::make(0, b'\x00')),
     ("新的/记录.txt", @utf8.encode("一行字\n")),
     ("清单.txt", @utf8.encode("另一行\n")),
   ])
@@ -1919,7 +1919,7 @@ test "wide: 文件 from the computer let go on the folder, their reading done a 
   // (the host reads them a while, as a device's does: what they hold told when the test says)
   t.picks_by_hand()
   t.drop_files(at.0, at.1, [
-    ("新的/", Bytes::new(0)),
+    ("新的/", Bytes::make(0, b'\x00')),
     ("新的/记录.txt", @utf8.encode("一行字\n")),
     ("清单.txt", @utf8.encode("另一行\n")),
   ])

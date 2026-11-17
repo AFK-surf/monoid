@@ -274,7 +274,7 @@ pub fn service_serve(src : Source, p : ServicePage, req : @ui.SiteRequest, reply
     },
     end: fn(error) {
       match tagging.val {
-        Some(t) if !t.placed => reply.chunk(tagging_take(t, Bytes::new(0), true))
+        Some(t) if !t.placed => reply.chunk(tagging_take(t, Bytes::make(0, b'\x00'), true))
         _ => ()
       }
       reply.end(error~)
@@ -403,7 +403,7 @@ pub fn service_ask(
                     } else {
                       headers
                     },
-                    if get { Bytes::new(0) } else { body },
+                    if get { Bytes::make(0, b'\x00') } else { body },
                     hop + 1,
                     kept + hs.filter(fn(h) { h.0.to_lower() == "set-cookie" }),
                     sink,
