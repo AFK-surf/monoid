@@ -62,6 +62,20 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 }
 
 ///|
+/// The band as a sidebar's block laid out `a` has it (BandAt), `held`: as the lists under it are laid out, on a fold the
+/// open end's all the way (list_brand, list_band), so their rows are not laid out again at each frame; else where the
+/// block's move has got, as the band itself is drawn.
+fn side_band_at(a : SideAt, held : Bool) -> BandAt {
+  {
+    brand: if held { a.list_brand } else { a.brand },
+    band: if held { a.list_band } else { a.band },
+    tape: a.tape,
+    in_bar: a.bar,
+    roots: @ui.tree_corner_roots_now(),
+  }
+}
+
+///|
 /// The chats' sidebar (lists_side's) in node `s` as wide as the sidebar: the lists (sfpages' chats_lists_node: 全部,
 /// 我参与的, 监控中, then 已归档 on its track: archive_pane_node) under the band (新建对话 and the filter: lists_band_node)
 /// and over the foot (lists_foot_node).
@@ -75,16 +89,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
       None => 0
     }
   }
-  let band_at = fn(held : Bool) {
-    let a = at()
-    ({
-      brand: if held { a.list_brand } else { a.brand },
-      band: if held { a.list_band } else { a.band },
-      tape: a.tape,
-      in_bar: a.bar,
-      roots: @ui.tree_corner_roots_now(),
-    } : BandAt)
-  }
+  let band_at = fn(held : Bool) { side_band_at(at(), held) }
   // (under the band and its top row: on a fold the open end's room all the way, while the band moves over them, so
   // their rows are not laid out again at each frame)
   let lists_top = fn() {
@@ -460,13 +465,12 @@ fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -
       ws,
       list_at,
       tips,
-      // (under the top row: its height as the frame last said the block stands, remote_band_h; in a block round at its
-      // corners off the tape (the sidebar shown a while over the page from the folded bar) at least as far under its
-      // top as it is round, so the first station's heading and its ＋ stand clear of its top corners)
+      // (under the top row: its height as the block stands, the open end's all the way on a fold, remote_band_h; in a
+      // block round at its corners off the tape (the sidebar shown a while over the page from the folded bar) at least
+      // as far under its top as it is round, so the first station's heading and its ＋ stand clear of its top corners)
       top=fn() {
         let a = at()
-        lists_room.get() |> ignore
-        let h = remote_band_h()
+        let h = remote_band_h(side_band_at(a, true))
         // (its top right corner: its one radius, else the corner it follows, linked)
         let corner = match a.links {
           Some(k) => dmax(a.round, k[1].radius(@ui.tree_corner_roots_now()))
@@ -487,15 +491,12 @@ fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -
 }
 
 ///|
-/// The room the remote list leaves over it (list_band_h's, with no row of a band): the sidebar's top row, and in a panel
-/// of the tape the room 新建对话's row has over it there (band_new_tape), so the first station's heading and its ＋ stand
-/// clear of the panel's top corners as the chats' first row does; the open band's all the way on the block's way.
-fn remote_band_h() -> Double {
-  let band = wide.band
-  wide.band = wide.list_band
-  let h = list_top_h() + (if wide.tape.get() { band_new_top + band_new_tape_over() } else { 0.0 })
-  wide.band = band
-  h
+/// The room the remote list leaves over it (lists_side_node's lists_top, with no row of a band): the sidebar's top row,
+/// and in a panel of the tape the room 新建对话's row has over it there (band_new_tape), so the first station's heading
+/// and its ＋ stand clear of the panel's top corners as the chats' first row does; laid out `at` (side_band_at's, held:
+/// the open band's all the way on the block's way).
+fn remote_band_h(at : BandAt) -> Double {
+  at.brand + (if at.tape { band_new_top + band_new_tape_over(at~) } else { 0.0 })
 }
 
 ///|
