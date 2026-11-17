@@ -125,3 +125,17 @@ test "sync key node: finishing at any point goes on from the drawn angle and spe
     assert_true((delta - 2.0 * pi / sync_turn_ms).abs() < 0.0002, msg="phase \{phase}: first step \{delta}")
   }
 }
+
+///|
+test "sync key node: the pointer resting on it shows its tip, what it is catching up on" {
+  let words = "正在同步 · 还剩 3 个对话"
+  let syncing = @signals.signal(Some(words))
+  let t = sync_key_tester(syncing)
+  t.check_looks(false)
+  t.run_for(later_ms + @kit.presence_in_ms)
+  let tips = fn() { t.semantics().filter(fn(s) { s.role == Tooltip && s.label == words }).length() }
+  let k = t.get(Status, label=words)
+  t.move_to(k.rect.0 + 17.0, k.rect.1 + 17.0)
+  t.run_for(tip_delay_ms + tip_settled_ms)
+  assert_eq(tips(), 1)
+}
