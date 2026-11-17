@@ -160,12 +160,6 @@ let active_chat_readers : Map[Int, () -> Unit] = Map([])
 pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_nodes_at_start, same=fn(a, b) { a == b })
 
 ///|
-/// Whether a chat's composer on its page made as nodes is made as nodes too (sfpages' composer_node), not an old view
-/// in its list's foot: 实验性功能's 试用新输入框, read with chat_page_nodes as the page is made (chat_page_kind).
-// kept across runs: false as a run begins (reset)
-pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-
-///|
 /// What chat_page_nodes is as a run begins.
 // kept across runs: a value
 let chat_page_nodes_at_start : Bool = false
@@ -176,7 +170,7 @@ let chat_page_nodes_at_start : Bool = false
 /// would read its chat at rest), by its station and session and the kind it is made as (chat_page_kind); none other.
 pub fn chat_page_left_key(p : Page) -> (String, String)? {
   match p {
-    Chat(r) if chat_page_nodes.untracked() && composer_nodes.untracked() =>
+    Chat(r) if chat_page_nodes.untracked() =>
       Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
     _ => None
   }
@@ -194,12 +188,7 @@ fn chat_page_kind_now() -> String {
 /// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
 pub fn chat_page_kind() -> String {
   if chat_page_nodes.get() {
-    // (its composer made as nodes or as an old view: another make of the page, made again in its place as it turns)
-    if composer_nodes.get() {
-      "chat-composed"
-    } else {
-      "chat"
-    }
+    "chat"
   } else {
     "chat-old"
   }
@@ -330,18 +319,20 @@ pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
 /// time on top, `stint`; made while `drawn` says its entry is drawn: shown, or kept shown in place while the one on top
 /// waits, as its island is). What it reads by, the source it keeps (its reads the page's, let go with it), given back:
 /// what is beside it reads by it too. With chat_page_nodes on as the page is made, its inside as what the page is,
-/// one in the other's place at once as it changes: a new chat its old view (what that reads let go as it goes); a chat,
+/// one in the other's place at once as it changes: a new chat its nodes (`new_node`), or its old view where the shell
+/// makes none (what that reads let go as it goes); a chat,
 /// one made so or a new chat become it in place (Nav::become), its inside nodes, chat `r`'s messages made by `body` in
-/// a column, given what makes its composer (by `foot`, its old view in a node of its own, as tall as it is laid out) in
-/// the node it is put in, the foot of the messages' list, and whether its entry is drawn (as `drawn` says). On the
+/// a column, given what makes its composer as nodes (by `foot_node`) in the node it is put in, the foot of the
+/// messages' list, and whether its entry is drawn (as `drawn` says). On the
 /// page's way to another width (a side panel sliding in or out beside it), its column laid out as at the narrower of
 /// where the way set off and where it goes, from the frame it sets off till the one it is there, so that its rows are
 /// laid out anew only at those two (as the old list's laid_w had it held), and moved across by as much as its rows'
 /// words start further in at the width it is drawn at than at the one it is laid out at, so that they go across with
 /// the page, never stepping where it is laid out anew: both the shell's to say, at a node's moment (`narrower`: how much
 /// narrower, how far across; none at rest), and moved aside with all of it (`aside`, as a node is drawn: the pane's page
-/// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, an old view as yet, is laid out at the
-/// width the column is drawn at all the way, and goes its way to another as with_side has it, by itself.
+/// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, is laid out at
+/// the width the column is drawn at all the way. A new chat, where the shell makes it so (`new_node`), is made as nodes
+/// too, over the column, leaving over the chat it becomes.
 pub fn chat_page_made(
   v : @view.View,
   src : Source,
@@ -352,13 +343,13 @@ pub fn chat_page_made(
   stint? : () -> Int = fn() { 0 },
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
-  foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
   foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (Source, @view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
   held? : (@view.View) -> ColumnLaid,
   held_from? : () -> Bool = fn() { true },
+  new_node? : (@view.View, Source) -> Unit,
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
   // (what the shell says of its column read by the page's own source, what it holds the page's, let go with it: never
@@ -376,12 +367,12 @@ pub fn chat_page_made(
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   // (with chat_page_nodes on as the page is made, a chat's made as nodes inside, as what the page is: a new chat its old
   // view, a chat once it has become one in place, Nav::become, its nodes, at once, the one in the other's place)
-  let nodes = match (body, foot) {
-    (Some(b), Some(f)) if @signals.untracked(fn() { chat_page_nodes.get() }) => Some((b, f))
+  let nodes = match body {
+    Some(b) if @signals.untracked(fn() { chat_page_nodes.get() }) => Some(b)
     _ => None
   }
   match nodes {
-    Some((b, f)) => {
+    Some(b) => {
       // (which chat the page is, by its station and session, "" while a new chat; as it was once its entry is gone)
       let was = Ref("")
       v.pick(
@@ -455,16 +446,11 @@ pub fn chat_page_made(
               // (coming to need the viewer while open, felt, as its old view felt it)
               feel_needed_node(col, retained, r)
               b(col, retained, r, fn(n) {
-                // (its height going the way the composer's ground sets out on for what it holds, from that cause's
-                // moment and by its spec, so the room under the last row goes with that ground, one motion:
-                // composer_set_out, foot_resizes)
-                // (its composer made as nodes too, where 试用新输入框 is on as the page is made (chat_page_kind): in the
-                // list's foot, its height going its own way, View::resizes)
-                let composed = @signals.untracked(fn() { composer_nodes.get() })
+                // (its composer made as nodes in the list's foot, its height going its own way, View::resizes)
                 match foot_node {
                   // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
                   // buttons the foot holds made before it under that picture, as over the list they stand on)
-                  Some(make) if composed => {
+                  Some(make) => {
                     n
                     .box(fn(at) {
                       at.flights_under() |> ignore
@@ -485,30 +471,7 @@ pub fn chat_page_made(
                     })
                     |> ignore
                   }
-                  _ => {
-                    let island : Ref[@view.View?] = Ref(None)
-                    island.val = app.nav.page_island(
-                      n,
-                      serial,
-                      fn(c, page) {
-                        page_entry_read(serial, retained, page)
-                        page_read(page)
-                        f(c, retained, r)
-                      },
-                      key~,
-                      natural=true,
-                      // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
-                      // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
-                      over=true,
-                      reshaped=fn(was, now) { foot_resizes(island.val, r, was, now) },
-                    )
-                    // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
-                    // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
-                    // from outside)
-                    |> @ui.old_takes_own
-                    |> i => { i.flights_under() }
-                    |> Some
-                  }
+                  None => ()
                 }
                 // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
                 // at: its own way to another width with_side's)
@@ -542,8 +505,9 @@ pub fn chat_page_made(
       // to draw it leaving, an old view drawing nothing in the frame it is made (the frame the words were sent in drawn
       // with neither the scene nor a composer); what it reads as the new chat let go with it
       // (what the scene is: none; the new chat; leaving over the chat it became; only mounted when the entry begins as
-      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages)
-      let has_scene = @signals.untracked(fn() {
+      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages; none where the
+      // new chat is made as nodes, `new_node`'s below)
+      let has_scene = new_node is None && @signals.untracked(fn() {
         match app.nav.page_of(serial) {
           Some((NewChat, _)) => true
           Some((Chat(r), _)) => leaving is Some(_) && fresh.became.get() == Some(r)
@@ -619,6 +583,45 @@ pub fn chat_page_made(
           at_once=true,
         )
       }
+      // (a new chat made as nodes where the shell makes it so (`new_node`): over the column, the page while it is the
+      // new chat; become its chat (its first words sent: Nav::become), leaving over it as its scene does (new_leave_ms:
+      // View::show's `leave`, how far it has left its View::going), nothing of it pressed, focused or read out as it
+      // leaves, the chat's own under it; come back as it was where its chat was not made; what it reads let go with it)
+      // (none on a page made as a chat: only a new chat becomes one, and comes back as itself where its chat is not made)
+      let made_new = @signals.untracked(fn() { app.nav.page_of(serial) is Some((NewChat, _)) })
+      match new_node {
+        Some(make) if made_new => {
+          // (held while it is the new chat, and while it leaves over the chat it becomes in place (Nav::become); let go
+          // at once as the page becomes anything else: another chat, a place, 设置)
+          let keeps_new = fn() {
+            match app.nav.page_of(serial) {
+              Some((NewChat, _)) => true
+              Some((Chat(r), _)) => fresh.became.get() == Some(r)
+              _ => false
+            }
+          }
+          v.show(at_once=true, keeps_new, fn(hold) {
+            hold.over(Is(true)) |> ignore
+            // (the new chat itself, leaving over the chat it became for new_leave_ms; come back to where it was asked
+            // back before it is gone)
+            hold.show(at_once=true, leave=new_leave_ms, fn() { app.nav.page_of(serial) is Some((NewChat, _)) }, fn(o) {
+              o.over(Is(true)) |> ignore
+              // (on the page's way to another width as what is beside it slides, laid out at the width it goes to all
+              // the way, drawn as the frame says: `narrower`, as a chat's column)
+              match narrower {
+                Some(by) =>
+                  o
+                  .width(By(fn() { Some(by(o).laid) }))
+                  .offset(By(fn() { (-by(o).across, 0.0) }))
+                  |> ignore
+                None => ()
+              }
+              make(o, src.owned_by(o))
+            })
+          })
+        }
+        _ => ()
+      }
     }
     None => {
       // (its old view, on the block's way laid out where and as wide as it is where the way ends (`held`, the
@@ -685,18 +688,8 @@ pub fn chat_page_made(
 }
 
 ///|
-/// The way a chat's composer's ground last set out on for what it holds (a line more, a file, a quote; sfpages'
-/// composer reshape, its `by` changed): its draft, the moment its build said it, and where that way is declared (when
-/// it set out, how long, and how far on it the ground is drawn at a moment: @motion.reshape_way, reshape_share, read
-/// once the frame that set it off is laid out). Said by the composer's build at that cause, none for words sent from
-/// it (their row carries its room) nor once a later build sets out on none; taken by the one height change of its node
-/// in a list's foot it comes out as (foot_resizes).
-// put back as a run starts (reset), said again by each composer's build, taken once
-pub let composer_set_out : Ref[(String, Double, () -> (Double, Double, (Double) -> Double)?)?] = Ref(None)
-
-///|
-/// How far the old composer's foot in a chat's list came down at once as words were sent from it (foot_resizes: the
-/// list takes that in the change their key comes), the chat's draft, the moment they were sent and by how much: what
+/// How far a chat's composer made as nodes came down at once as words were sent from it (sfpages' composer_sent_holds:
+/// the list takes that in the change their key comes), the chat's draft, the moment they were sent and by how much: what
 /// stands beside the list by that foot (对话目录's rail, sfpages' chat_rail_node) drawn from where it stood, down to
 /// where it is laid out on the ground's way (chat_foot_dropped_off), never stepped by half of it in a frame.
 pub let chat_foot_dropped : @signals.Signal[(String, Double, Double)?] = @signals.signal(None)
@@ -721,56 +714,6 @@ pub fn chat_foot_dropped_off(chat : String, t : Double) -> (Double, Double) {
     }
     _ => (0.0, 0.0)
   }
-}
-
-///|
-/// The old view `island` holding chat `r`'s composer in its list's foot come to another height: where its composer's
-/// ground set out on a way for that (composer_set_out), its height goes that very way (View::resizes, kept to its foot:
-/// the composer grows from it): from when the ground set out, as long as its way is declared, at each moment as far on
-/// as the ground is drawn then (its own way read, not one worked out beside it), so the room under the last row and
-/// what stands on the foot go with the ground in the same frames, one way, as the old list's foot went with it
-/// (sfpages' composer_way_for_list). Otherwise at once.
-fn foot_resizes(island : @view.View?, r : ChatRef, was : Double, now : Double) -> Unit {
-  // (words just sent from it: down at once, what the list takes in the change their key comes; what stands beside the
-  // list by it told how far, and from when, chat_foot_dropped)
-  let chat = r.station + ":" + r.session
-  if now < was && !(composer_set_out.val is Some((draft, _, _)) && draft == chat) {
-    match sent_out_at.get(chat) {
-      Some(at) => chat_foot_dropped.set(Some((chat, at, was - now)))
-      None => ()
-    }
-  }
-  guard composer_set_out.val is Some((draft, _, declared)) &&
-    draft == r.station + ":" + r.session &&
-    island is Some(v) else {
-    return
-  }
-  composer_set_out.val = None
-  // (said by the old composer for a person's act on it (a line typed, the cursor come or let go, a file or a quote put
-  // in): its way, where the chat's page moves only for a cause, @view.transition)
-  guard declared() is Some((start, dur, ground)) && dur > 0.0 else {
-    @view.transition(fn() { v.resizes(foot=true) |> ignore })
-    return
-  }
-  // (told after it set out: the rest of its way, from where it has got to)
-  let since = @ui.tree_cause().unwrap_or(start) - start
-  let gone = if since > 0.0 { since } else { 0.0 }
-  let left = dur - gone
-  guard left > 0.0 else { return }
-  let p0 = ground(start + gone)
-  @view.transition(fn() {
-    v.resizes(
-      spec=(left, fn(f) {
-        if p0 >= 1.0 {
-          1.0
-        } else {
-          (ground(start + gone + f * left) - p0) / (1.0 - p0)
-        }
-      }),
-      foot=true,
-    )
-    |> ignore
-  })
 }
 
 ///|
@@ -1808,7 +1751,6 @@ pub fn reset() -> Unit {
   absolute_times.set(false)
   // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
-  composer_nodes.set(false)
   farview_native.set(false)
   board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
@@ -1816,7 +1758,6 @@ pub fn reset() -> Unit {
   emits.clear()
   // words sent flying (flight.mbt)
   flights_reset()
-  composer_set_out.val = None
   chat_foot_dropped.set(None)
   sent_from_at.clear()
   sent_quotes_from_at.clear()

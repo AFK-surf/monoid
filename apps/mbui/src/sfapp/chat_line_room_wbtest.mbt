@@ -50,10 +50,20 @@ fn cr_open(
 }
 
 ///|
-/// `words` typed in the composer and sent.
-fn cr_send(t : @ui.Tester, words : String) -> Unit raise {
+/// The composer pressed, opened as a hand can type in it (its box on its way from the capsule, the list's foot with it:
+/// none of a hand's words go in that frame).
+fn cr_open_field(t : @ui.Tester) -> Unit raise {
   guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
   t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// `words` typed in the composer and sent: opened first (cr_open_field) unless it is already (`opened`).
+fn cr_send(t : @ui.Tester, words : String, opened? : Bool = false) -> Unit raise {
+  if !opened {
+    cr_open_field(t)
+  }
   t.type_text(words)
   tap_send(t)
 }

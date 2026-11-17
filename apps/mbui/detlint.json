@@ -317,14 +317,12 @@
     "cursor-hand": {},
     "tier-outside-shell": {
       "src/sfapp/chat.mbt": 3,
-      "src/sfapp/newchat.mbt": 2,
       "src/sfapp/settings/core.mbt": 3,
       "src/sfapp/viewer_host.mbt": 2,
       "src/sfbase/bars.mbt": 1,
       "src/sfdesk/chat_page.mbt": 1,
       "src/sfdesk/chat_talk.mbt": 1,
       "src/sfdesk/lists.mbt": 6,
-      "src/sfdesk/newchat.mbt": 2,
       "src/sfdesk/settings_frame.mbt": 1
     },
     "fixture-import": {},

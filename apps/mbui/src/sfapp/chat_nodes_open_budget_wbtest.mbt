@@ -72,13 +72,17 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // it 1014 and 943, 325 and 321)
   // (5 made, 4 laid, 1 measured and 9 bindings more in 大屏's again, 2026-11-17: the agent at work's 停止 chip before
   // 只看收发 in its history's head beside the chat; before it 881, 878, 122, 1048)
-  // (2026-11-17, the chat's composer made as nodes (sfpages composer_node, in its list's foot: 试用新输入框, on here) and
+  // (2026-11-17, the chat's composer made as nodes (sfpages composer_node, in its list's foot) and
   // not hosted as an old view: an old view's nodes are none of what is counted here, so what the composer makes (its
   // foot, box, rows, field, send, ＋ and the structures that come and go in it) is counted now where it was not, its
   // field's words measured with the page's, and its list laid out less; each the most of the default rate and 60, 120,
   // 24 and 7, what fell brought down to it: before it (1015, 29, 673, 79, 941), (326, 17, 239, 27, 319), (2443, 483,
   // 2011, 217, 2447), (886, 130, 882, 123, 1057), (564, 366, 617, 96), (721, 382, 911, 125) scrolling up, its frames
   // (140, 102, 125, 28), (160, 105, 146, 28))
+  // (wide's raised, 2026-11-18, once the new chat Home's pane opens on is made as nodes with the page (sfpages
+  // new_chat_node, 试用新对话页): opened from it again, the chat's page lets go of that page's nodes (406, 130 before) and
+  // makes and binds the chat's where the old view's island counted none; cold more made and bound as its pane's page
+  // is made so; the same at the default rate and 60, 120, 24 and 7: before it WIDEBEFORE)
   // (2026-11-18: each wide shell holds what opens over its panels as nodes, closed: a right click's menu, the rail's, its
   // adder and 待处理, sfdesk overlays_node: wide cold 6 more made, 2 laid)
   // (2026-11-18: signin & viz cards pick their decided/open state on View::pick with leave cross-fade instead of instant
@@ -88,7 +92,12 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 503, 1922, 217, 2471), (552, 359, 601, 87), (726, 372, 915, 114) scrolling up, its frames (139, 100, 124, 28))
   // (2 made and 1 laid more on a phone, 2026-11-18: the chat bar's pick between its title and keys and ⌘F's bar, open
   // from the chat's sheet's 在对话中查找 (chat_bar_node); before it (1028, 31, 660, 80, 968) and (339, 19, 226, 28, 346))
-  "phone cold": (1030, 31, 661, 80, 968),
+  // (2026-11-18: the new chat made as nodes with its composer (试用新对话页, sfpages new_chat_node), the chat's own composer
+  // made as nodes on every page of it (composer_node): 大屏's Home's pane the new chat's nodes, let go as the chat opens
+  // from it and made again as it is come back to, where the old view's island counted none; scrolling up on a phone the
+  // composer's own nodes laid out with the list; the same at the default rate and 60, 120, 24 and 7: before it (2473,
+  // 503, 1914, 217, 2470), (897, 132, 853, 121, 1062), (551, 358, 593, 87))
+  "phone cold": (1027, 31, 659, 80, 967),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -99,20 +108,23 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // places dimming) are bindings worked out again, each part only as its own ways are told: phone again 38 more
   // bindings, the same at 60, 120, 24 and 7; before it 144)
   "phone again": (4, 3, 62, 0, 182),
-  "wide cold": (2473, 503, 1914, 217, 2470),
+  "wide cold": (2473, 503, 1914, 217, 2472),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
   // (2026-11-19: 大屏's side panel taken back with the chat's page kept left (sfdesk tape_side_node's each kept by
   // entry), what it reads held while asked again; the same at 60, 120, 24 and 7: before it (94, 116, 245, 29, 290))
-  "wide again": (22, 44, 70, 4, 172),
-  "phone up": (551, 358, 593, 87, 0),
+  // (2026-11-19: Home's pane the new chat made as nodes (above), the chat's page kept left let go of it as the chat
+  // opens from it again and its nodes made and bound where the old view's island counted none; every bar brought to what
+  // is counted now, the most of the default rate and 60, 120, 24 and 7: wide again before it (22, 44, 70, 4, 172))
+  "wide again": (174, 325, 184, 23, 332),
+  "phone up": (543, 354, 606, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
   // where a bare box was pressed by hand; before it 724 and 914)
-  "wide up": (725, 371, 906, 114, 0),
-  "phone up frame": (138, 100, 123, 28, 0),
-  "wide up frame": (160, 103, 152, 28, 0),
+  "wide up": (716, 367, 906, 114, 0),
+  "phone up frame": (137, 99, 123, 28, 0),
+  "wide up frame": (159, 102, 152, 28, 0),
 }
 
 ///|
@@ -275,9 +287,8 @@ fn chat_nodes_open_measured(
       Some(s) => s
       None => {
         reset()
-        // (its composer made as nodes too, 试用新输入框: what the bars below were raised for)
+        // (its composer made as nodes too: what the bars below were raised for)
         @sfbase.chat_page_nodes.set(true)
-        @sfbase.composer_nodes.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
         // (through the app's own client as a phone's core is, so its messages come by key as a device's do:
         // sfbench's chat-real)
@@ -438,7 +449,6 @@ fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, I
   let (_, w, h, platform) = s
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let src = chat_nodes_window_source(n)
   let read0 = @sfbase.chat_messages_read.val
   open_chat(long_ref)
@@ -569,7 +579,6 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
     let (name, w, h, platform) = win
     new_run()
     @sfbase.chat_page_nodes.set(true)
-    @sfbase.composer_nodes.set(true)
     let client = @core.Client::new(fn(_) {  })
     let called : Array[String] = []
     let src = chat_kept_left_source(client, called)

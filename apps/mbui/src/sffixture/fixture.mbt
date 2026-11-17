@@ -2021,7 +2021,6 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
   ("chatPage", true),
-  ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
 ]

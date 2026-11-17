@@ -1,4 +1,4 @@
-// The composer made as nodes (sfpages' composer_node: 实验性功能's 试用新输入框) on a chat's page made as nodes, over
+// The composer made as nodes (sfpages' composer_node: 实验性功能's 试用新对话页) on a chat's page made as nodes, over
 // the fake core of composer_wbtest.mbt: what is typed told the core as it is typed, send taking it off the draft and
 // sending it, the field one node all along, its box kept a moment after the focus goes, what is put into its draft
 // from outside it taken at that moment.
@@ -106,7 +106,6 @@ test "made as nodes: words a visualization asks to send go into its draft at onc
 test "made as nodes, keyboard and mouse: 抄送, named with what it copies to, opens a menu of the chat's Slack and Feishu threads; each ticked or not asks the core (chat.cc), the menu kept open to tick the next" {
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let asked : Array[Json] = []
   let base = fixture("chat-cc")
   let src : Source = {
@@ -173,7 +172,6 @@ test "made as nodes, on a touch screen under what is said over it: opened and le
   }
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   // (its prompt cache over and its station down: two lines said over it, the foot taller than its least)
   let src = fixture("chat-cold-offline")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -203,7 +201,6 @@ test "made as nodes, on a touch screen under what is said over it: opened and le
 test "made as nodes, keyboard and mouse: 抄送's menu has each thread's platform mark before its place, none of a check's column, a ticked one's check at its end alone, ticked at once" {
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let src = fixture("chat-cc")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, pointing=Mouse)

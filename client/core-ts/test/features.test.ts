@@ -72,7 +72,7 @@ test("the_older_chat_page_choice_reads_as_its_switch", () => {
   assert.equal(featureEnabled("chatPage", { chatPage: "nodes" }, false), false);
   assert.equal(featureEnabled("chatPage", { chatPage: "nodes", experimental: { board: true } }, true), true);
   assert.equal(featureEnabled("chatPage", {}, true), false);
-  assert.deepEqual(Object.keys(FEATURES), ["chatPage", "composerNodes", "farviewNative", "board", "terminal", "stationMove"]);
+  assert.deepEqual(Object.keys(FEATURES), ["chatPage", "farviewNative", "board", "terminal", "stationMove"]);
   assert.deepEqual(stationFeatureIds(), ["terminal", "stationMove"]);
 });
 
@@ -89,7 +89,7 @@ test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () =>
   assert.equal(v(values, 1).features.board, false);
   // a station's own are its overview's to say, never the prefs'
   assert.equal("terminal" in v(values, 1).features, false);
-  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["chatPage", "composerNodes", "farviewNative", "board"] : ["board"]);
+  assert.deepEqual(v(values, 1).experimentalItems.map((i: J) => i.id), test ? ["chatPage", "farviewNative", "board"] : ["board"]);
 
   assert.ok((await ask(host, core, ui, 2, "prefs.set", { experimental: { board: true, farviewNative: true } })).ok !== undefined);
   apply(host, values);

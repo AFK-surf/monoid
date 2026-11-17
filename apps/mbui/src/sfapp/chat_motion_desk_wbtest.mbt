@@ -2,7 +2,7 @@
 // a card taken off the composer by its ✕ till none is left, the side panel opened and closed beside the chat (by its
 // switch, as a press asks it: sfdesk's side_toggle), words sent beside it, and the bell to what waits to be decided.
 // Each held to what its cause makes of it frame by frame: what the composer's ground does the list's room under the
-// last row does with it, one way (sfbase's composer_set_out, foot_resizes); the chat's column slides across with the
+// last row does with it, one way (the composer's View::resizes); the chat's column slides across with the
 // page as the panel takes its room, what is in its foot with it, never standing still to step to its place at the end
 // (sfbase's chat_page_made: its column's one offset, its way across and its way aside together).
 
@@ -26,18 +26,16 @@ let dk_into_slide_ms : Double = 100.0
 let dk_frame_ms : Double = 1000.0 / 60.0
 
 ///|
-/// The fixture's chat on `screen` (`h` high, else the screen's), made as nodes (its composer too where `composer_nodes`
-/// says), its rows on the host's pixels, at rest at its end.
+/// The fixture's chat on `screen` (`h` high, else the screen's), made as nodes (its composer too),
+/// its rows on the host's pixels, at rest at its end.
 fn dk_open(
   screen : (String, Double, Double, Int),
   h? : Double,
-  composer_nodes? : Bool = false,
 ) -> (@ui.Tester, Source) {
   let (_, w, sh, platform) = screen
   let h = h.unwrap_or(sh)
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(composer_nodes)
   fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
   let src = fixture("chat")
   open_chat(dk_chat)
@@ -202,10 +200,9 @@ test "大屏: the side panel opened and closed by its switch pressed, one's own 
 }
 
 ///|
-test "大屏, either composer: one's own words broken anew as the side panel opens and closes are drawn at their size every frame, never squeezed and sprung back; the rows and the composer's room under it go the page's one way, never a step nor a way of their own after" {
-  for nodes in [true, false] {
-  let (t, _) = dk_open(dk_screens[0], composer_nodes=nodes)
-  let which = if nodes { "composer made as nodes" } else { "old composer" }
+test "大屏: one's own words broken anew as the side panel opens and closes are drawn at their size every frame, never squeezed and sprung back; the rows and the composer's room under it go the page's one way, never a step nor a way of their own after" {
+  let (t, _) = dk_open(dk_screens[0])
+  let which = "composer made as nodes"
   // (lines enough that its bubble is as wide as one may be, at either width: wider where the panel is gone than the
   // column is drawn as it sets off closing, and fewer lines there than beside the panel)
   let mine = "侧栏打开的时候这一段会在气泡里多折几行，收起的时候又少几行，字的大小每一帧都不变才对；这段话故意写得很长，让气泡在窄栏和宽栏里都撑到最宽，收起侧栏的那一刻它按宽栏排好、比当时画出来的栏还宽，开头的字也不能被栏的左边裁掉。"
@@ -309,7 +306,6 @@ test "大屏, either composer: one's own words broken anew as the side panel ope
       )
     }
   }
-  }
 }
 
 ///|
@@ -381,12 +377,13 @@ test "the bell to what waits to be decided shows while any of it is out of sight
 }
 
 ///|
-/// The pictures the tree draws now whose keys are not among `before`, at all opaque: each drawn (node, x, y).
-fn dk_new_pictures(before : Array[String]) -> Array[(@view.NodeId, Double, Double)] {
+/// The pictures the tree draws now by nodes not among `before` (the composer's own tiles among those), at all opaque:
+/// each drawn (node, x, y).
+fn dk_new_pictures(before : Array[@view.NodeId]) -> Array[(@view.NodeId, Double, Double)] {
   let out = []
   for d in @ui.view_tree().unwrap().drawn() {
     match d.image {
-      Some((k, _, _)) if !before.contains(k) && d.alpha > 0.0 && d.bones == 0L => out.push((d.id, d.x, d.y))
+      Some(_) if !before.contains(d.id) && d.alpha > 0.0 && d.bones == 0L => out.push((d.id, d.x, d.y))
       _ => ()
     }
   }
@@ -409,11 +406,10 @@ test "大屏: a picture sent with a file and words, past the station delivering 
   t.run_for(@ui.move_most_ms)
   t.type_text("截图和日志都在这里")
   t.run_for(@ui.move_most_ms)
-  let before = []
+  let before : Array[@view.NodeId] = []
   for d in @ui.view_tree().unwrap().drawn() {
-    match d.image {
-      Some((k, _, _)) => before.push(k)
-      None => ()
+    if d.image is Some(_) {
+      before.push(d.id)
     }
   }
   tap_send(t)
@@ -786,7 +782,8 @@ test "a new chat's first words sent, the page made as nodes: they fly from where
         Some(d) => path.push((at, d.x, d.y))
         None =>
           if path.is_empty() {
-            match @motion.measured_rect(t.ctx(), "new/composer") {
+            // (the old page's as it measured it; one made as nodes, as the tree lays it out)
+            match (match @motion.measured_rect(t.ctx(), "new/composer") { Some(r) => Some(r); None => @sfpages.composer_node_box("new:ws1") }) {
               Some(r) => field = Some(r)
               None => ()
             }
@@ -843,7 +840,8 @@ test "大屏: a new chat's composer, as its first words are sent, comes down fro
       Some(d) => path.push((at, d.2))
       None =>
         if path.is_empty() {
-          match @motion.measured_rect(t.ctx(), "new/composer") {
+          // (the old page's as it measured it; one made as nodes, as the tree lays it out)
+          match (match @motion.measured_rect(t.ctx(), "new/composer") { Some(r) => Some(r); None => @sfpages.composer_node_box("new:ws1") }) {
             Some(r) => field = Some(r)
             None => ()
           }
@@ -889,27 +887,26 @@ test "大屏: a picture sent just after the side panel opened sets out from wher
     #|wait 1200
     #|exit
   let (name, w, h, platform) = dk_screens[0]
-  // (the composer's tile as last drawn, and the picture the window's tree first draws)
+  // (the composer's tile as last drawn, and the picture the window's tree first draws by a node of its own once the
+  // tile is there: the composer made as nodes, its tile a node of the tree too, the sent row's picture another)
   let mut tile : (Double, Double, Double, Double)? = None
   let mut first : (Double, Double, Double, Double, Double)? = None
-  dk_host_each("chat", w, h, platform, script, fn(t, at) {
+  let tiles : Array[@view.NodeId] = []
+  dk_host_each("chat", w, h, platform, script, fn(_, at) {
     guard first is None else { return }
-    let flown = match @ui.view_tree() {
-      Some(tr) =>
-        tr.drawn().filter(fn(d) { d.image is Some(_) && d.alpha > 0.05 && d.w >= 24.0 && d.y > h / 2.0 }).map(fn(d) {
-          (d.x, d.y, d.w, d.h)
-        })
+    let low = match @ui.view_tree() {
+      Some(tr) => tr.drawn().filter(fn(d) { d.image is Some(_) && d.alpha > 0.05 && d.w >= 24.0 && d.y > h / 2.0 })
       None => []
     }
-    // (the composer an old view hosted, its tile none of the tree's: a picture the tree draws there is what flies)
-    let all = t.drawn_images().filter(fn(i) { i[8] > 0.05 && i[2] >= 24.0 && i[1] > h / 2.0 })
-    match flown.get(0) {
-      Some(f) => first = Some((at, f.0, f.1, f.2, f.3))
-      None =>
-        match all.last() {
-          Some(i) => tile = Some((i[0], i[1], i[2], i[3]))
-          None => ()
-        }
+    for d in low {
+      if tiles.contains(d.id) {
+        tile = Some((d.x, d.y, d.w, d.h))
+      } else if tiles.is_empty() || tile is None {
+        tiles.push(d.id)
+        tile = Some((d.x, d.y, d.w, d.h))
+      } else if first is None {
+        first = Some((at, d.x, d.y, d.w, d.h))
+      }
     }
   })
   match (tile, first) {
@@ -994,21 +991,33 @@ test "大屏: a video sent flies from its tile in the composer, not drawn first 
   // tree draws in the first frame it draws any, the sent message's)
   let tiles : Array[(Double, Double)] = []
   let first : Array[(Double, Double, Double, Double)] = []
-  dk_host_each("chat-attach-video", w, h, platform, script, fn(t, _) {
+  // (the composer made as nodes, its tiles nodes of the tree too: those it draws first, the sent message's those of
+  // other nodes drawn after)
+  let tile_nodes : Array[@view.NodeId] = []
+  dk_host_each("chat-attach-video", w, h, platform, script, fn(_, _) {
     guard first.is_empty() else { return }
-    let flown = match @ui.view_tree() {
-      Some(tr) =>
-        tr.drawn().filter(fn(d) { d.image is Some(_) && d.alpha > 0.05 && d.w >= 24.0 }).map(fn(d) { (d.x, d.y, d.w, d.h) })
+    let drawn = match @ui.view_tree() {
+      Some(tr) => tr.drawn().filter(fn(d) { d.image is Some(_) && d.alpha > 0.05 && d.w >= 24.0 })
       None => []
     }
+    if tile_nodes.is_empty() {
+      let low = drawn.filter(fn(d) { d.y > h / 2.0 })
+      if low.length() == 2 {
+        for d in low {
+          tile_nodes.push(d.id)
+          tiles.push((d.x, d.y))
+        }
+      }
+      return
+    }
+    let flown = drawn.filter(fn(d) { !tile_nodes.contains(d.id) })
     if flown.is_empty() {
-      let now = t.drawn_images().filter(fn(i) { i[8] > 0.05 && i[2] >= 24.0 && i[1] > h / 2.0 }).map(fn(i) { (i[0], i[1]) })
-      if now.length() == 2 {
-        tiles.clear()
-        tiles.append(now)
+      tiles.clear()
+      for d in drawn.filter(fn(d) { tile_nodes.contains(d.id) }) {
+        tiles.push((d.x, d.y))
       }
     } else {
-      first.append(flown)
+      first.append(flown.map(fn(d) { (d.x, d.y, d.w, d.h) }))
     }
   })
   guard tiles.length() == 2 && first.length() >= 2 else {

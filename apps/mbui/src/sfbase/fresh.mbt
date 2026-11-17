@@ -64,7 +64,16 @@ pub fn fresh_reset() -> Unit {
   fresh.foot.set(0.0)
   fresh_composer_at.set(None)
   fresh_fly_after.set(0.0)
+  fresh_back.val = false
 }
+
+///|
+/// Whether the new chat's page made as nodes is the new chat again in the change under way, its first words' chat not
+/// made (new_chat_node's `back`): one made anew in it, its leaving over by then, comes back from gone (its scene over
+/// new_leave_ms, what is by its composer over new_fade_ms, as the old page's do: leaving_back); one still leaving
+/// comes back as it is (View::show's). Said till that change's frame is drawn.
+// kept across runs: false as a new chat is begun (fresh_reset), and once the frame of the change that set it is drawn
+pub let fresh_back : Ref[Bool] = Ref(false)
 
 ///|
 /// A new chat's scene leaving as it becomes the chat, fading where it is; its choices fading where they are, sooner.

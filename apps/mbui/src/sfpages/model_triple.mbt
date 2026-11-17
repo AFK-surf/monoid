@@ -552,12 +552,41 @@ pub fn model_triple(
 /// least first) its runtime, how hard it thinks, how fast, who runs it (its mark, its name, its allowance's chips); a
 /// ring in place of its chevron while what was picked is on its way; on its hover's ground while the hand is on it and
 /// while its panel is open. Pressed, its panel opens beside it (open_triple_panel); borrowing a model from there is
-/// asked in the presenters' confirm. `saved`: as model_triple's. Nothing while the pick is not read.
-pub fn model_triple_node(parent : @view.View, src : Source, station : String, of : String, saved? : String = "") -> Unit {
+/// asked in the presenters' confirm. `saved`: as model_triple's. Nothing while the pick is not read. `face`, `small`,
+/// `floating`, `bound` and `on_bound` as model_triple's: drawn of the face a page has of it (a new chat's), its panel's
+/// own pick asked as the hand comes to it and opened whole once answered (open_triple_whole); its words a composer's
+/// row's; a capsule of the composer's glass over the page; what it runs another's to say, a press `on_bound`'s.
+/// `ask_open`: asked from elsewhere as it is made (a new chat's `model` asked of its page), its panel opened as it is
+/// first placed, as the old one's is as it is seen.
+pub fn model_triple_node(
+  parent : @view.View,
+  src : Source,
+  station : String,
+  of : String,
+  saved? : String = "",
+  face? : () -> Json?,
+  small? : Bool = false,
+  floating? : Bool = false,
+  bound? : () -> Bool = fn() { false },
+  on_bound? : (@sf.Beside) -> Unit,
+  ask_open? : Bool = false,
+) -> Unit {
   let me = station + "\u{1}" + of
   let dkey = "pick.save/" + station + "/" + of
-  let v_held = @sfbase.topic_value_held(src, "pick", pick_params(station, of))
-  let v = fn() { v_held.get() }
+  let v = match face {
+    Some(f) => f
+    None => {
+      let v_held = @sfbase.topic_value_held(src, "pick", pick_params(station, of))
+      fn() { v_held.get() }
+    }
+  }
+  // (a face is drawn only of a control that runs on a model: there are models to pick)
+  let offers = fn() { face is Some(_) || items(v(), "options").length() > 0 || triple_other_stations(v()) }
+  let (name_look, words_look, muted_look) = if small {
+    (triple_name_xs, triple_words_xs, triple_muted_xs)
+  } else {
+    (triple_name, triple_words, triple_muted)
+  }
   let value = fn() { field(v(), "value") }
   let vo = fn() { field(v(), "valueOption") }
   let account = fn() { field(v(), "account") }
@@ -565,26 +594,77 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
   let opened = @signals.signal(false, same=fn(a, b) { a == b })
   // borrowing a model of another station's, asked first (borrow_dialog's, put up by the presenters)
   let asks = fn(borrow : Json?) { borrow_ask(src, station, of, borrow) }
-  parent.show(fn() { v() is Some(Object(_)) }, fn(o) {
-    o.box(fn(b) {
-      @sf.style_node(b, fn() { triple_style }, in_row=true)
+  parent.show(fn() { v() is Some(Object(_)) }, fn(b) {
+      // (the control the node its row holds, its parts the ones it holds itself: where its row leaves out what has not
+      // the room, it is as wide as what it keeps of them, View::fits)
+      @sf.style_node(
+        b,
+        fn() {
+          if floating {
+            glass_chooser_box
+          } else if small {
+            triple_small
+          } else {
+            triple_style
+          }
+        },
+        in_row=true,
+      )
+      // (over the page, not in a row: on the composer's glass, as the page's other choices)
+      if floating {
+        b.glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
+      }
       // (no wider than its row leaves it: what it says given way within it, its parts left out, its name cut last)
       b
+      .row(Is(true))
+      .gap(Is(triple_gap))
+      .fits(Is(true))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       |> ignore
-      @sf.hover_ground_node(b, extra=fn() { opened.get() })
-      let can = fn() { (items(v(), "options").length() > 0 || triple_other_stations(v())) && !doing(dkey) }
-      @sf.presses_node(b, fn() {
-        guard @signals.untracked(can) && triple.open != me else { return }
-        triple.asked = ""
+      @sf.hover_ground_node(b, on=fn() { !floating }, extra=fn() { opened.get() })
+      // (`bound`: what it runs is another's to say, a preset's: shown, not opened, no chevron)
+      let can = fn() { offers() && !doing(dkey) && !bound() }
+      // (drawn of its face: its panel's pick asked as the hand comes to it, ahead of the press it opens at: a pointer come
+      // to rest over it, a finger or a pointer gone down on it; let go as it leaves, where nothing else holds it)
+      if face is Some(_) && !src.read_only && !b.in_bones() {
+        b.reacts(fn() { can() && (@sf.hovered_node(b) || b.pressed()) }, fn(hand) {
+          if hand {
+            triple_ask(src, station, of)
+          } else {
+            triple_let_go(me)
+          }
+        })
+      }
+      let go = fn() {
         let (x, y, w, h) = b.placed_window_now()
-        opened.set(true)
         // (its panel gone up from it where it stands low in the window: short of room for it under it, more over it)
         let under = b.window().1 - (y + h)
         let up = under < triple_up_need && y > under
-        open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
-      }, on=can)
+        if @signals.untracked(bound) {
+          match on_bound {
+            Some(f) => if @signals.untracked(offers) { f(Node(b)) }
+            None => ()
+          }
+          return
+        }
+        guard @signals.untracked(can) && triple.open != me else { return }
+        triple.asked = ""
+        opened.set(true)
+        match face {
+          Some(_) => open_triple_whole(src, station, of, At(x, y, w, h), saved, up~)
+          None => open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
+        }
+      }
+      @sf.presses_node(b, go, on=fn() { can() || (bound() && on_bound is Some(_)) })
+      // (asked from elsewhere as it is made (`ask_open`): opened as it is first placed, as the old one's is as it is seen)
+      if ask_open {
+        @ui.after_frame(fn() {
+          if b.alive() && !@signals.untracked(bound) {
+            go()
+          }
+        })
+      }
       // (each part what its row holds itself, so the row leaves it out where it has not the room: View::drops)
       let part = fn(r : @view.View, drop : Int, shown : () -> Bool, body : (@view.View) -> Unit) {
         r.show(shown, fn(x) {
@@ -593,24 +673,19 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
           body(x)
         })
       }
-      let dot = fn(x : @view.View) { @sf.words_node(x, fn() { "·" }, fn() { triple_muted }) |> ignore }
-      b.pick(fn() { items(v(), "options").length() == 0 }, fn(r, none) {
-        // (its parts in a row, as the capsule's: what has not the room left out of it, View::drops)
-        r
-        .row(Is(true))
-        .gap(Is(triple_gap))
-        .lines_up(Is(Some(Middle)))
-        .fits(Is(true))
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        |> ignore
-        if none {
-          @sf.words_node(r, fn() { @sf.t("web-main.model.none") }, fn() { triple_muted }) |> ignore
-          return
-        }
-        r.pick(fn() { (text(field(vo(), "maker"), "id"), runtime()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
-        // (within the room it has, the most it can say: model_triple's; the model never, its name cut short last)
-        @sf.words_node(r, fn() {
+      let dot = fn(x : @view.View) { @sf.words_node(x, fn() { "·" }, fn() { muted_look }) |> ignore }
+      let r = b
+      // (none to pick: said so)
+      r.show(fn() { !offers() }, fn(n) { @sf.words_node(n, fn() { @sf.t("web-main.model.none") }, fn() { muted_look }) |> ignore })
+      r.show(offers, fn(m) {
+        m.pick(fn() { (text(field(vo(), "maker"), "id"), runtime()) }, fn(k, x) { @sf.maker_mark_node(k, x.0, x.1, 14.0) |> ignore })
+      })
+      // (within the room it has, the most it can say: model_triple's; the model never, its name cut short last)
+      r.show(offers, fn(nm) {
+        // (what may be left out leaving for it first, its name cut short only then: View::fit_whole, its own and its
+        // words')
+        nm.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_whole(Is(true)) |> ignore
+        @sf.words_node(nm, fn() {
           let model = text(value(), "model")
           if model == "" {
             @sf.t("web-main.model.pick")
@@ -622,7 +697,7 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
               (n, _) => n
             }
           }
-        }, fn() { triple_name })
+        }, fn() { name_look })
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         .cuts(Is(true))
@@ -630,11 +705,12 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
         // (what may be left out leaving for it first, its name cut short only then: View::fit_whole)
         .fit_whole(Is(true))
         |> ignore
-        part(r, triple_drop_runtime, fn() { !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) }, fn(x) {
+      })
+        part(r, triple_drop_runtime, fn() { offers() && !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) }, fn(x) {
           dot(x)
-          @sf.words_node(x, fn() { @settings.runtime_short(runtime()) }, fn() { triple_words }) |> ignore
+          @sf.words_node(x, fn() { @settings.runtime_short(runtime()) }, fn() { words_look }) |> ignore
         })
-        part(r, triple_drop_effort, fn() { text(value(), "effort") != "" || items(v(), "efforts").length() > 0 }, fn(x) {
+        part(r, triple_drop_effort, fn() { offers() && (text(value(), "effort") != "" || items(v(), "efforts").length() > 0) }, fn(x) {
           dot(x)
           @sf.words_node(x, fn() {
             let effort = text(value(), "effort")
@@ -643,21 +719,21 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
             } else {
               effort_text(effort)
             }
-          }, fn() { triple_words })
+          }, fn() { words_look })
           |> ignore
         })
-        part(r, triple_drop_effort, fn() { text(v(), "fastText") != "" }, fn(x) {
+        part(r, triple_drop_effort, fn() { offers() && text(v(), "fastText") != "" }, fn(x) {
           dot(x)
-          @sf.words_node(x, fn() { text(v(), "fastText") }, fn() { triple_words }) |> ignore
+          @sf.words_node(x, fn() { text(v(), "fastText") }, fn() { words_look }) |> ignore
         })
         // (who runs it: its mark where it has one, then its name, then its allowance's chips: model_triple's)
         let profile = fn() { field(account(), "profile") }
         let marked = fn() { profile() is Some(Object(_)) }
-        part(r, triple_drop_account, fn() { account() is Some(Object(_)) && marked() }, fn(x) {
+        part(r, triple_drop_account, fn() { offers() && account() is Some(Object(_)) && marked() }, fn(x) {
           dot(x)
           x.pick(fn() { (text(profile(), "mark"), runtime()) }, fn(m, k) { @sf.maker_mark_node(m, k.0, k.1, 14.0) |> ignore })
         })
-        r.show(fn() { account() is Some(Object(_)) }, fn(x) {
+        r.show(fn() { offers() && account() is Some(Object(_)) }, fn(x) {
           @sf.style_node(x, fn() { if marked() { triple_alone } else { triple_part } }, in_row=true)
           x.drops(Is(triple_drop_name)) |> ignore
           x.show(fn() { !marked() }, dot)
@@ -665,25 +741,22 @@ pub fn model_triple_node(parent : @view.View, src : Source, station : String, of
             match text(account(), "level") {
               "amber" => triple_amber
               "red" => triple_red
-              _ => triple_words
+              _ => words_look
             }
           })
           |> ignore
         })
-        part(r, triple_drop_account, fn() { account() is Some(Object(_)) && marked() }, fn(x) {
+        part(r, triple_drop_account, fn() { offers() && account() is Some(Object(_)) && marked() }, fn(x) {
           @sf.quota_chips_node(x, fn() { field(profile(), "quota") }, small=true)
         })
-      })
       // what was picked on its way: a ring in place of the chevron
-      b.pick(fn() { doing(dkey) }, fn(e, saving) {
-        if saving {
+      b.pick(fn() { (doing(dkey), bound()) }, fn(e, k) {
+        if k.0 {
           @sf.spinner_node(e, size=12.0) |> ignore
-        } else {
+        } else if !k.1 {
           @sf.icon_node(e, "chevron-down", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
         }
       })
-    })
-    |> ignore
   })
 }
 

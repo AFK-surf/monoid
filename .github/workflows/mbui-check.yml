@@ -828,6 +828,7 @@ jobs:
     outputs:
       files: ${{ steps.files.outputs.files }}
       pkg_files: ${{ steps.files.outputs.pkg_files }}
+      matrix: ${{ steps.files.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh main
@@ -840,8 +841,18 @@ jobs:
           echo "the packages' files: ${pkg_files:-(none)}"
           echo "files=$files" >> "$GITHUB_OUTPUT"
           echo "pkg_files=$pkg_files" >> "$GITHUB_OUTPUT"
+          # (at 120 and 60 a second in two parts where the files' seconds at 120 by scripts/page-seconds.txt (90 for one it
+          # has not) are ten minutes or more: one runner's five could not hold them, test.sh's APP_PART dealing them)
+          secs=$(printf '%s\n' $files | awk -v tbl=apps/mbui/scripts/page-seconds.txt 'BEGIN { while ((getline < tbl) > 0) if ($1 !~ /^#/ && NF >= 5) t[$1] = ($4 ~ /^[0-9]+$/ ? ($4 == 0 ? 1 : $4) : 90) } NF { sub(/^src\/sfapp\//, ""); sum += ($1 in t ? t[$1] : 90) } END { print sum + 0 }')
+          if [ "$secs" -ge 600 ]; then
+            matrix='[{"fps":"120","part":"1/2"},{"fps":"120","part":"2/2"},{"fps":"60","part":"1/2"},{"fps":"60","part":"2/2"},{"fps":"24","part":""}]'
+          else
+            matrix='[{"fps":"120","part":""},{"fps":"60","part":""},{"fps":"24","part":""}]'
+          fi
+          echo "their seconds at 120 a second: $secs"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
   rates-changed:
-    name: native (the branch's changed test files at ${{ matrix.fps }} fps)
+    name: native (the branch's changed test files at ${{ matrix.fps }} fps${{ matrix.part && format(' part {0}', matrix.part) || '' }})
     needs: [app-build, native, rates-files]
     if: ${{ !cancelled() && (needs.rates-files.outputs.files != '' || needs.rates-files.outputs.pkg_files != '') && (needs.rates-files.outputs.files == '' || needs.app-build.result == 'success') && (needs.rates-files.outputs.pkg_files == '' || needs.native.result == 'success') }}
     runs-on: ubuntu-24.04
@@ -849,9 +860,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fps: ["120", "60", "24"]
+        include: ${{ fromJSON(needs.rates-files.outputs.matrix) }}
     env:
       FPS: ${{ matrix.fps }}
+      # (a part of them where they are dealt in two: rates-files' matrix)
+      APP_PART: ${{ matrix.part }}
       MBUI_TEST_MOTION: ${{ (matrix.fps == '120' || matrix.fps == '60') && 'count' || '' }}
       MOTION_OUT: ${{ github.workspace }}/motion.txt
       # (none: no sfapp file, test.sh's APP_FILES=none)

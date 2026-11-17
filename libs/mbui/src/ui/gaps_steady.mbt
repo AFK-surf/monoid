@@ -113,7 +113,7 @@ fn Tester::gaps_steady_faults(self : Tester, now : Double, period : Double) -> A
     return out
   }
   // (each line drawn once, seen, in the window)
-  let said = self.words_said().filter(fn(w) { w.5 >= words_over_seen_least })
+  let said = self.gaps_words().filter(fn(w) { w.5 >= words_over_seen_least })
   let count : Map[String, Int] = Map([])
   for w in said {
     count[w.0] = count.get(w.0).unwrap_or(0) + 1
@@ -239,4 +239,85 @@ fn Tester::hold_gaps_steady(self : Tester) -> Unit {
       @halt.saying(said)
     }
   }
+}
+
+///|
+/// The words drawn as gaps_steady measures them (Tester::words_said's, read out): a field of the window's tree's
+/// placeholder as faded as it is painted, by its colour's alpha, none of it where words are in the field (one focused,
+/// its placeholder drawn in no ink, is no words seen), each else as Tester::words has it (an old view's as it is).
+fn Tester::gaps_words(self : Tester) -> Array[(String, Double, Double, Double, Double, Double)] {
+  self.reads_own()
+  let c = g()
+  let out = []
+  // (in the box of an old view let go since the old frame was built: not drawn, though its nodes are there till the old
+  // frame is built again (a frame drawn by the window's tree alone, or painted alone, builds none))
+  let let_go = fn(i : Int) {
+    let mut p = i
+    let mut gone = false
+    while p >= 0 && !gone {
+      if old_box_owners.get(p) is Some((_, id)) {
+        gone = !old_islands.iter().any(fn(o) { o.id == id })
+      }
+      p = c.nodes[p].parent
+    }
+    gone
+  }
+  for i in 0..<c.count {
+    let n = c.nodes[i]
+    // (a field's placeholder too, as Android's hint is words of their own)
+    if n.bones == 0L &&
+      (n.kind == kind_text || n.kind == kind_rich || n.kind == kind_editor) &&
+      n.text != "" &&
+      !let_go(i) {
+      let (x, y) = c.drawn_at(i)
+      let mut alpha = 1.0
+      let mut p = i
+      while p >= 0 {
+        alpha = alpha * c.nodes[p].opacity
+        match c.drawn_entry(p) {
+          Some(e) => alpha = alpha * e.look_now().alpha
+          None => ()
+        }
+        p = c.nodes[p].parent
+      }
+      if !n.sem_hid {
+        out.push((n.text, x, y, n.fw, n.fh, alpha))
+      }
+    }
+  }
+  // (and the words of the window's tree's nodes, where and as faded as they are drawn, as Tester::find finds them)
+  match view_tree() {
+    Some(tree) =>
+      for d in tree.drawn() {
+        // (a field's placeholder too, its hint: view_words_found)
+        let words = view_words_found(d)
+        if words != "" && d.bones == 0L {
+          let alpha = match tree_fields.get(d.id) {
+            Some(tf) =>
+              if tf.st.text != "" || tf.st.marked != "" {
+                0.0
+              } else {
+                let ph = match tf.view.lent(tree_field_colors_lent) {
+                  Some(f) => {
+                    let (_, hint, _) = @signals.untracked(f)
+                    if hint == tf.st.ph_color {
+                      tf.st.ph_shown()
+                    } else {
+                      hint
+                    }
+                  }
+                  None => tf.st.ph_shown()
+                }
+                d.alpha * (ph & 0xFFL).to_double() / 255.0
+              }
+            None => d.alpha
+          }
+          if tree.reads_out(d.id) {
+            out.push((words, d.x, d.y, d.w, d.h, alpha))
+          }
+        }
+      }
+    None => ()
+  }
+  out
 }

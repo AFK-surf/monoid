@@ -278,9 +278,6 @@ fn composing_reset() -> Unit {
   composing.hint_shown.set("")
   composing.taking.set(false)
   composing.corners.clear()
-  // (what its box was last shaped for: a run's, never the next's, whose first build would take the one before's as
-  // its ground set out, its list's foot going that way: composer_foot_told)
-  composer_shaped_by.val = ""
   composing_node_reset()
 }
 
@@ -692,7 +689,8 @@ pub fn composer(
     foot=!spec.roomy && @sf.native_side(),
     at?=if sent_lets_go { Some(composer_released_at(spec.draft)) } else { sent_out },
   )
-  composer_foot_told(c, spec.draft, holds, shape, moved || sent_lets_go || held_lines > 0, sent_out is Some(_))
+  // (what it is shaped for and how, kept for what stands round it)
+  composing.shaped = Some((holds, shape))
   // (its ＋ and send drawn whole on their way, its field going up past them as it opens: composer_hint_wbtest, the user
   // 2026-10-30 「输入框盖住了加号和发送」)
   for part in [(plus, "plus"), (words, "words"), (send_i, "send"), (chosen, "choices"), (said, "note")] {
@@ -3539,42 +3537,3 @@ fn composer_open_box_at(line : Double, corner : Double) -> Double {
 // kept across runs: a value (no field of it changes)
 let chat_foot_top : @ui.Style = @ui.css("w=Full pt=S3 align=ACenter")
 
-///|
-/// What draft `draft`'s composer is shaped for and how as it was built (`holds`, its box's reshape's `by` and `spec`):
-/// kept for what stands round it (composing's `shaped`), and its ground setting out for what it holds at this cause
-/// told what holds it in a list's foot on a page made as nodes, whose height goes the same way from the same moment
-/// (sfbase's composer_set_out, foot_resizes), as the old list's foot took composer_way_for_list's. Not where it
-/// `carried` (words sent from it hold it or let go of it; gone to another page), nor where words were just `sent` from it
-/// (at the press: the list takes that as its foot giving back room in the change its sent key comes,
-/// composer_sent_nodes_wbtest), whose foot is at once as before; kept through another build at this same moment, said
-/// anew at the next. Emptied by a hand (its last card's ✕, its lines cleared) is no send: its foot goes down with its
-/// ground (chat_motion_desk_wbtest; it was taken for a send by the draft come to nothing, and the list fell in one
-/// frame by all its ground went down by).
-fn composer_foot_told(
-  c : @ui.Ctx,
-  draft : String,
-  holds : String,
-  shape : @motion.Spec,
-  carried : Bool,
-  sent : Bool,
-) -> Unit {
-  composing.shaped = Some((holds, shape))
-  // (shaped for nothing before, as it was switched to or laid anew: what it is shaped for now is where it is, no set-out)
-  if holds != "" && composer_shaped_by.val != "" && holds != composer_shaped_by.val && !carried && !sent {
-    @sfbase.composer_set_out.val = Some((draft, c.moment(), fn() {
-      match (@motion.reshape_way(c, "composer/box"), @motion.reshape_share(c, "composer/box")) {
-        (Some((start, dur)), Some(share)) => Some((start, dur, share))
-        _ => None
-      }
-    }))
-  } else if @sfbase.composer_set_out.val is Some((_, at, _)) && at != c.moment() {
-    @sfbase.composer_set_out.val = None
-  }
-  composer_shaped_by.val = holds
-}
-
-///|
-/// What the composer's box was last shaped for as it was built (its reshape's `by`): a change of it is its ground
-/// setting out (composer_foot_told).
-// put back as a run starts (composer's reset), said again by each build of the composer
-let composer_shaped_by : Ref[String] = Ref("")

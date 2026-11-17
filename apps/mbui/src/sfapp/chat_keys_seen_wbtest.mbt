@@ -83,8 +83,10 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the reply 
   for screen in cr_screens {
     // (the line under what was sent from its delivery on, the reply 1400 ms after, the turn's end later)
     let t = cr_open(screen, (fix_deliver_ms, 1400.0, 1000.0), on_pixels=true)
+    // (its field opened first: what was sent goes from the press's moment)
+    cr_open_field(t)
     let sent = t.time()
-    cr_send(t, cr_sent)
+    cr_send(t, cr_sent, opened=true)
     let gap = sent + fix_deliver_ms + 1400.0 - 50.0 - t.time()
     if gap > 0.0 {
       t.run_for(gap)
@@ -175,8 +177,10 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the reply 
   // message came out of its picture at work (message_agent_node's agent_out_steps); the coordinator of the migration)
   for screen in cr_screens {
     let t = cr_open(screen, (fix_deliver_ms, 1400.0, 1000.0), on_pixels=true)
+    // (its field opened first: what was sent goes from the press's moment)
+    cr_open_field(t)
     let sent = t.time()
-    cr_send(t, cr_sent)
+    cr_send(t, cr_sent, opened=true)
     let comes = sent + fix_deliver_ms + 1400.0
     let out = comes + @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms()
     let gap = comes - 50.0 - t.time()
@@ -210,6 +214,8 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the first 
     let t = cr_open(screen, (fix_deliver_ms, 1.0e7, 1.0e7), on_pixels=true)
     guard composer_field(t) is Some((fx, fy0, fw, fh0)) else { fail("\{screen.0}: no composer's field") }
     t.tap(fx + fw / 2.0, fy0 + fh0 / 2.0)
+    // (opened as a hand can type in it: its box on its way from the capsule first)
+    t.run_for(@ui.move_most_ms)
     t.type_text(cr_sent)
     guard composer_field(t) is Some((_, fy, _, fh)) else { fail("\{screen.0}: no composer's field") }
     tap_send(t)

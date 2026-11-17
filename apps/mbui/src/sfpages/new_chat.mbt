@@ -1006,26 +1006,58 @@ fn new_send(
   // (sent_from_composer, as send_in_chat's; mbui's View::flies_in), as the page becomes the chat in this change)
   let from = if carried { None } else { sent_from_composer(c, src, d, station) }
   let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
+  new_send_go(src, frame.sent, v, station, key, make, d, rk, row, r, fn() {
+    if carried {
+      @sfbase.flight_carry_into(c, d.key, draft, rk, row)
+    } else if from is Some(_) {
+      // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
+      @sfbase.sent_out_said(c, station + ":" + key)
+    }
+  }, fn() {
+    fresh.room.set(@motion.measured(c, "new/composer").unwrap_or(0.0))
+    @sfbase.fresh_composer_at.set(@motion.measured_rect(c, "new/composer"))
+    fresh.foot.set(@motion.measured(c, "new/foot").unwrap_or(0.0))
+    @sfbase.became_starts(c, wide=!frame.in_place)
+  }, @sfbase.leaving_back)
+}
+
+///|
+/// What follows a new chat's first message sent from either page (new_send's, new_chat_node's), its row `row` of `rk`
+/// in the list from now: the page becomes chat `r` (by its key `key`, made for it where `make`), what carries its words
+/// said first (`carries`), its scene leaving from here (`leaves`: as the page that sent it draws that, said before the
+/// chat's page mounts), the frame told (`sent`); what the core does, in order: the
+/// words taken, the chat made, what is written meanwhile on into its draft; then the message sent into it, once both
+/// are. The chat not made: the page the new chat again, its scene back (`back`), what was taken back in its composer,
+/// saying why; the message not taken in: back in the chat's composer.
+fn new_send_go(
+  src : Source,
+  sent : (ChatRef) -> Unit,
+  v : Json?,
+  station : String,
+  key : String,
+  make : Bool,
+  d : Writing,
+  rk : String,
+  row : String,
+  r : ChatRef,
+  carries : () -> Unit,
+  leaves : () -> Unit,
+  back : () -> Unit,
+) -> Unit {
+  let fresh = @sfbase.fresh
+  let draft = station + ":" + key
   let sig = @sfbase.picked_sig(v)
   fresh.starting.set(true)
   fresh.sending.set(true)
   fresh.sent.set(true)
   fresh.made.set(key)
   fresh.made_sig.set(sig)
-  if carried {
-    @sfbase.flight_carry_into(c, d.key, draft, rk, row)
-  } else if from is Some(_) {
-    // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
-    @sfbase.sent_out_said(c, station + ":" + key)
-  }
+  carries()
   // the page becomes the chat, in place, now: the scene leaving over it from here (new_chat_left), with the words
   // (all of what the chat's page reads as it mounts — its scene, its composer's room and place, its foot, its fly_after —
   // said before `became` mounts it)
   fresh.scene.set(v)
-  fresh.room.set(@motion.measured(c, "new/composer").unwrap_or(0.0))
-  @sfbase.fresh_composer_at.set(@motion.measured_rect(c, "new/composer"))
-  fresh.foot.set(@motion.measured(c, "new/foot").unwrap_or(0.0))
-  @sfbase.became_starts(c, wide=!frame.in_place)
+  leaves()
   fresh.became.set(Some(r))
   @sfbase.writing_starting(src, d, true)
   // what the core does, in order: the words taken, the chat made, what is written meanwhile on into its draft; then
@@ -1129,7 +1161,7 @@ fn new_send(
             if had_cursor {
               composer_take_focus()
             }
-            @sfbase.leaving_back()
+            back()
             app.nav.become(NewChat)
           }
           // (what was taken comes back with what is written meanwhile: composer.carry)
@@ -1142,9 +1174,10 @@ fn new_send(
   // what is written meanwhile goes on in the chat's draft
   @sfbase.writing_carry(src, d.key, draft)
   new_chat_reset()
-  (frame.sent)(r)
+  sent(r)
   app.nav.become(Chat(r))
 }
+
 
 // ── the run picker ────────────────────────────────────────────────────────
 

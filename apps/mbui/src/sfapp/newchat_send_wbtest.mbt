@@ -307,8 +307,12 @@ test "a new chat's first words sent on a short page: nothing of its scene the fo
     t.tap_text("做任何事")
     t.type_text("把发布说明写一下")
     t.run_for(@ui.move_most_ms)
-    // the foot's top: what is seen under it is the choices' and the composer's alone
-    let top = 470.0 - @motion.measured(t.ctx(), "new/foot").unwrap()
+    // the foot's top: what is seen under it is the choices' and the composer's alone (the old page's as it measured it;
+    // the page made as nodes, its band of glass across the window's foot)
+    let top = match @motion.measured(t.ctx(), "new/foot") {
+      Some(h) => 470.0 - h
+      None => t.drawn_glass().fold(init=470.0, fn(a, g) { if g.2 >= 389.0 && g.1 > 100.0 && g.1 < a { g.1 } else { a } })
+    }
     let under = fn() { t.glyphs_seen().filter(fn(g) { g.3 > top + 1.0 }).length() }
     let before = under()
     tap_send(t)
@@ -362,7 +366,7 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     assert_true(app.nav.top() is Chat(_))
     t.run_for(new_leave_ms)
     assert_true(t.words().filter(fn(w) { w.0 == title && w.5 > 0.0 }).is_empty())
-  }, old_only="the nodes page drops the new chat's scene as it becomes the chat: its fade would take an old island more (old-island only falls), decided not done (2026-11-16)")
+  })
 }
 
 ///|
@@ -635,13 +639,20 @@ test "a new chat's first words: the room under its rows goes down to where the c
     // (every frame drawn from the press on, as a display draws them: the composer let go of as the words set out, its
     // room under the rows on the list's way with it, not a step)
     // (the chat's list's, the last list drawn, once it is the only one: the new chat's page has a list of its own
-    // before, leaving as the chat comes)
+    // before, leaving as the chat comes; the old view's foot its last row, the page made as nodes' its list's own, held
+    // apart from its rows (View::scrolls_window's `foot`): the room from where they end to the window's foot, a row
+    // that comes making its way into it)
     let foot = fn() {
       let lists = t.list_row_boxes()
       if !(app.nav.top() is Chat(_)) || lists.length() != 1 || lists[0].length() == 0 {
         -1.0
       } else {
-        lists[0][lists[0].length() - 1].3
+        let (_, y, _, h) = lists[0][lists[0].length() - 1]
+        if both_nodes.val {
+          844.0 - (y + h)
+        } else {
+          h
+        }
       }
     }
     let mut was = foot()

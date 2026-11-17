@@ -20,6 +20,7 @@ fn window_case(
   tucks? : Int,
   cover? : Double = 0.0,
   presses? : Bool = false,
+  tall_of? : (Int) -> Double = fn(_) { 40.0 },
 ) -> WindowCase {
   let scroll = @view.Scroll::list()
   let keys = @signals.signal(Array::makei(10, fn(i) { i }), same=fn(a, b) { a == b })
@@ -30,7 +31,7 @@ fn window_case(
     match heights.get(k) {
       Some(h) => h
       None => {
-        let h = @signals.signal(40.0, same=fn(a, b) { a == b })
+        let h = @signals.signal(tall_of(k), same=fn(a, b) { a == b })
         heights[k] = h
         h
       }
@@ -321,6 +322,18 @@ test "ListPlace::bring: a block brought to the top of where it shows (an offset 
   k.tree.frame(390.0, 844.0) |> ignore
   let (_, y7, _, _) = k.live[7].rect()
   assert_eq((k.scroll.at(k.tree), y7), (450.0, -10.0))
+}
+
+///|
+test "ListPlace::bring: a block never measured brought deep into itself (an offset past what it is counted at): made and measured as it is asked, where it was asked" {
+  // (its blocks none laid out yet as it is first made, each 120 tall but 2, 600, all counted 80 till they are: 2
+  // brought 480 into itself, past where its count ends, as a chat's page opens where it was left)
+  let place = @view.ListPlace::new()
+  place.bring(2, offset=480.0)
+  let k = window_case(place~, tall_of=fn(i) { if i == 2 { 600.0 } else { 120.0 } })
+  guard k.live.get(2) is Some(b) else { fail("2 not made: \{Repr(k.shown())}") }
+  let (_, y, _, h) = b.rect()
+  assert_eq((y, h), (-480.0, 600.0))
 }
 
 ///|

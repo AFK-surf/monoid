@@ -190,11 +190,12 @@ fn chat_body_nodes(
     }
   })
   chat_bar_handed_node(v, src, r)
-  chat_drop_node(v, src, r, fn() { held.val }, shows)
+  chat_drop_node(v, src, r.station + ":" + r.session, fn() { r.station }, fn() { held.val }, shows)
 }
 
 ///|
-/// A row of the 文件 tab carried over chat `r`'s page made with its inside nodes (`v`; chat_body_nodes), as the old pane
+/// A row of the 文件 tab carried over the page made with its inside nodes of the chat whose draft is `draft` on station
+/// `station()` as it is let go (`v`; chat_body_nodes; the new chat's, new_frame_node's `over`), as the old pane
 /// had it (drop_hint, chat_drop): while it is where it would land on the page were it let go (drop_on_page) but on the
 /// composer (`composer`'s node), frosted over all of it with 松开以添加到消息 under the row's mark, drawn only; let go on the page, into the
 /// chat's draft (composer.add), named by its path or sent as a file as the chat takes what is dragged in. Where it was
@@ -203,11 +204,11 @@ fn chat_body_nodes(
 fn chat_drop_node(
   v : @view.View,
   src : Source,
-  r : ChatRef,
+  draft : String,
+  station : () -> String,
   composer : () -> @view.View?,
   shows : () -> Bool,
 ) -> Unit {
-  let draft = r.station + ":" + r.session
   v.box(fn(h) {
     h.over(Is(true)).presses(Is(false)) |> ignore
     h.show(
@@ -262,7 +263,7 @@ fn chat_drop_node(
       guard !carried && shows() && ftab.let_go is Some((item, x, y)) else { return }
       guard drop_on_page(v, x, y) is Some(_) else { return }
       ftab.let_go = None
-      writing_drop(src, writing(src, draft), r.station, [@sfpages.dropped_of(item)], @sfpages.drops_as_files(src, draft))
+      writing_drop(src, writing(src, draft), station(), [@sfpages.dropped_of(item)], @sfpages.drops_as_files(src, draft))
     },
     at_start=false,
   )
@@ -279,18 +280,3 @@ fn drop_on_page(v : @view.View, x : Double, y : Double) -> @view.NodeId? {
   }
 }
 
-///|
-/// Chat `r`'s composer in its messages' list's foot where its page is made with its inside nodes (sfbase's
-/// chat_page_nodes: chat_page_made's `foot`), at its own height, never less than it takes opened with one line (its
-/// being opened or let go moves none of the messages: composer_open_room, as chat_talk's room keeps), `apart` as
-/// chat_composer's; nothing over it or let go into it yet (chat_talk's layers).
-fn chat_composer_nodes(c : @ui.Ctx, src : Source, r : ChatRef, apart : Bool) -> Unit {
-  guard @sfbase.workspace_in_view(src).0 is Some(w) else { return }
-  let foot = c.box(style=@ui.style(w=Full, min_h=Fixed(@sfpages.composer_open_room(c, c.width))), fn() {
-    c.spacer()
-    // (its head alone, as the composer reads it: sfbase's chat_view_now; a word streamed into a message builds none of
-    // it again)
-    @sfpages.chat_composer(c, src, w, r, @sfbase.chat_view_now(src, r), apart~)
-  })
-  @motion.scope(c, foot, bottom=true)
-}

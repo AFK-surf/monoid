@@ -624,7 +624,6 @@ pub fn open_mode(mode : String) -> Unit {
     @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
   }
   if mode.has_prefix("newchat") {
-    app.nav.rise(NewChat)
     // (newchat-station-models-many: more of this station's than the panel shows without its search)
     if mode == "newchat-station-models" || mode == "newchat-station-empty" || mode == "newchat-station-models-many" {
       @sffixture.new_fix.station_models = true
@@ -736,6 +735,9 @@ pub fn open_mode(mode : String) -> Unit {
         @sfpages.new_chat_ask("model")
       _ => ()
     }
+    // (risen once what it is over is said: the core's newChat it asks as it comes on top (page_opens_node) the
+    // mode's, a page made once as nodes reading it then)
+    app.nav.rise(NewChat)
   } else if mode == "home-bars" {
     bar.open_panel(true, at=0.0)
   } else if mode == "place" {

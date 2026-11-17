@@ -3371,7 +3371,11 @@ fn View::scrolls_window_ids(
           i = i - 1
         }
         from
-      } else if pressed_holds || (all.top(ai) + all.h(ai) > top && all.top(ai) < top + vh) {
+      } else if pressed_holds ||
+        // (and a block asked for not measured yet, counted at `est` alone: its foot may reach past `top` once it is
+        // measured, as a long message brought deep into itself does, so it is made and measured in this pass first)
+        (asked && !to_end && !all.known(ai)) ||
+        (all.top(ai) + all.h(ai) > top && all.top(ai) < top + vh) {
         // (held by what was pressed in it, the block shows by that alone, where what is over that comes to now: what
         // shows goes out from it, never found by its place as counted at the last layout. As tall as it was then, what
         // it opened over the pressed grown since by more than a screen (no frame for 88 ms) put it off what shows: let

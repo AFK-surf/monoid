@@ -99,8 +99,6 @@ fn chat_vs_again(
       None => {
         reset()
         @sfbase.chat_page_nodes.set(nodes)
-        // (its composer made as nodes too, 试用新输入框: what the bars below were raised for)
-        @sfbase.composer_nodes.set(nodes)
         // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
         // the key off Home under both pages alike)
         @sfbase.board_feature.set(true)
@@ -287,7 +285,7 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// plp_narrow 1658 before; wide md's 1305 in both), once what lights a message whole is the list's band, drawn under all its rows once
 /// (View::scrolls_window's `bands`): its each's slot one node more of the page, its rows' grounds bound no more.
 /// Again 2026-11-17 once the chat's composer is made as nodes on the new page (sfpages composer_node, in its list's
-/// foot; 试用新输入框, on here), the old page's still an old view: on the old page it is built as the shell's old islands
+/// foot), the old page's still an old view: on the old page it is built as the shell's old islands
 /// are at rest at Home (none of it over `idle`), on the new one its nodes at rest are made, so the new page counts what
 /// it made where it counted none (phone card's, plp_narrow card's, tape card's and wide card's nodes up: 2621, 2654,
 /// 1319 and 1256 before), and lays out less; every bar brought to what is counted now, rounded up, the most of the

@@ -177,25 +177,6 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 }
 
 ///|
-/// How far closed chat `r`'s side panel is as node `n` is drawn (1 closed, 0 open): on the tape (its panel a card of
-/// its own) at once by `open`; off it, with the panel's column (`side_col` against `side_whole`). (Read again as the
-/// column's way ends and what it showed is let go of, side_left: at 1 then, exactly.)
-fn side_closed_part(src : Source, n : @view.View, r : ChatRef, open : Bool) -> Double {
-  if @sf.in_pane() {
-    return if open { 0.0 } else { 1.0 }
-  }
-  let _ = panel_own.leaving.get()
-  let whole = side_whole(src, n)
-  if whole <= 0.0 {
-    return if open { 0.0 } else { 1.0 }
-  }
-  let key = chat_key(r)
-  let _ = side_way(key)
-  let col = side_col(src, n, key, open)
-  dmax(0.0, dmin(1.0, 1.0 - col / whole))
-}
-
-///|
 /// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out (less than none: wider), and
 /// how far across it is moved (chat_page_made's `narrower`): while its panel's column slides, as where it goes, from the
 /// moment it sets off, moved across as laid_toward has it (the old list's laid_w and list_shift: laid out anew only as
@@ -205,24 +186,39 @@ fn side_closed_part(src : Source, n : @view.View, r : ChatRef, open : Bool) -> D
 /// at rest, and over a page too narrow for both (the page as wide as it is), none, laid out as wide as it is.
 fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
   let pane = pane_w_at(src, n)
-  guard app.nav.page_of(serial) is Some((Chat(r), _)) else { return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 } }
-  let way = side_way(chat_key(r))
+  // (a chat's; or the new chat's made as nodes beside its Station 文件 (new_side_node), its column centred in what it
+  // is drawn in all the way, as it is at rest: by half of how much narrower it is laid out)
+  let (key, open, centred) = match app.nav.page_of(serial) {
+    Some((Chat(r), _)) => (chat_key(r), fn() { side_now(src, r).0.length() > 0 }, false)
+    Some((NewChat, _)) =>
+      match @sfbase.workspace_in_view(src).0 {
+        Some(w) => ("new:" + w.id, fn() { new_files_open(src, w.id) && new_drive_station(src, w) is Some(_) }, true)
+        None => return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 }
+      }
+    _ => return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 }
+  }
+  let way = side_way(key)
   way.said()
   let t = n.drawn_while(fn(at) { way.goes_at(at) })
   if pane < side_both_least {
     return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 }
   }
   if t == @double.infinity || !way.goes_at(t) {
-    let open = side_now(src, r).0.length() > 0
+    let open = open()
     let to = if open { side_whole(src, n) } else { 0.0 }
     // (about to set off: as it is still, where the column is (side_setting_off), laid out anew only as the way sets off,
     // its rows told then: side_slides)
-    if side_setting_off(chat_key(r), open) {
+    if side_setting_off(key, open) {
       return { by: 0.0, across: 0.0, laid: pane - way.target(), toward: pane - way.target(), toward_by: 0.0 }
     }
     return { by: 0.0, across: 0.0, laid: pane - to, toward: pane - to, toward_by: 0.0 }
   }
-  laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
+  let laid = laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
+  if centred {
+    { ..laid, across: -laid.by / 2.0 }
+  } else {
+    laid
+  }
 }
 
 ///|
@@ -265,7 +261,9 @@ fn laid_across(now : Double, laid : Double, wide : Double) -> @sfbase.ColumnLaid
 ///|
 /// The side panel of the chat page `serial` of the stack (a chat's, or the new chat's once it becomes one) in node `v`,
 /// the row its page is in, after it, read by `src` (the page's, chat_page_made's: what it reads let go with the page): its column (side_col), moved aside with the page; in it, while it shows anything,
-/// the panel as wide as it is at rest (cut to the column while it slides beside the page) and its edge.
+/// the panel as wide as it is at rest (cut to the column while it slides beside the page) and its edge. The new chat's,
+/// while the page is that, made as nodes with it (its new_node's: sfbase's chat_page_nodes), its Station 文件 alone:
+/// new_side_node.
 fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLayer) -> Unit {
   let chat = fn() {
     match app.nav.page_of(serial) {
@@ -273,9 +271,30 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       _ => None
     }
   }
-  v.pick(at_once=true, fn() { chat().map(chat_key) }, fn(col, key) {
-    guard key is Some(key) && @signals.untracked(chat) is Some(r) else {
+  // (the new chat's, made as nodes as the page was: its old view has its own beside it, side_beside)
+  let composed = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
+  let new_of = fn() {
+    match app.nav.page_of(serial) {
+      Some((NewChat, _)) if composed => @sfbase.workspace_in_view(src).0
+      _ => None
+    }
+  }
+  let key = fn() {
+    match chat() {
+      Some(r) => Some(chat_key(r))
+      None => new_of().map(fn(w) { "new:" + w.id })
+    }
+  }
+  v.pick(at_once=true, key, fn(col, key) {
+    guard key is Some(key) else {
       col.width(Is(Some(0.0))) |> ignore
+      return
+    }
+    guard @signals.untracked(chat) is Some(r) else {
+      match @signals.untracked(new_of) {
+        Some(w) => new_side_node(col, src, w, key, tips)
+        None => col.width(Is(Some(0.0))) |> ignore
+      }
       return
     }
     let open = fn() { side_now(src, r).0.length() > 0 }
@@ -368,7 +387,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       })
     })
     // its edge, beside the page only
-    col.show(at_once=true, fn() { !over() && open() }, fn(e) { side_edge_node(e, src, r, tips) })
+    col.show(at_once=true, fn() { !over() && open() }, fn(e) { side_edge_node(e, src, fn() { side_change(src, r, "clear", None) }, tips) })
   })
 }
 
@@ -418,9 +437,9 @@ fn side_view_node(
 }
 
 ///|
-/// Chat `r`'s panel's edge (ResizeHandle) in node `n`, over its column's left, half over the page: dragged, its width
-/// (kept while the app runs); pressed, the panel closed; pressed twice, its own width again.
-fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer) -> Unit {
+/// A page's panel's edge (ResizeHandle) in node `n`, over its column's left, half over the page: dragged, its width
+/// (kept while the app runs); pressed, the panel closed (`close`); pressed twice, its own width again.
+fn side_edge_node(n : @view.View, src : Source, close : () -> Unit, tips : @sf.TipLayer) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   n.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-@sf.handle_out, 0.0))) |> ignore
   // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go)
@@ -435,7 +454,7 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
     fn(said, _) {
       match said {
         Dragging(x) | Dropped(x) => panel_own.width.set(Some(x))
-        Pressed => side_change(src, r, "clear", None)
+        Pressed => close()
         Twice => panel_own.width.set(None)
         Untouched => ()
       }

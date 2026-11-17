@@ -4462,7 +4462,6 @@ test "the viewer stands in with the picture a file was picked as here: one sent,
 fn film_page(mode : String, script : String, w? : Double = 390.0, h? : Double = 844.0, platform? : Int = 2) -> (@ui.Tester, Source) raise {
   new_run()
   @sfbase.chat_page_nodes.set(true)
-  @sfbase.composer_nodes.set(true)
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

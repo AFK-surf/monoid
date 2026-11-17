@@ -27,13 +27,9 @@ fn fake_core(
   on_call? : (String, Json) -> Unit = fn(_, _) {  },
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too, `composed`:
-  // sfbase's composer_nodes)
+  // (the chat's page made as nodes, its composer too, where `nodes` or `composed` says so: sfbase's chat_page_nodes)
   if nodes || composed {
     @sfbase.chat_page_nodes.set(true)
-  }
-  if composed {
-    @sfbase.composer_nodes.set(true)
   }
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
@@ -985,7 +981,7 @@ test "the core's marks for words typed, answered between frames: the field draws
     outside_each(fn(wide, looks, nodes, at) raise {
       let heard : Array[String] = []
       let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["ref.marks"])
-      t.tap_text("发消息")
+      outside_tap_field(t, "发消息")
       t.type_text("同一个工作区的 @[发布清单]")
       t.run_for(outside_enter_ms)
       assert_true(outside_called(heard, "ref.marks") > 0, msg=at)
@@ -1001,7 +997,7 @@ test "the core's bound for words pasted, answered between frames: words pasted p
     outside_each(fn(wide, looks, nodes, at) raise {
       let heard : Array[String] = []
       let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["paste.info"])
-      t.tap_text("发消息")
+      outside_tap_field(t, "发消息")
       t.run_for(outside_enter_ms)
       assert_true(outside_called(heard, "paste.info") > 0, msg=at)
       t.paste(long_paste())
@@ -1018,7 +1014,7 @@ test "the core's bound for words pasted, answered between frames: words pasted p
 /// Files put into a chat's draft while its station is not reached (a 文件 tab's row added to it, files let go on it)
 /// were taken and let go of with nothing said (2026-11-17): every refusal says what to do next.
 test "files put into the draft of a chat whose station is not reached: none goes up, and a toast says why and what to do, with either composer" {
-  // (the old one, and the one made as nodes: sfbase's composer_nodes)
+  // (the old one, and the one made as nodes: sfbase's chat_page_nodes)
   for composed in [false, true] {
     let calls : Array[Made] = []
     let t = fake_core(calls, composed~, over=fn(name, tp) {

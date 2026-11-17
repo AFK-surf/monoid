@@ -43,12 +43,85 @@ pub fn chat_bar_wide_node(
       _ => None
     }
   }
+  // (the new chat made as nodes with the page (its new_node's: sfbase's chat_page_nodes), where a station lends its
+  // files: its 文件 alone, new_bar_of; its old view has its own over it, new_chat_page's)
+  let composed = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
+  let new_of = fn() {
+    match page() {
+      Some(NewChat) if composed =>
+        match @sfbase.workspace_in_view(src).0 {
+          Some(w) if new_drive_station(src, w) is Some(_) => Some(w)
+          _ => None
+        }
+      _ => None
+    }
+  }
   // (by the chat it is of: another one become in its place another bar, at once, as tall as a bar from the first: none
   // become one (a new chat, a place, 设置 left for a chat) is no bar growing)
-  v.switch_by(fn() { chat().map(fn(r) { (r.station, r.session) }) }, fn(b, which) {
-    guard which is Some(_) else { return }
-    guard @signals.untracked(chat) is Some(r) else { return }
-    wide_bar_of(b, src, r, ends, tips, stint)
+  v.switch_by(fn() { (chat().map(fn(r) { (r.station, r.session) }), new_of().map(fn(w) { w.id })) }, fn(b, which) {
+    match which {
+      (Some(_), _) =>
+        match @signals.untracked(chat) {
+          Some(r) => wide_bar_of(b, src, r, ends, tips, stint)
+          None => ()
+        }
+      (None, Some(_)) =>
+        match @signals.untracked(new_of) {
+          Some(w) => new_bar_of(b, src, w, ends, tips)
+          None => ()
+        }
+      (None, None) => ()
+    }
+  })
+}
+
+///|
+/// Workspace `w`'s new chat's bar in `b` (new_chat_page's, chat_bar_wide_node's): 文件 where a chat's bar has the side
+/// panel's switch, at its end, as far in as `ends` keeps a chat's (the window's corner while its panel is not open beside
+/// it), toggling its Station 文件 beside it (new_files_set); nothing else of it, the page's ground under it, its empty
+/// part dragging the window where the window's buttons are the app's. Its tips in `tips`.
+fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, tips : @sf.TipLayer) -> Unit {
+  let high = fn() { @sf.wide_bar_h + (ends.over)() }
+  let beside = fn() { new_files_open(src, w.id) }
+  b
+  .row(Is(true))
+  .height(By(fn() { Some(high()) }))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
+  |> ignore
+  bar_room_node(b, fn() { dmax(0.0, (ends.margins)().0) })
+  b.box(fn(bar) {
+    bar
+    .row(Is(true))
+    .grow(Is(1.0))
+    .height(By(fn() { Some(high()) }))
+    .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(End))
+    // (its empty part drags the window, in one with its buttons in the app's top row: what is in it taking presses all
+    // the same, so it is said to take them always, as a chat's bar's)
+    .presses(Is(true))
+    .moves_window(By(@ui.window_inset_now))
+    |> ignore
+    bar.box(fn(e) {
+      e.shrink(Is(0.0)) |> ignore
+      @sf.icon_button_node(
+        e,
+        "folder",
+        fn() { @sf.t("web-pages.chat.files") },
+        fn() { new_files_set(src, w.id, !new_files_open(src, w.id)) },
+        tips~,
+        linked=ends.linked,
+      )
+      |> ignore
+    })
+    |> ignore
+    bar_room_node(bar, fn() { (ends.end)(beside(), false) })
+  })
+  |> ignore
+  bar_room_node(b, fn() {
+    let (ml, mr) = (ends.margins)()
+    mr + dmin(0.0, ml)
   })
 }
 
@@ -791,10 +864,8 @@ fn wide_bar_keys(
         }, tips~, linked=ends.linked),
       )
     })
-    // the side panel's switch while it is closed: the first agent's history in it; made as the panel slides closed
-    // (side_leaving), the row is drawn eased right of where it is laid out by the room the switch takes that the panel
-    // has not given yet (side_closed_part), so nothing in it steps that room in the closing's first frame, and the switch
-    // comes with the row from under the panel, fading in (nothing bound where the chat opens with its panel closed)
+    // the side panel's switch while it is closed: the first agent's history in it; coming and going along the row, what
+    // is beside it going its way with it (along_row), as the panel slides closed or open
     let panel_closed_with_switch = fn() {
       own() &&
       (match view() {
@@ -804,24 +875,8 @@ fn wide_bar_keys(
     }
     k.show(
       panel_closed_with_switch,
+      along_row=true,
       fn(b) {
-        if @signals.untracked(fn() { side_leaving(chat_key(r)) is Some(_) }) {
-          let part = fn() {
-            if panel_closed_with_switch() {
-              side_closed_part(src, b, r, false)
-            } else {
-              1.0
-            }
-          }
-          k.offset(By(fn() { ((1.0 - part()) * (@sf.bar_key_side + @sf.keys_apart()), 0.0) })) |> ignore
-          b.alpha(By(part)) |> ignore
-          b.owns(fn() {
-            if k.alive() {
-              k.offset(Is((0.0, 0.0))) |> ignore
-            }
-          })
-          |> ignore
-        }
         @sf.icon_button_node(b, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
           match @signals.untracked(view) {
             Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))

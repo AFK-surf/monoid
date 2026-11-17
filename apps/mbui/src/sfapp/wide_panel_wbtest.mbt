@@ -179,45 +179,51 @@ test "wide: Station 文件 from the chat's \"…\" beside it (kept by the core: 
 
 ///|
 test "wide: a new chat's Station 文件 beside it (NewChat.tsx): kept open, closed and opened by its bar's button; a row's 添加到消息 into its draft" {
-  new_run()
-  let calls : Array[Made] = []
-  let base = fixture("newchat-files")
-  let src : Source = {
-    ..base,
-    call: fn(name, params, done) {
-      calls.push({ name, params, bytes: None, done })
-      (base.call)(name, params, done)
-    },
-  }
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
-  t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() == NewChat)
-  // kept open for the workspace's new chat: its tab, the station's home in it
-  assert_true(t.find("主目录") is Some(_))
-  t.click(Button, label="收起侧栏")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("主目录") is None)
-  let closed = named(calls, "chat.tabs.close")
-  assert_eq(closed.length(), 1)
-  assert_eq(text(Some(closed[0].params), "chat"), "new:ws1")
-  t.click(Button, label="Station 文件")
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("主目录") is Some(_))
-  // a file's 添加到消息: into the new chat's draft, named by its path
-  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
-  t.frame()
-  let (x, y) = match t.find("发布清单.md") {
-    Some(at) => at
-    None => fail("no 发布清单.md in the tab")
-  }
-  t.right_click(x, y)
-  t.frame()
-  t.tap_text("添加到消息")
-  t.frame()
-  t.frame()
-  let refs = @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get() }).unwrap_or([])
-  assert_eq(refs.length(), 1)
-  assert_eq(text(field(Some(refs[0]), "ref"), "path"), fix_docs + "/发布清单.md")
+  // (its page made either way: the old view's side_beside, or as nodes with its composer, new_side_node)
+  both_pages(fn() raise {
+    new_run()
+    if both_nodes.val {
+      both_way()
+    }
+    let calls : Array[Made] = []
+    let base = fixture("newchat-files")
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push({ name, params, bytes: None, done })
+        (base.call)(name, params, done)
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() == NewChat)
+    // kept open for the workspace's new chat: its tab, the station's home in it
+    assert_true(t.find("主目录") is Some(_))
+    t.click(Button, label="收起侧栏")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("主目录") is None)
+    let closed = named(calls, "chat.tabs.close")
+    assert_eq(closed.length(), 1)
+    assert_eq(text(Some(closed[0].params), "chat"), "new:ws1")
+    t.click(Button, label="Station 文件")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("主目录") is Some(_))
+    // a file's 添加到消息: into the new chat's draft, named by its path
+    @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+    t.frame()
+    let (x, y) = match t.find("发布清单.md") {
+      Some(at) => at
+      None => fail("no 发布清单.md in the tab")
+    }
+    t.right_click(x, y)
+    t.frame()
+    t.tap_text("添加到消息")
+    t.frame()
+    t.frame()
+    let refs = @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get() }).unwrap_or([])
+    assert_eq(refs.length(), 1)
+    assert_eq(text(field(Some(refs[0]), "ref"), "path"), fix_docs + "/发布清单.md")
+  })
 }
 
 ///|

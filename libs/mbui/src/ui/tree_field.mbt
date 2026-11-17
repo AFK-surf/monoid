@@ -61,6 +61,12 @@ priv struct TreeField {
 let tree_fields : Map[@view.NodeId, TreeField] = Map([])
 
 ///|
+/// A field's words', placeholder's and caret's colours as they are now, lent by its node where it said `colors_by` (as
+/// said once where it did not), read as it is painted (paint_tree_field).
+// kept across runs: each lent value let go with the node that lends it
+let tree_field_colors_lent : @view.Lent[() -> (Int64, Int64, Int64)] = @view.Lent::new()
+
+///|
 /// How many times a field was put in tree_fields or taken out: what view_draws reads besides a node's content
 /// (@view.Tree::each_drawn_laid_or_past's `draws_rev`).
 // kept across runs: only counts
@@ -177,17 +183,17 @@ pub fn field(
     }
     st.caret_color = caret_color
     st.sel_color = (caret_color & 0xFFFFFF00L) | 0x40L
+    // (followed as they change where it is painted (paint_tree_field), its paint's watch reading them: painted again in
+    // them in the frame they change in, the clock followed while a way they read goes, never a frame more asked for it)
     match colors_by {
-      Some(colors) =>
-        // (said again as they change: painted again in them)
-        f.reacts(colors, fn(k) {
-          let (ink, hint, caret) = k
-          st.color = ink
-          st.ph_color = hint
-          st.caret_color = caret
-          st.sel_color = (caret & 0xFFFFFF00L) | 0x40L
-          tree_field_redraw()
-        })
+      Some(colors) => {
+        let (ink, hint, caret) = @signals.untracked(colors)
+        st.color = ink
+        st.ph_color = hint
+        st.caret_color = caret
+        st.sel_color = (caret & 0xFFFFFF00L) | 0x40L
+        f.lends(tree_field_colors_lent, colors) |> ignore
+      }
       None => ()
     }
     match enter_sends {
@@ -1094,6 +1100,17 @@ fn Ctx::paint_tree_field(
   let st = tf.st
   // (painted again as what is its own changes it (tree_field_redraw), and with the clock while its words are flung on)
   tree_fields_drawn.val.get() |> ignore
+  // (in its colours as they are now, as this frame's paint reads them: `colors_by`)
+  match tf.view.lent(tree_field_colors_lent) {
+    Some(colors) => {
+      let (ink, hint, caret) = colors()
+      st.color = ink
+      st.ph_color = hint
+      st.caret_color = caret
+      st.sel_color = (caret & 0xFFFFFF00L) | 0x40L
+    }
+    None => ()
+  }
   // (more lines than it shows: its words' scroll brought to this frame as an old view's field's is as it is built
   // (Ctx::editor: Ctx::scroll_state, its fling stepped, its bar's and its fling's motion told), kept as this frame's;
   // painted again with the clock while it is flung)
