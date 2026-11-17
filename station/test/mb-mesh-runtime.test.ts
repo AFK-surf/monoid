@@ -1523,6 +1523,19 @@ test("a connection's streams taken in the order its other end opened them, as In
 
 /// A front of the test's on a Unix socket, as the station's would answer (mb/src/front/mesh.mbt): every ask kept, the
 /// streams path normalised; what it answers and the connections and streams it gives, the test's.
+/// (What it waits for of the client, another process's, fails `WAIT_MOST` on, saying what: never at the job's limit, the
+/// test's whole log lost with it, as #7002's check-station (4) was, 228 s, 2026-11-17.)
+const WAIT_MOST = 15_000;
+async function within<A>(what: string, p: Promise<A>): Promise<A> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => (t = setTimeout(() => reject(new Error(`not within ${WAIT_MOST / 1000} s: ${what}`)), WAIT_MOST)));
+  try {
+    return await Promise.race([p, late]);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 class FakeFront {
   readonly path: string;
   asks: Json[] = [];
@@ -1577,9 +1590,11 @@ class FakeFront {
     });
   }
 
-  /// Once `ready` holds, looked at again as each ask or frame comes.
-  async until(ready: () => boolean) {
-    while (!ready()) await new Promise<void>((r) => this.#arrived.push(r));
+  /// Once `ready` holds, looked at again as each ask or frame comes (`what` it waits for: said where it does not).
+  async until(ready: () => boolean, what = "what the front waits for") {
+    await within(what, (async () => {
+      while (!ready()) await new Promise<void>((r) => this.#arrived.push(r));
+    })());
   }
 
   /// A stream's socket to the station's streams path: its head (conn, stream, kind, index), then frames as said.
@@ -1616,7 +1631,7 @@ class FakeFront {
 
   /// A connection given the station's next accept.
   async give(conn: number) {
-    while (this.#accepts.length === 0) await new Promise<void>((r) => this.#arrived.push(r));
+    await this.until(() => this.#accepts.length > 0, `the client's accept, for connection ${conn}`);
     this.#accepts.shift()!({ conn, remote: "peer-key", alpn: "6161", via: null, paths: [], stats: {} });
   }
 
@@ -1664,7 +1679,8 @@ class FakeFront {
   }
 }
 
-test("the front's client: bound, its connections, streams both ways, its relays, and linked again once the front went", { skip }, async () => {
+// (0.4 s on a Mac; its limit says a wait no bounded one above catches, never the job's)
+test("the front's client: bound, its connections, streams both ways, its relays, and linked again once the front went", { skip, timeout: 30_000 }, async () => {
   const dir = fresh("front-");
   const sleeps: { ms: number; resolve: () => void }[] = [];
   let sleepAsked: (() => void) | null = null;
@@ -1673,7 +1689,9 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     sleepAsked?.();
   }));
   const wakeTs = async () => {
-    while (sleeps.length === 0) await new Promise<void>((r) => (sleepAsked = r));
+    await within("the TypeScript client's sleep before it links again", (async () => {
+      while (sleeps.length === 0) await new Promise<void>((r) => (sleepAsked = r));
+    })());
     const s = sleeps.shift()!;
     s.resolve();
     return s.ms;
@@ -1761,16 +1779,19 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     const own = await conn.openBi();
     await front("openBi", { as: "o1" }, "c1");
     await both("written on one opened here", () => own.write(Buffer.from("asked")), "write", { bytes: hex(Buffer.from("asked")) }, "o1");
+    // (at the front before the reset below: a reset lets go of what was not sent yet, as a QUIC stream's does, and the
+    // write was answered once the client had handed it on, not once the front had it)
+    const framesOf = (f: FakeFront) => [...f.streams.entries()].sort(([a], [b]) => a - b).map(([, k]) => k.frames);
+    const asked = hex(Buffer.from("asked"));
+    for (const f of [tsFront, mbFront]) await f.until(() => framesOf(f).flat().includes(asked), `"asked" at the front (${f === tsFront ? "TypeScript" : "MoonBit"})`);
     await both("stopped", () => own.stopped(), "stopped", {}, "o1");
     await both("reset", () => own.reset(5), "reset", { code: 5 }, "o1");
     await both("read once reset", () => own.read(), "read", {}, "o1");
     await both("answers", () => conn.answers!(100), "answers", { within: 100 }, "c1");
     await both("via", () => conn.via!(), "via", {}, "c1");
     await both("not closed yet", () => conn.isClosed(), "isClosed", {}, "c1");
-    // what reached the front of each stream
-    const framesOf = (f: FakeFront) => [...f.streams.entries()].sort(([a], [b]) => a - b).map(([, k]) => k.frames);
-    // (once the finished stream's end and the one opened here's words are there: all written before them is)
-    const there = (f: FakeFront) => f.until(() => framesOf(f).flat().includes("END") && framesOf(f).flat().includes(hex(Buffer.from("asked"))));
+    // what reached the front of each stream (once the finished stream's end is there: all written before it is)
+    const there = (f: FakeFront) => f.until(() => framesOf(f).flat().includes("END"), "the finished stream's end at the front");
     await there(tsFront);
     await there(mbFront);
     assert.deepEqual(framesOf(mbFront), framesOf(tsFront), "what reached the front");
