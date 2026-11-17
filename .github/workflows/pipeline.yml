@@ -1169,11 +1169,19 @@ jobs:
       # limit holds it)
       - name: Finish the Mac app build
         id: finish
+        # (a branch's cut 20 s before its job, saying where the worker had got to: cut by the job, its log was never
+        # said and nothing told where its five minutes went, #6955's 133997881250, 2026-11-17)
         run: |
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             bash scripts/with-timeout.sh @$((JOB_END - 60)) bash .github/mac-release-prebuild.sh wait
           else
-            bash .github/mac-release-prebuild.sh wait
+            bash scripts/with-timeout.sh @$((JOB_END - 20)) bash .github/mac-release-prebuild.sh wait || {
+              status=$?
+              echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
+              tail -80 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
+              bash .github/mac-release-prebuild.sh stop
+              exit "$status"
+            }
           fi
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
