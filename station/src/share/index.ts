@@ -808,10 +808,15 @@ export class Sharing {
           if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
             await this.placedHome(await this.placeProfile(id, had, got));
+            // (lent meanwhile, or heard of again, while it was placed: that one's copy in its place, as above)
+            if (state.borrowed[id] !== had) continue;
             const revision = Number(got?.quotaRevision ?? 0);
             if (had.version >= 0) had.profileUpdate = { reset: revision > (had.quotaRevision ?? 0) || had.profileUpdate?.reset === true };
             had.quotaRevision = revision;
-          } else await this.placeSkill(id, had, got);
+          } else {
+            await this.placeSkill(id, had, got);
+            if (state.borrowed[id] !== had) continue;
+          }
           had.version = Number(got?.version ?? 0);
           had.allow = Array.isArray(got?.allow) ? got.allow : null;
           had.stale = false;
@@ -1792,9 +1797,12 @@ export class Sharing {
     const allow: string[] | null = Array.isArray(request?.allow) ? request.allow : null;
     if (allow !== null && (me === null || !allow.includes(me))) throw new Error("this station is not among those it is shared with");
     const state = this.readState();
-    const had: Borrowed = state.borrowed[id] ?? { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
-    had.host = peer;
-    had.allow = allow;
+    // (a copy put in the place of what was had, never that one changed where it is: a pass of `reconcile` waiting on its
+    // host holds it, and finds by that it was taken over, as `heard` does)
+    const before = state.borrowed[id];
+    const had: Borrowed = before
+      ? { ...before, host: peer, allow }
+      : { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
     const home = await this.placeProfile(id, had, request);
     had.version = Number(request?.version ?? 0);
     had.quotaRevision = Number(request?.quotaRevision ?? 0);
