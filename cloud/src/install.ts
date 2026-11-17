@@ -218,6 +218,25 @@ unit_dir="\${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 unit="$product-station.service"
 # Whether this Linux has a systemd for the user to run services in (not a container's, not another init).
 user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+# Every directory the install writes in is checked before anything is downloaded or joined: one a sudo made root's
+# (~/.config after a \`sudo\` command made it, mkdir's "Permission denied" at the service once the machine had joined,
+# 2026-11-17) stops it here with the command that gives it back. Not run as root instead: the station is the user's,
+# its service a user service, and the agents run as the user.
+unwritable=""
+writable() {
+  w_dir=$1
+  while [ ! -e "$w_dir" ]; do w_dir=$(dirname "$w_dir"); done
+  [ -d "$w_dir" ] && [ -w "$w_dir" ] || unwritable="$w_dir"
+}
+writable "$data"
+writable "$HOME/.local/bin"
+if [ "$os" = Darwin ]; then writable "$(dirname "$plist")"; elif user_systemd; then writable "$unit_dir"; fi
+if [ -n "$unwritable" ]; then
+  owner=$(ls -ld "$unwritable" | awk '{print $3}')
+  me=$(id -un)
+  echo "${say("cloud.install.unwritable", { dir: "${unwritable}", owner: "${owner}", user: "${me}" })}" >&2
+  exit 1
+fi
 # WSL keeps a distribution up only while something of Windows' holds it (a terminal, a wsl.exe): with none, its
 # services stop with it, and it does not start with Windows. So a wsl.exe that holds it, hidden, started at each
 # Windows sign-in from the user's Startup folder ($keeper, a script for wscript) and now. Through WSL's interop

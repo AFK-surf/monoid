@@ -23,6 +23,7 @@
   "cloud.install.node.mismatch": "The downloaded Node {version} failed its checksum and wasn't installed; run the install command again",
   "cloud.install.release.mismatch": "The downloaded station doesn't match its signature and wasn't installed: the download may have been replaced",
   "cloud.install.unsupported": "Only macOS (Apple silicon), Linux (x64, arm64) and Windows (x64) are supported for now; this machine is {machine}",
+  "cloud.install.unwritable": "Can't write to {dir}: it belongs to {owner} (most likely made by an earlier sudo command). The station runs as {user}, in {user}'s own directories, so it isn't installed with sudo or as root: run sudo chown -R {user} {dir} && chmod u+rwx {dir}, then run the install command again",
   "cloud.install.upToDate": "still.fail station is already up to date ({version}); no update needed",
   "cloud.install.updateNoToken": "A station already in a workspace needs no token to update: stillfail update",
   "cloud.install.updated": "still.fail station updated; running agents weren't interrupted",

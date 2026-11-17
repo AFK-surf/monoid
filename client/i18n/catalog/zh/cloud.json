@@ -23,6 +23,7 @@
   "cloud.install.node.mismatch": "下载的 Node {version} 校验失败，未安装；重新运行安装命令",
   "cloud.install.release.mismatch": "下载的 station 与签名不符，未安装：下载内容可能已被替换",
   "cloud.install.unsupported": "目前仅支持 macOS（Apple 芯片）、Linux（x64、arm64）和 Windows（x64），此机器为 {machine}",
+  "cloud.install.unwritable": "无法写入 {dir}：它属于 {owner}（多半是之前某条 sudo 命令创建的）。station 以 {user} 身份运行、装在 {user} 的目录里，不能用 sudo 或 root 安装：先执行 sudo chown -R {user} {dir} && chmod u+rwx {dir}，再重新运行安装命令",
   "cloud.install.upToDate": "still.fail station 已是最新版本（{version}），无需更新",
   "cloud.install.updateNoToken": "已加入 workspace 的 station 更新时无需 token：stillfail update",
   "cloud.install.updated": "still.fail station 已更新，运行中的 agent 未中断",

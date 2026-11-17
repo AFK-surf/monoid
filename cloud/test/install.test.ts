@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -211,6 +211,26 @@ test("in WSL the station runs without Windows' PATH, and Windows keeps WSL up fr
     assert.doesNotMatch(done.out.replaceAll(linux.root, ""), /WSL/);
   } finally {
     linux.done();
+  }
+});
+
+test("a directory it writes in that a sudo made root's stops the install before the download, saying how to give it back", { skip: process.getuid?.() === 0 && "root writes anywhere" }, () => {
+  const m = machine("linux");
+  try {
+    // ~/.config made by an earlier sudo command (2026-11-17: mkdir's "Permission denied" once the machine had joined).
+    mkdirSync(join(m.home, ".config"));
+    chmodSync(join(m.home, ".config"), 0o555);
+    const done = m.run(["tok"]);
+    assert.equal(done.status, 1, done.out);
+    assert.match(done.out, new RegExp(`无法写入 ${join(m.home, ".config")}：.*sudo chown -R \\S+ ${join(m.home, ".config")}`));
+    // Nothing done yet: not downloaded, not joined.
+    assert.doesNotMatch(done.said, /curl|enroll/);
+    assert.ok(!existsSync(join(m.home, ".stillfail", "app")));
+    chmodSync(join(m.home, ".config"), 0o755);
+    assert.equal(m.run(["tok"]).status, 0);
+  } finally {
+    chmodSync(join(m.home, ".config"), 0o755);
+    m.done();
   }
 });
 
