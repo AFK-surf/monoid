@@ -1,4 +1,4 @@
-import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
+import { ultrafastModel, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Which account a session runs on (spend, pick, health_of, model_efforts, configure): the
 // pool's choice among the station's profiles, kept while usable, moved off one whose allowance ran out, and changed by
 // hand (profile, model, effort, fast). How profiles are doing comes from outside (the accounts module's checks and
@@ -14,7 +14,7 @@ import { modelKey } from "../read/usage.ts";
 import { availableEfforts, cheapToLeave, commonEfforts, type ProfileHealth, pickProfile, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
 import { agyScopeForModel } from "../accounts/agy-quota.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
-import { billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
+import { accessKind, billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
 
 /// How long a profile a turn ran into the allowance of is passed over when its allowance is not read again.
 const SPENT_FOR_MS = 60 * 60 * 1000;
@@ -206,13 +206,18 @@ export class Accounts {
     return usable(this.healthFor(id, model), this.deps.clock.currentTimeMillisUnsafe());
   }
 
+  supportsUltrafast(profile: Profile, model?: string | null): boolean {
+    return accessKind(profile) === "subscription" && ultrafastModel(model ?? profile.model, this.health(profile.id).check?.codexUltrafastModels);
+  }
+
   /// Which of `candidates` session `row` may use: its chosen subset while at least one of them is still configured and
   /// allowed here, else all of `candidates`.
   private poolFor(row: SessionRow, candidates: Profile[]): [Profile[], string[] | null] {
-    if (!row.profiles || row.profiles.length === 0) return [candidates, null];
-    const kept = new Set(row.profiles);
+    const kept = new Set(row.profiles ?? []);
     const subset = candidates.filter((p) => kept.has(p.id));
-    return subset.length > 0 ? [subset, row.profiles] : [candidates, null];
+    const allowed = subset.length > 0 ? subset : candidates;
+    const pool = row.speed === "ultrafast" ? allowed.filter((p) => this.supportsUltrafast(p, row.model)) : allowed;
+    return [pool, subset.length > 0 ? row.profiles ?? null : null];
   }
 
   /// The profiles session `row` could go on on other than its own, left to the station: those of its runtime allowed in
@@ -313,6 +318,9 @@ export class Accounts {
     // Profiles there are, none of them for its workspace: said so, for people to allow one.
     if (workspaceCandidates.length === 0 && all.length > 0) throw new Error(tr(stationLang(), "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
     const [candidates, keptProfiles] = this.poolFor(row, workspaceCandidates);
+    if (row.speed === "ultrafast" && (candidates.length === 0 || (row.profilePinned && !candidates.some((p) => p.id === row.profile)))) {
+      throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
+    }
     // Kept to it by hand: that one, whatever it says. Otherwise its own while it can run it: usable, and with its model
     // enabled.
     const current = candidates.find((p) => p.id === row.profile);
@@ -375,7 +383,8 @@ export class Accounts {
     if (!runtime) throw new Error(`session ${key} runs an unknown runtime ${row.runtime}`);
     const workspaceCandidates = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime) && this.allows(key, p));
     if (workspaceCandidates.length === 0) throw new Error(tr(stationLang(), "station.session.noProfileHere", { runtime: runtimeTitle(runtime) }));
-    const [candidates, keptProfiles] = row.profilePinned ? [workspaceCandidates, null] : this.poolFor(row, workspaceCandidates);
+    const [candidates, keptProfiles] = this.poolFor(row.profilePinned ? { ...row, profiles: null } : row, workspaceCandidates);
+    if (row.speed === "ultrafast" && candidates.length === 0) throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
     const next = this.pick(candidates, row.model, false, key);
     store.setSessionProfile(key, next.id, false, keptProfiles);
     if (next.id !== row.profile) log.info("hub", "session's account picked again", { session: key, from: row.profile, to: next.id });
@@ -457,7 +466,7 @@ export class Accounts {
   private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean): Profile | null {
     const runtime = runtimeNamed(row.runtime);
     const model = row.model;
-    if (!runtime || model === null) return null;
+    if (!runtime || model === null || row.speed === "ultrafast") return null;
     const config = this.deps.config();
     const candidates = config.profiles.filter((p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model));
     if (candidates.length === 0) return null;
@@ -480,7 +489,7 @@ export class Accounts {
   /// own: those allowed in its workspace that run its model (`takeAcross`).
   private acrossOthers(row: SessionRow): Profile[] {
     const runtime = runtimeNamed(row.runtime);
-    if (!runtime || row.profilePinned || row.model === null) return [];
+    if (!runtime || row.profilePinned || row.model === null || row.speed === "ultrafast") return [];
     const config = this.deps.config();
     const workspaceAll = config.profiles.filter((p) => p.runtimes.includes(runtime) && this.allows(row.key, p));
     if (this.poolFor(row, workspaceAll)[1] !== null) return [];
@@ -568,6 +577,12 @@ export class Accounts {
       const candidates = config.profiles.filter((p) => p.runtimes.includes(target) && this.allows(key, p));
       if (candidates.length === 0) throw new Error(t("station.session.noProfileHere", { runtime: runtimeTitle(target) }));
       if (model !== null && !candidates.some((p) => runs(p, model))) throw new Error(t("station.session.noProfileForModel", { model, runtime: runtimeTitle(target) }));
+      const pick = (pool: Profile[]) => {
+        if (target !== "codex" || change.speed !== "ultrafast") return this.pick(pool, model, true, key);
+        const eligible = pool.filter((p) => this.supportsUltrafast(p, model));
+        if (eligible.length === 0) throw new Error(t("station.speed.ultrafast_unavailable"));
+        return this.pick(eligible, model, true, key);
+      };
       let picked: Profile | undefined;
       const nextProfiles = Array.isArray(wantedProfiles) ? wantedProfiles : null;
       if (nextProfiles !== null) {
@@ -578,9 +593,9 @@ export class Accounts {
           if (model !== null && !runs(found, model)) throw new Error(t("station.session.modelOff", { profile: found.name, model }));
           subset.push(found);
         }
-        picked = subset.length === 1 ? subset[0] : this.pick(subset, model, true, key);
+        picked = subset.length === 1 ? subset[0] : pick(subset);
       } else {
-        picked = this.pick(candidates, model, true, key);
+        picked = pick(candidates);
       }
       if (!picked) throw new Error(`unknown profile ${nextProfiles?.[0] ?? ""}`);
       const effort = newEffort ?? null;

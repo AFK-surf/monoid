@@ -1201,7 +1201,7 @@
   "web-main.mode.group.multi.description": "私聊它，或在群里 @ 它开始；之后这个私聊或群里的消息都交给这个会话",
   "web-main.mode.group.single.label": "所有对话共用一个会话",
   "web-main.mode.group.single.description": "它所在的群和私聊都进入同一个会话，适合长期值守的助手",
-  "web-main.model.ultrafastNote": "需 500 美元 Pro 或符合条件的 Enterprise/Edu；套餐额度 ×8，积分 ×6。",
+  "web-main.model.ultrafastNote": "可用性取决于模型和订阅套餐，消耗更多额度。",
   "web-main.share.pool": "分享额度与恢复图",
   "web-main.share.poolReady": "{ready}/{total} 个账号可用",
   "web-main.share.accounts": "分享订阅额度",

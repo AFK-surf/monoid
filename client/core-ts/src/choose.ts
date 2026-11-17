@@ -30,6 +30,13 @@ type J = any;
 const arr = (v: unknown): J[] => arrU(v) ?? [];
 const get = (v: unknown, k: string): J => getU(v, k);
 
+// The Codex catalog is per account. An empty reported list means the account offers no Ultrafast models.
+function offersUltrafast(overview: unknown, modelId: unknown, accounts: J[], allowed: string[] | null = null): boolean {
+  return get(overview, "modelSpeeds") === true && arr(get(overview, "profiles")).some((p) =>
+    get(get(p, "access"), "kind") === "subscription" && (allowed === null || allowed.includes(p.id))
+    && accounts.some((a) => a.id === p.id) && ultrafastModel(modelId, get(get(p, "check"), "codexUltrafastModels")));
+}
+
 const TABLE = "choice";
 /// How many of the combinations used most a model control's panel keeps nearest what opened it.
 const NEAR = 4;
@@ -307,7 +314,7 @@ export function recordCombo(history: J[], choice: J, now: number): J[] {
 /// exact, still runnable ones are offered: never silently change a remembered depth, runtime or context; one only
 /// another station has (borrowable) is left out. `fixed`: the runtime the control cannot leave, only its own offered
 /// and none said by it. `selected`: `current` is exactly it.
-export function frequentCombos(history: J[], options: J[], current: Resolved, fixed: string | null = null, showRuntime = false): J[] {
+export function frequentCombos(history: J[], options: J[], current: Resolved, fixed: string | null = null, showRuntime = false, ultrafastAvailable: (id: string) => boolean = () => true): J[] {
   const sorted = [...history].sort(
     (a, b) => (typeof b.count === "number" ? b.count : -1) - (typeof a.count === "number" ? a.count : -1) || (typeof b.last === "number" ? b.last : 0) - (typeof a.last === "number" ? a.last : 0),
   );
@@ -328,7 +335,7 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
       (useTiered && arr(get(get(entry, "efforts"), runtime)).includes(tiered.effort) ? tiered.effort : null);
     const fast = comboFast(v);
     const speed = modelSpeed(get(v, "speed"));
-    if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(entry.model))) continue;
+    if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastAvailable(entry.model))) continue;
     const context = contextOf(get(v, "context"));
     const r = resolve(options, { model: entry.model, runtime, effort, fast, ...speedFields(v), context, profile: current.profile, profiles: current.profiles });
     if (r.effort !== effort || r.context !== context) continue;
@@ -455,7 +462,11 @@ export class Choose implements Owner {
     const entry = optionOf(this.#onStation(addr)[0], text(get(pm, "model")));
     if (entry === undefined) return false;
     const rt = text(get(pm, "runtime"));
-    if (pm.speed === "ultrafast" && (get(this.#env.store.get({ topic: "overview", station: addr }), "modelSpeeds") !== true || !ultrafastModel(pm.model) || (rt !== null && rt !== "codex"))) return false;
+    if (pm.speed === "ultrafast") {
+      const overview = this.#env.store.get({ topic: "overview", station: addr });
+      const allowed = normProfiles(pm.profiles) ?? (typeof pm.profile === "string" && pm.profile !== "" ? [pm.profile] : null);
+      if ((rt !== null && rt !== "codex") || !offersUltrafast(overview, pm.model, arr(get(entry.accounts, "codex")), allowed)) return false;
+    }
     return rt === null || arr(entry.runtimes).includes(rt);
   }
 
@@ -538,7 +549,8 @@ export class Choose implements Owner {
     const served = servingIn(raw, scope, station.joined === true);
     const options = overview !== null ? models(served, this.#env.now()) : [];
     const r = resolve(options, this.#choice(scope, id), raw !== undefined ? get(raw, "accountSubsets") === true : overview === null || get(overview, "accountSubsets") === true);
-    view.frequent = frequentCombos(arr(this.#record(`ws:${scope}:frequent`)), options, r);
+    view.frequent = frequentCombos(arr(this.#record(`ws:${scope}:frequent`)), options, r, null, false,
+      (id) => offersUltrafast(raw, id, arr(get(get(optionOf(options, id), "accounts"), "codex"))));
     // A station this workspace joined runs its chats on the profiles open to it: with some, but
     // none open, one is turned on rather than added.
     const joined = station.joined === true;
@@ -846,7 +858,12 @@ export class Choose implements Owner {
       if (get(params, "profile") !== undefined && get(params, "profiles") === undefined) next.profiles = null;
       for (const field of ["effort", "profile", "profiles", "fast", "speed", "context"]) if (get(params, field) !== undefined) next[field] = params[field];
       if (get(params, "fast") !== undefined && get(params, "speed") === undefined) delete next.speed;
-      if (next.speed === "ultrafast" && (next.runtime !== "codex" || !ultrafastModel(next.model))) delete next.speed;
+      if (next.speed === "ultrafast" && get(params, "speed") === undefined) {
+        const overview = this.#env.store.get({ topic: "overview", station: addr });
+        const accounts = arr(get(get(optionOf(options, next.model), "accounts"), "codex"));
+        const allowed = normProfiles(next.profiles) ?? (next.profile ? [next.profile] : null);
+        if (next.runtime !== "codex" || !offersUltrafast(overview, next.model, accounts, allowed)) delete next.speed;
+      }
       this.#keepChoice(scope, id, next);
     }
     this.#changed();
@@ -884,7 +901,12 @@ export class Choose implements Owner {
     } else if (r.entry === null || runtime === null) {
       throw CoreError.invalid(t("core-logic.choose.error.enable_models"));
     }
-    if (speed === "ultrafast" && get(overview, "modelSpeeds") !== true) throw CoreError.invalid(t("core-logic.choose.error.station_model_speeds"));
+    if (speed === "ultrafast") {
+      if (get(overview, "modelSpeeds") !== true) throw CoreError.invalid(t("core-logic.choose.error.station_model_speeds"));
+      if (runtime !== "codex" || !offersUltrafast(overview, chosenModel, r.accounts, profiles ?? (profile ? [profile] : null))) {
+        throw CoreError.invalid(t("core-logic.choose.error.ultrafast_unavailable"));
+      }
+    }
     const ask: J = { runtime, model: chosenModel, ...(get(overview, "modelSpeeds") === true ? speedFields({ speed }) : {}) };
     if (effort !== null) ask.effort = effort;
     if (profile !== null) ask.profile = profile;
@@ -1158,8 +1180,8 @@ export class Choose implements Owner {
       fastRuntime(onName) &&
       (o.kind === "new" || o.kind === "session" || isPreset) &&
       arr(get(overview, "profiles")).some((p) => typeof p.fast === "boolean" && (allowedIds === null || allowedIds.includes(p.id)) && accounts.some((a) => a.id === p.id));
-    const ultrafastAvailable = fastAvailable && get(overview, "modelSpeeds") === true && onName === "codex" && ultrafastModel(nextModel)
-      && arr(get(overview, "profiles")).some((p) => get(get(p, "access"), "kind") === "subscription" && (allowedIds === null || allowedIds.includes(p.id)) && accounts.some((a) => a.id === p.id));
+    const ultrafastOffered = (id: string) => offersUltrafast(overview, id, arr(get(get(optionOf(options, id), "accounts"), "codex")), allowedIds);
+    const ultrafastAvailable = fastAvailable && onName === "codex" && offersUltrafast(overview, nextModel, accounts, allowedIds);
     // How fast it runs where none is picked: its account's own (the one drafted, else the one it is on), said as what
     // it is rather than as 跟随订阅 (2026-11-02 用户「谁知道订阅是什么，应该直接显示具体值」).
     const currentInPool = typeof get(current, "id") === "string" && (allowedIds === null || allowedIds.includes(current.id)) ? current.id : null;
@@ -1273,7 +1295,7 @@ export class Choose implements Owner {
         runtime: rt,
         effort: e !== null && has("efforts").some((x) => x === e) ? e : null,
         fast: typeof hand.fast === "boolean" && fastRuntime(at) ? hand.fast : null,
-        ...speedFields(fastRuntime(at) && (hand.speed !== "ultrafast" || (at === "codex" && ultrafastModel(opt.model))) ? hand : null),
+        ...speedFields(fastRuntime(at) && (hand.speed !== "ultrafast" || (at === "codex" && ultrafastOffered(opt.model))) ? hand : null),
         context: c !== null && (o.kind === "new" || o.kind === "session" || isPreset) && has("contexts").some((n) => n === c) ? c : null,
       };
       return took.runtime === null && took.effort === null && took.fast === null && took.speed === undefined && took.context === null ? undefined : took;
@@ -1312,7 +1334,7 @@ export class Choose implements Owner {
     // not. Then every model, by its maker (`makers`).
     const draftNow: Resolved = { entry: value.model !== null || "model" in draft ? (option ?? null) : null, runtime: typeof on === "string" ? on : null, effort, fast, ...speedFields({ speed }), context, profile, profiles, efforts, contexts, accounts };
     const combos = o.kind === "new" || o.kind === "session" || isPreset
-      ? frequentCombos(history, options, draftNow, fixed && typeof value.runtime === "string" ? value.runtime : null, multiRuntime).filter((c: J) => c.speed !== "ultrafast" || get(overview, "modelSpeeds") === true).map((c: J) => ({
+      ? frequentCombos(history, options, draftNow, fixed && typeof value.runtime === "string" ? value.runtime : null, multiRuntime, ultrafastOffered).map((c: J) => ({
           model: c.model,
           runtime: c.runtime,
           effort: c.effort,
@@ -1519,7 +1541,7 @@ export class Choose implements Owner {
       if (get(params, "profile") !== undefined && get(params, "profiles") === undefined) delete draft.profiles;
       for (const f of fields) draft[f] = params[f];
       if (get(params, "fast") !== undefined && get(params, "speed") === undefined) draft.speed = null;
-      if (get(params, "speed") === undefined && ((typeof params.runtime === "string" && params.runtime !== "codex") || (typeof params.model === "string" && !ultrafastModel(params.model)))) draft.speed = null;
+      if (get(params, "speed") === undefined && ((typeof params.runtime === "string" && params.runtime !== "codex") || typeof params.model === "string")) draft.speed = null;
       this.#drafts.set(key, draft);
     }
     this.#changed();

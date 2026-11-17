@@ -249,11 +249,17 @@ pub fn chosen_speed(v : Json) -> String? {
 
 ///|
 /// model-speed.ts `ultrafastModel`.
-pub fn ultrafast_model(model : Json?) -> Bool {
+pub fn ultrafast_model(model : Json?, reported : Json?) -> Bool {
   match model {
     Some(String(m)) => {
       let k = @readops.model_key(m)
-      k == "gpt-6-astra" || k == "gpt-6.1-sol"
+      match reported {
+        Some(Array(models)) => models.iter().any(id => match id {
+          String(id) => @readops.model_key(id) == k
+          _ => false
+        })
+        _ => k == "gpt-6-astra" || k == "gpt-6.1-sol"
+      }
     }
     _ => false
   }
