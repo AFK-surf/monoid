@@ -104,7 +104,7 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
   s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
   |> ignore
-  s.pick(fn() { workspace().map(fn(w) { w.id }) }, fn(q, _id) {
+  s.switch_by(fn() { workspace().map(fn(w) { w.id }) }, fn(q, _id) {
     q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     guard @signals.untracked(workspace) is Some(w) else { return }
     let core = settings_core(src, w)

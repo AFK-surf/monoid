@@ -126,6 +126,10 @@ pub fn fixture_followed() -> Unit
 
 pub fn fixture_key_ask_ended() -> String
 
+pub fn fixture_lock_doing(String, @json.Json) -> Bool
+
+pub fn fixture_lock_done() -> Unit
+
 pub fn fixture_machine_sessions(Core) -> Unit
 
 pub fn fixture_motion(Int32) -> Unit

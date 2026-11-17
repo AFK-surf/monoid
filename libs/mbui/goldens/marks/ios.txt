@@ -2,8 +2,8 @@
 # an iOS simulator (host-ios's artifact). Checked: system (the simulator runtime, whose Core Graphics,
 # Core Text and ImageIO draw it) and fonts (its system font's bytes); the rest is said. Either another: made again
 # from the workflow's artifact, said in the PR.
-png caa3f8ad470dd6e97a393ee00d5c0338
-system iOS 26.5 23F77
-fonts aaf5aeb4df6d963f67dbac1e38406e4c
-device iPhone-17-Pro
-host macOS 26.5 25F71, Apple M4
+png 0477ea5533cbda8b64dcc5599d9e21a9
+system iOS 27.1 24A94425
+fonts c1629691ba6bf799bbc12bf0a483fed2
+device iPhone-Duo
+host macOS 27.0.1 26A434, Apple M4

@@ -18,6 +18,14 @@ pub impl Show for UnaccountedSchema with output(self, logger) {
 }
 
 ///|
+/// Its words (moonc 0.10.21 gives a suberror no `to_string` of its own)
+pub fn UnaccountedSchema::to_string(self : UnaccountedSchema) -> String {
+  match self {
+    UnaccountedSchema(m) => m
+  }
+}
+
+///|
 fn word_char(c : Int) -> Bool {
   (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
 }

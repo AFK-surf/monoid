@@ -1,0 +1,470 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/rigs_mode"
+
+import {
+  "moonbitlang/core/json",
+  "station/cloud_lock",
+  "station/host",
+  "station/sql",
+  "stillfail/rules/lock",
+}
+
+// Values
+pub fn add_refusal(@cloud_lock.Crypto, @json.Json?, String, @json.Json, @lock.LockState, (String, String) -> Array[String], Double) -> String?
+
+pub fn apply_script(run~ : String, data~ : String, task~ : String, on~ : Bool, deadline~ : Double, restart~ : Bool, runner~ : String) -> String
+
+pub fn ask_script(String, Bool) -> String
+
+pub fn base36(Double) -> String
+
+pub let card_occupied : String
+
+pub fn device_id_ok(String) -> Bool
+
+pub fn device_refusal(@json.Json?) -> String?
+
+pub fn disk_every(String) -> Double
+
+pub let disk_every_ms : Double
+
+pub let disk_low_bytes : Double
+
+pub fn disk_soft(Double) -> Double
+
+pub let disk_soft_bytes : Double
+
+pub let disk_soft_every_ms : Double
+
+pub fn disk_tier(Double, Double) -> String
+
+pub let elevation_ask_ms : Double
+
+pub fn elevation_on(String) -> Bool
+
+pub fn elevation_overview(Elevation, Viewer) -> @json.Json
+
+pub async fn elevation_route(Elevation, String, String, String, Viewer, (String) -> String) -> Answer?
+
+pub fn error_message(Error) -> String
+
+pub let full_for : Double
+
+pub fn get(@json.Json?, String) -> @json.Json?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn is_undefined(@json.Json) -> Bool
+
+pub fn iso(Double) -> String
+
+pub fn jarr(Array[@json.Json]) -> @json.Json
+
+pub fn jbool(Bool) -> @json.Json
+
+pub fn jnum(Double) -> @json.Json
+
+pub fn jobj(Array[(String, @json.Json)]) -> @json.Json
+
+pub fn js_entries(Map[String, @json.Json]) -> Array[(String, @json.Json)]
+
+pub fn js_lower(String) -> String
+
+pub fn js_string_of(@json.Json?) -> String
+
+pub fn js_trim(String) -> String
+
+pub fn jstr(String) -> @json.Json
+
+pub fn lasting(@json.Json?) -> String
+
+pub fn latest(Double, @json.Json?) -> Double
+
+pub fn manages_station(Viewer) -> Bool
+
+pub fn mcp_port_file(String) -> String
+
+pub fn mesh_allowed(Rig?, String, String) -> String?
+
+pub async fn mesh_device(Rig?, String, String, String, String, Bool) -> Socket?
+
+pub fn name_of(@cloud_lock.Cloud, String) -> String
+
+pub fn num_text(Double) -> String
+
+pub fn owned(String) -> (String, String, String)?
+
+pub fn owner_of(String, String, String) -> String
+
+pub fn parse(String) -> @json.Json?
+
+pub fn path_join(Array[String]) -> String
+
+pub fn ports_to_try(Int32?, Int32?, Int32, Bool) -> Array[Int32]
+
+pub fn request_id_of(Double, String) -> String
+
+pub fn request_json(Map[String, @json.Json]) -> @json.Json
+
+pub fn restart_script(run~ : String, data~ : String, app~ : String, task~ : String, on~ : Bool) -> String
+
+pub fn rig_jobs_deps(RigJobs, (async () -> Unit) -> Unit) -> ((String, String, String) -> Bool, (String, String, String) -> Unit, () -> Array[(String, String, String)])
+
+pub fn rig_self(@cloud_lock.Cloud) -> RigSelf?
+
+pub fn rig_use() -> @json.Json
+
+pub let rig_use_description : String
+
+pub let rig_use_name : String
+
+pub async fn rig_use_run(RigUse, String, @json.Json) -> String
+
+pub fn safe_int(Double) -> Bool
+
+pub fn said(Map[String, @json.Json]) -> String
+
+pub fn signature_holds(@cloud_lock.Crypto, String, @json.Json?) -> Bool
+
+pub fn signed_bytes(String, @json.Json) -> Bytes raise @cloud_lock.Failure
+
+pub let stillfail_surface : String
+
+pub fn stringify(@json.Json) -> String
+
+pub fn timeout_default() -> @json.Json
+
+pub let timeout_max : Double
+
+pub let timeout_min : Double
+
+pub fn timeout_refusal(@json.Json?) -> String?
+
+pub let undecided : String
+
+pub fn undefined_json() -> @json.Json
+
+pub let ungated : Array[String]
+
+pub fn well_formed(String, @json.Json?) -> Bool
+
+// Errors
+pub(all) suberror ChangeRefused {
+  ChangeRefused(String)
+}
+
+pub(all) suberror DeviceRefused {
+  DeviceRefused(Int32, String)
+}
+
+pub(all) suberror Refused {
+  Refused(String)
+}
+
+pub(all) suberror Thrown {
+  Thrown(String, String)
+}
+
+// Types and methods
+pub(all) struct Answer {
+  status : Int32
+  body : String
+}
+
+pub(all) struct Child {
+  kill : () -> Unit
+  on_error : (() -> Unit) -> Unit
+  on_exit : ((Int32?) -> Unit) -> Unit
+}
+
+pub(all) struct Clock {
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+}
+
+pub struct CommandLog {
+  // private fields
+}
+pub fn CommandLog::add(Self, Array[(String, @json.Json)]) -> Unit
+pub async fn CommandLog::last(Self, Int32) -> Array[@json.Json]
+pub fn CommandLog::new(@host.Host, String) -> Self
+pub async fn CommandLog::written(Self) -> Unit
+
+pub(all) enum DeviceSel {
+  RigItself
+  Either
+  AnyDevice
+  OneDevice(String)
+}
+
+pub struct Elevation {
+  // private fields
+}
+pub fn Elevation::change(Self, Bool) -> Unit raise
+pub fn Elevation::kept(Self) -> @json.Json?
+pub fn Elevation::new(ElevationDeps) -> Self
+pub fn Elevation::on(Self) -> Bool
+pub async fn Elevation::start(Self) -> Unit
+pub fn Elevation::stop(Self) -> Unit
+pub fn Elevation::view(Self, Bool) -> @json.Json
+
+pub(all) struct ElevationDeps {
+  data : String
+  app : String
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  changed : () -> Unit
+  probe : async () -> (Bool, Bool)
+  run : (String) -> Child
+  files : ElevationFiles
+}
+
+pub(all) struct ElevationFiles {
+  read : (String) -> String?
+  write : (String, String) -> Unit raise
+  remove : (String) -> Unit
+  exists : (String) -> Bool
+  copy : (String, String) -> Unit raise
+}
+pub fn ElevationFiles::of_host(@host.Host) -> Self
+
+pub(all) struct Files {
+  read : (String) -> String?
+  write : (String, String) -> Unit raise
+  mkdir : (String) -> Unit
+}
+pub fn Files::of_host(@host.Host) -> Self
+
+#derive(Eq, Show)
+pub(all) enum Follow {
+  BecomeOther
+  Relaunch
+  StopAll(String)
+  Stay
+}
+
+pub(all) struct GrantsDeps {
+  path : String
+  self_ : () -> RigSelf?
+  busy : (String, String) -> Bool
+  stop : (String, String) -> Unit
+  running : () -> Array[(String, String)]
+  ended : (@json.Json) -> Unit
+  cut : ((String, String?, String?) -> Unit)?
+  changed : () -> Unit
+  clock : Clock
+  files : Files
+  crypto : @cloud_lock.Crypto
+}
+
+pub(all) struct RequestsDeps {
+  db : @sql.Db
+  world : World
+  card_outcomes : Bool
+  home : () -> String?
+  self_ : () -> String
+  title : async (String, String) -> String?
+  bring : async (Map[String, @json.Json]) -> Double
+  release : (Map[String, @json.Json], @json.Json?) -> Unit raise
+  now : () -> Double
+  told : (async (Map[String, @json.Json]) -> Unit)?
+  id : () -> String
+}
+
+pub struct Rig {
+  grants : RigGrants
+  commands : CommandLog
+  // private fields
+}
+pub fn Rig::attached(Self) -> Unit
+pub async fn Rig::close(Self) -> Unit
+pub fn Rig::described(Self) -> @json.Json
+pub async fn Rig::device(Self, String, String, String, String, Bool) -> Socket?
+pub fn Rig::guarded(Self, String, String, @json.Json) -> Unit raise Refused
+pub async fn Rig::heard(Self, String, @json.Json, String) -> @json.Json
+pub fn Rig::new(RigDeps) -> Self
+pub fn Rig::self_(Self) -> RigSelf?
+pub fn Rig::station_refusal(Self, String, String) -> String?
+
+pub struct RigAdds {
+  // private fields
+}
+pub fn RigAdds::get(Self, String, String) -> @json.Json?
+pub fn RigAdds::holds(Self, String, @json.Json) -> Bool
+pub fn RigAdds::new(@sql.Db, @cloud_lock.Cloud, (String) -> Array[@json.Json]?, () -> Double, @cloud_lock.Crypto) -> Self raise
+pub fn RigAdds::take(Self, String, @json.Json, @json.Json?) -> String? raise
+
+pub(all) struct RigDeps {
+  data : String
+  cloud : @cloud_lock.Cloud
+  ask : async (String, @json.Json) -> @json.Json
+  busy : (String, String, String) -> Bool
+  stop : (String, String, String) -> Unit
+  running : () -> Array[(String, String, String)]
+  reach : async (@json.Json) -> Socket
+  spawn : (async () -> Unit) -> Unit
+  clock : Clock
+  files : Files
+  crypto : @cloud_lock.Crypto
+  host : @host.Host
+}
+
+pub struct RigFollow {
+  // private fields
+}
+pub fn RigFollow::in_workspace(Self) -> Bool
+pub fn RigFollow::new(@cloud_lock.Cloud) -> Self
+pub fn RigFollow::step(Self) -> Follow
+
+pub struct RigGrants {
+  // private fields
+}
+pub fn RigGrants::added(Self, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::close(Self) -> Unit
+pub fn RigGrants::device(Self, @json.Json?, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::device_refusal(Self, String, String, String, String, use_? : Bool) -> String?
+pub fn RigGrants::devices(Self) -> Array[@json.Json]
+pub fn RigGrants::full(Self, @json.Json?, @json.Json?) -> @json.Json raise Refused
+pub fn RigGrants::grant(Self, String, @json.Json?, @json.Json?) -> Double raise Refused
+pub fn RigGrants::kept_json(Self) -> @json.Json
+pub fn RigGrants::new(GrantsDeps) -> Self
+pub fn RigGrants::open(Self) -> Bool
+pub fn RigGrants::proof(Self) -> @json.Json?
+pub fn RigGrants::refusal(Self, String, String, String) -> String?
+pub fn RigGrants::release(Self, String, String) -> Bool
+pub fn RigGrants::revoke(Self, @json.Json?, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::station_refusal(Self, String, String) -> String?
+pub fn RigGrants::take_chain(Self, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::take_settings(Self, @json.Json?, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::view(Self) -> @json.Json?
+
+pub(all) struct RigJobs {
+  running_at_least : (String, Int32) -> Bool
+  up_job_ids : (String) -> Array[String]
+  running : () -> Array[String]
+  stop : async (String) -> Unit
+  relaunch : () -> Unit
+  stop_all : async (String) -> Unit
+}
+
+pub struct RigMain {
+  // private fields
+}
+pub async fn RigMain::changed(Self) -> Unit
+pub fn RigMain::close(Self) -> Unit
+pub fn RigMain::door_port(Self) -> Int32?
+pub fn RigMain::drain(Self) -> Unit
+pub fn RigMain::new(RigMainParts, @cloud_lock.Cloud) -> Self
+pub async fn RigMain::start(Self, @cloud_lock.Cloud) -> Unit
+pub fn RigMain::start_relieving(Self) -> Unit
+
+pub(all) struct RigMainParts {
+  jobs : RigJobs
+  disk_of : async () -> (Double, Double)
+  renewables : async (Double) -> Unit
+  relieve : async (Double, Double) -> Unit
+  become_other : () -> Unit
+  open_door : async (@json.Json) -> (Int32, String)
+  set_notify_url : (String) -> Unit
+  mcp_fd : Int32?
+  shown_port : Int32?
+  serving : (String, Int32) -> Unit
+  drained : (String) -> Unit
+  failed : (String) -> Unit
+  own_data : Bool
+  remembered_port : Int32?
+  files : Files
+  data : String
+  clock : Clock
+  spawn : (async () -> Unit) -> Unit
+}
+
+pub struct RigRequests {
+  // private fields
+}
+pub async fn RigRequests::ask(Self, String, @json.Json, String, String, @json.Json?, device? : (String, String)?) -> Map[String, @json.Json]
+pub async fn RigRequests::card_pending(Self, Map[String, @json.Json]) -> Bool?
+pub async fn RigRequests::decide(Self, String, String, String, @json.Json?, @json.Json?) -> String?
+pub async fn RigRequests::deliver(Self, Map[String, @json.Json]) -> Unit
+pub async fn RigRequests::ended_there(Self, String, String) -> Unit
+pub fn RigRequests::get(Self, String) -> Map[String, @json.Json]? raise
+pub async fn RigRequests::held_there(Self, String, Double) -> Unit
+pub fn RigRequests::new(RequestsDeps) -> Self raise
+pub async fn RigRequests::of(Self, String, String, device? : String?) -> Array[Map[String, @json.Json]]
+pub async fn RigRequests::of_rig(Self, String, String) -> Array[Map[String, @json.Json]]
+pub async fn RigRequests::release(Self, String, String?, device? : DeviceSel) -> Array[Map[String, @json.Json]]
+pub async fn RigRequests::revoke(Self, String, String, String, @json.Json?, @json.Json?) -> String?
+pub async fn RigRequests::store_changed(Self, @json.Json) -> Unit
+pub async fn RigRequests::undelivered(Self, String, String) -> Array[Map[String, @json.Json]]
+
+pub(all) struct RigSelf {
+  id : String
+  workspace : String
+  owner : String
+  person : String
+}
+
+pub(all) struct RigUse {
+  ask : async (String, String, String, @json.Json?) -> String
+  done : async (String, String) -> String
+}
+
+pub struct Rigs {
+  adds : RigAdds
+  requests : RigRequests
+  // private fields
+}
+pub fn Rigs::close(Self) -> Unit
+pub async fn Rigs::device_done(Self, String, @json.Json?) -> Array[String]
+pub async fn Rigs::device_entries(Self, String, String) -> Array[@json.Json]
+pub async fn Rigs::device_use(Self, String, String, @json.Json, String, @json.Json?) -> String
+pub async fn Rigs::flush(Self, String, String) -> Bool
+pub async fn Rigs::heard_rig(Self, String, @json.Json, String?) -> @json.Json
+pub async fn Rigs::listed(Self, String) -> Array[@json.Json]
+pub fn Rigs::listen(Self) -> () -> Unit
+pub fn Rigs::look(Self) -> Unit
+pub fn Rigs::named(Self, String, String) -> @json.Json raise Refused
+pub fn Rigs::new(RigsDeps) -> Self raise
+pub async fn Rigs::rig_add(Self, @json.Json, String?) -> @json.Json
+pub async fn Rigs::route(Self, String, String, Array[(String, String)], String, Int32, Viewer) -> Answer?
+pub async fn Rigs::station_listed(Self, String, String, @json.Json, @json.Json?) -> @json.Json
+pub async fn Rigs::take(Self, String, String, @json.Json) -> Unit
+pub async fn Rigs::tell(Self, String) -> Unit
+pub async fn Rigs::use_ask(Self, String, String, String, @json.Json?) -> String
+pub async fn Rigs::use_done(Self, String, String) -> String
+
+pub(all) struct RigsDeps {
+  cloud : @cloud_lock.Cloud
+  db : @sql.Db
+  world : World
+  card_outcomes : Bool
+  crypto : @cloud_lock.Crypto
+  now : () -> Double
+  within : async (Double, async () -> @json.Json, String) -> @json.Json
+  spawn : (async () -> Unit) -> Unit
+  id : () -> String
+}
+
+pub(all) struct Socket {
+  destroy : () -> Unit
+  on_close : (() -> Unit) -> Unit
+}
+
+pub(all) struct Viewer {
+  workspace : String
+  sub : String
+  role : String
+  email : String?
+  name : String?
+}
+
+pub(all) struct World {
+  call : async (String, Array[@json.Json]) -> @json.Json
+  callback : (async (Array[@json.Json]) -> @json.Json) -> @json.Json
+}
+pub async fn World::ask(Self, String, Array[@json.Json]) -> @json.Json?
+
+// Type aliases
+pub type RigRequest = Map[String, @json.Json]
+
+// Traits

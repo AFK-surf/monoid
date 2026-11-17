@@ -210,7 +210,8 @@ fn message_time_node(v : @view.View, tips : @sf.TipLayer, time : () -> Stamp?) -
   v.show(fn() { time() is Some(_) }, fn(b) {
     @sf.presses_node(b, fn() { absolute_times.set(!absolute_times.get()) })
     b.says(By(fn() { Some(@view.said(Button, label=said(false))) })) |> ignore
-    @sf.words_node(b, fn() { said(false) }, fn() { msg_time }) |> ignore
+    // (its words its own, no box of theirs in it: a node a message's head the fewer)
+    @sf.styled_words(b, fn() { said(false) }, fn() { msg_time }) |> ignore
     @sf.tip_node(tips, b, fn() { said(true) }) |> ignore
   })
 }

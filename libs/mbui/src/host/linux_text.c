@@ -466,7 +466,23 @@ void mb_text_set_scale(double scale) {
 
 // ---- a cluster drawn: in white, a pixel round its ink, its picture held for mb_host_glyph_put ----
 
-static void rasterize(int key) {
+// A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub), in pixels: how far right of the
+// whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's, the same).
+static double sub_dx(int sub) {
+  switch (sub) {
+    case 1: return 0.25;
+    case 2: return -0.50;
+    case 3: return -0.25;
+    default: return 0.0;
+  }
+}
+
+// Glyph `full_key` (its cluster's key and its phase) drawn, its ink moved right by its phase and the picture's edges on
+// whole pixels round it so moved.
+static void rasterize(int full_key) {
+  int key = full_key & 0x03FFFFFF;
+  int sub = (full_key >> 26) & 7;
+  double dx_px = sub < 4 ? sub_dx(sub) : 0.0;
   glyph_entry *e = &entries[key];
   free(held_px);
   held_px = NULL;
@@ -485,7 +501,7 @@ static void rasterize(int key) {
   double sc = text_scale;
   // the picture's edges on whole pixels from the baseline, a pixel of room round it: the baseline then falls on a pixel
   // row of every glyph's picture, so glyphs on the same rounded baseline line up
-  int px0 = (int)floor(x0 * sc) - 1, px1 = (int)ceil(x1 * sc) + 1;
+  int px0 = (int)floor(x0 * sc + dx_px) - 1, px1 = (int)ceil(x1 * sc + dx_px) + 1;
   int py0 = (int)floor((y0 - base) * sc) - 1, py1 = (int)ceil((y1 - base) * sc) + 1;
   int pw = px1 - px0, ph = py1 - py0;
   if (pw <= 0 || ph <= 0 || pw > MAX_PX || ph > MAX_PX) {
@@ -494,7 +510,9 @@ static void rasterize(int key) {
   }
   cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pw, ph);
   cairo_t *cr = cairo_create(surf);
-  cairo_translate(cr, -px0, -py0);
+  // (the context's options, no hinting and the pen where it is, on what draws too)
+  cairo_set_font_options(cr, pango_cairo_context_get_font_options(ctx));
+  cairo_translate(cr, -px0 + dx_px, -py0);
   cairo_scale(cr, sc, sc);
   cairo_move_to(cr, 0, -base);
   cairo_set_source_rgb(cr, 1, 1, 1);
@@ -535,7 +553,7 @@ static void rasterize(int key) {
   }
   cairo_surface_destroy(surf);
   g_object_unref(l);
-  held_key = key;
+  held_key = full_key;
   held_w = pw;
   held_h = ph;
   held_colour = colour;
@@ -554,12 +572,13 @@ void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
 }
 
 void mb_host_glyph(int32_t key, double *out) {
-  if (key < 0 || key >= n_entries) {
+  int base = key >= 0 ? (key & 0x03FFFFFF) : key;
+  if (base < 0 || base >= n_entries) {
     for (int i = 0; i < 7; i++) out[i] = 0;
     return;
   }
   rasterize(key);
-  glyph_entry *e = &entries[key];
+  glyph_entry *e = &entries[base];
   out[0] = 0;
   out[1] = 0;
   out[2] = e->w;

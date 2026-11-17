@@ -1,0 +1,583 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/comma"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/sql",
+}
+
+// Values
+pub fn already_said_j(Error) -> @jsjson.JValue?
+
+pub fn arr_of(@jsjson.JValue?) -> Array[@jsjson.JValue]?
+
+pub fn base64(Bytes) -> String
+
+pub fn bind_bytes(Bytes) -> @json.Json
+
+pub fn bind_num(Double) -> @json.Json
+
+pub fn bind_text(String) -> @json.Json
+
+pub let build_days : Int32
+
+pub let busy_ms : Int32
+
+pub fn byte_length(String) -> Int32
+
+pub fn chat_of(String) -> (Double, String?)?
+
+pub fn chat_ref(Double, String?) -> String
+
+pub fn classify(String, Bool) -> (Int32, String)
+
+pub fn col_bytes(Map[String, @json.Json], String) -> Bytes?
+
+pub fn col_json_text(Map[String, @json.Json], String) -> String
+
+pub fn col_num(Map[String, @json.Json], String) -> Double?
+
+pub fn col_text(Map[String, @json.Json], String) -> String?
+
+pub fn comma_connects(@jsjson.JValue) -> Array[CommaConnect]
+
+pub fn comma_line(String) -> (String, String)?
+
+pub fn connect_url(String, String, String?, String, String) -> String raise
+
+pub fn credentials(ScopedConnect) -> String?
+
+pub fn day_key(String) -> String
+
+pub fn fail_(String) -> Thrown
+
+pub fn first_points(String, Int32) -> String
+
+pub fn from_json(@json.Json) -> @jsjson.JValue
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn held_from(@jsjson.JValue?) -> Held?
+
+pub fn hex(Bytes) -> String
+
+pub fn host_io(@host.Host, words? : Words, lang? : () -> String, platform? : String, arch? : String, hostname? : String, version? : String, log? : (String, String, @jsjson.JValue) -> Unit) -> Io
+
+pub fn install_stats_age(@sql.Db) -> Unit raise
+
+pub fn is_object(@jsjson.JValue?) -> Bool
+
+pub fn iso_day(Double) -> String
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue?)]) -> @jsjson.JValue
+
+pub fn jobj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_number(String) -> Double
+
+pub fn js_string(@jsjson.JValue) -> Array[Int32]
+
+pub fn js_text(@jsjson.JValue) -> String
+
+pub fn js_trim(String) -> String
+
+pub fn jstr(String) -> @jsjson.JValue
+
+pub fn kind_of(Error) -> String
+
+pub fn make_comma(CommaOptions, Io, @effect.Runtime) -> CommaParts
+
+pub let manual : String
+
+pub fn mask_token(String) -> String
+
+pub fn message_of(Error) -> String
+
+pub fn next_page(RevIndex, Held, wire? : Wire, reset_if? : ((Double, Double, String) -> Bool)?) -> Page? raise
+
+pub fn nullish(@jsjson.JValue?, @jsjson.JValue?) -> @jsjson.JValue?
+
+pub fn num_of(@jsjson.JValue?) -> Double?
+
+pub fn num_text(Double) -> String
+
+pub fn or_null(@jsjson.JValue?) -> @jsjson.JValue
+
+pub let page_bytes : Int32
+
+pub let page_rows : Int32
+
+pub fn parse_json(String) -> @jsjson.JValue raise @jsjson.SyntaxError
+
+pub fn peer_read(async (String, @jsjson.JValue, String) -> String, () -> String?, () -> String, () -> Int32, (String, String) -> Unit raise) -> async (String, @jsjson.JValue, String?) -> PeerAnswer
+
+pub let ping_ms : Int32
+
+pub fn points(String) -> Array[String]
+
+pub fn probe_page(RevIndex) -> Page raise
+
+pub fn prop(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn question_of(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub let read_method : String
+
+pub async fn router_reads(CommaStats, WorkspaceReads, String, Double, Double) -> @jsjson.JValue
+
+pub async fn router_says(RouterHub, CommaStats, String?, RouterSay, Io) -> Double
+
+pub fn router_says_after(RouterHub, CommaStats, async () -> Unit, Io, @effect.Runtime) -> async (String?, RouterSay) -> Double
+
+pub let router_targets_insert : String
+
+pub fn safe_int(@jsjson.JValue?) -> Bool
+
+pub let say_method : String
+
+pub fn seq_ts(Double) -> String
+
+pub fn sha256_hex(Bytes) -> String
+
+pub fn shown(@jsjson.JValue) -> @jsjson.JValue
+
+pub let source : String
+
+pub let stale_ms : Int32
+
+pub fn stats_age_candidates(@sql.Db, String) -> Array[Kept] raise
+
+pub let stats_age_candidates_sql : String
+
+pub fn stats_age_ready(@sql.Db, max_dirty? : Int32?) -> Bool raise
+
+pub fn stats_age_step(@sql.Db, limit? : Int32) -> (Int32, Bool) raise
+
+pub fn stats_rows_of(StationRows, String) -> Map[String, (String, String)]
+
+pub fn stats_wire(IndexRow) -> @jsjson.JValue?
+
+pub fn str_of(@jsjson.JValue?) -> String?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub let task_channel : String
+
+pub fn task_rows_of(StationRows) -> Map[String, (String, String)]
+
+pub fn task_wire(IndexRow) -> @jsjson.JValue?
+
+pub fn test_random(Int32, Int32) -> String
+
+pub fn test_uuid(Int32) -> String
+
+pub async fn text_of(async () -> Bytes?) -> String
+
+pub fn text_of_utf8(Bytes) -> String
+
+pub fn thread_ts_of(String) -> String
+
+pub fn to_json(@jsjson.JValue) -> @json.Json
+
+pub fn unbase64(String) -> Bytes
+
+pub fn units_cmp(String, String) -> Int32
+
+pub fn utext(Array[Int32]) -> String
+
+pub fn utf8_of(String) -> Bytes
+
+pub fn workspace_db_name(String) -> String
+
+pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
+
+pub fn workspace_read(WorkspaceReads) -> async (Double, Double) -> ReadRows
+
+pub fn ws_j((String, Bool)) -> @jsjson.JValue
+
+// Errors
+pub suberror AlreadySaid {
+  AlreadySaid(RouterWrite)
+}
+
+pub(all) suberror Thrown {
+  Thrown(String, String)
+}
+pub impl Show for Thrown
+
+// Types and methods
+pub(all) struct Attachment {
+  path : String
+  name : String
+  size : Double
+}
+pub fn Attachment::of_j(@jsjson.JValue) -> Self
+
+pub(all) struct CommaChats {
+  read : async (String, Double, Double) -> @jsjson.JValue
+  say : async (String, String, String, String, String) -> @jsjson.JValue
+}
+
+pub(all) struct CommaConnect {
+  id : String
+  enabled : Bool
+  server : String
+  token : String
+  workspace : String?
+}
+pub fn CommaConnect::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct CommaIndexes {
+  stats : RevIndex
+  tasks : RevIndex
+  start : () -> Unit
+}
+
+pub struct CommaLive {
+  legacy : CommaStats
+  empty : CommaIndexes
+  // private fields
+}
+pub fn CommaLive::close(Self) -> Unit
+pub fn CommaLive::make_comma(Self, String, () -> @jsjson.JValue, ((@jsjson.JValue) -> Unit) -> () -> Unit, ((String?) -> Bool)?, SurfaceStore, (String) -> Array[@jsjson.JValue], async () -> Unit, async () -> Unit) -> CommaParts
+pub fn CommaLive::name(Self, String?) -> String
+pub async fn CommaLive::new(LiveDeps, Io, @effect.Runtime) -> Self
+pub fn CommaLive::on_scope_change(Self, () -> Unit) -> () -> Unit
+pub fn CommaLive::peer_read(Self) -> async (String, @jsjson.JValue, String?) -> PeerAnswer
+pub fn CommaLive::reads_for(Self, String) -> WorkspaceReads
+pub async fn CommaLive::say_handler(Self, String, @jsjson.JValue, String?) -> @jsjson.JValue
+pub fn CommaLive::scope(Self, String) -> (CommaIndexes, CommaChats) raise
+pub fn CommaLive::scope_version(Self) -> Int32
+pub fn CommaLive::within(Self, String) -> Bool
+
+pub(all) struct CommaOptions {
+  data : String
+  config_raw : () -> @jsjson.JValue
+  config_listen : ((@jsjson.JValue) -> Unit) -> () -> Unit
+  in_workspace : ((String?) -> Bool)?
+  store : SurfaceStore
+  models : (String) -> Array[@jsjson.JValue]
+  scope : (String) -> (CommaIndexes, CommaChats) raise
+  empty : CommaIndexes
+  home : () -> String?
+  within : (String) -> Bool
+  scope_version : () -> Int32
+  on_scope_change : (() -> Unit) -> () -> Unit
+  previous_exited : async () -> Unit
+  name : ((String?) -> String)?
+  reconcile : async () -> Unit
+  close_connects : async () -> Unit
+}
+
+pub struct CommaParts {
+  tasks : CommaTasks
+  // private fields
+}
+pub async fn CommaParts::close(Self) -> Unit
+pub fn CommaParts::connects(Self, @jsjson.JValue) -> Array[ScopedConnect]
+pub fn CommaParts::create(Self, ScopedConnect) -> CommaSurface
+
+pub struct CommaStats {
+  stats : RevIndex
+  tasks : RevIndex
+  // private fields
+}
+pub fn CommaStats::apply(Self, Array[StationRows], Array[String], Double) -> (Int32, Int32) raise
+pub fn CommaStats::at(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::build(Self) -> Unit
+pub fn CommaStats::close(Self) -> Unit
+pub fn CommaStats::in_workspace(String, String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime) -> Self raise
+pub async fn CommaStats::make_dirs(Io, String) -> Unit
+pub fn CommaStats::new(String, async (Double, Double) -> ReadRows, (() -> Unit) -> () -> Unit, Io, @effect.Runtime, ready? : async () -> Unit, busy? : Int32) -> Self raise
+pub fn CommaStats::remember(Self, String, Double) -> Unit raise
+pub fn CommaStats::said(Self, String) -> Double? raise
+pub async fn CommaStats::settled(Self) -> Unit
+pub fn CommaStats::start(Self) -> Unit
+pub fn CommaStats::task_title(Self, String) -> @jsjson.JValue? raise
+
+pub struct CommaSurface {
+  id : String
+  instance : String
+  // private fields
+}
+pub fn CommaSurface::address(Self) -> String raise
+pub fn CommaSurface::chats_now(Self) -> CommaChats?
+pub fn CommaSurface::closed(Self) -> Unit
+pub async fn CommaSurface::download(Self, String, String, Double) -> Bytes
+pub fn CommaSurface::frame(Self, Socket, @jsjson.JValue, () -> Unit) -> Unit
+pub fn CommaSurface::headers(Self) -> Array[(String, String)]
+pub fn CommaSurface::identify(Self) -> @jsjson.JValue
+pub fn CommaSurface::in_scope_now(Self) -> Bool
+pub fn CommaSurface::indexes_now(Self) -> CommaIndexes? raise
+pub async fn CommaSurface::known_person(Self, String) -> @jsjson.JValue
+pub fn CommaSurface::look_up(Self, String) -> @jsjson.JValue
+pub fn CommaSurface::look_up_email(Self, String) -> String?
+pub async fn CommaSurface::mention(Self, String) -> String
+pub fn CommaSurface::message(Self, Socket, String, () -> Unit) -> Unit
+pub fn CommaSurface::name(Self) -> String
+pub fn CommaSurface::new(SurfaceOptions, Io, @effect.Runtime) -> Self
+pub fn CommaSurface::of_workspace(Self) -> String?
+pub async fn CommaSurface::post(Self, String, String, String, Array[Attachment], card? : @jsjson.JValue?) -> String
+pub fn CommaSurface::session_link(Self) -> String?
+pub fn CommaSurface::stands_at(Self, String, String, String, String?) -> Unit
+
+pub struct CommaTasks {
+  path : String
+  // private fields
+}
+pub fn CommaTasks::by_thread(Self, String, String) -> Task?
+pub fn CommaTasks::by_thread_j(Self, String, String) -> @jsjson.JValue?
+pub fn CommaTasks::forget(Self, String) -> Unit
+pub fn CommaTasks::get(Self, String, String) -> Task?
+pub fn CommaTasks::get_j(Self, String, String) -> @jsjson.JValue?
+pub fn CommaTasks::given(Self, String, String, Double?, Double?) -> Unit
+pub fn CommaTasks::invited(Self, String, String, Start, Double) -> @jsjson.JValue
+pub fn CommaTasks::left(Self, String, String) -> Unit
+pub fn CommaTasks::new(String, Io, @effect.Runtime) -> Self
+pub fn CommaTasks::taking(Self, String) -> Array[Task]
+pub fn CommaTasks::taking_j(Self, String) -> Array[@jsjson.JValue]
+pub async fn CommaTasks::written(Self) -> Unit
+
+pub(all) struct Held {
+  epoch : String?
+  through : Double
+}
+
+#derive(Eq, Hash)
+pub(all) enum Holder {
+  Named(String)
+  Token(Int32)
+}
+
+pub(all) struct IndexRow {
+  key : String
+  source : String
+  kind : String
+  rev : Double
+  removed : Bool
+  json : String
+}
+pub fn IndexRow::to_j(Self) -> @jsjson.JValue
+
+pub struct IndexSync {
+  // private fields
+}
+pub fn IndexSync::close(Self) -> Unit
+pub fn IndexSync::new(RevIndex, wire? : Wire) -> Self raise
+pub fn IndexSync::next(Self, Held) -> Page? raise
+
+pub(all) struct Io {
+  now : () -> Double
+  after : (Int32, () -> Unit) -> () -> Unit
+  sleep : async (Int32) -> Unit
+  turn : async () -> Unit
+  random_hex : (Int32) -> String
+  uuid : () -> String
+  log : (String, String, @jsjson.JValue) -> Unit
+  read_text : (String) -> String? raise
+  write_private : async (String, String) -> Unit
+  mkdir : async (String, Int32?) -> Unit
+  file_part : async (String, Double, Int32) -> (Double, Bytes)?
+  open_db : (String, Int32) -> @sql.Db raise
+  platform : String
+  arch : String
+  hostname : String
+  version : String
+  words : Words
+  lang : () -> String
+}
+pub fn Io::info(Self, String, Array[(String, @jsjson.JValue?)]) -> Unit
+pub fn Io::join(Self, Array[String]) -> String
+pub fn Io::sep(Self) -> String
+pub fn Io::tr(Self, String, String, args? : Array[(String, String)]) -> String
+pub fn Io::warn(Self, String, Array[(String, @jsjson.JValue?)]) -> Unit
+
+pub(all) struct Kept {
+  key : Bytes
+  json : String
+}
+
+pub(all) struct LiveDeps {
+  data : String
+  home : () -> String?
+  memberships : () -> Array[String]
+  membership : (String) -> @jsjson.JValue
+  station : () -> String
+  cloud_listen : (() -> Unit) -> () -> Unit
+  pages : () -> @jsjson.JValue
+  read : async (String, @jsjson.JValue, String, Bool) -> String
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  ask_text : async (String, @jsjson.JValue) -> String
+  member : (String, String) -> Unit raise
+  subscribe : ((String) -> Unit) -> () -> Unit
+  hub : RouterHub
+  previous_exited : async () -> Unit
+}
+
+pub(all) struct Page {
+  epoch : String
+  reset : Bool
+  since : Double
+  through : Double
+  rows : Array[@jsjson.JValue]
+}
+pub fn Page::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct PeerAnswer {
+  head : @jsjson.JValue
+  bytes : Bytes
+  check : () -> Unit raise
+}
+
+pub(all) struct ReadRows {
+  stations : Array[StationRows]
+  unread : Array[String]
+  valid : (() -> Bool)?
+}
+
+pub struct RevIndex {
+  name : String
+  ready : async () -> Unit
+  // private fields
+}
+pub fn RevIndex::changed(Self) -> Unit
+pub fn RevIndex::epoch(Self) -> String raise
+pub fn RevIndex::following(Self) -> Holder raise
+pub fn RevIndex::gone(Self, Holder) -> Unit
+pub fn RevIndex::held(Self, Holder, Double) -> Unit raise
+pub fn RevIndex::listen(Self, () -> Unit) -> () -> Unit
+pub fn RevIndex::new(@sql.Db, String, Io, ready? : async () -> Unit) -> Self raise
+pub fn RevIndex::observed(Self, Holder, Double) -> Unit
+pub fn RevIndex::pruned(Self) -> Double raise
+pub fn RevIndex::rev(Self) -> Double raise
+pub fn RevIndex::since(Self, Double, Int32, omit_removed_bodies? : Bool) -> Array[IndexRow] raise
+pub fn[T] RevIndex::snapshot(Self, () -> T raise) -> T raise
+pub fn RevIndex::write(Self, Map[String, (String, String)], (@jsjson.JValue) -> Bool raise, candidates? : (() -> Array[Kept] raise)?) -> Int32 raise
+
+pub(all) struct RouterHub {
+  get : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  all : async (String, Array[@jsjson.JValue]) -> Array[@jsjson.JValue]
+  run : async (String, Array[@jsjson.JValue]) -> Unit
+  thread_sessions : async (Double) -> Array[@jsjson.JValue]
+  get_session : async (String) -> @jsjson.JValue
+  ws_of : async (@jsjson.JValue) -> String?
+  deliver : async (Double, Double, Array[String], String, String?) -> Unit
+  complete_router_write : async (String) -> Bool
+  say : async (Double, String, String, SayHooks?) -> Double
+}
+
+pub(all) struct RouterSay {
+  thread : Double
+  text : String
+  key : String
+  requester : String
+  connect : String
+}
+
+type RouterWrite
+
+pub(all) struct SayHooks {
+  workspace : String?
+  before : async () -> Unit
+  inserted : async (Double) -> Unit
+  targets : async () -> Array[String]
+}
+
+pub(all) struct ScopedConnect {
+  connect : CommaConnect
+  scope : String?
+  scope_version : Int32
+}
+pub fn ScopedConnect::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Socket {
+  id : Int32
+  send : (String) -> Unit raise
+  on_close : (() -> Unit) -> () -> Unit
+}
+
+pub(all) struct Start {
+  requester : String
+  title : String?
+  runtime : String?
+  model : String?
+}
+pub fn Start::of_j(@jsjson.JValue?) -> Self
+pub fn Start::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct StationRows {
+  station : String?
+  usage : @jsjson.JValue
+  chats : Array[@jsjson.JValue]
+}
+
+pub(all) struct SurfaceOptions {
+  connect : String
+  server : String
+  token : String
+  name : String
+  workspace : String?
+  tasks : CommaTasks
+  store : SurfaceStore
+  models : () -> Array[@jsjson.JValue]
+  lang : String?
+  stats : (() -> CommaIndexes raise)?
+  chats : CommaChats?
+  previous_exited : async () -> Unit
+  in_scope : () -> Bool
+}
+
+pub(all) struct SurfaceStore {
+  get_session : async (String) -> @jsjson.JValue
+  pending_count : async (String) -> Double
+  thread_at : async (String, String, String) -> @jsjson.JValue
+  leave_thread : async (Double, String) -> Unit
+  handler : async (@jsjson.JValue) -> Unit
+  book_person : (async (String, @jsjson.JValue) -> Unit)?
+  book_known : (async (String) -> @jsjson.JValue)?
+}
+
+pub(all) struct Task {
+  task : String
+  thread_ts : String
+  start : Start
+  fetched : Double
+  answered : Double
+  left : Bool
+}
+pub fn Task::of_j(@jsjson.JValue) -> Self
+
+pub(all) enum Wire {
+  StatsWire
+  TaskWire
+  OtherWire((IndexRow) -> @jsjson.JValue?)
+}
+
+pub struct Words {
+  zh : @jsjson.JValue
+  en : @jsjson.JValue
+  product : String
+}
+pub fn Words::empty() -> Self
+pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
+pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
+
+pub(all) struct WorkspaceReads {
+  of : () -> (String, Bool)?
+  here : async (String, @jsjson.JValue) -> String
+  others : async () -> Array[String]
+  there : async (String, String, @jsjson.JValue) -> String
+}
+
+// Type aliases
+
+// Traits

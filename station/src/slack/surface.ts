@@ -138,13 +138,19 @@ export function messageText(m: Json): string {
 /// The files shared with a message. Ones Slack keeps back (over a free workspace's limit, deleted) or that live
 /// elsewhere (external: Google Drive and the like) have no url.
 export function messageFiles(m: Json): InboundFile[] {
-  return (Array.isArray(m?.files) ? m.files : [])
-    .filter((f: Json) => text(f?.id) !== "")
-    .map((f: Json) => {
-      const held = !["tombstone", "hidden_by_limit", "external"].includes(text(f?.mode));
-      const url = text(f?.url_private_download) || text(f?.url_private);
-      return { id: text(f.id), name: text(f?.name) || text(f?.title) || text(f.id), size: typeof f?.size === "number" ? f.size : 0, url: held && url !== "" ? url : null };
-    });
+  return (Array.isArray(m?.files) ? m.files : []).filter((f: Json) => text(f?.id) !== "").map(fileOf);
+}
+
+function fileOf(f: Json): InboundFile {
+  const held = !["tombstone", "hidden_by_limit", "external"].includes(text(f?.mode));
+  const url = text(f?.url_private_download) || text(f?.url_private);
+  return { id: text(f.id), name: text(f?.name) || text(f?.title) || text(f.id), size: typeof f?.size === "number" ? f.size : 0, url: held && url !== "" ? url : null };
+}
+
+/// Ids of the files of an event that Slack gave only as `{ id, file_access: "check_file_info" }`: their name, size
+/// and url are files.info's to give (Socket Mode's events often carry a file so, files:read or not).
+export function filesToLookUp(m: Json): Set<string> {
+  return new Set((Array.isArray(m?.files) ? m.files : []).filter((f: Json) => text(f?.id) !== "" && text(f?.file_access) === "check_file_info").map((f: Json) => text(f.id)));
 }
 
 /// The files of a Web API answer: its messages' (conversations.replies, conversations.history), or a message's or a file's.
@@ -365,9 +371,13 @@ export class SlackSurface extends ConnectedSurface {
         if (envelope?.type !== "events_api") return;
         const event = toEvent(envelope.payload?.event ?? null, bot, botId);
         if (event?.type === "stop") event.localAt = this.client.localTimeUpper(event.ts);
+        const lookUp = filesToLookUp(envelope.payload?.event ?? null);
         const envelopeId = envelope.envelope_id ?? null;
         void (async () => {
           try {
+            if (event?.type === "message" && event.message.files && lookUp.size > 0) {
+              event.message.files = await Promise.all(event.message.files.map((f) => (lookUp.has(f.id) ? this.fileInfo(f) : f)));
+            }
             if (event?.type === "message") this.heard(event.message.channel, event.message.threadTs, event.message.ts);
             if (event !== null) await handler(event);
           } catch (error) {
@@ -1040,6 +1050,17 @@ export class SlackSurface extends ConnectedSurface {
       const earlier = all.filter((m) => (number(m.ts) ?? 0) < until);
       return earlier.slice(Math.max(0, earlier.length - limit));
     })();
+  }
+
+  /// A file Slack's event gave by its id alone, as files.info gives it; as it was where that fails (named as missing).
+  private async fileInfo(file: InboundFile): Promise<InboundFile> {
+    try {
+      const info = await this.client.api("files.info", [["file", file.id]], this.botToken);
+      return info?.file ? fileOf(info.file) : file;
+    } catch (error) {
+      log.warn("slack", "files.info failed", { file: file.id, error: (error as Error).message });
+      return file;
+    }
   }
 
   /// A shared file's bytes, read as the bot (files:read).

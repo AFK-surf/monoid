@@ -42,6 +42,10 @@ priv struct NewChatPage {
 }
 
 ///|
+/// What a new chat's draft begins with, its workspace's id after it: one of its own in each workspace.
+pub let new_chat_drafts : String = "new:"
+
+///|
 let new_chat_state : NewChatPage = { asked: "" }
 
 ///|
@@ -711,7 +715,7 @@ fn new_composer_place(
       let held = state is Held(_)
       let spec : ComposerSpec = {
         station: address,
-        draft: "new:" + w.id,
+        draft: new_chat_drafts + w.id,
         session: "",
         placeholder: @sf.t("web-main.newChat.placeholder"),
         toolbar: if wide && !held { Some(fn() { new_tools(c, src, w, v, station) }) } else { None },

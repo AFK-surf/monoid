@@ -137,6 +137,21 @@ fn[P] Nav::shift_of(self : Nav[P], serial : Int, now : () -> Double) -> (Double,
 }
 
 ///|
+/// When page `serial`'s slide on the stack ends (-1 when still, held by a finger, or still waiting at the gate before
+/// setting out): read by Tree::on_way_at so a layout step inside a sliding page is caught as a mid-motion jolt.
+fn[P] Nav::shift_ends_of(self : Nav[P], serial : Int) -> Double {
+  if self.mode == 0 || self.mode == 3 || self.t0 < 0.0 {
+    return -1.0
+  }
+  let (top, beside) = self.top_beside()
+  if top.serial == serial || (beside is Some(b) && b.serial == serial && !top.rise) {
+    self.t0 + self.dur
+  } else {
+    -1.0
+  }
+}
+
+///|
 /// The stacks the window's tree holds, each told as every frame ends (nav_views_framed): by a number of
 /// its own.
 // kept across runs: put back as a run begins (view_forget)
@@ -229,7 +244,7 @@ pub fn[P] nav_view(
         let entry = nav.entry(k)
         pv
           .over(Is(true))
-          .shift(By(fn() { nav.shift_of(k, fn() { pv.drawn_at() }) }))
+          .shift(By(fn() { nav.shift_of(k, fn() { pv.drawn_at() }) }), ends=fn() { nav.shift_ends_of(k) })
           // (going back off the stack, or covered as a page comes in over it: drawn only, from that moment)
           .presses(By(fn() { nav.takes(k) }))
           |> ignore

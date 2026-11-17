@@ -368,6 +368,40 @@ pub fn[T] computed_by(getter : (T?) -> T, same~ : (T, T) -> Bool, loc~ : SourceL
 }
 
 ///|
+/// A computed of `compute` over what `input` gives, `compute` worked out again only as that comes to be otherwise
+/// (`same_in`, else same_value): `input` is read as a getter reads, so what it reads is followed, let go of as the
+/// computed is unwatched (a watch at rest that holds something outside lets go of all it read: rest) and read anew as
+/// it is read again, while what `compute` made last is kept for an input the same as the one it was made of, through
+/// that too. `compute` reads nothing that follows: what it is worked out of is all in what `input` gives (untracked).
+/// Told as `same` says, else same_value.
+#callsite(autofill(loc))
+pub fn[K : Eq, V : Eq] memo(
+  input : () -> K,
+  compute : (K) -> V,
+  same_in? : (K, K) -> Bool,
+  same? : (V, V) -> Bool,
+  loc~ : SourceLoc,
+) -> Computed[V] {
+  let in_same = same_in.unwrap_or(same_value)
+  // (the input the value kept was made of: kept by the computed's own value, whatever it read let go of meanwhile)
+  let last_in : Ref[K?] = Ref(None)
+  computed_by(
+    fn(last) {
+      let k = input()
+      match (last, last_in.val) {
+        (Some(v), Some(was)) if in_same(was, k) => v
+        _ => {
+          last_in.val = Some(k)
+          untracked(fn() { compute(k) })
+        }
+      }
+    },
+    same=same.unwrap_or(same_value),
+    loc~,
+  )
+}
+
+///|
 /// A computed which releases its dependencies after a one-off read outside the graph. When read by another signal,
 /// its dependencies stay until the last reader leaves, just as for any computed. Only for what is read as nothing
 /// reads (`active_sub()` None, a one-off `get`): a node's own derived value is a plain `computed`, which rests as the

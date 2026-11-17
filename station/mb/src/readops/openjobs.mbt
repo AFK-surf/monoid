@@ -42,7 +42,8 @@ fn up_jobs(db : @sql.Db, viewer : Json) -> Array[Map[String, Json]] raise {
 }
 
 ///|
-/// store.ts `seenBy` of some sessions: which a viewer sees (a missing one counts as the home workspace's).
+/// store.ts `seenBy` of some sessions: which a viewer sees (a missing one counts as the home workspace's, but
+/// another station's task as its workspace's: rows.ts `seesMissing`).
 fn seen_by(db : @sql.Db, viewer : Json, keys : Array[String]) -> ((String) -> Bool) raise {
   let wanted : Set[String] = Set::new()
   for k in keys {
@@ -63,7 +64,48 @@ fn seen_by(db : @sql.Db, viewer : Json, keys : Array[String]) -> ((String) -> Bo
       ws[js_text(field(r, "key"))] = field(r, "ws")
     }
   }
-  k => wanted.contains(k) && sees(viewer, ws.get(k).unwrap_or(Json::null()))
+  k => wanted.contains(k) && (match ws.get(k) {
+    Some(w) => sees(viewer, w)
+    None => sees_missing(viewer, k)
+  })
+}
+
+///|
+/// rows.ts `seesMissing`: whether `viewer` sees what names a session not here (another station's task: its
+/// workspace's; anything else: the home one's).
+fn sees_missing(viewer : Json, key : String) -> Bool {
+  match remote_ws(key) {
+    Some(w) => viewer is Object(o) && o.get("workspace") == Some(Json::string(w))
+    None => sees(viewer, Json::null())
+  }
+}
+
+///|
+/// store/rows.ts `remoteWs`: the workspace another station's task runs for, by its job's session key
+/// (`remote:<workspace>:<station>:<session>`, as `/^remote:([^:/]+):[^:/]+:.+$/` reads it), none for any other key.
+pub fn remote_ws(key : String) -> String? {
+  guard key.has_prefix("remote:") else { return None }
+  // remote, the workspace's id, the station's, then the session's key (with colons of its own)
+  let parts = key.split(":").map(v => v.to_owned()).collect()
+  guard parts.length() >= 4 else { return None }
+  let ws = parts[1]
+  let station = parts[2]
+  if ws == "" || station == "" || ws.contains("/") || station.contains("/") {
+    return None
+  }
+  let from = 7 + ws.length() + 1 + station.length() + 1
+  let n = key.length()
+  if from >= n {
+    return None
+  }
+  for i in from..<n {
+    let c = key.unsafe_get(i).to_int()
+    // (a regular expression's `.` takes no line's end)
+    if c == 0x0a || c == 0x0d || c == 0x2028 || c == 0x2029 {
+      return None
+    }
+  }
+  Some(ws)
 }
 
 ///|

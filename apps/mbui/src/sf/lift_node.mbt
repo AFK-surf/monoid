@@ -17,7 +17,7 @@ pub fn lift_node(
   scale : Double,
   loc~ : SourceLoc,
 ) -> () -> Double {
-  let lift = EdgeWay::new(0.0)
+  let lift = @motion.NodeWay::new(0.0)
   // (as lift_of's: past none and back as its spring gives, over the scrim till it is at none)
   let lifted = fn() { lift.shown(v) }
   v.reacts(
@@ -30,7 +30,7 @@ pub fn lift_node(
         0.0
       }
     },
-    fn(to) { lift.go_by(v, to, lift_spring) },
+    fn(to) { lift.go(v, to, lift_spring) },
   )
   v.scale(By(fn() { 1.0 + (scale - 1.0) * lifted() }), loc~).over_scrim(By(fn() { lifted() != 0.0 }), loc~) |> ignore
   fn() {
