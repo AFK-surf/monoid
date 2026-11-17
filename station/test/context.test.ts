@@ -90,69 +90,85 @@ function holds(r: Rig, key: string, tokens: number) {
 
 test("a most lowered under what it holds, at rest: compacted at once, on a process that keeps to it", async () => {
   const r = new Rig();
-  const { key, session } = await done(r);
-  holds(r, key, 627_800);
-  await configure(r.hub, key, { context: 300_000 });
-  await settle();
-  assert.equal(r.session(key).contextBefore, 0, "the card goes by what it ran with until compacted");
-  const next = r.claude.last();
-  assert.notEqual(next, session, "a new process takes the new most");
-  assert.equal(next.compactions, 1);
-  next.complete();
-  await settle();
-  assert.equal(r.session(key).contextBefore, null);
-  assert.ok(r.chat.texts().includes("已压缩上下文"), r.chat.texts().join("\n"));
+  try {
+    const { key, session } = await done(r);
+    holds(r, key, 627_800);
+    await configure(r.hub, key, { context: 300_000 });
+    await settle();
+    assert.equal(r.session(key).contextBefore, 0, "the card goes by what it ran with until compacted");
+    const next = r.claude.last();
+    assert.notEqual(next, session, "a new process takes the new most");
+    assert.equal(next.compactions, 1);
+    next.complete();
+    await settle();
+    assert.equal(r.session(key).contextBefore, null);
+    assert.ok(r.chat.texts().includes("已压缩上下文"), r.chat.texts().join("\n"));
+  } finally {
+    await r.close();
+  }
 });
 
 test("a most lowered while a turn runs: that turn goes on, it is compacted as the turn ends, before what waited", async () => {
   const r = new Rig();
-  const { m, key, session } = await done(r);
-  await r.accept(reply(m, "9999.2", "and then the tests"));
-  await settle();
-  holds(r, key, 627_800);
-  await configure(r.hub, key, { context: 300_000 });
-  await settle();
-  assert.equal(session.disposed, false, "the running turn is not interrupted");
-  assert.equal(r.session(key).contextBefore, 0);
-  await r.call(key, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
-  session.complete();
-  await settle();
-  const next = r.claude.last();
-  assert.notEqual(next, session);
-  assert.equal(next.compactions, 1);
-  assert.equal(next.prompts.length, 0);
-  await r.accept(reply(m, "9999.3", "one more"));
-  await settle();
-  assert.equal(next.prompts.length, 0, "what comes meanwhile waits for it");
-  next.complete();
-  await settle();
-  assert.equal(next.prompts.length, 1, "what waited is given after");
+  try {
+    const { m, key, session } = await done(r);
+    await r.accept(reply(m, "9999.2", "and then the tests"));
+    await settle();
+    holds(r, key, 627_800);
+    await configure(r.hub, key, { context: 300_000 });
+    await settle();
+    assert.equal(session.disposed, false, "the running turn is not interrupted");
+    assert.equal(r.session(key).contextBefore, 0);
+    await r.call(key, "chat_state", { kind: "all_done", done: "测试任务已完成，没有剩余工作" });
+    session.complete();
+    await settle();
+    const next = r.claude.last();
+    assert.notEqual(next, session);
+    assert.equal(next.compactions, 1);
+    assert.equal(next.prompts.length, 0);
+    await r.accept(reply(m, "9999.3", "one more"));
+    await settle();
+    assert.equal(next.prompts.length, 0, "what comes meanwhile waits for it");
+    next.complete();
+    await settle();
+    assert.equal(next.prompts.length, 1, "what waited is given after");
+  } finally {
+    await r.close();
+  }
 });
 
 test("a most lowered but still over what it holds, or raised again: nothing to compact", async () => {
   const r = new Rig();
-  const { key } = await done(r);
-  holds(r, key, 200_000);
-  await configure(r.hub, key, { context: 300_000 });
-  await settle();
-  assert.equal(r.session(key).contextBefore, null);
-  assert.equal(r.claude.last().compactions, 0);
+  try {
+    const { key } = await done(r);
+    holds(r, key, 200_000);
+    await configure(r.hub, key, { context: 300_000 });
+    await settle();
+    assert.equal(r.session(key).contextBefore, null);
+    assert.equal(r.claude.last().compactions, 0);
+  } finally {
+    await r.close();
+  }
 });
 
 test("a compaction down to its most that fails is said once and not tried again", async () => {
   const r = new Rig();
-  const { m, key } = await done(r);
-  holds(r, key, 627_800);
-  await configure(r.hub, key, { context: 300_000 });
-  await settle();
-  const next = r.claude.last();
-  next.end({ kind: "failed", reason: "other", message: "Not enough messages to compact." });
-  await settle();
-  assert.equal(r.session(key).contextBefore, null);
-  await r.accept(reply(m, "9999.2", "go on"));
-  await settle();
-  assert.equal(next.compactions, 1);
-  assert.equal(next.prompts.length, 1);
+  try {
+    const { m, key } = await done(r);
+    holds(r, key, 627_800);
+    await configure(r.hub, key, { context: 300_000 });
+    await settle();
+    const next = r.claude.last();
+    next.end({ kind: "failed", reason: "other", message: "Not enough messages to compact." });
+    await settle();
+    assert.equal(r.session(key).contextBefore, null);
+    await r.accept(reply(m, "9999.2", "go on"));
+    await settle();
+    assert.equal(next.compactions, 1);
+    assert.equal(next.prompts.length, 1);
+  } finally {
+    await r.close();
+  }
 });
 
 test("a runtime that cannot compact says so", async () => {
