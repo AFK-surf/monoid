@@ -550,7 +550,7 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     // being otherwise and its faces then changed with nothing measured yet)
     if a.1 > 0.0 {
       let wide = @sfdesk.wide_at(a.1)
-      shell_set(pages_shell(src, wide))
+      shell_set(pages_shell(src, wide, a.1))
       @settings.wide.val = wide
       @ui.set_web_lines(wide)
       faces(src, wide)
