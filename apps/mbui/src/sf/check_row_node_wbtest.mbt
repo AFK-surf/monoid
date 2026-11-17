@@ -16,6 +16,10 @@ fn check_mark_drawn(t : @ui.Tester) -> ((Double, Double, Double), Array[(Double,
 }
 
 ///|
+/// A frame of 60 a second: how far apart the frames are that the walk below looks at.
+let check_mark_frame_ms : Double = 1000.0 / 60.0
+
+///|
 /// `on` and `mixed` set to each of `steps` in turn, each walked a frame of 60 a second at a time to past its way; at
 /// every frame the bar, if drawn, in the box's middle. What was drawn at rest after each step: (tick's pieces, bars).
 fn check_mark_walk(
@@ -29,9 +33,9 @@ fn check_mark_walk(
     on.set(s.0)
     mixed.set(s.1)
     let mut ms = 0.0
-    while ms < @ui.move_most_ms + 100.0 {
-      t.run_for(1000.0 / 60.0)
-      ms = ms + 1000.0 / 60.0
+    while ms < @ui.move_most_ms + check_mark_frame_ms * 6.0 {
+      t.run_for(check_mark_frame_ms)
+      ms = ms + check_mark_frame_ms
       let (box, bars) = check_mark_drawn(t)
       for bar in bars {
         let off = bar.1 + bar.3 / 2.0 - (box.1 + box.2 / 2.0)
