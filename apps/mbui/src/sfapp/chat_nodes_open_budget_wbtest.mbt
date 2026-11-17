@@ -40,9 +40,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // let go, 644 laid, 90 measured, wide 973, 793, 966, 126; the most one frame of it did phone 146, 150, 126, 17 and
   // wide 150, 149, 134, 23, the same at 60, 120, 24 and 7. What one frame still makes scrolling up is the first of
   // each make to come before one of it has left, a long message's pieces most)
-  "phone cold": (779, 29, 852, 146, 778),
+  // (again once Home's list's faces are fewer boxes, sfpages row_aside_node: the ground round them and who started it
+  // ringed rings of the face's own; phone cold 779 made and 852 laid before, wide cold 2557 and 3674)
+  "phone cold": (757, 29, 830, 146, 776),
   "phone again": (327, 17, 242, 28, 301),
-  "wide cold": (2557, 483, 3674, 557, 2649),
+  "wide cold": (2443, 483, 3532, 557, 2634),
   "wide again": (882, 130, 881, 123, 1049),
   "phone up": (565, 366, 618, 84, 0),
   "wide up": (698, 382, 910, 113, 0),

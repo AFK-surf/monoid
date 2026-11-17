@@ -69,7 +69,18 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
       let board = @signals.untracked(fn() { on.get() })
       l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       if board {
-        @sfpages.board_node(l, src, tips, workspace, fn() { l.window().0 }, top=fn() { (frame.under)() }, foot=fn() { (frame.foot)() })
+        // (the window's whole height, as the list: what its columns scroll passing under the top bar, the board's chips
+        // under it on the same glass, and under the bottom bar)
+        @sfpages.board_node(
+          l,
+          src,
+          tips,
+          workspace,
+          fn() { l.window().0 },
+          top=fn() { (frame.under)() + @sfpages.board_chips_h(l) },
+          foot=fn() { (frame.foot)() },
+          stint~,
+        )
       } else {
         @sfpages.chats_lists_node(l, src, workspace, frame, tips, stint)
       }

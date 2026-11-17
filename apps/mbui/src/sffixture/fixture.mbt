@@ -2538,7 +2538,8 @@ pub fn fixture(mode : String) -> Source {
     sign_in: fn() {  },
     signing_in: fn() { false },
     sign_in_step: fn() { Idle },
-    picture: fn(_, _) { "" },
+    // (board-many's people's faces their own pictures: board_face; none for any other)
+    picture: fn(url, _) { board_face(f.mode, url) },
     picture_waits: fn(_) { false },
     fatal: fn() { None },
     // (chat-image-coming: its pictures asked of their station, so much of each heard, never here)

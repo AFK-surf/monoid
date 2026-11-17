@@ -7,7 +7,8 @@
 ///|
 /// A person, round (avatar's, as a node) in `parent`, `size` across: `picture` (an image's key, "" while it comes or
 /// without one) once it is decoded at the size it is shown, at once; their initial on their colour (by `id`) until
-/// then, and for good when it cannot be decoded. Each as it changes.
+/// then, and for good when it cannot be decoded. Each as it changes. `ring`: a ring round it, outside it (View::ring's:
+/// how wide, how far out, its colour), as a face lying over another has its ground round it.
 #callsite(autofill(loc))
 pub fn avatar_node(
   parent : @view.View,
@@ -15,6 +16,7 @@ pub fn avatar_node(
   name : () -> String,
   picture : () -> String,
   size : Double,
+  ring? : () -> (Double, Double, Int64),
   loc~ : SourceLoc,
 ) -> Unit {
   let half = size / 2.0
@@ -39,6 +41,10 @@ pub fn avatar_node(
     .lies_along(Is(Middle))
     .ground(By(fn() { avatar_color(id()) }))
     |> ignore
+    match ring {
+      Some(r) => d.ring(By(r)) |> ignore
+      None => ()
+    }
     d.show(decoded, fn(p) {
       // (covering it, at once: avatar's picture, as Compose draws the bitmap it was handed)
       p

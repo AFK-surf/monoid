@@ -57,56 +57,14 @@ pub fn chat_row_node(
   // (what a finger pressing it read ahead, let go as it is let go without opening it: a hold)
   let primed : Ref[@sfbase.TopicLease?] = Ref(None)
   let opened = Ref(false)
-  // (its chat's whole row, asked as the hand comes to it: what it is held for, and what waits for it to be answered)
-  let whole = @sfbase.WholeAsk::new()
+  // (its chat's whole row, asked as the hand comes to it: held while the hand is on it, pointed at, its menu open, or
+  // a press waits for it)
   let pressing = Ref(false)
   let hovering = Ref(false)
-  // (a press waiting for it: sfbase's press_wait, while what it was pressed in stays as it was)
-  let whole_wait : Ref[@sfbase.PressWait?] = Ref(None)
-  let whole_waits = fn() { whole_wait.val is Some(w) && w.waiting() }
-  let ask_whole = fn() { whole.ask(src, @signals.untracked(item)) }
-  // (what reads it done with: hovered no more, let go of, its menu gone, nothing waiting for it)
-  let whole_idle = fn() {
-    @signals.untracked(fn() {
-      if !pressing.val && !hovering.val && !menu_on() && !whole_waits() {
-        whole.let_go()
-      }
-    })
-  }
-  // (`run` with its chat's whole row: now where it is answered, else the frame it is, while what it was pressed in
-  // stays as it was (sfbase's press_wait); else nothing, `gone` done, and what it asked let go of)
-  let then_whole = fn(run : (ChatItem) -> Unit, gone : () -> Unit) {
-    ask_whole()
-    match whole_wait.val {
-      Some(w) => {
-        whole_wait.val = None
-        w.end()
-      }
-      None => ()
-    }
-    let w = @sfbase.press_wait(fn() { @sfbase.whole_answered(src, item()) }, fn() {
-      match @signals.untracked(fn() { @sfbase.whole_row(src, item()) }) {
-        Some(i) => run(i)
-        None => ()
-      }
-      whole_idle()
-    }, let_go=fn() {
-      gone()
-      whole_idle()
-    })
-    whole_wait.val = if w.waiting() { Some(w) } else { None }
-  }
-  // (what waits for it ended with the row: gone, or taken for another chat, what it asked let go of by what follows,
-  // what the row showed put back as it is made anew)
-  let whole_wait_gone = fn() {
-    match whole_wait.val {
-      Some(w) => {
-        whole_wait.val = None
-        w.end()
-      }
-      None => ()
-    }
-  }
+  let whole = WholeHeld::new(src, item, fn() { pressing.val || hovering.val || menu_on() })
+  let ask_whole = fn() { whole.asks() }
+  let whole_idle = fn() { whole.idle() }
+  let then_whole = fn(run : (ChatItem) -> Unit, gone : () -> Unit) { whole.then(run, gone) }
   // (where the last press went down, and its state line: pressed there, while the core says which message that is
   // about and nothing in it is unread, its chat goes there as it opens: ChatMark.tsx jumpFromLine)
   let down_at : Ref[(Double, Double)?] = Ref(None)
@@ -581,11 +539,7 @@ pub fn chat_row_node(
     }
     // (its menu gone, what waited answered: let go of where nothing else holds it)
     row.reacts(fn() { menu_on() }, fn(on) { if !on { whole_idle() } })
-    row.owns(fn() {
-      whole_wait_gone()
-      whole.let_go()
-    })
-    |> ignore
+    row.owns(fn() { whole.drop() }) |> ignore
     // (its chat in view or no more, eased; taken for another chat, as that one's at once, as it would be made)
     let chosen_for = Ref(@sfbase.row_name(first))
     row.reacts(fn() { (key(), on()) }, fn(now) {
@@ -622,9 +576,8 @@ pub fn chat_row_node(
       }
       opened.val = false
       down_at.val = None
-      whole_wait_gone()
       pressing.val = false
-      whole.let_go()
+      whole.drop()
       // (put, never set going: a row taken for another chat is so as its list is laid out (a block given another key
       // as the list scrolls), what a frame found, no cause; what it shows is put back as it would be were it made anew
       // for that chat, as a list's reused row's looks always are (a way said here was the frame's, at 60 a second and

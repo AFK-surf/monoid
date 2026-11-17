@@ -170,7 +170,7 @@ test "小屏: the board under Home's bar, a column at a time by its chips, a car
   let (t, _) = board_at("board", 390.0, 844.0, platform=2)
   assert_true(board_words_at(t, "整理发布清单") is Some(_))
   assert_eq(board_faults(t), [])
-  t.click(Button, label="进行中 3")
+  t.click(Tab, label="进行中 3")
   t.run_for(@ui.move_most_ms)
   assert_true(board_words_at(t, "首页的列表改成按天分组") is Some(_))
   assert_true(board_words_at(t, "整理发布清单") is None)
@@ -643,7 +643,7 @@ test "小屏: the board's columns swiped across, in the hand and let go on the n
 ///|
 test "小屏: a draft's card held long offers 立即派发 and 删除; not dragged" {
   let (t, _) = board_at("board", 390.0, 844.0, platform=2)
-  t.click(Button, label="待派发 2")
+  t.click(Tab, label="待派发 2")
   t.run_for(@ui.move_most_ms)
   guard t.semantics().iter().find_first(fn(n) { n.role is Button && n.rect.1 > 200.0 && n.rect.2 > 300.0 }) is Some(card) else {
     fail("no draft's card")
@@ -809,9 +809,51 @@ test "大屏: each card where the core says its chat stands: one an agent leads 
 }
 
 ///|
+/// The narrow board over board-many (a busy workspace's: two figures a column) on a phone's window, at rest.
+fn board_many_at() -> (@ui.Tester, Source) {
+  board_at("board-many", 390.0, 844.0, platform=2)
+}
+
+///|
+/// The rect a screen reader is told card or chip `label` (of `role`) has, if it is there.
+fn board_rect_of(t : @ui.Tester, role : @ui.Role, label : String) -> (Double, Double, Double, Double)? {
+  for n in t.semantics() {
+    if n.role == role && n.label == label {
+      return Some(n.rect)
+    }
+  }
+  None
+}
+
+///|
+test "小屏: the board reaches the window's foot, its cards passing under the bottom bar; scrolled to its end, its last card at rest over that bar" {
+  let (t, _) = board_many_at()
+  let h = 844.0
+  let foot = nav_foot() + bar_room_now()
+  assert_true(foot > 40.0, msg="the bottom bar covers \{foot}")
+  // (a card's words drawn under the bottom bar's top, cut by nothing short of the window's foot: the column not cut
+  // in the air over that bar)
+  let under = t.glyph_clips().filter(fn(g) { g.0.1 > h - foot && g.0.1 < h - 8.0 })
+  assert_true(under.length() > 0, msg="no words under the bottom bar")
+  assert_true(under.iter().all(fn(g) { g.1.3 >= h - 0.5 }), msg="words under the bottom bar cut short of the window's foot")
+  // (scrolled down to its end: its last card whole, at rest over the bottom bar, as close over it as Home's list's
+  // last row)
+  for _ in 0..<6 {
+    t.wheel(200.0, 500.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  guard board_rect_of(t, Button, "安卓冷启动又慢了") is Some((_, y, _, ch)) else { fail("no last card") }
+  assert_true(y + ch <= h - foot + 0.5, msg="the last card's foot \{y + ch} under the bottom bar's top \{h - foot}")
+  assert_true(y + ch >= h - foot - 24.0, msg="the last card's foot \{y + ch} far over the bottom bar's top \{h - foot}")
+  // (a card passing under the bar's glass at its top is under it, not drawn over its chips: a press there is the bar's,
+  // as the hit test has it)
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "小屏: 待收口 says how many it has read and puts them away from its top, the result not read kept" {
   let (t, _) = board_at("board", 390.0, 844.0, platform=2)
-  t.click(Button, label="待收口 3")
+  t.click(Tab, label="待收口 3")
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfbase.board_lane.get(), "done")
   assert_true(board_words_at(t, "已读 2 项") is Some(_))
@@ -820,6 +862,53 @@ test "小屏: 待收口 says how many it has read and puts them away from its to
   t.run_for(@ui.move_most_ms)
   assert_true(board_words_at(t, "已读 2 项") is None)
   assert_true(board_words_at(t, "给设置页加一个深色模式开关") is Some(_))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+/// The wide board's columns' lists that reach its foot (the clips of words drawn within `h`'s last 200 points, taller
+/// than 300).
+fn board_wide_lists(t : @ui.Tester, h : Double) -> Array[(Double, Double, Double, Double)] {
+  let out : Array[(Double, Double, Double, Double)] = []
+  for g in t.glyph_clips() {
+    let c = g.1
+    if g.0.1 > h - 200.0 && c.3 - c.1 > 300.0 && !out.contains(c) {
+      out.push(c)
+    }
+  }
+  out
+}
+
+///|
+/// The wide board over board-many in a window `w` × `h`: each column's list reaching the foot of the panel or the window
+/// (within `h` by less than the page's margin), not cut in the air over it; each that scrolls, scrolled to its end, its
+/// last card at rest the page's margin over that foot, as far as from the sides.
+fn board_wide_foot_holds(w : Double, h : Double) -> Unit raise {
+  let (t, _) = board_at("board-many", w, h)
+  let lists = board_wide_lists(t, h)
+  assert_true(lists.length() > 0, msg="no column's cards near the foot")
+  let mut scrolled = 0
+  for c in lists {
+    let (x0, _, x1, y1) = c
+    assert_true(y1 > h - 16.0, msg="a column cut at \{y1}, the page's margin or more over the foot \{h}")
+    for _ in 0..<12 {
+      t.wheel((x0 + x1) / 2.0, y1 - 100.0, 900.0)
+      t.run_for(@ui.move_most_ms)
+    }
+    let mut last = 0.0
+    for n in t.semantics() {
+      if n.role == Button && n.rect.0 >= x0 - 1.0 && n.rect.0 + n.rect.2 <= x1 + 1.0 && n.rect.2 > 150.0 {
+        if n.rect.1 + n.rect.3 > last {
+          last = n.rect.1 + n.rect.3
+        }
+      }
+    }
+    if last > y1 - 40.0 {
+      scrolled += 1
+      assert_true((last - (y1 - 16.0)).abs() < 0.5, msg="the last card's foot \{last}, not 16 over the foot \{y1}")
+    }
+  }
+  assert_true(scrolled > 0, msg="no column scrolled to its end")
   assert_eq(board_faults(t), [])
 }
 
@@ -842,4 +931,213 @@ test "小屏: 待处理 lists what waits for the viewer read or not, and 全部�
   assert_eq(board_words_n(t, "给设置页加一个深色模式开关"), done_before - 1)
   assert_eq(board_words_n(t, "夜里的构建又失败了"), 2)
   assert_eq(board_words_n(t, "整理发布清单"), 2)
+}
+
+///|
+test "中屏 760 and 大屏 1440: the board's columns reach the foot, not cut in the air over it; scrolled to its end, a column's last card 16 over that foot" {
+  board_wide_foot_holds(760.0, 800.0)
+  board_wide_foot_holds(1440.0, 900.0)
+}
+
+///|
+test "小屏: the board's chips on Home's bar, two figures each; swiped to 监控中, its chip brought whole into sight within the page's margins" {
+  let (t, _) = board_many_at()
+  for w in ["待派发 2", "等你处理 10", "进行中 28", "待收口 25", "监控中 6"] {
+    assert_true(board_rect_of(t, Tab, w) is Some(_), msg="no chip \{w}")
+  }
+  // (on the bar's glass, its top bar's keys over it: the chips under them, the cards under the chips)
+  guard board_rect_of(t, Tab, "等你处理 10") is Some((_, cy, _, chh)) else { fail("no chip") }
+  guard board_rect_of(t, Button, "整理发布清单") is Some((_, ty, _, _)) else { fail("no card") }
+  assert_true(ty > cy + chh, msg="the first card under the chips")
+  // (swiped across, a column at a time, to the last)
+  for _ in 0..<3 {
+    board_swipe(t, 330.0, 500.0, -200.0, 6)
+  }
+  assert_eq(@sfbase.board_lane.get(), "watch")
+  guard board_rect_of(t, Tab, "监控中 6") is Some((x, _, w, _)) else { fail("no 监控中") }
+  assert_true(x >= 16.0 - 0.5 && x + w <= 390.0 - 16.0 + 0.5, msg="监控中 6 at \{x}, \{w} wide: not whole within the margins")
+  // (and back to the first by its chip: in sight again)
+  t.click(Tab, label="待派发 2")
+  t.run_for(@ui.move_most_ms)
+  guard board_rect_of(t, Tab, "待派发 2") is Some((x, _, w, _)) else { fail("no 待派发") }
+  assert_true(x >= 16.0 - 0.5 && x + w <= 390.0 - 16.0 + 0.5, msg="待派发 2 at \{x}: not whole within the margins")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "小屏: a card on a station with no mark of its own says its name where its title begins, nothing before it" {
+  let (t, _) = board_many_at()
+  guard board_words_at(t, "Farview 替换 agent 浏览器") is Some((tx, ty, _, _)) else { fail("no title") }
+  let names = t.words().filter(fn(w) { w.0 == "tokyo-mac-studio-0" && w.2 > ty })
+  guard names.get(0) is Some(n) else { fail("no station's name") }
+  assert_eq(n.1, tx)
+  assert_eq(t.line_start_faults().filter(fn(f) { f.contains("board_node") }), [])
+  assert_eq(t.first_line_faults().filter(fn(f) { f.contains("board_node") }), [])
+}
+
+///|
+test "小屏: a card's faces asked for their pictures, as a row's; an agent's subagents one mark, no key twice" {
+  new_run()
+  let asked : Array[String] = []
+  let base = fixture("board-many")
+  let src : Source = {
+    ..base,
+    picture: fn(url, stint) {
+      asked.push(url)
+      (base.picture)(url, stint)
+    },
+  }
+  open_fixture_over("board-many", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  assert_true(asked.contains("https://example.com/faces/board-z.png"), msg="asked: \{Repr(asked)}")
+  // (its picture drawn in the face's place: the only pictures the narrow board shows)
+  assert_true(t.drawn_images().length() > 0, msg="the face's picture not drawn")
+  guard board_rect_of(t, Button, "station W10-2：清退 src/store 剩余 16 处 TS Step 代码并加固门禁") is Some((x, y, w, h)) else {
+    fail("no card")
+  }
+  let marks = t
+    .semantics()
+    .filter(fn(n) {
+      n.role is Image && n.label.has_prefix("anthropic") && n.rect.0 >= x && n.rect.1 >= y && n.rect.0 < x + w && n.rect.1 < y + h
+    })
+  assert_eq(marks.length(), 1)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "小屏 and 大屏: a chat's card held long, or right clicked, offers the chat's menu, each of its items the board's to do" {
+  let (t, _) = board_many_at()
+  guard board_rect_of(t, Button, "夜里的构建又失败了") is Some((x, y, _, _)) else { fail("no card") }
+  t.touch(0, x + 40.0, y + 20.0)
+  t.advance(@ui.long_press_ms + @ui.input_step_ms)
+  t.draw()
+  t.touch(2, x + 40.0, y + 20.0)
+  t.run_for(@ui.move_most_ms)
+  let said = board_menu_said(t)
+  for w in ["重命名", "归档"] {
+    assert_true(said.contains(w), msg="\{w} not in \{Repr(said)}")
+  }
+  assert_true(app.nav.top() is Home)
+  // (大屏: right clicked at the pointer)
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  guard board_words_at(t, "夜里的构建又失败了") is Some((x, y, _, _)) else { fail("no card") }
+  t.right_click(x + 10.0, y + 6.0)
+  t.run_for(@ui.move_most_ms)
+  let said = board_menu_said(t)
+  for w in ["重命名", "归档"] {
+    assert_true(said.contains(w), msg="\{w} not in \{Repr(said)}")
+  }
+  // (重命名 asked over the page, whatever the input: the card shows no title of a row's to be its field)
+  board_tap_words(t, "重命名")
+  assert_true(t.semantics().iter().any(fn(n) { n.role is Dialog }), msg="重命名 asked nowhere")
+}
+
+///|
+/// A card lifted for its menu as it is drawn (its raised ground, wider than a card at rest of 小屏's, 358, by a
+/// hundredth and more, narrower than the window) and where among what is drawn; None where none is.
+fn board_lifted_card(t : @ui.Tester) -> ((Double, Double, Double, Double), Int)? {
+  let raised = @sf.theme().p.raised
+  for i, r in t.drawn_rects() {
+    if r.4 == raised && r.2 > 358.0 * 1.02 && r.2 < 385.0 {
+      return Some(((r.0, r.1, r.2, r.3), i))
+    }
+  }
+  None
+}
+
+///|
+/// Where among what is drawn the menu's scrim is (a ground over the whole window, seen through), and the top of the
+/// sheet a menu is in (what is drawn after `after` across the window's width, under its top).
+fn board_scrim_sheet(t : @ui.Tester, w : Double, h : Double, after : Int) -> (Int?, Double) {
+  let mut scrim : Int? = None
+  let mut top = h
+  for i, r in t.drawn_rects() {
+    if scrim is None && r.0 <= 0.5 && r.1 <= 0.5 && r.2 >= w && r.3 >= h && (r.4 & 0xFFL) < 0xFFL {
+      scrim = Some(i)
+    }
+    if i > after && r.0 <= 0.5 && r.2 >= w - 0.5 && r.1 > 100.0 && r.1 < top {
+      top = r.1
+    }
+  }
+  (scrim, top)
+}
+
+///|
+/// A long press of a finger at (x, y), let go once its menu is up, settled.
+fn board_long_press(t : @ui.Tester, x : Double, y : Double) -> Unit {
+  t.touch(0, x, y)
+  t.advance(@ui.long_press_ms + @ui.input_step_ms)
+  t.draw()
+  t.touch(2, x, y)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// Card `card` held by a finger for its menu and lifted: drawn larger, over the scrim, clear of the sheet over it.
+fn board_lifted_over(t : @ui.Tester, what : String) -> (Double, Double, Double, Double) raise {
+  guard board_lifted_card(t) is Some((r, at)) else { fail("\{what}: no card lifted") }
+  let (scrim, top) = board_scrim_sheet(t, 390.0, 844.0, at)
+  assert_true(scrim is Some(s) && s < at, msg="\{what}: scrim \{Repr(scrim)}, card \{at}")
+  assert_true(r.1 + r.3 <= top - 12.0 + 0.5, msg="\{what}: its foot \{r.1 + r.3} under the sheet's top \{top} less 12")
+  r
+}
+
+///|
+test "小屏: a card held by a finger lifts over its menu's scrim, clear of its sheet, a step further in too, back down as it closes; a draft's too; a right click lifts none, a mouse's button held opens nothing" {
+  let (t, _) = board_many_at()
+  let name = "Farview 替换 agent 浏览器"
+  guard board_rect_of(t, Button, name) is Some(laid) else { fail("no card") }
+  assert_true(board_lifted_card(t) is None)
+  board_long_press(t, laid.0 + 40.0, laid.1 + 20.0)
+  let up = board_lifted_over(t, "held")
+  assert_true(up.2 > 358.0 * 1.02, msg="drawn \{up.2} wide")
+  // (lower on the screen than the sheet lets it be: brought up over it)
+  assert_true(up.1 + up.3 < laid.1 + laid.3, msg="its foot \{up.1 + up.3} from \{laid.1 + laid.3}")
+  assert_eq(board_faults(t), [])
+  // (a step further in, 分享…: lifted still, over the sheet that takes the menu's place)
+  board_tap_words(t, "分享…")
+  board_lifted_over(t, "分享…") |> ignore
+  @sf.close_presented_of(@sf.last_presented())
+  // (back down on its spring from the moment the menu went)
+  t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+  assert_true(!@sf.presented_drawn())
+  assert_true(board_lifted_card(t) is None, msg="still lifted")
+  assert_eq(board_rect_of(t, Button, name), Some(laid))
+  assert_eq(board_faults(t), [])
+  // (a draft's card in 待派发, held so: lifted the same)
+  t.click(Tab, label="待派发 2")
+  t.run_for(@ui.move_most_ms)
+  guard board_rect_of(t, Button, "给导出加上按月份筛选") is Some(d) else { fail("no draft's card") }
+  board_long_press(t, d.0 + 40.0, d.1 + 20.0)
+  assert_true(board_menu_said(t).contains("立即派发"))
+  board_lifted_over(t, "a draft's") |> ignore
+  assert_eq(board_faults(t), [])
+  // (大屏: right clicked, its menu at the pointer, the card where it lies, as large)
+  let (t, _) = board_at("board-many", 1440.0, 900.0)
+  guard board_rect_of(t, Button, "夜里的构建又失败了") is Some(r) else { fail("no card") }
+  t.right_click(r.0 + 40.0, r.1 + 20.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_menu_said(t).contains("重命名"))
+  assert_eq(board_rect_of(t, Button, "夜里的构建又失败了"), Some(r))
+  let raised = @sf.theme().p.raised
+  assert_true(
+    !t.drawn_rects().iter().any(fn(d) { d.4 == raised && (d.2 - r.2).abs() < 40.0 && d.2 > r.2 + 1.0 }),
+    msg="a card drawn lifted",
+  )
+  assert_eq(board_faults(t), [])
+  // (a mouse's button held on a card as long as a finger's hold: a press as long as any, waiting to be dragged; no
+  // menu, nothing lifted)
+  let (t, _) = board_at("board-many", 1440.0, 900.0)
+  t.host_says_finger(Some(false))
+  guard board_rect_of(t, Button, "夜里的构建又失败了") is Some(r) else { fail("no card") }
+  t.touch(0, r.0 + 40.0, r.1 + 20.0)
+  t.advance(@ui.long_press_ms + @ui.input_step_ms)
+  t.draw()
+  assert_true(!@sf.presented_drawn(), msg="a menu up: \{Repr(board_menu_said(t))}")
+  assert_eq(board_rect_of(t, Button, "夜里的构建又失败了"), Some(r))
+  t.touch(3, r.0 + 40.0, r.1 + 20.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(!@sf.presented_drawn())
+  assert_eq(board_faults(t), [])
 }

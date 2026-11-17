@@ -4,6 +4,10 @@
 // floor; the lines to write are printed by the test). Counted 2026-11-16 (on main after #6556) on the values and changes of
 // client/core-ts/test/real-size.ts.
 
+// Raised once, 2026-11-16: the board's cards say their chat as Home's list's rows do (sfpages board_node.mbt: the list's
+// marks on its title's line, who is in it by row_aside_node), each part told only as what it shows of the chat's row
+// changes: a station's going down runs what of them shows it (its mark on the title's line, its ink).
+
 // Added 2026-11-16: the settings' sidebar beside every settings page in a wide window made once as nodes
 // (settings_side_node), each row held by its own computed (settings_list.mbt settings_side_row_node): a change of the
 // accounts (profiles/down) runs the bindings of 账号's row (Profile, its count) alone, 6, where they ran 82 as the old
@@ -1147,11 +1151,11 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide share-card-poster fleet/down": 7,
   "wide share-card-senren-ciallo fleet/down": 4,
   "wide share-card-senren-photo fleet/down": 4,
-  "phone board chats/down": 10,
+  "phone board chats/down": 14,
   "phone board chats/card": 10,
-  "wide board chats/renamed": 18,
-  "wide board chats/down": 42,
-  "wide board chats/card": 23,
+  "wide board chats/renamed": 5,
+  "wide board chats/down": 72,
+  "wide board chats/card": 79,
   "wide board chats/archived": 11,
   "phone settings-me-reading connects/session": 1,
   "phone settings-me-reading vaults/item": 1,

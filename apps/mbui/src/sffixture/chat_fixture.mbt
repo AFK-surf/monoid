@@ -442,6 +442,9 @@ pub fn fixture_file_png(name : String) -> Bytes {
     "演示录屏.mp4" => (160, 90, (0x1E, 0x2A, 0x3A), (0x5B, 0x7B, 0xB2))
     // a person's face (ana_face, as a test or a film gives it): small, as the core keeps one
     "face.png" => (22, 22, (0xF2, 0xB0, 0x1E), (0xC2, 0x41, 0x6B))
+    // board-many's people's faces (board_face)
+    "face-z.png" => (16, 16, (0x5B, 0x7B, 0xB2), (0x2F, 0x8F, 0x5B))
+    "face-u.png" => (16, 16, (0xC2, 0x41, 0x6B), (0x8E, 0x5B, 0xB2))
     _ => (120, 80, (0x2F, 0x8F, 0x5B), (0xE8, 0xE4, 0xDC))
   }
   let rgba = FixedArray::make(w * h * 4, b'\x00')

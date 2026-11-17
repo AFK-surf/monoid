@@ -143,6 +143,7 @@ fn message_image_node(
       },
       file_lift_scale,
     )
+    |> ignore
     // (what the preview flies from and back into, by its thumbnail's id: hidden while the preview shows it, its
     // picture flown from here and back here by the viewer, under the page's bar while it is under it)
     chosen.val = @sfbase.note_thumb_node(

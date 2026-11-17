@@ -152,6 +152,41 @@ fn Tree::covers_over(self : Tree, under : NodeId, cover : NodeId) -> Bool {
 }
 
 ///|
+/// Whether press target `under`, where press target `over` is drawn over it on `part` (x0, y0, x1, y1), is out of sight
+/// there under a cover, as the hit test has it (Tree::target_at): `over` or what holds it, not holding `under`, draws
+/// a ground or glass of its own (Node::covers, as opaque as it is drawn) in a layer over `under` (Tree::covers_over: a
+/// bar's glass over what scrolls under it) and holds all of `part` where it is drawn. A press there is the cover's and
+/// what is in it, never `under`'s: the two are not drawn over each other in one place a press could take for either
+/// (ui's tree_room_faults' `apart:`).
+pub fn Tree::covered_under(self : Tree, under : NodeId, over : NodeId, part : (Double, Double, Double, Double)) -> Bool {
+  guard self.alive_id(under) && self.alive_id(over) else { return false }
+  // (what may cover: `over` and what holds it, short of what holds `under` too)
+  let on : Map[Int, Bool] = Map([])
+  let mut i = over.at
+  while i >= 0 && !self.holds({ at: i, gen: self.nodes[i].gen }, under) {
+    on[i] = true
+    i = self.nodes[i].parent
+  }
+  let (px0, py0, px1, py1) = part
+  let found = Ref(false)
+  self.each_drawn_scaled(fn(c, x, y, a, s) {
+    if found.val || !on.contains(c.id.at) {
+      return
+    }
+    let n = self.nodes[c.id.at]
+    if n.covers(a) &&
+      x <= px0 + 0.5 &&
+      y <= py0 + 0.5 &&
+      x + c.w * s >= px1 - 0.5 &&
+      y + c.h * s >= py1 - 0.5 &&
+      self.covers_over(under, c.id) {
+      found.val = true
+    }
+  })
+  found.val
+}
+
+///|
 /// The node over all else of the window (View::over_all) node `id` is in, it or what holds it; -1 none.
 fn Tree::over_all_of(self : Tree, id : NodeId) -> Int {
   guard self.alive_id(id) else { return -1 }

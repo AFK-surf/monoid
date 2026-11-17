@@ -1,4 +1,6 @@
-// MBUI_FIXTURE=board (board-dark, board-list: the same chats as Home's list): a workspace's chats at every stand the
+// MBUI_FIXTURE=board (board-dark, board-list: the same chats as Home's list; board-many: as many as a busy workspace
+// has, two figures a column: 等你处理 10, 进行中 28, 待收口 25, 监控中 6, on a station with no mark of its own and from
+// Slack and Comma, faces of people with their pictures, an agent's subagents): a workspace's chats at every stand the
 // board sorts them by (waiting on a decision, on help, failed; at work, waiting on CI; done; keeping watch), on Willow
 // and Maple, with Claude, Codex and Gemini, 林, Ana and 周, from Slack and Feishu, each chat with what was said in it;
 // two drafts in 待派发, kept in the prefs as the core keeps them (`boardViews`, `boardDrafts`: board-list none, the
@@ -240,10 +242,140 @@ pub fn board_days(f : Fixture) -> Array[Json] {
       "people": [me],
     }),
   ]
+  if f.mode == "board-many" {
+    today.append(board_many_rows())
+  }
   [
     { "daysAgo": 0, "at": 0, "label": "今天", "items": kept(f, today) },
     { "daysAgo": 1, "at": 0, "label": "昨天", "items": kept(f, earlier) },
   ]
+}
+
+///|
+/// Where the made-up faces of board-many's people are (each its picture: board_face).
+let board_face_at : String = "https://example.com/faces/board-"
+
+///|
+/// A person of board-many's with their face's picture (board_face).
+fn board_faced(id : String, name : String, face : String) -> Json {
+  {
+    "id": Json::string(id),
+    "name": Json::string(name),
+    "email": Json::string(id),
+    "via": "cloud",
+    "shown": { "name": Json::string(name), "display": Json::string(name), "mine": false, "picture": Json::string(board_face_at + face + ".png") },
+  }
+}
+
+///|
+/// The picture the made-up core gives for a face at `url` in a fixture of `mode`: board-many's people's, each its own
+/// (chat_fixture's fixture_file); none for any other.
+pub fn board_face(mode : String, url : String) -> String {
+  if board_mode(mode) && url.has_prefix(board_face_at) {
+    fixture_file("face-" + url.exact_view(start=board_face_at.length()).to_owned())
+  } else {
+    ""
+  }
+}
+
+///|
+/// board-many's chats besides the board's own: so many at each stand that each column's count has two figures, on a
+/// station with no mark of its own (its name alone) and on one from Slack's and Comma's, its people with faces, one
+/// agent's subagents with it.
+fn board_many_rows() -> Array[Json] {
+  let zuo = board_faced("zuo@example.com", "Zuo", "z")
+  let uma = board_faced("uma@example.com", "Uma", "u")
+  let claude = agent("anthropic", "claude")
+  let sub = agent("anthropic", "claude-subagent")
+  let codex = agent("openai", "codex")
+  let bare = fn(more : Map[String, Json]) {
+    let m = more.copy()
+    m["stationName"] = "tokyo-mac-studio-0"
+    m["stationIcon"] = ""
+    m
+  }
+  let out : Array[Json] = []
+  // 等你处理: what the viewer is asked
+  let asks = [
+    ("station W10-2：清退 src/store 剩余 16 处 TS Step 代码并加固门禁", "审阅 PR #6655 并决定是否合并；以及 station/mb 注释里过期的路径要不要之后修"),
+    ("Farview 替换 agent 浏览器", "更新到最新 beta，在电脑上拖动窗口改变宽度，看 Farview 标签页是否一次跟上"),
+    ("待处理里的对话点不成已读", "说明当时是在哪里点已读没有反应（「待处理」面板里的某一行，还是对话列表上的标记），以及点完之后列表有没有变化"),
+    ("monoid-machine 装机视频", "看预览的动作和镜头，确认后开渲正式版"),
+    ("station 统一：阻碍与规划", "确认迁移顺序：先搬 jobs 还是先搬 accounts"),
+    ("Comma 里的周报草稿", "看一下第二段的数字要不要换成本周的"),
+    ("安卓冷启动又慢了", "选一个：回退 #6601，还是先加启动阶段的打点再看"),
+  ]
+  for k, a in asks {
+    let id = "m-w\{k}"
+    let more : Map[String, Json] = {
+      "state": "block",
+      "stage": "wait",
+      "tone": "wait",
+      "stateText": Json::string("要你帮忙：" + a.1),
+      "stateLead": "need",
+      "stateRest": Json::string(a.1),
+      "agents": if k == 0 { [claude, sub] } else { [claude] },
+      "people": [if k == 3 { uma } else { zuo }],
+      "creator": { "id": Json::string(if k == 3 { "uma@example.com" } else { "zuo@example.com" }), "via": "cloud" },
+    }
+    if k == 3 {
+      more["stationName"] = "Office-Host-2"
+      more["stationIcon"] = ""
+      more["connect"] = "slack-1"
+      more["originKind"] = "slack"
+      more["originText"] = "Slack · 星火 · #装机"
+      out.push(row(id, a.0, "ws1/st2", "\{k + 3} 分钟前", more))
+    } else if k == 5 {
+      more["connect"] = "comma-1"
+      more["originKind"] = "comma"
+      more["originText"] = "Comma · 周报"
+      out.push(row(id, a.0, "ws1/st1", "\{k + 3} 分钟前", bare(more)))
+    } else {
+      out.push(row(id, a.0, "ws1/st1", "\{k + 3} 分钟前", bare(more)))
+    }
+  }
+  // 进行中, 待收口, 监控中: at work, done, keeping watch
+  for k in 0..<25 {
+    out.push(
+      row("m-r\{k}", "进行中的第 \{k + 1} 件事：把第 \{k + 1} 组页面改成新的列表", "ws1/st1", "\{k + 1} 分钟前", bare({
+        "state": "run",
+        "stage": "run",
+        "tone": "busy",
+        "stateText": Json::string("正在改第 \{k + 1} 组页面，已改完 \{k % 5 + 1} 个文件"),
+        "stateLead": "",
+        "stateRest": Json::string("正在改第 \{k + 1} 组页面，已改完 \{k % 5 + 1} 个文件"),
+        "agents": if k % 3 == 0 { [claude, sub, codex] } else { [codex] },
+        "people": [zuo],
+      })),
+    )
+  }
+  for k in 0..<22 {
+    out.push(
+      row("m-d\{k}", "做完的第 \{k + 1} 件事：第 \{k + 1} 组截图换新", "ws1/st1", "\{k + 1} 小时前", bare({
+        "tone": "done",
+        "stateText": Json::string("做完了：第 \{k + 1} 组的截图都换了，已合进 main"),
+        "stateLead": "done",
+        "stateRest": Json::string("第 \{k + 1} 组的截图都换了，已合进 main"),
+        "agents": [claude],
+        "people": [zuo, uma],
+        "creator": { "id": "zuo@example.com", "via": "cloud" },
+      })),
+    )
+  }
+  for k in 0..<5 {
+    out.push(
+      row("m-m\{k}", "盯着第 \{k + 1} 条流水线", "ws1/st1", "\{k + 1} 小时前", bare({
+        "stage": "watch",
+        "stateText": Json::string("监控中：每 5 分钟看一次第 \{k + 1} 条流水线"),
+        "stateLead": "watch",
+        "stateRest": Json::string("监控中：每 5 分钟看一次第 \{k + 1} 条流水线"),
+        "watch": { "text": Json::string("监控中：第 \{k + 1} 条流水线"), "ask": "仍在监控。归档会停止监控。" },
+        "agents": [claude],
+        "people": [zuo],
+      })),
+    )
+  }
+  out
 }
 
 ///|

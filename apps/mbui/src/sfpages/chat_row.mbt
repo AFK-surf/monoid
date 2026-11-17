@@ -701,13 +701,17 @@ fn row_menu(c : @ui.Ctx, src : Source, item : ChatItem, id : Int, x : Double, y 
 /// has read already), in place of the row's. What shares it or takes it elsewhere (复制会话链接, 接力到频道 for a thread with an
 /// agent, and share_items: 分享给其他 workspace, 分享图片, 在 Slack／飞书打开) is one item, 分享…, its own menu from
 /// `share_from` (where the menu was opened), where there are two or more of them (左子健, 2026-11-09: 菜单有点太多了，只把分享收进一个).
-/// `here`: a row's of a list made once, its 归档 said where the row was (archive_row's `here`).
+/// `here`: a row's of a list made once, its 归档 said where the row was (archive_row's `here`). `asks_rename`: 重命名
+/// asked over the page on every input, where its chat shows no title of a row's to be its field (a board's card);
+/// `archived` done as it is archived from here, before it is (a board's card's: its chat no more beside the board).
 fn chat_menu_items(
   src : Source,
   item : ChatItem,
   share_from~ : () -> @sf.Beside,
   page? : Array[@sf.MenuItem?],
   here? : Bool = false,
+  asks_rename? : Bool = false,
+  archived? : () -> Unit = fn() {  },
 ) -> Array[@sf.MenuItem?] {
   let r = row_ref(item)
   let items : Array[@sf.MenuItem?] = []
@@ -733,7 +737,18 @@ fn chat_menu_items(
     Some(
       @sf.menu_item_of(@sf.t("web-main.chat.rename"), icon="edit", fn() {
         // asked where the presenters ask it: with keyboard and mouse the row's title its own field, on a
-        // touch over the page
+        // touch over the page; where no row's title shows it, over the page on both
+        if asks_rename {
+          @sf.ask(
+            @sf.t("android-chat.rename.title"),
+            @sf.t("common.save"),
+            fn(title) { rename(src, item, title) },
+            value=item.title,
+            placeholder=@sf.t("android-chat.rename.field"),
+            hint=@sf.t("android-chat.rename.note"),
+          )
+          return
+        }
         @sf.ask_here(
           @sf.t("android-chat.rename.title"),
           @sf.t("common.save"),
@@ -813,7 +828,14 @@ fn chat_menu_items(
   }
   // with the chat's own state (pinned, kept), not last: a sheet's last row is over the screen's foot, where a thumb
   // going home or back lands on it
-  items.push(Some(@sf.menu_item_of(@sf.t("web-main.chat.archive"), icon="archive", fn() { archive_row(src, item, here~) })))
+  items.push(
+    Some(
+      @sf.menu_item_of(@sf.t("web-main.chat.archive"), icon="archive", fn() {
+        archived()
+        archive_row(src, item, here~)
+      }),
+    ),
+  )
   // (a line between the groups: the chat itself; where else it is and goes)
   rule_after(items)
   // the chat an agent opened it from: gone to (its own page, its row as it is)

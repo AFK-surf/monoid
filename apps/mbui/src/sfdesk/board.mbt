@@ -32,7 +32,7 @@ fn board_on_in(ws : String) -> Bool {
 fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit) {
   (
     "home",
-    fn(v, _page, _under, _stint, k) {
+    fn(v, _page, _under, stint, k) {
       pane_made_host(v, src, k)
       board_listed_back()
       // (once made, put by as it was while the list is chosen (View::each's `keeps`), taken in again at once as the
@@ -51,7 +51,7 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
         }
         @sfpages.board_node(b, src, tips, fn() { @sfbase.workspace_in_view(src).0 }, width, beside=fn(s, r) {
           board_beside(s, src, r, tips, k)
-        }, bar_frame=fn(parent, make) { board_pane_bar(parent, src, make) }, archive=fn() { board_archive_go(src) })
+        }, bar_frame=fn(parent, make) { board_pane_bar(parent, src, make) }, archive=fn() { board_archive_go(src) }, stint~)
       })
     },
   )
@@ -64,7 +64,7 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
 fn board_tape_made(src : Source, tips : @sf.TipLayer, width : () -> Double) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit) {
   (
     "home",
-    fn(v, _page, _under, _stint, _k) {
+    fn(v, _page, _under, stint, _k) {
       v.lends(@sf.pane_lent, true).grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { tape_page_ground(v) })) |> ignore
       context_node(v)
       board_listed_back()
@@ -73,7 +73,7 @@ fn board_tape_made(src : Source, tips : @sf.TipLayer, width : () -> Double) -> (
         b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         @sfpages.board_node(b, src, tips, fn() { @sfbase.workspace_in_view(src).0 }, width, ground=fn() {
           tape_page_ground(b)
-        }, columns=true, bar_frame=fn(parent, make) { board_tape_bar(parent, make) }, archive=fn() { board_archive_go(src) })
+        }, columns=true, bar_frame=fn(parent, make) { board_tape_bar(parent, make) }, archive=fn() { board_archive_go(src) }, stint~)
       })
     },
   )

@@ -6,6 +6,12 @@
 // The wide stations' place's rows written again 2026-11-15, its page made as nodes (sfdesk places.mbt
 // stations_place_node): what its old view built now made in the tree's count, as wide settings-station's.
 
+// Raised once, 2026-11-16: the board's cards say their chat as Home's list's rows do (sfpages board_node.mbt: the list's
+// marks on its title's line, who is in it by row_aside_node, its menu), and its columns reach the window's foot, so
+// they make the cards a taller list shows. A chat come to wait on a card goes on to another column (chats/card: one
+// card let go in the one, made in the other); a station gone down marks its chats' titles, which break again narrower
+// (chats/down: 4 measured), the cards under them pushed past the room a column's list keeps made, let go.
+
 // Written again, 2026-11-15: 账号, 字体 and 下方栏 and the settings' sidebar made once as nodes (what their old views
 // built again on a change, made or laid out by the tree's now).
 
@@ -31,7 +37,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone board chats/renamed": (0, 0, 0, 0, 0, 1),
   "phone board chats/message": (0, 0, 0, 0, 0, 1),
   "phone board chats/member": (0, 0, 0, 0, 0, 1),
-  "phone board chats/down": (0, 0, 0, 0, 0, 1),
+  "phone board chats/down": (5, 3, 12, 1, 0, 1),
   "phone board chats/card": (2, 0, 30, 2, 0, 1),
   "phone board chats/archived": (0, 0, 0, 0, 0, 1),
   "phone home lock/member": (0, 0, 0, 0, 0, 1),
@@ -66,7 +72,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone search-results search/archived": (29, 33, 41, 8, 0, 0),
   "phone chat chat compact/thing": (0, 0, 0, 0, 10, 67),
   "phone chat chat compact/screen": (0, 0, 0, 0, 6, 17),
-  "phone chat chat compact/message": (0, 0, 0, 0, 20, 50),
+  "phone chat chat compact/message": (0, 0, 0, 0, 20, 42),
   "phone chat chatJobs compact summary/job": (3, 0, 23, 0, 20, 17),
   "phone chat live/step": (0, 0, 0, 0, 20, 17),
   "phone chat chatRow/thing": (0, 0, 0, 0, 20, 17),
@@ -100,7 +106,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone chat-peek stationNet/sample": (0, 0, 32, 4, 0, 0),
   "phone chat-working chat compact/thing": (0, 0, 0, 0, 10, 67),
   "phone chat-working chat compact/screen": (0, 0, 0, 0, 6, 17),
-  "phone chat-working chat compact/message": (0, 0, 0, 0, 20, 50),
+  "phone chat-working chat compact/message": (0, 0, 0, 0, 20, 42),
   "phone chat-working chatJobs compact summary/job": (3, 0, 23, 0, 20, 17),
   "phone chat-working live/step": (0, 0, 0, 0, 20, 17),
   "phone archived archive/down": (68, 64, 55, 13, 0, 0),
@@ -1565,8 +1571,8 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide board chats/renamed": (0, 0, 7, 1, 0, 1),
   "wide board chats/message": (0, 0, 0, 0, 0, 1),
   "wide board chats/member": (0, 0, 0, 0, 0, 1),
-  "wide board chats/down": (0, 0, 0, 0, 0, 1),
-  "wide board chats/card": (2, 0, 38, 2, 0, 1),
+  "wide board chats/down": (8, 60, 62, 4, 0, 1),
+  "wide board chats/card": (66, 66, 78, 9, 0, 1),
   "wide board chats/archived": (0, 0, 22, 0, 0, 1),
   "wide home lock/member": (0, 0, 0, 0, 0, 15),
   "wide home lock/approved": (0, 0, 0, 0, 0, 15),

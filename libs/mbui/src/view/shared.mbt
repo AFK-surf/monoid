@@ -964,8 +964,10 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
     self.handle(held).let_go()
   }
   let g = self.nodes[ghost]
-  // (taking nothing, read out as nothing, its id none of the living's)
+  // (taking nothing, read out as nothing, its id none of the living's: what of it reads whether it takes input told so,
+  // once the change is committed whole, as a node said to take no press is: View::presses)
   g.inert = true
+  self.modals_told(within=ghost)
   g.said_hidden = true
   match g.share {
     Some(id) => {
