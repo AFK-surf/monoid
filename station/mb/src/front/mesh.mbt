@@ -237,7 +237,8 @@ fn field(o : Json, k : String) -> Json {
 
 ///|
 /// What of a binding cannot change on an endpoint bound already: its key, its protocols, whether it finds and is found,
-/// its address and whether it goes by relays alone. Its relays and its congestion controller can (`Mesh::bind`).
+/// its address, whether it goes by relays alone and the DSCP its packets are marked with (`dscp`, set by the shell's
+/// `iroh.bind` alone). Its relays and its congestion controller can (`Mesh::bind`).
 fn identity_of(options : Json, key : Bytes) -> String {
   let parts : Array[Json] = [
     Json::string(hex(key)),
@@ -245,6 +246,7 @@ fn identity_of(options : Json, key : Bytes) -> String {
     field(options, "discovery"),
     field(options, "bindAddr"),
     field(options, "relayOnly"),
+    field(options, "dscp"),
   ]
   Json::array(parts).stringify()
 }

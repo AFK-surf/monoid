@@ -76,3 +76,7 @@ the same.
   On a machine with two addresses on one network, a device that had dialed one got the answer from the other, and
   the handshake never finished: the station dropped
   what came back as sent to the wrong interface.
+- **noq-udp 1.3.0** (src/lib.rs, src/unix.rs, src/apple_fast.rs): `set_dscp`, a DSCP every datagram of the process is
+  sent with, above its ECN bits in the `IP_TOS` / `IPV6_TCLASS` message each send carries (on Linux that message
+  replaces the socket's TOS byte, so a `setsockopt` would be lost). 0, the default, sends the bytes upstream does. The
+  mesh addon sets it from `STILLFAIL_MESH_DSCP` (docs/station-lan-firewall.md); `try_send_with_dscp` is for its tests.

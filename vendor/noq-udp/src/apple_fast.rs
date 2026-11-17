@@ -17,11 +17,12 @@ pub(crate) fn send(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
+    dscp: u8,
 ) -> io::Result<()> {
     if state.is_apple_fast_path_enabled() {
-        send_via_sendmsg_x(state, io, transmit)
+        send_via_sendmsg_x(state, io, transmit, dscp)
     } else {
-        send_single(state, io, transmit)
+        send_single(state, io, transmit, dscp)
     }
 }
 
@@ -30,6 +31,7 @@ fn send_via_sendmsg_x(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
+    dscp: u8,
 ) -> io::Result<()> {
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
     let mut iovs = unsafe { mem::zeroed::<[libc::iovec; BATCH_SIZE]>() };
@@ -58,12 +60,13 @@ fn send_via_sendmsg_x(
             &mut ctrls[i],
             true,
             state.sendmsg_einval(),
+            dscp,
         );
         hdrs[i].msg_datalen = chunk.len();
         cnt += 1;
     }
     let Some(sendmsg_x) = state.resolve_apple_fast_fn(sendmsg_x_fn) else {
-        return send_single(state, io, transmit);
+        return send_single(state, io, transmit, dscp);
     };
     retry_if_interrupted(|| unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) })?;
     Ok(())
@@ -78,6 +81,7 @@ fn prepare_msg_x(
     ctrl: &mut cmsg::Aligned<[u8; cmsg::LEN]>,
     #[allow(unused_variables)] encode_src_ip: bool,
     sendmsg_einval: bool,
+    dscp: u8,
 ) {
     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
     iov.iov_len = transmit.contents.len();
@@ -92,7 +96,8 @@ fn prepare_msg_x(
     hdr.msg_control = ctrl.0.as_mut_ptr() as _;
     hdr.msg_controllen = cmsg::LEN as _;
     let mut encoder = unsafe { cmsg::Encoder::new(hdr) };
-    let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int);
+    // stillfail: the DSCP above the ECN bits, as unix.rs `prepare_msg`.
+    let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int) | (libc::c_int::from(dscp) << 2);
     let is_ipv4 = transmit.destination.is_ipv4()
         || matches!(transmit.destination.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());
     if is_ipv4 {

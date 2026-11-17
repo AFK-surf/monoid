@@ -84,6 +84,27 @@ mod log {
 #[cfg(not(wasm_browser))]
 pub use imp::UdpSocketState;
 
+// stillfail: the DSCP every datagram of this process is sent with (`set_dscp`), 0 for none.
+#[cfg_attr(not(all(unix, not(posix_minimal))), allow(dead_code))]
+static DSCP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// stillfail: marks every datagram this process sends from now on with the DSCP `dscp` (the six high bits of IPv4's
+/// TOS byte and of IPv6's traffic class, its two low bits staying the datagram's ECN), for a network that routes
+/// packets so marked their own way; only its six low bits are taken. 0, as at the start, marks none: the byte is then
+/// what upstream sends. Process-wide, as it is a property of the machine's network, set before any socket sends.
+///
+/// Unix only, where the byte goes in the `IP_TOS` / `IPV6_TCLASS` control message sent with each datagram (which on
+/// Linux replaces the socket's own TOS, so a `setsockopt` would be lost); elsewhere it has no effect.
+pub fn set_dscp(dscp: u8) {
+    DSCP.store(dscp & 0x3f, std::sync::atomic::Ordering::Relaxed);
+}
+
+// stillfail: what `set_dscp` set.
+#[cfg_attr(not(all(unix, not(posix_minimal))), allow(dead_code))]
+pub(crate) fn dscp() -> u8 {
+    DSCP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Number of UDP packets to send/receive at a time
 #[cfg(not(wasm_browser))]
 pub const BATCH_SIZE: usize = imp::BATCH_SIZE;

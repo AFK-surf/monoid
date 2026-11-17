@@ -2256,6 +2256,20 @@ fn bytes_of(b: &'static [u8]) -> bytes::Bytes {
     bytes::Bytes::from_static(b)
 }
 
+/// The DSCP (1 to 63) every iroh packet of this process is marked with from a bind on: a station's front's
+/// (`STILLFAIL_MESH_DSCP`; station/native/mesh/src/dscp.rs says why), never an app's, whose packets stay as they were.
+/// One out of range, or on a system where packets cannot be marked, fails the bind: never silently unmarked.
+fn mark_with_dscp(dscp: Option<&Value>) -> Result<(), String> {
+    let Some(dscp) = dscp.filter(|v| !v.is_null()) else { return Ok(()) };
+    let dscp = dscp.as_u64().and_then(|d| u8::try_from(d).ok()).filter(|d| (1..=63).contains(d)).ok_or_else(|| format!("the DSCP to mark the mesh's packets with must be 1 to 63, not {dscp}"))?;
+    if !cfg!(any(target_os = "linux", target_os = "android", target_os = "macos")) {
+        return Err(format!("the mesh's packets cannot be marked with a DSCP ({dscp}) on this system"));
+    }
+    noq_udp::set_dscp(dscp);
+    iroh::set_relay_dscp(dscp);
+    Ok(())
+}
+
 fn relay_url(url: &str) -> Result<RelayUrl, String> {
     url.parse().map_err(err)
 }
@@ -3671,6 +3685,7 @@ impl Inner {
             iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
         }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
+        mark_with_dscp(a.get("dscp"))?;
         let mut builder = Endpoint::builder(Minimal)
             .secret_key(key)
             .alpns(alpns)
@@ -5159,6 +5174,18 @@ mod tests {
         assert_eq!(cancel(), json!({ "value": false }));
         shell.call(94_003, "iroh.close".into(), serde_json::to_vec(&json!({ "id": endpoint })).unwrap().as_slice(), None);
         assert_eq!(answer(94_003).1, "");
+    }
+
+    /// A DSCP out of range fails the bind, said, before anything is bound or marked (`mark_with_dscp`).
+    #[test]
+    fn a_dscp_out_of_range_fails_the_bind() {
+        let dir = TempDir::new();
+        let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+        for (id, dscp) in [(96_001, json!(0)), (96_002, json!(64)), (96_003, json!(-1)), (96_004, json!(4.5)), (96_005, json!("43"))] {
+            shell.call(id, "iroh.bind".into(), serde_json::to_vec(&json!({ "relayUrls": [], "alpns": [], "dscp": dscp })).unwrap().as_slice(), Some(vec![3; 32]));
+            let (_, error, _) = answer(id);
+            assert!(error.contains("must be 1 to 63"), "{dscp}: {error}");
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! ways and their streams. Which relays, when to add iroh's public ones, who may connect and what is said: the
 //! TypeScript's. And the image codecs of the thumbnails (thumbs.rs).
 
+mod dscp;
 mod keep;
 mod log;
 mod thumbs;
@@ -78,6 +79,8 @@ pub struct Options {
     pub relay_only: Option<bool>,
     /// Advanced choice, cubic by default; read when the endpoint is created.
     pub congestion: Option<String>,
+    /// The DSCP (1 to 63) every iroh packet of this process is marked with from this bind on (dscp.rs); none: unmarked.
+    pub dscp: Option<u32>,
 }
 
 #[napi(object)]
@@ -166,6 +169,7 @@ pub async fn bind(options: Options) -> napi::Result<Endpoint> {
 
 /// `insecure`: relays whose certificates are not checked (the tests' own, self-signed, on this machine).
 async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) -> napi::Result<Endpoint> {
+    dscp::apply(options.dscp).map_err(failed)?;
     let bytes: [u8; 32] = options.secret_key.as_ref().try_into().map_err(|_| failed("the key is not 32 bytes"))?;
     let key = SecretKey::from_bytes(&bytes);
     let relays: Vec<RelayUrl> = options.relay_urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
@@ -875,6 +879,7 @@ mod tests {
                 lookup: None,
                 relay_only: None,
                 congestion: None,
+                dscp: None,
             };
             let station = bind_with(options, true).await.unwrap();
             let peer = IrohEndpoint::builder(Minimal)
