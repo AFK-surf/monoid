@@ -78,6 +78,35 @@ test "⌘F: what is found counted as the core says where the reader is (n/total)
 }
 
 ///|
+test "⌘F's bar closed: it fades out over find_in_ms as it was (its count kept, not the find emptied), the chat's buttons not there meanwhile, then back in its place" {
+  let calls : Array[Made] = []
+  let t = find_chat_tester(calls)
+  find_typed(t, "截图")
+  t.run_for(@sfpages.find_typing_ms)
+  t.run_for(@ui.move_most_ms)
+  let counted = fn() { t.words().filter(fn(w) { w.5 > 0.0 && w.0.contains("/") && w.0.length() <= 5 }) }
+  let was = counted()
+  assert_true(was.length() == 1 && was[0].5 == 1.0, msg="\{Repr(t.words().map(fn(w) { (w.0, w.5) }))}")
+  t.click(Button, label=@sf.t("web-main.find.close"))
+  t.run_for(@sfpages.find_in_ms / 2.0)
+  // (half way: the find closed, the bar still seen as it was, fainter)
+  assert_eq(@sfpages.find_chat(), "")
+  let mid = counted()
+  assert_true(
+    mid.length() == 1 && mid[0].0 == was[0].0 && mid[0].5 < 1.0,
+    msg="half way out: \{Repr(mid.map(fn(w) { (w.0, w.5) }))}",
+  )
+  // (never both: the chat's buttons not back while it fades)
+  assert_eq(t.all(Button, label=@sf.t("web-pages.chat.info")).length(), 0)
+  // (at its end: none of it seen; then the buttons faded in in its place)
+  t.run_for(@sfpages.find_in_ms / 2.0)
+  assert_eq(counted().length(), 0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-main.find.placeholder")) is None)
+  assert_eq(t.all(Button, label=@sf.t("web-pages.chat.info")).length(), 1)
+}
+
+///|
 test "⌘F: words no message has say 无结果, and its ways up and down are not pressed" {
   let calls : Array[Made] = []
   let t = find_chat_tester(calls)

@@ -112,6 +112,8 @@ function jobJson(j: JobRow): Json {
   return {
     id: j.id, session: j.sessionKey, name: j.name, command: j.command, cwd: j.cwd, port: j.port, state: j.state, pgid: j.pgid,
     exitCode: j.exitCode, startedAt: j.startedAt, endedAt: j.endedAt, restarts: j.restarts, log: j.log, watch: j.watch,
+    // waiting in the queue for its turn (said only when so, as src/jobs/jobs.ts `jobJson` says it)
+    ...(j.queued === true ? { queued: true } : {}),
   };
 }
 

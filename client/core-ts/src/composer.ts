@@ -302,13 +302,39 @@ export class Composers {
     for (const l of Array.isArray(kept.links) ? kept.links : []) {
       if (isObject(l) && typeof l.url === "string") s.files.push(linkFile(localId("kept"), l as ComposerLink));
     }
+    // Named paths need no uploaded attachment, but are part of the draft all the same. Keep the drive location too,
+    // so one restored can still be switched to a file without holding a page's Blob or FileSource across a restart.
+    for (const p of Array.isArray(kept.paths) ? kept.paths : []) {
+      if (!isObject(p) || !isObject(p.ref) || typeof p.ref.station !== "string" || typeof p.ref.path !== "string") continue;
+      const ref: ComposerRef = { station: p.ref.station, stationName: typeof p.ref.stationName === "string" ? p.ref.stationName : p.ref.station, path: p.ref.path, dir: p.ref.dir === true, mode: "path" };
+      const id = localId("kept"), name = String(p.name ?? ""), size = Number(p.size ?? 0);
+      const done = isObject(p.done) ? p.done : null;
+      s.files.push({ id, name, size, ref, done, error: null });
+      if (typeof p.station !== "string") continue;
+      const drive = isObject(p.drive) && typeof p.drive.root === "string" && typeof p.drive.path === "string"
+        ? { station: typeof p.drive.station === "string" ? p.drive.station : p.station, root: p.drive.root, path: p.drive.path } : undefined;
+      const file: FileIn = { id, name, size, ref, ...(drive ? { drive } : {}) };
+      this.#held.set(id, { station: p.station, file });
+      if (drive) this.#sources.set(id, file);
+      if (done) {
+        const ready = Deferred.makeUnsafe<J, CoreError>();
+        Deferred.doneUnsafe(ready, Effect.succeed(done));
+        this.#uploads.set(id, { station: p.station, file: null, done: ready, error: false });
+      }
+    }
     return s;
   }
 
   #draft(s: State) {
     const links = s.files.flatMap((f) => (f.link ? [f.link] : []));
     const waiting = s.files.filter((f) => f.waits).map(({ id, name, size, width, height, pasted }) => ({ id, name, size, ...(width && height ? { width, height } : {}), ...(pasted ? { pasted } : {}) }));
-    return { text: s.text, quotes: s.quotes.map((q) => sentQuote(q, s.files)), files: upOnce(s.files), ...(waiting.length ? { waiting } : {}), ...(links.length ? { links } : {}), ...(s.id ? { id: s.id } : {}) };
+    const paths = s.files.filter((f) => f.ref?.mode === "path").map(({ id, name, size, ref, done }) => {
+      const held = this.#held.get(id);
+      const upload = this.#uploads.get(id);
+      const drive = (held?.file ?? this.#sources.get(id) ?? upload?.file)?.drive;
+      return { name, size, ref, station: upload?.station ?? held?.station ?? ref!.station, ...(done ? { done } : {}), ...(drive ? { drive } : {}) };
+    });
+    return { text: s.text, quotes: s.quotes.map((q) => sentQuote(q, s.files)), files: upOnce(s.files.filter((f) => f.ref?.mode !== "path")), ...(waiting.length ? { waiting } : {}), ...(links.length ? { links } : {}), ...(paths.length ? { paths } : {}), ...(s.id ? { id: s.id } : {}) };
   }
 
   /// The draft's name, given the first time it is asked for (`State.id`): the core's, as its other names are (random:
@@ -328,7 +354,7 @@ export class Composers {
     if (!at || s.db !== this.#db(key)) return;
     const topic = { topic: "draft", station: at[0], chat: at[1] };
     const draft = this.#draft(s);
-    if (!draft.text.trim() && draft.quotes.length === 0 && draft.files.length === 0 && !draft.waiting && !draft.links) this.#inner.data.forgetTopic(topic);
+    if (!draft.text.trim() && draft.quotes.length === 0 && draft.files.length === 0 && !draft.waiting && !draft.links && !draft.paths) this.#inner.data.forgetTopic(topic);
     else if (immediate) this.#inner.data.set(topic, draft, false);
     else this.#inner.data.setSoon(topic, draft);
   }

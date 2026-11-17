@@ -59,6 +59,7 @@ pub fn markdown_node(
   piece? : MdPiece? = None,
   piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
   serif? : () -> Bool = fn() { false },
@@ -114,6 +115,7 @@ pub fn markdown_node(
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       across_of,
+      tracks_of,
       text_face,
       code_face,
       serif,
@@ -239,6 +241,9 @@ priv struct MdNode {
   table_rows : (Int, Int)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
+  /// what the pieces of the table at a block keep of its columns together (markdown_node's `tracks_of`: measured once
+  /// for all of them, View::tracks' `kept`), none: each its own
+  tracks_of : (Int) -> @view.TracksKept?
   /// faces tried for prose and code, as they are now (markdown_node's `text_face`, `code_face`; Md's: None the chosen
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
@@ -366,22 +371,12 @@ fn md_blocks_node(
           }
         }, same=fn(a, b) { a == b })
         slot.padding(By(fn() { (0.0, top_pad.get(), 0.0, 0.0) })) |> ignore
-        let kind_sig = @signals.computed(
-          fn(_) {
-            match block.get() {
-              Some(x) => {
-                let kind = md_block_kind(md, x)
-                (kind, if kind == 7 { at() } else { -1 })
-              }
-              None => (-1, -1)
-            }
-          },
-          same=fn(a, b) { a == b },
-        )
-        slot.pick(fn() { kind_sig.get() }, fn(p, made_as) {
-          let i = if made_as.1 >= 0 { made_as.1 } else { @signals.untracked(at) }
-          let here = { ..md, before: fn() { (md.before)() + md_found_in(md, blocks(), at()) }, block_at: i }
-          md_block_node(p, here, made_as.0, fn() { block.get() }, tight)
+        let kind_sig = @signals.computed(fn(_) { block.get().map(fn(x) { md_block_kind(md, x) }).unwrap_or(-1) }, same=fn(a, b) { a == b })
+        // (the same nodes whichever block it is of its kind: what scrolls in it scrolled as that block's message has it,
+        // the list's, @view.View::reused_bool's)
+        slot.pick(fn() { kind_sig.get() }, fn(p, kind) {
+          let here = { ..md, before: fn() { (md.before)() + md_found_in(md, blocks(), at()) }, block_at: @signals.untracked(at) }
+          md_block_node(p, here, kind, fn() { block.get() }, tight)
         })
       })
       |> ignore
@@ -678,28 +673,34 @@ fn md_block_node(
       |> ignore
     6 => p.height(Is(Some(md_rule_h))).ground(By(fn() { web().line })) |> ignore
     7 =>
-      // (made again as what it scrolls across with is another's: a block taken for another message's row)
-      // (the box the pick makes for it its own: no box of its own in that)
-      p.pick(at_once=true, fn() { (md.across_of)(md.block_at).serial() }, fn(outer, _) {
-        md_table_body_node(
-          outer,
-          fn() {
-            match block() {
-              Some(Table(t)) => Some(t)
-              _ => None
-            }
-          },
-          By(md.bleed),
-          md.copy,
-          md.on_link,
-          md.on_link_hold,
-          fit=md.fit,
-          rows=md.table_rows,
-          across=@signals.untracked(fn() { (md.across_of)(md.block_at) }),
-          cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
-        )
-      })
-      |> ignore
+      // (a long table's pieces scrolled across as one, by the block it is (never one block of a list taken for another's
+      // row); a table in one block scrolled across on its own, as far as the message it is of has it where its block is
+      // taken for another's: the list's, reused_state.mbt)
+      md_table_body_node(
+        p,
+        fn() {
+          match block() {
+            Some(Table(t)) => Some(t)
+            _ => None
+          }
+        },
+        By(md.bleed),
+        md.copy,
+        md.on_link,
+        md.on_link_hold,
+        fit=md.fit,
+        rows=md.table_rows,
+        across=match md.table_rows {
+          Some(_) => @signals.untracked(fn() { (md.across_of)(md.block_at) })
+          None => @view.Scroll::across()
+        },
+        // (a table in one block measured on its own; one in pieces once for all of them)
+        tracks_kept?=match md.table_rows {
+          Some(_) => @signals.untracked(fn() { (md.tracks_of)(md.block_at) })
+          None => None
+        },
+        cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
+      )
     20 => {
       // (by what it links to, as it is now: another's card made again in its place)
       let alone = fn() {
@@ -1225,9 +1226,16 @@ pub fn code_block_node(
   let over = native_input() is Mouse
   let key_inset = @ui.capsule_in(row_corner, code_key_h)
   let copied = @signals.signal(false)
-  let wrapped = @signals.signal(false)
+  // (wrapped as the message it is of has it, where its block of a list is taken for another's: the list's)
+  let wrapped = p.reused_bool()
   let copied_off : Ref[() -> Unit] = Ref(fn() {  })
   p.owns(fn() { (copied_off.val)() }) |> ignore
+  // (taken for another message's: copied said of none of it, the moment that would have said so no more)
+  p.on_reused(fn() {
+    (copied_off.val)()
+    copied_off.val = fn() {  }
+    copied.set(false)
+  })
   // (a column as wide as its room, its bar over the code)
   p
   .row(Is(false))

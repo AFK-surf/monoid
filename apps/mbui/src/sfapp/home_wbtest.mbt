@@ -1592,3 +1592,85 @@ test "Home's long list held and dragged: a frame moves the list's header alone, 
   assert_true(y1 < y0 - 100.0, msg="the list moved from \{y0} to \{y1}")
   assert_eq(others, [], msg="\{looks} of 40 frames of the looks alone; \{Repr(others)}")
 }
+
+///|
+test "Home's list: two new chats arriving back-to-back while the first is still opening keep every row under them moving strictly downward without snapping back" {
+  new_run()
+  let base = fixture("home")
+  let stage = @signals.signal(0)
+  let make_new = fn(first : Json, id : String, title : String) -> Json {
+    match first {
+      Object(o) => {
+        let m = o.copy()
+        m["id"] = Json::string(id)
+        m["session"] = Json::string("s-" + id)
+        m["title"] = Json::string(title)
+        Json::object(m)
+      }
+      _ => first
+    }
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let snap = base.topic(name, params).get().snapshot()
+      let n = stage.get()
+      guard name == "chats" && n > 0 else { return snap }
+      match snap.value {
+        Some(Object(v)) =>
+          match v.get("days") {
+            Some(Array(days)) if days.length() > 0 =>
+              match days[0] {
+                Object(d0) =>
+                  match d0.get("items") {
+                    Some(Array(its)) if its.length() > 0 => {
+                      let out : Array[Json] = []
+                      if n >= 2 {
+                        out.push(make_new(its[0], "arr-2", "刚到的第二条会话"))
+                      }
+                      out.push(make_new(its[0], "arr-1", "刚到的第一条会话"))
+                      out.append(its)
+                      let d_copy = d0.copy()
+                      d_copy["items"] = Json::array(out)
+                      let days_copy = days.copy()
+                      days_copy[0] = Json::object(d_copy)
+                      let v_copy = v.copy()
+                      v_copy["days"] = Json::array(days_copy)
+                      { value: Some(Json::object(v_copy)), error: snap.error, version: snap.version + n }
+                    }
+                    _ => snap
+                  }
+                _ => snap
+              }
+            _ => snap
+          }
+        _ => snap
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  let anchor = "整理发布清单"
+  let y_of = fn() { t.rect_of(anchor).unwrap().1 }
+  let mut prev = y_of()
+  // First new chat arrives at the top; advance halfway through row_size_ms so it is half-open.
+  stage.set(1)
+  t.stepped()
+  for _ in 0..<4 {
+    t.run_for(@ui.row_size_ms / 8.0)
+    let cur = y_of()
+    assert_true(cur >= prev - 0.1, msg="first arrival stepped back: \{prev} -> \{cur}")
+    prev = cur
+  }
+  let mid = prev
+  // Second new chat arrives at slot 0 while the first shifts to slot 1 mid-opening; must never snap back up.
+  stage.set(2)
+  t.stepped()
+  for _ in 0..<10 {
+    t.run_for(@ui.row_size_ms / 8.0)
+    let cur = y_of()
+    assert_true(cur >= prev - 0.1, msg="second arrival snapped back on slot shift: \{prev} -> \{cur}")
+    prev = cur
+  }
+  assert_true(mid > 100.0 && prev > mid + 20.0, msg="moved smoothly down: \{mid} -> \{prev}")
+}

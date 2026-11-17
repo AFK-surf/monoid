@@ -80,7 +80,11 @@ export function chromeArgs(o: { profile: string; port: number; headless: boolean
     // Headful (when asked), no window of its own as it starts: one would make it the machine's front app, over what the
     // person there is doing (its tabs come in windows opened behind: gate.ts BEHIND; measured on a Mac, Edge 156,
     // 2026-10-29).
-    ...(o.headless ? ["--headless=new", "--window-size=1280,900"] : ["--no-startup-window"]),
+    // Headless, drawn at twice its CSS pixels, as on a Retina screen: its one screen's scale is 1 otherwise, and Chrome
+    // casts a tab at that whatever scale the tab is laid out at, so a phone's or a Retina window's view of it came as
+    // a picture of half its pixels, drawn twice as large (a captcha could not be read: Peng Xiao, 2026-11-17). A
+    // viewer's bounds still cap what is cast.
+    ...(o.headless ? ["--headless=new", "--window-size=1280,900", "--force-device-scale-factor=2"] : ["--no-startup-window"]),
     ...(o.userAgent ? [`--user-agent=${o.userAgent}`] : []),
   ];
 }

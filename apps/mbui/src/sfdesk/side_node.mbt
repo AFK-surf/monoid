@@ -290,9 +290,9 @@ fn lists_band_node(
               None => "chats"
             }
           }
-          let hot = @sf.EdgeWay::new(0.0)
+          let hot = @motion.NodeWay::new(0.0)
           f.reacts(fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, fn(on) {
-            hot.go(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
+            hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
           })
           // (its menu, while drawn: what it says of itself)
           let opener = @sf.Opener::new()

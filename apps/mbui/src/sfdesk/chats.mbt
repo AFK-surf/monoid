@@ -147,7 +147,7 @@ pub fn new_chat() -> Unit {
     bring_page()
   }
   // what it is opened for: the cursor in its words, its keyboard up with touch
-  @sfpages.composer_take_focus()
+  @sfpages.composer_take_focus(drafts=@sfpages.new_chat_drafts)
 }
 
 ///|

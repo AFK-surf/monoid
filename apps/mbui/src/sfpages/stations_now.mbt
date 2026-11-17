@@ -104,8 +104,9 @@ let share_scale : Double = 3.0
 /// portrait poster @sf.share_w_most wide: 「分享图片不应该分电脑和手机…按最合理的布局生成」), seen whole on the stage, drawn
 /// smaller where the window has not the room for it (the stage's): what is handed out is all of it, as it is laid out
 /// everywhere. Round as a card, or `flat` (handed out: its ground to its edges), in the look chosen under it
-/// (share_look: the night's here, the others' share_looks.mbt), made anew as the look chosen, what the view says or
-/// the language does. The night's read down: still.fail's name (its dot orange) and when it is; what leads the first
+/// (share_look: the night's here, the others' share_looks.mbt), made anew only as another look is chosen: what the view
+/// says and the words of the language are bound to the nodes that show them (share_pen.mbt), and what comes and goes by
+/// them comes and goes (Pen::show, Pen::each), the rest of the picture as it was. The night's read down: still.fail's name (its dot orange) and when it is; what leads the first
 /// kind's share (用 6 个 Claude 订阅账号消耗了, its ring's dot before it); the tokens each kind of account used over the 7
 /// days as rings, a kind each (Activity's rings: each its share of all kinds' tokens; 2026-10-29 用户「只算 token 和价格」,
 /// where it was a week's quota), beside them the first kind's first model's tokens large, the model and what they would
@@ -116,16 +117,15 @@ let share_scale : Double = 3.0
 /// and under it how many a chat on average), the devices' icon before them; still.fail's line. With nothing used: the
 /// chats at work large in its place.
 fn share_poster_node(v : @view.View, src : Source, w : Workspace, flat : Bool) -> Unit {
-  v.pick(at_once=true, fn() { (share_look(src).key, share_fleet(src, w), @sf.t("web-main.stations.shareTagline")) }, fn(
-    p,
-    k,
-  ) {
-    let look = share_look_of(k.0)
+  let fleet = share_fleet(src, w)
+  v.pick(at_once=true, fn() { share_look(src).key }, fn(p, key) {
+    let look = share_look_of(key)
     // (千恋＊万花's words in a face the app does not carry: had from the site as their pictures are, share_senren.mbt)
     if look.key.has_prefix(senren_prefix) {
       @sfbase.share_face_whole(src, senren_drawn)
     }
-    let files = senren_drawing(src, fn() { (look.draw)(Pen::of(p), k.1, flat) }).1
+    // (the pictures a look draws are its own, whatever the view says: those it was made with)
+    let files = senren_drawing(src, fn() { (look.draw)(Pen::of(p), fleet, flat) }).1
     if look_needs.get(look.key) != Some(files) {
       look_needs[look.key] = files
     }
@@ -159,15 +159,19 @@ fn share_stand(src : Source) -> @sfbase.LooksStand {
 }
 
 ///|
-/// What the card to share of workspace `w` says (the core's `fleet` view), whatever look draws it.
-fn share_fleet(src : Source, w : Workspace) -> Json? {
-  src.topic("fleet", { "scope": Json::string(w.id) }).get().value
+/// What the card to share of workspace `w` says (the core's `fleet` view), whatever look draws it: read by what shows
+/// it, as it is then (the topic asked as the card is made, so the card comes in once it is answered).
+fn share_fleet(src : Source, w : Workspace) -> () -> Json? {
+  let topic = src.topic("fleet", { "scope": Json::string(w.id) })
+  fn() { topic.get().value }
 }
 
 ///|
 /// The night's look: still.fail's own colours, the kinds' tokens as rings.
-fn night_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let spent = items(fleet, "spent")
+fn night_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let spent = fn() { items(fleet(), "spent") }
+  let used = fn() { spent().length() > 0 }
+  let tasks = fn() { text(fleet(), "tasksText") }
   c.box(style=if flat { pic_box_flat } else { pic_box }, fn(c) {
     c.box(style=pic_head, fn(c) {
       c.box(style=pic_grow, fn(c) {
@@ -175,90 +179,82 @@ fn night_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
         c.rich(words, style=pic_brand, face=@sfbase.share_face_given()) |> ignore
       })
       |> ignore
-      pic_words(c, text(fleet, "at"), pic_at)
+      pic_words(c, fn() { text(fleet(), "at") }, pic_at)
     })
     |> ignore
-    if spent.length() > 0 {
-      // the first kind's said round its first model's tokens, a sentence read down (用 6 个 Claude 订阅账号消耗了 | 2.1 亿 |
-      // Opus 5.5 | token，折合 $1,420: 2026-10-26 用户「你要么这么说"是用 x 个账号消耗了 xxx% 的周额度"」, then 「只算 token 和价格」), what leads
-      // it over the rings and the tokens
-      let first = Some(spent[0])
-      let top = items(first, "models").get(0)
-      pic_lead(c, first)
-      c.box(style=pic_hero, fn(c) {
-        pic_rings(c, spent)
-        c.box(style=pic_hero_words, fn(c) {
-          pic_words(c, text(top, "tokensText"), pic_number)
-          // (the model a line of its own: with what they would cost after it, a line too long beside the rings)
-          pic_words(c, text(top, "name"), pic_unit)
-          pic_words(c, text(top, "of"), pic_unit)
-        })
-        |> ignore
+    // the first kind's said round its first model's tokens, a sentence read down (用 6 个 Claude 订阅账号消耗了 | 2.1 亿 |
+    // Opus 5.5 | token，折合 $1,420: 2026-10-26 用户「你要么这么说"是用 x 个账号消耗了 xxx% 的周额度"」, then 「只算 token 和价格」), what leads
+    // it over the rings and the tokens
+    let first = fn() { spent().get(0) }
+    let top = fn() { items(first(), "models").get(0) }
+    pic_lead(c, used, first)
+    c.show(used, style=pic_hero, fn(c) {
+      pic_rings(c, spent)
+      c.box(style=pic_hero_words, fn(c) {
+        pic_words(c, fn() { text(top(), "tokensText") }, pic_number)
+        // (the model a line of its own: with what they would cost after it, a line too long beside the rings)
+        pic_words(c, fn() { text(top(), "name") }, pic_unit)
+        pic_words(c, fn() { text(top(), "of") }, pic_unit)
       })
       |> ignore
-      pic_models(c, spent)
-    } else {
-      c.box(style=pic_hero, fn(c) {
-        pic_words(c, count(fleet, "chats").to_string(), pic_number)
-        c.box(style=pic_hero_words, fn(c) { pic_words(c, text(fleet, "chatsText"), pic_unit) }) |> ignore
-      })
-      |> ignore
-    }
-    match (field(fleet, "today"), field(fleet, "week")) {
-      (Some(Object(_)) as today, Some(Object(_)) as week) => {
-        c.box(style=pic_spans, fn(c) {
-          pic_span(c, today)
-          pic_span(c, week)
-        })
-        |> ignore
-        pic_bars(c, week)
-      }
-      _ => ()
-    }
+    })
+    pic_models(c, spent)
+    c.show(fn() { !used() }, style=pic_hero, fn(c) {
+      pic_words(c, fn() { count(fleet(), "chats").to_string() }, pic_number)
+      c.box(style=pic_hero_words, fn(c) { pic_words(c, fn() { text(fleet(), "chatsText") }, pic_unit) }) |> ignore
+    })
+    let today = fn() { field(fleet(), "today") }
+    let week = fn() { field(fleet(), "week") }
+    let spans = fn() { today() is Some(Object(_)) && week() is Some(Object(_)) }
+    c.show(spans, style=pic_spans, fn(c) {
+      pic_span(c, today)
+      pic_span(c, week)
+    })
+    c.show(spans, style=pic_bars_row, fn(c) { pic_bars(c, week) })
     // the chats at work now (with the tokens large: said here), the tasks chats ran on other stations over the week
-    let tasks = text(fleet, "tasksText")
-    if spent.length() > 0 || tasks != "" {
-      c.box(style=pic_lines, fn(c) {
-        if spent.length() > 0 {
-          pic_line(c, fn(c) { c.box(style=pic_live_dot, fn(_) {  }) |> ignore }, text(fleet, "chatsText"), text(fleet, "where"), false)
-        }
-        if tasks != "" {
-          pic_line(c, fn(c) { @sf.icon_node(c.v, "devices", pic_mark_side, Is(@sf.share_ink)) |> ignore }, tasks, text(fleet, "tasksPer"), true)
-        }
+    c.show(fn() { used() || tasks() != "" }, style=pic_lines, fn(c) {
+      c.show(used, style=pic_live, fn(c) {
+        pic_line(c, fn(c) { c.box(style=pic_live_dot, fn(_) {  }) |> ignore }, fn() { text(fleet(), "chatsText") }, fn() {
+          text(fleet(), "where")
+        }, false)
       })
-      |> ignore
-    }
-    pic_words(c, @sf.t("web-main.stations.shareTagline"), pic_tagline)
+      c.show(fn() { tasks() != "" }, style=pic_live_apart, fn(c) {
+        pic_line(c, fn(c) { @sf.icon_node(c.v, "devices", pic_mark_side, Is(@sf.share_ink)) |> ignore }, tasks, fn() {
+          text(fleet(), "tasksPer")
+        }, true)
+      })
+    })
+    pic_words(c, fn() { @sf.t("web-main.stations.shareTagline") }, pic_tagline)
   })
 }
 
 ///|
-/// Words on the night's card, in the card's own face (@sfbase.share_face_given: EB Garamond and 霞鹜文楷, 2026-10-31
-/// 用户 chose it from drawn versions, 「就用右边这版」), the same on every device whatever face its app is set in.
-fn pic_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
-  c.rich([@ui.span(words)], style~, face=@sfbase.share_face_given()) |> ignore
+/// Words on the night's card as `words` works them out, in the card's own face (@sfbase.share_face_given: EB Garamond
+/// and 霞鹜文楷, 2026-10-31 用户 chose it from drawn versions, 「就用右边这版」), the same on every device whatever face its
+/// app is set in.
+fn pic_words(c : Pen, words : () -> String, style : @ui.TextStyle) -> Unit {
+  c.text_by(words, style~, face=@sfbase.share_face_given())
 }
 
 ///|
-/// A line under the days: its mark (in a square of its own, the lines' words starting together), what it says, and
-/// more of it after a dot, dimmer; `apart`, the more under it (a line as long as the tasks' is broken inside a word on
-/// one line: 「…312 个任」「务」).
-fn pic_line(c : Pen, mark : (Pen) -> Unit, words : String, more : String, apart : Bool) -> Unit {
-  c.box(style=if apart { pic_live_apart } else { pic_live }, fn(c) {
-    c.box(style=pic_mark_box, mark) |> ignore
-    if apart {
-      c.box(style=pic_line_words, fn(c) {
-        pic_words(c, words, pic_line_lead)
-        pic_words(c, more, pic_line_more)
-      })
-      |> ignore
-    } else {
-      let runs = [@ui.span(words, weight=700), @ui.span("  ·  " + more, color=@sf.share_dim)]
-      c.rich(runs, style=pic_line_one, face=@sfbase.share_face_given())
-      |> ignore
-    }
-  })
-  |> ignore
+/// What a line under the days holds (`c`, its box: pic_live, or pic_live_apart): its mark (in a square of its own, the
+/// lines' words starting together), what it says, and more of it after a dot, dimmer; `apart`, the more under it (a line
+/// as long as the tasks' is broken inside a word on one line: 「…312 个任」「务」).
+fn pic_line(c : Pen, mark : (Pen) -> Unit, words : () -> String, more : () -> String, apart : Bool) -> Unit {
+  c.box(style=pic_mark_box, mark) |> ignore
+  if apart {
+    c.box(style=pic_line_words, fn(c) {
+      pic_words(c, words, pic_line_lead)
+      pic_words(c, more, pic_line_more)
+    })
+    |> ignore
+  } else {
+    c.rich_by(
+      fn() { [@ui.span(words(), weight=700), @ui.span("  ·  " + more(), color=@sf.share_dim)] },
+      style=pic_line_one,
+      face=@sfbase.share_face_given(),
+    )
+  }
 }
 
 ///|
@@ -268,84 +264,98 @@ fn ring_color(k : Int) -> Int64 {
 }
 
 ///|
-/// What leads the first kind's share (用 6 个 Claude 订阅账号消耗了), its ring's dot before it as each other kind's line has
-/// (the share under it in white, as the second ring is: the dot says whose it is).
-fn pic_lead(c : Pen, first : Json?) -> Unit {
-  c.box(style=pic_lead_row, fn(c) {
+/// What leads the first kind's share (用 6 个 Claude 订阅账号消耗了), while any was `used`, its ring's dot before it as
+/// each other kind's line has (the share under it in white, as the second ring is: the dot says whose it is).
+fn pic_lead(c : Pen, used : () -> Bool, first : () -> Json?) -> Unit {
+  c.show(used, style=pic_lead_row, fn(c) {
     c.box(style=pic_lead_dot, fn(_) {  }) |> ignore
-    pic_words(c, text(first, "lead"), pic_unit)
+    pic_words(c, fn() { text(first(), "lead") }, pic_unit)
   })
-  |> ignore
+}
+
+///|
+/// A line of pic_models: the kind `kind` (in the core's order) as its ring's key (`model` -1), or its model `model`.
+#derive(Eq)
+priv struct PicLine {
+  kind : Int
+  model : Int
+  of : Json
 }
 
 ///|
 /// The models but the one said large, one line each (its name, its tokens and cost at the line's end in ink), past where
 /// the dots are: the first kind's under it; then each other kind a line as its ring's key (its colour's dot, its name,
-/// its accounts dimmer), its models under it. One model's tokens are not another's, so no kind adds its models' up
-/// (2026-10-30 用户「按模型分开写 token 和钱」). One line each whatever its name: said as a sentence, a name long enough
-/// broke it, a character on a line of its own (2026-10-26 用户：「这里折行了不太好看」); a name too long for its line cut
-/// short, nothing else.
-fn pic_models(c : Pen, spent : Array[Json]) -> Unit {
-  if spent.length() < 2 && items(Some(spent[0]), "models").length() < 2 {
-    return
-  }
-  c.box(style=pic_models_box, fn(c) {
-    for k, q in spent {
-      let q = Some(q)
+/// its accounts dimmer), its models under it; none where there is one kind of one model. One model's tokens are not
+/// another's, so no kind adds its models' up (2026-10-30 用户「按模型分开写 token 和钱」). One line each whatever its
+/// name: said as a sentence, a name long enough broke it, a character on a line of its own (2026-10-26 用户：「这里折行了
+/// 不太好看」); a name too long for its line cut short, nothing else. Each line kept by which kind and model it is.
+fn pic_models(c : Pen, spent : () -> Array[Json]) -> Unit {
+  let lines = fn() {
+    let out : Array[PicLine] = []
+    for k, q in spent() {
       if k > 0 {
-        c.box(style=pic_other, fn(c) {
-          c.box(style=pic_key_dot.then(@ui.style(bg=Data(ring_color(k)))), fn(_) {  }) |> ignore
-          pic_words(c, text(q, "name"), pic_key_name)
-          pic_words(c, text(q, "accountsText"), pic_key_accounts)
-        })
-        |> ignore
+        out.push({ kind: k, model: -1, of: q })
       }
-      for i, m in items(q, "models") {
-        if k == 0 && i == 0 {
-          continue
+      for i, m in items(Some(q), "models") {
+        if k > 0 || i > 0 {
+          out.push({ kind: k, model: i, of: m })
         }
-        let m = Some(m)
-        c.box(style=pic_model, fn(c) {
-          c.box(style=pic_key_dot, fn(_) {  }) |> ignore
-          pic_words(c, text(m, "name"), pic_key_name)
-          c.box(style=pic_grow, fn(_) {  }) |> ignore
-          pic_words(c, text(m, "lineText"), pic_key_share)
-        })
-        |> ignore
       }
     }
+    out
+  }
+  c.show(fn() { lines().length() > 0 }, style=pic_models_box, fn(c) {
+    c.each(lines, fn(l) { (l.kind, l.model) }, style_of=fn(l) { if l.model < 0 { pic_other } else { pic_model } }, fn(
+      c,
+      l,
+    ) {
+      let q = fn() { Some(l().of) }
+      // (which line it is is its key's: a kind's or a model's, whose colour)
+      let kind = @signals.untracked(l).kind
+      if @signals.untracked(l).model < 0 {
+        c.box(style=pic_key_dot.then(@ui.style(bg=Data(ring_color(kind)))), fn(_) {  }) |> ignore
+        pic_words(c, fn() { text(q(), "name") }, pic_key_name)
+        pic_words(c, fn() { text(q(), "accountsText") }, pic_key_accounts)
+      } else {
+        c.box(style=pic_key_dot, fn(_) {  }) |> ignore
+        pic_words(c, fn() { text(q(), "name") }, pic_key_name)
+        c.box(style=pic_grow, fn(_) {  }) |> ignore
+        pic_words(c, fn() { text(q(), "lineText") }, pic_key_share)
+      }
+    })
   })
-  |> ignore
 }
 
 ///|
 /// The rings: a kind of account each, from the outside in (as many as there are colours), as much of each drawn as its
 /// share of all kinds' tokens (the core's `share`: @sf.rings).
-fn pic_rings(c : Pen, spent : Array[Json]) -> Unit {
-  let rings : Array[(Double, Int64)] = []
-  for k, q in spent {
-    if k >= @sf.share_rings.length() {
-      break
+fn pic_rings(c : Pen, spent : () -> Array[Json]) -> Unit {
+  let rings = by_value(fn() {
+    let rings : Array[(Double, Int64)] = []
+    for k, q in spent() {
+      if k >= @sf.share_rings.length() {
+        break
+      }
+      rings.push((number(Some(q), "share"), ring_color(k)))
     }
-    rings.push((number(Some(q), "share"), ring_color(k)))
-  }
+    rings
+  })
   @sf.rings_node(c.v, rings, pic_rings_side, pic_track_alpha, most=@sf.share_rings.length()) |> ignore
 }
 
 ///|
-/// A span of days (today, the last 7) on a card: its title, then each figure over what it is.
-fn pic_span(c : Pen, span : Json?) -> Unit {
+/// A span of days (today, the last 7) on a card: its title, then each figure over what it is, each kept by its place.
+fn pic_span(c : Pen, span : () -> Json?) -> Unit {
   c.box(style=pic_span_box, fn(c) {
-    pic_words(c, text(span, "title"), pic_span_title)
+    pic_words(c, fn() { text(span(), "title") }, pic_span_title)
     c.box(style=pic_stats, fn(c) {
-      for x in items(span, "stats") {
-        let x = Some(x)
-        c.box(style=pic_stat, fn(c) {
-          pic_words(c, text(x, "value"), pic_stat_value)
-          pic_words(c, text(x, "label"), pic_stat_label)
-        })
-        |> ignore
-      }
+      c.each(fn() { items(span(), "stats").mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, style_of=fn(_) { pic_stat }, fn(
+        c,
+        x,
+      ) {
+        pic_words(c, fn() { text(Some(x().1), "value") }, pic_stat_value)
+        pic_words(c, fn() { text(Some(x().1), "label") }, pic_stat_label)
+      })
     })
     |> ignore
   })
@@ -354,25 +364,30 @@ fn pic_span(c : Pen, span : Json?) -> Unit {
 
 ///|
 /// Each day's chats archived a bar, as tall as its share of the most on a day (4 at least: a day with none still seen), today's
-/// orange, its date under it.
-fn pic_bars(c : Pen, week : Json?) -> Unit {
-  c.box(style=pic_bars_row, fn(c) {
-    for d in items(week, "days") {
-      let d = Some(d)
-      let h = dmax(pic_bar_least, number(d, "share") * pic_bars_h)
-      let today = flag(d, "today")
-      c.box(style=pic_day, fn(c) {
-        c.box(style=pic_bar_room, fn(c) {
-          c.box(style=pic_bar.then(@ui.style(h=Fixed(h), bg=Data(if today { @sf.share_orange } else { @sf.share_bar }))), fn(_) {  })
-          |> ignore
-        })
-        |> ignore
-        pic_words(c, text(d, "label"), if today { pic_day_today } else { pic_day_label })
-      })
+/// orange, its date under it; each kept by its place in the week.
+fn pic_bars(c : Pen, week : () -> Json?) -> Unit {
+  c.each(fn() { items(week(), "days").mapi(fn(i, d) { (i, d) }) }, fn(d) { d.0 }, style_of=fn(_) { pic_day }, fn(c, d) {
+    let d = fn() { Some(d().1) }
+    let today = fn() { flag(d(), "today") }
+    c.box(style=pic_bar_room, fn(c) {
+      c.box(
+        style_by=fn() {
+          let h = dmax(pic_bar_least, number(d(), "share") * pic_bars_h)
+          pic_bar.then(@ui.style(h=Fixed(h), bg=Data(if today() { @sf.share_orange } else { @sf.share_bar })))
+        },
+        fn(_) {  },
+      )
       |> ignore
-    }
+    })
+    |> ignore
+    c.text_by(fn() { text(d(), "label") }, style=pic_day_label, style_by=fn() {
+      if today() {
+        pic_day_today
+      } else {
+        pic_day_label
+      }
+    }, face=@sfbase.share_face_given())
   })
-  |> ignore
 }
 
 ///|

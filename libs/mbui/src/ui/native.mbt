@@ -1460,7 +1460,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
     let reply : SiteReply = { view: v.id, req, headed: false, ended: false, gone: false, on_gone: fn() {  } }
     v.replies[req] = reply
     let body = if str("method") == "GET" || str("method") == "HEAD" {
-      Bytes::new(0)
+      Bytes::make(0, b'\x00')
     } else {
       h_view_site_body(v.id, req)
     }

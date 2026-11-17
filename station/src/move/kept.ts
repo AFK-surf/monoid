@@ -229,6 +229,11 @@ export class LentLog<T extends { for: string[] }> {
     for (const k of this.#log.keys()) if (k.startsWith("f:")) this.#index(k.slice(2, k.indexOf("\n")), k.slice(k.indexOf("\n") + 1), true);
   }
 
+  /// Once what was asked to be written (the file of before taken in and let go too) is on disk (KeptLog `settled`).
+  settled(): Promise<void> {
+    return this.#log.settled();
+  }
+
   #index(share: string, item: string, on: boolean): void {
     const items = this.#for.get(share) ?? new Set<string>();
     const shares = this.#sharesOf.get(item) ?? new Set<string>();

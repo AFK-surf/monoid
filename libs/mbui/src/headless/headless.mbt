@@ -70,6 +70,10 @@
 // and says the item's own words after its look has run, keeping the roving Tab stop and the arrow keys across the
 // living enabled items.
 //
+// A part of several parts that takes no press of its own (table.mbt: a table, its rows, its cells) is the same, and
+// each part may be the node a structure made for it (`in_node`: a row of `View::each`), said to be what it is and no
+// node more, so a look already laid out by rows and cells takes it without a box more.
+//
 // A component is tested under a look of the tests' own, found by role and name, each window made by the tests'
 // `window` (window_test.mbt), which holds of every node in it that nothing said from this package's own files is drawn
 // or laid out by.

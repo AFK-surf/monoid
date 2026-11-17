@@ -163,6 +163,8 @@ long control_type(const std::wstring &r) {
       {L"Status", UIA_TextControlTypeId},         {L"Region", UIA_GroupControlTypeId},
       {L"Navigation", UIA_GroupControlTypeId},    {L"Form", UIA_GroupControlTypeId},
       {L"Heading", UIA_TextControlTypeId},        {L"ScrollArea", UIA_PaneControlTypeId},
+      {L"Table", UIA_TableControlTypeId},         {L"Row", UIA_DataItemControlTypeId},
+      {L"ColumnHeader", UIA_HeaderItemControlTypeId}, {L"Cell", UIA_DataItemControlTypeId},
   };
   auto it = types.find(r);
   return it == types.end() ? UIA_GroupControlTypeId : it->second;
