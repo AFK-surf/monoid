@@ -259,10 +259,12 @@ test "大屏 Mac: a board chat kept behind another page is not closed by ⌘W" {
   let (t, _) = board_at("board", 1440.0, 900.0)
   t.click(Button, label="整理发布清单")
   t.run_for(@ui.move_most_ms)
-  guard @sfbase.board_pick.get() is Some(r) else { fail("no selected chat") }
-  @sfbase.open_page(Chat(r))
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  // (a page other than a chat: a chat opened from the board puts the list back in its place, the board's chat closed,
+  // sfapp's open_where)
+  @sfbase.open_page(Files)
   t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() is Chat(_))
+  assert_true(app.nav.top() == Files)
   assert_false(@ui.view_action("window.close_panel"))
   assert_true(@sfbase.board_pick.get() is Some(_))
 }
