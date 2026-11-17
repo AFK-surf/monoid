@@ -836,7 +836,11 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       tape_cover(side, Side, fn() {
         let r = tape_room_now()
         let (_, wh) = side.window()
-        (bar_in_now(), r.panel_top, bar_gap_now(), dmax(0.0, wh - r.panel_top - r.panel_h))
+        // The cover can reopen the sidebar, but never takes the system window buttons' row.
+        let top = if @ui.window_inset() {
+          dmax(r.panel_top, @ui.window_points_to_content_now(window_buttons_row) + bar_in_now())
+        } else { r.panel_top }
+        (bar_in_now(), top, bar_gap_now(), dmax(0.0, wh - r.panel_top - r.panel_h))
       })
     })
     |> ignore

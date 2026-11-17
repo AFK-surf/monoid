@@ -694,7 +694,7 @@ pub let tape_shows : Double = 56.0
 /// (the user, 2026-10-26: 红绿灯没有一个空位可以放).
 pub fn tape_shows_left() -> Double {
   if @ui.window_keys_left() {
-    dmax(tape_shows, window_buttons_in + window_buttons_w + window_buttons_in)
+    dmax(tape_shows, @ui.window_points_to_content_now(window_buttons_in + window_buttons_w + window_buttons_in))
   } else {
     tape_shows
   }

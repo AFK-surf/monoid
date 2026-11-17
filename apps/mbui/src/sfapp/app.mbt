@@ -716,7 +716,8 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         let shell_was : Ref[ShellIs] = Ref(Unsized)
         v.pick(fn() { shell_is(src, v.window().0) }, fn(s, shell) {
           // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.
-          if shell is Taped && shell_was.val is (Stacked | Paned) && app.nav.top() != Home {
+          if shell is Taped && shell_was.val is (Stacked | Paned) && !@sf.native_able() &&
+            app.nav.top() != Home && pane_ready(src, app.nav.top()) {
             @sfdesk.wide.tape_at.set(Page)
             @sfdesk.wide.tape_ask.set(None)
           }
