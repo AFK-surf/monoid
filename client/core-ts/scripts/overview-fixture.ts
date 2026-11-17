@@ -111,8 +111,8 @@ const SUMMARY: Account[] = [
   { id: "cx", group: "chatgpt", plan: "Pro 200", seed: 21, windows: [w("5 小时", 18, 3, 300), w("每周", 32, 72, WEEK)] },
   { id: "cx2", group: "chatgpt", plan: "Pro 200", seed: 22, windows: [w("5 小时", 8, 4, 300), w("每周", 16, 14, WEEK)] },
   { id: "cx3", group: "chatgpt", plan: "Plus", seed: 23, usable: false, windows: [w("5 小时", 0, 5, 300), w("每周", 100, 48, WEEK)] },
-  { id: "ag1", group: "agy", plan: "AI Ultra", seed: 31, windows: [w("5 小时 · Gemini", 24, 3, 300, "Gemini"), w("每周 · Gemini", 32, 72, WEEK, "Gemini"), w("每周 · Claude / GPT", 20, 72, WEEK, "Claude / GPT")] },
-  { id: "ag2", group: "agy", plan: "AI Ultra", seed: 32, windows: [w("5 小时 · Gemini", 36, 1, 300, "Gemini"), w("每周 · Gemini", 38, 96, WEEK, "Gemini"), w("每周 · Claude / GPT", 32, 96, WEEK, "Claude / GPT")] },
+  { id: "ag1", group: "agy", plan: "AI Ultra", seed: 31, windows: [w("5 小时 · Gemini", 24, 3, 300, "gemini"), w("每周 · Gemini", 32, 72, WEEK, "gemini"), w("每周 · Claude / GPT", 20, 72, WEEK, "3p")] },
+  { id: "ag2", group: "agy", plan: "AI Ultra", seed: 32, windows: [w("5 小时 · Gemini", 36, 1, 300, "gemini"), w("每周 · Gemini", 38, 96, WEEK, "gemini"), w("每周 · Claude / GPT", 32, 96, WEEK, "3p")] },
 ];
 
 /// fx_profiles' two (Willow's Claude and ChatGPT subscriptions), each 81% of its week used, refilled Monday.

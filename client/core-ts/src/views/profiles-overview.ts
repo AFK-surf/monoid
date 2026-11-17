@@ -8,7 +8,10 @@
 // hours by what they spent (evenly where nothing was counted). The future is an hourly simulation: each hour's demand
 // leans from the last hours' pace (an exponential weighting) to the week's, shaped by the hour of the day people work
 // at, and is taken from the account whose week resets soonest that has room in both its week and its five hours; a
-// week refills at its reset, five hours at theirs, and what no account can take is the pool going without.
+// week refills at its reset, five hours at theirs, and what no account can take is the pool going without. What a pool
+// has left is its weeks' alone (station sessions/pool.ts: the week is what is spent and refilled, five hours only how
+// fast it may be taken): five hours spent hold an account back from being used now (`ready`) and from what the
+// simulation can take of it, never take its week out of the pool's line to put it back as they come back.
 const HOUR_MS = 3_600_000;
 
 // deno-lint-ignore no-explicit-any
@@ -68,8 +71,10 @@ type Slot = {
   ready: boolean;
   long: Win | null;
   short: Win | null;
-  /// Not to be used before this many hours on (Fable's while its account's week is spent).
+  /// Not to be used before this many hours on (Fable's while its account's week, reset apart from it, is spent).
   lockedHours: number;
+  /// A long window every call of it counts against too (Fable's: its account's week), or null.
+  gate: Win | null;
   /// What its calls count against (a window's `scope`; "" the account's own).
   scope: string;
   hours: Hours;
@@ -86,13 +91,31 @@ const round = (v: number, places: number) => {
 };
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/// A window's scope as one name whoever said it: an Antigravity account's "gemini" and "3p" as its allowance gives
+/// them (stations from before spent against "Gemini" and "Claude / GPT"), Fable's "Fable"; with none said, of a
+/// label that names one of these after its " · ".
+export function normScope(scope: string, label = ""): string {
+  const of = (name: string): string | null => {
+    const l = name.trim().toLowerCase();
+    if (l === "gemini") return "gemini";
+    if (l === "3p" || l === "claude / gpt") return "3p";
+    if (l === "fable") return "Fable";
+    return null;
+  };
+  const s = scope.trim();
+  if (s !== "") return of(s) ?? s;
+  const at = label.lastIndexOf(" · ");
+  return at < 0 ? "" : of(label.slice(at + 3)) ?? "";
+}
+
 function winOf(w: J): Win | null {
   if (!isObject(w)) return null;
   // (as a station said it, or as the list's rows keep it: what is left, whole percent)
   const left = num(w.left);
   const used = num(w.usedPercent) ?? (left === null ? null : 100 - left);
   if (used === null) return null;
-  return { label: str(w.label), scope: str(w.scope), used: clamp(used, 0, 100), resetsAt: num(w.resetsAt), minutes: num(w.minutes), mark: str(w.mark) };
+  const label = str(w.label);
+  return { label, scope: normScope(str(w.scope), label), used: clamp(used, 0, 100), resetsAt: num(w.resetsAt), minutes: num(w.minutes), mark: str(w.mark) };
 }
 
 /// Whether a window is a week's (or a month's) or a few hours'.
@@ -168,9 +191,10 @@ function hoursOf(item: J, pace: (station: string) => J): Hours {
       const hour = num(s?.hour);
       const weight = num(s?.weight);
       if (hour === null || weight === null || weight <= 0) continue;
-      const byHour = spend.get(str(s.scope)) ?? new Map<number, number>();
+      const scope = normScope(str(s.scope));
+      const byHour = spend.get(scope) ?? new Map<number, number>();
       byHour.set(hour, (byHour.get(hour) ?? 0) + weight);
-      spend.set(str(s.scope), byHour);
+      spend.set(scope, byHour);
     }
   }
   snaps.sort((a, b) => a.at - b.at);
@@ -192,13 +216,19 @@ function exact(w: Win | null, hours: Hours, now: number): Win | null {
   return w;
 }
 
-function slot(item: J, hours: Hours, now: number, scope: string, long: Win | null, short: Win | null, o: { weight?: number; lockedHours?: number; usable?: boolean } = {}): Slot {
+function slot(item: J, hours: Hours, now: number, scope: string, long: Win | null, short: Win | null, o: { weight?: number; lockedHours?: number; usable?: boolean; gate?: Win | null } = {}): Slot {
   const broken = needsFix(item) || item?.profile?.quota?.state === "blocked";
   const usable = o.usable ?? item?.usable === true;
   const lockedHours = o.lockedHours ?? 0;
-  const ready = !broken && usable && (long === null || long.used < 100) && (short === null || short.used < 100) && lockedHours <= 0;
-  return { weight: o.weight ?? planWeight(item), broken, ready, long: exact(long, hours, now), short: exact(short, hours, now), lockedHours, scope, hours };
+  const gate = o.gate ?? null;
+  const ready = !broken && usable && (long === null || long.used < 100) && (short === null || short.used < 100) && (gate === null || gate.used < 100) && lockedHours <= 0;
+  return { weight: o.weight ?? planWeight(item), broken, ready, long: exact(long, hours, now), short: exact(short, hours, now), lockedHours, gate: exact(gate, hours, now), scope, hours };
 }
+
+/// Whether a gate resets with its window (Claude's week and its Fable week: the same moment, a millisecond apart):
+/// then what is left of both is the less of the two, refilled together.
+const gatedTogether = (long: Win | null, gate: Win | null): boolean =>
+  long !== null && gate !== null && gate.resetsAt !== null && long.resetsAt !== null && Math.abs(gate.resetsAt - long.resetsAt) < 3 * HOUR_MS;
 
 /// Each pool's accounts.
 function poolSpecs(items: J[], pace: (station: string) => J, now: number): PoolSpec[] {
@@ -209,42 +239,39 @@ function poolSpecs(items: J[], pace: (station: string) => J, now: number): PoolS
     return [find(ws, "", "long"), find(ws, "", "short")];
   };
   const groupOf = (i: J) => str(i?.group);
-  const agyPart = (i: J, scope: string) => {
-    const ws = windowsOf(i);
-    return [find(ws, scope, "long"), find(ws, scope, "short")] as const;
-  };
   const specs: PoolSpec[] = [];
-  const claudeLike = (group: string, title: string) => {
-    const slots: Slot[] = [];
-    for (const i of items) {
-      if (groupOf(i) === group) {
-        const [long, short] = main(i);
-        slots.push(slot(i, h(i), now, "", long, short));
-      } else if (groupOf(i) === "agy") {
-        const [long, short] = agyPart(i, "Claude / GPT");
-        if (long !== null) slots.push(slot(i, h(i), now, "Claude / GPT", long, short));
-      }
-    }
+  // (an Antigravity account's Claude / GPT serve no Claude Code or Codex session: the station's pool never runs one
+  // of those on it, sessions/pool.ts, so it is none of their pools')
+  const own = (group: string, title: string) => {
+    const slots = items.filter((i) => groupOf(i) === group).map((i) => {
+      const [long, short] = main(i);
+      return slot(i, h(i), now, "", long, short);
+    });
     specs.push({ title, slots });
   };
-  claudeLike("claude", "Claude");
+  own("claude", "Claude");
   // Fable: a model's own week, on accounts whose week of their own must have room too.
   const fable: Slot[] = [];
   for (const i of items) {
     const ws = windowsOf(i);
-    const own = ws.find((w) => w.scope === "Fable" || w.scope === "fable") ?? null;
-    if (own === null && !(groupOf(i) === "claude" && needsFix(i))) continue;
+    const mine = ws.find((w) => w.scope === "Fable") ?? null;
+    if (mine === null && !(groupOf(i) === "claude" && needsFix(i))) continue;
     const [week, short] = main(i);
-    const locked = week !== null && week.used >= 100 ? Math.max(0, ((week.resetsAt ?? now) - now) / HOUR_MS) : 0;
-    fable.push(slot(i, h(i), now, "Fable", own, short, { lockedHours: locked }));
+    // (its account's week reset with it is a gate, the less of the two left; one reset apart and spent holds it till then)
+    const locked = !gatedTogether(mine, week) && week !== null && week.used >= 100 ? Math.max(0, ((week.resetsAt ?? now) - now) / HOUR_MS) : 0;
+    fable.push(slot(i, h(i), now, "Fable", mine, short, { lockedHours: locked, gate: week }));
   }
   if (fable.length > 0) specs.push({ title: "Fable", slots: fable });
-  claudeLike("chatgpt", "Codex");
+  own("chatgpt", "Codex");
   const gemini: Slot[] = [];
   for (const i of items) {
     if (groupOf(i) !== "agy") continue;
-    const [long, short] = agyPart(i, "Gemini");
-    gemini.push(slot(i, h(i), now, "Gemini", long, short));
+    const ws = windowsOf(i);
+    const long = find(ws, "gemini", "long");
+    const short = find(ws, "gemini", "short");
+    // (an allowance read that has no Gemini window: an account of none, not one to wait for)
+    if (long === null && short === null && i?.profile?.quota?.state === "ok" && !needsFix(i)) continue;
+    gemini.push(slot(i, h(i), now, "gemini", long, short));
   }
   specs.push({ title: "Gemini", slots: gemini });
   for (const [group, title] of [["grok", "SuperGrok"], ["kimi", "Kimi Code"], ["opencode", "OpenCode Go"], ["cursor", "Cursor"], ["devin", "Devin"]] as const) {
@@ -278,14 +305,14 @@ function spending(spend: Map<number, number> | undefined, nowHourF: number): (a:
   return (a, b) => (b <= a ? 0 : at(nowHourF + b) - at(nowHourF + a));
 }
 
-function pastOf(s: Slot, now: number): Past {
+/// `w` (its long window, or its gate) counted against by what was spent of `scope`.
+function pastOf(s: Slot, now: number, w: Win | null = s.long, scope: string = s.scope): Past {
   const used = new Array<number>(HISTORY_HOURS + 1).fill(0);
   const burn = new Array<number>(HISTORY_HOURS).fill(0);
-  const w = s.long;
   if (w === null) return { used, burn, known: 0 };
   const nowHourF = now / HOUR_MS;
-  const spentBetween = spending(s.hours.spend.get(s.scope), now / HOUR_MS);
-  const spend = s.hours.spend.get(s.scope);
+  const spentBetween = spending(s.hours.spend.get(scope), now / HOUR_MS);
+  const spend = s.hours.spend.get(scope);
   const cycle = cycleOf(w);
   const r = w.resetsAt !== null ? (w.resetsAt - now) / HOUR_MS : cycle / 2;
   // The end of the cycle a moment `t` (hours from now) is in.
@@ -321,7 +348,11 @@ function pastOf(s: Slot, now: number): Past {
     const start = end - cycle;
     let mine = ofCycle.get(end);
     if (mine === undefined) {
-      mine = points.filter((p) => sameCycle(p.end, end));
+      mine = points.filter((p) => sameCycle(p.end, end)).map((p) => ({ ...p }));
+      // What a cycle used so far never goes back: a percent read a whole one higher, or two stations' readings a
+      // moment apart, taken down to the newest reading after it (now's, the last), so the line rises nowhere but at a
+      // refill and meets now where now is.
+      for (let j = mine.length - 2; j >= 0; j--) mine[j]!.used = Math.min(mine[j]!.used, mine[j + 1]!.used);
       ofCycle.set(end, mine);
     }
     // (points in order of time: the first at or after `t`, the last at or before it)
@@ -355,20 +386,6 @@ function pastOf(s: Slot, now: number): Past {
   return { used, burn, known };
 }
 
-/// Whether an account's five hours were spent `k` hours back, as its kept hours say (none kept: not).
-function shortSpentAt(s: Slot, now: number, k: number): boolean {
-  if (s.short === null) return false;
-  if (k === 0) return s.short.used >= 100;
-  const t = now - k * HOUR_MS;
-  let last: Win | null = null;
-  for (const snap of s.hours.snaps) {
-    if (snap.at > t) break;
-    if (t - snap.at > 5 * HOUR_MS) continue;
-    last = snap.windows.find((x) => x.scope === s.short!.scope && kindOf(x) === "short") ?? last;
-  }
-  return last !== null && last.used >= 100 && (last.resetsAt === null || last.resetsAt > t);
-}
-
 /// Percent of its week a full five hours of an account is, as its kept hours tell (what both rose by, hour to hour
 /// within one of each), or SHORT_OF_LONG.
 function shortOfLong(s: Slot): number {
@@ -386,7 +403,8 @@ function shortOfLong(s: Slot): number {
     dl += lb.used - la.used;
     ds += sb.used - sa.used;
   }
-  return ds >= 20 && dl > 0 ? clamp((dl / ds) * 100, 2, 100) : SHORT_OF_LONG;
+  // (whole percents read: a five hours' 20 against a week's 1 is a rounding's, not a five hours of 2% of its week)
+  return ds >= 40 && dl >= 4 ? clamp((dl / ds) * 100, 8, 100) : SHORT_OF_LONG;
 }
 
 /// An account in the simulation.
@@ -405,7 +423,9 @@ function tanksOf(slots: Slot[], shares: number[], now: number): Tank[] {
     const cycle = s.long !== null ? cycleOf(s.long) : 168;
     let resetIn = s.long?.resetsAt != null ? (s.long.resetsAt - now) / HOUR_MS : cycle / 2;
     while (resetIn <= 0) resetIn += cycle;
-    const left = s.long !== null ? (share * (100 - s.long.used)) / 100 : share;
+    // (a gate reset with it: the less of the two left; one reset apart holds it by `lockedHours`)
+    const used = s.long === null ? 0 : gatedTogether(s.long, s.gate) ? Math.max(s.long.used, s.gate!.used) : s.long.used;
+    const left = (share * (100 - used)) / 100;
     const short = s.short === null ? null : {
       used: s.short.used,
       resetIn: s.short.used > 0 && s.short.resetsAt !== null ? Math.max(0, (s.short.resetsAt - now) / HOUR_MS) : null,
@@ -458,8 +478,9 @@ function simulate(start: Tank[], demand: (h: number) => number): { avail: number
       want -= take;
       took += take;
     }
+    // (what is left of the weeks: five hours spent only hold back what is taken, as `unmet` says)
     let a = 0;
-    for (const t of tanks) if (h > t.lockedTill && (t.short === null || t.short.used < 99.9)) a += t.left;
+    for (const t of tanks) if (h > t.lockedTill) a += t.left;
     avail.push(a);
     taken.push(took);
     unmet.push(want);
@@ -482,19 +503,23 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   }
   const shares = active.map((s) => (s.weight / weight) * 100);
   const pasts = active.map((s) => pastOf(s, now));
-  // The past: what each account had left, where it could be used then.
+  // (a gate reset with the window: its own past, of the account's own spending, what it left the less of the two)
+  const gates = active.map((s) => (gatedTogether(s.long, s.gate) ? pastOf(s, now, s.gate, "") : null));
+  // The past: what each account's week had left.
   const traj: number[] = [];
   for (let k = PAST_HOURS; k >= 1; k--) {
     let v = 0;
-    active.forEach((s, i) => {
-      if (shortSpentAt(s, now, k)) return;
-      v += (shares[i]! * (100 - pasts[i]!.used[k]!)) / 100;
+    active.forEach((_, i) => {
+      const used = Math.max(pasts[i]!.used[k]!, gates[i]?.used[k] ?? 0);
+      v += (shares[i]! * (100 - used)) / 100;
     });
     traj.push(clamp(v, 0, 100));
   }
   const tanks = tanksOf(active, shares, now);
   let nowAvail = 0;
-  for (const t of tanks) if (t.lockedTill <= 0 && (t.short === null || t.short.used < 100)) nowAvail += t.left;
+  for (const t of tanks) if (t.lockedTill <= 0) nowAvail += t.left;
+  // (none of it to be taken now: every account with some left has spent its five hours, or is held)
+  const nowStarved = !tanks.some((t) => t.lockedTill <= 0 && t.left > 0.3 && (t.short === null || t.short.used < 100));
   traj.push(clamp(nowAvail, 0, 100));
   // What the pool spent each hour back (0: the last).
   const pastBurn: number[] = [];
@@ -547,7 +572,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   for (let h = 0; h < FUTURE_HOURS; h++) traj.push(clamp(sim.avail[h]!, 0, 100));
   const willStarve = sim.avail.map((_, h) => starves(sim, h));
   const first = willStarve.findIndex((x) => x);
-  const exhaustHours = nowAvail <= 0.3 ? 0 : first >= 0 ? first + 1 : null;
+  const exhaustHours = nowAvail <= 0.3 || (nowStarved && (recent > 0.05 || base > 0.05)) ? 0 : first >= 0 ? first + 1 : null;
   // The most it could spend an hour, evenly, and never go without for the week.
   // (no more than all it holds and gets back in the week spread over it: searched to a hundredth of a percent an hour)
   let held = 0;

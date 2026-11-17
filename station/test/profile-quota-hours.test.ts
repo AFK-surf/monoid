@@ -7,7 +7,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Accounts } from "../src/accounts/index.ts";
 import { checkConfig } from "../src/accounts/check.ts";
-import { spendScopes, spendWeight } from "../src/accounts/pace.ts";
+import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
+import { paceView, spendScopes, spendWeight } from "../src/accounts/pace.ts";
 import { routes } from "../src/api/routes/accounts.ts";
 import type { Request } from "../src/api/request.ts";
 import { ConfigFile } from "../src/ops/config.ts";
@@ -92,9 +93,44 @@ describe("an account's last hours", () => {
     assert.equal(of("no-such-model", { input: 1_000_000, cacheRead: 1_000_000, output: 1_000_000 }), 6.1);
     assert.deepEqual(spendScopes("claude", "claude-fable-5-2"), ["Fable", ""]);
     assert.deepEqual(spendScopes("claude", "claude-opus-5-5"), [""]);
-    assert.deepEqual(spendScopes("agy", "gemini-4-hydrogen-high"), ["Gemini"]);
-    assert.deepEqual(spendScopes("agy", "claude-opus-5-5"), ["Claude / GPT"]);
     assert.deepEqual(spendScopes("codex", "gpt-6.1-terra"), [""]);
+  });
+
+  test("an Antigravity account's calls count against the windows its allowance names, by the scope it gives them", () => {
+    assert.deepEqual(spendScopes("agy", "gemini-4-carbon"), ["gemini"]);
+    assert.deepEqual(spendScopes("agy", "gemini-4-hydrogen-high"), ["gemini"]);
+    assert.deepEqual(spendScopes("agy", "google/gemini-4-argon[high]"), ["gemini", "Argon"]);
+    assert.deepEqual(spendScopes("agy", "us.google.gemma-3-27b"), ["gemini"]);
+    assert.deepEqual(spendScopes("agy", null), ["gemini"]);
+    assert.deepEqual(spendScopes("agy", "claude-opus-5-5"), ["3p"]);
+    assert.deepEqual(spendScopes("agy", "anthropic/claude-fable-5-2"), ["3p"]);
+    assert.deepEqual(spendScopes("agy", "gpt-6.1-terra"), ["3p"]);
+    // (the rule the station's pool picks an account's window by, the same)
+    for (const m of [null, "", "gemini-4-carbon", "google/gemini-4-argon[high]", "us.google.gemma-3-27b", "claude-opus-5-5", "gpt-6.1-terra", "grok-5"]) {
+      assert.equal(spendScopes("agy", m)[0], agyScopeForModel(m), String(m));
+    }
+    // An hour of each kept as the allowance said it, and the hours spent: each scope spent is one of a window kept.
+    const H0 = 700_000;
+    const { windows, scoped } = agyAllowance({ command: { data: { groups: [
+      { name: "Gemini Models", buckets: [
+        { id: "gemini-weekly", window: "weekly", remaining_fraction: 0.6, reset_time: "2026-11-23T04:49:34Z" },
+        { id: "gemini-5h", window: "5h", remaining_fraction: 0.8, reset_time: "2026-11-16T09:49:34Z" },
+      ] },
+      { name: "Claude and GPT models", buckets: [
+        { id: "3p-weekly", window: "weekly", remaining_fraction: 0.9, reset_time: "2026-11-22T13:43:14Z" },
+        { id: "3p-5h", window: "5h", remaining_fraction: 1, reset_time: "2026-11-16T09:58:00Z" },
+      ] },
+      { name: "Gemini 4 Argon", buckets: [{ id: "gemini-argon-wtu-weekly", window: "weekly", remaining_fraction: 0.87, reset_time: "2026-11-23T04:25:54Z" }] },
+    ] } } });
+    const hour = (model: string) => ({ hour: H0 - 1, profile: "ag", runtime: "agy", model, calls: 1, input: 0, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 1_000_000, fast: false });
+    const view = paceView(H0 * HOUR_MS, {
+      quotas: [{ profile: "ag", hour: H0 - 1, at: H0 * HOUR_MS - 1, windows: [...windows, ...scoped].map((w) => ({ label: w.label, scope: w.scope ?? null, usedPercent: w.usedPercent, resetsAt: w.resetsAt, minutes: w.minutes ?? null })) }],
+      spend: [hour("gemini-4-carbon"), hour("gemini-4-argon"), hour("claude-opus-5-5")],
+    }, () => true);
+    const kept = new Set(view.profiles.ag!.quotas[0]!.windows.map((w) => w.scope));
+    const spent = view.profiles.ag!.spend.map((s) => s.scope);
+    assert.deepEqual(spent, ["3p", "Argon", "gemini"]);
+    for (const scope of spent) assert.ok(kept.has(scope), `${scope} of ${[...kept]}`);
   });
 
   test("GET /profiles/pace gives the hours of the accounts the viewer's workspace may run on, none of another's", async () => {

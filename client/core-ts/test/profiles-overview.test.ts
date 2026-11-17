@@ -111,19 +111,49 @@ test("idle now but going without within the week at the week's pace: the pace no
   assert.ok(busiest.netPerHour < idle.netPerHour);
 });
 
-test("five hours spent take the pool to nothing until they come back, its week still holding", () => {
+test("five hours spent make the pool go without until they come back, the line its week's, never down to nothing and up again", () => {
   // 60% of the week spent in the last six hours; five hours of its own unused.
   const items = [account("a", [five(0, null), week(60, 150)])];
   const pool = claude(items, paceOf({ a: { spend: Array.from({ length: 6 }, (_, i) => [i, 1] as [number, number]) } }));
   assert.ok(pool.currentBurnPerHour > 6, `${pool.currentBurnPerHour}`);
   assert.equal(pool.exhaustHours, 2);
-  assert.equal(pool.traj[PAST_HOURS + 3], 0);
   assert.ok(pool.starveSpans[0] === 1 && pool.starveSpans[1]! >= 3, `${pool.starveSpans}`);
-  // Its five hours back: the pool comes back with what the week has left.
-  assert.ok(pool.traj[PAST_HOURS + 5]! > 10, `${pool.traj.slice(PAST_HOURS, PAST_HOURS + 8)}`);
+  // What the week holds: its five hours' worth (12% of it) taken, the rest there while it goes without.
+  assert.equal(pool.traj[PAST_HOURS], 40);
+  assert.equal(pool.traj[PAST_HOURS + 3], 28, `${pool.traj.slice(PAST_HOURS, PAST_HOURS + 8)}`);
+  // Down only, its five hours back or not, till the week refills (150 hours on).
+  for (let h = 1; h < 150; h++) assert.ok(pool.traj[PAST_HOURS + h]! <= pool.traj[PAST_HOURS + h - 1]!, `${h}: ${pool.traj.slice(PAST_HOURS, PAST_HOURS + 12)}`);
+  assert.ok(pool.traj[PAST_HOURS + 150]! > 90);
   // While it is spent, its hours go without: under the pace it could keep up, whatever it can take.
   assert.ok(pool.hourlyNet[24 + 2]! < 0);
   assert.ok(pool.netPerHour < 0);
+  // Its five hours spent now: going without now, the week as it is.
+  const spent = claude([account("a", [five(100, 3), week(60, 150)])], paceOf({ a: { spend: Array.from({ length: 6 }, (_, i) => [i, 1] as [number, number]) } }));
+  assert.deepEqual([spent.ready, spent.nowPct, spent.exhaustHours], [0, 40, 0]);
+  assert.equal(spent.starveSpans[0], 0);
+});
+
+test("accounts refilling at different hours, their five hours spent again and again: the line rises only at a week's refill", () => {
+  // Four accounts, their weeks refilling 20, 45, 90 and 130 hours on, spent fast in the last six hours (faster than
+  // their five hours let them take), each one's five hours read spent and given back again and again in the hours kept.
+  const resets = [20, 45, 90, 130];
+  const items = resets.map((r, i) => account(`a${i}`, [five(i === 0 ? 100 : 20 * i, 1 + i), week(30 + 10 * i, r)]));
+  const said: Record<string, { quotas: [number, J[]][]; spend: [number, number][] }> = {};
+  resets.forEach((_, i) => {
+    const quotas: [number, J[]][] = [];
+    for (let b = 47; b >= 1; b--) quotas.push([b, [five(b % 5 === i % 5 ? 100 : 20 * (4 - (b % 5)), 5 - (b % 5) - b)]]);
+    said[`a${i}`] = { quotas, spend: Array.from({ length: 6 }, (_, h) => [h, 5] as [number, number]) };
+  });
+  const pool = claude(items, paceOf(said));
+  assert.deepEqual([pool.ready, pool.total], [3, 4]);
+  assert.ok(pool.starveSpans.length > 0 && pool.hourlyNet.slice(24).some((n) => n < 0), `${pool.starveSpans}`);
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
+    if (resets.includes(h)) continue;
+    assert.ok(pool.traj[PAST_HOURS + h]! <= pool.traj[PAST_HOURS + h - 1]!, `up at ${h}: ${pool.traj.slice(PAST_HOURS + h - 3, PAST_HOURS + h + 2)}`);
+  }
+  for (const r of resets) assert.ok(pool.traj[PAST_HOURS + r]! > pool.traj[PAST_HOURS + r - 1]!, `refilled at ${r}`);
+  // And back: five hours read spent never take a week off the line.
+  for (let k = PAST_HOURS; k >= 1; k--) assert.ok(back(pool, k - 1) <= back(pool, k), `up ${k - 1} back: ${back(pool, k)} → ${back(pool, k - 1)}`);
 });
 
 test("the pools of a workspace's accounts: each model's, its accounts ready of all, one in trouble leaving its share", () => {
@@ -131,13 +161,42 @@ test("the pools of a workspace's accounts: each model's, its accounts ready of a
     account("a", [five(10, 2), week(20, 100), week(50, 100, "Fable")]),
     account("b", [five(100, 1), week(30, 60)], { profile: { id: "b", planText: "Max 5x", checkTone: "green", quota: { state: "ok", windows: [five(100, 1), week(30, 60)], checkedAt: NOW } } }),
     account("c", [], { look: true, state: { tone: "red", text: "需要登录" }, profile: { id: "c", planText: "Max 20x", checkTone: "red", quota: { state: "unavailable", windows: [] } } }),
-    { ...account("g", [{ label: "每周 · Gemini", usedPercent: 40, resetsAt: NOW + 50 * H, minutes: WEEK, scope: "Gemini" }]), group: "agy" },
+    { ...account("g", [{ label: "每周 · Gemini", usedPercent: 40, resetsAt: NOW + 50 * H, minutes: WEEK, scope: "gemini" }, { label: "每周 · Claude / GPT", usedPercent: 10, resetsAt: NOW + 50 * H, minutes: WEEK, scope: "3p" }]), group: "agy" },
   ];
   const { pools } = profilesOverview(items, () => undefined, NOW, 480);
   assert.deepEqual(pools.map((p) => [p.title, p.ready, p.total]), [["Claude", 1, 3], ["Fable", 1, 2], ["Gemini", 1, 1]]);
   const claudePool = pools[0]!;
-  // a (20 of 25 shares) usable now, b (5) on its five hours: 80 × 80% = 64.
-  assert.equal(claudePool.nowPct, 64);
+  // a (20 of 25 shares, 80% of its week left) usable now, b (5, 70%) not till its five hours come back: what their weeks
+  // hold, 64 + 14.
+  assert.equal(claudePool.nowPct, 78);
+});
+
+test("Gemini: the allowance's own scope and a station's spending by it, of this release or before, draw what was spent and its refills", () => {
+  const gemini = (used: number, resetsInH: number, shortUsed: number) => [
+    { label: "每周 · Gemini", usedPercent: used, resetsAt: NOW + resetsInH * H, minutes: WEEK, scope: "gemini" },
+    { label: "5 小时 · Gemini", usedPercent: shortUsed, resetsAt: NOW + 2 * H, minutes: 300, scope: "gemini" },
+    { label: "每周 · Claude / GPT", usedPercent: 5, resetsAt: NOW + resetsInH * H, minutes: WEEK, scope: "3p" },
+  ];
+  const plan = [[100, 96, 30], [58, 143, 20], [52, 120, 10], [45, 60, 0], [100, 100, 100]] as const;
+  const items = plan.map(([used, r, short], i) => ({ ...account(`g${i}`, gemini(used, r, short)), group: "agy", profile: { id: `g${i}`, planText: "Pro", checkTone: "green", quota: { state: "ok", windows: gemini(used, r, short), checkedAt: NOW } } }));
+  const paceSaid = (scope: string) => paceOf(Object.fromEntries(plan.map(([used, r], i) => [`g${i}`, {
+    // (read 24 and 12 hours back, the week lower by what was spent since: two an hour)
+    quotas: [[24, gemini(used - 24, r, 0)], [12, gemini(used - 12, r, 0)]] as [number, J[]][],
+    spend: Array.from({ length: 24 }, (_, h) => [h, 1, scope] as [number, number, string]),
+  }])));
+  const pools = (pace: J) => profilesOverview(items, (s) => (s === "ws/st" ? pace : undefined), NOW, 0).pools;
+  const now = pools(paceSaid("gemini"));
+  const before = pools(paceSaid("Gemini"));
+  assert.deepEqual(now.map((p) => p.title), ["Gemini"], "Claude / GPT of an Antigravity account in no other pool");
+  const g = now[0]!;
+  assert.deepEqual(before[0], g, "a station from before says it as \"Gemini\"");
+  // Ready: the three with week and five hours left; what their weeks hold, a fifth each: (42 + 48 + 55) / 5.
+  assert.deepEqual([g.ready, g.total, g.nowPct], [3, 5, 29]);
+  // The past as read: each week 24 points lower a day back, 12 half a day back.
+  assert.deepEqual([back(g, 24), back(g, 12), back(g, 0)], [53, 41, 29]);
+  assert.ok(g.hourlyNet.slice(0, 24).some((n) => n < g.sustainablePerHour), "the hours spent in show");
+  // Its weeks refill where they say: 60, 96, 100 (four days on), 120 and 143 hours (six days on).
+  for (const r of [60, 96, 100, 120, 143]) assert.ok(g.traj[PAST_HOURS + r]! > g.traj[PAST_HOURS + r - 1]!, `refill at ${r}: ${g.traj.slice(PAST_HOURS + r - 2, PAST_HOURS + r + 2)}`);
 });
 
 test("the overview is of the stations' hours as they come, and of the allowances alone where a station has none to give", async () => {

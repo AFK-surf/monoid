@@ -1,7 +1,7 @@
 // GET /profiles/pace: each account's last PACE_HOURS hours as its Profile overview draws them (client/core-ts
 // views/profiles-overview.ts): what its allowance said in each hour, and what its calls spent in each, as dollars at
 // list prices by the window they count against (`scope`, as the allowance names its models' windows: Fable's, an
-// Antigravity account's Gemini and Claude / GPT). Read of the two statistics kept at write (store/profile-hours.ts).
+// Antigravity account's "gemini" and "3p"). Read of the two statistics kept at write (store/profile-hours.ts).
 import { HOUR_MS, PACE_HOURS, type HourWindow, type SpendHour } from "../store/profile-hours.ts";
 import { price } from "../read/usage.ts";
 
@@ -20,14 +20,21 @@ export function spendWeight(s: SpendHour): number {
   return Math.max(0, dollars * (s.fast ? 2 : 1));
 }
 
-/// The windows an hour of a runtime's model counts against ("" the account's own): a Fable (Mythos) model's against its
-/// own week and the account's, an Antigravity account's Gemini and Claude / GPT against theirs.
+/// The windows an hour of a runtime's model counts against ("" the account's own), by the `scope` the allowance gives
+/// them (accounts/agy-quota.ts `groupMeta`): a Fable (Mythos) model's against its own week and the account's; on an
+/// Antigravity account a Gemini (or Gemma) model's against "gemini", Argon's its own week too, and every other model
+/// (Claude, GPT) against "3p": agy-quota.ts `agyScopeForModel`'s rule, written again here so that this stays free of
+/// what that file imports (test/profile-quota-hours.test.ts holds the two to one answer).
 export function spendScopes(runtime: string, model: string | null): string[] {
-  const m = (model ?? "").toLowerCase();
-  if (runtime === "claude" && (m.includes("fable") || m.includes("mythos"))) return ["Fable", ""];
+  const raw = (model ?? "").trim().toLowerCase();
+  // (the model's bare name: no provider path, no variant in brackets, no version after "@", no vendor prefix)
+  const bare = (raw.split("[")[0]?.split("/").pop() ?? "").split("@")[0]!.replace(/^(?:[a-z]+\.)+/, "");
+  if (runtime === "claude" && (bare.includes("fable") || bare.includes("mythos"))) return ["Fable", ""];
   if (runtime === "agy") {
-    if (m.includes("gemini")) return ["Gemini"];
-    if (m.includes("claude") || m.includes("gpt")) return ["Claude / GPT"];
+    if (bare === "" || bare.startsWith("gemini") || bare.startsWith("gemma")) {
+      return bare.includes("argon") ? ["gemini", "Argon"] : ["gemini"];
+    }
+    return ["3p"];
   }
   return [""];
 }
