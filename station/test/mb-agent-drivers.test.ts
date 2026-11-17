@@ -143,6 +143,13 @@ async function settle(rounds = 40) {
   for (let i = 0; i < rounds; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
+/// Turns of the loop (each polls the I/O done) until `ready` holds: what real I/O sets going is waited for by what it
+/// does, never by a time; what never comes fails saying so.
+async function until(ready: () => boolean, what: string, turns = 100_000) {
+  for (let i = 0; i < turns && !ready(); i++) await new Promise((resolve) => setImmediate(resolve));
+  if (!ready()) throw new Error(`never came: ${what}`);
+}
+
 function world(c: { now?: number; alive?: number[]; startTimes?: Record<string, number>; ids?: string[] }) {
   time.now = c.now ?? 0;
   time.timers = [];
@@ -434,8 +441,10 @@ test("where a runner left off: its attach answered, its output's size where it s
     world({});
     const answer = ackedOffset(info as RunnerInfo, file);
     if (name === "quiet") {
-      await settle();
+      // The socket's attach and the output's stat are real I/O: the clock is moved on only once each has landed.
+      await until(() => told.length > 0, "the attach");
       await time.advance(400);
+      await until(() => time.timers.length > 0, "the quiet timer after the output's size");
       await time.advance(150);
     }
     const ts = await answer;
@@ -471,13 +480,20 @@ test("a runner an earlier station left ended: asked to stop, killed where its gr
     const c = { alive: [...others], data, fs: snap(data), sockets: { [sock]: script } };
     world(c);
     const ended = endRunner(data, "claude-x", "label");
-    // (its process goes once it was told to: the case's runner leaves it)
     let done = false;
     void ended.then(() => (done = true));
-    for (let i = 0; i < 12 && !done; i++) {
+    // What it reads of the runner's files and says on its socket is real I/O: the clock is moved on only once what it
+    // waits for has landed. Its TERM and attach first; a runner that holds is waited for (2 s), then KILLed (1 s more).
+    await until(() => told.length >= 2, "the TERM and the attach");
+    if (script.length === 0) {
+      await time.advance(2000);
+      await until(() => told.length >= 3, "the KILL");
       await time.advance(1000);
-      if (told.some((m) => m.op === "done")) alive.clear();
     }
+    await until(() => told.some((m) => m.op === "done"), "the done");
+    // (its process goes once it was told to: the case's runner leaves it)
+    alive.clear();
+    while (!done) await time.advance(10);
     const ts = await ended;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     const said = await harness().next(JSON.stringify({ ...c, op: "endRunner", id: "claude-x" }));
