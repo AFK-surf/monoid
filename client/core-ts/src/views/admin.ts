@@ -4,6 +4,8 @@
 import { CoreError } from "../error.ts";
 import * as format from "../format.ts";
 import { t } from "../i18n.ts";
+import { branded } from "../../../i18n/brand.ts";
+import * as brand from "../brand.ts";
 import type { Topic } from "../protocol.ts";
 import type { Value } from "../store.ts";
 import { arr as arrU, compareKeys, get as getU, toJson } from "../util.ts";
@@ -25,7 +27,8 @@ export function sources(view: Topic): Topic[] {
       return [of(view.account, view.list as string)];
     case "adminItem":
       if (view.list === "users") return [of(view.account, "users"), of(view.account, "workspaces"), of(view.account, "invite-codes")];
-      if (view.list === "feedback") return [of(view.account, "feedback")];
+      // (a report whole, its logs too, read as its page shows: the list carries none)
+      if (view.list === "feedback") return [of(view.account, "feedback"), of(view.account, `feedback/${encodeURIComponent(view.id as string)}`)];
       return [of(view.account, "workspaces"), of(view.account, "users")];
     case "adminOverview":
       return [of(view.account, "users"), of(view.account, "workspaces"), of(view.account, "invite-codes"), of(view.account, "feedback")];
@@ -67,9 +70,25 @@ function compareVersions(a: number[], b: number[]): number {
   return a.length - b.length;
 }
 
+/// A workspace's machines: its stations and those that only run tasks (rigs; none from a cloud from before them).
+const machinesOf = (w: J): J[] => [...items(w, "stations"), ...items(w, "rigs")];
+
+/// Each machine once, of every workspace: one in several workspaces is one machine.
+function machinesOnce(workspaces: J[]): J[] {
+  const seen = new Set<string>();
+  const out: J[] = [];
+  for (const m of workspaces.flatMap(machinesOf)) {
+    const id = strOf(m, "id");
+    if (id !== "" && seen.has(id)) continue;
+    if (id !== "") seen.add(id);
+    out.push(m);
+  }
+  return out;
+}
+
 function newestVersion(workspaces: J[]): string | null {
   let best: string | null = null;
-  for (const s of workspaces.flatMap((w) => items(w, "stations"))) {
+  for (const s of workspaces.flatMap(machinesOf)) {
     const v = get(s, "version");
     if (typeof v !== "string") continue;
     if (best === null || compareVersions(versionKey(v), versionKey(best)) >= 0) best = v;
@@ -86,7 +105,7 @@ function stationState(lastSeen: number | null, now: number): string {
 
 function latestStation(w: J): number | null {
   let out: number | null = null;
-  for (const s of items(w, "stations")) {
+  for (const s of machinesOf(w)) {
     const at = num(s, "last_seen");
     if (at !== null) out = out === null ? at : Math.max(out, at);
   }
@@ -125,7 +144,7 @@ const FEEDBACK_STATUSES = ["new", "triaged", "fixed", "wontfix"];
 const channelLabel = (channel: string) => (channel === "beta" ? t("core-views.admin.channel.beta") : t("core-views.admin.channel.stable"));
 
 function areaLabel(area: string): string {
-  const fixed: Record<string, string> = { station: "Station", web: "Web", android: "Android", slack: "Slack", cloud: "still.fail cloud" };
+  const fixed: Record<string, string> = { station: "Station", web: "Web", android: "Android", slack: "Slack", cloud: branded("still.fail cloud", brand.current()) };
   if (area in fixed) return fixed[area];
   return area === "desktop" ? t("core-views.admin.area.desktop") : t("core-views.admin.area.unsure");
 }
@@ -168,13 +187,13 @@ function workspaceKind(now: number, newest: string | null): Kind {
   return {
     filters: [
       ["all", t("core-views.admin.filter.all"), () => true],
-      ["bare", t("core-views.admin.no_station"), (w) => items(w, "stations").length === 0],
+      ["bare", t("core-views.admin.no_station"), (w) => machinesOf(w).length === 0],
       ["stale", t("core-views.admin.filter.stale"), (w) => {
-        if (items(w, "stations").length === 0) return false;
+        if (machinesOf(w).length === 0) return false;
         const at = latestStation(w);
         return at === null || now - at > 7 * DAY;
       }],
-      ["outdated", t("core-views.admin.filter.outdated"), (w) => newest !== null && items(w, "stations").some((s) => typeof get(s, "version") === "string" && compareVersions(versionKey(s.version), versionKey(newest)) < 0)],
+      ["outdated", t("core-views.admin.filter.outdated"), (w) => newest !== null && machinesOf(w).some((s) => typeof get(s, "version") === "string" && compareVersions(versionKey(s.version), versionKey(newest)) < 0)],
       ["invited", t("core-views.admin.filter.invited"), (w) => items(w, "invitations").length > 0],
       ["full", t("core-views.admin.filter.full"), (w) => typeof get(w, "seats") === "number" && w.seats >= 0 && items(w, "members").length >= w.seats],
     ],
@@ -190,20 +209,101 @@ function codeKind(now: number): Kind {
   };
 }
 
+/// Whether the last word on a report is its reporter's (their agent's, or a person's in the app): one to answer.
+function repliedTo(f: J): boolean {
+  const r = items(f, "replies");
+  return r.length > 0 && strOf(r[r.length - 1], "from") === "reporter";
+}
+
+/// The areas a report can be about, in the order the console's 范围 lists them (cloud/src/types.ts FeedbackArea).
+const AREAS = ["station", "desktop", "android", "web", "slack", "cloud", "unknown"];
+
 function feedbackKind(): Kind {
   const is = (status: string) => (f: J) => strOf(f, "status") === status || (status === "new" && (get(f, "status") === undefined || f.status === null));
   return {
     filters: [
       ["all", t("core-views.admin.filter.all"), () => true],
       ["new", feedbackStatus("new")[0], is("new")],
+      ["replied", t("core-views.admin.feedback.replied"), repliedTo],
       ["triaged", feedbackStatus("triaged")[0], is("triaged")],
       ["fixed", feedbackStatus("fixed")[0], is("fixed")],
       ["wontfix", feedbackStatus("wontfix")[0], is("wontfix")],
       ["beta", channelLabel("beta"), (f) => strOf(f, "channel") === "beta"],
       ["stable", channelLabel("stable"), (f) => strOf(f, "channel") !== "beta"],
     ],
-    sorts: [["created", t("core-views.admin.sort.submitted")]],
+    sorts: [["created", t("core-views.admin.sort.submitted")], ["updated", t("core-views.admin.sort.updated")]],
   };
+}
+
+const AUDIT_KINDS: [string, (action: string) => boolean][] = [
+  ["users", (a) => a.startsWith("user.") || a.startsWith("pending.")],
+  ["workspaces", (a) => a.startsWith("workspace.")],
+  ["codes", (a) => a.startsWith("code.")],
+  ["feedback", (a) => a.startsWith("feedback.")],
+  ["relays", (a) => a.startsWith("relay.")],
+];
+
+function auditKind(): Kind {
+  return {
+    filters: [["all", t("core-views.admin.filter.all"), () => true], ...AUDIT_KINDS.map(([id, keep]): [string, string, (v: J) => boolean] => [id, t(`core-views.admin.audit.kind.${id}`), (v) => keep(strOf(v, "action"))])],
+    sorts: [["created", t("core-views.admin.sort.time")]],
+  };
+}
+
+/// An operator's change in words (`开通测试版`), by its action (cloud/src/api.ts `audited`); one not known as it is.
+function auditAction(action: string, detail: string): string {
+  const on = detail === "on";
+  switch (action) {
+    case "user.beta":
+      return t(on ? "core-views.admin.audit.action.beta_on" : "core-views.admin.audit.action.beta_off");
+    case "user.may_create":
+      return t(on ? "core-views.admin.audit.action.may_create_on" : "core-views.admin.audit.action.may_create_off");
+    case "user.block":
+      return t(on ? "core-views.admin.audit.action.block_on" : "core-views.admin.audit.action.block_off");
+    case "pending.set":
+    case "pending.remove":
+    case "workspace.create":
+    case "workspace.limits":
+    case "workspace.owners":
+    case "workspace.added_remove":
+    case "workspace.enroll":
+    case "workspace.delete":
+    case "code.create":
+    case "code.revoke":
+    case "feedback.status":
+    case "feedback.reply":
+    case "relay.put":
+    case "relay.remove":
+    case "relay.token":
+    case "relay.token_revoke":
+      return t(`core-views.admin.audit.action.${action.replace(".", "_")}`);
+  }
+  return action;
+}
+
+/// What an operator's change said besides, in words: a report's status by its label, limits given back said so.
+function auditDetail(action: string, detail: string): string {
+  if (action === "feedback.status") return feedbackStatus(detail)[0];
+  if (action === "workspace.limits" && detail === "reset") return t("core-views.admin.audit.detail.reset");
+  if (action === "workspace.limits") return detail.replace(/^members=/, t("core-views.admin.audit.detail.members"));
+  if (["user.beta", "user.may_create", "user.block"].includes(action)) return "";
+  // (what the cloud notes in its own words, `beta=on may_create=off`, `days=14 · beta`, said in the console's)
+  if (action === "pending.set") {
+    return detail.split(" ").filter(Boolean).map((part) => {
+      const [k, v] = part.split("=");
+      const on = v === "on";
+      if (k === "beta") return on ? t("core-views.admin.audit.action.beta_on") : t("core-views.admin.audit.action.beta_off");
+      if (k === "may_create") return on ? t("core-views.admin.audit.action.may_create_on") : t("core-views.admin.audit.action.may_create_off");
+      return part;
+    }).join(" · ");
+  }
+  if (action === "code.create") {
+    return detail.split(" · ").map((part) => {
+      const days = /^days=([0-9]+)$/.exec(part)?.[1];
+      return days !== undefined ? t("core-views.admin.audit.detail.days", { n: Number(days) }) : part === "beta" ? channelLabel("beta") : part;
+    }).join(" · ");
+  }
+  return detail;
 }
 
 function haystack(list: string, v: J): string {
@@ -222,7 +322,11 @@ function haystack(list: string, v: J): string {
     const account = a !== null ? `${strOf(a, "name")} ${strOf(a, "email")}` : "";
     const n = get(v, "number");
     const number = typeof n === "number" && Number.isInteger(n) && n >= 0 ? `fb-${n}` : "";
-    text = `${number} ${strOf(v, "title")} ${strOf(v, "body")} ${strOf(v, "reporter")} ${name("station")} ${name("workspace")} ${account}`;
+    const area = strOf(v, "area");
+    text = `${number} ${strOf(v, "title")} ${strOf(v, "body")} ${strOf(v, "reporter")} ${name("station")} ${name("workspace")} ${account} ${area} ${areaLabel(area)} ${items(v, "replies").map((r) => strOf(r, "text")).join(" ")}`;
+  } else if (list === "audit") {
+    const action = strOf(v, "action");
+    text = `${action} ${auditAction(action, strOf(v, "detail"))} ${strOf(v, "actor")} ${strOf(v, "target")} ${strOf(v, "detail")}`;
   } else {
     const u = get(v, "used_by");
     const user = u !== undefined ? `${strOf(u, "name")} ${strOf(u, "email")}` : "";
@@ -230,7 +334,7 @@ function haystack(list: string, v: J): string {
     const workspace = w !== undefined ? strOf(w, "name") : "";
     text = `${strOf(v, "code")} ${strOf(v, "note")} ${user} ${workspace}`;
   }
-  for (const [key, fields] of [["workspaces", ["name"]], ["members", ["name", "email"]], ["stations", ["name", "id"]]] as [string, string[]][]) {
+  for (const [key, fields] of [["workspaces", ["name"]], ["members", ["name", "email"]], ["stations", ["name", "id"]], ["rigs", ["name", "id", "owner_name", "owner_email"]]] as [string, string[]][]) {
     for (const item of items(v, key)) for (const field of fields) text += ` ${strOf(item, field)}`;
   }
   return text.toLowerCase();
@@ -241,6 +345,7 @@ function order(list: string, sort: string, a: J, b: J): number {
   const name = (v: J) => (strOf(v, "name") || strOf(v, "email")).toLowerCase();
   let o: number;
   if (sort === "created") o = desc(num(a, "created_at"), num(b, "created_at"));
+  else if (sort === "updated") o = desc(num(a, "updated_at"), num(b, "updated_at"));
   else if (list === "users" && sort === "workspaces") o = items(b, "workspaces").length - items(a, "workspaces").length;
   else if (list === "workspaces" && sort === "members") o = items(b, "members").length - items(a, "members").length;
   else if (list === "workspaces" && sort === "active") o = desc(latestStation(a), latestStation(b));
@@ -291,7 +396,7 @@ function row(list: string, v: J, now: number): J {
     };
   }
   if (list === "workspaces") {
-    const stations = items(v, "stations");
+    const stations = machinesOf(v);
     const c = get(v, "created_by");
     const creator = isObj(c) ? strOf(c, "name") || strOf(c, "email") : t("core-views.admin.someone_gone");
     const marks: J[] = [];
@@ -311,6 +416,9 @@ function row(list: string, v: J, now: number): J {
   if (list === "feedback") {
     const [label, tone] = feedbackStatus(strOf(v, "status"));
     const marks = [mark(label, tone)];
+    const replies = items(v, "replies");
+    // Only what is off is marked: one the reporter answered last; how many replies it has is said on its second line.
+    if (repliedTo(v)) marks.push(mark(t("core-views.admin.feedback.replied"), "amber"));
     if (strOf(v, "channel") === "beta") marks.push(mark(channelLabel("beta"), "accent"));
     const line = [areaLabel(strOf(v, "area"))];
     const w = named(v, "workspace");
@@ -322,7 +430,22 @@ function row(list: string, v: J, now: number): J {
       const a = named(v, "account");
       if (a !== null) line.push(accountTitle(a));
     } else line.push(by);
-    return { id: strOf(v, "id"), number: feedbackRef(v), title: strOf(v, "title"), line: line.join(" · "), state: strOf(v, "status"), marks, created_at: orNull(get(v, "created_at")) };
+    if (replies.length > 0 && !repliedTo(v)) line.push(t("core-views.admin.feedback.reply_count", { n: replies.length }));
+    return { id: strOf(v, "id"), number: feedbackRef(v), title: strOf(v, "title"), line: line.join(" · "), state: strOf(v, "status"), marks, created_at: orNull(get(v, "created_at")), updated_at: orNull(get(v, "updated_at")) };
+  }
+  if (list === "audit") {
+    const action = strOf(v, "action");
+    const detail = auditDetail(action, strOf(v, "detail"));
+    const target = strOf(v, "target");
+    const kind = AUDIT_KINDS.find(([, keep]) => keep(action))?.[0] ?? "";
+    return {
+      id: strOf(v, "id"),
+      title: target === "" ? auditAction(action, strOf(v, "detail")) : `${auditAction(action, strOf(v, "detail"))} · ${target}`,
+      line: detail === "" ? strOf(v, "actor") : `${strOf(v, "actor")} · ${detail}`,
+      state: kind,
+      marks: [],
+      created_at: orNull(get(v, "created_at")),
+    };
   }
   const [state, tone] = codeState(v, now);
   const user = isObj(get(v, "used_by")) ? v.used_by : null;
@@ -341,6 +464,8 @@ function row(list: string, v: J, now: number): J {
     state,
     marks: get(v, "beta") === true ? [mark(codeLabel(state), tone), mark(channelLabel("beta"), "accent")] : [mark(codeLabel(state), tone)],
     url: orNull(get(v, "url")),
+    // (each product's sign-up link, where the cloud answers as two: cloud/src/api.ts inviteLinks)
+    ...(Array.isArray(get(v, "links")) ? { links: items(v, "links").filter((l) => strOf(l, "url") !== "").map((l) => ({ product: strOf(l, "product"), url: strOf(l, "url") })) } : {}),
     user: user !== null ? strOf(user, "sub") : null,
     created_at: orNull(get(v, "created_at")),
     expires_at: orNull(get(v, "expires_at")),
@@ -350,7 +475,7 @@ function row(list: string, v: J, now: number): J {
 }
 
 function rowsOf(list: string, value: J): J[] {
-  const key = list === "users" ? "users" : list === "workspaces" ? "workspaces" : list === "feedback" ? "feedback" : "codes";
+  const key = list === "users" ? "users" : list === "workspaces" ? "workspaces" : list === "feedback" ? "feedback" : list === "audit" ? "audit" : "codes";
   return items(value, key);
 }
 
@@ -381,10 +506,14 @@ export function list(name: string, value: J, query: string, filter: string | nul
   else if (name === "workspaces") kind = workspaceKind(now, newestVersion(all));
   else if (name === "invite-codes") kind = codeKind(now);
   else if (name === "feedback") kind = feedbackKind();
+  else if (name === "audit") kind = auditKind();
   else throw CoreError.invalid(t("core-views.admin.error.no_list"));
   const words = format.splitWhitespace(query.toLowerCase());
-  const matched = all.filter((v) => words.length === 0 || found(haystack(name, v), words));
-  const f = kind.filters.find((x) => x[0] === filter) ?? kind.filters[0];
+  const searched = all.filter((v) => words.length === 0 || found(haystack(name, v), words));
+  // A report's list is narrowed by its area too, said after its tab (`new@android`): the topic's own filter, no other.
+  const [tab, area] = name === "feedback" && filter !== null && filter.includes("@") ? [filter.slice(0, filter.indexOf("@")), filter.slice(filter.indexOf("@") + 1)] : [filter, null];
+  const matched = area ? searched.filter((v) => strOf(v, "area") === area) : searched;
+  const f = kind.filters.find((x) => x[0] === tab) ?? kind.filters[0];
   const s = (kind.sorts.find((x) => x[0] === sort) ?? kind.sorts[0])[0];
   const shown = matched.filter((v) => f[2](v)).sort((a, b) => order(name, s, a, b));
   const max = Math.max(limit ?? LIMIT, 1);
@@ -395,6 +524,10 @@ export function list(name: string, value: J, query: string, filter: string | nul
     filters: kind.filters.map(([id, label, keep]) => ({ id, label, count: matched.filter((v) => keep(v)).length })),
     sort: s,
     sorts: kind.sorts.map(([id, label]) => ({ id, label })),
+    ...(name === "feedback" ? {
+      area: area ?? "",
+      areas: [{ id: "", label: t("core-views.admin.area.all"), count: searched.length }, ...AREAS.map((id) => ({ id, label: areaLabel(id), count: searched.filter((v) => strOf(v, "area") === id).length }))],
+    } : {}),
     rows: shown.slice(0, max).map((v) => row(name, v, now)),
     more: shown.length > max,
   };
@@ -494,15 +627,31 @@ export function workspace(id: string, workspaces: J, users: J, now: number): J {
       last_seen: own !== undefined && own !== null ? own : (seen.get(sub) ?? null),
     };
   });
+  const versionOf = (s: J) => (typeof get(s, "version") === "string" ? (s.version as string) : null);
+  const outdatedOf = (version: string | null) => version !== null && newest !== null && compareVersions(versionKey(version), versionKey(newest)) < 0;
   const stations = items(w, "stations").map((s) => {
-    const version = typeof get(s, "version") === "string" ? (s.version as string) : null;
+    const version = versionOf(s);
     return {
       id: strOf(s, "id"),
       name: strOf(s, "name"),
       version,
-      outdated: version !== null && newest !== null && compareVersions(versionKey(version), versionKey(newest)) < 0,
+      outdated: outdatedOf(version),
       state: stationState(num(s, "last_seen"), now),
       last_seen: orNull(get(s, "last_seen")),
+    };
+  });
+  // Those that only run tasks, each its member's (a cloud from before them says none).
+  const rigs = items(w, "rigs").map((r) => {
+    const version = versionOf(r);
+    return {
+      id: strOf(r, "id"),
+      name: strOf(r, "name"),
+      owner: strOf(r, "owner"),
+      ownerTitle: strOf(r, "owner_name") || strOf(r, "owner_email"),
+      version,
+      outdated: outdatedOf(version),
+      state: stationState(num(r, "last_seen"), now),
+      last_seen: orNull(get(r, "last_seen")),
     };
   });
   const invitations = items(w, "invitations").map((i) => {
@@ -525,7 +674,7 @@ export function workspace(id: string, workspaces: J, users: J, now: number): J {
   const whole = (v: J): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0;
   const seats = get(w, "seats");
   const stationSeats = get(w, "station_seats");
-  const enterprise = strOf(w, "plan") === "enterprise";
+  const plan = strOf(w, "plan");
   return {
     id,
     title: strOf(w, "name"),
@@ -533,8 +682,11 @@ export function workspace(id: string, workspaces: J, users: J, now: number): J {
     created_at: orNull(get(w, "created_at")),
     // Those added count as the cloud counts them: each holds a seat.
     people: whole(seats) ? `${members.length + added.length} / ${seats}` : String(members.length),
-    stationCount: whole(stationSeats) ? `${stations.length} / ${stationSeats}` : String(stations.length),
-    plan: enterprise ? t("core-views.admin.enterprise") : null,
+    // (a rig holds a station's place: the cloud's cap counts both)
+    stationCount: whole(stationSeats) ? `${stations.length + rigs.length} / ${stationSeats}` : String(stations.length + rigs.length),
+    plan: planLabel(plan),
+    // Limits of its own (made for a company): they can be given back to its creator's plan.
+    customLimits: plan === "enterprise",
     // What the limits form starts from: an older cloud gives neither station_seats nor stations_unlimited.
     limits: whole(seats) && (whole(stationSeats) || get(w, "stations_unlimited") === true) ? { members: seats, stations: whole(stationSeats) ? stationSeats : null } : null,
     // The admin puts a station in only before the company's owners are in (directory.ts adminEnrollment).
@@ -542,14 +694,31 @@ export function workspace(id: string, workspaces: J, users: J, now: number): J {
     members,
     added,
     stations,
+    rigs,
     invitations,
   };
 }
 
+/// A workspace's plan in words: its own limits (enterprise), or its creator's; none from a cloud from before plans.
+function planLabel(plan: string): string | null {
+  switch (plan) {
+    case "enterprise":
+      return t("core-views.admin.enterprise");
+    case "admin":
+      return t("core-views.admin.plan.admin");
+    case "standard":
+      return t("core-views.admin.plan.standard");
+    case "free":
+      return t("core-views.admin.plan.free");
+  }
+  return null;
+}
+
 const contextText = (v: J) => (typeof v === "string" ? v : toJson(v));
 
-/// A bug report's page, and the whole of it as plain text to hand to an agent.
-export function feedback(id: string, value: J): J {
+/// A bug report's page, and the whole of it as plain text to hand to an agent. `logsLoading`: of the list's (which
+/// carries no logs), its own read with them still to come.
+export function feedback(id: string, value: J, logsLoading = false): J {
   const f = rowsOf("feedback", value).find((x) => strOf(x, "id") === id);
   if (f === undefined) throw new CoreError("http_404", t("core-views.admin.error.no_feedback"), 404);
   const status = strOf(f, "status") || "new";
@@ -586,6 +755,27 @@ export function feedback(id: string, value: J): J {
     for (const [k, v] of context) text += `${k}: ${v}\n`;
   }
   if (logs !== null) text += `\n## ${t("core-views.admin.feedback.logs")}\n\n\`\`\`\n${logs.trimEnd()}\n\`\`\`\n`;
+  const replies = items(f, "replies").map((r) => {
+    const team = strOf(r, "from") !== "reporter";
+    const by = strOf(r, "by");
+    const delivery = !team ? null : strOf(r, "delivery") === "delivered" ? "delivered" : "pending";
+    return {
+      id: strOf(r, "id"),
+      from: team ? "team" : "reporter",
+      authorLabel: team ? (by === "feedback-monitor" ? t("core-views.admin.feedback.monitor") : by || t("core-views.admin.feedback.team")) : t("core-views.admin.feedback.reporter_side"),
+      delivery,
+      deliveryLabel: delivery === null ? null : t(`core-views.admin.feedback.delivery.${delivery}`),
+      text: strOf(r, "text"),
+      created_at: orNull(get(r, "created_at")),
+      delivered_at: orNull(get(r, "delivered_at")),
+    };
+  });
+  if (replies.length > 0) {
+    text += `\n## ${t("core-views.admin.feedback.replies")}\n\n`;
+    for (const r of replies) text += `${r.authorLabel}: ${r.text}\n`;
+  }
+  // The team's reply goes to the chat it came from: a station's, which said its session (cloud/src/directory.ts replyToFeedback).
+  const canReply = station !== null && isObj(raw) && typeof raw.session === "string" && raw.session !== "";
   return {
     id,
     number,
@@ -603,7 +793,12 @@ export function feedback(id: string, value: J): J {
     account: account !== null ? { id: strOf(account, "sub"), title: accountTitle(account) } : null,
     context: context.map(([key, v]) => ({ key, value: v })),
     logs,
+    logsLoading,
+    replies,
+    canReply,
+    replyHint: canReply ? t("core-views.admin.feedback.reply_hint") : t(station === null ? "core-views.admin.feedback.no_reply_account" : "core-views.admin.feedback.no_reply_session"),
     created_at: orNull(get(f, "created_at")),
+    updated_at: orNull(get(f, "updated_at")),
     text,
   };
 }
@@ -619,7 +814,8 @@ export function overview(usersV: J, workspacesV: J, codesV: J, feedbackV: J, now
   };
   const count = (list: J[], keep: (v: J) => boolean) => list.filter(keep).length;
   const active = count(users, (u) => within(u, "last_seen", 7));
-  const stations = workspaces.flatMap((w) => items(w, "stations"));
+  // (a machine in several workspaces is one: it is counted once)
+  const stations = machinesOnce(workspaces);
   const newest = newestVersion(workspaces);
   const outdated = stations.filter((s) => typeof get(s, "version") === "string" && newest !== null && compareVersions(versionKey(s.version), versionKey(newest)) < 0).length;
   const stale = stations.filter((s) => {
@@ -637,7 +833,7 @@ export function overview(usersV: J, workspacesV: J, codesV: J, feedbackV: J, now
     weeks.push({ count: n, label: ago === 0 ? t("core-views.admin.overview.this_week") : format.dayLabel(start * 1000, now * 1000, offsetMin) });
   }
   const stuck = count(users, (u) => get(u, "admission") === undefined || u.admission === null);
-  const bare = count(workspaces, (w) => items(w, "stations").length === 0);
+  const bare = count(workspaces, (w) => machinesOf(w).length === 0);
   const expiring = count(codes, (c) => {
     const at = num(c, "expires_at");
     return codeState(c, now)[0] === "open" && at !== null && at - now < 3 * DAY;
@@ -649,6 +845,8 @@ export function overview(usersV: J, workspacesV: J, codesV: J, feedbackV: J, now
   const reports = feedbackV !== undefined && feedbackV !== null ? rowsOf("feedback", feedbackV) : [];
   const fresh = count(reports, (f) => get(f, "status") === "new" || get(f, "status") === undefined || f.status === null);
   want(fresh, t("core-views.admin.todo.fresh", { n: fresh }), t("core-views.admin.todo.fresh_hint"), "amber", "feedback", "new");
+  const replied = count(reports, repliedTo);
+  want(replied, t("core-views.admin.todo.replied", { n: replied }), t("core-views.admin.todo.replied_hint"), "amber", "feedback", "replied");
   want(stuck, t("core-views.admin.todo.stuck", { n: stuck }), t("core-views.admin.todo.stuck_hint"), "amber", "users", "stuck");
   want(bare, t("core-views.admin.todo.bare", { n: bare }), t("core-views.admin.todo.bare_hint"), "amber", "workspaces", "bare");
   want(stale, t("core-views.admin.todo.stale", { n: stale }), t("core-views.admin.todo.stale_hint"), "neutral", "workspaces", "stale");
@@ -707,9 +905,22 @@ export function admin(view: Topic, read: (account: string, list: string) => Valu
         return both(read(account, "users"), read(account, "workspaces"), (u, w) => user(id, u, w, codes, now));
       }
       if (view.list === "feedback") {
-        const v = read(account, "feedback");
-        if (v === undefined || "err" in v) return v;
-        return attempt(() => feedback(id, v.ok));
+        // Its own read (any report, by its id or FB-n, its logs too) where it came; the list's row till then, or
+        // where a cloud from before has no such read.
+        const itemV = read(account, `feedback/${encodeURIComponent(id)}`);
+        const whole: J = itemV !== undefined && "ok" in itemV ? get(itemV.ok, "item") : undefined;
+        if (isObj(whole)) {
+          const item = whole;
+          return attempt(() => feedback(strOf(item, "id"), { feedback: [item] }));
+        }
+        const listV = read(account, "feedback");
+        if (listV === undefined) return itemV !== undefined && "err" in itemV && itemV.err.status !== 404 ? itemV : undefined;
+        if ("err" in listV) return listV;
+        const ref = /^fb-([0-9]+)$/i.exec(id)?.[1];
+        const found = rowsOf("feedback", listV.ok).find((x) => strOf(x, "id") === id || (ref !== undefined && get(x, "number") === Number(ref)));
+        if (found === undefined && itemV === undefined) return undefined;
+        if (found === undefined && itemV !== undefined && "err" in itemV && itemV.err.status !== 404) return itemV;
+        return attempt(() => feedback(found !== undefined ? strOf(found, "id") : id, listV.ok, found !== undefined && get(found, "has_logs") === true && itemV === undefined));
       }
       const w = read(account, "workspaces");
       if (w === undefined || "err" in w) return w;

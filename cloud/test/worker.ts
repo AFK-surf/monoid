@@ -1,10 +1,28 @@
 // Only the test bundler imports this entry. Production exports no fixture routes.
-import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter } from "../src/index";
+import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter } from "../src/index";
+import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
-export { LoginLimiter, RelayLoad, ServiceStatus, TelemetryLimiter };
+export { LoginLimiter, ServiceStatus, TelemetryLimiter };
+
+export class RelayLoad extends ProductionRelayLoad {
+  /** A day of the console's seeded relays' counters and what the probes found of them (dev.ts SEED=console). */
+  seedLoad(own: string) {
+    const sql = this.ctx.storage.sql;
+    const now = nowSeconds();
+    for (const [url, scale, seed] of [[own, 180_000, 7], [SEED_RELAYS.hk, 420_000, 11]] as const) {
+      for (const s of relaySamples(now, scale, seed)) sql.exec("INSERT OR REPLACE INTO samples (relay, at, load) VALUES (?, ?, ?)", url, s.at, JSON.stringify(s.load));
+    }
+    // (a cloud from before keeps no probes)
+    try {
+      for (const [url, which] of [[own, "own"], [SEED_RELAYS.hk, "hk"]] as const) sql.exec("INSERT OR REPLACE INTO probes (relay, at, lines) VALUES (?, ?, ?)", url, now - 12 * 60, JSON.stringify(probeLines(which)));
+    } catch {
+      // (none)
+    }
+  }
+}
 
 // The moment the tests run at (harness.ts NOW_MS), unless they run on the machine's time (dev.ts). The Worker and its
 // objects share this isolate, and so the clock.
@@ -64,6 +82,10 @@ class Saying {
 }
 
 export class Directory extends ProductionDirectory {
+  /** The console's made-up cloud in use (console-seed.ts), its admin the account given. */
+  seedConsole(admin: { sub: string; email: string }) {
+    this.ctx.storage.transactionSync(() => seedConsole(this.ctx.storage.sql, nowSeconds(), admin));
+  }
   /** A member left while the Directory still kept their unused rig enrollment tokens. */
   leaveWithRigTokenFromBefore(workspace: string, sub: string) {
     this.ctx.storage.sql.exec("DELETE FROM members WHERE workspace = ? AND sub = ?", workspace, sub);

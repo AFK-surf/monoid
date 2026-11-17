@@ -5,6 +5,7 @@ import { newChat } from "./NewChat.css.ts";
 import { pageBar as onePageBar } from "./styles/sidebar.css.ts";
 import { bar as filesBar } from "./pages/Files.css.ts";
 import { neg, outset } from "@stillfail/ui/styles/align.ts";
+import { vars } from "@stillfail/ui/styles/tokens.css.ts";
 
 // A page's bar, and the files page's over its tabs, which is in the same place.
 const pageBar = `:is(${onePageBar}, ${filesBar})`;
@@ -22,6 +23,10 @@ export const illus = style({
   },
 });
 const wide = "(min-width: 701px)";
+/** Another product's name beside the mark, as its site's bar (website/css/10-nav.css): set 1 px high so its x-height
+ * centres on the mark. */
+export const ownWordmark = style({ display: "inline-flex", alignItems: "center", gap: "8px", color: vars.text });
+globalStyle(`${ownWordmark} > span`, { fontSize: vars.textHeading, fontWeight: "600", letterSpacing: "-0.035em", lineHeight: "1", transform: "translateY(-1px)" });
 /** Here rather than with its class: it comes after .illus, and wins over it. */
 globalStyle(inNarrow("*"), { maxWidth: "760px", marginLeft: "auto", marginRight: "auto" });
 /** Lists stand on spacing, not frames or rules: their rows' text lines up with the page's, a row's ground shows on hover. */

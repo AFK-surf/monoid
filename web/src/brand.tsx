@@ -1,6 +1,7 @@
 import { useDark } from "./theme.ts";
 import * as css from "./brand.css.ts";
-import { NAME } from "./channel.ts";
+import { NAME, PRODUCT } from "./channel.ts";
+import { STILLFAIL } from "../../client/i18n/brand.ts";
 // still.fail's brand, from web/public (design/brand/README.md): the mark (the face: the black one on light, the white
 // one on dark), the wordmark and the illustrations. Mark and wordmark have -dark twins, picked by the page's 外观 like the
 // rest of the app; the illustrations switch themselves.
@@ -9,6 +10,9 @@ const BASE = import.meta.env.BASE_URL;
 
 // On the test channel (app.youdid.wtf) the name is its own, drawn the same way.
 const OWN = NAME !== "still.fail";
+// Another product (monoid) has no drawn wordmark: the mark and its name set in type, as its site's bar has them
+// (website/index.html, website/css/10-nav.css .wordmark).
+const OTHER = PRODUCT !== STILLFAIL;
 // Each drawing's size, in still.fail's: youdid.wtf's y goes below the line, its drawing taller at the same scale.
 const WORDMARK = OWN ? { name: "wordmark-beta", width: 393.41, height: 79.39 } : { name: "wordmark", width: 255.16, height: 63.13 };
 const WORD_HEIGHT = 63.13;
@@ -26,6 +30,14 @@ export function Mark({ size, className }: { size: number; className?: string }) 
 
 /** The name, still.fail (youdid.wtf on the test channel), `size` high as still.fail is drawn. */
 export function Wordmark({ size = 22, className }: { size?: number; className?: string }) {
+  if (OTHER) {
+    return (
+      <span className={className ? `${css.ownWordmark} ${className}` : css.ownWordmark} aria-label={NAME}>
+        <Mark size={size} />
+        <span aria-hidden="true">{NAME}</span>
+      </span>
+    );
+  }
   const k = size / WORD_HEIGHT;
   return <Themed name={WORDMARK.name} width={Math.round(WORDMARK.width * k)} height={Math.round(WORDMARK.height * k)} alt={NAME} className={className} />;
 }
