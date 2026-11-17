@@ -66,6 +66,14 @@ the one in `LICENSE`, with the copyright line given here.
 - Licence: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
   Copyright The Android Open Source Project.
 
+## AndroidLiquidGlass
+
+The refraction, dispersion and highlight shaders in the Metal, OpenGL ES,
+Direct3D and WebGL renderers, and the press springs in `src/motion/spec.mbt`,
+are adapted from AndroidLiquidGlass, copyright 2025 Kyant.
+[Source revision](https://github.com/Kyant0/AndroidLiquidGlass/tree/eb4a0ea2e17542ea28c2e71088f7dd9acf77aad5) ·
+[Apache License 2.0](LICENSE-AndroidLiquidGlass)
+
 ## nanoui's hill-climb benchmark
 
 - What: the scenes of `src/bench` (`scenes.mbt`) and of the Flutter
