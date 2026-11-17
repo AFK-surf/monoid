@@ -279,7 +279,7 @@ fn Ctx::semantics_old(self : Ctx) -> (Array[SemNode], Array[Int]) {
     let k = said[i]
     if k >= 0 {
       let s = self.sems[k]
-      let label = if s.label == "" { self.words_in(i) } else { s.label }
+      let label = if s.label == "" && s.role.named_by_held() { self.words_in(i) } else { s.label }
       // (and what an old view a modal layer of the window's tree keeps from input built: not read out either,
       // view_host.mbt's island_allows)
       let hidden = parent_hid || s.hidden || !in_modal[i] || !island_allows(n.island)
@@ -310,7 +310,8 @@ fn Ctx::semantics_old(self : Ctx) -> (Array[SemNode], Array[Int]) {
       named[i] = label != "" && s.role != Group && s.role != Dialog && s.role != AlertDialog &&
         s.role != Menu && s.role != Toolbar && s.role != RadioGroup && s.role != TabList &&
         s.role != TabPanel && s.role != Region && s.role != Form && s.role != MenuBar &&
-        s.role != Listbox && s.role != ScrollArea && s.role != Navigation
+        s.role != Listbox && s.role != ScrollArea && s.role != Navigation && s.role != Table &&
+        s.role != Row
     } else if self.press_target(i) {
       // a box pressed and saying nothing: a button, named by its label or its own words (not a widget's in it)
       let label = if n.label != "" { n.label } else { self.own_words(i) }

@@ -41,7 +41,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
   over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
-  `@headless.split`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
+  `@headless.split`; a Markdown table's and 进程's table over `@headless.table`): it says no role, press or focus of its own. The four conditional or fading-while-asleep parts
   that may or may not be a button (`own_head_node`, `quote_card_node`, `station_choice_node`, `viewer_steps_node`) are
   counted (detlint's `button-by-hand`) so no new hand-rolled button is added. What only still.fail wants of a control
   stays here, in its look, and no more than that: the icon button's and bar tool's tip held up by a finger's long press

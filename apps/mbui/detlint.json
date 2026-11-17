@@ -379,7 +379,6 @@
     "ui-current": {
       "src/sf/presented_node.mbt": 1,
       "src/sf/presenters.mbt": 1,
-      "src/sf/table_node.mbt": 1,
       "src/sfapp/app.mbt": 5,
       "src/sfapp/bar.mbt": 4,
       "src/sfapp/bars.mbt": 2,
@@ -529,7 +528,6 @@
     "raw-hover-ground": {},
     "width-structure": {
       "src/sf/seg_node.mbt": 5,
-      "src/sf/table_node.mbt": 1,
       "src/sfpages/message_quotes_node.mbt": 2
     },
     "reused-untracked-key": {

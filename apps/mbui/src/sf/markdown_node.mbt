@@ -59,6 +59,7 @@ pub fn markdown_node(
   piece? : MdPiece? = None,
   piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
   serif? : () -> Bool = fn() { false },
@@ -114,6 +115,7 @@ pub fn markdown_node(
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       across_of,
+      tracks_of,
       text_face,
       code_face,
       serif,
@@ -239,6 +241,9 @@ priv struct MdNode {
   table_rows : (Int, Int)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
+  /// what the pieces of the table at a block keep of its columns together (markdown_node's `tracks_of`: measured once
+  /// for all of them, View::tracks' `kept`), none: each its own
+  tracks_of : (Int) -> @view.TracksKept?
   /// faces tried for prose and code, as they are now (markdown_node's `text_face`, `code_face`; Md's: None the chosen
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
@@ -688,6 +693,11 @@ fn md_block_node(
         across=match md.table_rows {
           Some(_) => @signals.untracked(fn() { (md.across_of)(md.block_at) })
           None => @view.Scroll::across()
+        },
+        // (a table in one block measured on its own; one in pieces once for all of them)
+        tracks_kept?=match md.table_rows {
+          Some(_) => @signals.untracked(fn() { (md.tracks_of)(md.block_at) })
+          None => None
         },
         cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
       )

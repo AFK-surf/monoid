@@ -32,15 +32,37 @@ pub(all) struct Tracks {
 }
 
 ///|
+/// What one table cut in pieces (a few of its rows a block of a page's list, each piece's View::tracks over all of its
+/// rows) keeps of its columns, given each piece's View::tracks (`kept`): the cells as last measured, at the size of
+/// words and the shaping they were measured at, and what they came to; the room as last shared out and the widths that
+/// gave. A piece asking what another asked last is given what that came to, nothing measured or shared out again:
+/// each cell measured once for all the pieces, not once a piece. Kept by value, never by what asked it (a piece may be
+/// let go of, or its block taken for another key's): what is asked anew of other cells, another room or another size
+/// of words is worked out anew.
+pub struct TracksKept {
+  priv mut measured : ((Array[Array[TrackCell]], Double, Int), Array[Array[TrackExtent]])?
+  priv mut shared : (Array[Array[TrackExtent]], Double, (Array[Double], Double))?
+}
+
+///|
+/// Nothing kept yet.
+pub fn TracksKept::new() -> TracksKept {
+  { measured: None, shared: None }
+}
+
+///|
 /// The widths of a table's columns and all of them together, as `share` gives them of each cell's extent (`cells`, as
 /// they change: a row each, the head's first, a cell each; measured at the size of words `self` is at, again as that
 /// changes) and the room (`room`, as it changes). Each cell is measured once as the cells or the size of words change
 /// (each counted as one measure, Tree's work: its words shaped once for both), never as the room does; `share` works again as either changes.
+/// `kept`: what the pieces of one table cut in pieces keep of it together (TracksKept), each piece's `share` the same
+/// rule as the others'.
 pub fn View::tracks(
   self : View,
   cells : () -> Array[Array[TrackCell]],
   room : () -> Double,
   share : (Array[Array[TrackExtent]], Double) -> (Array[Double], Double),
+  kept? : TracksKept,
 ) -> Tracks {
   let tree = self.tree
   let measured = fn(rows : Array[Array[TrackCell]], scale : Double) {
@@ -64,9 +86,30 @@ pub fn View::tracks(
   // what they read told again the same, or this read anew after what read it let go of it as it was parked, measures
   // nothing again)
   let extents = @signals.memo(fn() { (cells(), self.words_scale(), self.tree.words_redone.get()) }, fn(k) {
-    measured(k.0, k.1)
+    match kept {
+      // (the same cells another piece had measured, at the same size and shaping: what they came to)
+      Some({ measured: Some((was, e)), .. }) if was == k => e
+      Some(kp) => {
+        let e = measured(k.0, k.1)
+        kp.measured = Some((k, e))
+        e
+      }
+      None => measured(k.0, k.1)
+    }
   })
-  let widths = @signals.computed(fn(_) { share(extents.get(), room()) })
+  let widths = @signals.computed(fn(_) {
+    let (e, r) = (extents.get(), room())
+    match kept {
+      // (what another piece shared out of the same measures in the same room)
+      Some({ shared: Some((was, at, w)), .. }) if at == r && was == e => w
+      Some(kp) => {
+        let w = share(e, r)
+        kp.shared = Some((e, r, w))
+        w
+      }
+      None => share(e, r)
+    }
+  })
   {
     widths: fn() { widths.get() },
     of: fn(rows) { @signals.untracked(fn() { share(measured(rows, self.words_scale()), room()) }) },

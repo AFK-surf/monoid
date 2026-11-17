@@ -207,6 +207,8 @@ final class A11y extends AccessibilityNodeProvider {
                 return "android.widget.ScrollView";
             case "TabList":
                 return "android.widget.TabWidget";
+            case "Table":
+                return "android.widget.GridView";
             case "Text":
             case "Heading":
             case "Link":
@@ -258,7 +260,7 @@ final class A11y extends AccessibilityNodeProvider {
         } else if (!n.label.isEmpty()) {
             info.setContentDescription(n.label);
         }
-        if (n.role.equals("Heading") && Build.VERSION.SDK_INT >= 28) info.setHeading(true);
+        if ((n.role.equals("Heading") || n.role.equals("ColumnHeader")) && Build.VERSION.SDK_INT >= 28) info.setHeading(true);
         if (!n.value.isEmpty() && !n.role.equals("TextField") && Build.VERSION.SDK_INT >= 30) info.setStateDescription(n.value);
         if (!n.description.isEmpty() && Build.VERSION.SDK_INT >= 30) info.setTooltipText(n.description);
         info.setCheckable(has(n.flags, 'c'));

@@ -209,7 +209,8 @@ pub fn table_node(
 /// cell of only the message's images drawn as those (`cell_images`: md_cell_images, Md::cell_images'). `rows`: only
 /// those of its rows (from, up to, not; its head's row 0), a piece of it a block of a page's list, its columns' widths
 /// those of all of it, scrolled across with the others (`across`: what they scroll beside, Scroll::beside), its copy key
-/// with its head's row and its bar under its last row.
+/// with its head's row and its bar under its last row (as it is now: its last as its table grows past it no longer),
+/// its columns measured and shared out once for all its pieces (`tracks_kept`: what they keep together, View::tracks).
 #callsite(autofill(loc))
 fn md_table_body_node(
   outer : @view.View,
@@ -222,6 +223,7 @@ fn md_table_body_node(
   cell_images? : (Array[MdInline]) -> Array[(Double, (@view.View, () -> Double) -> Unit)]?,
   rows? : (Int, Int)? = None,
   across? : @view.Scroll = @view.Scroll::across(),
+  tracks_kept? : @view.TracksKept,
   loc~ : SourceLoc,
 ) -> Unit {
   // (said once, bound as such: no binding run for what never changes (table_node's); a chat's message's by its list's
@@ -242,9 +244,10 @@ fn md_table_body_node(
       Some((r, _)) => r == 0
       None => true
     }
+    // (its bar under its last row: where it is in pieces, the one its table ends in now, followed as it grows)
     let has_foot = match rows {
-      Some((_, upto)) => @signals.untracked(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
-      None => true
+      Some((_, upto)) => Some(fn() { table().map_or(true, fn(t) { upto >= t.rows.length() + 1 }) })
+      None => None
     }
     let across = match rows {
       Some(_) => across.beside()
@@ -284,6 +287,7 @@ fn md_table_body_node(
             node_sp(outer, x)
           })
         },
+        kept?=tracks_kept,
       )
       let widths = tracks.widths
       let widths_for = fn(t : MdTable) { (tracks.of)(cells_of(t)) }
@@ -291,8 +295,8 @@ fn md_table_body_node(
       let head_h : Ref[@view.View?] = Ref(None)
       // (its own key, whatever its words: two tables of the same each their own menu, copy and picture)
       let scrolled = fn(outer : @view.View) {
-        table_nodes_made.val += 1
-        let key = "sf-table/\{table_nodes_made.val}"
+        let id = outer.id()
+        let key = "sf-table/\{id.at}.\{id.gen}"
         let in_rows = fn(held : @view.View) {
           held.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })) |> ignore
           // (it, then its copy key past it, from their tops: table_beside's; the key hung out in `bleed` where that has
@@ -317,13 +321,16 @@ fn md_table_body_node(
           })
           |> ignore
         }
-        // (its bar under its last row alone, where it is in pieces)
-        if has_foot {
-          outer.scrolls(across, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), bar_in=@signals.untracked(bleed_now), in_rows)
-          |> ignore
-        } else {
-          outer.scrolls(across, slop=@ui.touch_slop(), in_rows) |> ignore
-        }
+        // (its bar under its last row alone, where it is in pieces: drawn, and its room kept, only there)
+        outer.scrolls(
+          across,
+          slop=@ui.touch_slop(),
+          bar=@ui.tree_scroll_bar(),
+          bar_in=@signals.untracked(bleed_now),
+          bar_here?=has_foot,
+          in_rows,
+        )
+        |> ignore
       }
       // (as wide as its columns, scrolled across where wider than its room: every table but a chat's shared picture's,
       // nothing to choose between)
@@ -331,8 +338,10 @@ fn md_table_body_node(
         scrolled(outer)
         return
       }
-      // (shown whole in the column where it fits not (`fit`, a chat's shared picture): its every part as much smaller
-      // as makes it as wide as the room, nothing of it to scroll to: Md::table's)
+      // (shown whole in the column (`fit`, a chat's shared picture): its every part as much smaller as makes it as wide
+      // as the room where it fits not, as it is where it does, nothing of it to scroll to either way: Md::table's. One
+      // node whatever the room, bound to it, never a structure switched by it; no copy key: a picture offers none
+      // (message_agent_node's `copy` none where it is `fit`))
       let scale = fn() {
         let total = widths().1
         let avail = room()
@@ -342,31 +351,24 @@ fn md_table_body_node(
           1.0
         }
       }
-      // (at once: whether it fits is the room's, the width the window or the column gives it, an arrangement by it and
-      // no coming or going of its own)
-      outer.pick(fn() { scale() < 1.0 }, at_once=true, fn(outer, fitted) {
-        if fitted {
-          outer.box(made_for=loc, fn(whole) {
-            whole.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })) |> ignore
-            table_frame_node(
-              whole,
-              table,
-              fn() {
-                let (ws, total) = widths()
-                let k = scale()
-                (ws.map(fn(w) { w * k }), total * k)
-              },
-              scale=Some(scale),
-              on_link~,
-              on_link_hold~,
-              cell_images?,
-              rows~,
-            )
-          })
-          |> ignore
-          return
-        }
-        scrolled(outer)
+      outer.box(made_for=loc, fn(whole) {
+        // (cut to its room where it fits, as what scrolls across is (Md::table's sideways), not where it is made smaller
+        // to fit it (its box as wide as the room): the same picture as either)
+        whole.padding(by_bleed(fn(b) { (b, 0.0, b, 0.0) })).clips(By(fn() { scale() >= 1.0 })) |> ignore
+        table_frame_node(
+          whole,
+          table,
+          fn() {
+            let (ws, total) = widths()
+            let k = scale()
+            (ws.map(fn(w) { w * k }), total * k)
+          },
+          scale=Some(scale),
+          on_link~,
+          on_link_hold~,
+          cell_images?,
+          rows~,
+        )
       })
       |> ignore
     })
@@ -423,7 +425,9 @@ fn table_frame_node(
       None => 1.0
     }
   }
-  beside.box(made_for=loc, fn(frame) {
+  // (read out as a table (@headless.table): its rows, its head's cells naming its columns, its cells, each the node
+  // it is drawn by and no node more)
+  @headless.table(beside, made_for=loc, fn(frame, tb) {
     frame.width(By(fn() { Some(widths().1) })) |> ignore
     // (all its rows, its head's 0: how many, the last ruled under by none)
     let all = fn() { table().map_or(0, fn(t) { t.rows.length() + 1 }) }
@@ -440,7 +444,7 @@ fn table_frame_node(
     frame.each(rows, fn(r) { r }, fn(line, r) {
       let r = r.untracked()
       let head = r == 0
-      line.box(fn(cells) {
+      tb.row(line, fn(cells, tr) {
         // (its head's row: where its copy key's middle is, as the frame measured it)
         if head {
           head_h.val = Some(cells)
@@ -449,86 +453,97 @@ fn table_frame_node(
         let cols = fn() { Array::makei(widths().0.length(), fn(k) { k }) }
         cells.each(cols, fn(k) { k }, fn(cell, k) {
           let k = k.untracked()
-          let words = fn() {
-            match table() {
-              Some(t) => (if head { t.head } else { t.rows.get(r - 1).unwrap_or([]) }).get(k).unwrap_or([])
-              None => []
+          // (its head's a column's name, the rest its cells: the node the row made it)
+          let said = fn(cell : @view.View, look : (@view.View) -> Unit) {
+            if head {
+              tr.header(cell, in_node=true, look)
+            } else {
+              tr.cell(cell, in_node=true, look)
             }
           }
-          // (its width and its sides, one binding for both)
-          cell
-          .sets_together(fn() {
-            let ws = widths().0
-            (ws.get(k), table_cell_pad(k, ws.length()), scale())
-          }, fn(s) {
-            let (w, (pl, pr), k) = s
-            cell.width(Is(w)).padding(Is((pl * k, table_cell_y * k, pr * k, table_cell_y * k))) |> ignore
-          })
-          .lies_along(Is(Middle))
-          |> ignore
-          // its words (as a message's, in pieces, a press on a link where it leads, made as it first has one:
-          // words_links_node)
-          let words_box = fn(cell : @view.View) {
-            // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
-            let runs_now = @signals.computed(fn(_) { table_cell_runs(words()) })
-            let runs = fn() { runs_now.get() }
-            let look = fn() { table_words_look(head, scale()) }
-            let w = cell.box(fn(w) {
-              // (its pieces first: saying them says the words' look and ink plain, what follows says them)
-              w.words_runs(By(runs)) |> ignore
-              // (its look said once where it is drawn at 1; how its pieces are set and in what ink, all from the theme:
-              // one binding for both)
-              if scale_by is None {
-                w.words_look(Is(look())) |> ignore
-              } else {
-                w.words_look(By(look)) |> ignore
+          said(cell, fn(cell) {
+            let words = fn() {
+              match table() {
+                Some(t) => (if head { t.head } else { t.rows.get(r - 1).unwrap_or([]) }).get(k).unwrap_or([])
+                None => []
               }
-              w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
-                w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
-              })
-              |> ignore
-            })
-            words_links_node(cell, w, runs, on_link, hold=on_link_hold)
-          }
-          // its images in a row where it is only the message's images (CellImageRow: 6 apart, 4 over and under, each
-          // cell_image_width wide), else its words, made again only as it comes to hold images or no longer does; where
-          // it is given no images (`cell_images` none: every table but one of a message that places its files), its
-          // words alone, nothing made for the choice
-          match cell_images {
-            None => words_box(cell)
-            Some(of_cell) => {
-              let images = fn() { of_cell(words()) }
-              // (made again only as it comes to hold images or no longer does; its images each a row of the row's
-              // own, by their place, made and let go as their number changes)
-              cell.pick(at_once=true, fn() { images().map_or(0, fn(ims) { ims.length() }) > 0 }, fn(cell, held) {
-                if held {
-                  cell.box(fn(row) {
-                    row.row(Is(true)).gap(By(fn() { 6.0 * scale() })).padding(By(fn() { (0.0, 4.0 * scale(), 0.0, 4.0 * scale()) })) |> ignore
-                    row.each(
-                      fn() { Array::makei(images().map_or(0, fn(ims) { ims.length() }), fn(i) { i }) },
-                      fn(i) { i },
-                      at_once=true,
-                      fn(im, i) {
-                        let i = i.untracked()
-                        let width = fn() {
-                          cell_image_width(images().bind(fn(ims) { ims.get(i) }).map_or(1.0, fn(x) { x.0 })) * scale()
-                        }
-                        im.width(By(fn() { Some(width()) })) |> ignore
-                        match @signals.untracked(fn() { images().bind(fn(ims) { ims.get(i) }) }) {
-                          Some((_, draw)) => draw(im, width)
-                          None => ()
-                        }
-                      },
-                    )
-                  })
-                  |> ignore
-                  return
-                }
-                words_box(cell)
-              })
-              |> ignore
             }
-          }
+            // (its width and its sides, one binding for both)
+            cell
+            .sets_together(fn() {
+              let ws = widths().0
+              (ws.get(k), table_cell_pad(k, ws.length()), scale())
+            }, fn(s) {
+              let (w, (pl, pr), k) = s
+              cell.width(Is(w)).padding(Is((pl * k, table_cell_y * k, pr * k, table_cell_y * k))) |> ignore
+            })
+            .lies_along(Is(Middle))
+            |> ignore
+            // its words (as a message's, in pieces, a press on a link where it leads, made as it first has one:
+            // words_links_node)
+            let words_box = fn(cell : @view.View) {
+              // (its pieces worked out once as its words change, what draws them and what presses their links reading that)
+              let runs_now = @signals.computed(fn(_) { table_cell_runs(words()) })
+              let runs = fn() { runs_now.get() }
+              let look = fn() { table_words_look(head, scale()) }
+              let w = cell.box(fn(w) {
+                // (its pieces first: saying them says the words' look and ink plain, what follows says them)
+                w.words_runs(By(runs)) |> ignore
+                // (its look said once where it is drawn at 1; how its pieces are set and in what ink, all from the theme:
+                // one binding for both)
+                if scale_by is None {
+                  w.words_look(Is(look())) |> ignore
+                } else {
+                  w.words_look(By(look)) |> ignore
+                }
+                w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                  w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
+                })
+                |> ignore
+              })
+              words_links_node(cell, w, runs, on_link, hold=on_link_hold)
+            }
+            // its images in a row where it is only the message's images (CellImageRow: 6 apart, 4 over and under, each
+            // cell_image_width wide), else its words, made again only as it comes to hold images or no longer does; where
+            // it is given no images (`cell_images` none: every table but one of a message that places its files), its
+            // words alone, nothing made for the choice
+            match cell_images {
+              None => words_box(cell)
+              Some(of_cell) => {
+                let images = fn() { of_cell(words()) }
+                // (made again only as it comes to hold images or no longer does; its images each a row of the row's
+                // own, by their place, made and let go as their number changes)
+                cell.pick(at_once=true, fn() { images().map_or(0, fn(ims) { ims.length() }) > 0 }, fn(cell, held) {
+                  if held {
+                    cell.box(fn(row) {
+                      row.row(Is(true)).gap(By(fn() { 6.0 * scale() })).padding(By(fn() { (0.0, 4.0 * scale(), 0.0, 4.0 * scale()) })) |> ignore
+                      row.each(
+                        fn() { Array::makei(images().map_or(0, fn(ims) { ims.length() }), fn(i) { i }) },
+                        fn(i) { i },
+                        at_once=true,
+                        fn(im, i) {
+                          let i = i.untracked()
+                          let width = fn() {
+                            cell_image_width(images().bind(fn(ims) { ims.get(i) }).map_or(1.0, fn(x) { x.0 })) * scale()
+                          }
+                          im.width(By(fn() { Some(width()) })) |> ignore
+                          match @signals.untracked(fn() { images().bind(fn(ims) { ims.get(i) }) }) {
+                            Some((_, draw)) => draw(im, width)
+                            None => ()
+                          }
+                        },
+                      )
+                    })
+                    |> ignore
+                    return
+                  }
+                  words_box(cell)
+                })
+                |> ignore
+              }
+            }
+          })
+          |> ignore
         })
       })
       |> ignore
@@ -560,19 +575,13 @@ fn cell_images_node_width(images : Array[(Double, (@view.View, () -> Double) -> 
 }
 
 ///|
-/// Tables made as nodes so far: each one's own key (table_node's).
-// kept across runs: it goes on counting
-let table_nodes_made : Ref[Int] = Ref(0)
-
-///|
 /// A table's copy key as nodes (table_key's), in `beside` past the table (it and its key, View::points): its
 /// own `key`, table_key_gap past it and before what follows, its middle on its head's row's (`head_h`, as laid out);
-/// pressed, its menu (copy it as Markdown, as CSV, as the core wrote them; as a picture: the table whole, its columns
-/// `widths` as they are then, its frame as drawn here (table_frame_node) on the page's ground, taken once:
-/// take_picture); once one is copied a check, copied_ms (said on its timeline). Faded in (nav_fade) as the table or
-/// its key is pointed at (`beside` saying it is pointed at alone, View::points; what is over it taking the pointer:
-/// not), its menu open or it saying it copied, always to a finger; its room kept either way, as tall as the key,
-/// nothing in it to press or read out while it has faded out.
+/// pressed, its menu (table_copy_button_node). Faded in (nav_fade) as the table or its key is pointed at (`beside`
+/// saying it is pointed at alone, View::points; what is over it taking the pointer: not), its menu open or it saying it
+/// copied, always to a finger; there while it shows and as it fades out (View::show's `leave`: the same key come back
+/// where it shows again before it is gone, its fade turned back where it had it); its room kept either way, as tall as
+/// the key, nothing in it to press or read out once it has faded out.
 #callsite(autofill(loc))
 fn table_key_node(
   beside : @view.View,
@@ -583,9 +592,11 @@ fn table_key_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let copied = @signals.signal(false)
+  // (what says it copied no more, a moment of the key's)
   let copied_off : Ref[() -> Unit] = Ref(fn() {  })
   let menu_open = @signals.signal(false)
   beside.box(made_for=loc, fn(k) {
+    k.owns(fn() { (copied_off.val)() }) |> ignore
     // (its room kept, as tall as the key, whether it shows or not)
     let top = fn() { dmax(0.0, (head_h() - table_key_size) / 2.0) }
     k
@@ -594,98 +605,111 @@ fn table_key_node(
     .padding(By(fn() { (table_key_gap, top(), table_key_gap, 0.0) }))
     |> ignore
     let shown = fn() { beside.pointed_in() || menu_open.get() || copied.get() || @ui.pointing() is Finger }
+    // (how far it shows: set off as it comes to show or not, turned back from where it has it)
     let seen = @motion.NodeWay::new(0.0)
-    // (there while it shows or fades: gone, as it fades out to nothing, at that moment)
-    let there = @signals.signal(false)
-    let gone_off : Ref[() -> Unit] = Ref(fn() {  })
-    k.reacts(shown, fn(on) {
-      (gone_off.val)()
-      gone_off.val = fn() {  }
-      seen.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms)
-      if on {
-        there.set(true)
-      } else {
-        gone_off.val = k.at_moment(k.logic_at() + dur_ms, fn() { there.set(false) })
-      }
-    })
-    k.owns(fn() {
-      (gone_off.val)()
-      (copied_off.val)()
-    })
-    |> ignore
+    k.reacts(shown, fn(on) { seen.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms) })
     k.alpha(By(fn() { seen.shown(k) })) |> ignore
-    k.show(fn() { there.get() }, fn(slot) {
-      let button : Ref[@view.View?] = Ref(None)
-      let said = fn() {
-        // (a check a moment: said again, from then)
-        (copied_off.val)()
-        copied.set(true)
-        copied_off.val = k.at_moment(k.logic_at() + copied_ms, fn() { copied.set(false) })
-      }
-      let press = fn() {
-        match (table(), button.val) {
-          (Some(tb), Some(b)) => {
-            menu_open.set(true)
-            let closed = fn() { menu_open.set(false) }
-            let words = fn(s : String) {
-              closed()
-              @ui.clipboard_set(s)
-              said()
-            }
-            let items : Array[MenuItem?] = []
-            if tb.md != "" {
-              items.push(Some(menu_item_of(t("web-main.prose.copyMarkdown"), fn() { words(tb.md) })))
-            }
-            if tb.csv != "" {
-              items.push(Some(menu_item_of(t("web-main.prose.copyCsv"), fn() { words(tb.csv) })))
-            }
-            let album = picture_to_album()
-            items.push(
-              Some(
-                menu_item_of(picture_out_way().0, fn() {
-                  closed()
-                  // (the table as it is as this is chosen, its rows and its columns' widths read together then, whole,
-                  // past what scrolls)
-                  // (the table now, or as the menu opened on it where it is not read now: its widths worked out for
-                  // that one, never another's)
-                  let (now, (ws, total)) = @signals.untracked(fn() {
-                    let now = table().unwrap_or(tb)
-                    (now, widths_for(now))
-                  })
-                  @ui.take_picture(
-                    key + "/picture",
-                    total + 2.0 * table_shot_in,
-                    fn(paper) {
-                      paper
-                      .padding(Is((table_shot_in, table_shot_in, table_shot_in, table_shot_in)))
-                      .ground(By(fn() { theme().p.bg }))
-                      |> ignore
-                      table_frame_node(paper, fn() { Some(now) }, fn() { (ws, total) })
-                    },
-                    fn(png) { if (picture_out_by.val)(@ui.current(), png, !album) && !album { said() } },
-                    scale=dmax(slot.pixel_scale(), table_shot_scale),
-                  )
-                }),
-              ),
-            )
-            let (x, y, w, h) = b.rect()
-            menu(items, from=At(x, y, w, h), along=End, gone=closed)
-          }
-          _ => ()
-        }
-      }
-      button.val = Some(
-        icon_button_node(
-          slot,
-          "copy",
-          fn() { if copied.get() { t("common.copied") } else { t("web-main.prose.copyTable") } },
-          press,
-          size=table_key_size,
-          icon_now=fn() { if copied.get() { "check" } else { "copy" } },
-        ),
-      )
+    // (its block of a list taken for another message's table: copied said of none of it, the moment that would have
+    // said so no more, its menu not open on it, and shown as it is for that one at once, no fade of the one before's)
+    k.on_reused(fn() {
+      (copied_off.val)()
+      copied_off.val = fn() {  }
+      copied.set(false)
+      menu_open.set(false)
+      seen.put(if @signals.untracked(shown) { 1.0 } else { 0.0 })
+    })
+    // (the key itself at once: what it is is there as it fades in, all of it, nothing of its place making its way in a
+    // room kept as tall as it)
+    k.show(shown, leave=dur_ms, at_once=true, fn(slot) {
+      table_copy_button_node(slot, k, key, table, widths_for, copied, copied_off, menu_open)
     })
   })
   |> ignore
 }
 
+///|
+/// A table's copy key's button (table_key_node's), in `slot`: pressed, its menu (copy it as Markdown, as CSV, as the
+/// core wrote them; as a picture: the table whole, its columns `widths_for` it as they are then, its frame as drawn
+/// here (table_frame_node) on the page's ground, taken once: take_picture), `menu_open` while it is; once one is
+/// copied a check, `copied` for copied_ms (said on the timeline of `keeps`, the key's room: there however long a
+/// picture takes to be handed out, the key faded out meanwhile or not; `copied_off` calls it off, the key's own).
+fn table_copy_button_node(
+  slot : @view.View,
+  keeps : @view.View,
+  key : String,
+  table : () -> MdTable?,
+  widths_for : (MdTable) -> (Array[Double], Double),
+  copied : @signals.Signal[Bool],
+  copied_off : Ref[() -> Unit],
+  menu_open : @signals.Signal[Bool],
+) -> Unit {
+  let button : Ref[@view.View?] = Ref(None)
+  let said = fn() {
+    // (a check a moment: said again, from then)
+    (copied_off.val)()
+    copied.set(true)
+    copied_off.val = keeps.at_moment(keeps.logic_at() + copied_ms, fn() { copied.set(false) })
+  }
+  let press = fn() {
+    match (table(), button.val) {
+      (Some(tb), Some(b)) => {
+        menu_open.set(true)
+        let closed = fn() { menu_open.set(false) }
+        let words = fn(s : String) {
+          closed()
+          @ui.clipboard_set(s)
+          said()
+        }
+        let items : Array[MenuItem?] = []
+        if tb.md != "" {
+          items.push(Some(menu_item_of(t("web-main.prose.copyMarkdown"), fn() { words(tb.md) })))
+        }
+        if tb.csv != "" {
+          items.push(Some(menu_item_of(t("web-main.prose.copyCsv"), fn() { words(tb.csv) })))
+        }
+        let album = picture_to_album()
+        items.push(
+          Some(
+            menu_item_of(picture_out_way().0, fn() {
+              closed()
+              // (the table as it is as this is chosen, its rows and its columns' widths read together then, whole,
+              // past what scrolls)
+              // (the table now, or as the menu opened on it where it is not read now: its widths worked out for
+              // that one, never another's)
+              let (now, (ws, total)) = @signals.untracked(fn() {
+                let now = table().unwrap_or(tb)
+                (now, widths_for(now))
+              })
+              @ui.take_picture(
+                key + "/picture",
+                total + 2.0 * table_shot_in,
+                fn(paper) {
+                  paper
+                  .padding(Is((table_shot_in, table_shot_in, table_shot_in, table_shot_in)))
+                  .ground(By(fn() { theme().p.bg }))
+                  |> ignore
+                  table_frame_node(paper, fn() { Some(now) }, fn() { (ws, total) })
+                },
+                fn(png) { if (picture_out_now_by.val)(png, !album) && !album { said() } },
+                scale=dmax(slot.pixel_scale(), table_shot_scale),
+              )
+            }),
+          ),
+        )
+        let (x, y, w, h) = b.rect()
+        menu(items, from=At(x, y, w, h), along=End, gone=closed)
+      }
+      _ => ()
+    }
+  }
+  button.val = Some(
+    icon_button_node(
+      slot,
+      "copy",
+      fn() { if copied.get() { t("common.copied") } else { t("web-main.prose.copyTable") } },
+      press,
+      size=table_key_size,
+      icon_now=fn() { if copied.get() { "check" } else { "copy" } },
+    ),
+  )
+}

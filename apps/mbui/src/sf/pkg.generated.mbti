@@ -1584,6 +1584,8 @@ pub let picture_of : @ref.Ref[(String, Int32) -> String]
 
 pub let picture_out_by : @ref.Ref[(@ui.Ctx, Bytes?, Bool) -> Bool]
 
+pub let picture_out_now_by : @ref.Ref[(Bytes?, Bool) -> Bool]
+
 pub fn picture_out_way() -> (String, String)
 
 pub fn picture_to_album() -> Bool

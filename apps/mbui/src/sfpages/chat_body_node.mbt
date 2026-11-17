@@ -683,15 +683,45 @@ priv struct ChatBodyKeeps {
   /// what holds each piece after the first of a long message, by its message's key, while it is made: whether the
   /// pointer is on one of them, the first's ⋯ shown as it is on the first (agent_said_node's `pieces_pointed`)
   pieces : Map[String, @signals.Signal[Array[@view.View]]]
-  /// what the pieces of each long table scroll across beside, by its message's key and its block (agent_said_node's
-  /// `across_of`): all of them as one
-  tables : Map[String, @view.Scroll]
+  /// what the pieces of each long table scroll across beside and what they keep of its columns together, by its
+  /// message's key and its block (agent_said_node's `across_of`, `tracks_of`): all of them as one
+  tables : Map[String, (@view.Scroll, @view.TracksKept)]
 }
 
 ///|
 /// How many long tables a chat's page keeps what their pieces scroll across beside (ChatBodyKeeps' `tables`): those
 /// asked of last, the rest let go (a table come back to then at its start).
 let chat_tables_most : Int = 64
+
+///|
+/// What the pieces of the long table at block `b` of the message of key `whole` scroll across beside and keep of its
+/// columns together (ChatBodyKeeps' `tables`), made as it is first asked: the last asked of them last, those asked
+/// longest ago let go first past chat_tables_most.
+fn chat_table_kept(
+  tables : Map[String, (@view.Scroll, @view.TracksKept)],
+  whole : String,
+  b : Int,
+) -> (@view.Scroll, @view.TracksKept) {
+  let tk = whole + "#" + b.to_string()
+  match tables.get(tk) {
+    Some(kept) => {
+      tables.remove(tk)
+      tables[tk] = kept
+      kept
+    }
+    None => {
+      let kept = (@view.Scroll::across(), @view.TracksKept::new())
+      if tables.length() >= chat_tables_most {
+        match tables.keys().head() {
+          Some(first) => tables.remove(first)
+          None => ()
+        }
+      }
+      tables[tk] = kept
+      kept
+    }
+  }
+}
 
 ///|
 /// A chat's messages (chat_list's rows, at rest) in `v`, taking the room it is given: the chat `here` is (its view as
@@ -1454,26 +1484,10 @@ fn chat_body_row(
         more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
           // (by the message it is of now, followed: a block taken for another's row scrolls that one's table across)
           // (a long table's alone, cut a few rows a piece: one in a block scrolls across on its own, the list's)
-          let tk = whole_key() + "#" + b.to_string()
-          match keeps.tables.get(tk) {
-            Some(s) => {
-              // (the last asked of them last: those asked longest ago let go first)
-              keeps.tables.remove(tk)
-              keeps.tables[tk] = s
-              s
-            }
-            None => {
-              let s = @view.Scroll::across()
-              if keeps.tables.length() >= chat_tables_most {
-                match keeps.tables.keys().head() {
-                  Some(first) => keeps.tables.remove(first)
-                  None => ()
-                }
-              }
-              keeps.tables[tk] = s
-              s
-            }
-          }
+          chat_table_kept(keeps.tables, whole_key(), b).0
+        }, tracks_of=fn(b) {
+          // (its columns measured once for all its pieces, by the message it is of now as its scroll is)
+          Some(chat_table_kept(keeps.tables, whole_key(), b).1)
         }, pieces_pointed=fn() {
           chat_pieces_of(keeps.pieces, whole_key()).get().iter().any(@sf.hovered_in_node)
         }, piece_made=fn(at) {

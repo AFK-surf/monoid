@@ -427,3 +427,50 @@ test "Markdown as nodes: a table of one block asks for nothing to scroll across 
   let scrolled = x_of()
   assert_true(asked.val > 0 && scrolled < piece_rest - 1.0, msg="asked \{asked.val}, scrolled \{scrolled} at rest \{piece_rest} (one block's \{at_rest})")
 }
+
+///|
+/// A table of ten rows under its head as markdown_node draws it in a window 220 wide: whole in one block, or cut in the
+/// pieces a page's list makes a block each (md_table_piece_rows a piece), the pieces scrolling across beside each other
+/// and keeping its columns together (`tracks_of`) or each its own. How many times its room was shared out among its
+/// columns, and how many words the window's tree measured, from the table's first frame.
+fn mn_ten_rows(pieces : Bool, kept : Bool) -> (Int, Int) {
+  let rows = Array::makei(10, fn(i) { ["第 \{i} 行", "$\{i * 3}", "$\{i * 7}", "第 \{i} 行的说明，较长的一句"] })
+  let (text, tree) = tw_table(["模型", "输入", "输出", "备注"], rows)
+  let across = @view.Scroll::across()
+  let tracks = @view.TracksKept::new()
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=220.0, h=900.0, platform=2)
+  let before = table_widths_worked.val
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    let all = md_table_piece_rows
+    let cuts = if pieces { [(0, all), (all, 2 * all), (2 * all, 11)] } else { [] }
+    if cuts.is_empty() {
+      markdown_node(root, fn() { text }, tree=fn() { Some(tree) }) |> ignore
+    }
+    for i, cut in cuts {
+      markdown_node(
+        root,
+        fn() { text },
+        tree=fn() { Some(tree) },
+        piece=Some({ from: 0, upto: 1, rows: Some(cut), last: i == cuts.length() - 1 }),
+        across_of=fn(_) { across },
+        tracks_of=fn(_) { if kept { Some(tracks) } else { None } },
+      )
+      |> ignore
+    }
+  })
+  tt.draw()
+  (table_widths_worked.val - before, @ui.view_tree().unwrap().work().measured)
+}
+
+///|
+test "Markdown as nodes: a long table cut in three pieces keeping its columns together measures its cells and shares out its room once, as the table whole in one block does, not once a piece" {
+  let (whole_shared, whole_measured) = mn_ten_rows(false, false)
+  let (kept_shared, kept_measured) = mn_ten_rows(true, true)
+  let (own_shared, own_measured) = mn_ten_rows(true, false)
+  // (each its own: every piece measures every cell of the table again, 4 columns of 11 rows twice more)
+  assert_eq(
+    (whole_shared, kept_shared, kept_measured, own_shared, own_measured - kept_measured),
+    (1, 1, whole_measured, 3, 2 * 4 * 11),
+  )
+}

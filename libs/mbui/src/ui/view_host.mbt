@@ -5703,7 +5703,7 @@ fn Ctx::semantics_spliced(self : Ctx, tree : @view.Tree) -> Array[SemNode] {
       Some(s) => {
         // (none of its own: what it and what it holds say, an old view it hosts by what its widgets say, as an old
         // box with none is called: Ctx::words_in)
-        let label = if s.label != "" {
+        let label = if s.label != "" || !s.role.named_by_held() {
           s.label
         } else {
           tree.words_within(
