@@ -59,7 +59,7 @@ export class ViewCalls {
   readonly #views: Views;
   readonly #deliveries = new Map<string, Deferred.Deferred<unknown, CoreError>>();
   readonly #tails = new Map<string, Deferred.Deferred<unknown, CoreError>>();
-  readonly #archives = new Map<string, Deferred.Deferred<unknown, CoreError>>();
+  readonly #writes = new Map<string, Deferred.Deferred<unknown, CoreError>>();
 
   constructor(inner: Inner, views: Views) {
     this.#inner = inner;
@@ -72,15 +72,19 @@ export class ViewCalls {
 
   /// A chat's archive writes reach its station in the order asked, including a restore from sending a message.
   #archiveInOrder(station: string, thread: number | null, session: string, work: Effect.Effect<unknown, CoreError>): Effect.Effect<unknown, CoreError> {
+    return this.#writeInOrder(JSON.stringify([station, thread === null ? ["session", session] : ["thread", thread]]), work);
+  }
+
+  /// Writes to the same chat field reach its station in the order chosen; other chats and fields go independently.
+  #writeInOrder(key: string, work: Effect.Effect<unknown, CoreError>): Effect.Effect<unknown, CoreError> {
     return Effect.suspend(() => {
-      const key = JSON.stringify([station, thread === null ? ["session", session] : ["thread", thread]]);
-      const before = this.#archives.get(key);
+      const before = this.#writes.get(key);
       const done = Deferred.makeUnsafe<unknown, CoreError>();
-      this.#archives.set(key, done);
+      this.#writes.set(key, done);
       return Effect.andThen(before ? Effect.ignore(Deferred.await(before)) : Effect.void, work).pipe(
         Effect.onExit((exit) => Effect.sync(() => {
           Deferred.doneUnsafe(done, exit);
-          if (this.#archives.get(key) === done) this.#archives.delete(key);
+          if (this.#writes.get(key) === done) this.#writes.delete(key);
         })),
       );
     });
@@ -448,6 +452,7 @@ export class ViewCalls {
     };
     handlers.chatChange = (_inner, call, progress, at, ctx) => {
       const c = call as Of<"chatChange">;
+      const self = this;
       return Effect.gen(function* () {
         if (!("station" in c.op.target)) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.station")));
         const station = c.op.target.station;
@@ -458,7 +463,7 @@ export class ViewCalls {
         if (c.hidden !== null) row.hidden = c.hidden;
         if (c.muted !== null) row.muted = c.muted;
         const change = local.changing(station, c.thread, c.session, row, null);
-        const result = yield* Effect.result(handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx));
+        const result = yield* Effect.result(self.#writeInOrder(JSON.stringify([station, c.op.path]), handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx)));
         local.changed(change, result._tag === "Success", inner.data.rowsRev(station));
         return yield* settle(result);
       });
