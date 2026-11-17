@@ -14,7 +14,7 @@
 - Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
   hand, 10). A job that needs longer is made faster. Minutes are whole (the runner cut a step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
-  `@$((JOB_END - 35))` (more where more follows it: mbui-check's 45, its replay part's 65), JOB_END written by the
+  `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its replay part's 65), JOB_END written by the
   job's first step, less its 5 s of setting up. The units' stores of GitHub's images are keyed by the
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`

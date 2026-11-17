@@ -152,8 +152,12 @@ jobs:
             !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          key: mbui-moon-build-${{ env.PART }}-${{ github.sha }}
-          restore-keys: mbui-moon-build-${{ env.PART }}-
+          # (pkgs' build apart from the app build's: one key for both, main's pkgs part gone through and its app build
+          # cut, kept a _build without sfapp, and every app build after compiled it again, ~145 s, 134051515574)
+          key: mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-${{ github.sha }}
+          restore-keys: |
+            mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-
+            mbui-moon-build-${{ env.PART }}-
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
@@ -227,11 +231,13 @@ jobs:
           r=$GITHUB_REPOSITORY
           from=${FROM##*-}
           [ ${#from} = 40 ] || from=$BEFORE
-          shas=$(gh api "repos/$r/compare/$from...$GITHUB_SHA" --jq '.commits[].sha' | tail -12)
+          shas=$(gh api "repos/$r/compare/$from...$GITHUB_SHA" --jq '.commits[].sha' | tail -4)
           mkdir -p "$MBC_STORE" "$RUNNER_TEMP/branches"
           n0=$(find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d | wc -l)
-          got=0
+          got=0 t0=$(date +%s)
           for s in $shas; do
+            # (15 s at most of main's job: a help to its build, never its time; the last 12 took 69 s, 2026-11-17)
+            [ $(( $(date +%s) - t0 )) -lt 15 ] || break
             # (the pull request it merged, and that one's branch's last commit)
             head=$(gh api "repos/$r/commits/$s/pulls" --jq '[.[] | select(.merged_at != null)][0].head.sha // ""')
             [ -n "$head" ] || continue
@@ -283,7 +289,7 @@ jobs:
           code=0
           for r in ${FPS:-default}; do
             if [ $r = default ]; then unset MBUI_TEST_FPS; else export MBUI_TEST_FPS=$r; echo "=== at $r frames a second"; fi
-            TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash scripts/with-timeout.sh @$((JOB_END - ${{ env.PART == 'replay' && 65 || 45 }})) bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || { s=$?; [ $s != 124 ] || exit 124; code=1; }
+            TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash scripts/with-timeout.sh @$((JOB_END - ${{ env.PART == 'replay' && 65 || 25 }})) bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || { s=$?; [ $s != 124 ] || exit 124; code=1; }
           done
           exit $code
       # (sfapp's test program and its tests' list, for the app job's runs; stripped & zstd -6 so home upload takes ~3 s,
@@ -384,8 +390,11 @@ jobs:
             # or two before found few of its units in main's newest store, main having changed them since, and compiled
             # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
             # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
-            old=$( [ "$OWN" = m- ] && echo "-mmin +720" || echo "")
+            # (three hours of them: twelve kept 23,351 units, 926 MB, 36-45 s to restore, 2026-11-17)
+            old=$( [ "$OWN" = m- ] && echo "-mmin +180" || echo "")
             [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
+            # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
+            [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
             c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
             echo "BUILD_KEY=$CACHE_PREFIX$OWN$IMG-$c" >> "$GITHUB_ENV"
           fi
@@ -411,7 +420,7 @@ jobs:
             !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          key: mbui-moon-build-${{ env.PART }}-${{ github.sha }}
+          key: mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-${{ github.sha }}
       # (what the run counted of how what moves goes, MBUI_TEST_MOTION=count: in the summary; and that and what it said of
       # the bars, MBUI_TEST_BARS too, whole as an artifact, for motion-bars)
       - name: How what moves goes
