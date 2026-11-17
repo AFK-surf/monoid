@@ -306,6 +306,7 @@ class Twins {
   /// Names the program's world answers itself (the program's own machinery), not compared.
   own: (name: string, args: Json[]) => Promise<Json> | undefined = () => undefined;
   readonly p: Program;
+  readonly files: { writing: () => boolean; written: () => Promise<unknown> }[] = [];
   constructor(p: Program) {
     this.p = p;
     this.clock = new MbClock(p);
@@ -338,12 +339,17 @@ class Twins {
   async both(ms: number) {
     await this.time.adjust(ms);
     await this.clock.advance(ms);
-    await settleTs();
+    await this.rest();
   }
   /// Both sides at rest.
   async rest() {
-    await this.p.settle();
-    await settleTs();
+    for (;;) {
+      await this.p.settle();
+      const said = this.ts.said.length;
+      await Promise.all(this.files.map((f) => f.written()));
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+      if (said === this.ts.said.length && this.files.every((f) => !f.writing())) return;
+    }
   }
   /// Both sides at rest, and what each asked the same.
   /// What each side's own says differently (its bot's id, its key), said alike.
@@ -354,8 +360,7 @@ class Twins {
     return JSON.parse(text);
   }
   async same(what: string) {
-    await this.p.settle();
-    await settleTs();
+    await this.rest();
     assert.deepEqual(this.aliased(norm(this.mb.said, [this.mbDir]), "mb"), this.aliased(norm(this.ts.said, [this.tsDir]), "ts"), what);
     // (each check is of what was asked since the one before)
     this.mb.said = [];
@@ -365,16 +370,16 @@ class Twins {
   /// The same, in whatever order: what flows that go on side by side asked (a learning and a write of the config),
   /// each in its own order on its side.
   async sameUnordered(what: string) {
-    await this.p.settle();
-    await settleTs();
+    await this.rest();
     const sorted = (v: Json[]) => v.map((x) => JSON.stringify(x)).sort();
     assert.deepEqual(sorted(this.aliased(norm(this.mb.said, [this.mbDir]), "mb")), sorted(this.aliased(norm(this.ts.said, [this.tsDir]), "ts")), what);
     this.mb.said = [];
     this.ts.said = [];
   }
   async sameFiles(what: string, flushed: () => Promise<unknown> = async () => {}) {
-    await this.p.settle();
+    await this.rest();
     await flushed();
+    await this.rest();
     assert.deepEqual(this.aliased(norm(await tree(this.mbDir), []), "mb"), this.aliased(norm(await tree(this.tsDir), []), "ts"), what);
   }
   done() {
@@ -387,9 +392,31 @@ async function twins(p: Program): Promise<Twins> {
   await p.ok({ op: "clock", now: 0 });
   return new Twins(p);
 }
-const settleTs = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-};
+
+test("twins wait for a delayed TypeScript file write", async () => {
+  const w = new Twins({ settle: async () => {} } as unknown as Program);
+  try {
+    let pending = true;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const file = join(w.tsDir, "delayed.txt");
+    const written = (async () => {
+      await gate;
+      await writeFile(file, "written");
+      pending = false;
+    })();
+    w.files.push({ writing: () => pending, written: () => written });
+    let settled = false;
+    const resting = w.rest().then(() => { settled = true; });
+    for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r));
+    assert.equal(settled, false);
+    release();
+    await resting;
+    assert.equal(await readFile(file, "utf8"), "written");
+  } finally {
+    w.done();
+  }
+});
 
 /// A TypeScript function's answer as the program says it: `{ok}` or `{error, kind}`.
 async function settled(f: () => unknown): Promise<Json> {
@@ -632,6 +659,7 @@ test("the names book: what is known at once, the rest learned in the background 
         await writeFile(path(w.mbDir), kept);
       }
       const book = new NameBook(path(w.tsDir), { saveAfterMs: 300, learnAfterMs: 100, clock: w.time.clock });
+      w.files.push((book as Json).file);
       const h = await p.ok({ op: "names.open", path: path(w.mbDir), saveAfterMs: 300, learnAfterMs: 100 });
       await w.same(`opened on ${kept}`);
       book.onLearn(() => w.ts.push("names.learned", [h]));
@@ -665,8 +693,7 @@ test("the names book: what is known at once, the rest learned in the background 
       await w.both(10);
       await w.same("failed ones again after ten minutes");
       await person("u:T:late");
-      await settleTs();
-      await p.settle();
+      await w.rest();
       await book.close();
       await p.ok({ op: "names.close", h });
       await person("u:T:after");
@@ -1276,9 +1303,11 @@ test("another station's connects: kept on disk, their surfaces asking the statio
     const kept = { "cl@H": { station: "H", described: described() }, "fs@H": { station: "H", described: described({ kind: "feishu", team: null, link: null, has: [], cards: false, loginCards: true, platform: "lark", mention: ["@", ""] }) }, broken: { station: 5 }, "x@H": { station: "H", described: {} } };
     for (const d of [w.tsDir, w.mbDir]) await writeFile(join(d, "remote-connects.json"), JSON.stringify(kept));
     const book = new NameBook(join(w.tsDir, "slack-names.json"), { clock: w.time.clock });
+    w.files.push((book as Json).file);
     const bh = await p.ok({ op: "names.open", path: join(w.mbDir, "slack-names.json") });
     await p.ok({ op: "remote.names", kind: "slack", book: bh });
     const ts = new RemoteConnects(w.tsDir, () => "S", ask, (kind) => (kind === "slack" ? book : null));
+    w.files.push(ts);
     const h = await p.ok({ op: "remote.new", data: w.mbDir });
     const call = (name: string, f: () => unknown, args: Json[] = []) => same(p, `remote ${name} ${JSON.stringify(args).slice(0, 80)}`, f, { op: "remote.call", h, name, args });
     await call("ready", () => ts.ready());
@@ -1467,6 +1496,7 @@ async function wsTwins(p: Program, raw0: Json, answers: (name: string, args: Jso
     bus: { ask, on: (m: string, inbox: Json) => void handlers.set(m, inbox), heard: (f: (peer: string) => void) => void heard.push(f) } as Json,
     names: () => null,
   });
+  w.files.push({ writing: () => ref.ts!.writing(), written: () => ref.ts!.filesWritten() });
   const h = await p.ok({ op: "ws.new", data: w.mbDir });
   await ref.ts.remote.ready();
   await w.rest();
@@ -1755,6 +1785,7 @@ test("what a group connect heard of its anchor, kept on disk (im/2; im/1's read 
       const path = (d: string) => join(d, "group-threads.json");
       if (kept !== null) for (const d of [w.tsDir, w.mbDir]) await writeFile(path(d), kept);
       const ts = new GroupThreads(path(w.tsDir));
+      w.files.push(ts);
       const h = await p.ok({ op: "threads.open", path: path(w.mbDir) });
       await w.same(`opened on ${kept}`);
       const call = (name: string, args: Json[]) => same(p, `${name} ${JSON.stringify(args)}`, () => (ts as Json)[name](...args), { op: "threads.call", h, name, args });
@@ -1838,6 +1869,7 @@ test("a group connect (im/2): let in by its code, its spaces and topics taken on
     const keyT = randomBytes(32).toString("hex");
     const keyM = randomBytes(32).toString("hex");
     const threadsT = new GroupThreads(join(w.tsDir, "group-threads.json"));
+    w.files.push(threadsT);
     const th = await p.ok({ op: "threads.open", path: join(w.mbDir, "group-threads.json") });
     const o = { connect: "g", server: server.endpoint.id(), relays: ["https://relay.test"], botName: "Claude" };
     const h = await p.ok({ op: "gsurface.new", ...o, key: keyM, code: server.code(), threads: th });
@@ -2061,6 +2093,7 @@ test("a group connect (im/2): let in by its code, its spaces and topics taken on
     sayBoth(g, ada, "while it was down");
     const refusedAtRestart = server.refusals.filter((r) => r === "dseq").length;
     const threadsT2 = new GroupThreads(join(w.tsDir, "group-threads.json"));
+    w.files.push(threadsT2);
     const th2 = await p.ok({ op: "threads.open", path: join(w.mbDir, "group-threads.json") });
     const h2 = await p.ok({ op: "gsurface.new", ...o, key: keyM, code: null, threads: th2 });
     const ts2 = new GroupSurface({ ...o, key: keyT, code: null, threads: threadsT2, endpoints: mesh as Json, clock: w.time.clock });

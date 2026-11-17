@@ -113,6 +113,10 @@ export class PrivateFile {
   }
 
   /// Once what was asked is written (or failed).
+  writing(): boolean {
+    return this.#writing !== null;
+  }
+
   async written(): Promise<void> {
     await this.#writing?.catch(() => undefined);
   }

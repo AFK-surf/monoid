@@ -51,6 +51,21 @@ export class WorkspaceConnects {
   /// The files a chat of another station posts, until they are posted.
   private readonly uploads: string;
   readonly #uploadsCleared: Promise<void>;
+  readonly #files = new Set<Promise<unknown>>();
+
+  #file<T>(work: Promise<T>): Promise<T> {
+    this.#files.add(work);
+    void work.then(() => this.#files.delete(work), () => this.#files.delete(work));
+    return work;
+  }
+
+  writing(): boolean { return this.#files.size > 0 || this.remote.writing(); }
+
+  async filesWritten(): Promise<void> {
+    await this.#uploadsCleared;
+    await this.remote.written();
+    while (this.#files.size > 0) await Promise.allSettled([...this.#files]);
+  }
   /// One event at a time per thread: a conversation's first message is handed on before its next is looked at.
   private readonly gates = new Map<string, Promise<void>>();
   /// What a platform says of a workspace whose chats this station hands to another (hub `quiet`), acknowledged and kept
@@ -65,7 +80,7 @@ export class WorkspaceConnects {
     this.uploads = join(d.data, "run", "connect-uploads");
     this.heldFile = join(d.data, "replica", "held-events.jsonl");
     // What a process before left of the files remote chats posted, taken away off the thread; the first upload waits for it.
-    this.#uploadsCleared = rm(this.uploads, { recursive: true, force: true }).catch(() => {});
+    this.#uploadsCleared = this.#file(rm(this.uploads, { recursive: true, force: true })).catch(() => {});
     try {
       const kept = JSON.parse(readFileSync(join(d.data, "replica", "awaiting.json"), "utf8")) as Record<string, string[]>; // sync: read once, before the station serves
       for (const [id, keys] of Object.entries(kept)) if (Array.isArray(keys) && keys.length > 0) this.awaiting.set(id, new Set(keys));
@@ -265,13 +280,13 @@ export class WorkspaceConnects {
   }
   private async keepMoving(m: Moving): Promise<void> {
     this.moving.set(m.id, m);
-    await mkdir(this.movingDir(), { recursive: true });
-    await writeFile(`${this.movingFile(m.id)}.tmp`, JSON.stringify(m));
-    await rename(`${this.movingFile(m.id)}.tmp`, this.movingFile(m.id));
+    await this.#file(mkdir(this.movingDir(), { recursive: true }));
+    await this.#file(writeFile(`${this.movingFile(m.id)}.tmp`, JSON.stringify(m)));
+    await this.#file(rename(`${this.movingFile(m.id)}.tmp`, this.movingFile(m.id)));
   }
   private async doneMoving(id: string): Promise<void> {
     this.moving.delete(id);
-    await rm(this.movingFile(id), { force: true });
+    await this.#file(rm(this.movingFile(id), { force: true }));
   }
   #settling: Promise<void> = Promise.resolve();
 
@@ -350,8 +365,8 @@ export class WorkspaceConnects {
     return this.inAwaiting(async () => {
       if (!this.awaiting.has(id)) return void (await this.d.hub().receive(id, event));
       const file = this.awaitingFile(id);
-      await mkdir(dirname(file), { recursive: true });
-      await appendFile(file, `${JSON.stringify(event)}\n`);
+      await this.#file(mkdir(dirname(file), { recursive: true }));
+      await this.#file(appendFile(file, `${JSON.stringify(event)}\n`));
     });
   }
 
@@ -365,8 +380,8 @@ export class WorkspaceConnects {
         this.awaiting.delete(id);
         await this.saveAwaiting();
         const file = this.awaitingFile(id);
-        const lines = (await readFile(file, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
-        await rm(file, { force: true });
+        const lines = (await this.#file(readFile(file, "utf8")).catch(() => "")).split("\n").filter((l) => l !== "");
+        await this.#file(rm(file, { force: true }));
         for (const line of lines) {
           try {
             await this.d.hub().receive(id, JSON.parse(line) as ChatEvent);
@@ -381,9 +396,9 @@ export class WorkspaceConnects {
 
   private async saveAwaiting(): Promise<void> {
     const path = join(this.d.data, "replica", "awaiting.json");
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(`${path}.tmp`, JSON.stringify(Object.fromEntries([...this.awaiting].map(([k, v]) => [k, [...v]]))));
-    await rename(`${path}.tmp`, path);
+    await this.#file(mkdir(dirname(path), { recursive: true }));
+    await this.#file(writeFile(`${path}.tmp`, JSON.stringify(Object.fromEntries([...this.awaiting].map(([k, v]) => [k, [...v]])))));
+    await this.#file(rename(`${path}.tmp`, path));
   }
 
   /// The bots of this station's connects as last told to the workspace's other stations, by workspace.
@@ -525,7 +540,7 @@ export class WorkspaceConnects {
 
   /// What was kept of `ws`'s connects that `which` names sent to `to`, where they run now, in order; the rest stays kept.
   private async sendKept(ws: string, to: string, which: (id: string) => boolean): Promise<void> {
-    const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
+    const lines = (await this.#file(readFile(this.heldFile, "utf8")).catch(() => "")).split("\n").filter((l) => l !== "");
     if (lines.length === 0) return;
     const rest: string[] = [];
     for (let i = 0; i < lines.length; i++) {
@@ -554,7 +569,7 @@ export class WorkspaceConnects {
   async takeHeld(ws: string): Promise<void> {
     const mine: { id: string; event: ChatEvent }[] = [];
     await this.inHeld(async () => {
-      const lines = (await readFile(this.heldFile, "utf8").catch(() => "")).split("\n").filter((l) => l !== "");
+      const lines = (await this.#file(readFile(this.heldFile, "utf8")).catch(() => "")).split("\n").filter((l) => l !== "");
       if (lines.length === 0) return;
       const rest: string[] = [];
       for (const line of lines) {
@@ -586,14 +601,14 @@ export class WorkspaceConnects {
     return this.inHeld(async () => {
       const to = this.heldTo.get(ws);
       if (to !== undefined) return void (await this.d.bus.ask(to, { method: EVENT, workspace: ws, connect: knownOf(id, this.d.here()), kept: true, event }));
-      await mkdir(dirname(this.heldFile), { recursive: true });
-      await appendFile(this.heldFile, `${JSON.stringify({ id, ws, event })}\n`);
+      await this.#file(mkdir(dirname(this.heldFile), { recursive: true }));
+      await this.#file(appendFile(this.heldFile, `${JSON.stringify({ id, ws, event })}\n`));
     });
   }
 
   private async writeHeld(lines: string[]): Promise<void> {
-    await writeFile(`${this.heldFile}.tmp`, lines.map((l) => `${l}\n`).join(""));
-    await rename(`${this.heldFile}.tmp`, this.heldFile);
+    await this.#file(writeFile(`${this.heldFile}.tmp`, lines.map((l) => `${l}\n`).join("")));
+    await this.#file(rename(`${this.heldFile}.tmp`, this.heldFile));
   }
 
   /// A connect moved here: its config.json entry, and its threads' stations (none of those whose chats run here).
