@@ -109,10 +109,9 @@ jobs:
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh or shell-apple (iroh's crates built anew: 228 and 323 s with three jobs and no sccache, past a job's 5
-          # minutes); GitHub's macos-26 for a branch missing only the light parts (launcher 14 s, archive-rs 25, reader
-          # 72, helper 33), and for every run while vars.MINI1 is 'off'.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+          # mesh, shell-apple or reader. On macos-26 a cold reader took 223 s before packing; the job hit its deadline
+          # before upload (run 44160716571). The lighter parts and every run while vars.MINI1 is 'off' use macos-26.
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
@@ -198,7 +197,7 @@ jobs:
 
   # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac), built only when an Apple
   # native part is missing, where plan's natives_mac_runner says: Mini1's quick runner for main and for a branch's
-  # mesh or shell-apple, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
+  # mesh, shell-apple or reader, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
   # 2026-11-17).
   natives-mac:
     needs: plan
