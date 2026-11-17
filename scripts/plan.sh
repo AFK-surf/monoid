@@ -89,13 +89,13 @@ decide() {
   station_tests=false
   station_paths=$(sed -n "s/^ *station_paths='\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/check.sh")
   [ -n "$station_paths" ] || { echo "scripts/plan.sh: no station_paths in scripts/check.sh" >&2; exit 1; }
-  if has "$station_paths" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$)'; then station_tests=true; fi
+  if has "$station_paths" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$)'; then station_tests=true; fi
   # The core's tests (check-core: scripts/check.sh's core-tests, in slices on Linux runners): for a change to what
   # they read, as check.sh says it (its core_test_paths, read from there), to the check itself, or to CI's own files.
   core_tests=false
   core_test_paths=$(sed -n "s/^ *core_test_paths='\(.*\)'\$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/check.sh")
   [ -n "$core_test_paths" ] || { echo "scripts/plan.sh: no core_test_paths in scripts/check.sh" >&2; exit 1; }
-  if has "$core_test_paths" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$)'; then core_tests=true; fi
+  if has "$core_test_paths" || has '^scripts/check\.sh$' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$)'; then core_tests=true; fi
   # Exercise the GitHub-hosted web and Mac release paths, without secrets or publishing, when their CI changes.
   release_smoke=false
   if [ "${GITHUB_REF:-}" != refs/heads/main ] && { [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] || has '^(\.github/workflows/pipeline\.yml$|\.github/deploy\.sh$|\.github/actions/(setup|natives|mbui-moonbit)/|scripts/release\.sh$)'; }; then release_smoke=true; fi
@@ -104,7 +104,7 @@ decide() {
   # left from before by proc_listpids and KERN_PROCARGS2; `check` runs them on Linux): only when one of them or CI's
   # own files changed.
   check_mac=false
-  if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$)'; then check_mac=true; fi
+  if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$)'; then check_mac=true; fi
 }
 
 print() {

@@ -1143,6 +1143,7 @@ pub fn Tree::claimer_of(Self, Array[(NodeId, Int32)], Double, Double) -> NodeId?
 pub fn Tree::claimers_at(Self, Double, Double, from? : NodeId, there? : (NodeId) -> Bool) -> Array[(NodeId, Int32)]
 pub fn Tree::claims_scroll(Self, NodeId) -> Bool
 pub fn Tree::clear_of(Self, Double, Double, Double, Double) -> Unit
+pub fn Tree::clock_brought(Self) -> Double
 pub fn Tree::clock_read(Self) -> Bool
 pub fn Tree::composed(Self) -> Array[NodeId]
 pub fn Tree::cursor_of(Self, NodeId) -> Cursor

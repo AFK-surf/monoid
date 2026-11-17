@@ -332,7 +332,15 @@ pub fn chat_page_made(
                 // list's foot, its height going its own way, View::resizes)
                 let composed = @signals.untracked(fn() { composer_nodes.get() })
                 match foot_node {
-                  Some(fnode) if composed => n.box(fn(at) { fnode(at, retained, r) }) |> ignore
+                  // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
+                  // buttons the foot holds made before it under that picture, as over the list they stand on)
+                  Some(fnode) if composed =>
+                    n
+                    .box(fn(at) {
+                      at.flights_under() |> ignore
+                      fnode(at, retained, r)
+                    })
+                    |> ignore
                   _ => {
                     let island : Ref[@view.View?] = Ref(None)
                     island.val = app.nav.page_island(
@@ -354,6 +362,7 @@ pub fn chat_page_made(
                     // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
                     // from outside)
                     |> @ui.old_takes_own
+                    |> i => { i.flights_under() }
                     |> Some
                   }
                 }

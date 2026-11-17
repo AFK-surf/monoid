@@ -3153,6 +3153,7 @@ export function enrolled(inner: Inner, _sub: string, ws: string, made: unknown):
     const out: J = { ...made, lock: head.hash };
     if (typeof out.install === "string") out.install = `${out.install} ${head.hash}`;
     if (typeof out.installWindows === "string") out.installWindows = `${out.installWindows} ${head.hash}`;
+    if (typeof out.installDocker === "string") out.installDocker = `${out.installDocker} ${head.hash}`;
     if (typeof out.command === "string") out.command = `${out.command} --lock ${head.hash}`;
     return out;
   });

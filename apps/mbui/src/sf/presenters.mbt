@@ -1856,7 +1856,121 @@ fn done_with(p : Presented, f : () -> Unit) -> Unit {
     _ => ()
   }
   // (on a sheet, what `f` presents comes in its place, a menu's menu as a level of it: present)
+  chosen_in(p.serial, f)
+}
+
+///|
+/// The menu whose item's choice is being done now (chosen_in: its serial; 0 none): what that choice may hold open as it
+/// waits (choice_held).
+// kept across runs: said only while a choice is done, 0 again after it
+let choosing : Ref[Int] = Ref(0)
+
+///|
+/// What was chosen in the menu presented as `serial` done (`f`), closed for it already: while `f` runs, what it waits
+/// for before it opens what it opens may hold that menu open (choice_held).
+fn chosen_in(serial : Int, f : () -> Unit) -> Unit {
+  let was = choosing.val
+  choosing.val = serial
   f()
+  choosing.val = was
+}
+
+///|
+/// A menu held open as it was by what was chosen in it, while that waits for the core before it opens what it opens
+/// (choice_held): still held, and what lets it go.
+pub struct ChoiceHeld {
+  priv serial : Int
+  priv mut on : Bool
+}
+
+///|
+/// Said by what a menu's item does (its `select`, as it is chosen) where it waits for the core before it opens what it
+/// opens (sfbase's press_wait): the menu it was chosen in, closed for the choice, is open again and stays as it was
+/// meanwhile, the screen as it was (the coordinator of the migration's switches still: 其他成员的预设 closed its menu at
+/// the press and opened the next 800 ms later, two changes for one press), till that opens what it waited for in its
+/// place, a level of it as one opened at once would be (ChoiceHeld::close, chosen), or it gives up (unsaid). None
+/// where no menu's choice is being done, or that one is gone.
+pub fn choice_held() -> ChoiceHeld? {
+  guard choosing.val > 0 else { return None }
+  match presented_now.search_by(fn(q) { q.serial == choosing.val }) {
+    Some(i) if presented_now[i].shows is Menu(_, _, _) && presented_now[i].closed_now => {
+      let p = presented_now[i]
+      // (open again as it was: closed for the choice in this same handler, no frame drawn of its going; as a level's
+      // page put on reopens it, panel_page, menu_level)
+      p.open = true
+      p.closed_now = false
+      p.ended = false
+      p.chosen = false
+      presented_told()
+      Some({ serial: p.serial, on: true })
+    }
+    _ => None
+  }
+}
+
+///|
+/// What the menu was held for answered: as a change of its own at the answer's moment (the window's tree's), never
+/// inside the answer that told it, which would settle at once what comes in the menu's place (@view.answering: the
+/// menu's sheet a whole level taller in a frame), what the press opens (`go`) comes in its place, a level of it, the
+/// menu closed for it, where what it was pressed in stays as it was (`still_pressed`) and the menu is held still;
+/// else the menu closes unsaid and what it asked is let go of (`let_go`).
+pub fn ChoiceHeld::answer(
+  self : ChoiceHeld,
+  still_pressed : () -> Bool,
+  go : () -> Unit,
+  let_go : () -> Unit,
+) -> Unit {
+  let done = fn() {
+    if still_pressed() && self.still() {
+      self.close(chosen=true)
+      go()
+    } else {
+      self.close(chosen=false)
+      let_go()
+    }
+  }
+  match @ui.view_tree() {
+    Some(tree) => {
+      let root = tree.root()
+      root.at_moment(root.cause_at(), done) |> ignore
+    }
+    None => done()
+  }
+}
+
+///|
+/// Whether the menu is held still: open, nothing chosen in it or closed by the hand since.
+pub fn ChoiceHeld::still(self : ChoiceHeld) -> Bool {
+  self.on &&
+  (match presented_now.search_by(fn(q) { q.serial == self.serial }) {
+    Some(i) => presented_now[i].open && !presented_now[i].ended
+    None => false
+  })
+}
+
+///|
+/// The menu let go of: closed for what was chosen in it (`chosen`: what is presented now comes in its place, a level of
+/// it) or unsaid (what it holds let go of, as a press outside it would); nothing where it is held no more.
+pub fn ChoiceHeld::close(self : ChoiceHeld, chosen~ : Bool) -> Unit {
+  guard self.still() else {
+    self.on = false
+    return
+  }
+  self.on = false
+  if chosen {
+    match presented_now.search_by(fn(q) { q.serial == self.serial }) {
+      Some(i) => {
+        let p = presented_now[i]
+        field_let_go(p)
+        p.ended = true
+        p.chosen = true
+        close_from(i)
+      }
+      None => ()
+    }
+  } else {
+    dismissed_now(self.serial)
+  }
 }
 
 ///|

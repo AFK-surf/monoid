@@ -7,6 +7,8 @@ import {
 }
 
 // Values
+pub fn anchor_place((Double, Double, Double, Double), (Double, Double), (Double, Double), placement? : Placement, gap? : Double, insets? : (Double, Double, Double, Double)) -> AnchorPlaced
+
 #callsite(autofill(loc))
 pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Button) -> Unit, disabled? : () -> Bool, default_on? : () -> Bool, hold? : Hold, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
@@ -14,7 +16,31 @@ pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Butto
 pub fn choice(@view.View, ChoiceKind, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Choice) -> Unit, disabled? : () -> Bool, focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
+pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub let combobox_choose : String
+
+pub let combobox_close : String
+
+pub let combobox_context : String
+
+pub let combobox_first : String
+
+pub let combobox_keys : Array[@view.Binding]
+
+pub let combobox_last : String
+
+pub let combobox_next : String
+
+pub let combobox_prev : String
+
+#callsite(autofill(loc))
 pub fn disclosure(@view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Disclosure) -> Unit, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn edge_scroll_speed(Double, Double, Double, zone~ : Double, max_speed~ : Double) -> Double
+
+#callsite(autofill(loc))
+pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn[K : Eq] radio_group(@view.View, () -> String, () -> K, (K) -> Unit, (@view.View, RadioGroup[K]) -> Unit, kind? : GroupKind, axis? : GroupAxis, shown? : () -> Bool, selected? : Bool, in_node? : Bool, disabled? : () -> Bool, manual? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -34,6 +60,24 @@ pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, 
 // Errors
 
 // Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) struct AnchorPlaced {
+  x : Double
+  y : Double
+  side : AnchorSide
+  flipped : Bool
+  room : Double
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum AnchorSide {
+  Below
+  Above
+  Right
+  Left
+}
+pub fn AnchorSide::back_key(Self) -> Int32
+
 pub struct Button {
   // private fields
 }
@@ -58,6 +102,27 @@ pub(all) enum ChoiceKind {
   Button
   Radio
 }
+
+pub struct ComboOption {
+  // private fields
+}
+pub fn ComboOption::active(Self) -> Bool
+pub fn ComboOption::chosen(Self) -> Bool
+pub fn ComboOption::disabled(Self) -> Bool
+pub fn ComboOption::hovered(Self) -> Bool
+pub fn ComboOption::press(Self) -> Unit
+pub fn ComboOption::pressed(Self) -> Bool
+
+pub struct Combobox[K] {
+  // private fields
+}
+pub fn[K] Combobox::active(Self[K]) -> K?
+pub fn[K] Combobox::disabled(Self[K]) -> Bool
+#callsite(autofill(loc))
+pub fn[K] Combobox::listbox(Self[K], @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K] Combobox::node(Self[K]) -> @view.View
+#callsite(autofill(loc))
+pub fn[K : Eq] Combobox::option(Self[K], @view.View, () -> K, () -> String, (@view.View, ComboOption) -> Unit, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub struct Disclosure {
   // private fields
@@ -93,6 +158,48 @@ pub(all) struct Hold {
   tapped : ((@view.Drag) -> Unit)?
 }
 pub fn Hold::new(Double, Double, () -> Bool, on_hold? : () -> Unit, on_lift? : () -> Unit, on_cancel? : () -> Unit, down? : (@view.Drag) -> Unit, tapped? : (@view.Drag) -> Unit) -> Self
+
+pub struct Menu {
+  // private fields
+}
+#callsite(autofill(loc))
+pub fn Menu::check_item(Self, @view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, MenuItem) -> Unit, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn Menu::disabled(Self) -> Bool
+pub fn Menu::focus_first(Self, visible? : Bool) -> Bool
+pub fn Menu::focus_last(Self, visible? : Bool) -> Bool
+#callsite(autofill(loc))
+pub fn Menu::item(Self, @view.View, () -> String, (@view.View) -> Unit, (@view.View, MenuItem) -> Unit, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn Menu::node(Self) -> @view.View
+#callsite(autofill(loc))
+pub fn Menu::radio_item(Self, @view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, MenuItem) -> Unit, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub struct MenuItem {
+  // private fields
+}
+pub fn MenuItem::checked(Self) -> Bool
+pub fn MenuItem::disabled(Self) -> Bool
+pub fn MenuItem::focus_shown(Self) -> Bool
+pub fn MenuItem::focused(Self) -> Bool
+pub fn MenuItem::hovered(Self) -> Bool
+pub fn MenuItem::press(Self) -> Unit
+pub fn MenuItem::pressed(Self) -> Bool
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Placement {
+  BelowStart
+  BelowCenter
+  BelowEnd
+  AboveStart
+  AboveCenter
+  AboveEnd
+  RightStart
+  RightCenter
+  RightEnd
+  LeftStart
+  LeftCenter
+  LeftEnd
+}
+pub fn Placement::side(Self) -> AnchorSide
 
 pub struct RadioGroup[K] {
   // private fields

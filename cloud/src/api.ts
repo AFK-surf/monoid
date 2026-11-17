@@ -42,17 +42,24 @@ const STATUS: Record<string, number> = {
 
 const FEEDBACK_STATUSES: readonly FeedbackStatus[] = ["new", "triaged", "fixed", "wontfix"];
 
+/** still.fail's station image (.github/workflows/station-docker.yml). */
+const DOCKER_IMAGE = "ghcr.io/afk-surf/stillfail-station";
+
 /**
  * An enrollment with what to run for it. A machine without still.fail installs it and joins at once; one with it joins.
  * On the test channel the installer is the test channel's, which gets its release (index.ts): from its host, or, with
  * no such host, ?channel=beta. The station joins PUBLIC_ORIGIN either way.
  */
-function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: boolean): T & { install: string; installWindows: string; command: string } {
+function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: boolean): T & { install: string; installWindows: string; installDocker: string; command: string } {
   const beta = betaOrigin(env);
   const installer = (file: string) => (!ofBeta ? `${env.PUBLIC_ORIGIN}/${file}` : beta ? `${beta}/${file}` : `${env.PUBLIC_ORIGIN}/${file}?channel=beta`);
   // Quoted when it asks: zsh (macOS's shell) takes an unquoted ? for a file name to match, and stops.
   const sh = installer("install.sh").includes("?") ? `'${installer("install.sh")}'` : installer("install.sh");
-  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, command: `stillfail station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
+  // still.fail's station container (station/docker): its entrypoint runs the installer of the cloud it is told, on the
+  // channel it is told, with the same arguments after the image.
+  const told = [`-e STILLFAIL_ORIGIN=${env.PUBLIC_ORIGIN}`, ...(ofBeta ? ["-e STILLFAIL_CHANNEL=beta"] : [])];
+  const installDocker = ["docker run -d --restart unless-stopped -v stillfail:/home/stillfail", ...told, DOCKER_IMAGE, made.token].join(" ");
+  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, installDocker, command: `stillfail station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
 }
 
 /**

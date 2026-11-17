@@ -738,6 +738,8 @@ priv struct Door {
   /// The connections it let in, and what each request is answered: its status and body, by path.
   conns : Array[Incoming]
   replies : Map[String, (Int, Bytes)]
+  /// The connections dialled to it on another protocol than the mesh's: its program's own, taken as they came.
+  others : Array[Incoming]
 }
 
 ///|
@@ -753,6 +755,7 @@ fn Door::new(net : SimNet) -> Door {
     ends: [],
     conns: [],
     replies: Map([]),
+    others: [],
   }
 }
 
@@ -790,6 +793,10 @@ fn Door::open(self : Door, mesh : Mesh) -> Unit {
 
 ///|
 async fn Door::take(self : Door, incoming : Incoming) -> Unit {
+  if incoming.alpn != sim_alpn {
+    self.others.push(incoming)
+    return
+  }
   let first = attempt(() => incoming.first())
   guard first is Did((line, control)) else { return }
   self.conns.push(incoming)
@@ -961,7 +968,12 @@ priv struct World {
 }
 
 ///|
-fn World::new(ways : (SimNet) -> Unit, relay_only? : Bool = false, refusal? : (Json, String) -> Error?) -> World raise {
+fn World::new(
+  ways : (SimNet) -> Unit,
+  relay_only? : Bool = false,
+  refusal? : (Json, String) -> Error?,
+  takes? : Array[String] = [sim_alpn],
+) -> World raise {
   let net = SimNet::new()
   ways(net)
   let door = Door::new(net)
@@ -971,7 +983,7 @@ fn World::new(ways : (SimNet) -> Unit, relay_only? : Bool = false, refusal? : (J
       net.shells[1],
       kept_in(server_kept),
       { alpn: sim_alpn, relays: [sim_r1, sim_r2], relay_only: false, says: None, refusal: None },
-      binding={ lookup: false, takes: [sim_alpn], entries: [] },
+      binding={ lookup: false, takes, entries: [] },
     )),
   )
   door.open(server)
@@ -1611,6 +1623,73 @@ test "sim: the device key taken over with links open on two ways: all let go of,
   assert_eq(world.door.asked, ["GET /data 0", "GET /as-new 0"])
   // Held now at each shell: the endpoint, the link's connection and its control stream; all of the key before let
   // go of. Both closed, nothing is left behind at either.
+  assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
+  assert_eq(world.close_all(), (0, 0))
+}
+
+///|
+test "sim: a connection dialled once on a second protocol the peer takes, on an endpoint of its own beside the link, streams both ways, closed: the link never touched, and nothing left behind" {
+  let world = World::new(net => ignore(net.relay(sim_r1, ms=10)), takes=[sim_alpn, "side/1"])
+  let net = world.net
+  let door = world.door
+  let a = world.link()
+  net.pass(1_000)
+  let a = given(a)
+  assert_eq(door.conns.length(), 1)
+  // Dialled once on the other protocol: the peer takes it as its program's, from an endpoint whose id is not the
+  // device's, drawn for it (the shell's draws here: 0x40 each), on the relay the link is on too.
+  let dialling = net.go(() => world.client.dial_once(world.server.device_id(), "side/1"))
+  net.pass(1_000)
+  let out = given(dialling)
+  assert_eq(door.others.length(), 1)
+  let theirs = door.others[0]
+  assert_eq(theirs.alpn, "side/1")
+  assert_eq(theirs.peer, sim_hex(sha256(Bytes::make(32, b'\x40'))))
+  assert_true(theirs.peer != world.client.device_id())
+  assert_eq(net.keys[0].length(), 2)
+  // A stream from here, answered; one from the peer, taken and answered back.
+  let served = net.go(() => {
+    let inbound = theirs.accept().unwrap()
+    let carry = @wire.Carry::new()
+    while inbound.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    inbound.out.write(@utf8.encode("pong " + @utf8.decode(carry.take())))
+    inbound.out.finish()
+  })
+  let asked = net.go(() => {
+    let opened = out.open()
+    opened.out.write(b"ping")
+    opened.out.finish()
+    let carry = @wire.Carry::new()
+    while opened.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    @utf8.decode(carry.take())
+  })
+  net.pass(1_000)
+  given(served)
+  assert_eq(given(asked), "pong ping")
+  let taken = net.go(() => {
+    let inbound = out.accept().unwrap()
+    let got = inbound.take().unwrap()
+    (@utf8.decode(got), inbound.take() is None)
+  })
+  ignore(net.go(() => push(theirs, b"news")))
+  net.pass(1_000)
+  assert_eq(given(taken), ("news", true))
+  // The link went on beside it all the while: its one connection, answering.
+  let on_a = net.go(() => a.request("GET", "/a").rest())
+  net.pass(1_000)
+  assert_eq(@utf8.decode(given(on_a)), "ok")
+  // Closed here: the peer told why; its connection and endpoint let go of at this shell, the peer's connection at
+  // its; the link still the one there, never ended, its peer never told an end.
+  out.close(reason="done")
+  net.pass(1_000)
+  assert_eq(given(net.go(() => theirs.closed())).reason, "done")
+  assert_true(a.usable())
+  assert_true(physical_equal(world.client.current(world.server.device_id()).unwrap(), a))
+  assert_eq((door.conns.length(), door.ends), (1, []))
   assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
   assert_eq(world.close_all(), (0, 0))
 }

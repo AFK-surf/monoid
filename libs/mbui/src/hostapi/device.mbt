@@ -177,6 +177,18 @@ pub let ime_action_number : Int = 3
 pub let ime_action_secret : Int = 4
 
 ///|
+/// An email address's: the keyboard's for addresses with @ (iOS's UIKeyboardTypeEmailAddress, Android's
+/// TYPE_TEXT_VARIATION_EMAIL_ADDRESS, a page's inputmode=email), nothing corrected nor capitalised; its Enter as the
+/// field's own.
+pub let ime_action_email : Int = 5
+
+///|
+/// Words taken as they are typed (a server's id, a code, an address written out whole): the plain keyboard, nothing
+/// corrected, spelled, capitalised or suggested (Android's TYPE_TEXT_FLAG_NO_SUGGESTIONS, iOS's no corrections, a page's
+/// autocorrect=off); its Enter as the field's own.
+pub let ime_action_plain : Int = 6
+
+///|
 /// A long press taking something (Android LONG_PRESS, Compose's HapticFeedbackType.LongPress).
 pub let haptic_long_press : Int = 0
 

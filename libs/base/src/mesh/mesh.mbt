@@ -198,6 +198,8 @@ pub struct Mesh {
   priv taking : @effect.Semaphore
   priv mut coming : @effect.Deferred[Taken]?
   priv incomings : Array[Incoming]
+  /// The connections dialled once (dial_once.mbt), each on an endpoint of its own, until both are let go of.
+  priv outgoings : Array[Outgoing]
   /// A dial ran out of time with no connection made: the endpoint may be stuck, and is bound anew before the next
   /// dial where nothing is on it, `rebind_ms` after the last time at the soonest. When it last was; and whether
   /// one is under way: whoever would dial meanwhile waits (`held`).
@@ -332,6 +334,7 @@ pub async fn Mesh::make(
     taking: @effect.Semaphore::new(1),
     coming: None,
     incomings: [],
+    outgoings: [],
     stuck: false,
     rebound_at: None,
     rebinding: false,
@@ -1191,6 +1194,13 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
   for incoming in taken {
     ignore(incoming.gone.succeed({ kind: "local", reason: "closed" }))
   }
+  // (those dialled once: each one's own fiber, closing it already, ends as the fibers are waited for below)
+  let dialled_once = self.outgoings.filter(one => !one.done)
+  self.outgoings.clear()
+  for one in dialled_once {
+    one.done = true
+    ignore(one.gone.succeed({ kind: "local", reason: "closed" }))
+  }
   // (the wait for one a peer dials: whoever waits on it looks again, and finds the mesh closed; a connection it
   // had brought that nobody took is let go of)
   self.forget_coming()
@@ -1216,6 +1226,10 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
     }
     for incoming in taken {
       ignore(attempt(() => self.shell.call("conn.close", { "id": incoming.conn, "code": 0, "reason": "closed", "forget": true })))
+    }
+    for one in dialled_once {
+      ignore(attempt(() => self.shell.call("conn.close", { "id": one.conn, "code": 0, "reason": "closed", "forget": true })))
+      ignore(attempt(() => self.shell.call("iroh.close", { "id": one.endpoint, "forget": true })))
     }
     // (with it go the connections on it nobody took, and the wait for the next: `iroh.close`, in both shells)
     ignore(attempt(() => self.shell.call("iroh.close", { "id": self.endpoint, "forget": true })))

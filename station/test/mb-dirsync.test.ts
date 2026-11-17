@@ -4,14 +4,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { appendFileSync, chmodSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { describe, test } from "node:test";
 import { Bulk } from "../src/jobs/dirsync.ts";
 import type { Json } from "../src/store/store.ts";
 import { git, pair, tempdir, until } from "./dirsync-pair.ts";
-import { listLocal, syncDir } from "./dirsync-reference.ts";
+import { listLocal, submoduleUrl, syncDir } from "./dirsync-reference.ts";
 
 type Pair = Awaited<ReturnType<typeof pair>>;
 
@@ -117,7 +117,8 @@ describe("the program's directory sync, as the TypeScript's", { concurrency: tru
     const listed = await listedAlike(p, repo);
     assert.equal(listed.git, true);
     assert.ok(listed.files.some((f: Json) => f.path === "w.bat" && f.indexed === true), "a clean file by its index's id");
-    assert.deepEqual(listed.skipped.map((s: Json) => [s.path, s.why]), [["nested", "nested repository"], ["outside", "symbolic link leading out of the directory"], ["sub", "submodule"]]);
+    assert.deepEqual(listed.skipped.map((s: Json) => [s.path, s.why]), [["nested", "nested repository"], ["outside", "symbolic link leading out of the directory"], ["sub", "submodule with no URL in .gitmodules"]]);
+    assert.deepEqual(listed.submodules, []);
     // a file of the index gone, one made a directory, one in a conflict
     rmSync(join(repo, "empty"));
     rmSync(join(repo, "B"));
@@ -296,5 +297,133 @@ describe("the program's directory sync, as the TypeScript's", { concurrency: tru
     symlinkSync("b", join(dir, "l"));
     p.release();
     assert.match((await started) ?? "", /l changed while syncing; start again/);
+  });
+
+  test("a submodule's URL relative to its superproject's, as Git takes it", () => {
+    for (const [url, base, want] of [
+      ["https://h/o/x.git", "", "https://h/o/x.git"],
+      ["../x.git", "https://github.com/o/super.git", "https://github.com/o/x.git"],
+      ["./x", "https://h/o/super/", "https://h/o/super/x"],
+      ["../../p/x", "git@h:o/super", "git@h:p/x"],
+      ["../x", "git@h:super", "git@h:x"],
+      ["../x", "", ""],
+    ]) assert.equal(submoduleUrl(url!, base!), want, `${url} against ${base}`);
+  });
+
+  /// A repository to be a submodule: `lib.txt` saying `text`, committed; its commit.
+  const commitIn = (repo: string, text: string): string => {
+    if (!existsSync(repo)) {
+      mkdirSync(repo, { recursive: true });
+      git(repo, "init", "-q");
+    }
+    writeFileSync(join(repo, "lib.txt"), text);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", text);
+    return git(repo, "rev-parse", "HEAD").trim();
+  };
+  /// `path` made a submodule of `repo` at `id` (its gitlink and .gitmodules), committed.
+  const linkIn = (repo: string, path: string, id: string, url: string) => {
+    appendFileSync(join(repo, ".gitmodules"), `[submodule "${path}"]\n\tpath = ${path}\n\turl = ${url}\n`);
+    git(repo, "add", ".gitmodules");
+    git(repo, "update-index", "--add", "--cacheinfo", `160000,${id},${path}`);
+    git(repo, "commit", "-q", "-m", `link ${path}`);
+  };
+
+  test("a repository's submodules: each by its path, the commit checked out there else the index's, and its URL", async () => {
+    const p = await pair();
+    const base = tempdir();
+    const up = join(base, "up");
+    const first = commitIn(up, "one\n");
+    const second = commitIn(up, "two\n");
+    const repo = join(base, "super");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "first");
+    git(repo, "remote", "add", "origin", "https://example.invalid/acme/super.git");
+    linkIn(repo, "libs/up", first, up);
+    linkIn(repo, "libs/rel", first, "../rel.git");
+    linkIn(repo, "libs/none", first, "");
+    // libs/up checked out here at its second commit, not staged: built at it there too
+    git(base, "clone", "-q", up, join(repo, "libs", "up"));
+    const listed = await listedAlike(p, repo);
+    assert.deepEqual(listed.submodules, [
+      { path: "libs/rel", id: first, url: "https://example.invalid/acme/rel.git" },
+      { path: "libs/up", id: second, url: up },
+    ]);
+    assert.deepEqual(listed.skipped, [{ path: "libs/none", why: "submodule with no URL in .gitmodules" }]);
+    assert.ok(!listed.files.some((f: Json) => f.path.startsWith("libs/")), "none of a submodule's files");
+    // From a folder of it, its paths from there.
+    mkdirSync(join(repo, "libs", "x"));
+    writeFileSync(join(repo, "libs", "x", "f"), "f\n");
+    // (not `add -A`: it would take out the gitlinks with no directory here)
+    git(repo, "add", "libs/x");
+    git(repo, "commit", "-q", "-m", "x");
+    const libs = await listedAlike(p, join(repo, "libs"));
+    assert.deepEqual(libs.submodules.map((s: Json) => s.path), ["rel", "up"]);
+  });
+
+  test("a mirror's submodules checked out before its task runs: fetched once, kept with what tasks built in them, never in its changes; gone with the submodule", async () => {
+    const [p, q] = [await pair(), await pair()];
+    const base = tempdir();
+    const up = join(base, "up");
+    const v1 = commitIn(up, "lib one\n");
+    // one this station's shared clones have (`<data>/repos/<owner>/<name>`): its URL never reached
+    const cached = join(p.b.dir, "repos", "acme", "cached");
+    const c1 = commitIn(cached, "cached one\n");
+    const repo = join(base, "super");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "first");
+    linkIn(repo, "libs/up", v1, up);
+    linkIn(repo, "libs/cached", c1, "https://example.invalid/acme/cached.git");
+    // the program sends what the TypeScript did, the submodules with the plan's last part
+    const synced = await syncedAlike(p, q, "s0", repo);
+    assert.equal(synced.submodules, 2);
+    const commit = p.state.sent.filter(({ request }) => request.method === "sync.commit").at(-1)!.request;
+    assert.deepEqual(commit.submodules, [["libs/cached", c1, "https://example.invalid/acme/cached.git"], ["libs/up", v1, up]]);
+    const logOf = (job: Json) => readFileSync(p.b.store.getJob(job.id)!.log, "utf8");
+    const resultOf = (key: string) => {
+      const told = p.a.told.find(([, text]) => text.startsWith(`Remote task ${key} on `))![1];
+      return JSON.parse(told.slice(told.indexOf("{")));
+    };
+    // (s0's own task checked them out already)
+    const one = await p.run("s1", repo, "cat libs/up/lib.txt libs/cached/lib.txt > seen.txt && echo built > libs/up/out && echo more >> a.txt");
+    assert.equal(p.b.store.getJob(one.started.job.id)!.exitCode, 0, logOf(one.started.job));
+    assert.doesNotMatch(logOf(one.started.job), /checked out/, "at its commit already: nothing done");
+    assert.equal(readFileSync(join(p.mirror("super"), "seen.txt"), "utf8"), "lib one\ncached one\n");
+    assert.deepEqual(resultOf("s1").back.changed.files, ["a.txt"]);
+    // moved on: fetched and checked out over it, what a task built there kept
+    const v2 = commitIn(up, "lib two\n");
+    git(repo, "update-index", "--cacheinfo", `160000,${v2},libs/up`);
+    git(repo, "commit", "-q", "-m", "up two");
+    const two = await p.run("s2", repo, "cat libs/up/lib.txt > seen.txt");
+    assert.match(logOf(two.started.job), new RegExp(`still\\.fail: submodule libs/up checked out at ${v2}`));
+    assert.doesNotMatch(logOf(two.started.job), /libs\/cached/);
+    assert.equal(readFileSync(join(p.mirror("super"), "seen.txt"), "utf8"), "lib two\n");
+    assert.equal(readFileSync(join(p.mirror("super"), "libs", "up", "out"), "utf8"), "built\n");
+    assert.deepEqual(resultOf("s2").back.changed.files, ["a.txt"]);
+    // one that cannot be fetched: said, and the task runs
+    const v3 = "3".repeat(40);
+    git(repo, "update-index", "--cacheinfo", `160000,${v3},libs/up`);
+    git(repo, "commit", "-q", "-m", "up gone");
+    const three = await p.run("s3", repo, "echo ran");
+    assert.equal(p.b.store.getJob(three.started.job.id)!.exitCode, 0);
+    assert.match(logOf(three.started.job), new RegExp(`still\\.fail: submodule libs/up could not be fetched at ${v3}[^\\n]*\\n(.*\\n)*ran\\n`));
+    // the submodule taken out: its checkout goes, a file synced in its place
+    git(repo, "rm", "-q", "--cached", "libs/up");
+    writeFileSync(join(repo, ".gitmodules"), `[submodule "libs/cached"]\n\tpath = libs/cached\n\turl = https://example.invalid/acme/cached.git\n`);
+    mkdirSync(join(repo, "libs", "up"), { recursive: true });
+    writeFileSync(join(repo, "libs", "up", "lib.txt"), "vendored\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "vendored");
+    const four = await p.run("s4", repo, "cat libs/up/lib.txt > seen.txt");
+    assert.equal(p.b.store.getJob(four.started.job.id)!.exitCode, 0, logOf(four.started.job));
+    assert.equal(readFileSync(join(p.mirror("super"), "seen.txt"), "utf8"), "vendored\n");
+    assert.ok(!existsSync(join(p.mirror("super"), "libs", "up", ".git")));
+    assert.ok(!existsSync(join(p.mirror("super"), "libs", "up", "out")));
   });
 });

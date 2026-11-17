@@ -205,6 +205,10 @@ fn switch_node(t : @ui.Tester, s : Screen, sw : (String, @ui.Role, String), nth 
 }
 
 ///|
+/// What a layout's sums may leave over in a place (points), never a move of its own.
+let switch_sum_left : Double = 1.0e-6
+
+///|
 /// How long after a press `ms` late its answers have all come and their changes ended.
 fn switch_settle(ms : Double) -> Double {
   ms * 5.0 + @ui.move_most_ms + 500.0
@@ -352,7 +356,9 @@ fn switch_measure(
     }
     let here = switch_places(t)
     let what = []
-    // (a named node still on its way by less than a point this frame: what moves goes on, never a change apart)
+    // (a named node still on its way by less than a point this frame: what moves goes on, never a change apart, to the
+    // last crumb of its eased end (a part's way out rising its last hundredths of a point as it fades, let go of the
+    // frame after: one change to its end, not one more as it goes); only what a layout's sums leave over is none)
     let mut going = false
     for k, r in here {
       if skip.contains(k) {
@@ -366,7 +372,7 @@ fn switch_measure(
           )
           if step > 1.0 {
             what.push("\{k} \{Repr(was)} -> \{Repr(r)}")
-          } else if step > 0.01 {
+          } else if step > switch_sum_left {
             going = true
           }
         }
