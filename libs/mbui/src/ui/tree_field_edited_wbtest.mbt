@@ -87,3 +87,75 @@ test "a tree field's edited: let go with its node, nothing told after" {
   assert_true(f.st.on_change is None)
   assert_eq(told, ["a"])
 }
+
+///|
+test "a tree field's edit: told each edit of the person's, its words and selection before and after, and what made it; never the app's" {
+  let f = Field::new()
+  let edits : Array[FieldEdit] = []
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.width(Is(Some(200.0))) |> ignore
+      field(h, f, font_size=10.0, max_lines=1, edit=fn(e) { edits.push(e) }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  t.type_text("ab")
+  assert_eq(edits, [{ was: "", was_selection: (0, 0), now: "ab", selection: (2, 2), by: Typed }])
+  t.paste("c")
+  assert_eq(edits.length(), 2)
+  assert_eq((edits[1].was, edits[1].now, edits[1].by), ("ab", "abc", Pasted))
+  // (the app's words: none told)
+  f.set("from the app")
+  t.frame()
+  assert_eq(edits.length(), 2)
+}
+
+///|
+test "a tree field's command_sends: Enter a new line, ⌘Enter gives its words up, once, at that key's moment" {
+  let f = Field::new()
+  let given : Array[String] = []
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.width(Is(Some(200.0))) |> ignore
+      field(h, f, font_size=10.0, max_lines=4, enter_sends=false, command_sends=true, submitted=fn(w) { given.push(w) })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  t.type_text("ab")
+  t.key(key_enter)
+  assert_eq((f.text(), given), ("ab\n", []))
+  t.type_text("c")
+  t.key(key_enter, mods=mod_cmd)
+  assert_eq(given, ["ab\nc"])
+}
+
+///|
+test "a tree field's max_lines_by: as many lines as it says now, laid out anew as that changes" {
+  let f = Field::new(text="1\n2\n3\n4\n5\n6")
+  let most = @signals.signal(2, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=400.0)
+  let node : Ref[@view.View?] = Ref(None)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.width(Is(Some(200.0))) |> ignore
+      node.val = Some(field(h, f, font_size=10.0, line=12.0, max_lines_by=fn() { most.get() }))
+    })
+    |> ignore
+  })
+  t.draw()
+  guard node.val is Some(n) else { fail("no field") }
+  let two = n.laid_size().1
+  most.set(4)
+  t.draw()
+  let four = n.laid_size().1
+  assert_true(four > two + 20.0, msg="\{two} → \{four}")
+}
