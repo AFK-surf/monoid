@@ -60,7 +60,7 @@ fn cb_drawn(t : @ui.Tester) -> String {
 /// Its keys (换行, 复制) have theirs as the hit test reaches them, over what scrolls too (the test below).
 fn cb_audit(t : @ui.Tester, known : Int) -> Array[String] {
   let all = t.audit()
-  let room = all.filter(fn(f) { f.has_prefix("room: ") && f.contains("sf/markdown_node.mbt") })
+  let room = all.filter(fn(f) { f.has_prefix("room: ") && f.contains("stillfail/sf/src/markdown_node.mbt") })
   let faults = all.filter(fn(f) { !room.contains(f) })
   if room.length() != known {
     faults.push("a code block's rooms short \{room.length()} times, \{known} known: " + room.join(" | "))

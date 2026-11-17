@@ -1071,6 +1071,7 @@ let zh : Map[String, String] = {
   "web-main.model.account": "账号",
   "web-main.model.auto": "自动",
   "web-main.model.borrowed": "已借用，同步到此 station 后即可使用",
+  "web-main.model.defaultTui": "新对话默认使用 TUI",
   "web-main.model.claudeMode": "运行模式",
   "web-main.model.current": "当前",
   "web-main.model.defaultEffort": "默认深度",

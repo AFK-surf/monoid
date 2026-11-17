@@ -145,6 +145,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       _ => "claude"
     }
     let h = hosted(n.to_int(), if kind == "claude" { turn } else { @claude.Turn::new() }, if kind == "claude" { live } else { @claude.Live::new() }, kind~)
+    h.routed = m.get("routed") is Some(True)
     h.own = own_of(kind, m)
     if m.get("orphans") is Some(True) {
       h.codex.orphans = Some(Map([]))
@@ -218,7 +219,7 @@ fn Agents::told(self : Agents, line : String) -> Unit {
         }
       }
     }
-    "codexThread" => if text("id") is Some(thread) { self.add_thread(h, thread, m.get("live")) }
+    "codexThread" => if text("id") is Some(thread) { self.add_thread(h, thread, m.get("live"), routed=m.get("routed") is Some(True)) }
     "codexDrop" => if text("id") is Some(thread) { self.drop_thread(h, thread) }
     "orphans" => if m.get("on") is Some(False) { self.orphans_off(h) }
     "write" => if text("line") is Some(t) { self.write(h, t) }

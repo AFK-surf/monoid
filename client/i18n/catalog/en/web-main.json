@@ -800,6 +800,7 @@
   "web-main.model.runtime": "Runtime",
   "web-main.model.sidekick": "Sidekick",
   "web-main.model.search": "Search models",
+  "web-main.model.defaultTui": "Use TUI by default for new chats",
   "web-main.model.claudeMode": "Run mode",
   "web-main.model.speed": "Speed",
   "web-main.model.standard": "Standard",

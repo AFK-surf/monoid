@@ -32,12 +32,13 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 ## The component library
 
-- The parts pages are made of are the library's, `src/sf` (sf/styles.mbt). A part used by both the phone's pages and the desktop's lives there once and
+- The parts pages are made of are the library's, `libs/sf-ui/src` (sf/styles.mbt; `libs/sf-ui/AGENTS.md`), a
+  module of its own beside mbui that this app imports as `stillfail/sf`. A part used by both the phone's pages and the desktop's lives there once and
   both use it; a page keeps no copy of its own. The library imports nothing of the app (detlint's `library-import`):
   what it needs of the app is given to it as the app starts.
 - The library is looks (the user, 2026-11-14; `libs/mbui/AGENTS.md`, Components): what a control is to the hand, the
   keyboard and a screen reader is mbui's headless component's (`libs/mbui/src/headless`), where there is one, and its
-  part here is that component with still.fail's look (every unconditional plain button in `src/sf` over
+  part here is that component with still.fail's look (every unconditional plain button in `libs/sf-ui/src` over
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
   over `@headless.disclosure`; choice rows and offers over `@headless.choice`; segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
@@ -85,7 +86,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   - Each page exists once, drawn into the box it gets in any tier with either input. It opens things by saying what,
     and shows menus and dialogs through the library's presenters. The shell arranges the panes per tier.
 - **Packages now, while the two page sets are merged:**
-  - `src/sf` is the component library (above).
+  - `libs/sf-ui/src` is the component library (above).
   - `src/sfbase` is the model: the core's topics and calls (`Source`), the views, the pages (`Page`, `app.nav`), the
     app-level things, and the shared machinery. It imports the library and the settings' routes, nothing of the pages.
   - `src/sfdesk` holds the Medium and Large pages not merged yet, and the Medium and Large frame.
@@ -116,7 +117,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     MBUI_SWR_VIEWS); a chat's value kept waits for the core, and the lists above are shown again by `last_said`, never
     through the client (what names a station by them takes no kept value: `station_marks`).
   - A card, a panel, a sheet or a dialog opened the first time comes in once what its nodes read as they are made is
-    answered, `open_hold_ms` at most, never held for what waits on a station (`src/sf/open_gate.mbt`: what reads a topic
+    answered, `open_hold_ms` at most, never held for what waits on a station (`libs/sf-ui/src/open_gate.mbt`: what reads a topic
     tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`).
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
@@ -162,7 +163,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     (`src/sfapp/press_waits_wbtest.mbt`).
   - A step further in is the presenters', never a page's (弹层里往里走: the user, 2026-11-02, and 2026-11-10 「系统性
     全修一下」 once the chat's own sheet and a menu's 分享 were found never to have had it). A page says `close()` and
-    opens the next, and keeps no step number and no 返回 button of its own; `src/sf/presenters.mbt` does the rest on
+    opens the next, and keeps no step number and no 返回 button of its own; `libs/sf-ui/src/presenters.mbt` does the rest on
     every screen: a panel that closes for another panel is a step further in from it (a back key before its title;
     back, Escape and the system's back go back to the one before, a press outside, × or the sheet dragged down closes
     all of it), a menu a menu's item opens is a level of the same sheet, and on 小屏 whatever a sheet closes for comes
@@ -237,7 +238,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
 
 ## Motion
 
-- `src/sf/motion.mbt` says what moves and how; read it before adding or changing a motion. In short (the user,
+- `libs/sf-ui/src/motion.mbt` says what moves and how; read it before adding or changing a motion. In short (the user,
   2026-10-25):
   - Every motion is one of nine kinds (in the hand, coming and going, moved or reshaped, flying, another page,
     scrolled to, a control answering, waiting, emphasis), each set off one way, with the kind's presets.

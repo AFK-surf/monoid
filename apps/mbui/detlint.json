@@ -44,17 +44,13 @@
     "src/sfbase/web_assets.mbt"
   ],
   "style": {
-    "tokens": [
-      "src/sf/tokens.mbt"
-    ],
+    "tokens": [],
     "outside": [
       "src/sffilmcheck/main.mbt"
     ]
   },
   "library": {
-    "roots": [
-      "src/sf"
-    ],
+    "roots": [],
     "imports": [
       "mbui/",
       "moonbitlang/",
@@ -244,9 +240,7 @@
     "retired-api": {},
     "app-clock": {},
     "wall-clock": {},
-    "engine-math": {
-      "src/sf/glyph.mbt": 2
-    },
+    "engine-math": {},
     "poll": {},
     "host-read": {},
     "builtin-hash": {},
@@ -254,11 +248,6 @@
     "globals": {},
     "style-literal": {
       "src/coredemo/main.mbt": 39,
-      "src/sf/glass.mbt": 1,
-      "src/sf/markdown.mbt": 34,
-      "src/sf/parts.mbt": 46,
-      "src/sf/picture.mbt": 1,
-      "src/sf/waiting.mbt": 10,
       "src/sfapp/app.mbt": 2,
       "src/sfapp/bar.mbt": 28,
       "src/sfapp/chat.mbt": 46,
@@ -278,12 +267,6 @@
     },
     "box-loose": {
       "src/coredemo/main.mbt": 20,
-      "src/sf/avatar.mbt": 1,
-      "src/sf/glass.mbt": 1,
-      "src/sf/markdown.mbt": 26,
-      "src/sf/parts.mbt": 29,
-      "src/sf/picture.mbt": 2,
-      "src/sf/waiting.mbt": 6,
       "src/sfapp/app.mbt": 1,
       "src/sfapp/bar.mbt": 16,
       "src/sfapp/chat.mbt": 30,
@@ -298,9 +281,7 @@
       "src/sfkit/kit.mbt": 20,
       "src/stillfail/main.mbt": 2
     },
-    "style-exact": {
-      "src/sf/tokens.mbt": 25
-    },
+    "style-exact": {},
     "style-text": {},
     "build-effect": {},
     "after-build-input": {},
@@ -350,17 +331,11 @@
     "fixture-import": {},
     "motion-spring": {},
     "built-by-hand": {
-      "src/sf/parts.mbt": 2,
       "src/sfbase/viewer.mbt": 1,
       "src/sfdesk/rail_native.mbt": 1,
       "src/sfdesk/tape_view.mbt": 1
     },
     "layout-read-back": {
-      "src/sf/markdown.mbt": 1,
-      "src/sf/parts.mbt": 5,
-      "src/sf/seg.mbt": 1,
-      "src/sf/submenu.mbt": 1,
-      "src/sf/viewer_frame.mbt": 1,
       "src/sfbase/pick.mbt": 4,
       "src/sfbase/screen_links.mbt": 1,
       "src/sfbase/viewer.mbt": 1,
@@ -377,7 +352,6 @@
     "tester-branch": {},
     "frame-number": {},
     "ui-current": {
-      "src/sf/presented_node.mbt": 1,
       "src/sfapp/app.mbt": 5,
       "src/sfapp/bar.mbt": 4,
       "src/sfapp/bars.mbt": 2,
@@ -394,10 +368,6 @@
       "src/sfapp/bar.mbt": 1
     },
     "build-motion": {
-      "src/sf/lift.mbt": 1,
-      "src/sf/marked.mbt": 1,
-      "src/sf/parts.mbt": 1,
-      "src/sf/waiting.mbt": 1,
       "src/sfapp/chat.mbt": 1,
       "src/sfbase/chat_list.mbt": 4,
       "src/sfbase/emit.mbt": 3,
@@ -417,7 +387,6 @@
       "src/sfpages/message_files.mbt": 2
     },
     "old-list": {
-      "src/sf/page.mbt": 1,
       "src/sfkit/glass.mbt": 1,
       "src/sfkit/kit.mbt": 2,
       "src/sfpages/chat_list.mbt": 1,
@@ -427,7 +396,6 @@
       "src/sfpages/history_steps_node.mbt": 1
     },
     "old-island": {
-      "src/sf/presented_node.mbt": 1,
       "src/sfapp/app.mbt": 2,
       "src/sfapp/entry_tree.mbt": 1,
       "src/sfapp/narrow_shell.mbt": 2,
@@ -443,12 +411,7 @@
       "src/sfpages/login_card.mbt": 1
     },
     "part-place": {},
-    "button-by-hand": {
-      "src/sf/own_head_node.mbt": 1,
-      "src/sf/quote_card_node.mbt": 1,
-      "src/sf/station_choice_node.mbt": 1,
-      "src/sf/viewer_steps_node.mbt": 1
-    },
+    "button-by-hand": {},
     "layout-told": {},
     "abort-unsaid": {},
     "empty-on-done": {},
@@ -457,7 +420,6 @@
     "reset-by-hand": {},
     "app-word": {},
     "frame-walk": {
-      "src/sf/sheet_sink_wbtest.mbt": 2,
       "src/sfapp/bar_places_kept_wbtest.mbt": 1,
       "src/sfapp/bar_places_today_wbtest.mbt": 1,
       "src/sfapp/cards_order_wbtest.mbt": 1,
@@ -491,10 +453,6 @@
     "scoped-computed": {},
     "raw-effect": {},
     "pick-loop": {
-      "src/sf/image_reveal_node.mbt": 1,
-      "src/sf/quota_lines_node.mbt": 1,
-      "src/sf/seg_node.mbt": 2,
-      "src/sf/way_node.mbt": 1,
       "src/sfapp/chat_bar_node.mbt": 1,
       "src/sfapp/settings/run_more.mbt": 1,
       "src/sfapp/settings/vault_ask.mbt": 1,
@@ -520,7 +478,6 @@
     "shader-int": {},
     "raw-hover-ground": {},
     "width-structure": {
-      "src/sf/seg_node.mbt": 5,
       "src/sfpages/message_quotes_node.mbt": 2
     },
     "reused-untracked-key": {
@@ -617,14 +574,8 @@
     "builtin-hash": {},
     "hash-order": {},
     "globals": {},
-    "style-literal": {
-      "src/sf/seg.mbt": 2
-    },
-    "box-loose": {
-      "src/sf/files.mbt": 1,
-      "src/sf/nav_bar.mbt": 1,
-      "src/sf/seg.mbt": 2
-    },
+    "style-literal": {},
+    "box-loose": {},
     "style-exact": {},
     "style-text": {},
     "build-effect": {},
@@ -641,7 +592,6 @@
     "page-old-part": {},
     "page-old-sheet": {},
     "corners-each": {
-      "src/sf/tokens.mbt": 1,
       "src/sfdesk/chat_page.mbt": 2
     },
     "cursor-hand": {},
@@ -650,7 +600,6 @@
     "motion-spring": {},
     "built-by-hand": {},
     "layout-read-back": {
-      "src/sf/markdown.mbt": 1,
       "src/sfpages/search_marks.mbt": 1
     },
     "motion-length": {
@@ -686,13 +635,8 @@
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
-    "raw-hover-ground": {
-      "src/sf/menu_node.mbt": 1,
-      "src/sf/pick_node.mbt": 1
-    },
-    "width-structure": {
-      "src/sf/player_node.mbt": 1
-    },
+    "raw-hover-ground": {},
+    "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
     "page-at-moment": {},

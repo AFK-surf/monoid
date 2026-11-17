@@ -747,6 +747,8 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
       const id = typeof p.id === "string" && p.id !== "" ? p.id : null;
       return { kind: "shareIn", scope: p.scope as string, source: p.source as string, title: p.title as string | null, target: { station: p.station as string, ...(id !== null ? { id } : {}) }, key: typeof p.key === "string" && p.key.startsWith("new:") ? p.key : null };
     }
+    case "pick.defaultTui":
+      return { kind: "choose", name, params: read(params, [["tui", "bool", "req"]]) };
     case "newChat.pick":
     case "newChat.create":
     case "newChat.migrate":

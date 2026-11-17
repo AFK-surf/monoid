@@ -18,9 +18,9 @@ import {
 }
 
 import {
-  "mbui/pixels", "moonbitlang/core/env", "moonbitlang/core/encoding/utf8", "stillfail/sfkept", "mbui/halt", "moonbitlang/core/json" } for "wbtest"
+  "mbui/pixels", "moonbitlang/core/env", "moonbitlang/core/encoding/utf8", "mbui/halt", "moonbitlang/core/json" } for "wbtest"
 
-import { "stillfail/sfkept" } for "test"
+import { "moonbitlang/core/json" } for "test"
 
 options(
   targets: {

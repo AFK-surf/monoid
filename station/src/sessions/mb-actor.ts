@@ -337,6 +337,7 @@ export class MbActor {
   readonly #reads = new Map<number, Promise<void> | void>();
   /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, its unread cleared.
   #routing: { outcome?: Json; cleared?: boolean } = {};
+  #adopting: { generation: number; pending: Array<() => void> } | null = null;
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
   constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps) {
@@ -483,7 +484,18 @@ export class MbActor {
   /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
   /// idle time, `idleMs`) is so from here: the hub looks at it as it takes up (hub.ts `idleNow`, `evictIdle`), and read
   /// as a session's with no process, every handover started its idle time again (2026-11-15).
+  beginAdopt(generation: number): Router {
+    this.#adopting = { generation, pending: [] };
+    return { program: this.#program.program, took: (batch, proc) => this.#took(batch, null, generation, proc) };
+  }
+
+  cancelAdopt(generation: number): void {
+    if (this.#adopting?.generation === generation) this.#adopting = null;
+  }
+
   adopt(snap: Snapshot, agent: AgentSession | null, profile: string): Promise<void> {
+    const pending = this.#adopting?.pending ?? [];
+    this.#adopting = null;
     let taken: Json = null;
     if (agent) {
       const handle = ++this.#next;
@@ -493,7 +505,10 @@ export class MbActor {
       this.runtime = snap.runtime;
     }
     const adopted = this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
-    if (agent) this.#route(agent, this.#generation);
+    if (agent) {
+      for (const deliver of pending) deliver();
+      this.#route(agent, this.#generation);
+    }
     return adopted.then(() => undefined);
   }
 
@@ -530,11 +545,15 @@ export class MbActor {
     (session as AgentSession & { route?: (router: Router | null) => void }).route?.(null);
   }
 
-  #took(batch: number, session: AgentSession, generation: number): boolean {
+  #took(batch: number, session: AgentSession | null, generation: number, proc?: number): boolean {
+    const n = proc ?? (session as (AgentSession & { hostedProc?: () => HostedProcess | null }) | null)?.hostedProc?.()?.n;
+    if (this.#closed || n === undefined) return false;
+    if (this.#adopting?.generation === generation) {
+      this.#adopting.pending.push(() => { this.#took(batch, session, generation, n); });
+      return true;
+    }
     const routing = this.#routing;
     this.#routing = {};
-    const n = (session as AgentSession & { hostedProc?: () => HostedProcess | null }).hostedProc?.()?.n;
-    if (this.#closed || n === undefined) return false;
     // (what it read clears the unread as the program takes the batch: a mirror from before that is not taken)
     if (routing.cleared === true) this.#readAt = this.#sent + 1;
     this.#post({ routed: n, batch, generation, ...(routing.outcome !== undefined ? { outcome: routing.outcome } : {}) });
@@ -543,6 +562,10 @@ export class MbActor {
 
   #event(generation: number, event: RuntimeEvent) {
     if (this.#closed) return;
+    if (this.#adopting?.generation === generation) {
+      this.#adopting.pending.push(() => this.#event(generation, event));
+      return;
+    }
     if ((event as { routed?: boolean }).routed === true) {
       // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
       // take of it, its unread cleared and a turn's outcome)

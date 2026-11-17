@@ -5,6 +5,6 @@
 ///|
 fn init {
   @ui.sizes_steady_known([
-    ("src/sf/edge_look_node_wbtest.mbt", 1),
+    ("src/edge_look_node_wbtest.mbt", 1),
   ])
 }

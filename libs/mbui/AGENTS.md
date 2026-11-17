@@ -379,9 +379,10 @@ yet and you can add one, add it.
 ## Before a PR
 
 - MoonBit's C compiles a generic function once for every type it is called with, its closures too: a structure or a
-  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`) is a thin generic
-  shell over one body that knows no type (`Picked`, `Tree::structured_by`). Before, their copies were 48 MB of the 751 MB
-  of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
+  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`, `View::scrolls_window`)
+  is a thin generic shell over one body that knows no type (`Picked`, `Tree::structured_by`; a page's list's keys by
+  their numbers, `ListKeys`, `View::scrolls_window_ids`). Before, their copies were 48 MB and the list's 11 some 26 MB of
+  the 751 MB of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
 - A compiler warning is an error or off, never left a warning: `moon.mod`'s `warnings` is the app's line
   (`apps/mbui/AGENTS.md`, Warnings).
 

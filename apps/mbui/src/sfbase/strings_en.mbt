@@ -1087,6 +1087,7 @@ let en : Map[String, String] = {
   "web-main.model.account": "Account",
   "web-main.model.auto": "Auto",
   "web-main.model.borrowed": "Borrowed; usable here once it reaches this station",
+  "web-main.model.defaultTui": "Use TUI by default for new chats",
   "web-main.model.claudeMode": "Run mode",
   "web-main.model.current": "Current",
   "web-main.model.defaultEffort": "Default effort",
