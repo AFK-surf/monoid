@@ -69,6 +69,36 @@ test("reader_search_every_place_letters_without_case_when_nothing_else", () => {
   assert.deepEqual(search("text", ""), []);
 });
 
+test("reader_case_fallback_keeps_original_offsets_when_an_unrelated_character_expands_in_lowercase", () => {
+  assert.deepEqual(search("İstanbul\nHELLO world", "hello"), [9]);
+  assert.deepEqual(search("HELLO world\nİstanbul", "hello"), [0]);
+  assert.deepEqual(search("İ HELLO HELLO", "hello", 1), [2]);
+  assert.deepEqual(search("😀İ HELLO 😀HELLO", "hello"), [4, 12], "offsets count the original UTF-16 code units");
+  assert.deepEqual(search("İ 😀HELLO", "😀hello"), [2], "a non-BMP character in the query keeps its width");
+  assert.deepEqual(search("İ 𐐀HELLO", "𐐨hello"), [2], "case matching also preserves non-BMP letters");
+  assert.deepEqual(search("İ FILE[1].TXT FILEX1YTXT", "file[1].txt"), [2], "the query is literal");
+  assert.deepEqual(search("İ HELLO hello", "hello"), [8], "an exact match still takes precedence");
+  assert.deepEqual(search("İHELLO i\u0307HELLO", "i\u0307hello"), [7], "matches must fit the original query's highlight width");
+  assert.deepEqual(search("İHELLO", "\u0307hello"), [], "a match cannot start inside one character's lowercase expansion");
+  assert.deepEqual(search("İi\u0307I", "i\u0307i"), [1], "a rejected expansion does not consume a later valid match");
+  const text = "# İstanbul\n\n**HELLO** world";
+  assert.deepEqual(searchBook(book(text, true), "hello"), [text.indexOf("HELLO")], "Markdown results point into the original source");
+});
+
+test("reader_case_fallback_keeps_whole_text_lowercase_semantics", () => {
+  for (const [text, query] of [["ſHOP", "shop"], ["ΟΣ A", "οσ a"]] as const) {
+    assert.deepEqual(search(text, query), []);
+    assert.deepEqual(search(`İ ${text}`, query), [], "an unrelated expansion does not change which letters match");
+  }
+  assert.deepEqual(search("İ ΟΣ A", "ος a"), [2], "the whole text decides a final sigma's lowercase form");
+});
+
+test("reader_case_fallback_accepts_a_long_literal_query", () => {
+  const query = "a".repeat(65_536), text = `İ ${query.toUpperCase()}`;
+  assert.deepEqual(search(text, query), [2]);
+  assert.deepEqual(search(text, query, 0), []);
+});
+
 test("reader_books_kept_by_their_id_the_latest_three", () => {
   const ids = [1, 2, 3, 4].map((i) => keepBook(`第${i}本\n`, false).id);
   assert.equal(keptBook(ids[0]!), undefined);
