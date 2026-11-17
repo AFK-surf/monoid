@@ -568,7 +568,8 @@ pub fn farview_pane_node(
 }
 
 ///|
-/// The tab's bar: ← → ⟳, its address (Enter going to what is typed there), and its control button.
+/// The tab's bar: ← → ⟳, its address (Enter going to what is typed there), and its control button; ← and → faded and
+/// taking no press where the host says the tab has nothing to go back or forward to.
 /// Where it stands at the pane's top (`pads`: 远程's), as high as a page's bar, its keys as far in from its ends as
 /// the pane says, the last concentric with the window's corner, its empty part dragging the window; `window`: a window
 /// of its own, beside the control button.
@@ -596,8 +597,13 @@ fn farview_bar_node(
         |> ignore
       None => bar.padding(Is((6.0, 8.0, 6.0, 8.0))) |> ignore
     }
-    @sf.icon_button_node(bar, "arrow-left", fn() { @sf.t("web-pages.screen.back") }, fn() { stage.back() }, tips?, linked?) |> ignore
-    @sf.icon_button_node(bar, "arrow-right", fn() { @sf.t("web-pages.screen.forward") }, fn() { stage.forward() }, tips?, linked?)
+    @sf.icon_button_node(bar, "arrow-left", fn() { @sf.t("web-pages.screen.back") }, fn() { stage.back() }, tips?, linked?, disabled=fn() {
+      !stage.can_back()
+    })
+    |> ignore
+    @sf.icon_button_node(bar, "arrow-right", fn() { @sf.t("web-pages.screen.forward") }, fn() { stage.forward() }, tips?, linked?, disabled=fn() {
+      !stage.can_forward()
+    })
     |> ignore
     @sf.icon_button_node(bar, "refresh", fn() { @sf.t("web-pages.screen.reloadShort") }, fn() { stage.reload() }, tips?, linked?)
     |> ignore

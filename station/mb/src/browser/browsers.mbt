@@ -225,8 +225,18 @@ pub fn Browsers::passkeys_again(self : Browsers) -> Unit {
 /// The passkeys of a sign-in still granted put into `session`'s chat's context again (its cookies are there still), if
 /// the browser runs with it.
 pub async fn Browsers::passkeys_in(self : Browsers, session : String, sites : Array[String], cookies : String) -> Unit {
-  let ctx = self.contexts.get(session)
   let passkeys = site_passkeys(state_of(cookies).passkeys, sites)
+  match self.fv(session) {
+    Some(f) => {
+      // (its profile keeps them on disk: put in again only where its tab runs, no host started for it)
+      if passkeys.length() > 0 && f.status(session).running {
+        f.put_passkeys(session, passkeys)
+      }
+      return
+    }
+    None => ()
+  }
+  let ctx = self.contexts.get(session)
   guard ctx is Some(c) && passkeys.length() > 0 && self.station.status().running else { return }
   self.station.passkeys().put(c, passkeys)
 }
@@ -404,12 +414,15 @@ async fn Browsers::dispose(self : Browsers, session : String) -> Unit {
 }
 
 ///|
-/// The sign-in to `sites` in `session`'s chat's context, or in the station's own (`station`), as the vault keeps it:
-/// its cookies, and its passkeys (a chat's context only); the browser started if it is not running.
+/// The sign-in to `sites` in `session`'s chat's context (its Farview's profile where that is its browser), or in the
+/// station's own (`station`), as the vault keeps it: its cookies, and its passkeys (a chat's only); the browser started
+/// if it is not running.
 pub async fn Browsers::cookies(self : Browsers, session : String, sites : Array[String], station : Bool) -> String {
   match self.fv(session) {
-    Some(f) if !station =>
-      return kept_of({ cookies: site_cookies(Some(ja(f.cookies(session))), sites), passkeys: [] })
+    Some(f) if !station => {
+      let cookies = site_cookies(Some(ja(f.cookies(session))), sites)
+      return kept_of({ cookies, passkeys: site_passkeys(f.passkeys(session), sites) })
+    }
     _ => ()
   }
   let ctx = if station { None } else { Some(self.context(session)) }
@@ -453,6 +466,7 @@ pub async fn Browsers::sign_in(
       let x = SignedIn::new(request, workspace, sites, until)
       keep(x)
       f.put_cookies(session, cookies)
+      f.put_passkeys(session, passkeys)
       (self.log.info)(
         "browser",
         "a sign-in put into a chat's Farview",
@@ -461,6 +475,7 @@ pub async fn Browsers::sign_in(
           ("request", js(request)),
           ("sites", jsa(sites)),
           ("cookies", ji(cookies.length())),
+          ("passkeys", ji(passkeys.length())),
         ]),
       )
       self.arm(session, x)
@@ -504,14 +519,14 @@ async fn Browsers::due(self : Browsers, session : String) -> Unit {
       self.signed_in[session] = self.signed_in.get(session).unwrap_or([]).filter(x => x.until > now)
       self.write()
       for x in ended {
-        let cookies = f.take_out(session, x.sites)
+        let (cookies, passkeys) = f.take_out(session, x.sites)
         (self.log.info)(
           "browser",
           "a sign-in taken out of a chat's Farview as its grant ended",
           fields([("session", js(session)), ("request", js(x.request)), ("sites", jsa(x.sites))]),
         )
-        if cookies.length() > 0 {
-          (self.taken_out)(session, x.request, kept_of({ cookies, passkeys: [] }), x.workspace)
+        if cookies.length() > 0 || passkeys.length() > 0 {
+          (self.taken_out)(session, x.request, kept_of({ cookies, passkeys }), x.workspace)
         }
       }
       return

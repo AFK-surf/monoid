@@ -60,10 +60,10 @@ is the one way to ask:
   tab's screen for a sign-in yourself, and never ask for a password or a code in the chat.
 - The vault's sign-in ran out (the site asks you to sign in although it was granted): sign in with the site's passkey if
   it offers one (below: the browser signs it), else `sign_in {site, again: true}`.
-- Passkeys: each tab of this chat's Chrome has an authenticator of the browser's own, so a site asking for a passkey
-  already stored in that sign-in signs with it automatically. Farview has none yet: for a site that needs a passkey,
-  switch to `browser {engine: "chrome"}` first. Never register a new passkey on a person's account unless
-  they explicitly ask you to add one.
+- Passkeys: both engines have a platform authenticator of their own (each tab of this chat's Chrome, and Farview's
+  profile), so a site asking for a passkey already stored in that sign-in signs with it automatically, with no prompt,
+  and one the site makes is kept with the sign-in. Never register a new passkey on a person's account unless they
+  explicitly ask you to add one.
 - A sign-in made before each chat had its own environment is still in the station's own profile: `secret_save {…,
   kind: "browser", browser: "station"}` reads it from there.
 

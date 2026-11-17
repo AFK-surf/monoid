@@ -11,7 +11,9 @@
 // the chat. A host listens on 127.0.0.1 only: its agent port and its frame port (farview_screen.mbt). It is started as a
 // job is, in a group of its own, and outlives a station process: the next one takes it up by the `host.json` it wrote.
 // Sign-ins go into the tab as they go into a chat's Chrome context: cookies set in the host's jar, taken out again as
-// the grant ends; a card's sign-in fills the tab's form (farview_form.mbt). Farview has no authenticator.
+// the grant ends; a card's sign-in fills the tab's form (farview_form.mbt). A sign-in's passkeys go into the profile's
+// own authenticator (the host's passkeys.json) and come out with its cookies; a host from before it had one (no
+// PublicKeyCredential in its pages) is asked none of them.
 
 ///|
 /// Where Farview is and whose browser it is, as the config says it; `release`: the release `dir` is to be unpacked
@@ -157,6 +159,8 @@ priv struct Host {
   n : Int
   screen : FarviewScreen
   unscreen : () -> Unit
+  /// whether its host has an authenticator of its own (None: not asked yet)
+  mut authenticator : Bool?
 }
 
 ///|
@@ -361,7 +365,7 @@ fn FarviewTabs::up(
     None => () => ()
   }
   screen.watch()
-  let host : Host = { file, started, dir, n, screen, unscreen }
+  let host : Host = { file, started, dir, n, screen, unscreen, authenticator: None }
   self.tabs_of(session)[n] = host
   host
 }
@@ -801,9 +805,86 @@ pub async fn FarviewTabs::put_cookies(self : FarviewTabs, session : String, cook
 }
 
 ///|
-/// The cookies of `sites` taken out of the chat's profile where its first tab runs (a sign-in's grant ended): them, as
-/// they were.
-pub async fn FarviewTabs::take_out(self : FarviewTabs, session : String, sites : Array[String]) -> Array[J] {
+/// Whether the host of `host` has an authenticator of its own (a page of it sees PublicKeyCredential), asked once a
+/// host: one from before it had one would not read a passkeys ask.
+async fn FarviewTabs::authenticator(self : FarviewTabs, host : Host) -> Bool {
+  match host.authenticator {
+    Some(b) => b
+    None => {
+      let has = match
+        attempt(async fn() {
+          ask_tab(
+            self.o.net,
+            host.file.agent,
+            Eval("typeof PublicKeyCredential === 'function' && typeof navigator.credentials.get === 'function'"),
+          )
+        }) {
+        Ok(Value(v)) => v == "true"
+        _ => false
+      }
+      host.authenticator = Some(has)
+      has
+    }
+  }
+}
+
+///|
+/// The passkeys ask `verb` of the chat's first tab (its host started if it is not running); None where its host has no
+/// authenticator.
+async fn FarviewTabs::passkeys_ask(self : FarviewTabs, session : String, verb : String, arg : String) -> String? {
+  let host = self.host(session)
+  if !self.authenticator(host) {
+    return None
+  }
+  match ask_tab(self.o.net, host.file.agent, Passkeys(verb, arg)) {
+    Value(v) => {
+      if v.has_prefix("error:") {
+        raise fail_("Farview: \{v}")
+      }
+      Some(v)
+    }
+    _ => raise fail_("Farview's tab did not give its passkeys")
+  }
+}
+
+///|
+/// The passkeys of the chat's profile, as its first tab has them (its host started if it is not running): none where
+/// its host has no authenticator or does not answer.
+pub async fn FarviewTabs::passkeys(self : FarviewTabs, session : String) -> Array[Passkey] {
+  let read = match attempt(async fn() { parse(self.passkeys_ask(session, "get", "").unwrap_or("[]")) }) {
+    Ok(v) => v
+    Err(_) => ja([])
+  }
+  match read {
+    Arr(list) => list.filter_map(p => passkey_of(Some(p)))
+    _ => []
+  }
+}
+
+///|
+/// `passkeys` put into the chat's profile (a sign-in granted): every tab of it signs with them. Where its host has no
+/// authenticator they are not put in, and the log says so.
+pub async fn FarviewTabs::put_passkeys(self : FarviewTabs, session : String, passkeys : Array[Passkey]) -> Unit {
+  if passkeys.length() == 0 {
+    return
+  }
+  if self.passkeys_ask(session, "set", stringify(ja(passkeys.map(p => p.to_j())))) is None {
+    (self.o.log.warn)(
+      "browser",
+      "a sign-in's passkeys not put into a chat's Farview: its host has no authenticator",
+      fields([("session", js(session)), ("passkeys", ji(passkeys.length()))]),
+    )
+  }
+}
+
+///|
+/// The cookies and passkeys of `sites` taken out of the chat's profile where its first tab runs (a sign-in's grant
+/// ended): them, as they were.
+pub async fn FarviewTabs::take_out(
+  self : FarviewTabs,
+  session : String,
+  sites : Array[String],
+) -> (Array[J], Array[Passkey]) {
   let has_first = match self.hosts.get(session) {
     Some(m) => m.contains(0)
     None => false
@@ -811,7 +892,7 @@ pub async fn FarviewTabs::take_out(self : FarviewTabs, session : String, sites :
   if !has_first {
     match self.find(session, 0, self.tab_dir(session, 0)) {
       Some(_) => ()
-      None => return []
+      None => return ([], [])
     }
   }
   let taken = self.cookies(session).filter(c => of_sites(text(at(Some(c), "domain")), sites))
@@ -827,7 +908,14 @@ pub async fn FarviewTabs::take_out(self : FarviewTabs, session : String, sites :
   for d in domains {
     ignore(self.cookies_ask(session, "clear", d))
   }
-  taken
+  let passkeys = site_passkeys(self.passkeys(session), sites)
+  // (a site's passkeys cleared by the site: its own relying party and those under it, as site_passkeys has them)
+  for site in sites {
+    if passkeys.iter().any(p => of_sites(p.rp_id, [site])) {
+      ignore(self.passkeys_ask(session, "clear", site))
+    }
+  }
+  (taken, passkeys)
 }
 
 ///|
@@ -936,7 +1024,7 @@ pub fn farview_how_to(config : FarviewConfig, tabs : Array[FarviewTab]) -> Strin
   )
   lines.push("There is no DevTools address: Playwright and chrome-devtools-mcp do not drive it.")
   lines.push(
-    "Its tabs share one profile: cookies and storage are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome.",
+    "Its tabs share one profile: cookies, storage and passkeys are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome. A site's passkey sign-in (or its \"add a passkey\") is done by Farview's own authenticator with no prompt, as Chrome's is.",
   )
   lines.push(
     "A person can see and drive each tab from their app (the `screen` tool gives the link, by the tab's id); when they act on it, it is theirs: the agent is told \"the person took the tab back\" and waits until they say it is done.",

@@ -355,10 +355,15 @@ fn farview_tabs(
   started : Array[String],
   screens : Array[String],
   alive? : Map[Int, Unit] = {},
+  connect? : async (Int) -> TcpLink,
 ) -> FarviewTabs {
   m.files["/fv/bin/host.exe"] = "#!"
   m.mkdirs("/fv/bin")
   let clock = vclock(rt)
+  let connect = match connect {
+    Some(c) => c
+    None => async fn(_) { raise fail_("no host here") }
+  }
   FarviewTabs::new({
     dir: "/data/browser/farview",
     config: () => Some({
@@ -381,7 +386,7 @@ fn farview_tabs(
     sources: _ => [],
     machine: farview_machine(m, rt, started, alive),
     files: m.files(),
-    net: { connect: async fn(_) { raise fail_("no host here") }, clock },
+    net: { connect, clock },
     release_io: { write_bytes: async fn(_, _) { () }, untar: async fn(_, _) { () }, random_hex: n => "0".repeat(n * 2) },
     log: Log::silent(),
     env: [("HOME", "/home")],
@@ -598,4 +603,105 @@ test "Windows paths go by their own separator: a drive's, a share's, one of `\\`
   let cfg = farview_config(Some(parse("{\"browser\":{\"farview\":\"C:\\\\fv\"}}")), "win32-x64", [], "C:\\cache").unwrap()
   assert_eq(cfg.host, "C:\\fv\\bin\\host.exe")
   assert_eq(cfg.agent, "C:\\fv\\bin\\agent.exe")
+}
+
+///|
+/// An agent port as a Farview host's (its wire's asks read, each answered): a page's PublicKeyCredential there where
+/// `authenticator`, the profile's passkeys kept in `kept`; what was asked written down by kind.
+fn agent_link(authenticator : Bool, kept : Array[Passkey], asked : Array[String]) -> async (Int) -> TcpLink {
+  async fn(_) {
+    let out : Array[Bytes] = []
+    let answer = (v : String) => {
+      let body = @buffer.new()
+      varint(body, kind_value)
+      wire_str(body, v)
+      let b = body.to_bytes()
+      let framed = @buffer.new()
+      let n = b.length()
+      framed.write_byte((n >> 24).to_byte())
+      framed.write_byte(((n >> 16) & 0xff).to_byte())
+      framed.write_byte(((n >> 8) & 0xff).to_byte())
+      framed.write_byte((n & 0xff).to_byte())
+      framed.write_bytes(b)
+      out.push(framed.to_bytes())
+    }
+    {
+      write: async fn(b) {
+        let r : WireReader = { b: b[4:].to_bytes(), i: 0 }
+        let kind = r.int()
+        if kind == kind_eval {
+          asked.push("eval")
+          answer(if authenticator { "true" } else { "false" })
+        } else if kind == kind_passkeys {
+          let verb = r.string()
+          let arg = r.string()
+          asked.push("passkeys \{verb}")
+          match verb {
+            "get" => answer(stringify(ja(kept.filter(p => arg == "" || of_sites(p.rp_id, [arg])).map(p => p.to_j()))))
+            "set" => {
+              guard parse(arg) is Arr(list) else { return }
+              for j in list {
+                guard passkey_of(Some(j)) is Some(p) else { continue }
+                match kept.search_by(q => q.credential_id == p.credential_id) {
+                  Some(i) => kept[i] = p
+                  None => kept.push(p)
+                }
+              }
+              answer("ok: \{list.length()} set")
+            }
+            _ => {
+              let left = kept.filter(p => !of_sites(p.rp_id, [arg]))
+              kept.clear()
+              kept.append(left)
+              answer("ok")
+            }
+          }
+        } else if kind == kind_cookies {
+          let verb = r.string()
+          asked.push("cookies \{verb}")
+          answer(if verb == "get" { "[]" } else { "ok" })
+        }
+      },
+      read: async fn() { if out.length() > 0 { Some(out.remove(0)) } else { None } },
+      close: () => (),
+    }
+  }
+}
+
+///|
+test "a sign-in's passkeys go into a chat's Farview profile and come out with its cookies; a host with no authenticator is asked none" {
+  let keys = [
+    passkey_of(Some(parse("{\"credentialId\":\"Y3JlZC1h\",\"rpId\":\"github.com\",\"privateKey\":\"cGs=\",\"userHandle\":\"dQ==\",\"signCount\":3}"))).unwrap(),
+    passkey_of(Some(parse("{\"credentialId\":\"Y3JlZC1i\",\"rpId\":\"login.example.com\",\"privateKey\":\"cGs=\",\"signCount\":0}"))).unwrap(),
+  ]
+  let ids = (l : Array[Passkey]) => l.map(p => p.credential_id).join(",")
+  for authenticator in [true, false] {
+    let rt = @effect.Runtime::new()
+    let m = mem()
+    let kept : Array[Passkey] = []
+    let asked : Array[String] = []
+    let fv = farview_tabs(m, rt, [], [], connect=agent_link(authenticator, kept, asked))
+    let got : Ref[String] = Ref("")
+    ignore(
+      rt.fork(async fn() {
+        let before = fv.passkeys("chat:a")
+        fv.put_passkeys("chat:a", keys)
+        let after = fv.passkeys("chat:a")
+        let (cookies, taken) = fv.take_out("chat:a", ["github.com"])
+        let left = fv.passkeys("chat:a")
+        got.val = "\{ids(before)}|\{ids(after)}|\{cookies.length()} \{ids(taken)}|\{ids(left)}"
+      }),
+    )
+    rt.advance(1000)
+    if authenticator {
+      assert_eq(got.val, "|Y3JlZC1h,Y3JlZC1i|0 Y3JlZC1h|Y3JlZC1i")
+      assert_eq(asked, [
+        "eval", "passkeys get", "passkeys set", "passkeys get", "cookies get", "passkeys get", "passkeys clear", "passkeys get",
+      ])
+    } else {
+      // (asked once whether it has one, then nothing of passkeys)
+      assert_eq(got.val, "||0 |")
+      assert_eq(asked, ["eval", "cookies get"])
+    }
+  }
 }

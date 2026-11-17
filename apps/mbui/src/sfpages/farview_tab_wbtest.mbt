@@ -518,3 +518,57 @@ test "a Farview tab of a real page's size: a change makes and lays out what it c
   assert_true(r.t.words().any(fn(w) { w.0 == "x14" }))
   @stage.phase_mark.val = fn(_) {  }
 }
+
+///|
+/// The bar's button said `label` (its key's words), its middle and whether it is disabled.
+fn farview_button(t : @ui.Tester, key : String) -> ((Double, Double), Bool) raise {
+  for n in t.semantics() {
+    if n.label == @sf.t(key) && !n.hidden {
+      let (x, y, w, h) = n.rect
+      return ((x + w / 2.0, y + h / 2.0), n.disabled)
+    }
+  }
+  fail("no \{key}")
+}
+
+///|
+// ← and → as the host says the tab can go back and forward (Meta): disabled, faded and taking no press while it has
+// nothing that way; pressed, each said to the host; every rule the audit holds kept either way.
+test "a Farview tab: ← and → pressed only where the host says the tab can go back and forward" {
+  let r = farview_rig(screen="browser:fv_nav")
+  let (_, tell) = r.views[0]
+  farview_live(tell)
+  farview_feed(tell, FarviewHost::new().reset())
+  r.t.run_for(farview_drawn_ms)
+  let navs = fn() {
+    farview_said(r.sent).filter_map(fn(m) {
+      if m is Nav(k, _) && (k == @proto.NAV_BACK || k == @proto.NAV_FORWARD) { Some(k) } else { None }
+    })
+  }
+  let press_both = fn() raise {
+    for key in ["web-pages.screen.back", "web-pages.screen.forward"] {
+      let ((x, y), _) = farview_button(r.t, key)
+      r.t.tap(x, y)
+      r.t.run_for(farview_drawn_ms)
+    }
+  }
+  assert_eq(farview_button(r.t, "web-pages.screen.back").1, true)
+  assert_eq(farview_button(r.t, "web-pages.screen.forward").1, true)
+  press_both()
+  assert_eq(navs(), [])
+  assert_eq(r.t.audit(), [])
+  // gone somewhere: back now
+  farview_feed(tell, @proto.encode_host(Meta("https://example.test/b", "B", false, true, false)))
+  r.t.run_for(farview_drawn_ms)
+  assert_eq(farview_button(r.t, "web-pages.screen.back").1, false)
+  assert_eq(farview_button(r.t, "web-pages.screen.forward").1, true)
+  press_both()
+  assert_eq(navs(), [@proto.NAV_BACK])
+  assert_eq(r.t.audit(), [])
+  // back at the first: forward now, not back
+  farview_feed(tell, @proto.encode_host(Meta("https://example.test/", "Example", false, false, true)))
+  r.t.run_for(farview_drawn_ms)
+  press_both()
+  assert_eq(navs(), [@proto.NAV_BACK, @proto.NAV_FORWARD])
+  assert_eq(r.t.audit(), [])
+}

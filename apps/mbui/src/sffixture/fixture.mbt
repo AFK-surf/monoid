@@ -2029,10 +2029,12 @@ fn fixture_experimental_items_json(test_channel : Bool, on : Map[String, Bool]) 
 
 ///|
 /// The experimental switches a fixture of `mode` begins with on: the board's in the board's modes (a test's of the
-/// board sees it).
+/// board sees it), Farview's own tabs in `farview` (a film of a Farview tab, MBUI_WINDOW its screen).
 fn fixture_experimental(mode : String) -> Map[String, Bool] {
   if board_mode(mode) {
     { "board": true }
+  } else if mode == "farview" {
+    { "farviewNative": true }
   } else {
     Map([])
   }
@@ -2698,6 +2700,11 @@ pub fn fixture(mode : String) -> Source {
     waits: fn(_, _) { false },
     generation: fn(_, _) { (0, true) },
     call_bytes: fn(name, params, bytes, done) {
+      // (a Farview tab's stage: its bar's ← → and address done as a host does them)
+      if name == "farview.send" && fixture_farview_said(bytes) {
+        done(Ok(Json::null()))
+        return
+      }
       match fixture_kept(name, params, Some(bytes)) {
         Some(r) => {
           done(r.map(fn(a) { a.0 }))

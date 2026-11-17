@@ -529,7 +529,7 @@ test("the pages' scripts are the TypeScript's, character for character", { skip 
 
 test("Farview: its wire, its release, its config and its words", { skip }, async () => {
   const p = await mb();
-  const asks: Json[] = [{ kind: "look" }, { kind: "eval", script: "1+1" }, { kind: "cookies", verb: "set", arg: JSON.stringify([{ name: "é", value: "x".repeat(300) }]) }, { kind: "act", verb: "type", selector: "[a]", text: "pässwörd" }, { kind: "eval", script: "x".repeat(70000) }];
+  const asks: Json[] = [{ kind: "look" }, { kind: "eval", script: "1+1" }, { kind: "cookies", verb: "set", arg: JSON.stringify([{ name: "é", value: "x".repeat(300) }]) }, { kind: "act", verb: "type", selector: "[a]", text: "pässwörd" }, { kind: "eval", script: "x".repeat(70000) }, { kind: "passkeys", verb: "set", arg: JSON.stringify(PASSKEYS) }, { kind: "passkeys", verb: "clear", arg: "github.com" }];
   await sameFn(p, "encodeAsk", (a: Json) => encodeAsk(a).toString("base64"), asks.map((a) => [a]));
   const body = (kind: number, ...strs: string[]) => {
     const out: number[] = [];
@@ -1741,7 +1741,7 @@ async function agentPort(answer: (ask: Json) => Json) {
         const int = () => { let shift = 0, u = 0; for (;;) { const c = body[i++]!; u |= (c & 0x7f) << shift; shift += 7; if (c < 0x80) break; } u >>>= 0; return (u >>> 1) ^ -(u & 1); };
         const str = () => { const k = int(); const v = body.subarray(i, i + k).toString("utf8"); i += k; return v; };
         const kind = int();
-        const ask = kind === 19 ? { kind: "look" } : kind === 32 ? { kind: "eval", script: str() } : kind === 35 ? { kind: "cookies", verb: str(), arg: str() } : { kind: "act", verb: str(), selector: str(), text: str() };
+        const ask = kind === 19 ? { kind: "look" } : kind === 32 ? { kind: "eval", script: str() } : kind === 35 ? { kind: "cookies", verb: str(), arg: str() } : kind === 42 ? { kind: "passkeys", verb: str(), arg: str() } : { kind: "act", verb: str(), selector: str(), text: str() };
         heard.push(ask);
         const a = answer(ask);
         if (a === undefined) continue;
