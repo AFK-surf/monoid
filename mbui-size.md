@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d5f0f7a20](https://github.com/AFK-surf/monoid/commit/d5f0f7a2010d05be821fb3d252acc3d446e6c7f1) app, core, station: what is not yet everyone's dec | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [eb3f3a3a1](https://github.com/AFK-surf/monoid/commit/eb3f3a3a199d8006ff0068435567a00910c3bb6f) mbui: 分享图片层与全屏可视化改为节点（publish old-list 1 → 0、build | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.53 | 65.35 | 95.75 | 116.75 |
 | [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.53 | 65.35 | 95.75 | 116.75 |
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
-| [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d5f0f7a20](https://github.com/AFK-surf/monoid/commit/d5f0f7a2010d05be821fb3d252acc3d446e6c7f1) app, core, station: what is not yet everyone's dec | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [eb3f3a3a1](https://github.com/AFK-surf/monoid/commit/eb3f3a3a199d8006ff0068435567a00910c3bb6f) mbui: 分享图片层与全屏可视化改为节点（publish old-list 1 → 0、build | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
 | [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
-| [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
