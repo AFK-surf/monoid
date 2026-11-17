@@ -1023,11 +1023,6 @@ jobs:
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
-      # A branch's (release_smoke: the bundle, its signature, its symbols and the macOS it is linked for checked, nothing
-      # published or measured): the app's C compiled without optimising (mbc's MBC_LIGHT_TESTS, -O0), so that it is
-      # built within the job's five minutes on GitHub's three cores with no unit of main's store taken (its units are
-      # main's -O2). Main's release stays -O2.
-      MBC_LIGHT_TESTS: ${{ github.ref != 'refs/heads/main' && 'stillfail/stillfail' || '' }}
     steps:
       # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh;
       # less the 1-5 s of "Set up job" before this step)
@@ -1074,6 +1069,17 @@ jobs:
         run: |
           mkdir -p .ci && rsync -a --ignore-existing "$RUNNER_TEMP/ci-main/" .ci/
           rm -rf "$RUNNER_TEMP/ci-main"
+      # A branch's app (release_smoke: its bundle, signature, symbols and the macOS it is linked for checked, nothing
+      # published or measured) takes main's -O2 units where main's store holds them (its 1171 units the app's C is split
+      # into, most of them); where it does not (main's store 4 MB, 2026-11-17), the app's C is compiled without
+      # optimising (mbc's MBC_LIGHT_TESTS, -O0), within the job's five minutes on GitHub's three cores: 1171 units in
+      # 41 s on three of Studio's, against moonc's ~120 s here before it. Not the C whole at -O0 in one clang
+      # (MBC_SPLIT=0): 38 s on one of Studio's cores, but 5.8 GB at its peak, of the runner's 7. Main's stays -O2.
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          units=$(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$units" -ge 800 ]; then echo "main's store holds $units units: the app's C at -O2, taken from it"
+          else echo "main's store holds $units units: the app's C at -O0"; echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"; fi
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
@@ -1101,16 +1107,6 @@ jobs:
           restore-keys: |
             shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-
             shell-apple-target-darwin-arm64-
-      # The core's native parts can build while MoonBit and the old Moon build are restored; the app's Moon build can
-      # then run beside pnpm and the icon restore. The same scripts, target and compiler are used by mac-app.sh below.
-      - name: Start the Mac app build
-        env:
-          # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
-          # step below gives it, so that core.hbc is made once
-          POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
-        run: |
-          touch "$RUNNER_TEMP/start"
-          bash .github/mac-release-prebuild.sh start
       - uses: ./.github/actions/mbui-moonbit
       # The next build is kept on main's ref too. Take its Moon build first; unlike the content-addressed units,
       # two Moon build directories cannot be overlaid, so fall back to main's only if there is no next build.
@@ -1134,8 +1130,19 @@ jobs:
             !apps/mbui/_build/**/*.mbc/**
           key: mbui-mac-moon-${{ github.sha }}
           restore-keys: mbui-mac-moon-
-      - run: |
+      # The app's build (its core's native parts, then its Moon build) runs beside pnpm and the icon restore. Started once
+      # MoonBit and the old Moon build are restored, not before: its env.sh fetches Farview's client as the MoonBit action
+      # does, both into apps/mbui/deps/farview.tmp, each taking the other's away (scripts/farview.sh); its native parts
+      # are downloads of a few seconds. The same scripts, target and compiler are used by mac-app.sh below.
+      - name: Start the Mac app build
+        env:
+          # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
+          # step below gives it, so that core.hbc is made once
+          POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
+        run: |
           bash apps/mbui/scripts/moon-mtimes.sh
+          touch "$RUNNER_TEMP/start"
+          bash .github/mac-release-prebuild.sh start
           bash .github/mac-release-prebuild.sh ready
       # pnpm and its store only where the core's bytecode is not kept (HBC_CACHE): only a core made here installs the
       # packages (13-15 s of the job; the Node it needs is the first setup's). Asked with the PostHog project the build
@@ -1239,15 +1246,25 @@ jobs:
             .ci/mbc-store
             .ci/hbc
           key: ${{ env.STORE_KEY }}
-      # (moon's build once it is done, whatever came after it: cut in its bundling, the next run built it all again)
-      - if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome == 'success' && steps.moon.outputs.cache-hit != 'true'
+      # Moon's build kept once moonc has made the app's C (stillfail.c), whatever came after it: kept only of a build that
+      # went through, main's cut in its C (the units of -O2, at its JOB_END - 60) kept none, and every run did moonc's
+      # 120 s again before its C, cut again (2026-11-17). Keyed by that C, as next-mac-cache.yml's: one the same is not
+      # saved again. (The compilers the step before stopped; mbc's objects are not moon's: not kept.)
+      - name: Moon's build, once moonc made the app's C
+        if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome != 'skipped'
+        run: |
+          c=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.c
+          [ -s "$c" ] || { echo "moonc had not made the app's C: moon's build not kept"; exit 0; }
+          find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
+          echo "MOON_KEY=mbui-mac-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_ENV"
+      - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |
             apps/mbui/_build
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          key: mbui-mac-moon-${{ github.sha }}
+          key: ${{ env.MOON_KEY }}
   # The expensive build is already handed over; keep signing, notarization and release checks in their own budget.
   desktop:
     needs: [plan, natives, natives-mac, desktop-build]
