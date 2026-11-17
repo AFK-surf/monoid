@@ -240,6 +240,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   moon.work): `scripts/farview.sh` puts it in `deps/farview` at the commit `farview.pin` names, `moon.work` names it,
   `scripts/env.sh` fetches it with git's own credentials and CI with the read-only deploy key `FARVIEW_DEPLOY_KEY`
   (each workflow's env, the mbui-moonbit action's last step). A newer client is a change of `farview.pin`.
+- Where it cannot be fetched (an account that cannot read AFK-surf/farview, a fork), test what you can with a stand-in
+  kept out of the change, say so in the PR, and open it ready for review, never a draft: a draft's CI never runs, and
+  the full app build with the real client is the upstream CI's (左子健, 2026-11-17).
 
 ## Running the app in development
 
