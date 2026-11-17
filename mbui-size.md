@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [ebb9f966a](https://github.com/AFK-surf/monoid/commit/ebb9f966ae6d2111562b9e2beeec1d4cfb5ee5ed) mbui: what is read as pointed at is pointed at, wh | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [b1dc126d0](https://github.com/AFK-surf/monoid/commit/b1dc126d0b58739fa50b010e6382d1fdc0306d02) app, core: a new chat's words referring to this wo | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [1f2f741b2](https://github.com/AFK-surf/monoid/commit/1f2f741b2a409ad62fe9d26d71bcd1f60e27189d) console: issue relay tokens and take relays off th | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.86 | 120.08 |
 | [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
-| [394d2729d](https://github.com/AFK-surf/monoid/commit/394d2729da1b2a5f3a95d5c8b6175fcca37f519f) mbui: retry transient GitHub API failures in chk c | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 96 | 117.26 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.56 |
 | [ebb9f966a](https://github.com/AFK-surf/monoid/commit/ebb9f966ae6d2111562b9e2beeec1d4cfb5ee5ed) mbui: what is read as pointed at is pointed at, wh | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.56 |
 | [b1dc126d0](https://github.com/AFK-surf/monoid/commit/b1dc126d0b58739fa50b010e6382d1fdc0306d02) app, core: a new chat's words referring to this wo | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.48 |
 | [1f2f741b2](https://github.com/AFK-surf/monoid/commit/1f2f741b2a409ad62fe9d26d71bcd1f60e27189d) console: issue relay tokens and take relays off th | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
-| [394d2729d](https://github.com/AFK-surf/monoid/commit/394d2729da1b2a5f3a95d5c8b6175fcca37f519f) mbui: retry transient GitHub API failures in chk c | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
