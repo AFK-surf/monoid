@@ -169,6 +169,12 @@ test("how many more accounts of its plan a pool needs to keep up: none where it 
     ["its five hours taking it faster than they come back", [account("a", [five(0, null), week(60, 150)])], paceOf({ a: { spend: spend(() => 1, 6) } }), true],
     ["its week spent long ago, nothing spent since", [account("a", [week(100, 100)])], paceOf({ a: { spend: spend((i) => (i < 30 ? 0 : 2), 68) } }), false],
     ["two accounts, both spent fast", [account("a", [week(70, 120)]), account("b", [week(50, 40)])], paceOf({ a: { spend: spend(() => 1.5) }, b: { spend: spend(() => 1.5) } }), false],
+    // Six, half spent and refilling three days on, a run of agents in the last three hours: what it asks of the week
+    // on leans to the week's pace, never the run's of every hour.
+    ["six, a burst of the last hours, a day without before the refills", [
+      ...[0, 1, 2].map((i) => account(`s${i}`, [week(100, 82 + i)])),
+      account("t0", [week(80, 160)]), account("t1", [week(85, 160)]), account("t2", [week(85, 160)]),
+    ], paceOf(Object.fromEntries(["s0", "s1", "s2", "t0", "t1", "t2"].map((k) => [k, { spend: spend((i) => (i < 3 ? 3 : 0.4)) }]))), false],
   ];
   const steady = claude([account("a", [week(10, 100)])], paceOf({ a: { spend: spend(() => 1) } }));
   assert.equal(steady.overPace, false);
@@ -176,11 +182,19 @@ test("how many more accounts of its plan a pool needs to keep up: none where it 
   for (const [name, items, pace, short] of cases) {
     const pool = claude(items, pace);
     assert.ok(pool.overPace, `${name}: over its pace`);
+    if (pool.exhaustHours === null) {
+      // (over its pace now, never going without in the week: none more said)
+      assert.equal(pool.neededAccounts, null, `${name}: goes without in no hour`);
+      continue;
+    }
     const needed = pool.neededAccounts ?? 0;
     assert.ok(needed >= 1, `${name}: ${pool.neededAccounts}`);
-    // With so many more it keeps up: not over its pace, not going without in the week, needing none more.
+    // With so many more it goes without in no hour of the week, needing none more; with one fewer it still does (the
+    // fewest: a burst of the last hours is not asked of every hour on, 13 said where 1 would do).
     const after = claude(more(items, needed, short), pace);
-    assert.deepEqual([after.overPace, after.exhaustHours, after.neededAccounts], [false, null, null], `${name}, ${needed} more: ${after.currentBurnPerHour} of ${after.sustainablePerHour} %/h`);
+    assert.deepEqual([after.exhaustHours, after.neededAccounts], [null, null], `${name}, ${needed} more: ${after.starveSpans}`);
+    const fewer = claude(more(items, needed - 1, short), pace);
+    assert.ok(fewer.exhaustHours !== null, `${name}, ${needed - 1} more: goes without in none`);
   }
 });
 

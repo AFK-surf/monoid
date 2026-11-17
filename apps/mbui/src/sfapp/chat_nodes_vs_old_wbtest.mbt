@@ -273,11 +273,15 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// brought down to what is laid out now.
 /// Each brought down, 2026-11-17, to the most of the five rates, once a message's time is its words' own node and an
 /// avatar over a row one node with its layer (measured again after main's).
+/// Phone's and plp_narrow's laid out raised, 2026-11-17 (card 968, 978; md 931 before), phone md's brought down (1054
+/// before), once 小屏 Home's list no longer opens under what is left up long (moved into 待处理): a screen's more of its
+/// rows laid out under both pages alike (146 more of each, the same at the five rates), nothing of either page changed;
+/// each rounded up.
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2613, 968),
-  "phone md": (1707, 1054),
-  "plp_narrow card": (2646, 978),
-  "plp_narrow md": (2125, 931),
+  "phone card": (2613, 979),
+  "phone md": (1707, 930),
+  "plp_narrow card": (2646, 983),
+  "plp_narrow md": (2125, 943),
   "tape card": (1318, 1184),
   "tape md": (1368, 1150),
   "wide card": (1254, 1110),
@@ -302,12 +306,14 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// before) once Home's transfers key is made as nodes, as chat_vs_bars' are: the most of the five rates, the default's.
 /// Phone card's and plp_narrow md's laid out more again (1135, 1060 before) once Home's list's faces are fewer boxes, as
 /// chat_vs_bars' phone md, nothing of the new page changed; the most of the five rates, the default's, rounded up.
-/// Each brought down, 2026-11-17, as chat_vs_bars' are.
+/// Each brought down, 2026-11-17, as chat_vs_bars' are. Then plp_narrow card's laid out raised (978 before) and the
+/// others' brought down (1182, 1045, 1132 before), as chat_vs_bars' are once 小屏 Home's list no longer opens under what
+/// is left up long: the most of the five rates, the default's, each rounded up.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1639, 1182),
-  "phone md": (1329, 1045),
-  "plp_narrow card": (1658, 978),
-  "plp_narrow md": (1639, 1132),
+  "phone card": (1639, 979),
+  "phone md": (1329, 936),
+  "plp_narrow card": (1658, 983),
+  "plp_narrow md": (1639, 943),
   "tape card": (1318, 1184),
   "tape md": (1368, 1150),
   "wide card": (1254, 1110),

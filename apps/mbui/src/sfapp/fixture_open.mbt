@@ -142,7 +142,7 @@ pub fn open_fixture(mode : String) -> Unit {
       @sfdesk.open_jobs_pop()
       @sfdesk.open_job_pop("j-ci")
     }
-    "home-attention" => @sfdesk.open_attention()
+    "home-attention" | "home-shared-bell" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
       @sfdesk.letters_to_list(r)

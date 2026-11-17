@@ -113,7 +113,7 @@ test "settings search finds each experimental switch by its words, on 实验性�
 }
 
 ///|
-test "看板 off by default on 小屏, 中屏 and 大屏: no key to it; turned on, there; on the board and turned off, Home back to its list at once" {
+test "看板 off by default on 小屏, 中屏 and 大屏: no key to it (none in the rail); turned on, there; on the board and turned off, Home back to its list at once" {
   for win in [(390.0, 844.0, 2), (800.0, 800.0, 0), (1280.0, 800.0, 0)] {
     let (w, h, platform) = win
     let (t, src) = exp_at("home", w, h, platform~)
@@ -133,7 +133,17 @@ test "看板 off by default on 小屏, 中屏 and 大屏: no key to it; turned o
     t.click(Button, label="看板")
     t.run_for(@ui.move_most_ms)
     assert_true(@sfbase.board_on_now(src), msg="\{at}: on the board")
-    assert_true(t.query(Button, label="列表") is Some(_), msg="\{at}: its way back to the list")
+    // (小屏: Home's own 列表; 中屏 and 大屏: the rail's 对话 and 看板, no 列表 in the board's bar; on the tape (中屏) the
+    // rail is the sidebar's, beside the board's panel brought over)
+    if platform == 2 {
+      assert_true(t.query(Button, label="列表") is Some(_), msg="\{at}: its way back to the list")
+    } else {
+      assert_true(t.query(Button, label="列表") is None, msg="\{at}: no 列表")
+      assert_eq(@sfdesk.lit_place(), "board")
+      if !@sfdesk.wide.tape.get() {
+        assert_true(t.query(Button, label="对话") is Some(_) && t.query(Button, label="看板") is Some(_), msg="\{at}: the rail's")
+      }
+    }
     // turned off while it shows: the list again, with nothing pressed
     turn(false)
     assert_false(@sfbase.board_on_now(src), msg="\{at}: off: not the board")

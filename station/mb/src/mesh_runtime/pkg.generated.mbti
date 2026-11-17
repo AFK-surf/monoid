@@ -1,0 +1,835 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/mesh_runtime"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/mesh_door/door",
+}
+
+// Values
+pub fn access_shown(@json.Json?, String, (String, String, @json.Json) -> String) -> @json.Json?
+
+pub let address_most : Int32
+
+pub fn address_shown(String?) -> String?
+
+pub fn admin_answered(Int32, String) -> Result[@json.Json, (String, String)]
+
+pub async fn answer_screen(ScreenHubPort, @door.Stream, Bytes, @json.Json, @json.Json, () -> Bool, @effect.Runtime, (String, String, @json.Json) -> String, (String, String, String, @json.Json) -> Unit, paths? : (() -> Array[LinkPath])?, host_now? : (() -> Double)?, stall? : (() -> Double, () -> Unit)) -> Unit
+
+pub fn asked(@json.Json) -> @json.Json
+
+pub fn attribute(String, @json.Json) -> @json.Json
+
+pub fn bare(String) -> String
+
+pub fn bind_station(@json.Json, String?, String?) -> @json.Json raise Failure
+
+pub fn check_network(@json.Json?) -> String?
+
+pub fn clip_fits(Clip) -> Bool
+
+pub fn clip_payload(Clip, flags? : Int32?) -> Bytes
+
+pub let clip_png_max : Int32
+
+pub let clip_text_max : Int32
+
+pub fn config_payload(String, Double, Double, Bytes?, Region?) -> Bytes
+
+pub fn congestion_of(@json.Json?) -> String
+
+pub fn control_or_format(Int32) -> Bool
+
+pub let cut : Double
+
+pub fn decode_uri_component(String) -> String?
+
+pub let delivery_window_ms : Double
+
+pub fn dirname(String) -> String
+
+pub let down : Double
+
+pub let downsize_ms : Double
+
+pub let downsize_share : Double
+
+pub fn dscp_taken(@json.Json?) -> Bool
+
+pub fn encode_uri_component(String) -> String
+
+pub let export_ms : Int32
+
+pub fn file_bytes(async () -> FileReading, Int64, Int64) -> Pieces
+
+pub let fps_choices : Array[Int32]
+
+pub fn frame(Int32, Bytes) -> Bytes
+
+pub let frame_most : Int32
+
+pub fn front_bind_options(Bytes, Array[Bytes], Array[String], discovery? : Bool, bind_addr? : String?, relay_only? : Bool, congestion? : String?, dscp? : Double?) -> Map[String, @json.Json]
+
+pub let front_end : UInt32
+
+pub let front_failed : UInt32
+
+pub async fn harness(@host.Host) -> Unit
+
+pub let hold_ms : Double
+
+pub fn incoming_steps_json(Array[@json.Json]) -> @json.Json
+
+pub fn interfaces_of_json(@json.Json) -> Array[(String, Array[Iface])]
+
+pub fn is_fps(@json.Json?) -> Bool
+
+pub fn js_is_integer(Double) -> Bool
+
+pub fn js_num(Double) -> String
+
+pub fn js_number(String) -> Double
+
+pub fn js_quote(String) -> String
+
+pub fn js_round(Double) -> Double
+
+pub fn js_space(Int32) -> Bool
+
+pub fn js_stringify(@json.Json) -> String
+
+pub fn js_trim(String) -> String
+
+pub fn json_of(@jsjson.JValue) -> @json.Json
+
+pub fn jvalue(@json.Json) -> @jsjson.JValue
+
+pub let kind_ack : Int32
+
+pub let kind_audio : Int32
+
+pub let kind_audio_config : Int32
+
+pub let kind_clipboard : Int32
+
+pub let kind_config : Int32
+
+pub let kind_input : Int32
+
+pub let kind_keyframe : Int32
+
+pub let kind_look : Int32
+
+pub let kind_set_clipboard : Int32
+
+pub let kind_sound : Int32
+
+pub let kind_state : Int32
+
+pub let kind_video : Int32
+
+pub fn lan_addrs(Array[String], Array[(String, Array[Iface])]) -> Array[String]
+
+pub fn lan_neighbours(Array[(String, Array[Iface])]) -> Array[String]
+
+pub async fn lan_reach(Array[String], async (String) -> String?) -> String?
+
+pub fn lang_of_core(Array[(String, String)]) -> String
+
+pub let latency_every_ms : Double
+
+pub let latency_window_ms : Double
+
+pub fn limit_in(Int32) -> Int32
+
+pub let local_network_settings : String
+
+pub let look_least : Double
+
+pub let look_whole : Double
+
+pub let loss_every_ms : Int32
+
+pub let loss_min_lost : Double
+
+pub let loss_min_packets : Double
+
+pub let loss_window_ms : Double
+
+pub let low_bounds : Bounds
+
+pub let max_batch : Int32
+
+pub let max_buffer : Int32
+
+pub let max_clip_in : Int32
+
+pub let max_in : Int32
+
+pub let max_rate : Double
+
+pub let max_tools_line : Int32
+
+pub let max_unacked : Int32
+
+pub let measured_ms : Double
+
+pub fn message_of(Error) -> String
+
+pub let min_rate : Double
+
+pub fn network_view(@json.Json?) -> @json.Json
+
+pub fn not_lan(String) -> Bool
+
+pub fn one_bytes(Bytes) -> Pieces
+
+pub fn otlp_body(String, Array[@json.Json]) -> String
+
+pub fn own_rate(Double, Double) -> Double
+
+pub fn parse_clip(Bytes) -> (Clip, Bool)?
+
+pub fn parse_fill(@json.Json) -> @json.Json?
+
+pub fn parse_input(@json.Json) -> @json.Json?
+
+pub fn parse_look(Bytes, Bounds) -> (Region?, Bounds)?
+
+pub fn parse_parent(String?) -> Parent?
+
+pub fn parse_passkey(@json.Json) -> @json.Json?
+
+pub fn parse_resolution(@json.Json) -> (Double, Double)?
+
+pub fn parse_reveal(@json.Json) -> String?
+
+pub fn parse_scale(@json.Json) -> Double?
+
+pub fn parse_window_pick(@json.Json) -> WindowPick
+
+pub fn paths_of(Array[WayPath]) -> String
+
+pub let piece : Int32
+
+pub fn presence_refusal(ToolsDeps) -> String?
+
+pub async fn presence_tools(ToolsDeps, @json.Json?) -> @json.Json
+
+pub fn private_v4(String) -> Bool
+
+pub let queue_least_ms : Double
+
+pub fn queue_ms(Double) -> Double
+
+pub let queue_share : Double
+
+pub let quiet : Int32
+
+pub fn rate_ceiling(Double, Double, String?) -> Double
+
+pub async fn read_bytes(Pieces, Int32) -> Bytes
+
+pub fn region_of(@json.Json?) -> Region?
+
+pub fn route(String) -> String
+
+pub let rtt_window_ms : Double
+
+pub fn said_word(@json.Json?, Int32) -> String?
+
+pub let screen_type : String
+
+pub fn sent_on(Array[WayPath]) -> Array[(String, Double)]
+
+pub async fn serve_tools(ToolsDeps, @door.Connection, @effect.Runtime) -> Unit
+
+pub fn served_again_after(Double) -> Double
+
+pub let served_again_ms : Double
+
+pub let served_listen_ms : Double
+
+pub let served_routes : Array[String]
+
+pub let served_steady_ms : Double
+
+pub let servers : Int32
+
+pub let sharper : Double
+
+pub async fn shell_file(@host.Host, String) -> FileReading
+
+pub fn shell_sockets(@host.Host) -> Sockets
+
+pub fn slow_line(Array[(String, Double)], Int32?, Double, Array[WayPath], () -> String, Double, Double, String) -> @json.Json?
+
+pub let slow_reply_bytes : Int32
+
+pub let slow_reply_ms : Double
+
+pub async fn slowly(@door.Stream, () -> Array[WayPath], String, () -> String, Double, Double, Double, () -> Double, (String, String, @json.Json) -> Unit) -> Unit
+
+pub let stall_tick_ms : Double
+
+pub let start_rate : Double
+
+pub let start_unacked : Int32
+
+pub let start_up : Double
+
+pub let still_ms : Double
+
+pub async fn stop_bytes(Pieces) -> Unit
+
+pub fn streams_path_of(String, Int32, Int32) -> String
+
+pub fn sub_of(Array[@json.Json]) -> String?
+
+pub fn tailnet_addrs(Array[String], Array[(String, Array[Iface])]) -> Array[String]
+
+pub fn tailnet_v4(String) -> Bool
+
+pub fn tell_locks(LockSource, (String, @json.Json, String, @json.Json) -> Unit) -> () -> Unit
+
+pub fn to_uint32(Double) -> Double
+
+pub let tools_alpn : String
+
+pub async fn tools_answer(ToolsDeps, @json.Json?, () -> String?) -> @json.Json
+
+pub let tools_line_ms : Int32
+
+pub fn tools_refusal(ToolsDeps, String) -> String?
+
+pub async fn tools_say(async (String, String, String, @json.Json) -> @json.Json, String, String, String) -> Unit
+
+pub async fn tools_start(async (String, String, String, @json.Json) -> @json.Json, Array[String], Array[String], String, String?, String?, String) -> (String, String)
+
+pub fn tools_status(Array[@json.Json]) -> @json.Json
+
+pub fn tools_thread_status(ToolsStore?, String) -> @json.Json?
+
+pub fn traceparent(Span) -> String
+
+pub let up : Double
+
+pub let up_after_ms : Double
+
+pub let up_every_ms : Double
+
+pub let up_fast : Double
+
+pub let up_fast_after_ms : Double
+
+pub let upsize_ms : Double
+
+pub let used : Double
+
+pub fn video_payload(Bool, Double, Bytes) -> Bytes
+
+pub async fn write_bytes(async (Bytes, Int64) -> Unit, Pieces, Int64, Int64) -> Int64
+
+// Errors
+pub(all) suberror AdminRefused {
+  AdminRefused(String, String)
+}
+
+pub(all) suberror ScreenRefused {
+  ScreenRefused(Int32, String, @json.Json, @json.Json?)
+}
+
+// Types and methods
+pub(all) struct AudioPacket {
+  ts : Double
+  data : Bytes
+  codec : String
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Bounds {
+  max_width : Double
+  max_height : Double
+}
+pub fn Bounds::to_json(Self) -> @json.Json
+
+pub struct Came {
+  carry : Bytes
+  id : Int64
+  // private fields
+}
+
+pub(all) enum Claimed {
+  Kept(Handled)
+  Refused(Handled)
+  Claim(String, (Handled?) -> Unit)
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Clip {
+  Text(String)
+  Png(Bytes)
+}
+
+pub(all) struct FileReading {
+  read_at : async (Int64, Int32) -> Bytes
+  close : async () -> Unit
+}
+
+pub(all) struct FrameConfig {
+  codec : String
+  width : Double
+  height : Double
+  description : Bytes?
+  region : Region?
+}
+
+pub struct FrameIn {
+  mut carry : Bytes
+  read : async () -> Bytes?
+  limit : (Int32) -> Int32
+}
+pub fn FrameIn::new(async () -> Bytes?, carry? : Bytes, limit? : (Int32) -> Int32) -> Self
+pub async fn FrameIn::next(Self) -> (Int32, Bytes)?
+
+pub struct FrameLatency {
+  now : () -> Double
+  out : Map[Double, (Double, Double)]
+  samples : Array[Sample]
+  mut said : Double
+}
+pub fn FrameLatency::acked(Self, Double, Double) -> Unit
+pub fn FrameLatency::new(() -> Double) -> Self
+pub fn FrameLatency::sent(Self, Double) -> Unit
+pub fn FrameLatency::take(Self) -> (Double, Double)?
+
+pub struct Front {
+  streams_path : String
+  // private fields
+}
+pub async fn Front::ask(Self, String, args? : Array[(String, @json.Json)], id? : (Int32) -> Unit) -> @json.Json
+pub fn Front::close(Self) -> Unit
+pub fn Front::forget(Self, Int64) -> Unit
+pub async fn Front::gone_wait(Self) -> Unit
+pub fn Front::incoming_of(Self, Int64) -> Incoming
+pub fn Front::is_gone(Self) -> Bool
+pub async fn Front::open(Sockets, String, Int32, @effect.Runtime, (String, String, String, @json.Json) -> Unit) -> Self
+pub async fn Front::socket_of(Self, Int64, Int64) -> Came
+
+pub struct FrontEndpoint {
+  // private fields
+}
+pub async fn FrontEndpoint::accept(Self) -> @door.Connection?
+pub fn FrontEndpoint::add_addr(Self, @json.Json) -> Unit
+pub async fn FrontEndpoint::bind(Sockets, String, Int32, Map[String, @json.Json], @effect.Runtime, async (Int32) -> Unit, (String, String, String, @json.Json) -> Unit, closing? : () -> Unit) -> Self
+pub async fn FrontEndpoint::close(Self) -> Unit
+pub async fn FrontEndpoint::connect(Self, @json.Json, Bytes, additional? : Array[Bytes], given_up? : @effect.Deferred[Unit]?) -> @door.Connection
+pub async fn FrontEndpoint::disabled_relays(Self, String, Array[String], Bool) -> Unit
+pub fn FrontEndpoint::hold_incoming(Self, Int32) -> Unit
+pub fn FrontEndpoint::home(Self) -> String?
+pub fn FrontEndpoint::id(Self) -> String
+pub async fn FrontEndpoint::insert_relay(Self, String) -> Unit
+pub fn FrontEndpoint::keep(Self, Array[String]) -> Unit
+pub fn FrontEndpoint::linked(Self) -> Bool
+pub async fn FrontEndpoint::network_change(Self) -> Unit
+pub async fn FrontEndpoint::online(Self) -> Unit
+pub async fn FrontEndpoint::public_relays(Self, Bool) -> Unit
+pub fn FrontEndpoint::relay_status(Self) -> @json.Json
+pub async fn FrontEndpoint::remove_relay(Self, String) -> Unit
+pub async fn FrontEndpoint::route(Self, Bytes, Array[String], Array[String]) -> Bool
+pub fn FrontEndpoint::set_congestion(Self, String) -> Unit
+pub async fn FrontEndpoint::set_relay_entries(Self, @json.Json) -> Unit
+pub fn FrontEndpoint::sockets(Self) -> Array[String]
+
+pub(all) struct Handled {
+  status : Int32
+  headers : @json.Json
+  body : Bytes
+}
+
+pub(all) struct Iface {
+  address : String
+  netmask : String
+  family : String
+  internal : Bool
+}
+pub fn Iface::of_json(@json.Json) -> Self
+
+pub struct Incoming {
+  // private fields
+}
+pub fn Incoming::end(Self) -> Unit
+pub fn Incoming::give(Self, Came, index? : Int64?) -> Unit
+pub fn Incoming::new() -> Self
+pub fn Incoming::skip(Self, Int64) -> Unit
+pub async fn Incoming::take(Self) -> Came?
+
+pub struct LinkLoss {
+  // private fields
+}
+pub fn LinkLoss::new(() -> Double) -> Self
+pub fn LinkLoss::sample(Self, Array[LinkPath]) -> Double?
+pub fn LinkLoss::step(Self, Array[LinkPath]) -> Double?
+
+pub(all) struct LinkPath {
+  id : String?
+  selected : Bool
+  relay : String?
+  ip : String?
+  tx_packets : Double
+  lost_packets : Double
+}
+pub fn LinkPath::of_json(@json.Json) -> Self
+
+pub(all) struct LockSource {
+  memberships : () -> Array[(String, Bool)]
+  head : (String?) -> @json.Json?
+  force_word : (String?) -> String
+  listen_cloud : (() -> Unit) -> () -> Unit
+  listen_chains : ((String) -> Unit) -> () -> Unit
+  kept : (String) -> Array[@json.Json]?
+}
+
+pub struct LoopStall {
+  mut total : Double
+  mut last : Double
+  mut stop : (() -> Unit)?
+  mut users : Int32
+  now : () -> Double
+  every : (Double, () -> Unit) -> () -> Unit
+}
+pub fn LoopStall::new(() -> Double, (Double, () -> Unit) -> () -> Unit) -> Self
+pub fn LoopStall::stalled(Self) -> Double
+pub fn LoopStall::use_(Self) -> () -> Unit
+
+pub struct NetworkFollow {
+  mut congestion : String
+  set : (String) -> Unit raise
+  said : (String, String, @json.Json) -> Unit
+}
+pub fn NetworkFollow::new(@json.Json?, (String) -> Unit raise, (String, String, @json.Json) -> Unit) -> Self
+pub fn NetworkFollow::told(Self, @json.Json?) -> Unit
+
+pub struct Out {
+  ts : Double
+  bytes : Double
+  at : Double
+  stall : Double
+}
+
+pub struct Pacer {
+  out : Array[Out]
+  trips : Array[Trip]
+  through : Array[Through]
+  mut rate : Double?
+  mut ceiling : Double?
+  mut down : Double
+  mut up : Double
+  mut since : Double?
+  mut held : Double
+  mut first : Double
+  gap : Double?
+  mut due : Double
+  now : () -> Double
+  stalled : () -> Double
+}
+pub fn Pacer::acked(Self, Double) -> Unit
+pub fn Pacer::asked_rate(Self) -> Double?
+pub fn Pacer::backlogged(Self) -> Bool
+pub fn Pacer::may(Self) -> Bool
+pub fn Pacer::new(() -> Double, start? : Double?, fps? : Double?, stalled? : () -> Double) -> Self
+pub fn Pacer::rtt(Self) -> Double?
+pub fn Pacer::sent(Self, Double, Double) -> Unit
+pub fn Pacer::set_ceiling(Self, Double) -> Unit
+pub fn Pacer::through_rate(Self) -> Double
+pub fn Pacer::unacked(Self) -> Int32
+pub fn Pacer::wait(Self) -> Double
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Parent {
+  trace : String
+  span : String
+  sampled : Bool
+}
+pub fn Parent::to_json(Self) -> @json.Json
+
+pub struct PieceQueue {
+  pending : Array[(String?, Array[Int32])]
+}
+pub fn PieceQueue::drain(Self) -> Array[@json.Json]
+pub fn PieceQueue::new() -> Self
+pub fn PieceQueue::piece(Self, Int32, String?) -> Unit
+
+pub(all) struct Pieces {
+  next : async () -> Bytes?
+  stop : async () -> Unit
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Region {
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+}
+pub fn Region::to_json(Self) -> @json.Json
+
+pub struct Sample {
+  at : Double
+  frame : Double
+  before : Double
+}
+
+pub(all) struct Says {
+  claim : async (@json.Json, String, String?, String) -> Claimed
+  said : (Double, Double, String, @json.Json) -> Unit
+}
+
+pub(all) struct ScreenFrame {
+  config : FrameConfig?
+  key : Bool
+  ts : Double
+  data : Bytes
+}
+
+pub(all) struct ScreenHubPort {
+  get : (String) -> ScreenSourcePort?
+  drive : (String, String, Bool, String) -> (Bool, Array[String])
+  join : (String, Watcher) -> () -> Unit
+  watch : (() -> Unit) -> () -> Unit
+  when_stopping : (() -> Unit) -> () -> Unit
+}
+
+pub(all) struct ScreenSourcePort {
+  kind : String
+  title : () -> String
+  open : async (@json.Json) -> ScreenViewPort
+  access : (() -> @json.Json?)?
+  clipboard : (() -> Array[String])?
+  reveal : Bool
+  peek : Bool
+  open_url : Bool
+  user_tab : Bool
+  sleeping : (() -> Bool)?
+  site : (() -> String?)?
+  address : (() -> String?)?
+  scale : (async () -> @json.Json?)?
+  set_scale : (async (Double) -> @json.Json)?
+  resolution : (async () -> @json.Json?)?
+  set_resolution : (async (Double, Double) -> @json.Json)?
+}
+
+pub(all) struct ScreenViewPort {
+  next : async () -> ScreenFrame?
+  next_audio : (async () -> AudioPacket?)?
+  keyframe : () -> Unit
+  input : async (@json.Json) -> Unit
+  rate : ((Double) -> Unit)?
+  bounds : ((Double, Double, Region?) -> Unit)?
+  regions : (() -> Bool)?
+  video : (() -> @json.Json?)?
+  why : (() -> String?)?
+  close : () -> Unit
+  set_clipboard : (async (Clip, Bool) -> Unit)?
+  watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
+  watch_cursor : (((@json.Json) -> Unit) -> (() -> Unit))?
+  watch_turn : (((@json.Json) -> Unit) -> (() -> Unit))?
+  watch_windows : (((@json.Json) -> Unit) -> (() -> Unit))?
+  window : ((Double?) -> Unit)?
+  reveal : (async (String) -> Unit)?
+  watch_login : (((@json.Json) -> Unit) -> (() -> Unit))?
+  fill : (async (@json.Json) -> Unit)?
+  watch_passkey : (((@json.Json) -> Unit) -> (() -> Unit))?
+  passkey : (async (@json.Json) -> Unit)?
+  watch_child : (((String) -> Unit) -> (() -> Unit))?
+}
+
+pub struct Served {
+  // private fields
+}
+pub async fn Served::close(Self) -> Unit
+pub fn Served::new(String, String, ServedWith, @effect.Runtime) -> Self
+pub fn Served::set_changed(Self, (@json.Json, @json.Json) -> Unit) -> Unit
+pub fn Served::set_on_routes(Self, (Array[String]) -> Unit) -> Unit
+pub fn Served::set_says(Self, Says) -> Unit
+pub async fn Served::start(Self) -> Array[String]
+pub fn Served::viewer(Self, Int32, @json.Json?, moved? : Bool, floor? : Double?) -> Unit
+
+pub struct ServedTold {
+  told : Map[Int32, String]
+  names : Map[String, String]
+}
+pub fn ServedTold::again(Self) -> Array[@json.Json]
+pub fn ServedTold::new() -> Self
+pub fn ServedTold::viewer(Self, Int32, @json.Json?, Bool, Double?) -> Array[@json.Json]
+pub fn ServedTold::viewer_of(Self, Int32) -> @json.Json?
+
+pub(all) struct ServedWith {
+  spawn : (String, Array[String], (@json.Json) -> Unit, (Int32) -> Unit) -> ServingProcess
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  wall : () -> Double
+  answer : async (@json.Json, @json.Json, Bytes) -> Handled
+  built : (@json.Json, Double?) -> Unit
+  stream : (async (@json.Json, @json.Json, Bytes) -> StreamAnswer)?
+  prepare : (String) -> Unit
+  remove : async (String) -> Unit
+  set : () -> @json.Json
+  pid : Int32
+  sep : String
+  log : (String, String, String, @json.Json) -> Unit
+}
+
+pub(all) struct ServingProcess {
+  post : (@json.Json) -> Unit
+  terminate : async () -> Unit
+}
+
+pub struct Sharpener {
+  mut at : Double
+  mut rate : Double?
+}
+pub fn Sharpener::due(Self, Double, Double?) -> Bool
+pub fn Sharpener::left(Self, Double) -> Double
+pub fn Sharpener::new() -> Self
+pub fn Sharpener::sent(Self, Double, Double?) -> Unit
+
+pub struct Sizer {
+  now : () -> Double
+  mut asked : Bounds
+  mut low : Bool
+  mut since : Double?
+  whole : Bool
+}
+pub fn Sizer::ask(Self, Bounds) -> Bounds
+pub fn Sizer::asked_bounds(Self) -> Bounds
+pub fn Sizer::bounds(Self) -> Bounds
+pub fn Sizer::is_low(Self) -> Bool
+pub fn Sizer::new(() -> Double, Bounds, quality? : String?) -> Self
+pub fn Sizer::step(Self, Double, Double, Double, Double) -> Bounds?
+
+pub(all) struct Sock {
+  read : async () -> Bytes?
+  write : async (Bytes) -> Unit
+  end : async () -> Unit
+  destroy : () -> Unit
+}
+
+pub(all) struct SockListener {
+  accept : async () -> Sock?
+  close : () -> Unit
+}
+
+pub(all) struct Sockets {
+  connect : async (String) -> Sock
+  listen : async (String) -> SockListener
+  remove : async (String) -> Unit
+}
+
+pub(all) struct Span {
+  parent : Parent
+  id : String
+  wall_ns : Int64
+  started : Int64
+}
+
+pub(all) struct StreamAnswer {
+  status : Int32
+  headers : @json.Json
+  body : StreamBody
+}
+
+pub(all) enum StreamBody {
+  Whole(Bytes)
+  Relay(((String) -> Unit, () -> Unit) -> Unit, () -> Unit)
+  Pieces(async () -> Bytes?, async () -> Unit)
+}
+
+pub struct Through {
+  at : Double
+  bytes : Double
+}
+
+pub(all) struct ToolsDeps {
+  enabled : () -> Bool
+  workspace : () -> String?
+  removed : () -> Bool
+  gateway_keys : () -> Array[String]
+  run : async (String, @json.Json, @json.Json) -> Result[@json.Json, (String, String)]
+  said : (String, String, @json.Json) -> Unit
+}
+
+pub(all) struct ToolsStore {
+  has_thread : (Double) -> Bool
+  thread_sessions : (Double) -> Array[String]
+  last_turn : (String) -> @json.Json?
+}
+
+pub struct Traces {
+  enabled : Bool
+  spans : Array[@json.Json]
+  rt : @effect.Runtime
+  mut armed : Bool
+  mut sink : (async (Array[@json.Json]) -> Unit)?
+  mut closed : Bool
+  mut waiting : @effect.Fiber[Unit]?
+  hr_now : () -> Int64
+  said : (String, String, @json.Json) -> Unit
+}
+pub fn Traces::close(Self) -> Unit
+pub fn Traces::end(Self, Span, String, Array[(String, @json.Json)], Bool) -> Unit
+pub fn Traces::export_to(Self, async (Array[@json.Json]) -> Unit) -> Unit
+pub fn Traces::new(Bool, @effect.Runtime, () -> Int64, (String, String, @json.Json) -> Unit) -> Self
+pub fn Traces::start(Self, Parent?, String, Int64) -> Span?
+
+pub struct Trip {
+  at : Double
+  ms : Double
+}
+
+pub(all) struct Watcher {
+  name : String
+  device : String
+  self_ : String?
+  client : String?
+  app : String?
+  control : Bool
+  tell : (@json.Json) -> Unit
+  end : (String) -> Unit
+  watch_only : (String?) -> Unit
+}
+
+pub(all) struct WayPath {
+  selected : Bool
+  relay : String?
+  ip : String?
+  rtt_ms : Double?
+  tx_packets : Double
+  lost_packets : Double
+  cwnd : Double?
+  congestion_events : Double?
+}
+pub fn WayPath::of_json(@json.Json) -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) enum WindowPick {
+  NotOne
+  Whole
+  Window(Double)
+}
+
+// Type aliases
+pub type Ask = async (String, String, String, @json.Json) -> @json.Json
+
+pub type Said = (String, String, String, @json.Json) -> Unit
+
+pub type Tell = (String, @json.Json, String, @json.Json) -> Unit
+
+pub type Tr = (String, String, @json.Json) -> String
+
+// Traits
