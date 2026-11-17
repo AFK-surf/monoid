@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f5d3b641f](https://github.com/AFK-surf/monoid/commit/f5d3b641f66a8cbcefff71f654467fbaf74a3547) cloud: the relays' list no longer comes from the d | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
 | [7b4e3e36a](https://github.com/AFK-surf/monoid/commit/7b4e3e36af878c4cb82546e779238fd35b588efe) station/mb: the agents' tools in MoonBit (mcp_tool | 2.5 | 3.53 | 15.23 | 36.59 | 60.22 | 32.04 | 67.19 | 95.88 | 116.32 |
 | [719a050d0](https://github.com/AFK-surf/monoid/commit/719a050d043ed11baf37af4b7e07ab21c8782561) app: the board reaches the foot on every screen, i | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.81 | 126.21 |
 | [54a442122](https://github.com/AFK-surf/monoid/commit/54a442122fc73c5fdacfa203df6398994b12b563) ci: each GitHub image keeps its own units, and a b | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.8 | 119.85 |
 | [c94b14180](https://github.com/AFK-surf/monoid/commit/c94b141807a6ca280fc02db5788b70bff2917113) mbui android: the app made on a thread of its own, | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.8 | 119.85 |
-| [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 2.46 | 3.45 | 14.75 | 35.96 | 57.86 | 31.53 | 65.35 | 95.75 | 117.47 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f5d3b641f](https://github.com/AFK-surf/monoid/commit/f5d3b641f66a8cbcefff71f654467fbaf74a3547) cloud: the relays' list no longer comes from the d | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.28 |
 | [7b4e3e36a](https://github.com/AFK-surf/monoid/commit/7b4e3e36af878c4cb82546e779238fd35b588efe) station/mb: the agents' tools in MoonBit (mcp_tool | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.28 |
 | [719a050d0](https://github.com/AFK-surf/monoid/commit/719a050d043ed11baf37af4b7e07ab21c8782561) app: the board reaches the foot on every screen, i | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.28 |
 | [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.27 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2e8b6f8f](https://github.com/AFK-surf/monoid/commit/e2e8b6f8fabe211352c4c074e1f2e10d60e985d5) mbui: a wide page's first block's top room held by | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [54a442122](https://github.com/AFK-surf/monoid/commit/54a442122fc73c5fdacfa203df6398994b12b563) ci: each GitHub image keeps its own units, and a b | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
 | [c94b14180](https://github.com/AFK-surf/monoid/commit/c94b141807a6ca280fc02db5788b70bff2917113) mbui android: the app made on a thread of its own, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
-| [ad732e239](https://github.com/AFK-surf/monoid/commit/ad732e2394aa0aee077b849aec5c0b5038e90797) mbui: a Windows stream's frame shown, read back fo | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
