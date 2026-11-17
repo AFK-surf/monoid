@@ -26,6 +26,11 @@
 #                                                       WSL's keeper) and its Helper gone, its release, its Node and
 #                                                       ~/.local/bin's link removed; its chats, memory and secrets kept
 #                                                       in the data (<data>/uninstalled says so) unless --purge
+#   stillfail move <folder>                             moves this machine's station's data (~/.stillfail) into
+#                                                       <folder>/stillfail (another disk: an external one), ~/.stillfail
+#                                                       a link to it; <folder> the home brings it back. Its station
+#                                                       stopped meanwhile (what its agents ran too) and started again,
+#                                                       the old place given back only once it runs from the new one
 # The data is in $STILLFAIL_DATA, default ~/.stillfail.
 set -eu
 # Called through a link (~/.local/bin/stillfail): the app is where the link points.
@@ -100,6 +105,8 @@ uninstall() {
   link="$HOME/.local/bin/$product"
   if [ -L "$link" ]; then case "$(readlink "$link")" in "$data/app/"*) rm -f "$link" ;; esac; fi
   if [ -n "$purge" ]; then
+    # moved elsewhere (stillfail move): its data there, then the link to it
+    if [ -L "$data" ]; then there=$(readlink "$data"); case "$there" in /?*) rm -rf "$there" ;; esac; fi
     rm -rf "$data"
   else
     rm -rf "$data/app" "$data/app.old" "$data/app.failed" "$data/node" "$data/helper" "$data/run" "$data/stillfail.pid"
@@ -108,11 +115,201 @@ uninstall() {
   if [ -n "$purge" ]; then echo "stillfail: uninstalled, $data removed"; else echo "stillfail: uninstalled; chats, memory and secrets kept in $data"; fi
 }
 
+# stillfail move <folder>: this machine's station's data, ~/.stillfail, moved to <folder>/stillfail (another disk), the
+# home's name left a link to it, so everything that names it (its service, its command, the app, the agents' sessions)
+# goes on naming it so; <folder> the home brings it back. Run from a copy of this script outside the data (it moves). Its
+# station is stopped (its service, its launcher, every process whose command names its data: its agents' runners, its
+# readers), its data copied (renamed on the same disk), the link pointed at the copy and the station started; once it
+# runs there (run/health.json written anew) the old place is given back, else the link goes back to it and the copy is
+# removed. What it says as it goes is for the app: "NN%" lines of the copy (local_heard); how it ended, its exit: 0
+# moved (or there already), 2 asked wrong (no such folder, not a whole path, inside its data, not this machine's own
+# station), 3 a stillfail there already, 4 not room enough, 5 the folder not writable, 6 not copied, 7 the station did
+# not start from there (back where it was), 8 its data not there (its disk not connected).
+move() {
+  pick=$1
+  product=${own##*/.}
+  product=${product:-stillfail}
+  reverse=fail.still
+  [ "$product" = stillfail ] || reverse=build.monoid
+  [ "$data" = "$own" ] || { echo "stillfail move: only this machine's own station ($own) moves, not $data" >&2; exit 2; }
+  case "$pick" in /*) ;; *) echo "stillfail move: give the folder as a whole path" >&2; exit 2 ;; esac
+  [ -d "$pick" ] || { echo "stillfail move: no folder $pick" >&2; exit 2; }
+  pick=$(cd "$pick" && pwd -P)
+  # where it is now: the home's own name (~/.stillfail, as it is named), or where that links to (its real path)
+  if [ -L "$own" ]; then
+    cur=$(readlink "$own")
+    [ -d "$cur" ] || { echo "stillfail move: its data is not there ($cur): the disk it is on is not connected" >&2; exit 8; }
+    cur=$(cd "$cur" && pwd -P)
+  else
+    cur=$own
+    [ -d "$cur" ] || { echo "stillfail move: no data in $own" >&2; exit 8; }
+  fi
+  if [ "$pick" = "$(cd "$HOME" && pwd -P)" ]; then to=$own; else to=$pick/$product; fi
+  [ "$to" != "$cur" ] || { echo "stillfail move: already in $to"; exit 0; }
+  case "$to/" in "$(cd "$cur" && pwd -P)/"*) echo "stillfail move: $to is inside its data" >&2; exit 2 ;; esac
+  if [ "$to" != "$own" ]; then
+    if [ -d "$to" ] && [ -z "$(ls -A "$to" 2>/dev/null)" ]; then rmdir "$to"; fi
+    [ ! -e "$to" ] && [ ! -L "$to" ] || { echo "stillfail move: $to is there already" >&2; exit 3; }
+  fi
+  stage="$to.moving"
+  rm -rf "$stage"
+  mkdir "$stage" 2>/dev/null && [ -w "$stage" ] || { echo "stillfail move: cannot write in $pick" >&2; rmdir "$stage" 2>/dev/null; exit 5; }
+  # (the device a path is on: GNU's stat -c %d, else BSD's stat -f %d; never GNU's -f, its file system's figures,
+  # where %d is its free inodes)
+  dev() { stat -c %d "$1" 2>/dev/null || stat -f %d "$1"; }
+  same=""
+  # (STILLFAIL_MOVE_APART: a test's, copied as to another disk)
+  [ "$(dev "$cur")" != "$(dev "$stage")" ] || [ -n "${STILLFAIL_MOVE_APART:-}" ] || same=yes
+  if [ -z "$same" ]; then
+    need=$(du -sk "$cur" | cut -f1)
+    free=$(df -Pk "$stage" | awk 'NR==2 { print $4 }')
+    [ "$free" -gt "$need" ] 2>/dev/null || { rmdir "$stage"; echo "stillfail move: $pick has ${free:-?} KB free, its data takes $need KB" >&2; exit 4; }
+  fi
+
+  # Stopped: its service (left defined, started again below), what runs of its data.
+  uid=$(id -u)
+  plist="$HOME/Library/LaunchAgents/$reverse.station.plist"
+  unit="$product-station.service"
+  service=""
+  case "$(uname -s)" in
+    Darwin) [ ! -f "$plist" ] || service=launchd ;;
+    *) [ ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit" ] || service=systemd ;;
+  esac
+  stop_all() {
+    case "$service" in
+      launchd)
+        launchctl bootout "gui/$uid/$reverse.station" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$uid/$reverse.station" >/dev/null 2>&1 || break; sleep 1; done ;;
+      systemd) systemctl --user stop "$unit" 2>/dev/null || true ;;
+    esac
+    # its launcher started by hand, its agents' runners and its readers: each whose command names its data (as it is
+    # named, and where it is), by its pid; given 10 s, then killed
+    pids=$(ps -axo pid=,command= 2>/dev/null | awk -v a="$own" -v b="$cur" -v me=$$ 'function names(d) { return index($0 "\n", d "/") || index($0 "\n", d " ") || index($0 "\n", d "\n") } names(a) || names(b) { if ($1 != me) print $1 }')
+    [ -z "$pids" ] || kill $pids 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      left=""
+      for p in $pids; do kill -0 "$p" 2>/dev/null && left="$left $p"; done
+      [ -n "$left" ] || break
+      sleep 1
+    done
+    [ -z "${left:-}" ] || kill -9 $left 2>/dev/null || true
+  }
+  start_all() {
+    case "$service" in
+      launchd) launchctl enable "gui/$uid/$reverse.station" 2>/dev/null || true; launchctl bootstrap "gui/$uid" "$plist" ;;
+      systemd) systemctl --user start "$unit" ;;
+    esac
+  }
+  # Whether it runs from its data where the link points: Node's word written after `since` (ms), within 180 s
+  # (STILLFAIL_MOVE_WAIT: a test's).
+  runs() {
+    since=$1
+    [ -n "$service" ] || return 0
+    for _ in $(seq 1 "${STILLFAIL_MOVE_WAIT:-180}"); do
+      at=$(sed -n 's/.*"updatedAt": *\([0-9]*\).*/\1/p' "$own/run/health.json" 2>/dev/null)
+      [ -n "$at" ] && [ "$at" -gt "$since" ] && return 0
+      sleep 1
+    done
+    return 1
+  }
+  # The link (~/.stillfail) to `$1`; the home's own directory where that is it.
+  point() {
+    if [ "$1" = "$own" ]; then
+      [ ! -L "$own" ] || rm -f "$own"
+    else
+      # (never a link made inside a directory there: only a link is replaced)
+      [ ! -e "$own" ] || [ -L "$own" ] || { echo "stillfail move: $own is a directory still" >&2; return 1; }
+      rm -f "$own"
+      ln -s "$1" "$own"
+    fi
+  }
+
+  echo "stillfail move: stopping the station"
+  stop_all
+  # The copy, where it is to another disk: what it is now but its sockets (run/'s, the Helper's: made anew), said
+  # as it goes by what is copied of it.
+  if [ -z "$same" ]; then
+    echo "stillfail move: copying $cur to $to"
+    rmdir "$stage"
+    ( cp -pPR "$cur" "$stage" 2>"$stage.err"; echo $? > "$stage.done" ) &
+    copier=$!
+    while [ ! -f "$stage.done" ]; do
+      has=$(du -sk "$stage" 2>/dev/null | cut -f1)
+      [ -z "$has" ] || [ "$need" -le 0 ] || echo "$(( has * 100 / need > 99 ? 99 : has * 100 / need ))%"
+      sleep 2
+    done
+    wait "$copier" 2>/dev/null || true
+    copied=$(cat "$stage.done")
+    rm -f "$stage.done"
+    if [ "$copied" != 0 ]; then
+      # only sockets it could not copy are let pass: every other name there as here
+      a=$(cd "$cur" && find . ! -type s | sort | cksum)
+      b=$(cd "$stage" && find . | sort | cksum)
+      if [ "$a" != "$b" ]; then
+        cat "$stage.err" >&2
+        rm -rf "$stage" "$stage.err"
+        start_all || true
+        echo "stillfail move: its data could not be copied to $to; it stays in $cur" >&2
+        exit 6
+      fi
+    fi
+    rm -f "$stage.err"
+    echo "100%"
+  else
+    rmdir "$stage"
+  fi
+
+  since=$(($(date +%s) * 1000))
+  if [ -n "$same" ]; then
+    # the same disk: renamed, nothing copied
+    [ "$to" != "$own" ] || rm -f "$own"
+    if [ "$cur" = "$own" ]; then mv "$own" "$to"; else mv "$cur" "$to"; fi
+    point "$to"
+    old=""
+  else
+    old=$cur
+    if [ "$cur" = "$own" ]; then old="$own.moved"; rm -rf "$old"; mv "$own" "$old"; fi
+    [ "$to" != "$own" ] || rm -f "$own"
+    mv "$stage" "$to"
+    point "$to"
+  fi
+  echo "stillfail move: starting the station from $to"
+  if start_all && runs "$since"; then
+    [ -z "$old" ] || { echo "stillfail move: removing the old copy"; rm -rf "$old"; }
+    echo "stillfail move: moved to $to"
+    return 0
+  fi
+  # It does not run from there (the disk is kept from the station, it is slow or full): back to where it was.
+  echo "stillfail move: the station did not start from $to; back to $cur" >&2
+  stop_all
+  if [ -n "$same" ]; then
+    [ ! -L "$own" ] || rm -f "$own"
+    if [ "$cur" = "$own" ]; then mv "$to" "$own"; else mv "$to" "$cur"; point "$cur"; fi
+  else
+    [ ! -L "$own" ] || rm -f "$own"
+    rm -rf "$to"
+    if [ "$old" = "$own.moved" ]; then mv "$old" "$own"; else point "$cur"; fi
+  fi
+  start_all || true
+  echo "stillfail move: the station did not start from $to, so its data stays in $cur" >&2
+  exit 7
+}
+
 case "${1:-} ${2:-}" in
   "uninstall ") [ $# -eq 1 ] || { echo "usage: stillfail uninstall [--purge]" >&2; exit 2; }; uninstall "" ;;
   "uninstall --purge") [ $# -eq 2 ] || { echo "usage: stillfail uninstall [--purge]" >&2; exit 2; }; uninstall yes ;;
   "uninstall "*) echo "usage: stillfail uninstall [--purge]" >&2; exit 2 ;;
   "start "*) shift; exec "$station" run --app "$here" --data "$data" "$@" ;;
+  "move "*)
+    [ $# -eq 2 ] || { echo "usage: stillfail move <folder>" >&2; exit 2; }
+    # run from a copy of this script outside the data, which it moves (its name kept: it says which product's)
+    if [ -z "${STILLFAIL_MOVE_COPY:-}" ]; then
+      dir=$(mktemp -d "${TMPDIR:-/tmp}/stillfail-move.XXXXXX")
+      cp "$self" "$dir/$(basename "$0")"
+      STILLFAIL_MOVE_COPY=$dir exec sh "$dir/$(basename "$0")" "$@"
+    fi
+    trap 'rm -rf "$STILLFAIL_MOVE_COPY"' EXIT
+    move "$2" ;;
   "update "*)
     # The channel's latest release, verified by this release's Node (the station's `update`: its signature, newer than
     # this one) and installed by the installer this release carries, told what it must hash to
@@ -141,5 +338,5 @@ PLAN
     node=${STILLFAIL_NODE:-$here/node/bin/node}
     [ -x "$node" ] && [ -f "$here/station/main.js" ] || { echo "stillfail heap: $here is not an installed release (no node/bin/node or station/main.js)" >&2; exit 1; }
     exec "$node" "$here/station/main.js" heap --data "$data" ;;
-  *) echo "usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap" >&2; exit 2 ;;
+  *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap" >&2; exit 2 ;;
 esac

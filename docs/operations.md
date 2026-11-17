@@ -14,7 +14,7 @@ docker run -d --name stillfail --restart unless-stopped -v stillfail:/home/still
 
 卸载：`stillfail uninstall` 停掉 station 并移除开机自启服务（macOS 的 launchd、Linux 的 systemd user service、WSL 的启动脚本、Windows 的计划任务）、still.fail Helper、发布包（`<数据目录>/app`）、它的 Node 和 `~/.local/bin` 里的命令；对话、记忆、密钥等数据留在数据目录，并写一个 `<数据目录>/uninstalled` 标记，app 看到它就显示「已卸载」、不再自动装回来。`stillfail uninstall --purge` 连数据目录一起删。app 的「本机 Station」⋯ 菜单里的「卸载本机 Station」做同样的事（不需要发布包还在）；Windows 上卸载 still.fail 或 youdid.wtf 桌面 app（另一个通道的 app 不在时）也会这样卸掉本机 station。重新安装或在 app 里「启动」会去掉这个标记。app 里点「停止」会同时停用自启（launchd disable、systemd disable、计划任务停用），重启电脑后不再自己起来，「启动」再打开。
 
-station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/.stillfail`（`STILLFAIL_DATA` 可改）。开发测试使用独立数据目录，不使用已有真实会话的 station。
+station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/.stillfail`（`STILLFAIL_DATA` 可改，那样会被当作开发用的另一台 station：不占固定端口，app 和 `stillfail` 命令也不认它）。要把本机 station 的数据放到别的盘（比如外接盘），用 `stillfail move <文件夹>` 或 app「本机 Station」⋯ 菜单里的「更改存储位置…」（macOS、Linux）：停掉 station 和它跑着的进程，把数据复制到 `<文件夹>/stillfail`（同一块盘上直接改名），`~/.stillfail` 换成指向它的链接，再启动；新位置上 station 没起来（磁盘对 station 不可访问、太慢）就自动移回原处，起来了才删旧的。选个人文件夹则移回 `~/.stillfail`。盘没接上时服务启动不了，接上后 launchd/systemd 会自己再拉起；`stillfail uninstall --purge` 会连链接指向的数据一起删。开发测试使用独立数据目录，不使用已有真实会话的 station。
 
 查内存：station 每 10 分钟在日志里记一行 `memory: now`（主线程的 heap、external，各读取线程的 heap）。`stillfail heap` 让运行中的 station 把主线程的堆快照写到 `<数据目录>/run/heap-*.heapsnapshot`（只留最新一份，0600：里面有 station 持有的 token），用 Chrome DevTools 的 Memory 打开；写的几秒里 station 不响应（station/src/ops/heap.ts）。macOS 上看进程占用以 footprint 为准（`footprint -p <pid>`），RSS 含共享库。
 
