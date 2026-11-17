@@ -73,23 +73,28 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
       None => 0
     }
   }
-  // (under the band and its top row: on the block's way between open and folded the taller end's all the way, the band
-  // moving over them as it goes, so their rows are not laid out again each frame: list_band_h, list_top_h; read again
-  // as the block is said to stand otherwise)
+  let band_at = fn(held : Bool) {
+    let a = at()
+    ({
+      brand: if held { a.list_brand } else { a.brand },
+      band: if held { a.list_band } else { a.band },
+      tape: a.tape,
+      in_bar: a.bar,
+      roots: @ui.tree_corner_roots_now(),
+    } : BandAt)
+  }
+  // (under the band and its top row: on a fold the open end's room all the way, while the band moves over them, so
+  // their rows are not laid out again at each frame)
   let lists_top = fn() {
-    at() |> ignore
-    lists_room.get() |> ignore
     match workspace() {
-      Some(w) => list_band_h(src, w)
+      Some(w) => band_h(src, w, at=band_at(true))
       None => 0.0
     }
   }
   let frame : @sfpages.ListsNodeFrame = {
     top: lists_top,
     under: fn() {
-      at() |> ignore
-      lists_room.get() |> ignore
-      list_top_h()
+      band_at(true).brand
     },
     // (over the foot's band where it shows: their last row clear of it, their bar too, lists_foot_h)
     foot: fn() { lists_foot_h(src, workspace) },
@@ -115,10 +120,8 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
           src,
           fn() { workspace().map(fn(w) { w.id }).unwrap_or("") },
           fn() {
-            at() |> ignore
-            lists_room.get() |> ignore
             match workspace() {
-              Some(w) => band_h(src, w)
+              Some(w) => band_h(src, w, at=band_at(false))
               None => 0.0
             }
           },
@@ -143,10 +146,8 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     lists
     .over(Is(true))
     .drawn_off(By(fn() {
-      at() |> ignore
-      lists_room.get() |> ignore
       match workspace() {
-        Some(w) => (0.0, band_h(src, w) - list_band_h(src, w))
+        Some(w) => (0.0, band_h(src, w, at=band_at(false)) - band_h(src, w, at=band_at(true)))
         None => (0.0, 0.0)
       }
     }))
@@ -164,7 +165,7 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
   })
   |> ignore
   s.show(@sfpages.search_on_lists, fn(k) {
-    @sfpages.search_page_node(k, src, workspace, side_top_h, list_at)
+    @sfpages.search_page_node(k, src, workspace, fn() { at().brand }, list_at)
   })
 }
 
