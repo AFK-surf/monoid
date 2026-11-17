@@ -519,9 +519,9 @@ jobs:
       # (when the job is cut, as the Linux and iOS jobs say it: the installer's put gives its deltas only what leaves it
       # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on
       # them. The job's first step: after Defender's, pwsh's start put it 8 s past the job's real end, main bd0f01ab's,
-      # 43990130513, and its put, all done, was cancelled at that end)
+      # 43990130513, and its put, all done, was cancelled at that end; less the 3-5 s of "Set up job" before it, 43998071944)
       - name: The job's end
-        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
+        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
       # Defender's real-time scan kept off what the job writes and runs: each new file and each program's first start was
       # scanned, MoonBit's 114 MB (206 MB of programs) put in in 12-25 s against 2 s for as much of the build's, 2026-10-30
       - shell: pwsh
@@ -755,13 +755,16 @@ jobs:
           trap '[ -s "$E/app" ] || echo failed > "$E/app"' EXIT
           # the installer's own program made while the app compiles (win.sh setup takes it), not beside the e2e flow
           bash apps/mbui/scripts/win.sh setup-bare
-          # (a push's till 45 s before the job's end (JOB_END), the room for what the build compiled to be kept: the
-          # stop, the key and the save after a cut ~10 s, its upload 2 s, the post steps 6 s. Waited 420 s, a push's
-          # build that had much to compile was cut at the job's 5 minutes and kept none of it, the next push as far
-          # behind; a fixed 115 s, it was cut with 39-64 s of the job unused, main 6c66e773, 21ec95ea and eb3f3a3a in
-          # a row, 2026-11-17: 43989080704, 43989906170, 43992166607)
+          # (a push's till what follows a build done still fits before the job's end (JOB_END): a branch's put, checks,
+          # store and reuse of its objects, 48 s (43998071944, done 37 s before the end and cancelled at it with 45 s
+          # left to them); main's put, build cache, checks, stores and installer's publish, 65 s (43990130513). Cut,
+          # the stop, the key and the save take ~10 s of that. Waited 420 s, a push's build that had much to compile
+          # was cut at the job's 5 minutes and kept none of it, the next push as far behind; a fixed 115 s, it was cut
+          # with 39-64 s of the job unused, main 6c66e773, 21ec95ea and eb3f3a3a in a row, 2026-11-17: 43989080704,
+          # 43989906170, 43992166607)
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            wait=$(( JOB_END - $(date +%s) - 45 ))
+            reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 75 || echo 60)
+            wait=$(( JOB_END - $(date +%s) - reserve ))
             [ "$wait" -ge 30 ] || wait=30
           else
             wait=420

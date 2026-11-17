@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -1788,7 +1788,12 @@ sim("ways_told_while_a_link_opens_give_a_link_on_the_ways_it_may_go", async (s) 
   mesh.setWays(id, [own], ["ours"]);
   const link = await s.settle(opening);
   assert.equal(link.usable(), true, "a link closed as it came through");
-  assert.ok(sameRelay(link.pinned, own), `${link.pinned} ${link.via()}`);
+  // (own's relay, or the endpoint fenced to it, #6660: at home on own alone, through it or punched direct)
+  assert.ok(
+    sameRelay(link.pinned, own) ||
+      (link.pinned === fencedOf([own]) && (sameRelay(link.via(), own) || link.path() === "direct")),
+    `${link.pinned} ${link.via()}`,
+  );
   assert.ok(s.time.now() - told < 4 * 1_500, "dialled beside at once, not after the first");
   assert.ok(![mesh.current(id), ...mesh.ways(id).map((w) => w.link)].some((l) => l !== null && l.usable() && l.pinned === null));
   assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);

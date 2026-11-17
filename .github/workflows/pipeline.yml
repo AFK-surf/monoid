@@ -1244,7 +1244,8 @@ jobs:
       - run: |
           git config --global core.autocrlf false
           echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
-          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
+          # (less the 3-5 s of "Set up job" before this step: preview's windows, 43998071944)
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       - uses: ./.github/actions/setup
