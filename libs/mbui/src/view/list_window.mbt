@@ -1963,6 +1963,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let slots_found : Ref[(Column[K], Int, Int)?] = Ref(None)
   // (what the window last found shows, and the places it found it from and to: window)
   let window_found : Ref[(Array[K], Int, Int)] = Ref(([], 0, -1))
+  // (whether the window last found stopped short of what shows at one never measured: window)
+  let window_short = Ref(false)
   // (the slots that hold `need` (what shows) and as much round it as where the column shows from `top`, `vh` tall,
   // asks; a block put by in a slot that leaves them taken out of it first, held by no node (View::park), kept)
   let slots_cover = fn(all : Places[K], need : Array[K], top : Double, vh : Double) {
@@ -2133,9 +2135,14 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // while one meets where it shows. One never measured is as far as it goes that way till it is measured: where those
   // past it start is known only then; what is sure stays made whatever comes in over it or under it. `up_first`: the
   // first of them is sure by its top (those over it sure too, measured or not); else by its foot. None sure (`lo`
-  // past `hi`): from the first that meets it down, as far as the first never measured.)
+  // past `hi`): from the first that meets it down, as far as the first never measured. Whether it stopped so short of
+  // what shows, one past the one never measured it stopped at meeting where it shows as they are counted:
+  // `window_short`.)
   let window = fn(all : Places[K], top : Double, vh : Double, lo : Int, hi : Int, up_first : Bool) -> Array[K] {
     let now = []
+    window_short.val = false
+    // (whether `i` meets where it shows, as it is counted)
+    let meets = fn(i : Int) { i >= 0 && i < all.length() && all.top(i) + all.h(i) > top && all.top(i) < top + vh }
     // (showing none of it, a page under another: none made, the one it is held by neither, what it reads let go)
     if vh <= 0.0 {
       window_found.val = (now, 0, -1)
@@ -2149,6 +2156,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         now.push(all.key(i))
         last = i
         if !all.known(i) {
+          window_short.val = meets(i + 1)
           break
         }
         i = i + 1
@@ -2162,10 +2170,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       while i >= 0 && all.top(i) + all.h(i) > top {
         a = i
         if !all.known(i) {
+          window_short.val = meets(i - 1)
           break
         }
         i = i - 1
       }
+    } else {
+      window_short.val = meets(lo - 1)
     }
     let mut b = hi
     if all.known(hi) {
@@ -2173,10 +2184,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       while i < all.length() && all.top(i) < top + vh {
         b = i
         if !all.known(i) {
+          window_short.val = window_short.val || meets(i + 1)
           break
         }
         i = i + 1
       }
+    } else {
+      window_short.val = window_short.val || meets(hi + 1)
     }
     for i in a..=b {
       now.push(all.key(i))
@@ -2619,6 +2633,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     let mut found : Array[K] = []
     while again {
       again = false
+      fill_passes.val = fill_passes.val + 1
       // (its head and its foot measured as the blocks are, at its width, in this layout: the head's height where its
       // keys start, the foot's the room under them. The head grown or shrunk where what shows starts in it or at its
       // very top: what shows starting there still, what is under it moved with it; else what is read where it is)
@@ -2764,11 +2779,20 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         all.first_past(top).min(all.length() - 1)
       }
       let now = window(all, top, vh, si, si, !foot && !centring)
-      // (a block on its way: what shows where all of it ends as well, kept made till then)
+      let mut short = window_short.val
+      // (a block on its way: what shows where all of it ends as well, kept made till then; stopped short there too, at
+      // one never measured, a pass again as well)
       let now = if !ways.is_empty() {
         let end = counted(all.col)
         let most_end = dmax(0.0, whole_of(end) - vh)
-        with_end(all, now, if foot { most_end } else { dclamp(end.top(ai) + (top - all.top(ai)), 0.0, most_end) }, vh)
+        let both = with_end(
+          all,
+          now,
+          if foot { most_end } else { dclamp(end.top(ai) + (top - all.top(ai)), 0.0, most_end) },
+          vh,
+        )
+        short = short || window_short.val
+        both
       } else {
         now
       }
@@ -2805,7 +2829,15 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       }
       slots_cover(all, now, top, vh)
       self.tree.room_bindings_run()
-      // (each that shows measured, once in this fill, its height counted where it came out otherwise)
+      // (each that shows measured, once in this fill, its height counted where it came out otherwise. One never measured
+      // that comes out as tall as it was counted, on the host's pixels, moves nothing: every block is where this pass put
+      // it, its height told and the column counting it measured, no pass again for it; but where the window stopped
+      // short of what shows at one never measured (those past it made only once it is measured), or the block it is
+      // held by is measured first (what it marks, what a go-to brings in it, read only once it is made), a pass again
+      // all the same)
+      let g = self.tree.rows_grid_now()
+      let held_key = all.key(ai)
+      let mut told_only = false
       for b in blocks.filter(fn(b) { b.0.alive() }) {
         let (v, key) = b
         let k = @signals.untracked(key)
@@ -2813,15 +2845,23 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         measured[k] = true
         let bh = self.tree.height_in(v.at, self.at, w)
         if heights.get(k) != Some(bh) {
+          let first = heights.get(k) is None
           heights[k] = bh
           heights_changed.push(k)
           if tall.get(k) is Some(c) {
             c.set(Some(bh))
           }
-          again = true
+          if first && rows_slot_on(bh, g) == rows_slot_on(est, g) && k != held_key {
+            told_only = true
+          } else {
+            again = true
+          }
         }
       }
-      if again {
+      if told_only && short {
+        again = true
+      }
+      if again || told_only {
         tell()
         self.tree.room_bindings_run()
       }
@@ -4850,3 +4890,9 @@ pub fn[K] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double
   self.from_met = false
   (self.laid_again)()
 }
+
+///|
+/// The passes of all page's lists' fills (View::scrolls_window's), counted for its tests: what a scroll or a change
+/// laid out again, measured and made in each.
+// kept across runs: only counted on, each test reading how far it went
+let fill_passes : Ref[Int] = Ref(0)
