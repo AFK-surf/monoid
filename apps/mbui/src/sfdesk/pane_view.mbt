@@ -1020,6 +1020,8 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
     }
   }))
   |> ignore
+  // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go; folded, none)
+  let pull = @sf.EdgePull::new()
   let e = @sf.edge_node(
     n,
     words,
@@ -1042,6 +1044,7 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
     },
     tips~,
     side=Right,
+    pull~,
   )
   // (a list's thumb of the sidebar's shown under its strip: the thumb's there)
   @ui.yield_thumbs(e)
@@ -1061,6 +1064,7 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
       fn() { e.pointed() || e.focus_shown() || held.get() },
       fn() { held.get() },
       line=fn() { !wide.folded.get() },
+      pull~,
     )
     |> ignore
   })

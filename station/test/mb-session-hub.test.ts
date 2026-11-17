@@ -1192,6 +1192,7 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
   await pair.advance(1_800_000_000_000);
   await pair.call("accept", "cl", msg({ threadTs: "1000.000001", ts: "1000.000001" }));
   await pair.call("accept", "cl", msg({ threadTs: "1100.000001", ts: "1100.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1300.000001", ts: "1300.000001" }));
   await pair.call("accept", "gpt", msg({ threadTs: "1200.000001", ts: "1200.000001", text: "<@UGPT> go" }));
   pair.both((s) => s.setRunning("gpt:C1:1200.000001", true));
   pair.both((s) => s.startTurn("t-1", "gpt:C1:1200.000001", "normal"));
@@ -1199,10 +1200,12 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
     pair.a.states = {
       "cl:C1:1000.000001": { state: "warm", idleSince: pair.now - 1000 },
       "cl:C1:1100.000001": { state: "cold", holds: true },
+      "cl:C1:1300.000001": { state: "running" },
       "gpt:C1:1200.000001": { state: "running" },
     };
   });
-  // A profile gone under its sessions: moved where another runs them.
+  // A profile gone under its sessions (#6948): only the one with a turn under way moved where another runs it; the idle
+  // one's process ended, the cold one left as it is.
   await pair.call("profileGone", "cc");
   pair.compareStores("a profile gone");
   // Handed over: held, every actor's snapshot taken (those cold and holding nothing closed), the drivers let go.

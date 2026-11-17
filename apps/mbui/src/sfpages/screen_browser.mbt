@@ -248,7 +248,20 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
     s.said.get() |> ignore
     !view_tabs(s).0.is_empty()
   }
-  row.show(at_once=true, fn() { (narrow() || @sf.soft_keyboard() || pg.in_tab) && tabs() }, fn(k) { tabs_button_node(k, pg) })
+  let bar_holds = fn() { narrow() || @sf.soft_keyboard() || pg.in_tab }
+  row.show(at_once=true, fn() { bar_holds() && tabs() }, fn(k) { tabs_button_node(k, pg) })
+  // (where the tabs have no row of their own the address keeps the room: ⟳ is the 控制中心's, a new tab the tabs'
+  // panel's first row, ＋ here only where there is no tabs' button to hold it)
+  row.show(at_once=true, fn() {
+    s.said.get() |> ignore
+    let (tabs, add) = view_tabs(s)
+    bar_holds() && tabs.is_empty() && add
+  }, fn(k) {
+    screen_round_node(k, pg, fn() { "plus" }, fn() { @sf.t("web-pages.screen.newTab") }, fn(_) {
+      tab_do(s, pg.u, Add, pg.close)
+    })
+    |> ignore
+  })
 }
 
 ///|
@@ -308,11 +321,13 @@ fn address_bar_node(row : @view.View, pg : ScreenPage) -> Unit {
         field.set(a, caret=0)
       }
     })
-    let input = @sf.input_node(
+    let input = @sf.input_bar_node(
       b,
       field,
       placeholder=@sf.t("web-pages.screen.addressHint"),
       small=true,
+      // (in a pane's own bar, as tall as its keys)
+      high=if pg.tab_pads is Some(_) { round_bar_side } else { @sf.menu_row_min },
       submitted=fn(words) {
         let go = words.trim().to_owned()
         if go == "" {
@@ -368,7 +383,11 @@ fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
   }
   let b = @headless.button(k, fn() { label() + " \{count()}" }, open, fn(b, _) {
     @sf.style_node(b, fn() { browser_count_box }, in_row=true)
-    // (in a bar of tools, as big as they are: what is pressed side by side is one height)
+    // (in a bar of tools, as big as they are: what is pressed side by side is one height; in a pane's own bar, its keys')
+    let side = match side {
+      Some(d) => Some(d)
+      None => if pg.tab_pads is Some(_) { Some(round_bar_side) } else { None }
+    }
     if side is Some(d) {
       b.width(Is(Some(d))).height(Is(Some(d))) |> ignore
     }
@@ -425,18 +444,48 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
       )
     })
   })
-  v.show(at_once=true, fn() { s.said.get() |> ignore; s.user_tab() }, fn(f) {
+  // (the page's address copied, or sent to the chat open; a person's page closed)
+  v.show(at_once=true, fn() { s.said.get() |> ignore; address_shown(s) != "" || s.user_tab() }, fn(f) {
     @sf.panel_group_node(f, fn() { "" }, fn(g) {
-      @sf.panel_row_node(
-        g,
-        fn() { @sf.t("web-pages.screen.closeTabFull") },
-        fn() {
-          done()
-          close_tab(s, u, s.screen, user_tabs_of(s), close)
-        },
-        icon=fn() { "close" },
-        danger=true,
-      )
+      g.show(at_once=true, fn() { s.said.get() |> ignore; address_shown(s) != "" }, fn(ub) {
+        @sf.panel_row_node(
+          ub,
+          fn() { @sf.t("web-pages.remote.copyUrl") },
+          fn() {
+            let url = address_shown(s)
+            if url != "" {
+              @ui.clipboard_set(url)
+              @sfbase.toast_later(@sf.t("web-pages.remote.urlCopied"))
+            }
+            done()
+          },
+          icon=fn() { "copy" },
+        )
+        @sf.panel_row_node(
+          ub,
+          fn() { @sf.t("web-pages.remote.sendUrlToChat") },
+          fn() {
+            let url = address_shown(s)
+            if url != "" {
+              send_url_to_open_chat(s.src, url)
+            }
+            done()
+          },
+          icon=fn() { "send" },
+        )
+      })
+      g.show(at_once=true, fn() { s.said.get() |> ignore; s.user_tab() }, fn(cl) {
+        @sf.panel_row_node(
+          cl,
+          fn() { @sf.t("web-pages.screen.closeTabFull") },
+          fn() {
+            done()
+            close_tab(s, u, s.screen, user_tabs_of(s), close)
+          },
+          icon=fn() { "close" },
+          danger=true,
+        )
+      })
     })
   })
 }

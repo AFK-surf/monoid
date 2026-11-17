@@ -485,6 +485,8 @@ export function linkTarget(url: string, origin: string): J {
   if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "services" && s[5] !== "") return { opens: "service", workspace: s[1], station: s[3], service: s[5] };
   // One of a station's screens, as its agents' `screen` tool links it.
   if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "screen" && s[5] !== "") return { opens: "screen", workspace: s[1], station: s[3], screen: s[5] };
+  // One of a station's terminals (`/w/<workspace>/s/<station>/terminal/<id>`).
+  if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "terminal" && s[5] !== "") return { opens: "terminal", workspace: s[1], station: s[3], terminal: s[5] };
   // A login an agent started on a station, as its `login` tool links it: its card on the
   // station's page.
   if (s.length === 6 && s[0] === "w" && s[2] === "s" && s[4] === "login" && s[5] !== "") return { opens: "login", workspace: s[1], station: s[3], login: s[5] };

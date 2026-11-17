@@ -14,7 +14,10 @@
 /// `slop` how far a finger may move while still a tap, `ms` how long a finger is held before `on_hold` runs (`finger`
 /// whether the hand now is a finger's). Under a finger, once `on_hold` has run the press is no tap: `on_lift` runs as
 /// the finger is let go, `on_cancel` if the hold is called off (`Off`). Under a mouse, a press let go on the node
-/// counts whether it moved past `slop` or was held past `ms`.
+/// counts whether it moved past `slop` or was held past `ms`. `taps`: whether a press of the pointer's or a finger's
+/// that goes down now counts as the control's press as it is let go, asked as it goes down (when a pointer's press counts
+/// is the component's: a hold that confirms, its press let go after the hold did its work no press of what it turned
+/// into); the keyboard's and a screen reader's presses are the tree's, untouched.
 pub(all) struct Hold {
   slop : Double
   ms : Double
@@ -24,11 +27,12 @@ pub(all) struct Hold {
   on_cancel : () -> Unit
   down : ((@view.Drag) -> Unit)?
   tapped : ((@view.Drag) -> Unit)?
+  taps : () -> Bool
 }
 
 ///|
-/// A `Hold` of `slop`, `ms` and `finger`, with what runs on the finger's hold, lift and cancel and what a press's
-/// look hears of the pointer (`down`, `tapped`).
+/// A `Hold` of `slop`, `ms` and `finger`, with what runs on the finger's hold, lift and cancel, what a press's look
+/// hears of the pointer (`down`, `tapped`) and whether a press going down now counts as one let go (`taps`).
 pub fn Hold::new(
   slop : Double,
   ms : Double,
@@ -38,18 +42,27 @@ pub fn Hold::new(
   on_cancel? : () -> Unit = fn() {  },
   down? : (@view.Drag) -> Unit,
   tapped? : (@view.Drag) -> Unit,
+  taps? : () -> Bool = fn() { true },
 ) -> Hold {
-  { slop, ms, finger, on_hold, on_lift, on_cancel, down, tapped }
+  { slop, ms, finger, on_hold, on_lift, on_cancel, down, tapped, taps }
 }
 
 ///|
 /// Attach `hold` to `v`: its gesture ending in `v.press()` where a press counts, and calling `hold`'s callbacks.
 fn attach_hold(v : @view.View, hold : Hold) -> Unit {
   let held = Ref(false)
-  let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
+  // (whether this press counts as one as it is let go: asked as it went down, so what the press itself changed (a hold
+  // that did its work) does not turn its letting go into another's press)
+  let tap_on = Ref(true)
+  let on_it = fn(d : @view.Drag) { tap_on.val && v.finger_target(d.wx, d.wy) }
   v.gesture(
     hold.slop,
-    press?=hold.down,
+    press=fn(d) {
+      tap_on.val = (hold.taps)()
+      if hold.down is Some(f) {
+        f(d)
+      }
+    },
     tap=fn(d) {
       if hold.tapped is Some(f) {
         f(d)

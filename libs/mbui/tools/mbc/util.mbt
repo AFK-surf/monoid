@@ -83,11 +83,31 @@ fn sub(t : Bytes, i : Int, j : Int) -> Bytes {
 
 ///|
 fn cat(parts : Array[Bytes]) -> Bytes {
-  let buf = Buffer()
+  let mut n = 0
+  for p in parts {
+    n += p.length()
+  }
+  let buf = Buffer(capacity=n)
   for p in parts {
     buf.write_bytes(p)
   }
   buf.to_bytes()
+}
+
+///|
+/// The parts one after another, in a text made to their length at once (not grown, not copied again)
+fn concat(parts : Array[BytesView]) -> Bytes {
+  let mut n = 0
+  for p in parts {
+    n += p.length()
+  }
+  let out : FixedArray[Byte] = FixedArray::make(n, b'\x00')
+  let mut w = 0
+  for p in parts {
+    out.blit_from_bytesview(w, p)
+    w += p.length()
+  }
+  made_text(out)
 }
 
 ///|
@@ -121,25 +141,32 @@ fn find(t : BytesView, s : Bytes, from : Int) -> Int {
   if m == 0 {
     return if from <= n { from } else { -1 }
   }
-  let c0 = s[0]
-  let mut i = imax(from, 0)
-  while i + m <= n {
-    if t[i] == c0 && starts_at(t, i, s) {
-      return i
-    }
-    i += 1
+  let i = imax(from, 0)
+  if i + m > n {
+    return -1
   }
-  -1
+  let base = t.start_offset()
+  let r = c_find(t.data(), base + i, base + n, s)
+  if r < 0 {
+    -1
+  } else {
+    r - base
+  }
 }
 
 ///|
 fn find_byte(t : BytesView, c : Byte, from : Int) -> Int {
-  for i in imax(from, 0)..<t.length() {
-    if t[i] == c {
-      return i
-    }
+  let i = imax(from, 0)
+  if i >= t.length() {
+    return -1
   }
-  -1
+  let base = t.start_offset()
+  let r = c_find_byte(t.data(), base + i, base + t.length(), c.to_int())
+  if r < 0 {
+    -1
+  } else {
+    r - base
+  }
 }
 
 ///|
@@ -254,13 +281,8 @@ fn replace_all(t : Bytes, from : Bytes, to : Bytes) -> Bytes {
 ///|
 /// len() of the text Python decoded (characters: bytes that do not continue one)
 fn clen(t : BytesView) -> Int {
-  let mut n = 0
-  for i in 0..<t.length() {
-    if (t[i].to_int() & 0xC0) != 0x80 {
-      n += 1
-    }
-  }
-  n
+  let base = t.start_offset()
+  c_clen(t.data(), base, base + t.length())
 }
 
 ///|
@@ -269,52 +291,75 @@ fn bint(n : Int) -> Bytes {
 }
 
 ///|
-/// FNV-1a of t[s:e]
+/// FNV-1a of t[s:e] (io.c's mbc_hash)
 fn hash_range(t : BytesView, s : Int, e : Int) -> Int {
-  let mut h = 0x811c9dc5
-  for i in s..<e {
-    h = (h ^ t[i].to_int()) * 0x01000193
-  }
-  h ^ (h >> 15)
+  let base = t.start_offset()
+  c_hash(t.data(), base + s, base + e)
 }
 
 ///|
-fn same_range(k : Bytes, t : BytesView, s : Int, e : Int) -> Bool {
-  if k.length() != e - s {
-    return false
-  }
-  for i in 0..<k.length() {
-    if k[i] != t[s + i] {
-      return false
-    }
-  }
-  true
+/// k[ks:ke] is t[s:e]
+fn same_range(
+  k : FixedArray[Byte],
+  ks : Int,
+  ke : Int,
+  t : BytesView,
+  s : Int,
+  e : Int,
+) -> Bool {
+  ke - ks == e - s && c_same(k, ks, t.data(), t.start_offset() + s, e - s)
 }
 
 ///|
 /// A table keyed by byte strings, in the order keys came in, that a range of a text can be looked up in without
-/// copying it (an identifier in a function's text: most are looked up, few added)
+/// copying it (an identifier in a function's text: most are looked up, few added). A key is looked up in a copy of
+/// all of them in one array (`bytes`), never as the object it is: reading an object counts a reference to it, a
+/// write, and a job's process (run_jobs) that looked names up in its parent's tables made every page their keys were
+/// on its own.
 struct BTab[V] {
   keys : Array[Bytes]
+  hashes : Array[Int] // each key's hash_range: never worked out again
+  key_at : Array[Int] // where each key starts in `bytes`, and where the last ends
+  mut bytes : FixedArray[Byte]
   vals : Array[V]
   mut slots : FixedArray[Int] // index + 1 into keys; 0 empty
 }
 
 ///|
 fn[V] BTab::new() -> BTab[V] {
-  { keys: [], vals: [], slots: FixedArray::make(16, 0) }
+  {
+    keys: [],
+    hashes: [],
+    key_at: [0],
+    bytes: FixedArray::make(0, b'\x00'),
+    vals: [],
+    slots: FixedArray::make(16, 0),
+  }
 }
 
 ///|
 fn[V] BTab::find_range(self : BTab[V], t : BytesView, s : Int, e : Int) -> Int {
+  self.find_hashed(t, s, e, hash_range(t, s, e))
+}
+
+///|
+/// find_range with t[s:e]'s hash_range given (a scan's, worked out once for every table it looks the name up in)
+fn[V] BTab::find_hashed(
+  self : BTab[V],
+  t : BytesView,
+  s : Int,
+  e : Int,
+  h : Int,
+) -> Int {
   let mask = self.slots.length() - 1
-  let mut i = hash_range(t, s, e) & mask
+  let mut i = h & mask
   while true {
     let k = self.slots[i]
     if k == 0 {
       return -1
     }
-    if same_range(self.keys[k - 1], t, s, e) {
+    if self.hashes[k - 1] == h &&
+      same_range(self.bytes, self.key_at[k - 1], self.key_at[k], t, s, e) {
       return k - 1
     }
     i = (i + 1) & mask
@@ -332,8 +377,8 @@ fn[V] BTab::grow(self : BTab[V]) -> Unit {
   let n = self.slots.length() * 2
   let slots = FixedArray::make(n, 0)
   let mask = n - 1
-  for idx, k in self.keys {
-    let mut i = hash_range(k, 0, k.length()) & mask
+  for idx, h in self.hashes {
+    let mut i = h & mask
     while slots[i] != 0 {
       i = (i + 1) & mask
     }
@@ -345,18 +390,37 @@ fn[V] BTab::grow(self : BTab[V]) -> Unit {
 ///|
 /// Adds k (as given: not copied) with v, or sets its value
 fn[V] BTab::set(self : BTab[V], k : Bytes, v : V) -> Unit {
-  let at = self.find(k)
+  let h = hash_range(k, 0, k.length())
+  let at = self.find_hashed(k, 0, k.length(), h)
   if at >= 0 {
     self.vals[at] = v
     return
   }
+  self.put_new(k, h, v)
+}
+
+///|
+/// Adds k (not there: found not to be), its hash h, with v
+fn[V] BTab::put_new(self : BTab[V], k : Bytes, h : Int, v : V) -> Unit {
   if (self.keys.length() + 1) * 2 > self.slots.length() {
     self.grow()
   }
   self.keys.push(k)
+  self.hashes.push(h)
+  let at = self.key_at[self.key_at.length() - 1]
+  if at + k.length() > self.bytes.length() {
+    let bytes = FixedArray::make(
+      imax(self.bytes.length() * 2, at + k.length()),
+      b'\x00',
+    )
+    self.bytes.blit_to(bytes, len=at)
+    self.bytes = bytes
+  }
+  self.bytes.blit_from_bytes(at, k, 0, k.length())
+  self.key_at.push(at + k.length())
   self.vals.push(v)
   let mask = self.slots.length() - 1
-  let mut i = hash_range(k, 0, k.length()) & mask
+  let mut i = h & mask
   while self.slots[i] != 0 {
     i = (i + 1) & mask
   }
@@ -366,6 +430,32 @@ fn[V] BTab::set(self : BTab[V], k : Bytes, v : V) -> Unit {
 ///|
 fn[V] BTab::length(self : BTab[V]) -> Int {
   self.keys.length()
+}
+
+///|
+/// Lists of ints in one array, the i-th v[at[i]:at[i + 1]]: read with no object of their own each (as BTab's keys)
+struct Csr {
+  at : FixedArray[Int]
+  v : FixedArray[Int]
+}
+
+///|
+fn Csr::of(lists : Array[Array[Int]]) -> Csr {
+  let at = FixedArray::make(lists.length() + 1, 0)
+  let mut n = 0
+  for i, l in lists {
+    n += l.length()
+    at[i + 1] = n
+  }
+  let v = FixedArray::make(n, 0)
+  let mut w = 0
+  for l in lists {
+    for x in l {
+      v[w] = x
+      w += 1
+    }
+  }
+  { at, v }
 }
 
 ///|
@@ -390,27 +480,23 @@ fn BSet::of(xs : Array[Bytes]) -> BSet {
 
 ///|
 fn BSet::add(self : BSet, x : Bytes) -> Unit {
-  if self.t.find(x) < 0 {
-    self.t.set(x, ())
+  let h = hash_range(x, 0, x.length())
+  if self.t.find_hashed(x, 0, x.length(), h) < 0 {
+    self.t.put_new(x, h, ())
   }
 }
 
 ///|
-/// Adds t[s:e] (copied only when it is not there yet)
-fn BSet::add_range(self : BSet, t : BytesView, s : Int, e : Int) -> Unit {
-  if self.t.find_range(t, s, e) < 0 {
-    self.t.set(t[s:e].to_owned(), ())
+/// Adds t[s:e] (copied only when it is not there yet), its hash_range h given
+fn BSet::add_hashed(self : BSet, t : BytesView, s : Int, e : Int, h : Int) -> Unit {
+  if self.t.find_hashed(t, s, e, h) < 0 {
+    self.t.put_new(t[s:e].to_owned(), h, ())
   }
 }
 
 ///|
 fn BSet::has(self : BSet, x : BytesView) -> Bool {
   self.t.find(x) >= 0
-}
-
-///|
-fn BSet::has_range(self : BSet, t : BytesView, s : Int, e : Int) -> Bool {
-  self.t.find_range(t, s, e) >= 0
 }
 
 ///|
@@ -425,8 +511,11 @@ fn BSet::items(self : BSet) -> Array[Bytes] {
 
 ///|
 fn BSet::add_all(self : BSet, o : BSet) -> Unit {
-  for k in o.t.keys {
-    self.add(k)
+  for i, k in o.t.keys {
+    let h = o.t.hashes[i]
+    if self.t.find_hashed(k, 0, k.length(), h) < 0 {
+      self.t.put_new(k, h, ())
+    }
   }
 }
 
@@ -440,9 +529,10 @@ fn BSet::copy(self : BSet) -> BSet {
 ///|
 fn BSet::minus(self : BSet, o : BSet) -> BSet {
   let s = BSet::new()
-  for k in self.t.keys {
-    if !o.has(k) {
-      s.add(k)
+  for i, k in self.t.keys {
+    let h = self.t.hashes[i]
+    if o.t.find_hashed(k, 0, k.length(), h) < 0 {
+      s.t.put_new(k, h, ())
     }
   }
   s
@@ -451,9 +541,10 @@ fn BSet::minus(self : BSet, o : BSet) -> BSet {
 ///|
 fn BSet::inter(self : BSet, o : BSet) -> BSet {
   let s = BSet::new()
-  for k in self.t.keys {
-    if o.has(k) {
-      s.add(k)
+  for i, k in self.t.keys {
+    let h = self.t.hashes[i]
+    if o.t.find_hashed(k, 0, k.length(), h) >= 0 {
+      s.t.put_new(k, h, ())
     }
   }
   s

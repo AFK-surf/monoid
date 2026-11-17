@@ -214,6 +214,16 @@ pub(all) struct LinkTo {
 }
 
 ///|
+/// The terminal a link's card names (`card` "terminal": its id, kept as `screen`), "" for any other.
+pub fn LinkTo::terminal_id(self : LinkTo) -> String {
+  if self.card == "terminal" {
+    self.screen
+  } else {
+    ""
+  }
+}
+
+///|
 /// A link to none of those: a web page's, a file's.
 pub let no_link_to : LinkTo = { chat: false, card: "", station: "", screen: "", job: "", peek: "", bare: false }
 
@@ -226,7 +236,15 @@ pub fn link_to_of(j : Json, text? : String = "", bare? : Bool = false) -> LinkTo
     chat: math_field(j, "chat") == Json::boolean(true),
     card: words("card"),
     station: words("station"),
-    screen: words("screen"),
+    // (a terminal's card says its id as `terminal`, put here: LinkTo::terminal_id)
+    screen: {
+      let s = words("screen")
+      if s != "" {
+        s
+      } else {
+        words("terminal")
+      }
+    },
     job: words("job"),
     peek: words("peek"),
     bare,

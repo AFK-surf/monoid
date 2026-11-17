@@ -311,16 +311,26 @@ fn events_of(j : J) -> Events {
 }
 
 ///|
+/// What the applier apart is run with: a checkout's scripts/delta.ts `apply`, the release's main.js `update
+/// --apply-delta`, or ("", no Node) the station's own program's `update --apply-delta`, no module before it.
+fn apart_args(applier : String, app : String, delta : String, out : String) -> Array[String] {
+  if ends_with(applier, ".ts") {
+    [applier, "apply", "--old", app, "--delta", delta, "--out", out]
+  } else if applier == "" {
+    ["update", "--apply-delta", "--app", app, "--delta", delta, "--out", out]
+  } else {
+    [applier, "update", "--apply-delta", "--app", app, "--delta", delta, "--out", out]
+  }
+}
+
+///|
 /// `applyApart`: the applier in a process apart: the release's own Node running its station's
-/// `update --apply-delta`, or from a checkout scripts/delta.ts. Its last line said is why it failed.
+/// `update --apply-delta` (or, `applier` "", the station's own program `exec_path` doing it), or from a checkout
+/// scripts/delta.ts. Its last line said is why it failed.
 pub fn apply_apart(w : World) -> Applier {
   async fn(app, delta, out, _signal) {
     let m = machine.val
-    let args = if ends_with(m.applier, ".ts") {
-      [m.applier, "apply", "--old", app, "--delta", delta, "--out", out]
-    } else {
-      [m.applier, "update", "--apply-delta", "--app", app, "--delta", delta, "--out", out]
-    }
+    let args = apart_args(m.applier, app, delta, out)
     let child = w.call("child_process.spawn", [
       js(m.exec_path),
       jstrs(args),

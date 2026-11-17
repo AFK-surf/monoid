@@ -4,8 +4,9 @@
 
 ///|
 /// A checkbox in `parent`, on or off as `on` says: 18 square, its corner 6, on the page's ground edged in the theme's
-/// control edge (darker under the pointer), filled with the primary ink while on, its tick in the ink on that; faded
-/// while `disabled`. Pressed (a tap, a click, Space with the keyboard's focus, a screen reader's Activate),
+/// control edge (darker under the pointer), filled with the primary ink while on, its tick drawn in the ink on that by
+/// its stroke as it is ticked (whole where it is on as it is made); sunk a little while pressed; faded while
+/// `disabled`. Pressed (a tap, a click, Space with the keyboard's focus, a screen reader's Activate),
 /// `turn` told what it becomes; a ring round it while the keyboard's focus is on it. Read out a checkbox named `label`,
 /// on or off.
 #callsite(autofill(loc))
@@ -63,13 +64,9 @@ pub fn check_node_of(
     }))
     .alpha(By(fn() { if disabled() { check_disabled_alpha } else { 1.0 } }))
     |> ignore
-    b.show(on, fn(m) {
-      m
-      .words(Is("✓"))
-      .words_look(Is({ size: side * 0.7, weight: 700, line: side, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }))
-      .ink(By(fn() { @ui.tree_theme().on_primary }))
-      |> ignore
-    })
+    // (pressed, sunk a little and springing back as it is let go; its tick drawn by its stroke as it is ticked)
+    @motion.press_feel(b, live=fn() { !disabled() }, hovers=false, size=(side, side)) |> ignore
+    check_tick_node(b, on, fn() { side }, fn() { @ui.tree_theme().on_primary })
     // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
     focus_ring_node(b)
   })
@@ -84,3 +81,41 @@ let check_corner : Double = 6.0
 
 ///|
 let check_disabled_alpha : Double = 0.45
+
+///|
+/// A box's tick in `b` (its middle, `side()` square), in `ink()`, while `on()`: a pen's stroke (round ends and join)
+/// drawn from its start as it comes to be on (check_tick_in), whole where it is on as it is made (a picture of it at rest
+/// never half drawn), gone at once as it is off (on the box's own ground then, unseen however drawn). Nothing of it is
+/// made while it is off.
+fn check_tick_node(b : @view.View, on : () -> Bool, side : () -> Double, ink : () -> Int64) -> Unit {
+  let tick = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+  b.reacts(on, at_start=false, fn(now) { if now { tick.go_from(b, 0.0, 1.0, check_tick_in) } else { tick.put(0.0) } })
+  b.show(on, at_once=true, fn(m) {
+    m
+    .width(By(fn() { Some(side()) }))
+    .height(By(fn() { Some(side()) }))
+    .lines(By(fn() {
+      let k = side() / check_side
+      [
+        @paint.line(
+          check_tick_points.map(fn(p) { (p.0 * k, p.1 * k) }),
+          width=check_tick_w * k,
+          color=ink(),
+          upto=dmax(0.0, tick.shown(m)),
+        ),
+      ]
+    }))
+    |> ignore
+  })
+}
+
+///|
+/// How a box's tick is drawn as it is ticked (eased out), its points in an 18-point box (a pen's: down to its foot, up
+/// to its end) and how wide.
+let check_tick_in : @motion.Spec = @motion.tween(160.0, ease=Out)
+
+///|
+let check_tick_points : Array[(Double, Double)] = [(4.75, 9.25), (7.75, 12.25), (13.25, 5.75)]
+
+///|
+let check_tick_w : Double = 2.0

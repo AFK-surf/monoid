@@ -1,0 +1,287 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/station_main"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/drive",
+  "station/host",
+  "station/station_main/media",
+  "station/updates",
+}
+
+// Values
+pub fn answer_heap_request(String, () -> @json.Json) -> Bool
+
+pub fn arch() -> String
+
+pub fn catalogs_json() -> (@json.Json, @json.Json)
+
+pub async fn cmd_channel(@host.Host, Array[String], String, String) -> Int32
+
+pub async fn cmd_enroll(@host.Host, Array[String], String, String) -> Int32
+
+pub async fn cmd_heap(String) -> Int32
+
+pub async fn cmd_id(@host.Host, String) -> Int32
+
+pub async fn cmd_update(@host.Host, Array[String], String, String) -> Int32
+
+pub fn codecs() -> @drive.Codecs
+
+pub fn command_of(Array[String]) -> String?
+
+pub fn config_path(String) -> String
+
+pub fn data_dir(Array[String]) -> String
+
+pub fn disk_of(String) -> (Double, Double)?
+
+pub fn env_all() -> Array[(String, String)]
+
+pub fn env_get(String) -> String?
+
+pub fn env_set(String, String) -> Unit
+
+pub fn env_unset(String) -> Unit
+
+pub fn err_write(String) -> Unit
+
+pub fn fd_close(Int32) -> Unit
+
+pub fn fd_write(Int32, Bytes) -> Bool
+
+pub async fn file_lock(@host.Host, String) -> FileLock
+
+pub fn flag(Array[String], String) -> String?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn held_by(String, Int32) -> Int32?
+
+pub let held_exit : Int32
+
+pub fn homedir() -> String
+
+pub fn hook_of(Array[String]) -> String?
+
+pub fn hostname() -> String
+
+pub fn ignore_signals() -> Unit
+
+pub fn is_station(Array[String]) -> Bool
+
+pub fn is_windows() -> Bool
+
+pub fn iso_time(Double) -> String
+
+pub fn json_reply(Int32, @json.Json) -> Reply
+
+pub fn kill(Int32, String, group? : Bool) -> Bool
+
+pub fn lan_addrs() -> Array[@json.Json]
+
+pub fn lang_of(String?) -> String
+
+pub fn lock_command(@host.Host, String, String, String?) -> String
+
+pub fn loopback_answer(String, String?, Bool, @json.Json?, String) -> Reply
+
+pub fn machine() -> @json.Json
+
+pub fn machine_link_world() -> @media.LinkWorld
+
+pub fn machine_rules_world() -> RulesWorld
+
+pub fn moved_to(String, String?, String, String, String) -> String
+
+pub fn on_signals(@host.Host, (String) -> Unit) -> Unit
+
+pub fn out_write(String) -> Unit
+
+pub fn parent_pid() -> Int32
+
+pub fn peer_process(Int32) -> @json.Json?
+
+pub fn pid_alive(Int32) -> Bool
+
+pub fn plain(Int32, String) -> Reply
+
+pub fn platform() -> String
+
+pub fn positionals(Array[String], Array[String]) -> Array[String]
+
+pub fn prepare_local_links(String, Array[String], String) -> Result[(String, Array[String]), String]
+
+pub fn process_usage(Array[Int32]) -> Array[@json.Json?]
+
+pub fn read_lines(@host.Host, Int32, (String) -> Unit, () -> Unit) -> Unit
+
+pub fn repo_rules_hook(RulesWorld, String) -> String
+
+pub async fn run_command(@host.Host, String, Array[String]) -> Int32
+
+pub async fn run_hook(@host.Host, String, Array[String]) -> Int32
+
+pub async fn run_station(@host.Host, String, Array[String]) -> Int32
+
+pub fn sep() -> String
+
+pub async fn serve_http(@host.Host, @json.Json, async (Request, @json.Json) -> Reply?) -> Unit
+
+pub fn spawn(@host.Host, String, Array[String], env? : Array[(String, String)], cwd? : String, stdin_piped? : Bool, stdout? : Sink, stderr? : Sink, group? : Bool) -> Proc raise SysError
+
+pub let station_en : String
+
+pub fn station_lang(String) -> String
+
+pub fn station_main(Array[String]) -> Int32
+
+pub fn station_version(Array[String], String) -> String
+
+pub let station_zh : String
+
+pub fn status_text(@host.Host, String, Double) -> String
+
+pub fn subagent_hook(String, String?) -> String
+
+pub fn target() -> String
+
+pub fn thumbhash(String, String?) -> (String, Double, Double)?
+
+pub fn thumbnail(String, String) -> @drive.Thumbnail?
+
+pub fn tmpdir() -> String
+
+pub fn tr(String, String, args? : Array[(String, String)]) -> String
+
+pub fn updates_setup(String, String) -> Unit
+
+pub fn updates_world(@host.Host, String) -> @updates.World
+
+pub fn wall_ms() -> Int64
+
+pub async fn write_on(@host.Host, @json.Json, Bytes) -> Bool
+
+// Errors
+pub(all) suberror PartTwice {
+  PartTwice(String)
+}
+
+pub(all) suberror SysError {
+  SysError(String)
+}
+
+// Types and methods
+pub(all) struct CardChoice {
+  may : (@json.Json, @json.Json, @json.Json) -> String?
+  chosen : (@json.Json, @json.Json, String, @json.Json) -> Unit
+}
+
+pub(all) struct DoorRoute {
+  prefix : String
+  request : async (Request, @json.Json) -> Reply?
+}
+
+pub struct FileLock {
+  // private fields
+}
+pub fn FileLock::release(Self) -> Unit
+
+pub(all) struct PartRoute {
+  meth : String
+  path : String
+  answer : async (@json.Json) -> @json.Json
+}
+
+pub(all) struct PartTool {
+  name : String
+  declared : @json.Json
+  call : async (@json.Json, @json.Json) -> @json.Json
+}
+
+pub struct Proc {
+  pid : Int32
+  events : @effect.Queue[ProcEvent]
+  // private fields
+}
+pub fn Proc::end_input(Self) -> Unit
+pub async fn Proc::finished(Self) -> (Int32?, String?, Bytes, Bytes)
+pub fn Proc::write(Self, Bytes) -> Bool
+
+pub(all) enum ProcEvent {
+  Out(Bytes)
+  Err(Bytes)
+  Exit(Int32?, String?)
+}
+
+pub(all) struct Reply {
+  status : Int32
+  headers : Array[(String, String)]
+  body : Bytes
+}
+
+pub(all) struct Request {
+  meth : String
+  target : String
+  headers : Array[(String, String)]
+  body : Bytes
+}
+pub fn Request::header(Self, String) -> String?
+pub fn Request::path(Self) -> String
+pub fn Request::query(Self) -> String?
+
+pub(all) struct RulesWorld {
+  sep : String
+  windows : Bool
+  cwd : String
+  home : String?
+  tmpdir : String
+  switch_ : String?
+  exists : (String) -> Bool
+  stat : (String) -> (Double, Bool)?
+  realpath : (String) -> String?
+  read : (String) -> String?
+  write : (String, String) -> Unit
+  remove : (String) -> Unit
+}
+
+pub(all) enum Sink {
+  Ignored
+  Piped
+  Appended(String)
+}
+
+pub struct StationParts {
+  // private fields
+}
+pub fn StationParts::all_routes(Self, @json.Json) -> Array[PartRoute]
+pub fn StationParts::all_tools(Self) -> Array[PartTool]
+pub fn StationParts::card_choice(Self, String, CardChoice) -> Unit raise PartTwice
+pub fn StationParts::card_choice_of(Self, @json.Json) -> CardChoice?
+pub async fn StationParts::carried(Self) -> Map[String, @json.Json]
+pub fn StationParts::carry(Self, String, async () -> @json.Json, (@json.Json) -> Unit) -> Unit raise PartTwice
+pub fn StationParts::connected(Self) -> Unit
+pub fn StationParts::door(Self, DoorRoute) -> Unit
+pub fn StationParts::door_open(Self, String) -> Unit
+pub fn StationParts::door_route_of(Self, String) -> DoorRoute?
+pub fn StationParts::door_routes(Self) -> Array[DoorRoute]
+pub fn StationParts::door_url(Self) -> String?
+pub fn StationParts::end_session(Self, String) -> Unit
+pub fn StationParts::may_view(Self, String, String) -> Bool
+pub fn StationParts::member_connected(Self, () -> Unit) -> Unit
+pub fn StationParts::new() -> Self
+pub fn StationParts::overview(Self, String, async (@json.Json, String) -> @json.Json) -> Unit raise PartTwice
+pub async fn StationParts::overview_of(Self, @json.Json, String) -> Map[String, @json.Json]
+pub fn StationParts::routes(Self, Array[PartRoute]) -> Unit
+pub fn StationParts::routes_of(Self, (@json.Json) -> Array[PartRoute]) -> Unit
+pub fn StationParts::session_ended(Self, (String) -> Unit) -> Unit
+pub fn StationParts::stream_of(Self, @json.Json) -> (async (@json.Json) -> Unit)?
+pub fn StationParts::streams(Self, String, async (@json.Json) -> Unit) -> Unit raise PartTwice
+pub fn StationParts::take_up(Self, Map[String, @json.Json]) -> Unit
+pub fn StationParts::tools(Self, Array[PartTool], offered? : () -> Bool) -> Unit
+pub fn StationParts::viewer_may(Self, (String, String) -> Bool) -> Unit
+
+// Type aliases
+
+// Traits

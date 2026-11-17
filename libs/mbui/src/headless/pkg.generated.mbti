@@ -156,8 +156,9 @@ pub(all) struct Hold {
   on_cancel : () -> Unit
   down : ((@view.Drag) -> Unit)?
   tapped : ((@view.Drag) -> Unit)?
+  taps : () -> Bool
 }
-pub fn Hold::new(Double, Double, () -> Bool, on_hold? : () -> Unit, on_lift? : () -> Unit, on_cancel? : () -> Unit, down? : (@view.Drag) -> Unit, tapped? : (@view.Drag) -> Unit) -> Self
+pub fn Hold::new(Double, Double, () -> Bool, on_hold? : () -> Unit, on_lift? : () -> Unit, on_cancel? : () -> Unit, down? : (@view.Drag) -> Unit, tapped? : (@view.Drag) -> Unit, taps? : () -> Bool) -> Self
 
 pub struct Menu {
   // private fields

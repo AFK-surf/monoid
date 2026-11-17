@@ -142,14 +142,20 @@ test "desk composer: its menu under a panel that leaves the field its focus: Ent
   let calls : Array[Made] = []
   let (t, _, src) = ref_menu_tester(calls~)
   let entered = Ref(0)
-  @sf.panel(
+  @sf.panel_nodes(
     "盖在上面",
-    fn(c, _) {
-      // (the keys the panel's: Enter read by it, once)
-      if c.key_pressed(@ui.key_code_enter) {
-        entered.val += 1
-      }
-      c.text("盖在上面的对话框") |> ignore
+    fn(v, _) {
+      // (the keys the panel's: Enter taken by it, once)
+      v.on_key(fn(k) {
+        if k.code == @ui.key_code_enter {
+          entered.val += 1
+          true
+        } else {
+          false
+        }
+      })
+      |> ignore
+      @sf.words_node(v, fn() { "盖在上面的对话框" }, fn() { @sf.paragraph }) |> ignore
     },
     from=@sf.at_point(450.0, 60.0).anchor(),
     focus=false,

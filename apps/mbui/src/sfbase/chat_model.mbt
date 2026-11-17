@@ -133,6 +133,8 @@ pub(all) struct Card {
   /// who is to decide (their email), where someone is
   assignee : String
   options : Array[Choice]?
+  /// a text card's: the hint its field shows while nothing is written in it, as the agent said it ("" none)
+  placeholder : String
   login : String
   station : String
   vault : String
@@ -502,6 +504,7 @@ pub fn message_of(m : Json) -> Message {
           assignee_text: opt_text(c, "assigneeText"),
           assignee: text(c, "assignee"),
           options: choices_of(c, "options"),
+          placeholder: text(c, "placeholder"),
           login: text(c, "login"),
           station: text(c, "station"),
           vault: text(c, "vault"),
@@ -882,11 +885,36 @@ fn[T] chat_part(v : Json, was : (Json, ChatView)?, name : String, kept : (ChatVi
 }
 
 ///|
+/// What a chat's station lets it open there, by the chat's key (`ChatView::can_browser`, `can_terminal`), as its view
+/// was last read: kept apart from `ChatView`, whose shape every unit that reads a chat is compiled by.
+// kept across runs: reset in pages' reset
+let chat_remote_caps : Map[String, (Bool, Bool)] = Map([])
+
+///|
+/// Forget what the chats' stations let them open (a run's core is a new one).
+pub fn chat_remote_caps_reset() -> Unit {
+  chat_remote_caps.clear()
+}
+
+///|
+/// Whether the chat's station lets it open a tab of its own browser (the core's `canBrowser`).
+pub fn ChatView::can_browser(self : ChatView) -> Bool {
+  chat_remote_caps.get(self.key).map_or(false, fn(c) { c.0 })
+}
+
+///|
+/// Whether the chat's station lets it open a terminal in the chat's workspace (the core's `canTerminal`).
+pub fn ChatView::can_terminal(self : ChatView) -> Bool {
+  chat_remote_caps.get(self.key).map_or(false, fn(c) { c.1 })
+}
+
+///|
 /// A chat's view as the core gives it, its messages read already (`messages`: chat_read's, each read again only as it
 /// changed), and what else it says read again only where it changed (`was`: the value the view before was read from,
 /// and that view; chat_part's).
 fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) -> ChatView {
   let s = Some(v)
+  chat_remote_caps[text(s, "key")] = (flag(s, "canBrowser"), flag(s, "canTerminal"))
   let thread = field(s, "thread")
   {
     title: text(s, "title"),

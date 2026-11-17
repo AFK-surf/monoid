@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { latest as latestNote } from "../src/agents/migrations.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
@@ -326,8 +327,16 @@ test("sessions: made, set, read, counted, kept in memory and forgotten as the Ty
   await p.c("modelStars", "w1", "ann");
   await p.c("putModelStars", "w1", "ann", '["a","b"]');
   await p.c("modelStars", "w1", "ann");
+  // (#6960) the first write waits for no other writer: refused at once while another connection holds the lock, read
+  // without the lock once it is kept
+  const holders = ["a", "b"].map((side) => new DatabaseSync(join(p.dir, side, "stillfail.db")));
+  for (const h of holders) h.exec("BEGIN IMMEDIATE");
+  assert.deepEqual(await p.c("deviceBuildsSince", 3), { error: "device builds write is busy", data: null });
+  for (const h of holders) h.exec("ROLLBACK");
   await p.c("deviceBuildsSince", 5);
-  await p.c("deviceBuildsSince", 9);
+  for (const h of holders) h.exec("BEGIN IMMEDIATE");
+  assert.equal(await p.c("deviceBuildsSince", 9), 5);
+  for (const h of holders) { h.exec("ROLLBACK"); h.close(); }
   // (a session's workspace kept in memory: forgotten as all of its workspace move)
   await p.c("setSessionsWs", null, "home");
   for (const k of ["s1", "s2", "s4"]) await p.c("sessionWs", k);

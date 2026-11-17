@@ -72,8 +72,6 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
   {
     title,
     description: "",
-    body: fn(_, _) {  },
-    foot: None,
     w: panel_w,
     fits: false,
     wide: false,
@@ -82,21 +80,17 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
     grows: false,
     focus: true,
     ruled: false,
-    lists: false,
     fade_out_together: false,
     form: false,
-    field: "",
     stage: false,
     above: None,
-    title_row: None,
     heads_itself: false,
     side: Bottom,
     along: Start,
     offset: panel_offset,
     match_panel: 0,
-    steps: false,
     on_back: None,
-    nodes: Some({
+    nodes: {
       body,
       foot: None,
       hugs: false,
@@ -107,7 +101,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       top: 0.0,
       most: None,
       flush: true,
-    }),
+    },
   }
 }
 
@@ -325,6 +319,8 @@ fn sheet_pick_node(
             value=x.value,
             icon=fn() { x.icon },
             mark?=x.mark.map(fn(m) { fn(b, size) { choice_mark_node(b, m, size) } }),
+            // (one not to be chosen: faint, taking no press, its note saying why: Choice's `disabled`)
+            disabled=fn() { x.disabled },
           )
         None => ()
       }
@@ -341,7 +337,7 @@ fn sheet_pick_node(
       all.box(fn(s) {
         style_node(s, fn() { sheet_search_in })
         input_node(s, line, placeholder_by=fn() { t("common.search") }, submitted=fn(_) {
-          match @signals.untracked(found).get(0) {
+          match @signals.untracked(found).iter().find_first(fn(x) { !x.disabled }) {
             Some(x) => go(x.key)
             None => ()
           }

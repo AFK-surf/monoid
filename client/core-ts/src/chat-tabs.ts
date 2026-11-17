@@ -44,6 +44,17 @@ function isScreen(key: string): boolean {
   }
 }
 
+/// A station's terminal beside the chat (`terminal:["<station>","<terminal>"]`, optional initial `cwd` third).
+function isTerminal(key: string): boolean {
+  if (!key.startsWith("terminal:")) return false;
+  try {
+    const v = JSON.parse(key.slice("terminal:".length));
+    return Array.isArray(v) && (v.length === 2 || v.length === 3) && v.every((x) => typeof x === "string") && v[0] !== "" && v[1] !== "";
+  } catch {
+    return false;
+  }
+}
+
 /// A file opened beside the chat in the app's viewer (`view:["<of>","<station>","<in>","<path>","<name>",<size>]`, a
 /// drive's file `<mtime>` after it): which file it is (`chat` one sent with a message, `named` one a message names by
 /// its path, `drive` a drive's), its station, the session that keeps it (a drive's: its root), its path, its name, and
@@ -100,7 +111,7 @@ export function tabsOf(kept: unknown, agents: readonly unknown[], noChat: boolea
   const auto = chosen === null && noChat && session !== null;
   const tabs = chosen ?? (auto && session !== null ? [session] : []);
   const has = chatHas(agents);
-  const known = (key: string) => key === JOBS || key === FILES || key === LETTERS || key === THINGS || isFile(key) || isView(key) || isScreen(key) || isStationPage(key) || (key.startsWith("service:") && has.jobs.has(key.slice("service:".length))) || has.histories.has(key);
+  const known = (key: string) => key === JOBS || key === FILES || key === LETTERS || key === THINGS || isFile(key) || isView(key) || isScreen(key) || isTerminal(key) || isStationPage(key) || (key.startsWith("service:") && has.jobs.has(key.slice("service:".length))) || has.histories.has(key);
   const open = agents.length ? tabs.filter(known) : tabs;
   const active = isObject(kept) && typeof kept.active === "string" ? kept.active : null;
   const shown = active !== null && open.includes(active) ? active : open[0];

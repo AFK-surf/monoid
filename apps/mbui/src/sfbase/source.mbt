@@ -368,7 +368,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
 // what Home's bar shows of the stations' newer releases (`stationUpdates`: its key made again as Home was taken back).
 // kept across runs: a value (nothing of it changes)
 let lasting : Array[String] = [
-  "workspace", "stations", "stationNet", "profiles", "connects", "vaults", "usage", "archive", "chats", "longJobs", "changelog",
+  "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "vaults", "usage", "archive", "chats", "longJobs", "changelog",
   "stationUpdates",
 ]
 

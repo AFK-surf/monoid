@@ -50,7 +50,17 @@ fn tab_job(tab : String) -> String? {
 /// drawn (the panel shows what it showed as it slides out: sfbase's service_page_held, service_left waiting for the
 /// last node drawing it); opened again before, kept (tab_kept).
 fn tab_let_go(src : Source, r : ChatRef, tab : String) -> Unit {
+  // (over the whole window: back, as it is gone)
+  if @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, tab) }) {
+    @sfbase.tab_full_close()
+  }
   panel_screen_pages.remove(tabs_key(r) + "/" + tab)
+  panel_terminal_pages.remove(tabs_key(r) + "/" + tab)
+  match station_tab(tab) {
+    Some(("screen", station, screen)) if !@sfpages.farview_screen(screen) => @sfpages.screen_left(src, station, screen)
+    Some(("terminal", station, terminal)) => @sfpages.terminal_left(station, terminal)
+    _ => ()
+  }
   // (a file in the viewer: what it read)
   @sfbase.tab_viewer_let_go(tabs_key(r), tab)
   match tab_job(tab) {
@@ -74,6 +84,8 @@ fn tab_kept(r : ChatRef, tab : String) -> Unit {
 ///|
 fn sv_reset() -> Unit {
   jobs_handed.clear()
+  held_beside.clear()
+  held_full.clear()
 }
 
 ///|
@@ -108,13 +120,14 @@ fn job_now(src : Source, station : String, job : String) -> (Json?, Json?) {
 /// The service `job` of chat `r`'s station beside the chat, in node `q` (its tab, as large as the panel under its bar;
 /// service_pane's): the page while it is up (and as it starts again), what stopped it said otherwise, that it is not
 /// found, or that the station is asked. `close`: what closes the panel it is alone in (its bar the panel's, its
-/// corners `round`).
+/// corners `round`); `full`: what puts it over the whole window (its bar's 全屏).
 fn service_tab_node(
   q : @view.View,
   src : Source,
   r : ChatRef,
   job : String,
   close : (() -> Unit)?,
+  full : (() -> Unit)?,
   round : FixedArray[@ui.CornerOf]?,
   tips : @sf.TipLayer,
 ) -> Unit {
@@ -159,6 +172,7 @@ fn service_tab_node(
           },
           fn() { b.window().0 },
           close~,
+          full~,
           round~,
           tips~,
         )
@@ -176,9 +190,18 @@ fn service_tab_node(
 ///|
 /// The visualization `path` named `name` of session `session` on chat `r`'s station beside the chat, in node `q` (its
 /// tab; file_pane's, FileFrame): the file in the web's stylesheet with what its widget kept; nowhere else to go, its bar
-/// names it.
-fn file_tab_node(q : @view.View, src : Source, r : ChatRef, session : String, path : String, name : String, tips : @sf.TipLayer) -> Unit {
-  @sfpages.file_view_node(q, src, r.station, session, path, name, None, tips~)
+/// names it; its 全屏 `full`.
+fn file_tab_node(
+  q : @view.View,
+  src : Source,
+  r : ChatRef,
+  session : String,
+  path : String,
+  name : String,
+  full : (() -> Unit)?,
+  tips : @sf.TipLayer,
+) -> Unit {
+  @sfpages.file_view_node(q, src, r.station, session, path, name, None, full~, tips~)
 }
 
 ///|
@@ -247,9 +270,9 @@ fn beside_follow(v : @view.View, src : Source) -> Unit {
           }
           side_change_from(src, r, "open", Some(key), now)
         }
-        Some((Service(station, job), session, now)) if session != "" =>
-          tab_beside(src, station, session, "service:" + job, now)
-        Some((PreviewFile(station, key, path, name), _, now)) => {
+        Some((Service(station, job) as p, session, now)) if session != "" =>
+          tab_beside(src, station, session, "service:" + job, now, full=@sfbase.page_full_taken(p))
+        Some((PreviewFile(station, key, path, name) as p, _, now)) => {
           let tab = if @sfbase.is_mbui_viz(name) || @sfbase.is_mbui_viz(path) {
             let a : @sfbase.Attachment = {
               name: if name != "" { name } else { @sfbase.viz_base_name(path) },
@@ -268,7 +291,7 @@ fn beside_follow(v : @view.View, src : Source) -> Unit {
           } else {
             file_tab(key, path, name)
           }
-          tab_beside(src, station, key, tab, now)
+          tab_beside(src, station, key, tab, now, full=@sfbase.page_full_taken(p))
         }
         _ => ()
       }
@@ -279,8 +302,15 @@ fn beside_follow(v : @view.View, src : Source) -> Unit {
 ///|
 /// Tab `tab` opened in front beside chat `session` on `station` (its tabs as they are `now`), the page the chat's in
 /// place of the one on top that asked: the chat under it where it was asked from there (as it mostly is: a chat's link,
-/// its jobs), else that chat.
-fn tab_beside(src : Source, station : String, session : String, tab : String, now : (Array[String], String)) -> Unit {
+/// its jobs), else that chat; over the whole window where `full` asks it (sfbase's tab_full.mbt).
+fn tab_beside(
+  src : Source,
+  station : String,
+  session : String,
+  tab : String,
+  now : (Array[String], String),
+  full~ : Bool,
+) -> Unit {
   let (r, under) = match app.nav.pages() {
     [.., Chat(u), _] if u.station == station && u.session == session => (u, true)
     _ => ({ station, session, title: "", station_name: "" }, false)
@@ -291,6 +321,9 @@ fn tab_beside(src : Source, station : String, session : String, tab : String, no
     app.nav.replace(Chat(r))
   }
   side_change_from(src, r, "open", Some(tab), now)
+  if full {
+    @sfbase.tab_full_open(r, tab)
+  }
 }
 
 ///|

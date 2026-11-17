@@ -3740,6 +3740,7 @@ priv enum Prop {
   GroundOver
   Ring
   FocusRing
+  BesideOf
 }
 
 ///|
@@ -3847,6 +3848,7 @@ impl Show for Prop with output(self, logger) {
       GroundOver => "GroundOver"
       Ring => "Ring"
       FocusRing => "FocusRing"
+      BesideOf => "BesideOf"
     },
   )
 }
@@ -3866,7 +3868,7 @@ fn Prop::moves_hits(self : Prop, phase : Phase) -> Bool {
     Layout | Both => true
     _ =>
       match self {
-        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | Modal | OverAll | Stacked | MovesWindow =>
+        Offset | Shift | MovedBy | FlipIn | Scale | DrawnOff | BoundsInput | Presses | Modal | OverAll | Stacked | MovesWindow | BesideOf =>
           true
         _ => false
       }
@@ -3978,6 +3980,7 @@ fn Prop::ord(self : Prop) -> Int {
     GroundOver => 91
     Ring => 92
     FocusRing => 93
+    BesideOf => 97
   }
 }
 
@@ -6045,6 +6048,8 @@ fn Tree::measured_now(self : Tree) -> Unit {
         @flex.compute(root, width=self.last_w, height=self.last_h, round=false, reuse=true)
         self.measuring = false
       }
+      // (what goes beside another as wide as it, as wide as that is laid out now, laid out so: Tree::besides_widened_now)
+      self.besides_widened_now()
       self.measured_gen = g
       // (placed by once things are placed, whatever is laid out again before that: from the first of what was laid out
       // and not placed yet)
@@ -6065,24 +6070,13 @@ fn Tree::measured_now(self : Tree) -> Unit {
 ///|
 /// Where it is laid out in the window as of the logic's moment, and how big (as laid_place_now, each that holds it where
 /// it is laid out too, drawn off and grown or shrunk by nothing): where a change told now puts it, said once at that
-/// moment, never followed.
+/// moment, never followed. What goes beside another (View::beside), it or what holds it, where it goes beside it as
+/// that is laid out then (Tree::laid_window_at), not where it is laid out of its own (its holder's top left).
 pub fn View::laid_window_now(self : View) -> (Double, Double, Double, Double) {
   guard self.live() is Some(n) else { return (0.0, 0.0, 0.0, 0.0) }
   self.tree.measured_now()
-  let mut x = 0.0
-  let mut y = 0.0
-  let mut i = self.at
-  while i >= 0 {
-    let m = self.tree.nodes[i]
-    // (a slot lays out nothing of its own: what it holds is placed in the one that holds it)
-    if !m.slot {
-      let (dx, dy) = self.tree.off_now(m)
-      x = x + m.flex.left + dx
-      y = y + m.flex.top + dy
-    }
-    i = m.parent
-  }
-  (x, y, n.flex.width, n.flex.height)
+  let (x, y) = self.tree.laid_window_at(self.at, [])
+  (x, y, self.tree.laid_width_of(self.at), n.flex.height)
 }
 
 ///|
@@ -6101,6 +6095,11 @@ pub fn View::placed_now(self : View) -> (Double, Double, Double, Double) {
 pub fn View::laid_place_now(self : View) -> (Double, Double, Double, Double) {
   guard self.live() is Some(n) else { return (0.0, 0.0, 0.0, 0.0) }
   self.tree.measured_now()
+  // (beside another: where it goes beside it, in what holds it's terms, Tree::beside_laid)
+  if self.tree.beside_laid(self.at, []) is Some((bx, by)) {
+    let (hx, hy) = if n.parent >= 0 { self.tree.laid_window_at(n.parent, []) } else { (0.0, 0.0) }
+    return (bx - hx, by - hy, self.tree.laid_width_of(self.at), n.flex.height)
+  }
   let (dx, dy) = self.tree.off_now(n)
   (n.flex.left + dx, n.flex.top + dy, n.flex.width, n.flex.height)
 }
