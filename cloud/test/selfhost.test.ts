@@ -143,3 +143,42 @@ test("through the operator's OpenID provider: its page, its endpoints from its d
     await h.close();
   }
 });
+
+test("a workspace open to sign-in: whoever the operator's OpenID provider signs in joins it as a member, not only its first", async () => {
+  // (its owner the cloud's admin, as a machine's is: the workspace's seats are the admin's)
+  const h = await harness({ oidc: true, mail: true, adminEmail: "owner@sso.example.test" });
+  try {
+    const owner = await h.login("owner");
+    const team = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Machine" })).json()) as { id: string };
+    const lab = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Lab" })).json()) as { id: string };
+    const dir = await h.object("DIRECTORY", "primary");
+    await dir.openToSignIn(team.id, true);
+    // Carol was invited as an admin: her invitation is hers to accept, not taken by joining as a member.
+    assert.equal((await h.as(owner)("POST", `/v1/workspaces/${team.id}/invitations`, { role: "admin", email: "carol@sso.example.test" })).status, 200);
+    const roles = async (tokens: Tokens) => ((await (await h.as(tokens)("GET", "/v1/me")).json()) as { workspaces: { id: string; role: string }[] }).workspaces.map((w) => `${w.id === team.id ? "team" : w.id === lab.id ? "lab" : w.id} ${w.role}`);
+    const bob = await h.login("bob");
+    assert.deepEqual(await roles(bob), ["team member"], "in the open workspace, not the other");
+    assert.deepEqual(await roles(await h.login("bob")), ["team member"], "signing in again changes nothing");
+    assert.deepEqual(await roles(await h.login("carol")), []);
+    assert.deepEqual((await roles(owner)).sort(), ["lab owner", "team owner"], "the owner stays its owner");
+    // Closed again: nobody new joins; who joined stays.
+    await dir.openToSignIn(team.id, false);
+    assert.deepEqual(await roles(await h.login("dave")), []);
+    assert.deepEqual(await roles(bob), ["team member"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a cloud signing in with Google opens no workspace to it: only its own OpenID provider's people join", async () => {
+  const h = await harness({ adminEmail: "owner@example.test" });
+  try {
+    const owner = await h.login("owner");
+    const team = (await (await h.as(owner)("POST", "/v1/workspaces", { name: "Machine" })).json()) as { id: string };
+    await (await h.object("DIRECTORY", "primary")).openToSignIn(team.id, true);
+    const eve = await h.login("eve");
+    assert.deepEqual(((await (await h.as(eve)("GET", "/v1/me")).json()) as { workspaces: unknown[] }).workspaces, []);
+  } finally {
+    await h.close();
+  }
+});

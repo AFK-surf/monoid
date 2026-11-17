@@ -75,7 +75,9 @@ Each call with `Authorization: Bearer $ADMIN_TOKEN`:
 - `POST /v1/setup {"admin": "<email>", "workspace": "<name>", "station": "<name>"}`: the admin's account (the one a
   code to that email signs in to), its workspace of that name, made once, and while it has no station an enrollment
   for one: `{cloud, relays, workspace, workspace_name, stations, enrollment?: {name, token, expires_at, command}}`. What a machine
-  that is its own cloud runs at its first boot.
+  that is its own cloud runs at its first boot. With `"open_to_sign_in": true` whoever signs in through the OpenID
+  provider (`OIDC_ISSUER`) joins that workspace as a member (an invitation of their own waiting is theirs to accept
+  instead), for a provider that lets in only the operator's people (a machine's, its organization's); `false` stops it.
 - `POST /v1/scheduled`: what Cloudflare's cron runs.
 
 ### Releases

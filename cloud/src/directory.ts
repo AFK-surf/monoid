@@ -191,6 +191,9 @@ export class Directory extends DurableObject<Env> {
     for (const column of ["ways_at INTEGER", "ways_station TEXT"]) {
       if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === column.split(" ")[0])) this.#run(`ALTER TABLE workspaces ADD COLUMN ${column}`);
     }
+    // Nor whether whoever signs in through the cloud's OpenID provider joins it (1: joinBySignIn), before a machine's
+    // cloud let its organization's people in so (selfhost/setup.ts).
+    if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "sign_in_joins")) this.#run("ALTER TABLE workspaces ADD COLUMN sign_in_joins INTEGER");
     // Nor did push keep a device's language, before there were languages.
     if (!this.#rows("PRAGMA table_info(push)").some((r) => r.name === "lang")) this.#run("ALTER TABLE push ADD COLUMN lang TEXT");
     // Nor what a device shows of notices (JSON: noticeText.ts Shows; null all, in full), before a device said.
@@ -676,6 +679,40 @@ export class Directory extends DurableObject<Env> {
       this.#run("UPDATE users SET admitted = 'invitation' WHERE sub = ? AND admitted IS NULL", sub);
     });
     for (const row of rows) this.#changed(row.workspace as string, true);
+  }
+
+  /**
+   * A self-hosted cloud's workspace that whoever its OpenID provider (OIDC_ISSUER) signs in joins as a member, or no
+   * longer does (selfhost/setup.ts `open_to_sign_in`): a machine's cloud whose provider lets in only its organization's
+   * people (monoid's console) lets each of them in, not only the first to sign in. Those already in stay.
+   */
+  openToSignIn(workspace: string, open: boolean): void {
+    this.#run("UPDATE workspaces SET sign_in_joins = ? WHERE id = ?", open ? 1 : null, workspace);
+  }
+
+  /**
+   * Someone the cloud's OpenID provider has just vouched for (login.ts, before their session is made): added to each
+   * workspace open to its sign-in (openToSignIn), as addMembers adds an email, so the session's upsertUser makes
+   * them a member (#joinAdded). Not one who is in it already or waits on an invitation of their own (its role is
+   * the one meant), nor beyond the workspace's seats. Taken out, they are added again as they sign in again: who may
+   * is the provider's to say.
+   */
+  joinBySignIn(email: string): void {
+    const address = email.toLowerCase();
+    const open = this.#rows("SELECT id, created_by FROM workspaces WHERE sign_in_joins = 1");
+    const added: string[] = [];
+    this.ctx.storage.transactionSync(() => {
+      for (const row of open) {
+        const workspace = row.id as string;
+        if (this.#one(`SELECT 1 AS x FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?
+          UNION ALL SELECT 1 FROM added WHERE workspace = ? AND email = ?
+          UNION ALL SELECT 1 FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ? LIMIT 1`, workspace, address, workspace, address, workspace, address, nowSeconds())) continue;
+        if (this.#seats(workspace, true) >= this.#memberCap(workspace)) continue;
+        this.#run("INSERT INTO added (workspace, email, role, added_by, added_at) VALUES (?, ?, 'member', ?, ?)", workspace, address, row.created_by, nowSeconds());
+        added.push(workspace);
+      }
+    });
+    for (const workspace of added) this.#changed(workspace, true);
   }
 
   /** An account signing in with an email the admin gave rights to before it had one: they are its from now on. */
@@ -2656,7 +2693,7 @@ export type DirectoryLoad = {
 
 /** What each of the directory's calls serves, as its load is counted (adminLoad); "other" for one not listed. */
 const FAMILIES: Record<string, string> = {
-  accountFor: "signin", upsertUser: "signin",
+  accountFor: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
   me: "me", invitationsFor: "me", setOwnPicture: "me", deleteAccount: "me", revokeSessions: "me",
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",
