@@ -70,8 +70,19 @@ jobs:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, fetch-tags: true, filter: "blob:none" } # (the history's commits and trees: the range, the paths it changed; a blob read is fetched then)
       - uses: ./.github/actions/node
+      - id: plan
+        run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then base=$(git rev-parse -q --verify "refs/tags/deployed/beta^{commit}" || true)
+          else base=$(git merge-base origin/main HEAD); fi
+          if [ -n "$base" ]; then range="$base..$GITHUB_SHA"; changed=$(git diff --name-only "$base" "$GITHUB_SHA"); else range=all; changed=$(git ls-files); fi
+          # Part by part: scripts/plan.sh.
+          printf '%s\n' "$changed" | range=$range bash scripts/plan.sh > "$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
+          echo "range $range ($(printf '%s\n' "$changed" | grep -c .) files): $(grep -v '^range=' "$RUNNER_TEMP/plan" | tr '\n' ' ')"
       # Whether the natives jobs have anything to do: a part this run uses that the release native-artifacts lacks (the
-      # keys are the sources' hashes: scripts/native.ts). None, and they are skipped.
+      # keys are the sources' hashes: scripts/native.ts). None, and they are skipped. A branch's Apple parts only where
+      # a job of its uses them (check-mac, mac-build: station, desktop-build: release_smoke): a part main had not yet
+      # published held every branch, a page's or the cloud's too, on natives-mac (2026-11-17).
       - id: natives
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,30 +99,23 @@ jobs:
               missing_mac=$(node scripts/native.ts missing --mac)
             else
               missing=$(node scripts/native.ts missing $BRANCH_NATIVES)
-              missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
+              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
+              else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
             fi
             echo "missing (linux): ${missing:-none}"
             echo "missing (mac): ${missing_mac:-none}"
             echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
-      - id: plan
-        run: |
-          if [ "$GITHUB_REF" = refs/heads/main ]; then base=$(git rev-parse -q --verify "refs/tags/deployed/beta^{commit}" || true)
-          else base=$(git merge-base origin/main HEAD); fi
-          if [ -n "$base" ]; then range="$base..$GITHUB_SHA"; changed=$(git diff --name-only "$base" "$GITHUB_SHA"); else range=all; changed=$(git ls-files); fi
-          # Part by part: scripts/plan.sh.
-          printf '%s\n' "$changed" | range=$range bash scripts/plan.sh > "$RUNNER_TEMP/plan"
-          cat "$RUNNER_TEMP/plan" >> "$GITHUB_OUTPUT"
-          echo "range $range ($(printf '%s\n' "$changed" | grep -c .) files): $(grep -v '^range=' "$RUNNER_TEMP/plan" | tr '\n' ' ')"
 
   # The non-Apple native parts for this commit (scripts/native.ts --linux): Linux, Windows cross-builds, Wasm and Android,
-  # built on ci-1's linux-quick runner (falling back to macos-ci's quick runner when vars.CI_1 == 'off'), decoupling
-  # check, check-linux, check-station, check-core, bundle, ui-windows, static and android from Mini1.
+  # built on any of ci-1's runners (falling back to macos-ci's quick runner when vars.CI_1 == 'off'), decoupling
+  # check, check-linux, check-station, check-core, bundle, ui-windows, static and android from Mini1. Not linux-quick's
+  # alone: one runner, natives waited 16-26 minutes behind one another there while ci-1's others were idle (2026-11-17).
   natives:
     needs: plan
     if: needs.plan.outputs.natives == 'needed'
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-quick"]' || '["self-hosted", "quick"]') }}
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "ci-1"]' || '["self-hosted", "quick"]') }}
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
@@ -192,9 +196,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
 
+  # A branch's the rest of main's Apple parts, into macos-ci's cache, only while vars.MINI1 is 'on': a job queued for
+  # macos-ci with Mini1 away held the branch's run in progress, its concurrency group with it (2026-11-17), and a
+  # branch's checks need none of it.
   natives-mac-main:
     needs: [plan, natives-mac]
-    if: vars.CI_1 != 'off' && needs.plan.outputs.natives_mac == 'needed' && github.ref != 'refs/heads/main' && needs.natives-mac.result == 'success'
+    if: vars.CI_1 != 'off' && vars.MINI1 == 'on' && needs.plan.outputs.natives_mac == 'needed' && github.ref != 'refs/heads/main' && needs.natives-mac.result == 'success'
     runs-on: [self-hosted, macos-ci]
     timeout-minutes: 5
     steps:
@@ -367,16 +374,39 @@ jobs:
           exit $status
 
   # The few checks only a Mac can run (Swift's still.fail Helper, the iOS crash reports' Objective-C test, and the Mac
-  # release prebuild's Mach-O symbol check), run on macos-ci only when one of them or CI's own files changed.
+  # release prebuild's Mach-O symbol check), run only when one of them or CI's own files changed: main's on macos-ci, a
+  # branch's on GitHub's macos-26 (free for a public repository, as many as are asked for), which they need no more of
+  # Mini1 than (an ad hoc signature, no keychain): a branch's waited for Mini1 when it was away, and failed with it
+  # (2026-11-17). macos-26, not macos-15: the Helper's Package.swift asks for Swift 6.2, Xcode 26's.
+  # vars.MINI1 == 'off' puts main's there too.
   check-mac:
     needs: [plan, natives-mac]
     if: ${{ !cancelled() && !failure() && vars.CI_1 != 'off' && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
-    runs-on: [self-hosted, macos-ci]
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.MINI1 != 'off' && '["self-hosted", "macos-ci"]' || '"macos-26"') }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
-      - uses: ./.github/actions/setup-mac
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-mac
+      # (GitHub's: the pinned Node, and rustup's Rust the image has, in a target of the job's own; no sccache there)
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/setup
+        with: { pnpm: 'false' }
+      - if: runner.environment != 'self-hosted'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+          echo "RUST_TEST_THREADS=4" >> "$GITHUB_ENV"
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: check-mac-cargo-${{ hashFiles('station/native/launcher/Cargo.lock') }}
+          restore-keys: check-mac-cargo-
       - uses: ./.github/actions/natives
       - name: Mac-only checks (helper, iOS crash reports, Mac release prebuild, the launcher on macOS)
         run: |
@@ -581,7 +611,9 @@ jobs:
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
-    permissions: {}
+    permissions:
+      actions: read # the attempts before this one, their jobs and logs (scripts/gate-rerun-check.mjs)
+      contents: read
     steps:
       - env:
           RESULTS: ${{ toJSON(needs) }}
@@ -591,6 +623,18 @@ jobs:
             echo "::error::a branch job failed or was cancelled: main's protection keeps this branch out"
             exit 1
           fi
+      # A run attempted again goes through only where what failed in the attempts before was GitHub's or the network's
+      # (a runner that never came, a checkout, a 504), never a check that failed or ran its time out: those are found and
+      # fixed in a new commit, never rerun green (the root AGENTS.md; scripts/gate-rerun-check.mjs says what is which).
+      - if: fromJSON(github.run_attempt) > 1
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+          persist-credentials: false
+      - if: fromJSON(github.run_attempt) > 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/gate-rerun-check.mjs
 
   # The API and the web wait for the checks of what they are made of, not the Android app's (2026-10-17, as asked: its
   # lint on GitHub's runners held a release's web back for minutes); the apps' releases (put) wait for all.

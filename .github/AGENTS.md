@@ -17,14 +17,19 @@
   `@$((JOB_END - 35))`, JOB_END written by the job's first step. The units' stores of GitHub's images are keyed by the
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
-  unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`,
-  `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux
-  machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; Apple native parts, Xcode/Simulator checks
-  (`check-mac`, `side-mac`, iOS/macOS builds) and release signing stay on `Mini1` (`macos-ci`, `quick`). Runners on one
+  unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
+  (any `ci-1` runner), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
+  a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch's `check-mac`
+  runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
+  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`); the other Apple native parts,
+  Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and release signing stay on `Mini1` (`macos-ci`, `quick`), and
+  a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
   parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
-- A check that failed and passed on the same commit is never rerun green (the root AGENTS.md). Do not rerun an old
-  commit's main pipeline: it deploys that commit's beta over the newer one.
+- A check that failed and passed on the same commit is never rerun green (the root AGENTS.md): a branch's `gate`, in a
+  run attempted again, fails unless every job that failed or was cancelled before failed for GitHub's or the network's
+  sake (`scripts/gate-rerun-check.mjs`). Do not rerun an old commit's main pipeline: it deploys that commit's beta over
+  the newer one.
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
   `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's, unless that
