@@ -180,7 +180,7 @@ pub fn toggle_chip_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Button, label, active, fn(_) { press() }, fn(b, _) {
-    capsule_chip_look(b, label, active, icon, chevron)
+    capsule_chip_look(label, active, icon, chevron)(b)
   })
 }
 
@@ -198,51 +198,59 @@ pub fn press_chip_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(v, _) {
-    capsule_chip_look(v, label, fn() { false }, icon, false)
+    capsule_chip_look(label, fn() { false }, icon, false)(v)
     v.alpha(By(fn() { if disabled() { chip_off } else { 1.0 } })) |> ignore
   })
 }
 
 ///|
-/// toggle_chip_node's and press_chip_node's look, on `b`: its capsule, `icon` before `label`, `chevron` after.
-fn capsule_chip_look(b : @view.View, label : () -> String, active : () -> Bool, icon : String, chevron : Bool) -> Unit {
-  let hand = @motion.NodeWay::new(0.0)
-  b.reacts(fn() { lit_node(b) }, fn(on) { hand.go_ms(b, if on { 1.0 } else { 0.0 }, dur_ms) })
-  let ink = fn() {
-    let p = theme().p
-    if active() { p.accent_text } else { p.text }
-  }
-  let ground = fn() {
-    let p = theme().p
-    let base = if active() { p.accent_bg } else { p.neutral_bg }
-    over(base, alpha(p.hover, hand.shown(b)))
-  }
-  b
-  .row(Is(true))
-  .min_height(Is(Some(toggle_chip_h)))
-  .padding(Is((10.0, 2.0, 10.0, 2.0)))
-  .gap(Is(4.0))
-  .lines_up(Is(Some(Middle)))
-  .radius(Is(1.0e6))
-  .ground(By(ground))
-  .shrink(Is(0.0))
-  .bone_whole(Is(true))
-  |> ignore
-  if icon != "" {
-    icon_node(b, icon, toggle_chip_icon, By(ink)) |> ignore
-  }
-  b.box(fn(w) {
-    w
-    .words(By(label))
-    .words_look(By(fn() { @ui.style_words(toggle_chip_words) }))
-    .ink(By(ink))
+/// toggle_chip_node's and press_chip_node's look, given to the headless node each makes: its capsule, `icon` before
+/// `label`, `chevron` after.
+fn capsule_chip_look(
+  label : () -> String,
+  active : () -> Bool,
+  icon : String,
+  chevron : Bool,
+) -> (@view.View) -> Unit {
+  fn(b) {
+    let hand = @motion.NodeWay::new(0.0)
+    b.reacts(fn() { lit_node(b) }, fn(on) { hand.go_ms(b, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let ink = fn() {
+      let p = theme().p
+      if active() { p.accent_text } else { p.text }
+    }
+    let ground = fn() {
+      let p = theme().p
+      let base = if active() { p.accent_bg } else { p.neutral_bg }
+      over(base, alpha(p.hover, hand.shown(b)))
+    }
+    b
+    .row(Is(true))
+    .min_height(Is(Some(toggle_chip_h)))
+    .padding(Is((10.0, 2.0, 10.0, 2.0)))
+    .gap(Is(4.0))
+    .lines_up(Is(Some(Middle)))
+    .radius(Is(1.0e6))
+    .ground(By(ground))
+    .shrink(Is(0.0))
+    .bone_whole(Is(true))
     |> ignore
-  })
-  |> ignore
-  if chevron {
-    b.pick(active, fn(c, open) {
-      icon_node(c, if open { "chevron-up" } else { "chevron-down" }, toggle_chip_chevron, By(ink)) |> ignore
+    if icon != "" {
+      icon_node(b, icon, toggle_chip_icon, By(ink)) |> ignore
+    }
+    b.box(fn(w) {
+      w
+      .words(By(label))
+      .words_look(By(fn() { @ui.style_words(toggle_chip_words) }))
+      .ink(By(ink))
+      |> ignore
     })
+    |> ignore
+    if chevron {
+      b.pick(active, fn(c, open) {
+        icon_node(c, if open { "chevron-up" } else { "chevron-down" }, toggle_chip_chevron, By(ink)) |> ignore
+      })
+    }
   }
 }
 

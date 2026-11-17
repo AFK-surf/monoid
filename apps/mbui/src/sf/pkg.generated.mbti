@@ -1686,6 +1686,9 @@ pub fn presenters_reset() -> Unit
 
 pub fn presenting() -> Bool
 
+#callsite(autofill(loc))
+pub fn press_chip_node(@view.View, () -> String, () -> Unit, icon? : String, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
+
 pub fn press_ripple(@ui.Ctx, Int32, Double) -> Unit
 
 pub fn presses_held_node(@view.View, () -> Unit, Double, (@view.Drag) -> Unit, down? : () -> Unit, up? : () -> Unit) -> Unit
