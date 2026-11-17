@@ -63,16 +63,6 @@ fn init {
 }
 
 ///|
-fn px_of(c : @ui.Ctx, size : Double) -> Int {
-  let p = (size * c.scale).ceil().to_int()
-  if p < 1 {
-    1
-  } else {
-    p
-  }
-}
-
-///|
 /// An icon's shapes as its data has them (icon_data: a 24 grid's strokes), for a host to draw it in its own controls
 /// (@hostapi.nav_bar's tabs and items); "" for none of that name.
 pub fn icon_path(name : String) -> String {

@@ -50,7 +50,7 @@ fn screen_rig(
   @sf.presenters_reset()
   @sf.set_words(@sfbase.fill)
   @sf.set_dark(Some(dark))
-  // the core as this page reads it: the device's prefs, and what is told it (screen_page alone over it, no app)
+  // the core as this page reads it: the device's prefs, and what is told it (screen_node alone over it, no app)
   let base = @sfbase.made_source(
     topic=fn(name, _) {
       if name == "prefs" {
@@ -163,16 +163,22 @@ fn screen_rig(
           row.owns(fn() { screen_left(src, station, screen) }) |> ignore
         },
       )
-      @ui.old(root, fn(c) {
+      // the page as nodes, made again for another screen on top (as the shells make it)
+      root.pick(at_once=true, fn() {
         match app.nav.top() {
-          Screen(at) => screen_page(c, src, at, @sf.no_frame, in_tab~)
-          _ => ()
+          Screen(at) => Some(at)
+          _ => None
         }
-        @sf.presented(c)
+      }, fn(p, at) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        match at {
+          Some(at) => screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
+          None => ()
+        }
       })
-      .grow(Is(1.0))
-      |> ignore
-      // what of the presented the tree draws, over the page (as the app's tree has it)
+      // what is presented over the page (as the app's tree has it): the presenters' old views, then what of the
+      // presented the tree draws
+      @ui.old(root, fn(c) { @sf.presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
       @sf.presented_nodes(root)
       // what the page said, as the shell shows it (sfbase's toasts_node, at the window's foot)
       @sfbase.toasts_node(root, fn() { @sf.toast_bottom }) |> ignore
@@ -324,7 +330,26 @@ fn ScreenRig::frame(self : ScreenRig, ts : Double) -> Unit {
 fn ScreenRig::at(self : ScreenRig, x : Double, y : Double) -> (Double, Double) {
   let u = self.ui()
   let s = u.shown(self.t.ctx())
-  (u.stage_x + s.x + x * s.w, u.stage_y + s.y + y * s.h)
+  let (sx, sy) = u.stage_xy()
+  (sx + s.x + x * s.w, sy + s.y + y * s.h)
+}
+
+///|
+/// Where the frame is drawn on the stage now (ScreenUi::shown_at, at the Tester's moment `c` builds at).
+fn ScreenUi::shown(self : ScreenUi, c : @ui.Ctx) -> SRect {
+  self.shown_at(c.moment())
+}
+
+///|
+/// Where the stage is in the window (its top left), as it is drawn.
+fn ScreenUi::stage_xy(self : ScreenUi) -> (Double, Double) {
+  match self.stage_node {
+    Some(v) => {
+      let (x, y, _, _) = v.rect()
+      (x, y)
+    }
+    None => (0.0, 0.0)
+  }
 }
 
 ///|
@@ -1136,7 +1161,9 @@ test "a login field in focus while driving a tab: 用 1Password 填入; its logi
   r.state("live", others=[], more={ "login": { "host": "github.com", "field": "password" } })
   r.t.draw()
   assert_true(r.t.find("用 1Password 填入") is None)
+  // (a host's password manager is there from its start: the page reads it as the state comes)
   screen_fix_one_password()
+  r.state("live", others=[], more={ "login": { "host": "github.com", "field": "password" } })
   r.t.draw()
   assert_true(r.t.find("用 1Password 填入") is Some(_))
   assert_true(r.t.find("github.com") is Some(_))
@@ -1610,7 +1637,9 @@ test "a page asking for a passkey while driving a tab: 用通行密钥登录; si
   r.state("live", others=[], more={ "passkey": ask("github.com") })
   r.t.draw()
   assert_true(r.t.find("用通行密钥登录") is None)
+  // (a host's passkeys are there from its start: the page reads them as the state comes)
   screen_fix_passkeys()
+  r.state("live", others=[], more={ "passkey": ask("github.com") })
   r.t.draw()
   assert_true(r.t.find("用通行密钥登录") is Some(_))
   assert_true(r.t.find("github.com") is Some(_))
@@ -1687,7 +1716,7 @@ test "sideways, driven directly: a tap on a drop row's 在访达中显示 over t
   let u = r.ui()
   let sh = u.shown(r.t.ctx())
   assert_true(
-    x > u.stage_x + sh.x && x < u.stage_x + sh.x + sh.w && y > u.stage_y + sh.y && y < u.stage_y + sh.y + sh.h,
+    x > u.stage_xy().0 + sh.x && x < u.stage_xy().0 + sh.x + sh.w && y > u.stage_xy().1 + sh.y && y < u.stage_xy().1 + sh.y + sh.h,
     msg="\{x},\{y}",
   )
   let before = pointers_of(r).length()

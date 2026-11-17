@@ -41,3 +41,48 @@ test "a stream in a node of the tree: nothing drawn till a frame decodes; each f
   s.frame(b"\x00\x00\x00\x01\x41", false, 103.0)
   assert_eq(t.stream_fed(s.id()).filter(fn(l) { l.contains("ts=103") }), [])
 }
+
+///|
+test "a stream in a node of the tree on its system video layer while its node says so: its hole where the node is drawn, what is drawn after it over it; drawn here while not, or faded" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, h264=true)
+  t.check_looks(false)
+  t.set_stream_layers(true)
+  let s = @ui.Stream::new(shown=fn(_) {  }, broken=fn() {  }, layer=true)
+  let layer = @signals.signal(true)
+  let faded = @signals.signal(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.alpha(@view.By(fn() { if faded.get() { 0.4 } else { 1.0 } })) |> ignore
+      @ui.stream(b, s, layer=fn() { @signals.untracked(fn() { layer.get() }) })
+      .width(@view.Is(Some(200.0)))
+      .height(@view.Is(Some(100.0)))
+      |> ignore
+    })
+    |> ignore
+  })
+  s.h264(tree_avcc, 320, 640)
+  s.frame(b"\x00\x00\x00\x01\x65", true, 101.0)
+  t.draw()
+  // (not before a frame of it shows: drawn here, nothing yet)
+  assert_eq(t.holes().length(), 0)
+  t.stream_shows(s.id(), 101.0, 320, 640)
+  t.draw()
+  assert_eq(t.holes().length(), 1)
+  assert_true(s.layered())
+  assert_false(t.drawlist().contains("\"stream 320x640"), msg=t.drawlist())
+  // not on it: drawn here, its layer hidden
+  layer.set(false)
+  t.draw()
+  t.draw()
+  assert_eq(t.holes().length(), 0)
+  assert_true(t.drawlist().contains("\"stream 320x640 ts=101\""), msg=t.drawlist())
+  // faded: drawn here too
+  layer.set(true)
+  faded.set(true)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.holes().length(), 0)
+  faded.set(false)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.holes().length(), 1)
+  s.close()
+}

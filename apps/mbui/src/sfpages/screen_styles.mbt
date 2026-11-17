@@ -4,25 +4,8 @@
 // ── the page ──────────────────────────────────────────────────────────────
 
 ///|
-/// The page: the theme's ground; 全屏, black as a video is.
-// kept across runs: a value (no field of it changes)
-let screen_page_box : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let screen_page_full : @ui.Style = @ui.css("w=Full h=Full bg=Theater")
-
-///|
-// kept across runs: a value (no field of it changes)
-let screen_fill : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
 // kept across runs: a value (no field of it changes)
 let screen_fill_w : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let screen_row : @ui.Style = @ui.css("row w=Full h=Full")
 
 ///|
 /// Over the frame's top, in its middle, 12 down (接管 sideways and 全屏).
@@ -144,10 +127,6 @@ let full_tools_box : @ui.Style = @ui.css("p=S1 gap=S1 align=ACenter radius=Xl4 b
 /// Sideways: 60 wide, 8 over and under, the buttons 4 apart in its middle.
 // kept across runs: a value (no field of it changes)
 let rail_box : @ui.Style = @ui.style(w=@sf.rail_w, h=Full, py=S2, gap=S1, align=ACenter)
-
-///|
-// kept across runs: a value (no field of it changes)
-let rail_people : @ui.Style = @ui.css("")
 
 ///|
 /// The count of the others on it: over the button's top right, 4 out and 2 up.
@@ -308,29 +287,6 @@ let take_over_button_words : @ui.TextStyle = @ui.text_style(
 // ── the stage ─────────────────────────────────────────────────────────────
 
 ///|
-// kept across runs: a value (no field of it changes)
-let stage_box : @ui.Style = @ui.css("w=Full h=Full clip")
-
-///|
-/// Beside a chat: a ground a shade off the page's, what a wide picture leaves of a tall panel not taken for the page.
-// kept across runs: a value (no field of it changes)
-let stage_box_in_panel : @ui.Style = @ui.css("w=Full h=Full clip bg=Faint")
-
-///|
-/// A device's at its whole size, its body round the picture being past this box.
-// kept across runs: a value (no field of it changes)
-let stage_box_body : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// The frame as it was, faded while the view is on its way back (40%).
-// kept across runs: a value (no field of it changes)
-let frame_faded : @ui.Style = @ui.css("opacity=O40")
-
-///|
-// kept across runs: a value (no field of it changes)
-let frame_clear : @ui.Style = @ui.css("")
-
-///|
 /// Over: the screen's place gone dark, what happened in its middle.
 // kept across runs: a value (no field of it changes)
 let over_box : @ui.Style = @ui.css("clip align=ACenter justify=JCenter")
@@ -376,11 +332,6 @@ let undriven_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color
 /// its own, 12 and 6 in, the spinner (12) 8 before the words (13 on 18, the ink, two lines).
 // kept across runs: a value (no field of it changes)
 let wait_pill_box : @ui.Style = @ui.css("row px=S3 py=S1_5 gap=S2 align=ACenter radius=Full bg=Floating shadow=Sm")
-
-///|
-/// Not shown yet (a wait is said once it has been a moment), its room kept.
-// kept across runs: a value (no field of it changes)
-let unseen : @ui.Style = @ui.css("opacity=O0")
 
 ///|
 let wait_spinner : Double = 12.0
@@ -484,7 +435,7 @@ let drop_key_side : Double = 34.0
 ///|
 /// Its mark by its first line, as high as its keys, across their middle.
 // kept across runs: a value (no field of it changes)
-let drop_icon_box : @ui.Style = @ui.style(h=@sf.row_key, justify=JCenter)
+let drop_icon_box : @ui.Style = @ui.style(h=Fixed(drop_key_side), justify=JCenter)
 
 ///|
 let drop_icon : Double = 20.0
@@ -511,8 +462,10 @@ let drop_failed_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4,
 let drop_going_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, color=Muted, wrap=false)
 
 ///|
+/// What is done with a file there, or 填入, 登录: at the row's foot end, the last in the panel's corner as far in as its
+/// keys are (drop_key_in), concentric with it as they are.
 // kept across runs: a value (no field of it changes)
-let drop_buttons : @ui.Style = @ui.css("row pt=S2 gap=S2")
+let drop_buttons : @ui.Style = @ui.css("row w=Full pt=S2 gap=S2 justify=JEnd")
 
 ///|
 /// How far it has got: a track of the ink at 8%, 3 high, 5 under the words, filled in the accent.
@@ -535,24 +488,16 @@ let drop_track : @ui.Style = @ui.style(
 let drop_track_fill : @ui.Style = @ui.css("h=Full radius=Full bg=Accent")
 
 ///|
-/// A small round key at a row's end (34).
-// kept across runs: a value (no field of it changes)
-let row_key_round : @ui.Style = @ui.style(
-  w=@sf.row_key,
-  h=@sf.row_key,
-  radius=Full,
-  align=ACenter,
-  justify=JCenter,
-)
-
-///|
 let drop_key_icon : Double = 16.0
 
 ///|
-/// A button that is not the main one (16 in, the chip under the ink's words, 14 semibold).
+///|
+/// A button that is not the main one (16 in, the chip under the ink's words, 14 semibold), as high as a row's round key
+/// (34): in the files' panel's foot corner, as far in as its keys are (drop_key_in), concentric with the panel's corner
+/// as they are.
 // kept across runs: a value (no field of it changes)
 let soft_button_box : @ui.Style = @ui.style(
-  h=@sf.button_38,
+  h=Fixed(drop_key_side),
   px=S4,
   radius=Full,
   bg=Neutral,
@@ -565,7 +510,6 @@ let soft_button_box : @ui.Style = @ui.style(
 let soft_button_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Fg, wrap=false)
 
 // ── how the view goes (screen_panel.mbt) ─────────────────────────────────
-
 
 ///|
 /// How long it has been seen (12 on 16, muted, its figures as wide as each other).
@@ -777,15 +721,6 @@ let key_tile_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Fg, weig
 let tile_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Fg, wrap=false)
 
 ///|
-/// All of the window, what its frame keeps it from (the system's bars) and the page inside it.
-// kept across runs: a value (no field of it changes)
-let screen_whole : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// What its frame leaves it.
-// kept across runs: a value (no field of it changes)
-let screen_within : @ui.Style = @ui.style(w=Full, h=@sf.grow)
-
 // ── a tab of the station's browser (screen_browser.mbt) ───────────────────
 
 ///|
@@ -793,9 +728,9 @@ let screen_within : @ui.Style = @ui.style(w=Full, h=@sf.grow)
 let browser_wide_at : Double = 640.0
 
 ///|
-/// The browser's bar: its row of tabs over its tools' row, a line under it, the page's ground.
+/// The browser's bar: its row of tabs over its tools' row, a line under it, on the page's ground (no ground of its own).
 // kept across runs: a value (no field of it changes)
-let browser_bar_box : @ui.Style = @ui.css("w=Full pb=S1 gap=S0_5 bg=Bg")
+let browser_bar_box : @ui.Style = @ui.css("w=Full pb=S1 gap=S0_5")
 
 ///|
 /// Its tabs in a row, the canvas's ground under them; what has not the room cut short (each tab's words first).
@@ -808,10 +743,15 @@ let browser_tabs_row : @ui.Style = @ui.css("row w=Full h=S11 px=S2 gap=S1 align=
 let browser_tools_row : @ui.Style = @ui.css("row w=Full h=S12 pl=S2 pr=S5 gap=S1 align=ACenter")
 
 ///|
-/// A tab: a capsule, its words then its ×, the one shown on the ink's tint; at most 224 wide, cut short past that.
+/// How tall a tab is (browser_tab_box's S9), and ＋ beside them.
+let browser_tab_h : Double = @ui.Space::px(S9)
+
+///|
+/// A tab: a capsule, its words then its ×, the one shown on the ink's tint; at most 224 wide, cut short past that. Its
+/// words as far in as its ×'s mark is from its end (the × concentric with the capsule's end: 11, its words 12).
 // kept across runs: a value (no field of it changes)
 let browser_tab_box : @ui.Style = @ui.css(
-  "row h=S9 max_w=S56 pl=S3_5 pr=S1 gap=S1 radius=Full align=ACenter hovered{bg=Hover} selected{bg=A(Fg,O10)}",
+  "row h=S9 max_w=S56 pl=S3 pr=S1 gap=S1 radius=Full align=ACenter hovered{bg=Hover} selected{bg=A(Fg,O10)}",
 )
 
 ///|

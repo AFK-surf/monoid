@@ -1290,8 +1290,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         service_tab_node(s, src, r, job, if alone { Some(fn() { side_change(src, r, "clear", None) }) } else { None }, round, tips)
       } else if tab_file(agent) is Some((session, path, name)) {
         file_tab_node(s, src, r, session, path, name, tips)
-      } else if side_farview_tab(agent) is Some((station, screen)) {
-        side_farview_node(s, src, station, screen)
+      } else if side_screen_tab(agent) is Some(_) {
+        side_screen_node(s, src, r, agent, fn() { shown().0 }, true)
       } else if side_adb_tab(agent) is Some(station) {
         side_adb_node(s, src, station)
       } else if side_files_tab(agent) is Some(station) {

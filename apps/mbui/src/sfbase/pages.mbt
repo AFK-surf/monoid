@@ -1365,6 +1365,7 @@ pub fn reset() -> Unit {
   beside_room_now.set(false)
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
+  lone_shown.val = @signals.signal(None)
   windows_open.clear()
   windows_here_show.clear()
 }

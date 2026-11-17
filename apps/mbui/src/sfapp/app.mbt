@@ -399,7 +399,6 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   // everything in still.fail's theme, as this frame's palette has it (light or dark, a phone's or a desktop's): the
   // styles' roles (@sf styles.mbt, the pages' own) its ink, its sizes, its corners; the one place it is put (the room
   // beside what the system has at the window's sides the tree's root keeps: app_tree, sides.mbt)
-  c.after_build("station-tabs-left", fn() { @sfdesk.station_tabs_sweep(c, src) })
   // (the system's own bars as this frame wants them: the wide frame's tabs, else none: sfdesk's rail_native.mbt)
   c.with_theme(@sf.ui_theme(), fn() { @sfdesk.nav_frame(fn() { view_in(c, src) }) })
 }
@@ -743,8 +742,8 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
 
 ///|
 /// A window of its own (sfbase's window.mbt) in node `v` (shell_is's Lone): on the window's ground, its top dragging it
-/// where its buttons are in the app's top row (under all of it), its page alone over all of it, an old view the tree
-/// hosts (lone_page_view: closing it ends the run), the library's presenters and the toasts over that, taking a finger
+/// where its buttons are in the app's top row (under all of it), its page alone over all of it (a station's screen,
+/// sfpages' screen_node: closing it closes the window), the library's presenters and the toasts over that, taking a finger
 /// only where they draw something.
 fn lone_tree(v : @view.View, src : Source) -> Unit {
   v.ground(By(fn() { @sf.theme().p.bg })) |> ignore
@@ -754,30 +753,37 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   })
   // a Farview tab, while 实验性功能's Farview 原生标签页渲染 is on: drawn here (sfpages' farview_tab_node), under the
   // window's top band, as the panel and the phone's page draw it: its page laid out at this window's width as it
-  // changes, not a picture of the tab; else (or turned off) the old view's page of it, the station's pictures
-  let farview = match @sfbase.lone_page.val {
-    Some(Screen(at)) if @sfpages.farview_screen(at.screen) => Some(at)
-    _ => None
-  }
-  v.pick(at_once=true, fn() { farview is Some(_) && @sfbase.farview_native.get() }, fn(q, native) {
-    q.over(Is(true)) |> ignore
-    match farview {
-      Some(at) if native => {
-        // (padding's order: left, top, right, bottom)
-        q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
-        @sfpages.farview_tab_node(q, src, at.station, at.screen)
+  // changes, not a picture of the tab; any other station's screen (and a Farview tab with it turned off) its page,
+  // sfpages' screen_node, closing it closing the window. Made again for another page put in its place (a child
+  // popup followed, another tab chosen: sfbase's lone_page_replace)
+  // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
+  let shown = @sfbase.lone_shown.val
+  shown.set(@sfbase.lone_page.val)
+  v.pick(
+    at_once=true,
+    fn() {
+      let native = @sfbase.farview_native.get()
+      match shown.get() {
+        Some(Screen(at)) => Some((at, native && @sfpages.farview_screen(at.screen)))
+        _ => None
       }
-      _ =>
-        @ui.old(q, fn(c) {
-          match @sfbase.lone_page.val {
-            Some(p) => lone_page_view(c, src, p)
-            None => ()
-          }
-        })
-        .grow(Is(1.0))
-        |> ignore
-    }
-  })
+    },
+    fn(q, shown) {
+      q.over(Is(true)) |> ignore
+      match shown {
+        Some((at, true)) => {
+          // (padding's order: left, top, right, bottom)
+          q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
+          @sfpages.farview_tab_node(q, src, at.station, at.screen)
+        }
+        Some((at, false)) => {
+          q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
+        }
+        None => ()
+      }
+    },
+  )
   @ui.old(v, fn(c) {
     @sf.presented(c)
   })
@@ -787,18 +793,12 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// Page `p` of a window of its own, alone over all of it (lone_tree's): a station's screen, closing it closing the
-/// window: a window of this run beside its first (@ui.window_close_here: the run goes on), else the run of its own
-/// it is (its window closed as its own close button closes it).
-fn lone_page_view(c : @ui.Ctx, src : Source, p : Page) -> Unit {
-  match p {
-    Screen(at) =>
-      @sfpages.screen_page(c, src, at, system_frame(), on_close=fn() {
-        let wid = @ui.current_window_id()
-        c.after_build("lone-closed", fn() { if wid > 0 { @ui.window_close_here(wid) } else { @hostapi.exit(0) } })
-      })
-    _ => ()
-  }
+/// A window of its own's page closed (lone_tree's, in node `q`): a window of this run beside its first closed
+/// (@ui.window_close_here: the run goes on), else the run of its own it is (its window closed as its own close button
+/// closes it), once the press that closed it is done.
+fn lone_closed(q : @view.View) -> Unit {
+  let wid = @ui.current_window_id()
+  q.at_moment(q.logic_at(), fn() { if wid > 0 { @ui.window_close_here(wid) } else { @hostapi.exit(0) } }) |> ignore
 }
 
 ///|
@@ -934,9 +934,8 @@ fn page_view(
         Setting(r) => setting_page(c, src, w, r)
         // (made once: narrow_shell.mbt's history_node)
         History(_, _, _) => ()
-        // (a Farview tab drawn natively: made once, narrow_shell.mbt's)
-        Screen(at) if @sfpages.farview_native_screen(at.screen) => ()
-        Screen(at) => @sfpages.screen_page(c, src, at, system_frame())
+        // (a Farview tab drawn natively, and any other station's screen: made once, narrow_shell.mbt's)
+        Screen(_) => ()
         // (made once: narrow_shell.mbt's terminal_node)
         Terminal(_) => ()
       }

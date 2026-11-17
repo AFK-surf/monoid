@@ -5,10 +5,11 @@
 //   - under all of it, what the frame does in every tier before its pages (signed_in_frame) and what the tape's frame
 //     does under its panels (sfdesk's tape_under: the sidebar as it was left, the chat landed on, back);
 //   - the tape: its row of panels, moved as its move says, what each holds an island of its own;
-//   - over it, a station's screen, a film played over the whole window, what opens over the panels (sfdesk's
+//   - over it, a film played over the whole window, what opens over the panels (sfdesk's
 //     overlays.mbt), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
 //     under them the tree's;
-//   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's terminal or a
+//   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's screen or
+//     terminal or a
 //     drive's text read, and an image opened: nodes of the tree's (sfpages' publish_layer_node, sfbase's
 //     viz_full_layer_node, wide_page, wide_viewer).
 
@@ -64,24 +65,27 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What a wide frame shows over all of it while it is on top: a station's terminal (terminal_node), a drive's text
-/// read (sfpages' reader_page_node) or its video or song played (sfpages' play_page_node).
+/// What a wide frame shows over all of it while it is on top: a station's screen (screen_node), its terminal
+/// (terminal_node), a drive's text read (sfpages' reader_page_node) or its video or song played (sfpages'
+/// play_page_node).
 #derive(Eq)
 priv enum WideTop {
+  Scr(ScreenAt)
   Term(@sfbase.TerminalAt)
   Read(DriveAt)
   Play(DriveAt)
 }
 
 ///|
-/// A station's terminal, a drive's text read or its film played on top over the wide frame, over all of it as a
-/// station's screen is: nodes of the tree's of its own, one structure for them, a modal layer while it is on top, back closing it; made
-/// again for another.
+/// A station's screen (sfpages' screen_node), its terminal, a drive's text read or its film played on top over the wide
+/// frame, over all of it: nodes of the tree's of its own, one structure for them, a modal layer while it is on top, back
+/// closing it; made again for another.
 fn wide_page(v : @view.View, src : Source) -> Unit {
   v.pick(
     at_once=true,
     fn() {
       match app.nav.top() {
+        Screen(at) => Some(Scr(at))
         Terminal(at) => Some(Term(at))
         DriveRead(at) => Some(Read(at))
         DrivePlay(at) => Some(Play(at))
@@ -90,6 +94,11 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
     },
     fn(n, top) {
       match top {
+        Some(Scr(at)) => {
+          // (back as the page has it: in 全屏 out of it first, its own back key's; else closed, as the stack's)
+          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Screen(at)) |> ignore }) |> ignore
+          @sfpages.screen_node(n, src, at, fn() { system_frame() })
+        }
         Some(Term(at)) => {
           n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Terminal(at)) |> ignore }) |> ignore
           let back = fn() {
@@ -166,17 +175,13 @@ fn taped_under(c : @ui.Ctx, src : Source) -> Unit {
 }
 
 ///|
-/// Over the tape's panels (an island, taking presses where it draws them alone): a station's screen over the whole
-/// window, as Android's ScreenActivity is over the app (a drive's text read or film played: nodes of their own,
-/// wide_page); what opens over the panels (sfdesk's
-/// overlays.mbt); words picked let go by back first; what is over the frame in every tier (signed_in_over).
+/// Over the tape's panels (an island, taking presses where it draws them alone): what opens over the panels (sfdesk's
+/// overlays.mbt); words picked let go by back first; what is over the frame in every tier (signed_in_over). A
+/// station's screen over the whole window, as Android's ScreenActivity is over the app, is a node of its own
+/// (wide_page).
 fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
   match workspace_in_view(src).0 {
     Some(w) => {
-      match app.nav.top() {
-        Screen(at) => c.layer(fn() { @sfpages.screen_page(c, src, at, system_frame()) }) |> ignore
-        _ => ()
-      }
       @sfdesk.overlays(c, src, w)
       pick_back(c)
       signed_in_over(c)

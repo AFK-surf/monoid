@@ -161,28 +161,29 @@ fn ScreenSess::fill_took(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// 用 1Password 填入 (用密码管理器填入 where the system's autofill service is asked), over the stage while the focus is
-/// in a login field of a page this viewer drives (on a host that has a password manager to ask): what it is at, the
-/// logins to pick from, or why it did not fill.
-fn login_fill(c : @ui.Ctx, s : ScreenSess) -> Unit {
-  // a run under way: its end taken once it came (after this frame: what the page shows changes then)
-  match s.fill_run {
-    Some(r) if r.done() is Some(_) => c.tell("screen-fill/" + s.view, fn() { s.fill_took() })
-    _ => ()
-  }
-  let step = s.fill_step.get()
-  let host = s.login_host()
-  let op = @hostapi.passwords()
+/// 用 1Password 填入 (用密码管理器填入 where the system's autofill service is asked), over the stage in `c` while the focus
+/// is in a login field of a page this viewer drives (on a host that has a password manager to ask): what it is at, the
+/// logins to pick from, or why it did not fill. A run's end, the login picked in the service's offer, and a login owed
+/// to the view while it could take no input, each taken as it is told.
+fn login_fill_node(c : @view.View, s : ScreenSess) -> Unit {
+  // a run under way: its end taken once it came
+  c.reacts(fn() {
+    s.fill_step.get() |> ignore
+    match s.fill_run {
+      Some(r) => r.done() is Some(_)
+      None => false
+    }
+  }, fn(ended) { if ended { s.fill_took() } })
   // the login picked in the service's offer, once it came (the page's focus may have left the login meanwhile: the
-  // app's own tap on 填入 can take it, before the service answers; it is filled as 1Password's is, below)
-  if step == "auto" {
-    match @hostapi.autofill_take() {
-      Some(got) => c.tell("screen-fill-auto/" + s.view, fn() { s.fill_auto_took(got) })
+  // app's own tap on 填入 can take it, before the service answers; it is filled as 1Password's is)
+  c.reacts(fn() { if s.fill_step.get() == "auto" { @hostapi.autofill_take() } else { None } }, fn(got) {
+    match got {
+      Some(g) => s.fill_auto_took(g)
       None => ()
     }
-  }
-  if s.fill_owed is Some(_) && s.input_goes() {
-    c.tell("screen-fill-owed/" + s.view, fn() {
+  })
+  c.reacts(fn() { s.fill_step.get() |> ignore; s.said.get() |> ignore; s.fill_owed is Some(_) && s.input_goes() }, fn(now) {
+    if now {
       match s.fill_owed {
         Some((username, password)) => {
           s.fill_owed = None
@@ -190,61 +191,79 @@ fn login_fill(c : @ui.Ctx, s : ScreenSess) -> Unit {
         }
         None => ()
       }
-    })
+    }
+  })
+  let op = fn() { @hostapi.passwords() }
+  let host = fn() {
+    s.said.get() |> ignore
+    s.login_host()
   }
-  if (!op && !@hostapi.autofill()) || (host is None && step == "") {
-    return
-  }
-  c.box(style=drops_box, fn() {
-    c.box(style=drop_row_box, fn() {
-      c.box(style=drop_icon_box, fn() {
-        @sf.icon(c, if step == "said" { "info" } else { "key" }, size=drop_icon, color=c.color(Muted)) |> ignore
-      })
-      |> ignore
-      @sf.row_lines(c, fn() {
-        let title = match step {
-          "listing" | "getting" => @sf.t("android-misc.screen.fill.asking")
-          "auto" => @sf.t("android-misc.screen.fill.autoPick", args=[("host", s.fill_host)])
-          "choosing" => @sf.t("android-misc.screen.fill.pick", args=[("host", s.fill_host)])
-          "said" => s.fill_note
-          _ => @sf.t(if op { "android-misc.screen.fill.offer" } else { "android-misc.screen.fill.offerAuto" })
-        }
-        c.box(style=drop_words, fn() { c.text(title, style=if step == "said" { drop_path_words } else { drop_name }) |> ignore })
+  // (what it is about read first, so it is followed whatever the host has: a host's manager is its from its start)
+  c.show(at_once=true, fn() { !(host() is None && s.fill_step.get() == "") && (op() || @hostapi.autofill()) }, fn(card) {
+    @sf.style_node(card, fn() { drops_box })
+    floats_node(card)
+    card.box(fn(row) {
+      @sf.style_node(row, fn() { drop_row_box }, in_row=true)
+      let step = fn() { s.fill_step.get() }
+      @sf.first_line_node(row, Ui, fn(l) {
+        @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) }), name_now=fn() { if step() == "said" { "info" } else { "key" } })
         |> ignore
-        if step != "" {
-          screen_row_key(c, "fill-close", "close", @sf.t("common.close"), on_press=fn() {
-            s.fill_stop()
-          })
-        }
-      }, fn() {
-        match step {
-          "" => {
-            // the site under the words, 填入 under it (as a file sent says where it is, then what is done with it)
-            match host {
-              Some(h) => c.text(h, style=drop_path_words) |> ignore
-              None => ()
-            }
-            c.box(style=drop_buttons, fn() {
-              soft_button(c, "fill", @sf.t("android-misc.screen.fill.button"), on_press=fn() { s.fill_start() })
-            })
-            |> ignore
-          }
-          "choosing" =>
-            // one under another, as wide as its words (none out to the panel's corner)
-            c.box(style=fill_choice_list, fn() {
-              for i, l in s.fill_choices {
-                let words = if l.username == "" { l.title } else { l.title + " · " + l.username }
-                soft_button(c, "fill-pick/\{i}", words, on_press=fn() { s.fill_pick(l) })
-              }
-            })
-            |> ignore
-          _ => ()
-        }
       })
+      // (its first line as high as its close key while that shows: across its middle)
+      .min_height(By(fn() { if step() != "" { Some(drop_key_side) } else { None } }))
+      |> ignore
+      @sf.row_lines_node(
+        row,
+        fn(first) {
+          let title = fn() {
+            match step() {
+              "listing" | "getting" => @sf.t("android-misc.screen.fill.asking")
+              "auto" => @sf.t("android-misc.screen.fill.autoPick", args=[("host", s.fill_host)])
+              "choosing" => @sf.t("android-misc.screen.fill.pick", args=[("host", s.fill_host)])
+              "said" => s.fill_note
+              _ => @sf.t(if op() { "android-misc.screen.fill.offer" } else { "android-misc.screen.fill.offerAuto" })
+            }
+          }
+          first.box(fn(w) {
+            @sf.style_node(w, fn() { drop_words }, in_row=true)
+            @sf.words_node(w, title, fn() { if step() == "said" { drop_path_words } else { drop_name } }) |> ignore
+          })
+          |> ignore
+          first.show(at_once=true, fn() { step() != "" }, fn(k) { screen_row_key_node(k, "close", @sf.t("common.close"), fn() { s.fill_stop() }) })
+        },
+        fn(under) {
+          under.pick(at_once=true, step, fn(u, st) {
+            match st {
+              "" => {
+                // the site under the words, 填入 under it (as a file sent says where it is, then what is done with it)
+                u.show(at_once=true, fn() { host() is Some(_) }, fn(h) {
+                  @sf.words_node(h, fn() { host().unwrap_or("") }, fn() { drop_path_words }) |> ignore
+                })
+                u.box(fn(b) {
+                  @sf.style_node(b, fn() { drop_buttons }, in_row=true)
+                  soft_button_node(b, fn() { @sf.t("android-misc.screen.fill.button") }, fn() { s.fill_start() })
+                })
+                |> ignore
+              }
+              "choosing" =>
+                // one under another, as wide as its words (none out to the panel's corner)
+                u.box(fn(list) {
+                  @sf.style_node(list, fn() { fill_choice_list })
+                  list.each(at_once=true, fn() { s.fill_step.get() |> ignore; s.fill_choices.copy() }, fn(l) { l.id }, fn(slot, l) {
+                    let l = l.untracked()
+                    let words = if l.username == "" { l.title } else { l.title + " · " + l.username }
+                    soft_button_node(slot, fn() { words }, fn() { s.fill_pick(l) })
+                  })
+                })
+                |> ignore
+              _ => ()
+            }
+          })
+        },
+      )
     })
     |> ignore
   })
-  |> ignore
 }
 
 ///|

@@ -9,9 +9,8 @@
 /// What 控制中心 holds in `v`: 快捷操作, tiles each there only where it applies (全屏, 粘贴, 发送文件, 静音, 触控板, 在新窗口打开),
 /// a toggle lit while on; 画面, a row each for 画质, 帧率 and (where the station changes them) 缩放 and 分辨率, its choice at
 /// its end, pressed its choices beside it; then 连接 (a step further in: the view's figures), who else is on it, 结束其他查看
-/// and 断开. `c` the screen page's, what its choices are told through; `from` what opened it; `done` closes it.
+/// and 断开. `from` what opened it; `done` closes it.
 fn center_node(
-  c : @ui.Ctx,
   v : @view.View,
   s : ScreenSess,
   u : ScreenUi,
@@ -75,14 +74,14 @@ fn center_node(
                 fn() { if full_now(u) { "shrink" } else { "expand" } },
                 fn() { full_now(u) },
                 fn() {
-                  full_asked(c, u)
+                  full_asked(u)
                   done()
                 },
               )
             "go" =>
               quick_tile_node(row, fn() { @sf.t("web-pages.screen.goUrlShort") }, fn() { "link" }, fn() { false }, fn() {
                 done()
-                go_url_asked(c, s, from)
+                go_url_asked(s, from)
               })
             "forward" =>
               quick_tile_node(row, fn() { @sf.t("web-pages.screen.forward") }, fn() { "arrow-right" }, fn() { false }, fn() {
@@ -91,18 +90,18 @@ fn center_node(
               })
             "reload" =>
               quick_tile_node(row, fn() { @sf.t("web-pages.screen.reloadShort") }, fn() { "refresh" }, fn() { false }, fn() {
-                reload_asked(c, s)
+                reload_asked(s)
                 done()
               })
             "paste" =>
               quick_tile_node(row, fn() { @sf.t("web-pages.screen.paste") }, fn() { "paste" }, fn() { false }, fn() {
-                paste_asked(c, s, u)
+                paste_asked(s, u)
                 done()
               })
             "send" =>
               quick_tile_node(row, fn() { @sf.t("android-misc.screen.sendFile") }, fn() { "upload" }, fn() { false }, fn() {
                 done()
-                send_asked(c, s, u)
+                send_asked(s)
               })
             "mute" =>
               quick_tile_node(
@@ -127,7 +126,7 @@ fn center_node(
                   fn() {
                     let on = !s.pad(src)
                     s.pad_set.set(Some(on))
-                    pad_chosen(c, s, u, on)
+                    pad_chosen(s, u, on)
                   },
                 )
               }
@@ -160,7 +159,7 @@ fn center_node(
       fn() { screen_qualities[quality_now()].1 },
       fn(k) {
         match screen_qualities.search_by(fn(q) { q.1 == k }) {
-          Some(i) => prefs_chosen(c, s, "screenQuality", screen_qualities[i].0)
+          Some(i) => prefs_chosen(s, "screenQuality", screen_qualities[i].0)
           None => ()
         }
       },
@@ -177,7 +176,7 @@ fn center_node(
         match screen_fps_choices.search_by(fn(f) { "\{f}" == k }) {
           Some(i) => {
             let f = screen_fps_choices[i]
-            prefs_set(c, s, "screenFps", "\{f}", if f == 0 { Json::null() } else { Json::number(f.to_double()) })
+            prefs_set(s, "screenFps", "\{f}", if f == 0 { Json::null() } else { Json::number(f.to_double()) })
           }
           None => ()
         }
@@ -291,7 +290,7 @@ fn center_node(
       @sf.panel_switch_row_node(m, fn() { @sf.t("android-misc.screen.look") }, fn() {
         state() |> ignore
         !s.controlling()
-      }, fn(on) { control_chosen(c, s, u, !on) })
+      }, fn(on) { control_chosen(s, u, !on) })
     })
     // how the view goes: live, its round trip and how long it has been seen; pressed, its figures a step further in;
     // who else is on it, as the core says it, its note

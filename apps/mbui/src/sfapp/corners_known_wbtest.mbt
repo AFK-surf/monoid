@@ -152,18 +152,10 @@ let corners_outgrown_known : Map[String, Int] = Map([])
 /// language and screen: the bar it may only fall from, counted as the rule first ran (2026-11-14). A screen not listed
 /// has none. Listed: 连接's 继续 (a connect's session waiting to go on) in the wide windows, its button 36 and the
 /// icon's button beside it 32. And what old views hosted in the window's tree show, not measured till the spacing rules
-/// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows, a tab's × 40 beside
-/// its tabs' 36 (their address field 36 beside 后退's 40 till it was as high, 2026-11-15); a chat's 任务 beside it in the
+/// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows till their ＋ was as
+/// high as their tabs (2026-11-17; their address field beside 后退, 2026-11-15); a chat's 任务 beside it in the
 /// wide windows till it was made of nodes (2026-11-15).
 let corners_heights_known : Map[String, Int] = Map([
-  ("wide-en screen-user-pages", 1),
-  ("wide-en screen-user-tabs", 1),
-  ("wide-win-en screen-user-pages", 1),
-  ("wide-win-en screen-user-tabs", 1),
-  ("wide-win-zh screen-user-pages", 1),
-  ("wide-win-zh screen-user-tabs", 1),
-  ("wide-zh screen-user-pages", 1),
-  ("wide-zh screen-user-tabs", 1),
   ("wide-zh settings-connects", 1),
   ("wide-win-zh settings-connects", 1),
   ("wide-en settings-connects", 1),
@@ -179,7 +171,7 @@ let corners_heights_known : Map[String, Int] = Map([
 /// file's card in a chat (published files), a found message in the outline, 决策's chevron, a run's model in its
 /// history's details (its icon and chevron). And what old views hosted in the window's tree show, measured once the
 /// rules took the tree's nodes in each after its parent (#6294, 2026-11-15): a chat's files and references, its
-/// agent's card, 文件's rows, a station's settings, a login's fill.
+/// agent's card, 文件's rows, a station's settings.
 let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
@@ -277,17 +269,12 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-zh settings-new-connect-platform-group", 2),
   ("wide-zh settings-new-connect-group", 2),
   ("wide-zh settings-new-connect-scan", 2),
-  ("desk-en screen-login-fill", 1),
-  ("desk-win-en screen-login-fill", 1),
-  ("desk-win-zh screen-login-fill", 1),
-  ("desk-zh screen-login-fill", 1),
   ("phone-en chat-attach-row", 3),
   ("phone-en chat-attach", 2),
   ("phone-en chat-download", 1),
   ("phone-en chat-station-file", 2),
   ("phone-en chat-station-ref", 1),
   ("phone-en chat-station-sheet", 2),
-  ("phone-en screen-login-fill", 1),
   ("phone-en service-restart", 1),
   ("phone-zh chat-attach-row", 3),
   ("phone-zh chat-attach", 2),
@@ -295,7 +282,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-zh chat-station-file", 2),
   ("phone-zh chat-station-ref", 1),
   ("phone-zh chat-station-sheet", 2),
-  ("phone-zh screen-login-fill", 1),
   ("phone-zh service-restart", 1),
   ("tablet-en chat-attach-row", 3),
   ("tablet-en chat-attach", 2),
@@ -304,7 +290,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-en chat-station-file", 2),
   ("tablet-en chat-station-ref", 1),
   ("tablet-en chat-station-sheet", 2),
-  ("tablet-en screen-login-fill", 1),
   ("tablet-zh chat-attach-row", 3),
   ("tablet-zh chat-attach", 2),
   ("tablet-zh chat-download", 1),
@@ -312,37 +297,30 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-zh chat-station-file", 2),
   ("tablet-zh chat-station-ref", 1),
   ("tablet-zh chat-station-sheet", 2),
-  ("tablet-zh screen-login-fill", 1),
-  ("touch-en screen-login-fill", 1),
-  ("touch-zh screen-login-fill", 1),
   ("wide-en chat-attach-row", 3),
   ("wide-en chat-attach", 2),
   ("wide-en chat-download", 1),
   ("wide-en chat-station-file", 2),
   ("wide-en chat-station-ref", 1),
   ("wide-en chat-station-sheet", 2),
-  ("wide-en screen-login-fill", 1),
   ("wide-win-en chat-attach-row", 3),
   ("wide-win-en chat-attach", 2),
   ("wide-win-en chat-download", 1),
   ("wide-win-en chat-station-file", 2),
   ("wide-win-en chat-station-ref", 1),
   ("wide-win-en chat-station-sheet", 2),
-  ("wide-win-en screen-login-fill", 1),
   ("wide-win-zh chat-attach-row", 3),
   ("wide-win-zh chat-attach", 2),
   ("wide-win-zh chat-download", 1),
   ("wide-win-zh chat-station-file", 2),
   ("wide-win-zh chat-station-ref", 1),
   ("wide-win-zh chat-station-sheet", 2),
-  ("wide-win-zh screen-login-fill", 1),
   ("wide-zh chat-attach-row", 3),
   ("wide-zh chat-attach", 2),
   ("wide-zh chat-download", 1),
   ("wide-zh chat-station-file", 2),
   ("wide-zh chat-station-ref", 1),
   ("wide-zh chat-station-sheet", 2),
-  ("wide-zh screen-login-fill", 1),
 ])
 
 ///|

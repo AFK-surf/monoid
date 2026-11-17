@@ -27,19 +27,26 @@ fn window_rig(layered? : Bool = false) -> ScreenRig {
     fn(wid, _) {
       fn(root) {
         @sfbase.lone_page.val = @sfbase.window_here_page(wid)
+        @sfbase.lone_shown.val.set(@sfbase.lone_page.val)
         @ui.set_tree_theme(@sf.ui_theme_now)
-        @ui.old(root, fn(c) {
-          match @sfbase.lone_page.val {
-            Some(Screen(at)) =>
-              screen_page(c, src, at, @sf.no_frame, on_close=fn() {
-                c.after_build("lone-closed", fn() { @ui.window_close_here(wid) })
-              })
-            _ => ()
+        // (made again for another page put in its place, as the app's lone_tree)
+        let shown = @sfbase.lone_shown.val
+        root.pick(at_once=true, fn() {
+          match shown.get() {
+            Some(Screen(at)) => Some(at)
+            _ => None
           }
-          @sf.presented(c)
+        }, fn(p, at) {
+          p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          match at {
+            Some(at) =>
+              screen_node(p, src, at, fn() { @sf.no_frame }, on_close=fn() {
+                p.at_moment(p.logic_at(), fn() { @ui.window_close_here(wid) }) |> ignore
+              })
+            None => ()
+          }
         })
-        .grow(Is(1.0))
-        |> ignore
+        @ui.old(root, fn(c) { @sf.presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
         @sf.presented_nodes(root)
         @sfbase.toasts_node(root, fn() { @sf.toast_bottom }) |> ignore
       }

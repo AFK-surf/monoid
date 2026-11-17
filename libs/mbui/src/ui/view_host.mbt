@@ -2045,7 +2045,7 @@ fn Ctx::view_drawn(
     Some(ts) if c.bones == 0L => {
       ride_spoil()
       list_drawn_anew()
-      self.paint_tree_stream(ts, x, y, c.w * s, c.h * s, c.radius * s, a)
+      self.paint_tree_stream(c.id, ts, x, y, c.w * s, c.h * s, c.radius * s, a)
     }
     _ => ()
   }

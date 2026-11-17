@@ -102,18 +102,18 @@ pub fn open_screen_fixture(mode : String) -> Unit {
     "screen-full" => u.full.set(true)
     "screen-full-tools" => {
       u.full.set(true)
-      u.tools_open = true
+      u.tools_open.set(true)
     }
-    "screen-center" => u.asked_panel = "center"
-    "screen-user-tabs" => u.asked_panel = "tabs"
-    "screen-keys" => u.asked_panel = "keys"
-    "screen-stats" => u.asked_panel = "net"
-    "screen-simulator-center" => u.asked_panel = "center"
-    "screen-simulator-logs" => u.asked_panel = "logs"
-    "screen-simulator-apps" => u.asked_panel = "apps"
+    "screen-center" => u.asked_panel.set("center")
+    "screen-user-tabs" => u.asked_panel.set("tabs")
+    "screen-keys" => u.asked_panel.set("keys")
+    "screen-stats" => u.asked_panel.set("net")
+    "screen-simulator-center" => u.asked_panel.set("center")
+    "screen-simulator-logs" => u.asked_panel.set("logs")
+    "screen-simulator-apps" => u.asked_panel.set("apps")
     "screen-simulator-device" => {
       u.logs.tab.set(1)
-      u.asked_panel = "logs"
+      u.asked_panel.set("logs")
     }
     _ => ()
   }
@@ -506,6 +506,7 @@ fn screen_fix_drops(done : Bool) -> Unit {
     id: @signals.signal(""),
   })
   s.drops_serial = 2
+  s.drops_told.set(s.drops_told.untracked() + 1)
   // (going: the parts go no further, as the test holds its second part)
   s.pumping = !done
 }

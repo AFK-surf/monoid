@@ -243,9 +243,10 @@ fn in_host_window(f : () -> Unit) -> Unit {
 }
 
 ///|
-/// `f` done as window `wid` (a Tester's: what it reads or does of a window beside the first), the window in place
-/// before put back after.
-fn as_window(wid : Int, f : () -> Unit) -> Unit {
+/// `f` done as window `wid` (a Tester's: what it reads or does of a window beside the first; an app's, what a node of
+/// that window's tree does as its tree takes a moment another window's runtime is in place for: what it keeps of its
+/// window read and written as that window's), the window in place before put back after.
+pub fn as_window(wid : Int, f : () -> Unit) -> Unit {
   let back = window_now.now
   window_use(wid)
   f()

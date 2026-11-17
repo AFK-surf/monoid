@@ -31,6 +31,7 @@ fn side_node_tab(front : String) -> Bool {
   tab_service(front) is Some(_) ||
   tab_file(front) is Some(_) ||
   side_farview_tab(front) is Some(_) ||
+  side_screen_tab(front) is Some(_) ||
   side_adb_tab(front) is Some(_) ||
   side_files_tab(front) is Some(_) ||
   side_station_tab(front) is Some(_) ||
@@ -49,6 +50,16 @@ fn side_own_tab(front : String) -> Bool {
 fn side_farview_tab(front : String) -> (String, String)? {
   match station_tab(front) {
     Some(("screen", station, screen)) if @sfpages.farview_native_screen(screen) => Some((station, screen))
+    _ => None
+  }
+}
+
+///|
+/// The station and the screen of `front` where it is a station's screen (side_screen_node: as its page shows it, or a
+/// Farview tab drawn natively).
+fn side_screen_tab(front : String) -> (String, String)? {
+  match station_tab(front) {
+    Some(("screen", station, screen)) => Some((station, screen))
     _ => None
   }
 }
@@ -298,8 +309,8 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           service_tab_node(q, src, r, job, None, None, tips)
         } else if tab_file(agent) is Some((session, path, name)) {
           file_tab_node(q, src, r, session, path, name, tips)
-        } else if side_farview_tab(agent) is Some((station, screen)) {
-          side_farview_node(q, src, station, screen)
+        } else if side_screen_tab(agent) is Some(_) {
+          side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false)
         } else if side_adb_tab(agent) is Some(station) {
           side_adb_node(q, src, station)
         } else if side_files_tab(agent) is Some(station) {
@@ -430,6 +441,55 @@ fn side_farview_node(q : @view.View, src : Source, station : String, screen : St
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     @sfpages.farview_tab_node(s, src, station, screen)
+  })
+  |> ignore
+}
+
+///|
+/// Station screen tab `tab` in chat `r`'s panel (`tabs` the panel's as they are now; `on_tape`: a panel of its own on the
+/// tape), in node `q` (as large as the panel under its bar): a Farview tab drawn here while 实验性功能's Farview 原生标签页渲染
+/// is on (side_farview_node), else its page (sfpages' screen_node) beside its chat, its × the tab's, alone in the panel
+/// upright the panel's bar its own (side_own_bar_node), its view let go of as the tab goes (closed, another in front,
+/// its chat left) unless it is the page on top over all of it; made again as that is turned on or off.
+fn side_screen_node(q : @view.View, src : Source, r : ChatRef, tab : String, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+  guard station_tab_page(r, tab) is Some(Screen(at)) else { return }
+  q.pick(at_once=true, fn() { @sfpages.farview_native_screen(at.screen) }, fn(n, native) {
+    n.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    if native {
+      side_farview_node(n, src, at.station, at.screen)
+    } else {
+      side_screen_page_node(n, src, r, tab, at, tabs, on_tape)
+    }
+  })
+}
+
+///|
+/// Station screen tab `tab`'s page (`at`) in node `q` (side_screen_node's).
+fn side_screen_page_node(q : @view.View, src : Source, r : ChatRef, tab : String, at : @sfbase.ScreenAt, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.owns(fn() {
+      match app.nav.top() {
+        Screen(top) if top.station == at.station && top.screen == at.screen => ()
+        _ => @sfpages.screen_left(src, at.station, at.screen)
+      }
+    })
+    |> ignore
+    s.pick(at_once=true, fn() {
+      let (ww, wh) = s.window()
+      screen_tab_alone(tabs()) && !column_short.get() && ww <= wh
+    }, fn(p, alone) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      @sfpages.screen_node(
+        p,
+        src,
+        at,
+        fn() { { back: None, top: 0.0, foot: 0.0, named: false } },
+        on_close=fn() { side_change(src, r, "close", Some(tab)) },
+        in_tab=true,
+        own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
+      )
+    })
   })
   |> ignore
 }

@@ -3246,7 +3246,8 @@ pub fn rows_head_node(parent : @view.View, body : (@view.View) -> Unit, first? :
 /// A page made once laid out by the width of the box it is given (`width`), as page_node lays one out: `wide` makes it
 /// where that is wide, `narrow` where narrow, each lent its arrangement (look_node), made again only as the arrangement
 /// changes. For a page whose two arrangements are not a page_node's (the files' page: Finder's window wide, a folder
-/// in its own frame narrow).
+/// in its own frame narrow; a station's screen on a simulator, what debugs its app beside the device or under it). As
+/// tall as what holds it gives it, never what it holds props up (a stage laid out by the room it is given).
 #callsite(autofill(loc))
 pub fn by_look_node(
   parent : @view.View,
@@ -3256,9 +3257,9 @@ pub fn by_look_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(b) {
-    b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
     b.pick(fn() { look_for(width()) }, at_once=true, fn(p, look) {
-      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       look_lent(p, look)
       match look {
         Wide => wide(p)

@@ -6,7 +6,10 @@
 // that each frame draws the frame shown then. What becomes of each frame handed over is the stream's to say, as ever
 // (Stream::new's `shown`, once that frame is painted: drawn or let go). Let go with its node (View::owns): closed then,
 // unless what holds it closes it itself (`closes` false: it is only no longer drawn there). Drawn by the app's canvas,
-// never on a system video layer (Ctx::stream's `layer`), as it is drawn in the tree's order.
+// or, while its `layer` says so, by its system video layer where it has one (Stream::new's `layer`, as Ctx::stream's
+// `layer`): an H.264 frame of it shown, stretched to its node, not round, not faded, not in a shot, its hole where the
+// tree draws the node, what the tree draws after it over it and what of that takes a finger its covers, as a native
+// node's (tree_native.mbt).
 
 ///|
 /// A stream of the window's tree's: the stream, how its picture is fitted to its node, whether its node closes it.
@@ -14,6 +17,7 @@ priv struct TreeStream {
   stream : Stream
   fit : Fit
   closes : Bool
+  layer : () -> Bool
 }
 
 ///|
@@ -30,14 +34,16 @@ let tree_streams_rev : Ref[Int] = Ref(0)
 ///|
 /// Stream `s` drawn in a box of `parent`'s, as big as the box is said to be (by default the room its holder leaves it),
 /// its picture fitted to it as `fit` says (FitFill: stretched; FitCover, FitContain as an image's), its corners its own
-/// (View::radius). Let go with the node: the stream closed, unless not `closes` (what holds it closes it). One stream in
-/// one node: given to another while one draws it, a fault. The box made.
+/// (View::radius). Let go with the node: the stream closed, unless not `closes` (what holds it closes it). On its system
+/// video layer where it may be while `layer` says so, as each frame draws it (read as it is drawn, not followed). One
+/// stream in one node: given to another while one draws it, a fault. The box made.
 #callsite(autofill(loc))
 pub fn stream(
   parent : @view.View,
   s : Stream,
   fit? : Fit = FitFill,
   closes? : Bool = true,
+  layer? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
@@ -46,7 +52,7 @@ pub fn stream(
       b.fault("stream: one stream given to two nodes of the tree's: a stream is drawn in one place")
     }
     tree_streams_rev.val = tree_streams_rev.val + 1
-    tree_streams[id] = { stream: s, fit, closes }
+    tree_streams[id] = { stream: s, fit, closes, layer }
     b.owns(fn() { tree_stream_gone(id) }) |> ignore
   })
 }
@@ -63,11 +69,13 @@ fn tree_stream_gone(id : @view.NodeId) -> Unit {
 }
 
 ///|
-/// Stream node `ts` drawn this frame at (`x`, `y`), `w` × `h` where it is drawn, its corners `radius` round, as opaque as
-/// `a`: the picture its stream shows, fitted as it says, as Ctx::paint_stream places an old view's; nothing until one
+/// Stream node `id`'s `ts` drawn this frame at (`x`, `y`), `w` × `h` where it is drawn, its corners `radius` round, as
+/// opaque as `a`: on its system video layer where it may be there (its hole, as a native node's: paint_tree_native),
+/// else the picture its stream shows, fitted as it says, as Ctx::paint_stream places an old view's; nothing until one
 /// shows.
 fn Ctx::paint_tree_stream(
   self : Ctx,
+  id : @view.NodeId,
   ts : TreeStream,
   x : Double,
   y : Double,
@@ -77,6 +85,26 @@ fn Ctx::paint_tree_stream(
   a : Double,
 ) -> Unit {
   let s = ts.stream
+  // (on its layer as Ctx::stream puts an old view's there: an H.264 frame of it shown, stretched, square, whole; a shot
+  // shows the picture, drawn here)
+  match s.view {
+    Some(v) if !shooting.val &&
+      s.h264 &&
+      ts.fit is FitFill &&
+      radius == 0.0 &&
+      a >= 1.0 &&
+      !s.closed &&
+      s.at is Some(_) &&
+      (ts.layer)() => {
+      let radii = FixedArray::from_array([0.0, 0.0, 0.0, 0.0])
+      if v.paint_in(self, x, y, w, h, None, radii) {
+        v.island = Some(id)
+        v.hits_before = tree_hits_passed.val
+      }
+      return
+    }
+    _ => ()
+  }
   let (pw, ph) = match s.size {
     Some((pw, ph)) if !s.closed && s.id != 0 && pw > 0 && ph > 0 => (pw.to_double(), ph.to_double())
     _ => return

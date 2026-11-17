@@ -13,7 +13,7 @@
 /// less viewer_bar_sides at most), where the file is (`title`, none: "") its tip while the pointer is over them; what `tools` makes in
 /// the row at its end (the corner each is round at given: the window's followed at its corner, a bar's buttons'), the
 /// last as far in from the window's side as a page's bar's last (`capsule_end`: a capsule of words, past the window's
-/// corner as far as a long capsule stands: window_corner_past). There while `hidden` holds not (gone up its height and
+/// corner as far as a long capsule stands: window_corner_past; `capsule_now`: while it says so, followed). There while `hidden` holds not (gone up its height and
 /// faded over 240 ms, eased out, from where it is at the moment it is told, and back so; at once with motion
 /// reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade). A press on it where nothing of it
 /// takes one is its own, moving the window while it has none of the system's title bar (the app's own top row). Its
@@ -34,8 +34,14 @@ pub fn viewer_bar_node(
   went : () -> Unit,
   tips : TipLayer,
   capsule_end? : Bool = false,
+  capsule_now? : () -> Bool = fn() { false },
+  middle? : (@view.View) -> Unit,
+  middle_shown? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> @view.View {
+  // (what stands in the name's place while `middle_shown` says so (a screen's tabs: viewer_bar's `middle`), the way
+  // back as wide as it alone then)
+  let held = fn() { middle is Some(_) && middle_shown() }
   // (hidden as it is made: gone whole, not gone up; its way a motion's, there at once with motion reduced)
   let gone = EdgeWay::new(if @signals.untracked(hidden) { 1.0 } else { 0.0 })
   let mut bar : @view.View? = None
@@ -70,7 +76,7 @@ pub fn viewer_bar_node(
         .lines_up(Is(Some(Middle)))
         .height(Is(Some(viewer_bar_h)))
         .gap(Is(@ui.Space::px(S4)))
-        .padding(By(fn() { (bar_start_in(), 0.0, bar_end_in(width(), capsule_end), hairline_h) }))
+        .padding(By(fn() { (bar_start_in(), 0.0, bar_end_in(width(), capsule_end || capsule_now()), hairline_h) }))
         |> ignore
         // clear of the window's buttons at its left, the system's (not in full screen)
         row.show(@ui.window_keys_left_now, fn(k) { k.width(Is(Some(viewer_buttons_w))) |> ignore })
@@ -80,42 +86,56 @@ pub fn viewer_bar_node(
           start
           .row(Is(true))
           .lines_up(Is(Some(Middle)))
-          .basis(Is(Some(0.0)))
-          .grow(Is(1.0))
+          .basis(By(fn() { if held() { None } else { Some(0.0) } }))
+          .grow(By(fn() { if held() { 0.0 } else { 1.0 } }))
           .shrink(Is(1.0))
           .min_width(Is(Some(0.0)))
           |> ignore
-          back_node(start, back, ink, went) |> ignore
+          // (no way back where there is nowhere to go back to: a page alone in a window of its own, whose window's own
+          // close closes it; its room kept, the name in the middle as ever)
+          start.show(fn() { back() != "" }, fn(k) { back_node(k, back, ink, went) |> ignore })
         })
         |> ignore
-        // the middle, as wide as what it says, the sides kept for the way back and the tools
-        let middle = row.box(fn(m) {
-          m
-          .lines_up(Is(Some(Middle)))
-          .max_width(By(fn() { Some(dmax(viewer_none, width() - viewer_bar_sides())) }))
-          .shrink(Is(1.0))
-          .min_width(Is(Some(0.0)))
-          |> ignore
-          m.box(fn(n) {
-            n
-            .words(By(name))
-            .words_look(By(fn() { bar_words(Ui, L6, 600) }))
-            .ink(By(fn() { ink().ink }))
-            .says(By(fn() { Some(@view.said(Text, label=name())) }))
-            |> ignore
-          })
-          |> ignore
-          m.show(fn() { meta() != "" }, fn(l) {
-            l
-            .words(By(meta))
-            .words_look(By(fn() { bar_words(Caption, L4, 400) }))
-            .ink(By(fn() { ink().muted }))
-            .says(By(fn() { Some(@view.said(Text, label=meta())) }))
-            |> ignore
-          })
+        row.pick(at_once=true, held, fn(slot, is_held) {
+          slot.shrink(Is(1.0)).min_width(Is(Some(0.0))).grow(Is(if is_held { 1.0 } else { 0.0 })) |> ignore
+          match middle {
+            // what stands in the name's place (a screen's tabs): grown between the way back and the tools
+            Some(made) if is_held => {
+              slot.row(Is(true)).lines_up(Is(Some(Middle))).clips(Is(true)) |> ignore
+              made(slot)
+            }
+            _ => {
+              // the middle, as wide as what it says, the sides kept for the way back and the tools
+              let middle = slot.box(fn(m) {
+                m
+                .lines_up(Is(Some(Middle)))
+                .max_width(By(fn() { Some(dmax(viewer_none, width() - viewer_bar_sides())) }))
+                .shrink(Is(1.0))
+                .min_width(Is(Some(0.0)))
+                |> ignore
+                m.box(fn(n) {
+                  n
+                  .words(By(name))
+                  .words_look(By(fn() { bar_words(Ui, L6, 600) }))
+                  .ink(By(fn() { ink().ink }))
+                  .says(By(fn() { Some(@view.said(Text, label=name())) }))
+                  |> ignore
+                })
+                |> ignore
+                m.show(fn() { meta() != "" }, fn(l) {
+                  l
+                  .words(By(meta))
+                  .words_look(By(fn() { bar_words(Caption, L4, 400) }))
+                  .ink(By(fn() { ink().muted }))
+                  .says(By(fn() { Some(@view.said(Text, label=meta())) }))
+                  |> ignore
+                })
+              })
+              // (where the file is, over its name while the pointer is there)
+              tip_node(tips, middle, title, within=true) |> ignore
+            }
+          }
         })
-        // (where the file is, over its name while the pointer is there)
-        tip_node(tips, middle, title, within=true) |> ignore
         // (short of room, the tools kept whole: the way back and the name give way)
         row.box(fn(end) {
           // (its tools kept whole, the way back and the name giving way first: viewer_bar's keep)

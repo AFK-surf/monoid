@@ -49,7 +49,9 @@ fn first_open_islands() -> Array[(Double, Double, Double, Double)] {
 ///|
 test "the pages of the stack come in the same way the first time and again" {
   for mode in [
-    "chat", "history", "files", "archived", "drive", "reader", "player-video", "service", "newchat", "screen-full",
+    // (a screen's page live, not 全屏: 全屏 is the page's while it is open, let go with it, so the fixture's comes the
+    // first time only; the page's parts are nodes now, so its looks differ where its old view was one island)
+    "chat", "history", "files", "archived", "drive", "reader", "player-video", "service", "newchat", "screen-live",
     "direct-preview", "direct-profile-account", "direct-kept-chat", "direct-station-archiving",
     "settings-home", "settings-appearance", "settings-fonts", "settings-me", "settings-workspace", "settings-security",
     "settings-security-pending", "settings-security-open", "settings-vault", "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station",

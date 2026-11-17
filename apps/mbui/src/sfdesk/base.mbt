@@ -102,7 +102,6 @@ using @sfbase {
   type DvStation, 
   type Dragged,
   type Page,
-  type PageFrame,
   type Source,
   type Workspace,
   settings_core,

@@ -714,7 +714,7 @@ pub fn stands_alone(Int64, glass? : Bool, edge? : Double) -> Bool
 pub let still_look : Look
 
 #callsite(autofill(loc))
-pub fn stream(@view.View, Stream, fit? : Fit, closes? : Bool, loc~ : SourceLoc) -> @view.View
+pub fn stream(@view.View, Stream, fit? : Fit, closes? : Bool, layer? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn stream_audio_here() -> Bool
 

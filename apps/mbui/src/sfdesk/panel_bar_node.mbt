@@ -69,12 +69,15 @@ fn side_own_bar_node(n : @view.View, tabs : Array[String], front : String, on_ta
   if alone && tab_service(front) is Some(_) {
     return true
   }
+  // (a station's screen alone in it upright: the screen's bar its own, in the panel's bar's look: side_screen_node)
+  let (ww, wh) = n.window()
+  if side_screen_tab(front) is Some(_) && screen_tab_alone(tabs) && !column_short.get() && ww <= wh {
+    return true
+  }
   if side_node_tab(front) {
     return false
   }
-  let (ww, wh) = n.window()
-  let screen_alone = screen_tab_alone(tabs) && !column_short.get() && ww <= wh
-  (alone && tab_service(front) is Some(_)) || screen_alone
+  alone && tab_service(front) is Some(_)
 }
 
 ///|

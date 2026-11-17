@@ -4,6 +4,10 @@
 // floor; the lines to write are printed by the test). Counted 2026-11-16 (on main after #6556) on the values and changes of
 // client/core-ts/test/real-size.ts.
 
+// Added 2026-11-17: the remote screen's page made as nodes (sfpages screen_*.mbt): a change of its view's tabs
+// (screens/screen) runs its tabs' row, and a sample of its station's link (stationNet) the bar's link chip, where its old
+// view's were not counted.
+
 // Raised once, 2026-11-16: the board's cards say their chat as Home's list's rows do (sfpages board_node.mbt: the list's
 // marks on its title's line, who is in it by row_aside_node), each part told only as what it shows of the chat's row
 // changes: a station's going down runs what of them shows it (its mark on the title's line, its ink).
@@ -98,6 +102,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone lock-security profiles/down": 12,
   "phone lock-upgrade profiles/down": 12,
   "phone lock-needs-app-security profiles/down": 12,
+  "phone screen-user-pages screens/screen": 1,
+  "phone screen-user-tabs screens/screen": 1,
   "phone settings-home profiles/down": 12,
   "phone settings-appearance profiles/down": 12,
   "phone settings-experimental profiles/down": 12,
@@ -851,6 +857,27 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide newchat-preset-new-clones newChat/down": 2,
   "wide newchat-preset-new-clones newChat/carried": 2,
   "wide newchat-preset-new-clones presets/preset": 8,
+  "wide screen-agent-driving stationNet/sample": 1,
+  "wide screen-agent-paused stationNet/sample": 1,
+  "wide screen-clipboard-driving stationNet/sample": 1,
+  "wide screen-clipboard-old-station stationNet/sample": 1,
+  "wide screen-files-done stationNet/sample": 1,
+  "wide screen-files-going stationNet/sample": 1,
+  "wide screen-keys stationNet/sample": 1,
+  "wide screen-live stationNet/sample": 1,
+  "wide screen-login-fill stationNet/sample": 1,
+  "wide screen-login-pick stationNet/sample": 1,
+  "wide screen-not-drivable stationNet/sample": 1,
+  "wide screen-pages stationNet/sample": 1,
+  "wide screen-read-only stationNet/sample": 1,
+  "wide screen-trackpad stationNet/sample": 1,
+  "wide screen-trackpad-command stationNet/sample": 1,
+  "wide screen-user-pages screens/screen": 3,
+  "wide screen-user-pages stationNet/sample": 1,
+  "wide screen-user-tabs screens/screen": 3,
+  "wide screen-user-tabs stationNet/sample": 1,
+  "wide screen-window stationNet/sample": 1,
+  "wide screen-windows stationNet/sample": 1,
   "wide settings-vault-items vaultItems vault=plain/item": 7,
   "wide settings-vault-items profiles/down": 12,
   "wide settings-station station/host": 13,

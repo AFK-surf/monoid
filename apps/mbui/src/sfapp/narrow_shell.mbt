@@ -820,6 +820,14 @@ fn narrow_made_as(
         )
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
       })
+    // a station's screen (sfpages' screen_node): its bar, its picture and what drives it its own, inside the room the
+    // stack's frame keeps over and under it (but in 全屏); let go as the page leaves (app.mbt's page_left: screen_left),
+    // its view paused while a page is over it (screen_covered, above)
+    Screen(at) =>
+      made("screen/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.screen_node(p, src, at, frame)
+      })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch
     Setting(Stations) =>

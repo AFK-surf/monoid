@@ -91,46 +91,15 @@ fn station_tab_page(r : ChatRef, tab : String) -> Page? {
 let panel_screen_pages : Map[String, @sfbase.ScreenAt] = Map([])
 
 ///|
-/// The station screens shown in a tab, by the tab: the station and the screen, and whether the frame's builds drew it
-/// since station_tabs_sweep went over them last (as the frame before's were over).
-let panel_screens : Map[String, (String, String, Bool)] = Map([])
-
-///|
-fn station_tab_pane(c : @ui.Ctx, src : Source, r : ChatRef, tab : String, own_bar? : @ui.Style? = None) -> Bool {
-  guard station_tab(tab) is Some((kind, station, screen)) else { return false }
-  let frame : PageFrame = { back: None, top: 0.0, foot: 0.0, named: false }
+fn station_tab_pane(_c : @ui.Ctx, _src : Source, _r : ChatRef, tab : String, own_bar? : @ui.Style? = None) -> Bool {
+  guard station_tab(tab) is Some((kind, _, _)) else { return false }
   match kind {
-    "screen" => {
-      panel_screens[tab] = (station, screen, true)
-      let at = panel_screen_pages.get(tabs_key(r) + "/" + tab).unwrap_or({ station, screen, title: "", until_gone: false })
-      @sfpages.screen_page(c, src, at, frame,
-        on_close=fn() { side_change(src, r, "close", Some(tab)) }, in_tab=true, own_bar~)
-    }
+    // (a station's screen: made once as nodes in the panel, panel_node's side_screen_node, its own bar the panel's
+    // where it is alone there)
+    "screen" => ignore(own_bar)
     // (a station's 文件, its page and the settings' 共享调试, made once as nodes in the panel: panel_node's
     // side_files_node, side_station_node, side_adb_node)
     _ => ()
   }
   true
-}
-
-///|
-/// Stop streams when their tab is hidden, closed or its chat left: said once a frame's builds are over (the app's
-/// after_build), those they did not draw; those they did, to be drawn again by the next frame's.
-pub fn station_tabs_sweep(c : @ui.Ctx, src : Source) -> Unit {
-  ignore(c)
-  let gone : Array[String] = []
-  let drawn : Array[(String, String, String)] = []
-  for tab, (station, screen, was) in panel_screens {
-    if was {
-      drawn.push((tab, station, screen))
-    } else {
-      match app.nav.top() {
-        Screen(at) if at.station == station && at.screen == screen => ()
-        _ => @sfpages.screen_left(src, station, screen)
-      }
-      gone.push(tab)
-    }
-  }
-  for tab in gone { panel_screens.remove(tab) }
-  for d in drawn { panel_screens[d.0] = (d.1, d.2, false) }
 }

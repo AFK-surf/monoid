@@ -45,7 +45,7 @@ test "with keyboard and mouse: the viewer's bar across the top, the picture unde
   assert_true(r.labelled("Esc") is None)
   // the picture under the bar, the window's width
   let u = r.ui()
-  assert_true(u.stage_y >= @sf.viewer_bar_h)
+  assert_true(u.stage_xy().1 >= @sf.viewer_bar_h)
   assert_eq(u.box_w.get(), 1280.0)
   assert_eq(r.t.squeeze_faults(), [])
   r.tap_label(tr("common.back"))
@@ -409,7 +409,7 @@ test "a mouse's press on a drop row's 在访达中显示 over the picture is its
   let u = r.ui()
   let sh = u.shown(r.t.ctx())
   assert_true(
-    x > u.stage_x + sh.x && x < u.stage_x + sh.x + sh.w && y > u.stage_y + sh.y && y < u.stage_y + sh.y + sh.h,
+    x > u.stage_xy().0 + sh.x && x < u.stage_xy().0 + sh.x + sh.w && y > u.stage_xy().1 + sh.y && y < u.stage_xy().1 + sh.y + sh.h,
     msg="\{x},\{y}",
   )
   let before = r.inputs().filter(fn(j) { text(Some(j), "t") == "pointer" && kind_of_input(j) != "move" }).length()
@@ -434,7 +434,7 @@ test "in a chat's side panel with keyboard and mouse: one compact toolbar row (n
   assert_true(b.t.find("still.fail — Chrome") is None)
   assert_true(b.labelled(tr("web-pages.screen.back")) is Some(_))
   assert_true(b.labelled(tr("web-pages.screen.panel")) is Some(_))
-  assert_eq(b.ui().stage_y, 48.0)
+  assert_eq(b.ui().stage_xy().1, 48.0)
   assert_eq(b.t.squeeze_faults(), [])
   assert_eq(b.t.audit(), [])
   mouse_done(b)
@@ -449,7 +449,7 @@ test "in a chat's side panel with keyboard and mouse: one compact toolbar row (n
   assert_true(d.t.find("控制 · 李雷也在看") is Some(_))
   assert_true(d.labelled(tr("web-pages.screen.combos")) is Some(_))
   assert_true(d.labelled(tr("web-pages.screen.panel")) is Some(_))
-  assert_eq(d.ui().stage_y, 48.0)
+  assert_eq(d.ui().stage_xy().1, 48.0)
   assert_eq(d.t.squeeze_faults(), [])
   assert_eq(d.t.audit(), [])
   mouse_done(d)

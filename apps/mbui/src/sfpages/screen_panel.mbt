@@ -10,6 +10,7 @@
 ///|
 /// A key sent with modifiers (mod_alt, mod_ctrl, mod_meta, mod_shift), as the screen's system names it: its name, its
 /// keys as they are written (each apart), what it sends.
+#derive(Eq)
 priv struct Combo {
   name : String
   keys : String
@@ -89,31 +90,6 @@ let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smoo
 // ── what the view's figures are now ──────────────────────────────────────
 
 ///|
-/// The view's figures as this device counts them, read each second of the frames' clock while it is live (ScreenUi's):
-/// how many seconds it has been seen, and the frames and bits a second over the last of them.
-fn screen_count(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
-  if s.phase() != "live" {
-    return
-  }
-  let n = c.every(second_ms)
-  if u.first_tick < 0 {
-    u.first_tick = n
-  }
-  if n != u.rate_tick {
-    let (frames, bytes) = s.came()
-    if u.rate_tick >= 0 {
-      let secs = (n - u.rate_tick).to_double()
-      u.fps = Some((frames - u.rate_frames).to_double() / secs)
-      u.bps = Some((bytes - u.rate_bytes).to_double() * 8.0 / secs)
-    }
-    u.rate_tick = n
-    u.rate_frames = frames
-    u.rate_bytes = bytes
-  }
-  u.seen.set(u.rate_tick - u.first_tick)
-}
-
-///|
 /// How long it has been seen, in the seconds counted: 00:20:50 (read as it changes where a node reads it).
 fn seen_for(u : ScreenUi) -> String {
   let secs = u.seen.get()
@@ -168,19 +144,6 @@ fn level_color(level : String, plain : @ui.Color) -> @ui.Color {
     "red" => Danger
     _ => plain
   }
-}
-
-///|
-/// Three bars (the web's Bars), 4, 8 and 12 high, those not lit at a quarter, in the round trip's colour.
-fn signal_bars(c : @ui.Ctx, level : String) -> Unit {
-  let lit = bars_lit(level)
-  let ink = level_color(level, Muted)
-  c.box(style=bars_row, fn() {
-    for i, bar in [bar_low, bar_mid, bar_high] {
-      c.box(style=bar.then(@ui.style(bg=if i < lit { ink } else { A(ink, O25) })), fn() {  }) |> ignore
-    }
-  })
-  |> ignore
 }
 
 ///|
@@ -412,43 +375,6 @@ let diag_said_ms : Double = 1500.0
 
 // ── 控制中心 ──────────────────────────────────────────────────────────────
 
-///|
-/// 控制中心 as a round button (the bar's, the rail's, the folded tools'): pressed, its panel.
-fn center_button(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, close : () -> Unit) -> Unit {
-  let key = "screen-center"
-  let id = c.id(key)
-  round_button(c, key, "sliders", @sf.t("web-pages.screen.panel"), on_press=fn() { center_open(c, s, u, id, close) })
-  // (a fixture's, asked as it is built)
-  if center_asked(u) {
-    center_open(c, s, u, id, close)
-  }
-}
-
-///|
-/// A fixture's: 控制中心 or a simulator's panel opened as if pressed.
-fn center_asked(u : ScreenUi) -> Bool {
-  u.asked_panel == "center" || u.asked_panel == "logs" || u.asked_panel == "apps"
-}
-
-///|
-/// 控制中心's panel, beside what opened it (`id`).
-fn center_open(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, id : Int, close : () -> Unit) -> Unit {
-  let asked = u.asked_panel
-  u.asked_panel = ""
-  let from : @sf.Anchor = Of(id)
-  if asked == "logs" {
-    debug_logs_open(c, s, u, from)
-    return
-  }
-  if asked == "apps" {
-    debug_apps_open(s, u, from)
-    return
-  }
-  screen_panel_toggle(u, "center", fn() {
-    @sf.panel_nodes(@sf.t("web-pages.screen.panel"), fn(v, done) { center_node(c, v, s, u, from, close, done) }, from~, side=screen_panel_side(), focus=false)
-  })
-}
-
 // ── 按键 ─────────────────────────────────────────────────────────────────
 
 ///|
@@ -462,69 +388,6 @@ fn keys_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor, combos_only? : Boo
 }
 
 ///|
-/// 按键 as a round button (the foot's, the rail's, the folded tools', in the trackpad's place before it): pressed, its
-/// panel beside it; on while it is open. Only while driving a screen that is no simulator's (its device's buttons are
-/// beside its picture).
-fn keys_button(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
-  if s.simulator() {
-    return
-  }
-  let key = "screen-keys"
-  let id = c.id(key)
-  round_button(c, key, "keycap", @sf.t("web-pages.screen.keysPanel"), on=screen_panel_on(u, "keys"), on_press=fn() {
-    keys_open(s, u, Of(id))
-  })
-  // (a fixture's, asked as it is built)
-  if u.asked_panel == "keys" {
-    u.asked_panel = ""
-    keys_open(s, u, Of(id))
-  }
-}
-
-///|
-/// 组合键 in the viewer's bar while driving (with keyboard and mouse: its keyboard has the rest): pressed, the combos
-/// under it.
-fn combos_chip(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
-  let key = "screen-combos"
-  let id = c.id(key)
-  @sf.viewer_tool(c, key, "keycap", @sf.t("web-pages.screen.combos"), @sf.page_viewer_ink(), on_press=fn() {
-    keys_open(s, u, Of(id), combos_only=true)
-  })
-}
-
-///|
-/// 控制中心 in the viewer's bar: one of its tools (@sf.viewer_tool, its mark, named on hover); pressed, its panel under it.
-fn center_chip(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, close : () -> Unit) -> Unit {
-  let key = "screen-center"
-  let id = c.id(key)
-  @sf.viewer_tool(c, key, "sliders", @sf.t("web-pages.screen.panel"), @sf.page_viewer_ink(), on_press=fn() {
-    center_open(c, s, u, id, close)
-  })
-  // (asked from elsewhere: opened as it is seen)
-  if center_asked(u) {
-    center_open(c, s, u, id, close)
-  }
-}
-
-///|
-/// How the view goes, in the viewer's bar (the web's NetChip): the signal mark on its tile, coloured as the round trip
-/// is, and how long it has been seen; pressed, the view's figures under it.
-fn net_chip(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
-  let id = c.id("screen-net")
-  let b = c.box(style=net_chip_box, id~, fn() {
-    c.box(style=net_mark_tile, fn() { signal_bars(c, text(field(screen_net(s), "rtt"), "level")) }) |> ignore
-    c.text(seen_for(u), style=screen_time_words) |> ignore
-  })
-  c.semantics(b, Button, id~, label=@sf.t("web-pages.screen.stats"), actions=[Activate])
-  c.on_press(id, fn() { net_panel_open(s, u, Of(id)) })
-  // (asked from elsewhere, the native bar's: opened as this is built)
-  if u.asked_panel == "net" {
-    u.asked_panel = ""
-    net_panel_open(s, u, Of(id))
-  }
-}
-
-///|
 /// Whether 全屏 is on: the screen alone on a phone (ScreenUi's), the window filling the screen with keyboard and mouse.
 fn full_now(u : ScreenUi) -> Bool {
   u.full.get() || @ui.full_screen()
@@ -533,13 +396,13 @@ fn full_now(u : ScreenUi) -> Bool {
 ///|
 /// 全屏 asked for, or let go of: on a phone the screen alone, turned sideways, its tools folded into one button; with
 /// keyboard and mouse the window made to fill the screen, the bar kept (as the web's page in its browser's full screen).
-fn full_asked(c : @ui.Ctx, u : ScreenUi) -> Unit {
+fn full_asked(u : ScreenUi) -> Unit {
   screen_panels_close(u)
   if @sf.soft_keyboard() {
-    u.full.set(!u.full.get())
+    u.full.set(!u.full.untracked())
   } else {
     let on = !@ui.full_screen()
-    c.set_full_screen(on)
+    @hostapi.set_full_screen(on)
     u.fulled = on
   }
 }
@@ -570,9 +433,9 @@ let screen_panel_keys : Array[(String, String)] = [
 
 ///|
 /// A choice of 控制中心 kept on this device for every screen (`prefs.set`, null for the default): the view takes it
-/// once the prefs say so (screen_page's asked_again: 画质 asked of the open view).
-fn prefs_chosen(c : @ui.Ctx, s : ScreenSess, name : String, value : String) -> Unit {
-  prefs_set(c, s, name, value, if value == "" { Json::null() } else { Json::string(value) })
+/// once the prefs say so (screen_life_node's asked_again: 画质 asked of the open view).
+fn prefs_chosen(s : ScreenSess, name : String, value : String) -> Unit {
+  prefs_set(s, name, value, if value == "" { Json::null() } else { Json::string(value) })
 }
 
 ///|
@@ -587,12 +450,11 @@ fn fps_note(fps : Int) -> String {
 
 ///|
 /// A choice kept on this device (`prefs.set` `name`: `v`, null for the default), `value` naming it.
-fn prefs_set(c : @ui.Ctx, s : ScreenSess, name : String, value : String, v : Json) -> Unit {
-  c.tell("screen-prefs/" + s.view + "/" + name + "/" + value, fn() {
-    let p : Map[String, Json] = Map([])
-    p[name] = v
-    (s.src.call)("prefs.set", Json::object(p), screen_act(c, @sf.t("web-pages.screen.panel")))
-  })
+fn prefs_set(s : ScreenSess, name : String, value : String, v : Json) -> Unit {
+  ignore(value)
+  let p : Map[String, Json] = Map([])
+  p[name] = v
+  (s.src.call)("prefs.set", Json::object(p), screen_act(@sf.t("web-pages.screen.panel")))
 }
 
 // ── 页面切换与网址导航 ───────────────────────────────────────────────────
@@ -624,7 +486,7 @@ fn switch_screen_to(s : ScreenSess, u : ScreenUi, next : String, title : String,
 ///|
 /// Asks for a URL, bare domain, or pasted text containing an `https://` link and navigates the current browser tab to it
 /// (`screen.openUrl`).
-fn go_url_asked(c : @ui.Ctx, s : ScreenSess, from : @sf.Anchor) -> Unit {
+fn go_url_asked(s : ScreenSess, from : @sf.Anchor) -> Unit {
   let site = text(s.state, "site")
   @sf.ask(
     @sf.t("web-pages.screen.goUrl"),
@@ -635,7 +497,7 @@ fn go_url_asked(c : @ui.Ctx, s : ScreenSess, from : @sf.Anchor) -> Unit {
         "screen": Json::string(s.screen),
         "url": Json::string(url),
       }
-      (s.src.call)("screen.openUrl", Json::object(p), screen_act(c, @sf.t("web-pages.screen.goUrlWhat")))
+      (s.src.call)("screen.openUrl", Json::object(p), screen_act(@sf.t("web-pages.screen.goUrlWhat")))
     },
     placeholder=if site != "" { site } else { "mail.proton.me" },
     hint=@sf.t("web-pages.screen.urlHint"),
@@ -645,13 +507,10 @@ fn go_url_asked(c : @ui.Ctx, s : ScreenSess, from : @sf.Anchor) -> Unit {
 
 ///|
 /// Reloads the current browser tab (`screen.reload`).
-fn reload_asked(c : @ui.Ctx, s : ScreenSess) -> Unit {
-  c.tell("screen-reload/" + s.view + "/\{s.said.untracked()}", fn() {
-    let p : Map[String, Json] = {
-      "station": Json::string(s.station),
-      "screen": Json::string(s.screen),
-    }
-    (s.src.call)("screen.reload", Json::object(p), screen_act(c, @sf.t("web-pages.screen.reloadWhat")))
-  })
+fn reload_asked(s : ScreenSess) -> Unit {
+  let p : Map[String, Json] = {
+    "station": Json::string(s.station),
+    "screen": Json::string(s.screen),
+  }
+  (s.src.call)("screen.reload", Json::object(p), screen_act(@sf.t("web-pages.screen.reloadWhat")))
 }
-

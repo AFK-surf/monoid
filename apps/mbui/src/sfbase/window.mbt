@@ -14,9 +14,17 @@
 pub let lone_page : Ref[Page?] = Ref(None)
 
 ///|
+/// The page a window of its own shows (lone_page's), told as another is put in its place (lone_page_replace): what shows
+/// it (sfapp's lone_tree) reads it, made again for another. Each window's own, a signal kept as its object (what one
+/// window's change tells wakes none of another's), read through the object its tree took as it was made: a binding of
+/// that tree may run as another window's runtime is in place.
+pub let lone_shown : Ref[@signals.Signal[Page?]] = Ref(@signals.signal(None))
+
+///|
 fn init {
   // (each window of the run its own page alone, and its own toast: what is said in one is said there)
   @ui.window_kept_ref(lone_page, fn() { None })
+  @ui.window_kept_ref(lone_shown, fn() { @signals.signal(None) })
   @ui.window_kept(
     fn() {
       let held = app.toast
@@ -156,6 +164,7 @@ pub fn window_has_screen(station : String, screen : String) -> Bool {
 pub fn lone_page_replace(next : Page) -> Unit {
   let was = lone_page.val
   lone_page.val = Some(next)
+  lone_shown.val.set(Some(next))
   let wid = @ui.current_window_id()
   guard wid > 0 && windows_here_show.contains(wid) else { return }
   windows_here_show[wid] = next
