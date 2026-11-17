@@ -30,7 +30,6 @@ pub let bar_update_in : Double
 
 pub let bar_update_inset : Double
 
-pub fn attention_any(@sfbase.Source, @sfbase.Workspace) -> Bool
 
 pub fn bell_lit(@sfbase.Source, @sfbase.Workspace) -> Bool
 

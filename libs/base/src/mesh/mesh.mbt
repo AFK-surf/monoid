@@ -198,6 +198,8 @@ pub struct Mesh {
   priv taking : @effect.Semaphore
   priv mut coming : @effect.Deferred[Taken]?
   priv incomings : Array[Incoming]
+  /// The connections dialled once (dial_once.mbt), each on an endpoint of its own, until both are let go of.
+  priv outgoings : Array[Outgoing]
   /// A dial ran out of time with no connection made: the endpoint may be stuck, and is bound anew before the next
   /// dial where nothing is on it, `rebind_ms` after the last time at the soonest. When it last was; and whether
   /// one is under way: whoever would dial meanwhile waits (`held`).
@@ -237,7 +239,8 @@ pub struct Mesh {
   priv unanswered_at : Map[Place, String]
   /// The ways to each place and what is kept of them (ways.mbt); the endpoints of a way's own, by way, and the dials
   /// under way on them (none is let go of meanwhile); the ways no more gone on, closed `retire_ms` after; the dials
-  /// on the endpoint beside a place's link (`Mesh::explore`); and what a relay's endpoint's key is made with.
+  /// on the endpoint beside a place's link (`Mesh::explore`) and on no link's (`Mesh::connect`, bind.mbt); and what
+  /// a relay's endpoint's key is made with.
   priv ways_of : Map[Place, Ways]
   priv pinned : Map[String, Pinned]
   priv mut dialing : Int
@@ -332,6 +335,7 @@ pub async fn Mesh::make(
     taking: @effect.Semaphore::new(1),
     coming: None,
     incomings: [],
+    outgoings: [],
     stuck: false,
     rebound_at: None,
     rebinding: false,
@@ -1191,6 +1195,13 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
   for incoming in taken {
     ignore(incoming.gone.succeed({ kind: "local", reason: "closed" }))
   }
+  // (those dialled once: each one's own fiber, closing it already, ends as the fibers are waited for below)
+  let dialled_once = self.outgoings.filter(one => !one.done)
+  self.outgoings.clear()
+  for one in dialled_once {
+    one.done = true
+    ignore(one.gone.succeed({ kind: "local", reason: "closed" }))
+  }
   // (the wait for one a peer dials: whoever waits on it looks again, and finds the mesh closed; a connection it
   // had brought that nobody took is let go of)
   self.forget_coming()
@@ -1216,6 +1227,10 @@ pub async fn Mesh::close(self : Mesh) -> Unit {
     }
     for incoming in taken {
       ignore(attempt(() => self.shell.call("conn.close", { "id": incoming.conn, "code": 0, "reason": "closed", "forget": true })))
+    }
+    for one in dialled_once {
+      ignore(attempt(() => self.shell.call("conn.close", { "id": one.conn, "code": 0, "reason": "closed", "forget": true })))
+      ignore(attempt(() => self.shell.call("iroh.close", { "id": one.endpoint, "forget": true })))
     }
     // (with it go the connections on it nobody took, and the wait for the next: `iroh.close`, in both shells)
     ignore(attempt(() => self.shell.call("iroh.close", { "id": self.endpoint, "forget": true })))

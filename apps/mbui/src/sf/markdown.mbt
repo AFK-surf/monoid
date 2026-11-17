@@ -1219,10 +1219,17 @@ fn code_key(c : @ui.Ctx, id : Int, icon_name : String, words : String) -> Unit {
 ///|
 /// A code block as the web phone draws it: a quiet
 /// tinted block with no frame; above the code, on a row of its own, its
-/// language and a copy button; the code in the code face, 12 on 18 lines,
+/// language and a copy button (with a mouse, icons in a tray over its top right corner while pointed at); the code in the code face, 12 on 18 lines,
 /// in its colours as the core said them (ink.mbt), scrolled sideways, or wrapped at
 /// its width once its wrap key (before the copy key) is pressed, till it is pressed again.
-pub fn code_block(c : @ui.Ctx, code : String, lang : String, colours? : String? = None, face? : Int? = None) -> Unit {
+pub fn code_block(
+  c : @ui.Ctx,
+  code : String,
+  lang : String,
+  colours? : String? = None,
+  face? : Int? = None,
+  keys_always? : Bool = false,
+) -> Unit {
   let t = theme()
   let w = web()
   let id = c.id("sf-code/" + code)
@@ -1253,9 +1260,13 @@ pub fn code_block(c : @ui.Ctx, code : String, lang : String, colours? : String? 
   // block (a block of the ladder's: row_corner), on a row of its own over the code with either input (the web's over
   // the code's first line to a mouse: a long first line ran under its words). Whole: quiet at 55% until pointed at, its
   // words were 2.2 to 1 (mbui ui/contrast.mbt)
+  // With a mouse (the user, 2026-11-17: 「hover 才显示，不占空间，悬浮」, as GitHub's and Cursor's code blocks) no bar:
+  // its keys are icons in a little tray floating in its top right corner, taking no room, shown while the pointer is on
+  // the block or it says it copied, each named in its tip.
   let block_radius = row_corner
   let key_inset = @ui.capsule_in(block_radius, code_key_h)
   let over = native_input() is Mouse
+  let block_id = c.id("sf-code-block/" + code)
   let bar = fn() {
     c.box(
       dir=Row,
@@ -1284,8 +1295,43 @@ pub fn code_block(c : @ui.Ctx, code : String, lang : String, colours? : String? 
       },
     )
   }
-  c.box(w=Fill(1.0), bg=t.p.code_ground, radius=block_radius, clip=true, fn() {
-    bar() |> ignore
+  // (the tray: its keys concentric with the block's corner, a step of the ladder in (small_corner, row_corner's next);
+  // as high as a line of code and the code's room over and under it less that step, so a block of one line holds them
+  // as far from its foot as from its top)
+  let tray = fn() {
+    let in_ = block_radius - small_corner
+    let side = (if over { code_line_wide } else { code_line_narrow }) + code_room_y * 2.0 - in_ * 2.0
+    c.box(
+      style=code_tray,
+      top=in_,
+      right=in_,
+      fn() {
+        let key = fn(icon_name : String, k : String, on : Bool, said : String, press : () -> Unit) {
+          c.box(style=@ui.style(w=Fixed(side), h=Fixed(side), radius=rounded(small_corner), bg=Surface, border=B1, border_color=Line), fn() {
+            icon_button(c, icon_name, key=k, size=side, icon_size=code_tray_icon, corner=small_corner, on~, label=said, on_press=press)
+          })
+          |> ignore
+        }
+        key("wrap", "sf-code-wrap-ib/" + code, wrapped, md_wrap_words(wrapped), fn() {
+          if code_wrapped.contains(id) {
+            code_wrapped.remove(id)
+          } else {
+            code_wrapped[id] = true
+          }
+        })
+        key(if copied { "check" } else { "copy" }, "sf-code-copy-ib/" + code, false, md_copy_words(copied), fn() {
+          c.copy_text(code)
+          @kit.after(c, copy_key, false, copied_ms) |> ignore
+          copied_at[id] = true
+        })
+      },
+    )
+    |> ignore
+  }
+  c.box(w=Fill(1.0), bg=t.p.code_ground, radius=block_radius, clip=true, id=block_id, taps=false, points=true, fn() {
+    if !over {
+      bar() |> ignore
+    }
     // in the colours the core said (ink.mbt), scrolled sideways, or wrapped at its width (12 on 1.6 on a desktop's
     // width)
     let words = fn(wrap : Bool) {
@@ -1307,11 +1353,32 @@ pub fn code_block(c : @ui.Ctx, code : String, lang : String, colours? : String? 
     if wrapped {
       c.box(style=code_wrapped_box, fn() { words(true) }) |> ignore
     } else {
-      c.sideways("sf-code/" + code, padx=14.0, pady=12.0, fn() { words(false) }) |> ignore
+      // (its bar clear of the block's round corners)
+      c.sideways("sf-code/" + code, padx=14.0, pady=12.0, bar_in=block_radius, fn() { words(false) }) |> ignore
+    }
+    // (made only while the pointer is on the block, it says it copied, or it is said to show always)
+    if over && (keys_always || copied || c.hovered(block_id)) {
+      tray()
     }
   })
   |> ignore
 }
+
+///|
+/// A code block's tray of keys with a mouse (code_block's): its keys 4 apart in a row, each an icon button
+/// (code_tray_icon) on the surface within a hairline; made while pointed at. How far a block's code stands in over and under it (code_block's 12, pady); a line of it with a
+/// finger (18).
+let code_tray : @ui.Style = @ui.css("row gap=S1")
+
+///|
+let code_tray_icon : Double = 14.0
+
+///|
+let code_room_y : Double = 12.0
+
+///|
+let code_line_narrow : Double = 18.0
+
 
 ///|
 /// A code block's lines and its language's size on a desktop's width (Prose.css.ts codePre: the meta size on 1.6;

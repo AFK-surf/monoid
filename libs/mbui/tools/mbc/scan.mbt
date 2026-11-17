@@ -60,67 +60,86 @@ fn eol(t : BytesView, p : Int) -> Int {
   }
 }
 
+
 ///|
-fn write_spaces(buf : @buffer.Buffer, t : BytesView, i : Int, j : Int) -> Unit {
-  for k in i..<j {
-    buf.write_byte(if t[k] == b'\n' { b'\n' } else { b' ' })
+/// `out` (made for it alone, of the text's length: what blank and top_level make) as the text it is, not copied
+fn made_text(out : FixedArray[Byte]) -> Bytes {
+  out.unsafe_reinterpret_as_bytes()
+}
+
+///|
+/// Whether something blank replaces may start at p: blank_end is asked only there
+fn may_blank(t : BytesView, p : Int) -> Bool {
+  let c = t[p]
+  c == b'/' || c == b'"' || c == b'\'' || p == 0 || t[p - 1] == b'\n'
+}
+
+///|
+/// Where what blank replaces at p ends (a comment, a literal: its quotes kept, a directive's line), or -1 when
+/// nothing starts there (blank itself is io.c's mbc_blank, the same a byte at a time: csplit_wbtest's blank_ref)
+fn blank_end(t : BytesView, p : Int) -> Int {
+  let n = t.length()
+  let c = t[p]
+  if c == b'/' && p + 1 < n && t[p + 1] == b'*' {
+    let e = find(t, b"*/", p + 2)
+    if e >= 0 {
+      return e + 2
+    }
   }
+  if c == b'/' && p + 1 < n && t[p + 1] == b'/' {
+    return eol(t, p)
+  }
+  if c == b'"' || c == b'\'' {
+    let q = lit_end(t, p)
+    if q >= 0 {
+      return q
+    }
+  }
+  if p == 0 || t[p - 1] == b'\n' {
+    let mut q = p
+    while q < n && (t[q] == b' ' || t[q] == b'\t') {
+      q += 1
+    }
+    if q < n && t[q] == b'#' {
+      return eol(t, q)
+    }
+  }
+  -1
 }
 
 ///|
 /// `text` with its comments, directives and what is inside its literals replaced by spaces (positions kept):
 /// /\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|^[ \t]*#[^\n]* (re.S, re.M)
 fn blank(t : BytesView) -> Bytes {
+  let out : FixedArray[Byte] = FixedArray::make(t.length(), b'\x00')
+  c_blank(t.data(), t.start_offset(), t.length(), out)
+  made_text(out)
+}
+
+///|
+/// Where top_level(t) keeps its first `=` (outside comments, literals, directives and any brackets), or -1: found
+/// without making it
+fn top_eq(t : BytesView) -> Int {
   let n = t.length()
-  let buf = Buffer(capacity=n)
-  let mut last = 0
+  let mut depth = 0
   let mut p = 0
   while p < n {
-    let c = t[p]
-    let mut me = -1
-    let mut lit = false
-    if c == b'/' && p + 1 < n && t[p + 1] == b'*' {
-      let e = find(t, b"*/", p + 2)
-      if e >= 0 {
-        me = e + 2
-      }
-    }
-    if me < 0 && c == b'/' && p + 1 < n && t[p + 1] == b'/' {
-      me = eol(t, p)
-    }
-    if me < 0 && (c == b'"' || c == b'\'') {
-      let q = lit_end(t, p)
-      if q >= 0 {
-        me = q
-        lit = true
-      }
-    }
-    if me < 0 && (p == 0 || t[p - 1] == b'\n') {
-      let mut q = p
-      while q < n && (t[q] == b' ' || t[q] == b'\t') {
-        q += 1
-      }
-      if q < n && t[q] == b'#' {
-        me = eol(t, q)
-      }
-    }
-    if me < 0 {
-      p += 1
+    let me = if may_blank(t, p) { blank_end(t, p) } else { -1 }
+    if me >= 0 {
+      p = me
       continue
     }
-    buf.write_bytesview(t[last:p])
-    if lit {
-      buf.write_byte(c)
-      write_spaces(buf, t, p + 1, me - 1)
-      buf.write_byte(t[me - 1])
-    } else {
-      write_spaces(buf, t, p, me)
+    let c = t[p]
+    if c == b'{' || c == b'(' || c == b'[' {
+      depth += 1
+    } else if c == b'}' || c == b')' || c == b']' {
+      depth -= 1
+    } else if c == b'=' && depth == 0 {
+      return p
     }
-    last = me
-    p = me
+    p += 1
   }
-  buf.write_bytesview(t[last:n])
-  buf.to_bytes()
+  -1
 }
 
 ///|
@@ -129,65 +148,30 @@ fn blank(t : BytesView) -> Bytes {
 fn top_level(t : BytesView) -> Bytes {
   let b = blank(t)
   let n = b.length()
-  let buf = Buffer(capacity=n)
+  let out : FixedArray[Byte] = FixedArray::make(n, b'\x00')
   let mut depth = 0
   for i in 0..<n {
     let c = b[i]
     if c == b'{' || c == b'(' || c == b'[' {
       depth += 1
-      buf.write_byte(if depth == 1 { c } else { b' ' })
+      out[i] = if depth == 1 { c } else { b' ' }
     } else if c == b'}' || c == b')' || c == b']' {
-      buf.write_byte(if depth == 1 { c } else { b' ' })
+      out[i] = if depth == 1 { c } else { b' ' }
       depth -= 1
     } else {
-      buf.write_byte(if depth == 0 { c } else { b' ' })
+      out[i] = if depth == 0 { c } else { b' ' }
     }
   }
-  buf.to_bytes()
+  made_text(out)
 }
 
 ///|
 /// Where each line starts (str.splitlines(keepends=True)'s line breaks), and the text's end last
 fn line_starts(t : Bytes) -> Array[Int] {
-  let n = t.length()
-  let out = [0]
-  let mut i = 0
-  while i < n {
-    let c = t[i]
-    let e = if c == b'\n' ||
-      c == b'\x0b' ||
-      c == b'\x0c' ||
-      c == b'\x1c' ||
-      c == b'\x1d' ||
-      c == b'\x1e' {
-      i + 1
-    } else if c == b'\r' {
-      if i + 1 < n && t[i + 1] == b'\n' {
-        i + 2
-      } else {
-        i + 1
-      }
-    } else if c == b'\xc2' && i + 1 < n && t[i + 1] == b'\x85' {
-      i + 2
-    } else if c == b'\xe2' &&
-      i + 2 < n &&
-      t[i + 1] == b'\x80' &&
-      (t[i + 2] == b'\xa8' || t[i + 2] == b'\xa9') {
-      i + 3
-    } else {
-      -1
-    }
-    if e >= 0 {
-      out.push(e)
-      i = e
-    } else {
-      i += 1
-    }
-  }
-  if out[out.length() - 1] != n {
-    out.push(n)
-  }
-  out
+  // (io.c's mbc_line_starts, counted, then written)
+  let all : FixedArray[Int] = FixedArray::make(c_line_starts(t, []), 0)
+  let _ = c_line_starts(t, all)
+  Array::makei(all.length(), fn(i) { all[i] })
 }
 
 ///|
@@ -217,11 +201,8 @@ fn last_ident(t : BytesView, j : Int, lo : Int) -> (Int, Int) {
 ///|
 /// The end of the run of identifier characters from i
 fn ident_end(t : BytesView, i : Int) -> Int {
-  let mut k = i
-  while k < t.length() && is_ident(t[k]) {
-    k += 1
-  }
-  k
+  let base = t.start_offset()
+  c_ident_end(t.data(), base + i, base + t.length()) - base
 }
 
 ///|
@@ -304,8 +285,8 @@ fn skip_comment_lit(t : BytesView, p : Int) -> Int {
 ///|
 /// The identifiers outside comments and literals, as SCAN finds them:
 /// //[^\n]*|/\*.*?\*/|"…"|'…'|([A-Za-z_$][A-Za-z0-9_$]*)|\d[A-Za-z0-9_.]*  (re.S)
-/// `f` gets each one's start and end.
-fn scan(t : BytesView, f : (Int, Int) -> Unit) -> Unit {
+/// `f` gets each one's start, end and hash_range.
+fn scan(t : BytesView, f : (Int, Int, Int) -> Unit) -> Unit {
   let n = t.length()
   let mut p = 0
   while p < n {
@@ -315,7 +296,7 @@ fn scan(t : BytesView, f : (Int, Int) -> Unit) -> Unit {
       p = if e >= 0 { e } else { p + 1 }
     } else if is_start(c) {
       let e = ident_end(t, p)
-      f(p, e)
+      f(p, e, hash_range(t, p, e))
       p = e
     } else if is_digit(c) {
       let mut e = p + 1
@@ -332,7 +313,8 @@ fn scan(t : BytesView, f : (Int, Int) -> Unit) -> Unit {
 ///|
 /// A function's scan (split_stable's body_scan): only moonc's names (_…), what ends in a number, and `plain`:
 /// …|(?<![A-Za-z0-9_$])(_[A-Za-z0-9_$]*|[A-Za-z$][A-Za-z0-9_$]*\d|plain…)(?![A-Za-z0-9_$])
-fn scan_body(t : BytesView, plain : BSet, f : (Int, Int) -> Unit) -> Unit {
+/// `f` gets each one's start, end and hash_range.
+fn scan_body(t : BytesView, plain : BSet, f : (Int, Int, Int) -> Unit) -> Unit {
   let n = t.length()
   let mut p = 0
   while p < n {
@@ -347,10 +329,13 @@ fn scan_body(t : BytesView, plain : BSet, f : (Int, Int) -> Unit) -> Unit {
         p = e
         continue
       }
-      if c == b'_' ||
-        (is_start(c) && e - p >= 2 && is_digit(t[e - 1])) ||
-        plain.has_range(t, p, e) {
-        f(p, e)
+      if c == b'_' || (is_start(c) && e - p >= 2 && is_digit(t[e - 1])) {
+        f(p, e, hash_range(t, p, e))
+      } else {
+        let h = hash_range(t, p, e)
+        if plain.t.find_hashed(t, p, e, h) >= 0 {
+          f(p, e, h)
+        }
       }
       p = e
     } else {
@@ -362,7 +347,7 @@ fn scan_body(t : BytesView, plain : BSet, f : (Int, Int) -> Unit) -> Unit {
 ///|
 fn idents(t : BytesView) -> BSet {
   let s = BSet::new()
-  scan(t, fn(i, j) { s.add_range(t, i, j) })
+  scan(t, fn(i, j, h) { s.add_hashed(t, i, j, h) })
   s
 }
 
@@ -404,32 +389,61 @@ fn is_local(t : BytesView) -> Bool {
 }
 
 ///|
+/// moonc's names and what each is renamed to, the new names in one text (as BTab's keys: what a job's process
+/// writes of them it reads there, not from objects of its parent's)
+struct Renames {
+  tab : BTab[Int] // a name: its new name's index
+  text : Bytes // the new names one after another
+  at : Array[Int] // where each starts in `text`, and where the last ends
+  hash : Array[Int] // each one's hash_range
+}
+
+///|
+fn Renames::new(names : Map[Bytes, Bytes]) -> Renames {
+  let tab : BTab[Int] = BTab::new()
+  let news = []
+  for k, v in names {
+    tab.set(k, news.length())
+    news.push(v)
+  }
+  let at = [0]
+  let hash = []
+  for v in news {
+    at.push(at[at.length() - 1] + v.length())
+    hash.push(hash_range(v, 0, v.length()))
+  }
+  { tab, text: concat(news.map(fn(v) { v[:] })), at, hash }
+}
+
+///|
 /// rename: `text` with `names` renamed; with local_ok (the identifiers that are not locals), its locals too, by the
 /// order they first come in it; with `plain`, scanned as a function's body. Returns the text and the identifiers in
-/// it (those the scan looks at).
+/// it (those the scan looks at), added to `used` when it is given.
 fn rename(
-  t : Bytes,
-  names : BTab[Bytes],
+  t : BytesView,
+  names : Renames,
   local_ok? : BSet? = None,
   plain? : BSet? = None,
+  used? : BSet = BSet::new(),
 ) -> (Bytes, BSet) {
-  let used = BSet::new()
   let locals : BTab[Bytes] = BTab::new()
   let buf = Buffer(capacity=t.length())
   let mut last = 0
-  let one = fn(s : Int, e : Int) {
+  let one = fn(s : Int, e : Int, h : Int) {
     buf.write_bytesview(t[last:s])
     last = e
-    let at = names.find_range(t, s, e)
+    let at = names.tab.find_hashed(t, s, e, h)
     if at >= 0 {
-      let o = names.vals[at]
-      used.add(o)
-      buf.write_bytes(o)
+      let i = names.tab.vals[at]
+      let a = names.at[i]
+      let z = names.at[i + 1]
+      used.add_hashed(names.text, a, z, names.hash[i])
+      buf.write_bytesview(names.text[a:z])
       return
     }
     match local_ok {
       Some(ok) =>
-        if !ok.has_range(t, s, e) && is_local(t[s:e]) {
+        if ok.t.find_hashed(t, s, e, h) < 0 && is_local(t[s:e]) {
           // (a struct's member after . or -> is not a local)
           let mut i = s - 1
           while i >= 0 && (t[i] == b' ' || t[i] == b'\t') {
@@ -437,12 +451,12 @@ fn rename(
           }
           if !(i >= 0 &&
             (t[i] == b'.' || (t[i] == b'>' && i > 0 && t[i - 1] == b'-'))) {
-            let li = locals.find_range(t, s, e)
+            let li = locals.find_hashed(t, s, e, h)
             let o = if li >= 0 {
               locals.vals[li]
             } else {
               let l = cat([b"_Ml", bint(locals.length())])
-              locals.set(t[s:e].to_owned(), l)
+              locals.put_new(t[s:e].to_owned(), h, l)
               l
             }
             used.add(o)
@@ -452,7 +466,7 @@ fn rename(
         }
       None => ()
     }
-    used.add_range(t, s, e)
+    used.add_hashed(t, s, e, h)
     buf.write_bytesview(t[s:e])
   }
   match plain {

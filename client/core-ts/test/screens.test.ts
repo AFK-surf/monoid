@@ -296,6 +296,9 @@ test("a_tab_says_the_chat_that_opened_it_and_is_closed_by_a_member_not_a_reader"
   call(core, ui, 2, "screen.close", { station: "ws/st", screen: "browser:T1" });
   await host.settle();
   assert.ok(host.requests.some((r: J) => r.method === "POST" && String(r.url).endsWith("/screens/browser%3AT1/close")));
+  // Gone from the list at once, the station's stream not having said so yet.
+  apply(host, values);
+  assert.deepEqual((values.get(1) as J).screens.map((s: J) => s.id), ["desktop", "browser:T2"]);
   core.close();
 
   // A read-only member only looks: nothing to close.
@@ -796,6 +799,9 @@ each("each_view_of_a_screen_says_its_device_and_a_member_lets_it_go_a_reader_doe
   call(core, ui, 4, "screen.endViews", { station: "ws/st", screen: "desktop" });
   await host.settle();
   for (const path of ["/screens/desktop/views/v1/watch", "/screens/desktop/views/v1/end", "/screens/desktop/views/end"]) assert.ok(host.requests.some((r: J) => r.method === "POST" && String(r.url).endsWith(path)), path);
+  // The view ended gone from the screen's at once, the station's stream not having said so yet.
+  apply(host, values);
+  assert.deepEqual((values.get(1) as J).screens[0].views.map((v: J) => v.id), ["v2", "v3", "v4"]);
 
   // Open here too: the bar says where else it is open, what it may let go of beside it.
   const log: J[] = [];

@@ -56,7 +56,7 @@ fn beside_thumb(tree : @view.Tree) -> (Double, Double, Double, Double, Double)? 
 }
 
 ///|
-test "scrolls beside another, the bar under the second alone (bar_here): the wheel on the first shows it there; the first keeps no room for a bar, the second its own; said otherwise, the room and the bar go with it" {
+test "scrolls beside another, the bar under the second alone (bar_here): the wheel on the first shows it there, over the second's foot; no room kept for it under either; said otherwise, the bar goes with it" {
   let shared = @view.Scroll::across()
   let a = shared.beside()
   let b = shared.beside()
@@ -96,7 +96,7 @@ test "scrolls beside another, the bar under the second alone (bar_here): the whe
   now.val = 300.0
   tree.frame(390.0, 844.0, now=now.val) |> ignore
   let shown = beside_thumb(tree)
-  // (the bar the first's now: its room and its bar there, none under the second)
+  // (the bar the first's now, none under the second)
   second_bars.set(false)
   now.val = 3000.0
   tree.frame(390.0, 844.0, now=now.val) |> ignore
@@ -105,9 +105,9 @@ test "scrolls beside another, the bar under the second alone (bar_here): the whe
   now.val = 3300.0
   tree.frame(390.0, 844.0, now=now.val) |> ignore
   let shown_first = beside_thumb(tree)
-  // (room under each that has its bar: 3 and 2 either side of it)
-  assert_eq(first, (None, [40.0, 47.0]))
-  assert_true(shown is Some((_, y, _, _, alpha)) && y > 80.0 && y < 87.0 && alpha == 1.0, msg="\{Repr(shown)}")
-  assert_eq(moved_tall, [47.0, 40.0])
-  assert_true(shown_first is Some((_, y, _, _, alpha)) && y > 40.0 && y < 47.0 && alpha == 1.0, msg="\{Repr(shown_first)}")
+  // (no room kept for a bar, the user's 2026-11-17: each bar over the foot of the one that has it, 2 over its edge)
+  assert_eq(first, (None, [40.0, 40.0]))
+  assert_true(shown is Some((_, y, _, _, alpha)) && y > 70.0 && y < 80.0 && alpha == 1.0, msg="\{Repr(shown)}")
+  assert_eq(moved_tall, [40.0, 40.0])
+  assert_true(shown_first is Some((_, y, _, _, alpha)) && y > 30.0 && y < 40.0 && alpha == 1.0, msg="\{Repr(shown_first)}")
 }

@@ -12,3 +12,22 @@ pub fn page_add_node(parent : @view.View, label : () -> String, open : (@view.Vi
     Wide => button_opens_node(loc~, parent, label, open, icon="plus") |> ignore
   }
 }
+
+///|
+/// What a page does by a mark alone (分享) in the bar its frame lends it (`bar_actions`), named `label` as it is said
+/// now: narrow, a phone's top bar, a round key as the settings' beside it there (round_key_node); wide, a pane's bar, the
+/// icon button.
+#callsite(autofill(loc))
+pub fn bar_icon_node(
+  parent : @view.View,
+  icon : String,
+  label : () -> String,
+  press : () -> Unit,
+  tips? : TipLayer,
+  loc~ : SourceLoc,
+) -> Unit {
+  match look_node(parent) {
+    Narrow => round_key_node(loc~, parent, icon, label, press)
+    Wide => icon_button_node(loc~, parent, icon, label, press, tips?) |> ignore
+  }
+}

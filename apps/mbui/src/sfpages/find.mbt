@@ -53,11 +53,24 @@ pub let finding : Finding = {
 
 ///|
 /// The list the find goes along (the page's message list): the messages showing (the first's
-/// and the last's seq; -1 none), the list to a message with the words marked in it, its marks let go.
+/// and the last's seq; -1 none), the list to a message with the words marked in it, its marks let go; how many times
+/// the words are in each of the messages asked (by seq) it holds as it draws and marks them (what it holds not: the
+/// core's count).
 pub(all) struct FindList {
   showing : () -> (Double, Double)
   go : (Double, Array[String]) -> Unit
   forget : () -> Unit
+  drawn : (Array[String], Array[Double]) -> Map[Double, Int]
+}
+
+///|
+/// How many times `words` are in message `m` as its row draws and marks them: an agent's words as markdown_node draws
+/// them (a link's address, a code block's none of them: @sf.markdown_found_count), else its words as they are.
+fn find_times_drawn(m : Message, words : Array[String]) -> Int {
+  match m.md {
+    Some(_) => @sf.markdown_found_count(m.text, m.md, words)
+    None => @sf.find_words(m.text, words).length()
+  }
 }
 
 ///|
@@ -184,7 +197,9 @@ fn find_go(list : FindList) -> Unit {
 ///|
 /// Where the reader goes among what was found, as the core says (`chat.find.go`, chat-find.ts): with `by` 0 where they
 /// are while what was found still has it, else where they start (from the messages showing); else the next (1) or the
-/// one before (-1). The list goes there as the reader moves to another message or another time in one.
+/// one before (-1). The list goes there as the reader moves to another message or another time in one. How many times
+/// the words are in what the list holds as it marks them told (`drawn`), so a step goes along those marked, not those
+/// the core counts in a message's text (a link's address, a code block's: never marked, a step onto them not moving).
 fn find_move(src : Source, key : String, list : FindList, by : Int) -> Unit {
   let f = match finding.found.get() {
     Some(f) => f
@@ -206,6 +221,17 @@ fn find_move(src : Source, key : String, list : FindList, by : Int) -> Unit {
   if from >= 0.0 && to >= 0.0 {
     params["from"] = Json::number(from)
     params["to"] = Json::number(to)
+  }
+  let held = (list.drawn)(f.words, f.hits.map(fn(h) { h.0 }))
+  let drawn : Map[String, Json] = Map([])
+  for h in f.hits {
+    match held.get(h.0) {
+      Some(n) => drawn[h.0.to_int().to_string()] = Json::number(n.to_double())
+      None => ()
+    }
+  }
+  if !drawn.is_empty() {
+    params["drawn"] = Json::object(drawn)
   }
   finding.moves += 1
   let n = finding.moves

@@ -229,6 +229,9 @@ fn fc_back(r : FcRun) -> Unit {
 fn fc_closed(platform : Int, w : Double, how : String, decode : FcDecode, nodes? : Bool = false) -> Unit raise {
   let r = fc_opened(platform, w, decode, nodes~)
   let t = r.t
+  // (its thumbnail's id: on a chat's page made as nodes, the window's tree flies the thumbnail back as the viewer fades,
+  // landing after it is gone: View::shared's end that stays)
+  let id = viewer.get().map(fn(v) { v.thumb_id() }).unwrap_or("")
   let name = "\{if nodes { "nodes" } else { "old" }}, \{if r.wide { "大屏 mouse" } else { "小屏 touch" }}, \{how}, \{decode.name}"
   match how {
     "drag down" => {
@@ -261,7 +264,8 @@ fn fc_closed(platform : Int, w : Double, how : String, decode : FcDecode, nodes?
     _ => fc_back(r)
   }
   let start = r.close.val
-  while (viewer.get() is Some(_) || pv_leaving.get() is Some(_)) && t.time() < start + @ui.move_most_ms * 6.0 {
+  while (viewer.get() is Some(_) || pv_leaving.get() is Some(_) || t.flight_of(id) is Some(_)) &&
+        t.time() < start + @ui.move_most_ms * 6.0 {
     fc_frame(r, name)
   }
   assert_eq(r.faults, [], msg=name)

@@ -146,3 +146,18 @@ test "chat as nodes, a message caught up on at its foot at its end: simply there
     assert_true(told[0].at == cause && told[0].end && told[0].seen == 171.0, msg="\{name}: \{s}")
   }
 }
+
+///|
+test "a long message drawn a block a piece, a chat's page made as nodes opened where the core says it was left, 小屏 and 大屏: its pieces seen whole but not its last, the message before it is the last seen whole" {
+  for s in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = s
+    let calls : Array[(String, Json)] = []
+    let paras = Array::makei(40, fn(i) { "第\{i + 1}段：这一段讲清单里的一项，写得长一些，好让一屏放不下整条消息的所有段落。" })
+    let (_, _) = chat_nodes_calling(w, h, platform, calls, long=@signals.signal([(3.0, paras)]), at=2.0)
+    let seen = calls
+      .filter(fn(c) { c.0 == "client.focus" })
+      .filter_map(fn(c) { chat_nodes_focus_told(c.1).1 })
+    assert_true(seen.length() > 0, msg="\{name}: nothing told")
+    assert_eq(seen[seen.length() - 1], Json::number(2.0), msg="\{name}: \{Repr(seen)}")
+  }
+}

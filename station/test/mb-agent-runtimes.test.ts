@@ -403,6 +403,13 @@ describe("sandbox.ts, sandbox-name.ts, no-keychain.ts, machine-logins.ts, repo-r
       for (const args of [[], ["--x", "it's"]]) assert.equal(await call("hookCommand", rules.hookNode(file), file, args), rules.hookCommand(file, ...args));
       for (const os of ["windows", "macos", "linux"]) assert.equal(await call("agyHookCommand", rules.hookNode(file), "/a \"b\"/hook.mjs", os), rules.agyHookCommand("/a \"b\"/hook.mjs", os));
     }
+    // A release with no Node: the station's own program beside the hook runs it (a release with Node keeps its Node).
+    for (const [has, node] of [
+      [["/app/station/stillfail-reader"], "/app/station/stillfail-reader"],
+      [["/app/station/stillfail-reader.exe"], "/app/station/stillfail-reader.exe"],
+      [["/app/node/bin/node", "/app/station/stillfail-reader"], "/app/node/bin/node"],
+      [["/elsewhere/station/stillfail-reader"], process.execPath],
+    ] as const) assert.equal(await call("hookNode", file, has, process.execPath), node, `hookNode with ${has.join(", ")}`);
     assert.equal(await call("hookCommand", rules.hookNode(rules.REPO_RULES_HOOK), rules.REPO_RULES_HOOK, []), rules.REPO_RULES_COMMAND);
     await same("peerHttpBase", [["http://127.0.0.1:1/mcp"], ["http://x/mcp/y"], ["http://x/mcpx"]], (u) => u.replace(/\/mcp$/, "/peer"));
   });

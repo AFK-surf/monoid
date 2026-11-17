@@ -615,6 +615,7 @@ fn wide_link_row_node(
   value_cut : Bool,
   chevron_room : Bool,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -737,7 +738,8 @@ fn wide_link_row_node(
             // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
             // the line leaves it less: link_row's title_line; its title the same words all along)
             t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-            t.box(fn(w) {
+            // (hidden by dots where it says so: a picture shared, masked_words_box)
+            masked_words_box(t, title_masked, fn(w) {
               w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               styled_words(w, title, fn() {
                 if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
@@ -747,7 +749,6 @@ fn wide_link_row_node(
                 w.ink(By(fn() { link_ink() })) |> ignore
               }
             })
-            |> ignore
             match title_after {
               Some(after) =>
                 t.show(title_after_shown, fn(a) {

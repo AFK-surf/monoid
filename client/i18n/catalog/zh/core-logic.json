@@ -271,6 +271,7 @@
   "core-logic.jobs.long.disconnect": "断开",
   "core-logic.jobs.long.ios": "iOS 模拟器",
   "core-logic.jobs.long.jobs": "长时间运行的后台任务",
+  "core-logic.jobs.long.other": "其他运行中 · {n}",
   "core-logic.jobs.long.services": "长时间运行的网页服务",
   "core-logic.jobs.long.shutdown": "关闭",
   "core-logic.jobs.long.simulators": "长时间开着的模拟器",

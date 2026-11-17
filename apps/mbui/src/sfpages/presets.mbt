@@ -246,22 +246,49 @@ fn preset_others_open(src : Source, w : Workspace, v : Json?, from : @sf.Beside)
 
 ///|
 /// 复制「X」为我的预设, in place of 编辑 for someone else's preset picked: copied into the person's own (`preset.copy`, made on
-/// the page's station `address`), the copy picked, and its dialog opened so it can be changed. Not copied, said why
-/// and that it can be pressed again.
+/// the page's station `address`), the copy picked, and its dialog opened so it can be changed, once the copy is made
+/// and read whole (its `preset`, asked as the copy answers and handed to the dialog), the screen and the menu as they
+/// were meanwhile (press_wait): one change for the press, not the menu gone, the dialog come and then filled. Not
+/// copied, said why and that it can be pressed again.
 fn preset_copy_item(src : Source, w : Workspace, address : String, v : Json?) -> @sf.MenuItem {
   let picked = text(v, "preset")
   let stations = items(v, "stations")
   @sf.menu_item_of(@sf.t("web-main.preset.copyNamed", args=[("name", text(v, "presetName"))]), fn() {
+    // (the copy's answer, and what is asked of it once it is made: its whole, as the dialog reads it)
+    let copied : @signals.Signal[Result[String, String]?] = @signals.signal(None)
+    let asked : Ref[(() -> Bool, Array[@sfbase.TopicLease])] = Ref((fn() { true }, []))
+    let let_go = fn() { asked.val.1.each(fn(l) { l.cancel() }) }
     (src.call)("preset.copy", Json::object({ "station": Json::string(address), "id": Json::string(picked) }), fn(r) {
       match r {
         Ok(made) => {
           let id = text(Some(made), "id")
-          @sfbase.pick_new(src, w.id, { "preset": Json::string(id), "presetStation": Json::string(address) })
-          preset_dialog(src, w, address, id, stations)
+          asked.val = @sfbase.asked_now(src, [("preset", preset_asked(w.id, id))])
+          copied.set(Some(Ok(id)))
         }
-        Err(e) => toast_later(@sf.t("web-main.preset.copyFailed", args=[("error", error_words(e))]))
+        Err(e) => copied.set(Some(Err(error_words(e))))
       }
     })
+    @sfbase.press_wait(
+      fn() {
+        match copied.get() {
+          Some(Ok(_)) => (asked.val.0)()
+          Some(Err(_)) => true
+          None => false
+        }
+      },
+      fn() {
+        match copied.untracked() {
+          Some(Ok(id)) => {
+            @sfbase.pick_new(src, w.id, { "preset": Json::string(id), "presetStation": Json::string(address) })
+            preset_dialog(src, w, address, id, stations, held=asked.val.1)
+          }
+          Some(Err(e)) => toast_later(@sf.t("web-main.preset.copyFailed", args=[("error", e)]))
+          None => ()
+        }
+      },
+      let_go~,
+    )
+    |> ignore
   }, icon="copy")
 }
 
@@ -373,7 +400,8 @@ priv struct PresetEditing {
 /// (not while a clone of it is under way: its folder is not there yet). Made, it is the one picked for the station's
 /// new chats. `stations`: the workspace's up now (the `newChat` view's), whose folders are offered too;
 /// `browse_station`: the one its folders are browsed and cloned on at first (the composer's). `then`: the step gone on
-/// to as it opens (a fixture's screen of each); `clones`: those under way as it opens (one).
+/// to as it opens (a fixture's screen of each); `clones`: those under way as it opens (one); `held`: what was asked of it
+/// before it opened (its copy's whole), held while it shows.
 fn preset_dialog(
   src : Source,
   w : Workspace,
@@ -383,6 +411,7 @@ fn preset_dialog(
   then? : String = "",
   browse_station? : String = "",
   clones? : Array[PresetClone] = [],
+  held? : Array[@sfbase.TopicLease] = [],
 ) -> Unit {
   let e : PresetEditing = {
     dirs: @signals.signal([]),
@@ -409,7 +438,10 @@ fn preset_dialog(
   let title = if id == "" { @sf.t("web-main.preset.new") } else { @sf.t("web-main.preset.edit") }
   @sf.panel_nodes(
     title,
-    fn(v, close) { preset_fields(v, src, w.id, address, id, stations, e, close) },
+    fn(v, close) {
+      held.each(fn(l) { l.bind_to(v) })
+      preset_fields(v, src, w.id, address, id, stations, e, close)
+    },
     from=Unanchored,
     foot=fn(v, close) { preset_foot(v, src, w, address, id, e, close) },
   )

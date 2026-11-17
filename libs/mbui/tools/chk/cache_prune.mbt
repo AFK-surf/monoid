@@ -8,14 +8,17 @@
 // restore-keys takes the newest of a kind on its ref (then main's), so the older ones of a kind on a ref are never read
 // again: kept is the newest of each kind on each live ref, the rest deleted (one under a megabyte left: it frees
 // nothing). A deleted branch's caches cannot be restored by another branch, so all of its caches are removed once
-// they have not been created or read for 30 minutes, and a live branch's once not read for 12 hours. Pull request and
+// they have not been created or read for 5 minutes, and a live branch's once not read for 2 hours. Pull request and
 // other refs keep their own existing rules.
 // What is kept after all that is held under `repo_cache_cap_bytes`: 15 branches pushed within 12 hours kept 15.8 GB,
 // the repository 23.7 GB (2026-11-17, run 44076658048 deleted none of its 152), and GitHub's eviction took main's
 // seldom read ones again (warp-1.0.21, android-image, natives-shell-apple, mbui-tool-*). Over it, the caches of refs
 // other than the default branch (a branch's, a pull request's) go, least recently read first, till it holds: such a
-// branch's next push restores main's by restore-keys, as after 12 hours idle. The default branch's are never taken
-// for it, nor one under a megabyte.
+// branch's next push restores main's by restore-keys, as after 2 hours idle. The default branch's are never taken
+// for it, nor one under a megabyte. Held under 9 GB, the repository still came to 12.15 GB between two prunes (191
+// caches, 2026-11-17) and GitHub evicted main's mbui-moon-build-app and mbui-mac-moon: the cap is 7.5 GB now, and the
+// grace of a deleted branch's and an idle one's caches shorter (30 minutes and 12 hours held 3-4 GB of the branches
+// merged and deleted in a busy hour).
 // (A list of the kinds by name, as .github/cache_prune.py had, missed each new one: on 2026-10-22 mbui-apk-<sha>,
 // android-lint-main-<sha>, android-build-main-<sha> and the mbui-linux-store-… ones were 4 GB of the 22.)
 // setup-gradle's parts of a Gradle home (gradle-transforms-v1-<hash>, gradle-dependencies-v1-…: by their content,
@@ -39,7 +42,7 @@ struct Cache {
 let stale_parts_s : Double = 30.0 * 60.0
 
 ///|
-let deleted_head_grace_s : Double = 30.0 * 60.0
+let deleted_head_grace_s : Double = 5.0 * 60.0
 
 ///|
 fn is_hex(s : String) -> Bool {
@@ -189,7 +192,7 @@ fn deleted_head_cache(c : Cache, heads : Map[String, Bool], now : Double) -> Boo
 /// new one does. Kept till it is gone, the caches of the 70 branches besides main held 5.4 GB
 /// of the 10 on 2026-11-15, most of it unread for 12-24 hours, and GitHub evicted the emulator's build, read each
 /// scheduled mbui-ci run: android-streams-real, android-devices and android-oldest failed with no emulator (43673780626).
-let idle_branch_s : Double = 12.0 * 3600.0
+let idle_branch_s : Double = 2.0 * 3600.0
 
 ///|
 /// A branch's cache (not the default branch's) not read for `idle_branch_s`
@@ -201,8 +204,9 @@ fn idle_branch_cache(c : Cache, default_head : String, now : Double) -> Bool {
 }
 
 ///|
-/// The most the caches kept may hold: GitHub's 10 GB less one for what runs save while this one has not run again.
-let repo_cache_cap_bytes : Int64 = 9_000_000_000L
+/// The most the caches kept may hold: GitHub's 10 GB less two and a half for what runs save while this one has not
+/// run again (a prune each quarter hour, and after each of main's runs).
+let repo_cache_cap_bytes : Int64 = 7_500_000_000L
 
 ///|
 /// What goes of `kept` to hold it under `cap`: caches of refs other than `default_head`, a megabyte or more, least

@@ -51,6 +51,7 @@ set -eu
 [ "$MOON_HOME" = "$RUNNER_TOOL_CACHE/moon-ci" ]
 touch "$RUNNER_TEMP/app-built"
 [ "${FAIL_APP:-0}" = 0 ] || exit 8
+[ "${SAY_NEWER:-0}" = 0 ] || echo "ld: warning: object file (x.o) was built for newer macOS version (15.0) than being linked (12.0)"
 # (the app, with libghostty-vt's calls unless NO_GHOSTTY: the app's mac.sh fails one without them)
 exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
 mkdir -p "$(dirname "$exe")"
@@ -90,6 +91,7 @@ bash "$script" packages
 bash "$script" wait
 [ -f "$RUNNER_TEMP/app-built" ]
 [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo 'core bytecode was not prepared before packaging' >&2; exit 1; }
+[ -f "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a whole build did not say built (MBUI_BUILT)' >&2; exit 1; }
 
 # No Moon build for this macOS restored (none, or another's): what was built for another goes, the marker is written,
 # the core just built is kept, and the app is built here all the same.
@@ -121,7 +123,18 @@ bash "$script" start
 bash "$script" ready
 bash "$script" packages
 if bash "$script" wait; then echo 'app failure was not reported' >&2; exit 1; fi
+[ ! -e "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a failed build said built' >&2; exit 1; }
 unset FAIL_APP
+
+case_dir newer_macos
+echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+export SAY_NEWER=1
+bash "$script" start
+bash "$script" ready
+bash "$script" packages
+if bash "$script" wait; then echo 'a build for a newer macOS was not reported' >&2; exit 1; fi
+[ ! -e "$RUNNER_TEMP/mac-prebuild/built" ] || { echo 'a build for a newer macOS said built' >&2; exit 1; }
+unset SAY_NEWER
 
 case_dir no_terminal
 echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"

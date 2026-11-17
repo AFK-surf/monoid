@@ -1,5 +1,8 @@
 // mbc's few needs from the system: files read and written whole as bytes (paths as UTF-8 bytes), a directory's
 // names, a file removed or renamed, an environment variable, and the process ended with a status.
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE // (memmem)
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -563,4 +566,193 @@ int32_t mbc_chdir(moonbit_bytes_t path) {
 #endif
   free(p);
   return r == 0;
+}
+// Bytes searched as libc searches them (find and find_byte in util.mbt: a C text of half a gigabyte, searched many
+// times over)
+int32_t mbc_find_byte(moonbit_bytes_t t, int32_t from, int32_t end, int32_t c) {
+  if (from >= end) return -1;
+  const uint8_t *p = memchr(t + from, c, (size_t)(end - from));
+  return p == NULL ? -1 : (int32_t)(p - t);
+}
+
+int32_t mbc_find(moonbit_bytes_t t, int32_t from, int32_t end, moonbit_bytes_t s) {
+  size_t m = (size_t)Moonbit_array_length(s);
+  if (m == 0) return from <= end ? from : -1;
+  if (from < 0 || end - from < (int32_t)m) return -1;
+#if defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__ANDROID__)
+  const uint8_t *p = memmem(t + from, (size_t)(end - from), s, m);
+  return p == NULL ? -1 : (int32_t)(p - t);
+#else
+  const uint8_t *q = t + from, *last = t + end - m;
+  while (q <= last) {
+    q = memchr(q, s[0], (size_t)(last - q) + 1);
+    if (q == NULL) return -1;
+    if (memcmp(q, s, m) == 0) return (int32_t)(q - t);
+    q++;
+  }
+  return -1;
+#endif
+}
+
+// What csplit's scans do to every byte of the C (scan.mbt says what each is; these do it as they do): a byte at a
+// time in MoonBit, its view's bounds checked at each, was most of their time.
+
+// FNV-1a of t[s:e] as util.mbt's hash_range has it (Int's wrapping multiply, an arithmetic shift)
+int32_t mbc_hash(moonbit_bytes_t t, int32_t s, int32_t e) {
+  uint32_t u = 0x811c9dc5u;
+  for (int32_t i = s; i < e; i++) u = (u ^ t[i]) * 0x01000193u;
+  int32_t h = (int32_t)u;
+  return h ^ (h >> 15);
+}
+
+static uint8_t ident_tab[256];
+
+static void ident_tab_init(void) {
+  if (ident_tab['_']) return;
+  for (int c = 'a'; c <= 'z'; c++) ident_tab[c] = 1;
+  for (int c = 'A'; c <= 'Z'; c++) ident_tab[c] = 1;
+  for (int c = '0'; c <= '9'; c++) ident_tab[c] = 1;
+  ident_tab['$'] = 1;
+  ident_tab['_'] = 1;
+}
+
+// the end of the run of identifier characters ([A-Za-z0-9_$]) in t[i:end]
+int32_t mbc_ident_end(moonbit_bytes_t t, int32_t i, int32_t end) {
+  ident_tab_init();
+  while (i < end && ident_tab[t[i]]) i++;
+  return i;
+}
+
+// k[ks:ks + n] is t[s:s + n]
+int32_t mbc_same(uint8_t *k, int32_t ks, moonbit_bytes_t t, int32_t s, int32_t n) {
+  if (n <= 0) return 1;
+  return memcmp(k + ks, t + s, (size_t)n) == 0;
+}
+
+// len() of the text Python decoded t[s:e] to (util.mbt's clen: the bytes that do not continue a character)
+int32_t mbc_clen(moonbit_bytes_t t, int32_t s, int32_t e) {
+  int32_t n = 0;
+  for (int32_t i = s; i < e; i++) n += (t[i] & 0xC0) != 0x80;
+  return n;
+}
+
+// scan.mbt's line_starts of t, into `all` (empty: only counted): where each line starts (str.splitlines(keepends=True)'s
+// line breaks), and the text's end last; how many
+int32_t mbc_line_starts(moonbit_bytes_t t, int32_t *all) {
+  int32_t *out = Moonbit_array_length(all) > 0 ? all : NULL;
+  int32_t n = Moonbit_array_length(t), k = 0, last = 0;
+  if (out) out[k] = 0;
+  k++;
+  int32_t i = 0;
+  while (i < n) {
+    uint8_t c = t[i];
+    int32_t e = -1;
+    if (c > 0x1e && c != 0xc2 && c != 0xe2) {
+      i++;
+      continue;
+    }
+    if (c == '\n' || c == 0x0b || c == 0x0c || c == 0x1c || c == 0x1d || c == 0x1e) e = i + 1;
+    else if (c == '\r') e = i + 1 < n && t[i + 1] == '\n' ? i + 2 : i + 1;
+    else if (c == 0xc2 && i + 1 < n && t[i + 1] == 0x85) e = i + 2;
+    else if (c == 0xe2 && i + 2 < n && t[i + 1] == 0x80 && (t[i + 2] == 0xa8 || t[i + 2] == 0xa9)) e = i + 3;
+    if (e >= 0) {
+      if (out) out[k] = e;
+      k++;
+      last = e;
+      i = e;
+    } else {
+      i++;
+    }
+  }
+  if (last != n) {
+    if (out) out[k] = n;
+    k++;
+  }
+  return k;
+}
+
+// scan.mbt's lit_end and blank_end on t[0:n]
+static int32_t lit_end(const uint8_t *t, int32_t p, int32_t n) {
+  uint8_t q = t[p];
+  int32_t k = p + 1;
+  while (k < n) {
+    uint8_t c = t[k];
+    if (c == '\\') {
+      if (k + 1 < n) {
+        k += 2;
+        continue;
+      }
+      return -1;
+    }
+    if (c == q) return k + 1;
+    if (c == '\n') return -1;
+    k++;
+  }
+  return -1;
+}
+
+static int32_t eol_of(const uint8_t *t, int32_t p, int32_t n) {
+  const uint8_t *e = p < n ? memchr(t + p, '\n', (size_t)(n - p)) : NULL;
+  return e == NULL ? n : (int32_t)(e - t);
+}
+
+static int32_t blank_end(const uint8_t *t, int32_t p, int32_t n) {
+  uint8_t c = t[p];
+  if (c == '/' && p + 1 < n && t[p + 1] == '*') {
+    int32_t from = p + 2;
+    const uint8_t *e = NULL;
+    for (const uint8_t *q = t + from; n - (q - t) >= 2;) {
+      q = memchr(q, '*', (size_t)(n - (q - t)) - 1);
+      if (q == NULL) break;
+      if (q[1] == '/') {
+        e = q;
+        break;
+      }
+      q++;
+    }
+    if (e != NULL) return (int32_t)(e - t) + 2;
+  }
+  if (c == '/' && p + 1 < n && t[p + 1] == '/') return eol_of(t, p, n);
+  if (c == '"' || c == '\'') {
+    int32_t q = lit_end(t, p, n);
+    if (q >= 0) return q;
+  }
+  if (p == 0 || t[p - 1] == '\n') {
+    int32_t q = p;
+    while (q < n && (t[q] == ' ' || t[q] == '\t')) q++;
+    if (q < n && t[q] == '#') return eol_of(t, q, n);
+  }
+  return -1;
+}
+
+// scan.mbt's blank of tv[start:start + n] into out (n bytes)
+void mbc_blank(moonbit_bytes_t tv, int32_t start, int32_t n, uint8_t *out) {
+  if (n <= 0) return;
+  const uint8_t *t = tv + start;
+  int32_t last = 0, p = 0;
+  while (p < n) {
+    uint8_t c = t[p];
+    if (!(c == '/' || c == '"' || c == '\'' || p == 0 || t[p - 1] == '\n')) {
+      p++;
+      continue;
+    }
+    int32_t me = blank_end(t, p, n);
+    if (me < 0) {
+      p++;
+      continue;
+    }
+    memcpy(out + last, t + last, (size_t)(p - last));
+    int32_t a = p, z = me;
+    if (c == '"' || c == '\'') {
+      // (a literal: its quotes kept)
+      out[p] = c;
+      out[me - 1] = t[me - 1];
+      a = p + 1;
+      z = me - 1;
+    }
+    for (int32_t k = a; k < z; k++) out[k] = t[k] == '\n' ? '\n' : ' ';
+    last = me;
+    p = me;
+  }
+  memcpy(out + last, t + last, (size_t)(n - last));
 }

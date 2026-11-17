@@ -19,11 +19,17 @@ fn plg_cut(t : @view.Tree, w : String) -> String? {
     let mut k = held[i].1
     while k >= 0 {
       let (c, up, _) = held[k]
+      // (as the hosts cut it: one on its way along its way alone, Drawn's clips_way)
       if c.clips {
-        l = if c.x > l { c.x } else { l }
-        r = if c.x + c.w < r { c.x + c.w } else { r }
-        top = if c.y > top { c.y } else { top }
-        foot = if c.y + c.h < foot { c.y + c.h } else { foot }
+        let way = if c.clips_self { c.clips_way } else { 0 }
+        if way != 1 {
+          l = if c.x > l { c.x } else { l }
+          r = if c.x + c.w < r { c.x + c.w } else { r }
+        }
+        if way != 2 {
+          top = if c.y > top { c.y } else { top }
+          foot = if c.y + c.h < foot { c.y + c.h } else { foot }
+        }
       }
       k = up
     }

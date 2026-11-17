@@ -285,7 +285,10 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       }, fn(b) { side_bar_node(b, src, r, fn() { side_shown(src, r) }, false, tips) })
       p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
         q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-        if agent == "" {
+        if agent == tab_full_mark {
+          // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
+          ()
+        } else if agent == "" {
           // (every other tab: the panel's old view of what it shows)
           island(
             q,
@@ -304,11 +307,14 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           .min_height(Is(Some(0.0)))
           |> ignore
         } else if @sfbase.view_tab_file(agent) is Some(_) {
-          side_view_node(q, src, r, agent)
+          tab_held_beside(q, r, agent)
+          side_view_node(q, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
         } else if tab_service(agent) is Some(job) {
-          service_tab_node(q, src, r, job, None, None, tips)
+          tab_held_beside(q, r, agent)
+          service_tab_node(q, src, r, job, None, full_of(r, agent), None, tips)
         } else if tab_file(agent) is Some((session, path, name)) {
-          file_tab_node(q, src, r, session, path, name, tips)
+          tab_held_beside(q, r, agent)
+          file_tab_node(q, src, r, session, path, name, full_of(r, agent), tips)
         } else if side_screen_tab(agent) is Some(_) {
           side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false)
         } else if side_adb_tab(agent) is Some(station) {
@@ -334,7 +340,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
 fn history_in_front(src : Source, r : ChatRef) -> String {
   let front = side_shown(src, r).1
   if side_node_tab(front) {
-    front
+    full_elsewhere(r, front)
   } else {
     ""
   }
@@ -353,24 +359,21 @@ fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, 
 }
 
 ///|
-/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): the file's
-/// tools and its stage (sfbase's viewer_tab_node); its picture over the whole
-/// window (its 全屏) stepping through the chat's.
+/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node, or over the
+/// whole window: tab_full_node.mbt): the file's tools (`tools`: over the whole window the bar's) and its stage (sfbase's
+/// viewer_tab_node), `width()` wide, its 全屏 `full`.
 fn side_view_node(
   q : @view.View,
   src : Source,
   r : ChatRef,
   tab : String,
+  width : (@view.View) -> Double,
+  full : (() -> Unit)?,
+  tools? : Bool = true,
 ) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, fn() {
-      let thread = match @sfbase.chat_view_now(src, r) {
-        Some(v) => v.thread
-        None => None
-      }
-      @sfbase.InChat(thread, r.session)
-    }, fn() { side_whole(src, s) })
+    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, fn() { width(s) }, full, tools~)
   })
   |> ignore
 }
@@ -381,6 +384,8 @@ fn side_view_node(
 fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   n.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-@sf.handle_out, 0.0))) |> ignore
+  // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go)
+  let pull = @sf.EdgePull::new()
   let e = @sf.edge_node(
     n,
     fn() { @sf.t("web-pages.chat.resizePanel") + " · " + @sf.t("web-pages.chat.closePanel") },
@@ -399,10 +404,11 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
     fn(h) { held.set(h) },
     tips~,
     side=Left,
+    pull~,
   )
   e.box(fn(g) {
     g.over(Is(true)) |> ignore
-    @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() })
+    @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() }, pull~)
     |> ignore
   })
   |> ignore
@@ -538,7 +544,14 @@ fn side_own_node(
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "jobs" {
-      jobs_tab_node(s, src, r, tips, foot_card, fn(job) { side_tab_open(src, r, "service:" + job) })
+      jobs_tab_node(s, src, r, tips, foot_card, fn(job) {
+        // (over the whole window, the command key held as it was pressed: sfbase's tab_full.mbt)
+        let full = @sfbase.full_held()
+        side_tab_open(src, r, "service:" + job)
+        if full {
+          @sfbase.tab_full_open(r, "service:" + job)
+        }
+      })
       // (what its press asked, taken over by what it read as it was made: side_front_pressed)
       @sfbase.shown_read(side_tab_shown_at(r, tab))
       return

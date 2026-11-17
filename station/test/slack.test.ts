@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { crc32 } from "node:zlib";
 import { describe, test } from "node:test";
 import { Clock, Effect, Exit, FiberSet, Option, Result, Scope } from "effect";
 import { TestClock } from "effect/testing";
@@ -363,6 +364,75 @@ describe("slack", { concurrency: true }, () => {
       const before = fake.calls("chat.postMessage").length;
       await assert.rejects(surface.post(thread, "with a file", [{ name: "shot.png", path: file, size: 7 }]), /slack files.getUploadURLExternal: missing_scope/);
       assert.equal(fake.calls("chat.postMessage").length, before);
+    } finally {
+      await fake.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an installer goes as it is in a channel of this workspace, and in a zip of its own where Slack Connect would refuse it", async () => {
+    const fake = await FakeSlack.start();
+    bot(fake);
+    fake.answer("conversations.info", (s) => ({ ok: true, channel: { id: s.params.channel, name: "x", is_ext_shared: s.params.channel === "CX" } }));
+    const uploads: Buffer[] = [];
+    let n = 0;
+    fake.answer("files.getUploadURLExternal", () => ({ ok: true, upload_url: `${fake.base}/upload-here`, file_id: `F${++n}` }));
+    fake.answer("upload-here", (s) => (uploads.push(Buffer.from(s.body, "latin1")), { ok: true }));
+    fake.answer("files.completeUploadExternal", { ok: true, files: [{ id: "F1", shares: { public: { C1: [{ ts: "9.9" }], CX: [{ ts: "9.9" }] } } }] });
+    const dir = mkdtempSync(join(tmpdir(), "sl-"));
+    const surface = new SlackSurface({ appToken: "xapp-1", botToken: "xoxb-1", client: new SlackClient(fake.base) });
+    // Every byte value, and more than a gzip block, so the archive's CRC and sizes are of real binary data.
+    const apk = Buffer.alloc(70_000);
+    for (let i = 0; i < apk.length; i++) apk[i] = (i * 31 + (i >> 8)) & 0xff;
+    const file = join(dir, "app-debug.APK");
+    writeFileSync(file, apk);
+    const png = join(dir, "shot.png");
+    writeFileSync(png, "PNGDATA");
+    const files = [
+      { name: "app-debug.APK", path: file, size: apk.length },
+      { name: "shot.png", path: png, size: 7 },
+    ];
+    try {
+      // This workspace's channel: as it is.
+      await surface.post({ channel: "C1", threadTs: "1.1" }, "", files);
+      assert.deepEqual(fake.calls("files.getUploadURLExternal").map((c) => c.params), [
+        { filename: "app-debug.APK", length: String(apk.length) },
+        { filename: "shot.png", length: "7" },
+      ]);
+      assert.ok(uploads[0]!.equals(apk));
+      assert.deepEqual(JSON.parse(fake.calls("files.completeUploadExternal")[0]!.params.files!), [
+        { id: "F1", title: "app-debug.APK" },
+        { id: "F2", title: "shot.png" },
+      ]);
+
+      // Shared with another organization: the installer in a zip, the picture as it is.
+      await surface.post({ channel: "CX", threadTs: "1.1" }, "", files);
+      const asked = fake.calls("files.getUploadURLExternal").slice(2).map((c) => c.params);
+      assert.equal(asked[0]!.filename, "app-debug.APK.zip");
+      assert.deepEqual(asked[1], { filename: "shot.png", length: "7" });
+      const zip = uploads[2]!;
+      assert.equal(asked[0]!.length, String(zip.length));
+      assert.equal(uploads[3]!.toString("latin1"), "PNGDATA");
+      assert.deepEqual(JSON.parse(fake.calls("files.completeUploadExternal")[1]!.params.files!), [
+        { id: "F3", title: "app-debug.APK.zip" },
+        { id: "F4", title: "shot.png" },
+      ]);
+      // A zip of one stored entry, read as an unzipper does: from its end to the central directory to the entry.
+      const end = zip.length - 22;
+      assert.equal(zip.readUInt32LE(end), 0x06054b50);
+      assert.equal(zip.readUInt16LE(end + 10), 1, "one entry");
+      const cd = zip.readUInt32LE(end + 16);
+      assert.equal(zip.readUInt32LE(cd), 0x02014b50);
+      const crc = zip.readUInt32LE(cd + 16);
+      assert.equal(crc, crc32(apk));
+      assert.equal(zip.toString("utf8", cd + 46, cd + 46 + zip.readUInt16LE(cd + 28)), "app-debug.APK");
+      const at = zip.readUInt32LE(cd + 42);
+      assert.equal(zip.readUInt32LE(at), 0x04034b50);
+      assert.deepEqual([zip.readUInt16LE(at + 8), zip.readUInt32LE(at + 14), zip.readUInt32LE(at + 18), zip.readUInt32LE(at + 22)], [0, crc, apk.length, apk.length]);
+      const start = at + 30 + zip.readUInt16LE(at + 26) + zip.readUInt16LE(at + 28);
+      assert.ok(zip.subarray(start, start + apk.length).equals(apk), "the entry is the file, byte for byte");
+      assert.equal(start + apk.length, cd);
+      assert.equal(zip.readUInt32LE(end + 12), end - cd, "the central directory's size");
     } finally {
       await fake.close();
       rmSync(dir, { recursive: true, force: true });

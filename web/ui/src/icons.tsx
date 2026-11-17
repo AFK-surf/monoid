@@ -621,6 +621,10 @@ export function Web(props: IconProps) {
   return <Svg {...props}><path d="M20.5 12C20.5 17.5 17.5 20.5 12 20.5C6.5 20.5 3.5 17.5 3.5 12C3.5 6.5 6.5 3.5 12 3.5C17.5 3.5 20.5 6.5 20.5 12Z M12 3.5C7.5 8 7.5 16 12 20.5C16.5 16 16.5 8 12 3.5Z M4 12H20" /></Svg>;
 }
 
+export function Wrap(props: IconProps) {
+  return <Svg {...props}><path d="M3.5 6H20.5 M3.5 12H16.5Q20.5 12 20.5 15Q20.5 18 16.5 18H12.5 M14.5 16L12.5 18L14.5 20 M3.5 18H8.5" /></Svg>;
+}
+
 export function Zap(props: IconProps) {
   return <Svg {...props}><path d="M13 3L4.5 13.5H11.5L10.5 21L19.5 10.5H12.5L13 3Z" /></Svg>;
 }
@@ -783,6 +787,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "wait": Wait,
   "watch": Watch,
   "web": Web,
+  "wrap": Wrap,
   "zap": Zap,
   "zou": Zou,
 };

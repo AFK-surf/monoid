@@ -100,11 +100,13 @@ fn split_stable(
   for k, n in data_names {
     data_text[n] = data[k]
   }
-  for d in decls {
-    if starts(lstrip(d), b"#") {
+  // (each declaration blanked once, for this and fn_defs below)
+  let decls_b = decls.map(fn(d) { blank(d) })
+  for i, d in decls {
+    if starts(d[lskip(d, 0):], b"#") {
       continue
     }
-    let b = blank(d)
+    let b = decls_b[i]
     for tag in tag_findall(b) {
       if starts(tag, b"_M0") {
         add(tag)
@@ -135,23 +137,22 @@ fn split_stable(
     }
   }
   let fn_defs : Map[Bytes, Bytes] = Map([])
-  for d in decls {
-    match fn_type_def(blank(d)) {
+  for i, d in decls {
+    match fn_type_def(decls_b[i]) {
       Some(n) => fn_defs[n] = d
       None => ()
     }
   }
   let names = stable_names(own, data_text, fn_defs)
-  let names_t : BTab[Bytes] = BTab::new()
-  for k, v in names {
-    names_t.set(k, v)
-  }
+  let names_t = Renames::new(names)
   stats.push(("renamed", names.length()))
 
   tick("names")
   // the declarations (and the externs) renamed, each with what it declares and what it uses
   let file_ids = prelude_ids.copy()
   let ditems : Array[DItem] = []
+  // (each type's declaration as renamed blanked, for what follows: the others' are not looked at so)
+  let ditems_b : Array[Bytes] = []
   // (a declaration renamed as one before it is that one: function types the same are one type, names.mbt)
   let decl_seen = BSet::new()
   for k, d in decls {
@@ -161,6 +162,7 @@ fn split_stable(
       if decl_seen.has(t) {
         // (kept in its place, declaring nothing: the items are found by their place in decls)
         ditems.push({ t: b"", declares: BSet::new(), uses: BSet::new(), always: false })
+        ditems_b.push(b"")
         continue
       }
       decl_seen.add(t)
@@ -168,13 +170,16 @@ fn split_stable(
     file_ids.add_all(used)
     if kind == 0 {
       ditems.push({ t, declares: BSet::new(), uses: used, always: true })
+      ditems_b.push(b"")
       continue
     }
     let declares = BSet::new()
     if kind == 2 {
       declares.add(names.get_or_default(info, info))
+      ditems_b.push(b"")
     } else {
       let b = blank(t)
+      ditems_b.push(b)
       let m = if starts(lstrip(b), b"typedef") {
         typedef_name(b)
       } else {
@@ -206,8 +211,8 @@ fn split_stable(
   let data_r : Array[Bytes] = []
   let data_ids : Array[BSet] = [] // (the identifiers in each, for its unit's declarations)
   for d in data {
-    let t = rename(d, names_t).0
-    let ids = idents(t)
+    // (what rename saw is what is in what it made: each identifier, or the name it became; never scanned again)
+    let (t, ids) = rename(d, names_t)
     file_ids.add_all(ids)
     data_r.push(t)
     data_ids.push(ids)
@@ -379,9 +384,13 @@ fn split_stable(
   }
   let name_layouts = fn(text : Bytes) -> (Bytes, BSet) {
     let used = BSet::new()
+    let ms = layout_matches(text)
+    if ms.length() == 0 {
+      return (text, used)
+    }
     let buf = Buffer(capacity=text.length())
     let mut last = 0
-    for m in layout_matches(text) {
+    for m in ms {
       let n = layout_named[key_of[parse_int(text[m.0:m.1])]]
       used.add(n)
       buf.write_bytesview(text[last:m.0])
@@ -410,9 +419,23 @@ fn split_stable(
 
   // the functions renamed (their locals by their own order), each in its package's unit
   let pk = rest.map(fn(f) { package_of(f.name) })
+  // (each function's length in characters and its source file's name, worked out once)
+  let fclen = rest.map(fn(f) { clen(f.text) })
+  let ffile : Array[Bytes?] = rest.map(fn(f) {
+    match line_file(f.text) {
+      Some(path) => {
+        let mut s = path.length()
+        while s > 0 && path[s - 1] != b'/' && path[s - 1] != b'\\' {
+          s -= 1
+        }
+        Some(sub(path, s, path.length()))
+      }
+      None => None
+    }
+  })
   let sizes : Map[Bytes, Int] = Map([])
-  for k, f in rest {
-    sizes[pk[k]] = sizes.get_or_default(pk[k], 0) + clen(f.text)
+  for k, _ in rest {
+    sizes[pk[k]] = sizes.get_or_default(pk[k], 0) + fclen[k]
   }
   let mut small = 0
   for _, v in sizes {
@@ -437,22 +460,16 @@ fn split_stable(
   // (type_args): by their names, a branch's one new type's instances (a Map's keys, get, set, iter...) were spread
   // over 20 of core's 32 pieces of that file and 21 of view's, each compiled again (with mbui's view and signals, some
   // 60 of the 280 units a branch's 360 lines of sfpages had to compile, mbui-chat-nodes-outline, 2026-11-14)
-  let file_key = rest.map(fn(f) {
-    match line_file(f.text) {
-      Some(path) => {
-        let mut s = path.length()
-        while s > 0 && path[s - 1] != b'/' && path[s - 1] != b'\\' {
-          s -= 1
-        }
-        sub(path, s, path.length())
-      }
+  let file_key = rest.mapi(fn(k, f) {
+    match ffile[k] {
+      Some(file) => file
       None => names.get_or_default(f.name, f.name)
     }
   })
   let file_sizes : Map[Bytes, Int] = Map([])
-  for k, f in rest {
+  for k, _ in rest {
     let fk = cat([pk[k], b"\x1f", file_key[k]])
-    file_sizes[fk] = file_sizes.get_or_default(fk, 0) + clen(f.text)
+    file_sizes[fk] = file_sizes.get_or_default(fk, 0) + fclen[k]
   }
   // each function's unit: unit: [(its name as renamed, its index in rest)] (renamed in its unit's job, below)
   let units : Map[Bytes, Array[(Bytes, Int)]] = Map([])
@@ -496,13 +513,13 @@ fn split_stable(
     let (t0, used) = rename(text, names_t, local_ok=Some(file_ids), plain=Some(plain))
     let (t1, lused) = name_layouts(t0)
     used.add_all(lused)
-    (flatten(drop_line_directives(t1)), used)
+    (flatten(drop_line_directives(t1)).to_owned(), used)
   }
   // moonbit_init in its packages' pieces (init_pieces), each a function in its package's init unit
   // (init.<package>.c; those under init_small together, init.s<k>.c): a package changed compiles its own again;
   // moonbit_init itself calls them in order. MBC_INIT_SPLIT=0: one unit, as it was
   let pieces = if env_is("MBC_INIT_SPLIT", "1") != b"0" {
-    match init_pieces(init.text) {
+    match init_pieces(init.text.to_owned()) {
       Some(ps) if ps.length() > 0 => Some(ps)
       _ => None
     }
@@ -579,7 +596,7 @@ fn split_stable(
         0
       } else if decl_kinds[k].0 == 2 {
         1
-      } else if is_fwd(blank(di.t)) {
+      } else if is_fwd(ditems_b[k]) {
         2
       } else {
         3
@@ -602,7 +619,7 @@ fn split_stable(
     if kind != 3 {
       continue
     }
-    let b = blank(ditems[k].t)
+    let b = ditems_b[k]
     if starts(lstrip(b), b"typedef") && !has_byte(b, b'{') {
       needs[k] = [] // (a name for a type: complete or not, as it may be)
       continue
@@ -631,7 +648,7 @@ fn split_stable(
   let struct_defs : Map[Int, Unit] = Map([])
   for k, kind in kinds {
     if kind == 3 && has_byte(ditems[k].t, b'{') {
-      let b = blank(ditems[k].t)
+      let b = ditems_b[k]
       let i = lskip(b, 0)
       if word_at(b, i, b"struct") >= 0 || word_at(b, i, b"union") >= 0 {
         struct_defs[k] = ()
@@ -644,167 +661,311 @@ fn split_stable(
   }
   let typedef_of : Map[Bytes, BSet] = Map([])
   for k, kind in kinds {
-    if kind == 3 && starts(lstrip(blank(ditems[k].t)), b"typedef") {
+    if kind == 3 && starts(lstrip(ditems_b[k]), b"typedef") {
       for n in ditems[k].declares.items() {
         typedef_of[n] = ditems[k].uses.inter(struct_tags)
       }
     }
   }
-  let fields : Map[Bytes, Map[Bytes, (Bytes, Int)]] = Map([])
+  let fields : Map[Bytes, BTab[(Bytes, Int)]] = Map([])
   for k in ints(struct_defs) {
-    let b = blank(ditems[k].t)
+    let b = ditems_b[k]
     let inner = pyslice(b, find_byte(b, b'{', 0) + 1, rfind_byte(b, b'}'))
-    let f : Map[Bytes, (Bytes, Int)] = Map([])
+    let f : BTab[(Bytes, Int)] = BTab::new()
     for v in decl_vars(inner) {
-      f[v.0] = (v.1, v.2)
+      f.set(v.0, (v.1, v.2))
     }
     for n in ditems[k].declares.items() {
       fields[n] = f
     }
   }
-  let extern_by_value : Array[BSet] = eitems.map(fn(e) {
+  let eitems_b = eitems.map(fn(e) { blank(e.t) })
+  let extern_by_value : Array[BSet] = eitems.mapi(fn(k, _) {
     let s = BSet::new()
-    for t in by_value_all(blank(e.t)) {
+    for t in by_value_all(eitems_b[k]) {
       if struct_tags.has(t) {
         s.add(t)
       }
     }
     s
   })
-  let globals : Map[Bytes, (Bytes, Int)] = Map([])
-  for e in eitems {
-    for v in decl_vars(blank(e.t)) {
-      globals[v.0] = (v.1, v.2)
+  let globals : BTab[(Bytes, Int)] = BTab::new()
+  for k, _ in eitems {
+    for v in decl_vars(eitems_b[k]) {
+      globals.set(v.0, (v.1, v.2))
+    }
+  }
+  // (the declarations' texts in one, the externs' and the globals' too, and the declarations' order keys: what a
+  // job's process reads of them it reads there, as BTab's keys, not from objects of its parent's)
+  let in_one = fn(ts : Array[Bytes]) -> (Bytes, FixedArray[Int]) {
+    let at = FixedArray::make(ts.length() + 1, 0)
+    for i, t in ts {
+      at[i + 1] = at[i] + t.length()
+    }
+    (concat(ts.map(fn(t) { t[:] })), at)
+  }
+  let (d_text, d_at) = in_one(ditems.map(fn(di) { di.t }))
+  let decl_text = fn(k : Int) -> BytesView { d_text[d_at[k]:d_at[k + 1]] }
+  // The closure's graph by number: each name a declaration, an extern or a directive's group declares (by_name's
+  // keys) is a number, and what each item uses, declares and holds by value are those numbers, each in one array
+  // (Csr). Names that are not keys of by_name lead nowhere in it and are left out. A unit's closure is then marks on
+  // arrays, set anew by a stamp, not sets of names made for each unit.
+  let syms : BTab[Int] = BTab::new()
+  let sym_names : Array[Bytes] = []
+  for n, _ in by_name {
+    syms.set(n, sym_names.length())
+    sym_names.push(n)
+  }
+  let nsym = sym_names.length()
+  let sym_of = fn(n : BytesView) -> Int {
+    let at = syms.find(n)
+    if at < 0 {
+      -1
+    } else {
+      syms.vals[at]
+    }
+  }
+  let ids_of = fn(names : Array[Bytes]) -> Array[Int] {
+    let out = []
+    for n in names {
+      let s = sym_of(n)
+      if s >= 0 {
+        out.push(s)
+      }
+    }
+    out
+  }
+  let ids_of_set = fn(set : BSet) -> Array[Int] {
+    let out = []
+    for i, n in set.t.keys {
+      let at = syms.find_hashed(n, 0, n.length(), set.t.hashes[i])
+      if at >= 0 {
+        out.push(syms.vals[at])
+      }
+    }
+    out
+  }
+  // (by_name's entries of each name: (kind, k) as k * 2 + kind)
+  let by_sym = Csr::of(
+    sym_names.map(fn(n) { by_name[n].map(fn(x) { x.1 * 2 + x.0 }) }),
+  )
+  let d_uses = Csr::of(ditems.map(fn(di) { ids_of(di.uses.t.keys) }))
+  let d_declares = Csr::of(ditems.map(fn(di) { ids_of(di.declares.t.keys) }))
+  let e_uses = Csr::of(eitems.map(fn(ei) { ids_of(ei.uses.t.keys) }))
+  let pp_ids = ids_of(pp_uses.t.keys)
+  let is_typedef = FixedArray::make(nsym, false)
+  for n in typedef_names.t.keys {
+    let s = sym_of(n)
+    if s >= 0 {
+      is_typedef[s] = true
+    }
+  }
+  let typedef_lists : Array[Array[Int]] = Array::make(nsym, [])
+  for n, ts in typedef_of {
+    let s = sym_of(n)
+    if s >= 0 {
+      typedef_lists[s] = ids_of(ts.t.keys)
+    }
+  }
+  let typedef_ids = Csr::of(typedef_lists)
+  let type_lists : Array[Array[Int]] = Array::make(nsym, [])
+  for n, ks in type_of {
+    let s = sym_of(n)
+    if s >= 0 {
+      type_lists[s] = ks
+    }
+  }
+  let type_ids = Csr::of(type_lists)
+  let needs_lists : Array[Array[Int]] = Array::make(ditems.length(), [])
+  for k, js in needs {
+    needs_lists[k] = js
+  }
+  let needs_of = Csr::of(needs_lists)
+  let is_struct_def = FixedArray::make(ditems.length(), false)
+  for k, _ in struct_defs {
+    is_struct_def[k] = true
+  }
+  let e_by_value = Csr::of(extern_by_value.map(fn(s) { ids_of(s.t.keys) }))
+  // (a name declared alone as a struct of moonc's, `struct X;`: written by the unit only where no such declaration
+  // is among moonc's (as by_name's entries are looked up, an extern's index among the declarations' too))
+  let has_fwd = FixedArray::make(nsym, false)
+  for s in 0..<nsym {
+    for q in by_sym.at[s]..<by_sym.at[s + 1] {
+      let k = by_sym.v[q] / 2
+      if k < kinds.length() && kinds[k] == 2 {
+        has_fwd[s] = true
+      }
     }
   }
   // (a prototype's types held by value, of the structs: the closure's)
-  let proto_by_value : Map[Int, Array[Bytes]] = Map([])
-  let proto_held = fn(k : Int) -> Array[Bytes] {
-    match proto_by_value.get(k) {
+  let proto_by_value : Array[Array[Int]?] = Array::make(ditems.length(), None)
+  let proto_held = fn(k : Int) -> Array[Int] {
+    match proto_by_value[k] {
       Some(a) => a
       None => {
-        let a = by_value_all(blank(ditems[k].t)).filter(fn(t) {
-          struct_tags.has(t)
-        })
-        proto_by_value[k] = a
+        let a = ids_of(
+          by_value_all(blank(decl_text(k))).filter(fn(t) { struct_tags.has(t) }),
+        )
+        proto_by_value[k] = Some(a)
         a
       }
     }
   }
-  let closure = fn(used : BSet, need0 : BSet?) -> (Map[Int, Unit], Map[Int, Unit], Array[Bytes]) {
+  // (the marks: a name, a declaration or an extern is marked when its mark is the stamp of the closure being made)
+  let need_mark = FixedArray::make(nsym, 0)
+  let seen_mark = FixedArray::make(nsym, 0)
+  let declared_mark = FixedArray::make(nsym, 0)
+  let d_mark = FixedArray::make(ditems.length(), 0)
+  let e_mark = FixedArray::make(eitems.length(), 0)
+  let stamp : Ref[Int] = { val: 0 }
+  let always_list = ints(always_pp)
+  let closure = fn(used : Array[Int], need0 : Array[Int]?) -> (Array[Int], Array[Int], Array[Bytes]) {
     // (need: the struct types to define, by defined_needed; None: every one used. With it, what they hold by value
     // too, and the others declared only: struct X;)
-    let expand = fn(n0 : BSet) -> BSet {
-        let need = n0.copy()
-        for n in used.items() {
-          match by_name.get(n) {
-            Some(a) =>
-              for x in a {
-                if x.0 == 0 && kinds[x.1] == 1 {
-                  for t in proto_held(x.1) {
-                    need.add(t)
-                  }
-                }
-              }
-            None => ()
+    let expand = fn(n0 : Array[Int]) -> Array[Int] {
+      stamp.val += 1
+      let st = stamp.val
+      let need : Array[Int] = []
+      let add = fn(t : Int) {
+        if need_mark[t] != st {
+          need_mark[t] = st
+          need.push(t)
+        }
+      }
+      for t in n0 {
+        add(t)
+      }
+      for n in used {
+        for q in by_sym.at[n]..<by_sym.at[n + 1] {
+          let x = by_sym.v[q]
+          if x % 2 == 0 && kinds[x / 2] == 1 {
+            for t in proto_held(x / 2) {
+              add(t)
+            }
           }
         }
-        for n in used.inter(typedef_names).items() {
-          match typedef_of.get(n) {
-            Some(s) => need.add_all(s)
-            None => ()
+        if is_typedef[n] {
+          for q in typedef_ids.at[n]..<typedef_ids.at[n + 1] {
+            add(typedef_ids.v[q])
           }
         }
-        let todo = need.items()
-        while todo.length() > 0 {
-          match type_of.get(todo.pop().unwrap()) {
-            Some(a) =>
-              for k in a {
-                for j in needs[k] {
-                  for t in ditems[j].declares.items() {
-                    if !need.has(t) {
-                      need.add(t)
-                      todo.push(t)
-                    }
-                  }
-                }
-              }
-            None => ()
+      }
+      let mut i = 0
+      while i < need.length() {
+        let t = need[i]
+        i += 1
+        for q in type_ids.at[t]..<type_ids.at[t + 1] {
+          let k = type_ids.v[q]
+          for r in needs_of.at[k]..<needs_of.at[k + 1] {
+            let j = needs_of.v[r]
+            for u in d_declares.at[j]..<d_declares.at[j + 1] {
+              add(d_declares.v[u])
+            }
           }
         }
-        need
+      }
+      need
     }
     let mut need = match need0 {
       Some(n0) => Some(expand(n0))
       None => None
     }
     while true {
-      let want_d : Map[Int, Unit] = Map([])
-      let want_e : Map[Int, Unit] = Map([])
-      let declared = BSet::new()
-      let todo = used.items()
-      for n in pp_uses.items() {
+      // (the need's marks are the stamp expand left; this pass's are one past it)
+      let nst = stamp.val
+      stamp.val += 1
+      let st = stamp.val
+      let want_d : Array[Int] = []
+      let want_e : Array[Int] = []
+      let declared : Array[Int] = []
+      let todo : Array[Int] = []
+      for n in used {
         todo.push(n)
       }
-      let seen = BSet::new()
+      for n in pp_ids {
+        todo.push(n)
+      }
       while todo.length() > 0 {
         let n = todo.pop().unwrap()
-        if seen.has(n) {
+        if seen_mark[n] == st {
           continue
         }
-        seen.add(n)
-        match by_name.get(n) {
-          Some(a) =>
-            for x in a {
-              let (kind, k) = x
-              if kind == 0 && !want_d.contains(k) {
-                match need {
-                  Some(nd) =>
-                    if struct_defs.contains(k) &&
-                      ditems[k].declares.inter(nd).size() == 0 {
-                      declared.add_all(ditems[k].declares)
-                      continue
-                    }
-                  None => ()
-                }
-                want_d[k] = ()
-                for u in ditems[k].uses.items() {
-                  todo.push(u)
-                }
-              } else if kind == 1 && !want_e.contains(k) {
-                want_e[k] = ()
-                for u in eitems[k].uses.items() {
-                  todo.push(u)
+        seen_mark[n] = st
+        for q in by_sym.at[n]..<by_sym.at[n + 1] {
+          let kind = by_sym.v[q] % 2
+          let k = by_sym.v[q] / 2
+          if kind == 0 && d_mark[k] != st {
+            if need is Some(_) && is_struct_def[k] {
+              let mut any = false
+              for u in d_declares.at[k]..<d_declares.at[k + 1] {
+                if need_mark[d_declares.v[u]] == nst {
+                  any = true
+                  break
                 }
               }
+              if !any {
+                for u in d_declares.at[k]..<d_declares.at[k + 1] {
+                  let d = d_declares.v[u]
+                  if declared_mark[d] != st {
+                    declared_mark[d] = st
+                    declared.push(d)
+                  }
+                }
+                continue
+              }
             }
-          None => ()
+            d_mark[k] = st
+            want_d.push(k)
+            for u in d_uses.at[k]..<d_uses.at[k + 1] {
+              todo.push(d_uses.v[u])
+            }
+          } else if kind == 1 && e_mark[k] != st {
+            e_mark[k] = st
+            want_e.push(k)
+            for u in e_uses.at[k]..<e_uses.at[k + 1] {
+              todo.push(e_uses.v[u])
+            }
+          }
         }
       }
-      for k, _ in always_pp {
-        want_d[k] = ()
+      for k in always_list {
+        if d_mark[k] != st {
+          d_mark[k] = st
+          want_d.push(k)
+        }
       }
       match need {
         Some(nd) => {
           // (a type defined holds by value what it holds by value, defined too: again with those; and an extern's
           // type, a struct written out (a closure's object), what it holds by value)
-          let held = BSet::new()
-          for k, _ in want_d {
-            match needs.get(k) {
-              Some(js) =>
-                for j in js {
-                  held.add_all(ditems[j].declares)
-                }
-              None => ()
+          let more : Array[Int] = []
+          let more_st = st + 1
+          stamp.val = more_st
+          let held = fn(t : Int) {
+            if need_mark[t] != nst && seen_mark[t] != more_st {
+              // (seen_mark is this pass's no more: what is held and not needed, once)
+              seen_mark[t] = more_st
+              more.push(t)
             }
           }
-          for k, _ in want_e {
-            held.add_all(extern_by_value[k])
+          for k in want_d {
+            for r in needs_of.at[k]..<needs_of.at[k + 1] {
+              let j = needs_of.v[r]
+              for u in d_declares.at[j]..<d_declares.at[j + 1] {
+                held(d_declares.v[u])
+              }
+            }
           }
-          let more = held.minus(nd)
-          if more.size() > 0 {
+          for k in want_e {
+            for q in e_by_value.at[k]..<e_by_value.at[k + 1] {
+              held(e_by_value.v[q])
+            }
+          }
+          if more.length() > 0 {
             let n2 = nd.copy()
-            n2.add_all(more)
+            for t in more {
+              n2.push(t)
+            }
             need = Some(expand(n2))
             continue
           }
@@ -812,22 +973,12 @@ fn split_stable(
         None => ()
       }
       let fwd_made = []
-      for n in declared.sorted() {
-        let mut fwd = false
-        match by_name.get(n) {
-          Some(a) =>
-            for x in a {
-              if x.1 < kinds.length() && kinds[x.1] == 2 {
-                fwd = true
-              }
-            }
-          None => ()
-        }
-        if !fwd {
+      for n in sort_bytes(declared.map(fn(d) { sym_names[d] })) {
+        if !has_fwd[sym_of(n)] {
           fwd_made.push(n)
         }
       }
-      return (want_d, want_e, fwd_made)
+      return (sorted_ints(want_d), sorted_ints(want_e), fwd_made)
     }
     abort("unreachable")
   }
@@ -840,34 +991,40 @@ fn split_stable(
       b""
     }
   })
+  let (k_text, k_at) = in_one(key_name)
+  let (e_text, e_at) = in_one(eitems.map(fn(ei) { ei.t }))
   let key_cmp = fn(a : Int, b : Int) {
-    let c = bcmp(key_name[a], key_name[b])
+    let c = bcmp(k_text[k_at[a]:k_at[a + 1]], k_text[k_at[b]:k_at[b + 1]])
     if c != 0 {
       return c
     }
-    let c = bcmp(ditems[a].t, ditems[b].t)
+    let c = bcmp(decl_text(a), decl_text(b))
     if c != 0 {
       return c
     }
     a - b
   }
-  let canonical = fn(want : Map[Int, Unit]) -> Array[Bytes] {
-    let all = ints(want)
+  let in_types = FixedArray::make(ditems.length(), 0)
+  let types_done = FixedArray::make(ditems.length(), 0)
+  let left = FixedArray::make(ditems.length(), 0)
+  let canonical = fn(all : Array[Int]) -> Array[BytesView] {
+    // (all: the declarations wanted, in their order)
     let pp = all.filter(fn(k) { kinds[k] == 0 })
     let fwd = stable_sort(all.filter(fn(k) { kinds[k] == 2 }), key_cmp)
     let protos = stable_sort(all.filter(fn(k) { kinds[k] == 1 }), key_cmp)
     let types = all.filter(fn(k) { kinds[k] == 3 })
-    let tset : Map[Int, Unit] = Map([])
+    stamp.val += 1
+    let st = stamp.val
     for k in types {
-      tset[k] = ()
+      in_types[k] = st
     }
     let users : Map[Int, Array[Int]] = Map([])
-    let left : Map[Int, Int] = Map([])
     let heap = Heap::new(key_cmp)
     for k in types {
       let mut nd = 0
-      for j in needs[k] {
-        if tset.contains(j) {
+      for r in needs_of.at[k]..<needs_of.at[k + 1] {
+        let j = needs_of.v[r]
+        if in_types[j] == st {
           nd += 1
           match users.get(j) {
             Some(a) => a.push(k)
@@ -881,11 +1038,10 @@ fn split_stable(
       }
     }
     let out = []
-    let done : Map[Int, Unit] = Map([])
     while heap.size() > 0 {
       let k = heap.pop()
       out.push(k)
-      done[k] = ()
+      types_done[k] = st
       match users.get(k) {
         Some(us) =>
           for u in us {
@@ -900,23 +1056,23 @@ fn split_stable(
     if out.length() < types.length() {
       // (a cycle: never by value; moonc's order for what is left)
       for k in types {
-        if !done.contains(k) {
+        if types_done[k] != st {
           out.push(k)
         }
       }
     }
     let texts = []
     for k in pp {
-      texts.push(ditems[k].t)
+      texts.push(decl_text(k))
     }
     for k in fwd {
-      texts.push(ditems[k].t)
+      texts.push(decl_text(k))
     }
     for k in out {
-      texts.push(ditems[k].t)
+      texts.push(decl_text(k))
     }
     for k in protos {
-      texts.push(ditems[k].t)
+      texts.push(decl_text(k))
     }
     texts
   }
@@ -948,21 +1104,22 @@ fn split_stable(
     buf.to_bytes()
   }
   let decls_all = lines_of(ditems.map(fn(d) { d.t }))
-  let join = fn(ts : Array[Bytes], sep : Bytes) {
-    let buf = Buffer()
+  // (texts with a line break between each two, as parts of a unit's text)
+  let lines_between = fn(ts : Array[BytesView]) -> Array[BytesView] {
+    let parts = []
     for i, t in ts {
       if i > 0 {
-        buf.write_bytes(sep)
+        parts.push(b"\n"[:])
       }
-      buf.write_bytes(t)
+      parts.push(t)
     }
-    buf.to_bytes()
+    parts
   }
   let declare_only = env_is("MBC_DECLARE_ONLY", "1") != b"0"
   let unit_text = fn(
     used : BSet,
-    body : Bytes,
-    texts : Array[Bytes]?,
+    body : Array[BytesView],
+    texts : Array[BytesView]?,
     defines : BSet,
   ) -> Bytes {
     // A unit: the prelude, the declarations and externs `used` needs (in an order of their own), then `body`; with
@@ -973,34 +1130,47 @@ fn split_stable(
       Some(ts) if declare_only => defined_needed(ts, globals, fields)
       _ => None
     }
-    let (want_d, want_e, fwd_made) = closure(used, need)
-    let buf = Buffer()
-    buf.write_bytes(unit_head)
-    buf.write_bytes(internal)
-    buf.write_bytes(prelude)
-    buf.write_bytes(b"\n")
+    let (want_d, want_e, fwd_made) = closure(
+      ids_of_set(used),
+      match need {
+        Some(nd) => Some(ids_of_set(nd))
+        None => None
+      },
+    )
+    // (its parts, put together once in a text made to their length)
+    let parts : Array[BytesView] = [unit_head[:], internal[:], prelude[:], b"\n"[:]]
     for n in fwd_made {
-      buf.write_bytes(b"struct ")
-      buf.write_bytes(n)
-      buf.write_bytes(b";\n")
+      parts.push(b"struct "[:])
+      parts.push(n[:])
+      parts.push(b";\n"[:])
     }
-    buf.write_bytes(lines_of(canonical(want_d)))
-    for t in sort_bytes(
-        ints(want_e)
-        .filter(fn(k) { eitems[k].declares.inter(defines).size() == 0 })
-        .map(fn(k) { eitems[k].t }),
+    for t in canonical(want_d) {
+      parts.push(t)
+      if !ends(t, b"\n") {
+        parts.push(b"\n"[:])
+      }
+    }
+    for t in stable_sort(
+        want_e
+        .filter(fn(k) {
+          defines.size() == 0 || eitems[k].declares.inter(defines).size() == 0
+        })
+        .map(fn(k) { e_text[e_at[k]:e_at[k + 1]] }),
+        bcmp,
       ) {
-      buf.write_bytes(t)
+      parts.push(t)
     }
     for n in used.inter(layout_names).sorted() {
-      buf.write_bytes(b"extern CSPLIT_INTERNAL const uint32_t ")
-      buf.write_bytes(n)
-      buf.write_bytes(b";\n")
+      parts.push(b"extern CSPLIT_INTERNAL const uint32_t "[:])
+      parts.push(n[:])
+      parts.push(b";\n"[:])
     }
-    buf.write_bytes(b"\n")
-    buf.write_bytes(body)
-    buf.write_bytes(b"\n")
-    buf.to_bytes()
+    parts.push(b"\n"[:])
+    for b in body {
+      parts.push(b)
+    }
+    parts.push(b"\n"[:])
+    concat(parts)
   }
   tick("kinds, needs")
   // the units, each written as it is made (mbc builds what changed): those every unit's declarations are
@@ -1098,8 +1268,8 @@ fn split_stable(
   stats.push(("objects_layouts_fixed", fixes.length()))
   // moonbit_init too: with all of decls.h it was compiled again for any type changed anywhere
   if whole_init {
-    let (t, used) = init_part(init.text)
-    put(b"init.c", unit_text(used, t, None, BSet::new()))
+    let (t, used) = init_part(init.text.to_owned())
+    put(b"init.c", unit_text(used, [t[:]], None, BSet::new()))
   } else {
     let buf = Buffer()
     for f in init_calls {
@@ -1119,7 +1289,10 @@ fn split_stable(
       buf.write_bytes(b"();\n")
     }
     buf.write_bytes(b"}\n")
-    put(b"init.c", unit_text(BSet::new(), buf.to_bytes(), Some([]), BSet::new()))
+    put(
+      b"init.c",
+      unit_text(BSet::new(), [buf.to_bytes()[:]], Some([]), BSet::new()),
+    )
     let iu = []
     for u, _ in init_units {
       iu.push(u)
@@ -1139,7 +1312,7 @@ fn split_stable(
   // functions use it)
   let lit_users : Map[Bytes, BSet] = Map([])
   let lit_file : Map[Bytes, Bytes] = Map([])
-  let note_users = fn(text : Bytes, pkg : Bytes, file : Bytes?) {
+  let note_users = fn(text : BytesView, pkg : Bytes, file : Bytes?) {
     let mut p = 0
     while true {
       let s = find(text, lit, p)
@@ -1147,7 +1320,7 @@ fn split_stable(
         break
       }
       let e = ident_end(text, s)
-      let n = sub(text, s, e)
+      let n = text[s:e].to_owned()
       match lit_users.get(n) {
         Some(u) => u.add(pkg)
         None => lit_users[n] = BSet::of([pkg])
@@ -1161,18 +1334,8 @@ fn split_stable(
       p = e
     }
   }
-  for f in rest {
-    let file = match line_file(f.text) {
-      Some(path) => {
-        let mut s = path.length()
-        while s > 0 && path[s - 1] != b'/' && path[s - 1] != b'\\' {
-          s -= 1
-        }
-        Some(sub(path, s, path.length()))
-      }
-      None => None
-    }
-    note_users(f.text, package_of(f.name), file)
+  for k, f in rest {
+    note_users(f.text, pk[k], ffile[k])
   }
   note_users(init.text, b" init", None)
   for k, n in data_names {
@@ -1270,6 +1433,9 @@ fn split_stable(
     n
   }
   tick("kinds, needs, first units")
+  // (the globals as renamed in one text, as the declarations')
+  let (r_text, r_at) = in_one(data_r)
+  let global_text = fn(k : Int) -> BytesView { r_text[r_at[k]:r_at[k + 1]] }
   let results = run_jobs(jobs.length(), outdir, size_of, fn(i) {
     let (name, kind, entries) = jobs[i]
     if kind == 2 {
@@ -1287,11 +1453,11 @@ fn split_stable(
         if c != 0 {
           c
         } else {
-          bcmp(data_r[entries[a].1], data_r[entries[b].1])
+          bcmp(global_text(entries[a].1), global_text(entries[b].1))
         }
       })
       let placed = Array::make(entries.length(), false)
-      let texts = []
+      let texts : Array[BytesView] = []
       fn place(i : Int) -> Unit {
         if placed[i] {
           return
@@ -1303,7 +1469,7 @@ fn split_stable(
             _ => ()
           }
         }
-        texts.push(data_r[entries[i].1])
+        texts.push(global_text(entries[i].1))
       }
       for i in by_name {
         place(i)
@@ -1313,35 +1479,38 @@ fn split_stable(
         defines.add(e.0)
       }
       if name == b"data_layout.c" {
-        texts.push(layout_defs)
-        texts.push(layout_fixes)
+        texts.push(layout_defs[:])
+        texts.push(layout_fixes[:])
         used.add_all(fix_names)
       }
-      let text = unit_text(used, join(texts, b"\n"), None, defines)
+      let text = unit_text(used, lines_between(texts), None, defines)
       let ch = if write_if_changed(join_path(outdir, name), text) { 1 } else { 0 }
       return (clen(text), 0, ch)
     }
     let is_init = kind == 1
-    let texts : Array[(Bytes, Bytes)] = []
+    let texts : Array[(Bytes, BytesView)] = []
     let used = BSet::new()
     for e in entries {
       if is_init {
         let x = ps[e.1]
         let (t, u) = init_part(cat([x.1, x.2]))
         texts.push(
-          (e.0, cat([b"CSPLIT_INTERNAL void ", e.0, b"(void) {\n", t, b"}\n"])),
+          (
+            e.0,
+            cat([b"CSPLIT_INTERNAL void ", e.0, b"(void) {\n", t, b"}\n"])[:],
+          ),
         )
         used.add_all(u)
       } else {
-        let (t0, u) = rename(
+        let (t0, _) = rename(
           rest[e.1].text,
           names_t,
           local_ok=Some(file_ids),
           plain=Some(plain),
+          used~,
         )
         let (t1, lu) = name_layouts(t0)
         texts.push((e.0, flatten(t1)))
-        used.add_all(u)
         used.add_all(lu)
       }
     }
@@ -1359,7 +1528,7 @@ fn split_stable(
     }
     let text = unit_text(
       used,
-      join(ordered.map(fn(x) { x.1 }), b"\n"),
+      lines_between(ordered.map(fn(x) { x.1 })),
       Some(texts.map(fn(x) { x.1 })),
       BSet::new(),
     )
@@ -1394,8 +1563,8 @@ fn split_stable(
     raise SplitError("\{nitems - npp} items, \{accounted} placed")
   }
   let mut largest = (-1, b"")
-  for f in rest {
-    let l = clen(f.text)
+  for k, f in rest {
+    let l = fclen[k]
     if l > largest.0 || (l == largest.0 && bcmp(f.name, largest.1) > 0) {
       largest = (l, f.name)
     }

@@ -254,14 +254,6 @@ fn lists_band_node(
           }
         }, offered=fn() { true })
       })
-      // the chats as a board (board.mbt): the sidebar closed to its bar, the board the pane's whole
-      // (the first to go where the line has not the room: the stations' newer releases beside it, on the tape)
-      line.fits(Is(true)) |> ignore
-      // (列表 | 看板 only while 实验性功能's 对话列表看板视图 is on)
-      line.show(at_once=true, fn() { @sfbase.board_feature.get() && !band_at().in_bar && !@sf.native_on() }, fn(k) {
-        k.drops(Is(1)) |> ignore
-        k.box(fn(f) { board_key_node(f, src, tips) }) |> ignore
-      })
       // beside the system's bars, the search and the filter in their glass (rail_native.mbt: what each does there)
       line.show(at_once=true, @sf.native_on, fn(k) {
         sidebar_glass_node(k, "sidebar/search", fn() { @sf.t("android-chat.search.field") }, "search", fn() { [] })

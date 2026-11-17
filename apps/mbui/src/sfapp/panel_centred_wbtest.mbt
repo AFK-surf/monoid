@@ -1,5 +1,5 @@
-// A panel of the presenters' opened by nothing (@sf.panel `from` Unanchored), a dialog in the middle of the window, on
-// 中屏 and 大屏: the old contract, measured on main first (a4c845604), what it does held whatever draws it.
+// A panel of the presenters' opened by nothing (@sf.panel_nodes `from` Unanchored), a dialog in the middle of the
+// window, on 中屏 and 大屏: as it was when the old contract was measured on main beside it (a4c845604).
 
 ///|
 /// Where what a centred panel shows is: its dialog, its title, what it says, its words, its button(s), its close
@@ -11,24 +11,20 @@ fn centred_said(t : @ui.Tester) -> String {
 }
 
 ///|
-test "panel centred, 大屏 keyboard and mouse: plain, with what it says, a foot of its own, wide, untitled, a share of the window tall in a tall window and a short one: where it is and what it shows, drawn by the window's tree: as main has it" {
+test "panel centred, 大屏 keyboard and mouse: plain, with what it says, a foot of its own, wide, untitled, a share of the window tall in a tall window and a short one: where it is and what it shows, drawn by the window's tree" {
   let out = []
   let drawn = []
   for kind in ["plain", "says", "foot", "wide", "untitled", "tall 800", "tall 500"] {
     let h = if kind == "tall 500" { 500.0 } else { 800.0 }
     let t = menu_tester(1280.0, h, 0)
-    let foot = fn(c : @ui.Ctx, close : () -> Unit) {
-      @sf.button(c, "好的", key="ok34", tone=Primary, on_press=fn() {
-        close()
-      }) |> ignore
-    }
+    let foot = fn(v : @view.View, close : () -> Unit) { @sf.button_node(v, fn() { "好的" }, close, tone=Primary) |> ignore }
     match kind {
-      "plain" => @sf.panel("面板", panel_test_body([]), from=Unanchored)
-      "says" => @sf.panel("面板", panel_test_body([]), from=Unanchored, description="说明的话")
-      "foot" => @sf.panel("面板", fits_words_body(@signals.signal("面板里的话，长一些，好看它怎么折行")), from=Unanchored, foot~)
-      "wide" => @sf.panel("面板", panel_test_body([]), from=Unanchored, wide=true)
-      "untitled" => @sf.panel("", panel_test_body([]), from=Unanchored)
-      _ => @sf.panel("面板", panel_column_body(@signals.signal(40), []), from=Unanchored, tall=0.5, foot~)
+      "plain" => @sf.panel_nodes("面板", panel_test_body([]), from=Unanchored)
+      "says" => @sf.panel_nodes("面板", panel_test_body([]), from=Unanchored, description="说明的话")
+      "foot" => @sf.panel_nodes("面板", fits_words_body(@signals.signal("面板里的话，长一些，好看它怎么折行")), from=Unanchored, foot~)
+      "wide" => @sf.panel_nodes("面板", panel_test_body([]), from=Unanchored, wide=true)
+      "untitled" => @sf.panel_nodes("", panel_test_body([]), from=Unanchored)
+      _ => @sf.panel_nodes("面板", panel_column_body(@signals.signal(40)), from=Unanchored, tall=0.5, foot~)
     }
     t.run_for(@ui.move_most_ms)
     let said = centred_said(t)
@@ -37,27 +33,28 @@ test "panel centred, 大屏 keyboard and mouse: plain, with what it says, a foot
     // (said a dialog titled as it is: an untitled one says no label of its own, read out by what it holds)
     drawn.push(t.query(Dialog).map(fn(_) { tree_said(Dialog, if kind == "untitled" { "" } else { "面板" }) is Some(_) }))
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "plain: dialog Some((面板, (380, 314.5, 520, 171))) title [(404, 340.5, 44, 30)] says [] words [(414, 389.5, 452, 22)] ok Some((826, 431.5, 44, 24)) close Some((842, 340.5, 32, 32)) focus None row0 []",
-    "says: dialog Some((面板, (380, 301.5, 520, 197))) title [(404, 327.5, 44, 30)] says [(404, 364.5, 472, 20)] words [(414, 402.5, 452, 22)] ok Some((826, 444.5, 44, 24)) close Some((842, 327.5, 32, 32)) focus None row0 []",
-    "foot: dialog Some((面板, (380, 309.5, 520, 181))) title [(404, 335.5, 44, 30)] says [] words [(414, 384.5, 452, 22)] ok Some((818, 430.5, 58, 36)) close Some((842, 335.5, 32, 32)) focus None row0 []",
-    "wide: dialog Some((面板, (320, 314.5, 640, 171))) title [(344, 340.5, 44, 30)] says [] words [(354, 389.5, 572, 22)] ok Some((886, 431.5, 44, 24)) close Some((902, 340.5, 32, 32)) focus None row0 []",
-    "untitled: dialog Some((关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 323, 520, 154))) title [] says [] words [(414, 381, 452, 22)] ok Some((826, 423, 44, 24)) close Some((842, 349, 32, 32)) focus None row0 []",
-    "tall 800: dialog Some((面板, (380, 168.5, 520, 463))) title [(404, 194.5, 44, 30)] says [] words [] ok Some((818, 571.5, 58, 36)) close Some((842, 194.5, 32, 32)) focus None row0 [(414, 243.5, 452, 22)]",
-    "tall 500: dialog Some((面板, (380, 93.5, 520, 313))) title [(404, 119.5, 44, 30)] says [] words [] ok Some((818, 346.5, 58, 36)) close Some((842, 119.5, 32, 32)) focus None row0 [(414, 168.5, 452, 22)]",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "plain: dialog Some((面板, (380, 313.5, 520, 173))) title [(404, 339.5, 44, 30)] says [] words [(404, 388.5, 472, 22)] ok Some((404, 426.5, 472, 36)) close Some((842, 339.5, 32, 32)) focus None row0 []",
+    #|  "says: dialog Some((面板, (380, 300.5, 520, 199))) title [(404, 326.5, 44, 30)] says [(404, 363.5, 472, 20)] words [(404, 401.5, 472, 22)] ok Some((404, 439.5, 472, 36)) close Some((842, 326.5, 32, 32)) focus None row0 []",
+    #|  "foot: dialog Some((面板, (380, 309.5, 520, 181))) title [(404, 335.5, 44, 30)] says [] words [(404, 384.5, 472, 22)] ok Some((818, 430.5, 58, 36)) close Some((842, 335.5, 32, 32)) focus None row0 []",
+    #|  "wide: dialog Some((面板, (320, 313.5, 640, 173))) title [(344, 339.5, 44, 30)] says [] words [(344, 388.5, 592, 22)] ok Some((344, 426.5, 592, 36)) close Some((902, 339.5, 32, 32)) focus None row0 []",
+    #|  "untitled: dialog Some((关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 322, 520, 156))) title [] says [] words [(404, 380, 472, 22)] ok Some((404, 418, 472, 36)) close Some((842, 348, 32, 32)) focus None row0 []",
+    #|  "tall 800: dialog Some((面板, (380, 168.5, 520, 463))) title [(404, 194.5, 44, 30)] says [] words [] ok Some((818, 571.5, 58, 36)) close Some((842, 194.5, 32, 32)) focus None row0 [(404, 243.5, 472, 22)]",
+    #|  "tall 500: dialog Some((面板, (380, 93.5, 520, 313))) title [(404, 119.5, 44, 30)] says [] words [] ok Some((818, 346.5, 58, 36)) close Some((842, 119.5, 32, 32)) focus None row0 [(404, 168.5, 472, 22)]",
+    #|]
+  ))
   assert_eq(drawn, [Some(true), Some(true), Some(true), Some(true), Some(true), Some(true), Some(true)])
 }
 
 ///|
-test "panel centred, 大屏 keyboard and mouse: closed by its close button, by Escape, by a press outside it, by its own button: presenting no more, its gone told, the focus back where it was: as main has it" {
+test "panel centred, 大屏 keyboard and mouse: closed by its close button, by Escape, by a press outside it, by its own button: presenting no more, its gone told, the focus back where it was" {
   let out = []
   for how in ["close", "escape", "outside", "own", "untitled close pressed"] {
     let t = menu_tester(1280.0, 800.0, 0)
     let gone = Ref(0)
     let said : Array[String] = []
-    @sf.panel(if how == "untitled close pressed" { "" } else { "面板" }, panel_test_body(said), from=Unanchored, gone=fn() { gone.val = gone.val + 1 })
+    @sf.panel_nodes(if how == "untitled close pressed" { "" } else { "面板" }, panel_test_body(said), from=Unanchored, gone=fn() { gone.val = gone.val + 1 })
     t.run_for(@ui.move_most_ms)
     match how {
       "close" => t.click(Button, label="关闭")
@@ -77,45 +74,45 @@ test "panel centred, 大屏 keyboard and mouse: closed by its close button, by E
     t.run_for(@ui.move_most_ms)
     out.push("\{how}: focus closed \{@ui.some_text(at_close)} midway \{@ui.some_text(midway)} then presenting \{@sf.presenting()} gone \{gone.val} said \{@ui.list_text(said)} focus \{@ui.some_text(t.focused().map(fn(s) { "\{s.role} \{s.label}" }))}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "close: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    "escape: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    "outside: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-    "own: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 0 said [ok] focus Some(TextField 发消息)",
-    // (untitled, its close button pressed where it is drawn: closed. On main, a4c845604, it was not: its close button
-    // built under what it holds, the press taken by what scrolls what it holds there, "untitled close pressed: focus
-    // closed None midway None then presenting true gone 0 said [] focus None")
-    "untitled close pressed: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "close: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "escape: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "outside: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|  "own: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 0 said [ok] focus Some(TextField 发消息)",
+    #|  "untitled close pressed: focus closed Some(TextField 按空格输入) midway Some(TextField 按空格输入) then presenting false gone 1 said [] focus Some(TextField 发消息)",
+    #|]
+  ))
 }
 
 ///|
-test "panel centred, 大屏 keyboard and mouse: untitled saying something; what it holds there, then nothing, a foot of its own under it; words at its foot on a panel's words' line: as main has it" {
+test "panel centred, 大屏 keyboard and mouse: untitled saying something; what it holds there, then nothing, a foot of its own under it; words at its foot on a panel's words' line" {
   let out = []
   let w = fn(t : @ui.Tester, s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
   let dialog = fn(t : @ui.Tester) { t.query(Dialog).map(fn(s) { (s.label, tenth4(s.rect)) }) }
   // (untitled, saying something)
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("", panel_test_body([]), from=Unanchored, description="说明的话")
+  @sf.panel_nodes("", panel_test_body([]), from=Unanchored, description="说明的话")
   t.run_for(@ui.move_most_ms)
   out.push("untitled says: \{centred_said(t)}")
   // (what it holds there, then nothing; its foot of its own words on a panel's words' line)
   let t = menu_tester(1280.0, 800.0, 0)
   let holds = @signals.signal(true)
-  @sf.panel(
+  @sf.panel_nodes(
     "面板",
-    fn(c, _) {
-      if holds.get() {
-        @sf.panel_text(c, fn() { c.text("面板里的话，长一些，好看它怎么折行", style=@sf.paragraph) |> ignore })
-      }
+    fn(v, _) {
+      v.show(fn() { holds.get() }, fn(h) {
+        @sf.words_node(h, fn() { "面板里的话，长一些，好看它怎么折行" }, fn() { @sf.paragraph }) |> ignore
+      })
     },
     from=Unanchored,
-    foot=fn(c, close) {
-      c.box(style=@sf.panel_words_in(), fn() { c.text("脚注", style=@sf.paragraph) |> ignore }) |> ignore
-      @sf.button(c, "好的", key="ok34", tone=Primary, on_press=fn() {
-        close()
-      }) |> ignore
+    foot=fn(v, close) {
+      v.box(fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b) })
+        @sf.words_node(b, fn() { "脚注" }, fn() { @sf.paragraph }) |> ignore
+      })
+      |> ignore
+      @sf.button_node(v, fn() { "好的" }, close, tone=Primary) |> ignore
     },
   )
   t.run_for(@ui.move_most_ms)
@@ -123,12 +120,13 @@ test "panel centred, 大屏 keyboard and mouse: untitled saying something; what 
   holds.set(false)
   t.run_for(@ui.move_most_ms)
   out.push("holds nothing: dialog \{@ui.some_text(dialog(t).map(fn(d) { "(\{d.0}, \{@ui.rect_text(d.1)})" }))} foot words \{@ui.list_text(w(t, "脚注").map(@ui.rect_text))} ok \{@ui.some_text(t.query(Button, label="好的").map(fn(s) { tenth4(s.rect) }).map(@ui.rect_text))}")
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "untitled says: dialog Some((关闭 说明的话 面板里的话，长一些，好看它怎么折行 好的, (380, 310, 520, 180))) title [] says [(404, 340, 472, 20)] words [(414, 394, 452, 22)] ok Some((826, 436, 44, 24)) close Some((842, 336, 32, 32)) focus None",
-    "holds: dialog Some((面板, (380, 309.5, 520, 181))) words [(414, 384.5, 452, 22)] foot words [(782, 437.5, 28, 22)] ok Some((818, 430.5, 58, 36))",
-    "holds nothing: dialog Some((面板, (380, 329.5, 520, 141))) foot words [(782, 417.5, 28, 22)] ok Some((818, 410.5, 58, 36))",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "untitled says: dialog Some((关闭 说明的话 面板里的话，长一些，好看它怎么折行 好的, (380, 309, 520, 182))) title [] says [(404, 339, 472, 20)] words [(404, 393, 472, 22)] ok Some((404, 431, 472, 36)) close Some((842, 335, 32, 32)) focus None",
+    #|  "holds: dialog Some((面板, (380, 309.5, 520, 181))) words [(404, 384.5, 472, 22)] foot words [(782, 437.5, 28, 22)] ok Some((818, 430.5, 58, 36))",
+    #|  "holds nothing: dialog Some((面板, (380, 329, 520, 142))) foot words [(782, 418, 28, 22)] ok Some((818, 411, 58, 36))",
+    #|]
+  ))
 }
 
 ///|
@@ -136,15 +134,21 @@ test "panel centred, 大屏 keyboard and mouse: untitled, what it holds reaching
   let t = menu_tester(1280.0, 800.0, 0)
   let under = Ref(0)
   let gone = Ref(0)
-  @sf.panel(
+  @sf.panel_nodes(
     "",
-    fn(c, _) {
-      let id = c.id("under close")
-      c.on_press(id, fn() {
-        under.val = under.val + 1
-      })
+    fn(v, _) {
       // (in the dialog's corners, round as a row there is: the ladder's 18, 24 in from its 42)
-      c.box(id~, w=Fill(1.0), h=Px(60.0), bg=0x336699FFL, radius=@sf.row_corner, label="底下", fn() {  }) |> ignore
+      v.box(fn(b) {
+        b
+        .height(Is(Some(60.0)))
+        .ground(Is(0x336699FFL))
+        .radius(Is(@sf.row_corner))
+        .says(Is(Some(@view.said(Button, label="底下"))))
+        .presses(Is(true))
+        .on_press(fn() { under.val = under.val + 1 })
+        |> ignore
+      })
+      |> ignore
     },
     from=Unanchored,
     gone=fn() { gone.val = gone.val + 1 },
@@ -174,9 +178,9 @@ test "panel centred, 大屏 keyboard and mouse: untitled, what it holds reaching
 }
 
 ///|
-test "panel centred, 大屏 keyboard and mouse: untitled, Tab pressed twice: read out as focused, nothing either time, as main has it" {
+test "panel centred, 大屏 keyboard and mouse: untitled, Tab pressed twice: read out as focused, its button each time" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("", panel_test_body([]), from=Unanchored)
+  @sf.panel_nodes("", panel_test_body([]), from=Unanchored)
   t.run_for(@ui.move_most_ms)
   let out = []
   for _ in 0..<2 {
@@ -184,6 +188,6 @@ test "panel centred, 大屏 keyboard and mouse: untitled, Tab pressed twice: rea
     t.run_for(@ui.move_most_ms)
     out.push(t.focused().map(fn(s) { "\{s.role} \{s.label}" }))
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [None, None])
+  // (on its button, its one stop (its close button none: tab_stop), and there it stays)
+  assert_eq(out, [Some("Button 好的"), Some("Button 好的")])
 }

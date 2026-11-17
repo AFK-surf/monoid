@@ -339,7 +339,7 @@ fn profile_side_row_node(
   // how it is where that is not simply fine, as the core says it, in its tone: what needs a look in colour
   let trouble = held(fn() { text(field(e(), "state"), "text") })
   let tone = held(fn() { text(field(e(), "state"), "tone") })
-  // its name and its allowance: its plan, where it can be used and which connects use it are its page's (the user,
+  // its name, its plan and its allowance: where it can be used and which connects use it are its page's (the user,
   // 2026-11-14: 「额度的第二行感觉现在就一个有效信息」); the line under the name only for what is wrong, and a balance
   // where it has no windows
   let quota_c = @signals.computed(fn(_) { field(p(), "quota") })
@@ -367,6 +367,8 @@ fn profile_side_row_node(
       ""
     }
   })
+  // (its plan right after its name, leaving the line before the name is cut short for it: the user, 2026-11-17)
+  let plan = held(fn() { text(p(), "planText") })
   // (a subscription by its account, a key by its name: the core's)
   let name = held(fn() { if text(p(), "name") != "" { text(p(), "name") } else { text(e(), "title") } })
   let picked_as = held(fn() {
@@ -410,7 +412,11 @@ fn profile_side_row_node(
           @sf.provider_logo_node(k, l.0, l.1, @sf.nav_mark_side, l.2) |> ignore
         })
       },
-      fn(t) { @sf.nav_title_node(t, name, away=fn() { !usable() }) },
+      fn(t) {
+        @sf.nav_title_node(t, name, away=fn() { !usable() }, after=fn(a) { @sf.row_tag_node(a, plan) }, after_shown=fn() {
+          plan() != ""
+        })
+      },
       lines=fn(ls) {
         ls.show(fn() { trouble() != "" }, fn(k) {
           @sf.list_row_line_node(k, fn(r) { @sf.nav_meta_node(r, trouble, look=fn() { trouble_ink(tone()) }) })
@@ -455,6 +461,8 @@ fn machine_side_row_node(
   // (the room its kind's widest allowance takes, told on only as that comes out otherwise)
   let widest_c = @signals.computed(fn(_) { widest(kind())() })
   let label = fn() { @settings.runtime_label(text(l(), "runtime")) }
+  let plan_c = @signals.computed(fn(_) { text(l(), "planText") })
+  let plan = fn() { plan_c.get() }
   @sf.nav_item_node(
       line,
       list_at,
@@ -471,7 +479,10 @@ fn machine_side_row_node(
       fn(m) {
         m.pick(fn() { text(l(), "runtime") }, fn(k, rt) { @sf.maker_mark_node(k, "", rt, @sf.nav_mark_side) |> ignore })
       },
-      fn(t) { @sf.nav_title_node(t, label) },
+      // (its plan after its runtime as an account's is after its name: the core's planText)
+      fn(t) {
+        @sf.nav_title_node(t, label, after=fn(a) { @sf.row_tag_node(a, plan) }, after_shown=fn() { plan() != "" })
+      },
       lines=fn(ls) {
         @sf.list_row_line_node(ls, fn(r) {
           r.box(fn(g) {

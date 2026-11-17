@@ -22,6 +22,13 @@ fn draw_logging() -> Bool {
 let inputs_since : Ref[Bool] = Ref(false)
 
 ///|
+/// The moment a pointer last went down or was let go, since the last frame (pointer_in; -1 none): a press at that same
+/// moment draws no frame early (frame_at_press), so what the two do is taken together by the frame that comes, as at
+/// one moment it must be.
+// kept across runs: set by a press or a let-go, put back as each frame begins
+let press_moment : Ref[Double] = Ref(-1.0)
+
+///|
 /// An input came between two frames that what is built takes (a press, a key, words typed, a drag, a wheel): the
 /// frame after the next is built, for what it changed late in it that is no signal yet (what the build itself keeps of
 /// a press: a menu shut). Not a pointer moved with nothing down: what changes of where it is, what

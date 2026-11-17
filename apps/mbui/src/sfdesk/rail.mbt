@@ -38,20 +38,75 @@ fn words_in(a : Array[Json]) -> Array[String] {
 }
 
 ///|
-/// The rail's places in workspace `ws`, in their order.
+/// The rail's places in workspace `ws`, in their order: the core's, and 看板 where it stands while 实验性功能's
+/// 对话列表看板视图 is on (board_rail_at).
 pub fn rail_items(src : Source, ws : String) -> Array[String] {
-  words_in(items(rail_of(src, ws), "items"))
+  let places = words_in(items(rail_of(src, ws), "items"))
+  match board_rail_at(src, ws, places) {
+    Some(at) => places.insert(at, "board")
+    None => ()
+  }
+  places
 }
 
 ///|
-/// Every place the rail can show, in the order its settings list them (railView's `places`).
+/// Every place the rail can show, in the order its settings list them (railView's `places`), 看板 after 对话 while
+/// 实验性功能's 对话列表看板视图 is on.
 fn rail_places(src : Source) -> Array[String] {
-  items(rail_view(src), "places").map(fn(p) { text(Some(p), "id") })
+  let places = items(rail_view(src), "places").map(fn(p) { text(Some(p), "id") })
+  if @sfbase.board_feature.get() {
+    match places.search_by(fn(p) { p == "chats" }) {
+      Some(i) => places.insert(i + 1, "board")
+      None => places.insert(0, "board")
+    }
+  }
+  places
 }
 
 ///|
-/// A place's words (its tip, its menu's row): as the core says them.
+/// The prefs' key where 看板's place in workspace `ws`'s rail is kept (`sidebars`, as the sidebars' are by workspace:
+/// the core's rails know no 看板 while it is an experimental feature): its index among the places, or "closed" where
+/// it was taken out; none, after 对话.
+fn board_rail_key(ws : String) -> String {
+  ws + "\nboardRail"
+}
+
+///|
+/// Where 看板 stands among workspace `ws`'s rail's other places `places` (the core's): as kept (board_rail_key), else
+/// after 对话 (first where 对话 is out); None where it was taken out, or 实验性功能's 对话列表看板视图 is off.
+fn board_rail_at(src : Source, ws : String, places : Array[String]) -> Int? {
+  guard @sfbase.board_feature.get() else { return None }
+  match text(field(src.topic("prefs", {}).get().value, "sidebars"), board_rail_key(ws)) {
+    "closed" => None
+    said =>
+      match whole_of(said) {
+        Some(n) => Some(if n < 0 { 0 } else if n > places.length() { places.length() } else { n })
+        None => Some(board_rail_default(places))
+      }
+  }
+}
+
+///|
+/// Where 看板 stands among the rail's other places `places` where nothing else is said: after 对话, else first.
+fn board_rail_default(places : Array[String]) -> Int {
+  match places.search_by(fn(p) { p == "chats" }) {
+    Some(i) => i + 1
+    None => 0
+  }
+}
+
+///|
+/// Whether workspace `ws`'s 看板 stands elsewhere than as the rail starts (moved, taken out): the rail changed.
+fn board_rail_changed(src : Source, ws : String) -> Bool {
+  @sfbase.board_feature.get() && text(field(src.topic("prefs", {}).get().value, "sidebars"), board_rail_key(ws)) != ""
+}
+
+///|
+/// A place's words (its tip, its menu's row): as the core says them (看板 the board's own).
 fn rail_label(src : Source, place : String) -> String {
+  if place == "board" {
+    return @sf.t("web-main.board.board")
+  }
   match items(rail_view(src), "places").search_by(fn(p) { text(Some(p), "id") == place }) {
     Some(i) => text(Some(items(rail_view(src), "places")[i]), "label")
     None => place
@@ -65,11 +120,11 @@ pub fn place_bare(place : String) -> Bool {
 }
 
 ///|
-/// Whether the place is drawn with no sidebar of its own now: place_bare's, and the chats as the board off the tape
-/// (Large: the sidebar closed to its bar, the board the pane's whole; on the tape the board is the page's panel's, the
-/// sidebar beside it as ever).
+/// Whether the place is drawn with no sidebar of its own now: place_bare's, and 看板 off the tape (大屏: the sidebar
+/// closed to its bar, the board the pane's whole; on the tape the board is the page's panel's, the chats' list beside
+/// it as ever).
 pub fn place_bare_now(place : String) -> Bool {
-  place_bare(place) || (place == "chats" && board_bare() && !wide.tape.get())
+  place_bare(place) || (place == "board" && !wide.tape.get())
 }
 
 ///|
@@ -88,6 +143,8 @@ pub fn lit_place() -> String {
     match pages[k] {
       Files | Drive(_) | DriveRead(_) | DrivePlay(_) => return "files"
       Place(p) => return p
+      // (Home as the board: 看板's, board.mbt)
+      Home if k == 0 && board_bare() => return "board"
       // 已归档: one of the chats' lists
       Home | Chat(_) | NewChat | Archived => return "chats"
       _ => ()
@@ -101,11 +158,19 @@ pub fn lit_place() -> String {
 /// The places the rail shows: its own, and a place left out of it but in view at their foot while it is (not while the
 /// rail is changed).
 fn rail_shown(src : Source, w : Workspace) -> Array[String] {
+  rail_shown_entries(src, w).map(fn(e) { e.1 })
+}
+
+///|
+/// rail_shown's places, each said whether it is the one in view added at their foot (true) or one of the rail's own: a
+/// place taken out of the rail while it is in view is another entry at their foot, not the same moved there (Rail.tsx's
+/// `added-` key: not moved or taken out, it is not kept), so the rail closes its room where it was and opens it there.
+fn rail_shown_entries(src : Source, w : Workspace) -> Array[(Bool, String)] {
   let places = rail_items(src, w.id)
   let in_view = rail_in_view(src, w)
-  let shown = places.copy()
+  let shown = places.map(fn(p) { (false, p) })
   if in_view != "" && !places.contains(in_view) && !wide.editing.get() {
-    shown.push(in_view)
+    shown.push((true, in_view))
   }
   shown
 }
@@ -136,6 +201,9 @@ pub fn side_place() -> String {
     wide.side_place
   } else if lit == "chats" && app.nav.pages().contains(Archived) {
     "archive"
+  } else if lit == "board" {
+    // (the board on the tape: the chats' list beside it)
+    "chats"
   } else {
     lit
   }
@@ -375,7 +443,13 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
     "attention" => {
       attention_set(!wide.attention_open.get())
     }
+    "board" => board_go(src, w)
     "chats" | "mine" | "watching" | "hidden" => {
+      // (from the board: the list again, the chat open as 看板 was gone to put back beside it: board_kept_chat)
+      let from_board = @sfbase.board_on_of(src, w.id)
+      if from_board {
+        @sfbase.board_set(src, false)
+      }
       // its list in the sidebar: 对话 all of them, the others theirs
       let f = if place == "chats" { "all" } else { place }
       if filter_of(src, w.id) != f {
@@ -386,7 +460,9 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
         })
       }
       // the chats again: the chat last open stays open beside the list
-      if app.nav.pages()[0] == Home && lit_place() == "chats" && !app.nav.pages().contains(Archived) {
+      if from_board && board_back_to_chat(w) {
+        ()
+      } else if app.nav.pages()[0] == Home && lit_place() == "chats" && !app.nav.pages().contains(Archived) {
         ()
       } else {
         @sfbase.go_place("chats") |> ignore
@@ -403,13 +479,33 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
 }
 
 ///|
-/// The rail kept (`prefs.set {rails: {workspace: [...]}}`, on this device).
+/// The rail kept (`prefs.set {rails: {workspace: [...]}}`, on this device); while 实验性功能's 对话列表看板视图 is on, 看板's
+/// place apart (board_rail_key: where it stands among the rest, "closed" where it is not in `items`, nothing where it
+/// stands where it starts), in the same change.
 fn rail_keep(src : Source, ws : String, items : Array[String]) -> Unit {
-  (src.call)(
-    "prefs.set",
-    { "rails": Json::object(Map::from_array([(ws, Json::array(items.map(fn(i) { Json::string(i) })))])) },
-    fn(_) {  },
-  )
+  let rest = items.filter(fn(i) { i != "board" })
+  let said : Map[String, Json] = { "rails": Json::object(Map::from_array([(ws, Json::array(rest.map(fn(i) { Json::string(i) })))])) }
+  if @sfbase.board_feature.get() {
+    let at = match items.search_by(fn(i) { i == "board" }) {
+      Some(i) if i == board_rail_default(rest) => Json::null()
+      Some(i) => Json::string(i.to_string())
+      None => Json::string("closed")
+    }
+    said["sidebars"] = Json::object(Map::from_array([(board_rail_key(ws), at)]))
+  }
+  (src.call)("prefs.set", Json::object(said), @sfbase.answer_unread)
+}
+
+///|
+/// The rail as it starts (its menu's 侧边条恢复默认): the core's default, 看板 after 对话 again.
+fn rail_reset(src : Source, ws : String) -> Unit {
+  let said : Map[String, Json] = {
+    "rails": Json::object(Map::from_array([(ws, Json::array(items(rail_view(src), "default")))])),
+  }
+  if @sfbase.board_feature.get() {
+    said["sidebars"] = Json::object(Map::from_array([(board_rail_key(ws), Json::null())]))
+  }
+  (src.call)("prefs.set", Json::object(said), @sfbase.answer_unread)
 }
 
 ///|
@@ -500,7 +596,7 @@ fn rail_menu(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       }
       entries.push(@kit.menu_item("customize", label=@sf.t("web-main.rail.customize")))
       icons["customize"] = "sliders"
-      if flag(rail_of(src, w.id), "changed") {
+      if flag(rail_of(src, w.id), "changed") || board_rail_changed(src, w.id) {
         entries.push(@kit.menu_item("reset", label=@sf.t("web-main.rail.reset")))
         icons["reset"] = "refresh"
       }
@@ -557,7 +653,7 @@ fn rail_menu(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   }
   match m.chosen {
     Some("remove") => rail_keep(src, w.id, kept.filter(fn(i) { i != place }))
-    Some("reset") => rail_keep(src, w.id, words_in(items(rail_view(src), "default")))
+    Some("reset") => rail_reset(src, w.id)
     Some("customize") => {
       drawn.replaced = true
       wide.editing.set(true)
@@ -622,6 +718,7 @@ fn rail_icon(place : String) -> String {
   match place {
     "attention" => "bell"
     "chats" => "chats"
+    "board" => "view-columns"
     "mine" => "user"
     "watching" => "watch"
     "hidden" => "eye-off"
@@ -686,8 +783,16 @@ fn rail_adder(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
         fn() {
           @sf.panel_head(c, @sf.t("web-main.rail.customize"), note=@sf.t("web-main.rail.customizeLead"))
           // (by kind, as the core groups them: railView's `groups`)
+          // (看板 among the lists after 对话 while 实验性功能's 对话列表看板视图 is on, as rail_places has it)
           let kinds = items(rail_view(src), "groups").map(fn(g) {
-            (text(Some(g), "label"), words_in(items(Some(g), "places")))
+            let places = words_in(items(Some(g), "places"))
+            if @sfbase.board_feature.get() && text(Some(g), "kind") == "lists" {
+              match places.search_by(fn(p) { p == "chats" }) {
+                Some(i) => places.insert(i + 1, "board")
+                None => places.insert(0, "board")
+              }
+            }
+            (text(Some(g), "label"), places)
           })
           let mut none = true
           for k in kinds {
