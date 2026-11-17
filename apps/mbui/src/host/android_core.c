@@ -20,11 +20,11 @@
 // MB_CORE_TRACE=1 in the app's environment says what the core says (its first 400 bytes) and the app's calls in the
 // log.
 //
-// mb_core_start/send/stop come from the UI's (GL) thread; on_message runs on the core's. A push delivered with no core
+// mb_core_start/send/stop come from the UI's thread (MBView's app thread); on_message runs on the core's. A push delivered with no core
 // running (the app's process started for it: dev.mbui.Push) starts one alone (CoreHost.startAlone, FCM's thread), which
 // the app takes as its own if it starts meanwhile (its on_message set then), else is stopped once the push is handled
 // (CoreHost.stopAlone), as still.fail's PushService starts its StillFailCore. The app's own activity starts one so
-// too as it is made (StillfailApp coreAhead), off the GL thread and before the window's surface: the app takes it as
+// too as it is made (StillfailApp coreAhead), off the UI's thread and before the window's surface: the app takes it as
 // it starts.
 #include <jni.h>
 #include <pthread.h>

@@ -1,3 +1,4 @@
+import { modelSpeed } from "../../../../client/core-ts/src/model-speed.ts";
 // What the pages ask of the hub, the jobs and the files (admin/mod.rs `route`): new chats and sessions,
 // uploads, messages, adding a session to a chat, archiving, deleting, stopping, evicting, warming, a session's settings,
 // clearing a chat's ended jobs, stopping a job. What is only written to the store is routes/marks.ts's; the reads are
@@ -481,6 +482,7 @@ export const routes = (tools: Tools): Route[] => {
                 model: given("model"),
                 effort: given("effort"),
                 fast: typeof i.fast === "boolean" ? i.fast : null,
+                speed: speedAsked(i.speed),
                 context: contextAsked(i.context, r.lang),
                 title: typeof i.title === "string" ? chars(i.title, 120) : null,
                 createdBy: r.viewer.email,
@@ -684,6 +686,7 @@ export const routes = (tools: Tools): Route[] => {
                 if (i.afresh !== null && typeof i.afresh !== "boolean") throw new Refused(400, "afresh is true, false or null");
                 change.afresh = i.afresh;
               }
+              if ("speed" in i) change.speed = speedAsked(i.speed);
               if ("fast" in i) {
                 if (i.fast !== null && typeof i.fast !== "boolean") throw new Refused(400, tr(r.lang, "station.admin.badFast"));
                 change.fast = i.fast;
@@ -828,3 +831,10 @@ export const routes = (tools: Tools): Route[] => {
     ),
   ];
 };
+
+function speedAsked(value: unknown) {
+  if (value == null) return null;
+  const speed = modelSpeed(value);
+  if (speed === null) throw new Refused(400, "speed must be standard, fast, ultrafast or null");
+  return speed;
+}

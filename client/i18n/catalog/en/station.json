@@ -829,5 +829,7 @@
   "station.group.badRelay": "A relay address starts with https:// or http://",
   "station.group.noCode": "Give a join code (an invitation or a device code, 16 characters)",
   "station.group.badCode": "A join code is 16 letters and digits, like XXXX-XXXX-XXXX-XXXX",
-  "station.group.longName": "A member's name is {most} characters at most"
+  "station.group.longName": "A member's name is {most} characters at most",
+  "station.speed.invalid": "Choose Standard, Fast or Ultrafast on a runtime that supports speed settings.",
+  "station.speed.ultrafast_unavailable": "Ultrafast requires GPT-6 Astra or GPT-6.1 Sol in Codex with a ChatGPT subscription. Choose a supported model and account, or Standard/Fast."
 }

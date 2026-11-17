@@ -1,5 +1,5 @@
-// The files' page (sfdesk files_start.mbt files_station): one page for a station's drive, laid out by its own width
-// (narrow: drive_narrow.mbt, the web's narrow app; wide: the files' page as the web's desktop), at a width of each tier,
+// The files' page (sfpages files_page_node.mbt drive_page_node): one page for a station's drive, laid out by its own width
+// (narrow: narrow_folder_node, the web's narrow app; wide: the files' page as the web's desktop), at a width of each tier,
 // with a finger and with a mouse.
 
 ///|
@@ -254,7 +254,7 @@ test "adding a favorite on a narrow screen chooses a station and folder without 
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   app.nav.replace(Files)
   t.run_for(@ui.move_most_ms)
-  @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+  @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   sheet_rested(t, "sf-present")
   // (two stations it can be done on: which first)
   assert_true(t.find("选择一台 station，然后选择要收藏的文件夹") is Some(_), msg="which station")
@@ -275,7 +275,7 @@ test "adding a favorite on a narrow screen chooses a station and folder without 
   t.click(Button, label="收藏此文件夹")
   t.frame()
   assert_eq(named(calls, "drive.setRoots").length(), 0)
-  assert_true(@sfdesk.favorite_has(@sfdesk.favorites(src, "ws1"), "ws1/st1", "/Users/lin/项目", ""))
+  assert_true(@sfpages.favorite_has(@sfpages.favorites(src, "ws1"), "ws1/st1", "/Users/lin/项目", ""))
   assert_true(!@sf.presenting())
 }
 
@@ -448,7 +448,7 @@ fn go_up(platform : Int, w : Double, h : Double, rest? : Bool = true) -> @ui.Tes
   if platform == 0 {
     t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   } else {
-    @sfdesk.go_to_open()
+    @sfpages.go_to_open()
     t.draw()
   }
   if rest {
@@ -638,7 +638,7 @@ fn which_station(calls : Array[Made], platform : Int, wide : Bool, rest : Bool) 
   }
   app.nav.replace(Files)
   t.run_for(@ui.move_most_ms)
-  @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+  @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   t.frame()
   if rest {
     t.run_for(@ui.move_most_ms)

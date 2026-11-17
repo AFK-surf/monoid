@@ -23,7 +23,7 @@ export type Asked = { method: string; url: string; headers: Record<string, strin
 export type Reply = { status: number; body: unknown; delayMs?: number };
 
 /// A provider at a local address: `answer` says what each request gets; `asked` keeps the requests in order.
-export async function provider(answer: (asked: Asked) => Reply) {
+export async function provider(answer: (asked: Asked) => Reply | Promise<Reply>) {
   const asked: Asked[] = [];
   const server = createServer(async (req: IncomingMessage, res) => {
     const chunks: Buffer[] = [];
@@ -36,7 +36,7 @@ export async function provider(answer: (asked: Asked) => Reply) {
     const form = Object.fromEntries(new URLSearchParams(String(req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded") ? text : ""));
     const one: Asked = { method: req.method ?? "", url: req.url ?? "", headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, String(v)])), body, form };
     asked.push(one);
-    const reply = answer(one);
+    const reply = await answer(one);
     if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
     const out = typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
     res.writeHead(reply.status, { "content-type": "application/json", connection: "close" });

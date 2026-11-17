@@ -683,7 +683,13 @@ let pg_lead_foot : Double = 10.0
 /// Back (nav_back's, as a node): a chevron and where to (`label`) in the link's ink, rippling as it is pressed; `back`
 /// done then.
 #callsite(autofill(loc))
-fn nav_back_node(parent : @view.View, label : () -> String, back : () -> Unit, loc~ : SourceLoc) -> Unit {
+fn nav_back_node(
+  parent : @view.View,
+  label : () -> String,
+  back : () -> Unit,
+  most? : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(b) {
     b
     .row(Is(true))
@@ -693,7 +699,17 @@ fn nav_back_node(parent : @view.View, label : () -> String, back : () -> Unit, l
     |> ignore
     pressed_node(b, back, Is(nav_back_ripple), Link, label)
     icon_node(b, "chevron-left", nav_back_icon, By(fn() { theme().p.accent_text })) |> ignore
-    b.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }) |> ignore
+    match most {
+      // (its word no wider than `most`: there whole or not at all, the chevron alone where it has not the room, as
+      // nav_back's)
+      Some(m) =>
+        b.box(fn(r) {
+          r.row(Is(true)).fits(Is(true)).min_width(Is(Some(0.0))).max_width(By(fn() { Some(m()) })) |> ignore
+          r.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }).drops(Is(1)) |> ignore
+        })
+        |> ignore
+      None => b.box(fn(w) { styled_words(w, label, fn() { nav_back_words }) |> ignore }) |> ignore
+    }
   })
   |> ignore
 }

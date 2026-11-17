@@ -62,7 +62,7 @@ export class CommandMissing extends Error {
 export async function startRunner(data: string, id: string, program: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, pty?: { cols: number; rows: number }): Promise<RunnerInfo> {
   // Looked for as the runner would (its PATH is `env`'s): one not there is told apart from a runner that failed.
   env = await withShellCommand(program, env);
-  if (!/[\\/]/.test(program) && platform.findCommand(program, env) === null) return Promise.reject(new CommandMissing(program));
+  if (!/[\\/]/.test(program) && (await platform.findCommandSoon(program, env)) === null) return Promise.reject(new CommandMissing(program));
   return new Promise((resolve, reject) => {
     // Lower than the station (ops/nice.ts), the runtime it starts and what that starts too.
     const [command, given] = niced(runnerBinary(), ["--dir", runnersDir(data), "--id", id, "--cwd", cwd, ...(pty ? ["--pty", `${pty.cols}x${pty.rows}`] : []), "--", program, ...args]);

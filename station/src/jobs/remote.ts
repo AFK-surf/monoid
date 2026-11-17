@@ -131,7 +131,7 @@ export function hash(v: Json): string {
 }
 
 export function readJson(path: string): Json {
-  return JSON.parse(readFileSync(path, "utf8"));
+  return JSON.parse(readFileSync(path, "utf8")); // sync: a use record before the program told those it read as it started (usedRecord), and the tests' cloud.json (cloudState)
 }
 
 /// How long what a task brought back is kept once nothing in it changed (`tidyBack`), and how often that is looked at.
@@ -771,7 +771,7 @@ export class Remote {
     if (this.usedReady) return null;
     let read: Json | null;
     try {
-      read = readJson(path);
+      read = readJson(path); // sync: only until usedReady, as the program starts
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       read = null;

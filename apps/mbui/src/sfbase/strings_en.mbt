@@ -1094,6 +1094,7 @@ let en : Map[String, String] = {
   "web-main.model.effortLevel.minimal": "Minimal",
   "web-main.model.effortLevel.xhigh": "Extra high",
   "web-main.model.fastNote": "Fast uses more quota or credits",
+  "web-main.model.ultrafastNote": "Requires Pro $500 or eligible Enterprise/Edu. Uses 8× included quota or 6× credits.",
   "web-main.model.models": "Model",
   "web-main.model.allModels": "All models",
   "web-main.model.likeModel": "Star {model}",

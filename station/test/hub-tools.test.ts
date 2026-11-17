@@ -15,7 +15,7 @@ import { sessionKey } from "../src/sessions/hub.ts";
 import { fromPeer, sender } from "../src/sessions/messages.ts";
 import { handedOf } from "../src/store/rows.ts";
 import { DecisionSessionsUnavailable } from "../src/store/legacy-decision-session.ts";
-import { CREATE, CREATE_PRESET, NOTICE, createForPeer, noticeForPeer } from "../src/sessions/opened.ts";
+import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, NOTICE, createForPeer, noticeForPeer } from "../src/sessions/opened.ts";
 import { presetCopyOf } from "../src/sessions/presets.ts";
 import { stationLang, tr } from "../src/ops/i18n.ts";
 import { forPeer } from "../src/sessions/others.ts";
@@ -1573,9 +1573,9 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
   assert.ok(said.includes("this station"), said);
   assert.deepEqual([near.session(child).runtime, near.session(child).model], ["claude", "opus"]);
   assert.equal((await presetCopyOf(near.session(child).workspace))?.id, review.id);
-  for (const beside of [{ model: "sonnet" }, { runtime: "claude" }, { effort: "high" }, { fast: true }, { context: 200_000 }]) {
+  for (const beside of [{ model: "sonnet" }, { runtime: "claude" }, { effort: "high" }, { fast: true }, { speed: "ultrafast" }, { context: 200_000 }]) {
     const why = await near.refused(keyA, "chat_create", { for: "me", key: "beside", text: "x", preset: review.id, ...beside });
-    assert.ok(why.includes("leave runtime, model, effort, fast and context out"), why);
+    assert.ok(why.includes("leave runtime, model, effort, fast, speed and context out"), why);
   }
   // One that names no model is chosen as without one, and kept with the chat.
   await near.call(keyA, "chat_create", { for: "me", key: "loose", text: "x", preset: "Loose", model: "sonnet" });
@@ -1606,6 +1606,42 @@ test("an agent opens a chat with a preset as a person would in the app: taken as
   });
   const old = await near.refused(keyA, "chat_create", { for: "me", key: "old", text: "x", preset: "Far" });
   assert.ok(old.includes("not updated yet") && old.includes("with a preset"), old);
+  await near.close();
+  await far.close();
+});
+
+test("a chat opened on another station keeps its explicit speed, including a preset's, or refuses an older station", async () => {
+  const near = new Rig({ link: true });
+  const far = new Rig({ link: true });
+  far.edit((raw) => Object.assign(raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6-astra"] }));
+  const a = say("<@UBOT> review it");
+  await near.accept(a);
+  await settle();
+  const key = sessionKey("cl", "C1", a.threadTs);
+  const asked: string[] = [];
+  near.hub.onPeer(async (_station, request) => {
+    if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
+    asked.push(request.method);
+    if (request.method === CREATE_SPEED || request.method === CREATE_PRESET_SPEED) return createForPeer(far.hub, "st", request);
+    return fromPeer(far.hub, "st", request);
+  });
+  const preset = await near.hub.presets.add(null, { name: "Quick review", dirs: [], instructions: "Review it.", model: { model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" } }, "local");
+  for (const [k, choice, method] of [
+    ["explicit", { runtime: "codex", model: "gpt-6-astra", speed: "ultrafast" }, CREATE_SPEED],
+    ["preset", { preset: preset.id }, CREATE_PRESET_SPEED],
+  ] as const) {
+    asked.length = 0;
+    await near.call(key, "chat_create", { for: "me", key: k, station: "far", text: "review it", ...choice });
+    assert.equal(asked[0], method);
+    const child = near.store.openedBy(key).find((o) => o.key === k)!.child;
+    assert.equal(far.session(child).speed, "ultrafast");
+  }
+  near.hub.onPeer(async (_station, request) => {
+    if (request.method === "peers") return { stations: [{ id: "far", name: "orchard" }] };
+    throw new Refused("remote tasks are not enabled for this source station");
+  });
+  assert.match(await near.refused(key, "chat_create", { for: "me", key: "old", station: "far", text: "review it", preset: preset.id }), /not updated yet.*requested speed/);
+  assert.equal(far.store.listSessions().length, 2);
   await near.close();
   await far.close();
 });

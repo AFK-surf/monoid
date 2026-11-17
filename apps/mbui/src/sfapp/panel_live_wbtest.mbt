@@ -151,7 +151,7 @@ test "names already where files go, two asked in turn, 大屏 keyboard and mouse
   let t = screen_in("files-list", win, "zh")
   let done = Ref(0)
   let entry = fn(name : String) { dv_entry(@sffixture.fix_entry(name, false, 320, "10/01")) }
-  @sfdesk.drag_ask({
+  @sfpages.drag_ask({
     into: { station: "ws1/st1", root: Some(@sffixture.fix_docs), path: "会议记录" },
     into_name: "会议记录",
     total: 2,

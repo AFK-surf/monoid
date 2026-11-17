@@ -139,7 +139,7 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
       const k = str(get(group, "kind"));
       if (k === null || !wants(k)) continue;
       const hits = arr(get(group, "hits"));
-      if (get(group, "more") === true || hits.length > (kind ? ONE_KIND : SHOWN)) more.add(k);
+      if (get(group, "more") === true || hits.length > (kind ? ONE_KIND : k === "chat" ? CHATS_SHOWN : SHOWN)) more.add(k);
       for (const hit of hits) {
         const thread = num(hit.thread);
         if (thread !== null && src.moved?.(s.address, thread) === true) continue;
@@ -233,7 +233,7 @@ export function searchView(src: SearchSource, chats: J, view: Topic): Value {
   return {
     ok: {
       items: shownItems,
-      chatsMore: items.length > shownItems.length,
+      chatsMore: items.length > shownItems.length || more.has("chat"),
       words,
       messages: messages.slice(0, limit),
       messagesMore: messages.length > limit || more.has("message"),

@@ -173,9 +173,13 @@ fn centered(
 ) -> Unit {
   let pid = c.id(key + "/panel")
   let (ww, wh) = c.window_size()
-  let i = c.box(id=pid, max_w=ww - 32.0, body)
+  // (in the room the system's bars leave of the window: a status bar, the home indicator, a column of the app's tabs
+  // down a side)
+  let bars = @ui.system_bars()
+  let (rw, rh) = (ww - bars.left - bars.right, wh - bars.top - bars.bottom)
+  let i = c.box(id=pid, max_w=rw - 32.0, body)
   // in the middle by its size as laid out (its first frame too)
-  c.place_by_size(i, fn(pw, ph) { ((ww - pw) / 2.0, (wh - ph) / 2.0) })
+  c.place_by_size(i, fn(pw, ph) { (bars.left + (rw - pw) / 2.0, bars.top + (rh - ph) / 2.0) })
   c.semantics(i, role, label=title, description~, modal~)
   c.look(i, shows)
 }

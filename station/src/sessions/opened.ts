@@ -1,3 +1,4 @@
+import { modelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Chats an agent opens for another (chat_create): a new session in a still.fail chat of its own, on this station or on
 // another of the workspace (`session.create` there, its files and first message after it as session_send sends them).
 // The chat begins with the opener's message, headed as its opening; its starter is the person who started the opener's
@@ -35,6 +36,9 @@ export const CREATE = "session.create";
 /// The same with a preset (its copy in `presetCopy`): a method of its own, so a station from before refuses it rather
 /// than opening the chat without the preset.
 export const CREATE_PRESET = "session.create.preset";
+/// Explicit speed must not be silently discarded by a station from before the three speed choices.
+export const CREATE_SPEED = "session.create.speed";
+export const CREATE_PRESET_SPEED = "session.create.preset.speed";
 /// The method a station tells the opener of a chat how one of its turns ended.
 export const NOTICE = "session.notice";
 
@@ -101,7 +105,7 @@ function starterOf(hub: Hub, key: string): string {
 async function makeChat(
   hub: Hub,
   o: { runtime: RuntimeName; model: string | null; effort: string | null; inherited: boolean; title: string | null; createdBy: string; ws: string | null; bound?: boolean },
-  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "context" | "profile" | "profiles">> = {},
+  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "speed" | "context" | "profile" | "profiles">> = {},
 ) {
   const usual = o.effort === null && o.bound !== true ? usualEffort(hub, o.createdBy, o.runtime, o.model) : null;
   const options: NewChat = { ...more, runtime: o.runtime, model: o.model, effort: o.effort ?? usual, title: o.title, createdBy: o.createdBy, ws: o.ws };
@@ -141,7 +145,7 @@ function boundHere(hub: Hub, ws: string | null, pm: PresetModel, name: string) {
   if (runtime === undefined || !RUNTIMES.includes(runtime as RuntimeName)) throw new Error(`the preset ${name} runs ${pm.model}, which no account on the station it is opened on runs`);
   return {
     choice: { runtime: runtime as RuntimeName, model: pm.model, effort: pm.effort ?? null, bound: true },
-    more: { fast: pm.fast ?? null, context: pm.context ?? null, profile: pm.profile ?? null, profiles: pm.profiles ?? null },
+    more: { ...(pm.speed ? { speed: pm.speed } : {}), fast: pm.fast ?? null, context: pm.context ?? null, profile: pm.profile ?? null, profiles: pm.profiles ?? null },
   };
 }
 
@@ -281,14 +285,16 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   const effort = given(args, "effort");
   if (args.fast !== undefined && args.fast !== null && typeof args.fast !== "boolean") throw new Error("fast must be true or false");
   const fast = typeof args.fast === "boolean" ? args.fast : null;
+  const speed = modelSpeed(args.speed);
+  if (args.speed != null && speed === null) throw new Error("speed must be standard, fast or ultrafast");
   const context = contextAsked(args.context ?? undefined, stationLang()) ?? null;
   // A preset is taken as it is, as a person opening a chat with it in the app takes it (the user, 2026-11-14: 「有预设
   // 就只能直接用预设，或者设置用户也能手动指定的部分，没有特权」): where it names its model configuration nothing of it is
   // given beside it; where it names stations, the chat opens on one of them (the one, where it names one).
   const presetName = given(args, "preset");
   const preset = presetName === null ? null : await presetNamed(hub, row.ws ?? null, presetName);
-  if (preset?.model && (runtime !== null || model !== null || effort !== null || fast !== null || context !== null)) {
-    throw new Error(`the preset ${preset.name} runs ${preset.model.model} as it says (its runtime, effort, Fast and context too): leave runtime, model, effort, fast and context out, or leave preset out to choose them yourself`);
+  if (preset?.model && (runtime !== null || model !== null || effort !== null || fast !== null || speed !== null || context !== null)) {
+    throw new Error(`the preset ${preset.name} runs ${preset.model.model} as it says (its runtime, effort, Fast and context too): leave runtime, model, effort, fast, speed and context out, or leave preset out to choose them yourself`);
   }
   const bindsTo = preset === null ? [] : presetStations(preset);
   // Without a model of its own it runs what its starter uses most where it is opened (chosen there), never its
@@ -326,7 +332,7 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   if (there === null) {
     const bound = preset?.model ? boundHere(hub, row.ws ?? null, preset.model, preset.name) : null;
     const chosen = bound !== null ? bound.choice : model === null ? chosenHere(hub, createdBy, row.ws ?? null, runtime as RuntimeName | null) : choice;
-    const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, context, ...bound?.more };
+    const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, ...(speed ? { speed } : {}), context, ...bound?.more };
     const [child, chat] = await makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
     const link = hub.link(child) ?? null;
     hub.store.insertOpened({ childStation: "", child, parentStation: "", parent: key, key: k, title, link, openerTitle: from, led });
@@ -341,9 +347,10 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   // runtime's default there.
   // With a preset, its copy (`presetCopy`), whose model configuration, where it names one, the station there runs.
   const request: Json = {
-    method: preset !== null ? CREATE_PRESET : CREATE,
+    method: preset !== null ? (speed !== null || preset.model?.speed ? CREATE_PRESET_SPEED : CREATE_PRESET) : speed !== null ? CREATE_SPEED : CREATE,
     session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led,
     ...(fast !== null ? { fast } : {}),
+    ...(speed !== null ? { speed } : {}),
     ...(context !== null ? { context } : {}),
     ...(preset !== null ? { presetCopy: copyFor(hub.presets, preset, hub.station() ?? "", there) } : {}),
   };
@@ -352,7 +359,7 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
     made = await call(there, request);
   } catch (error) {
     const why = (error as Error).message;
-    if (error instanceof Refused && fromBefore(why)) throw new Error(`station ${there} is not updated yet: chats cannot be opened there${preset !== null ? " with a preset" : ""}`);
+    if (error instanceof Refused && fromBefore(why)) throw new Error(`station ${there} is not updated yet: chats cannot be opened there${preset !== null ? " with a preset" : ""}${speed !== null || preset?.model?.speed ? " at the requested speed" : ""}`);
     throw new Error(`not opened on station ${there}: ${why}. If it timed out it may have been opened: call chat_create again with the same key, which gives that chat rather than another`);
   }
   const child = typeof made?.session === "string" ? made.session : "";
@@ -399,7 +406,7 @@ async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: strin
   const createdBy = given(request, "createdBy") ?? `${peer}/${parent}`;
   const model = given(request, "model");
   // With a preset (CREATE_PRESET): its copy, and the model configuration it names run as it says.
-  const copy = request?.method === CREATE_PRESET ? presetCopyInput(request?.presetCopy) : null;
+  const copy = request?.method === CREATE_PRESET || request?.method === CREATE_PRESET_SPEED ? presetCopyInput(request?.presetCopy) : null;
   const bound = copy?.model ? boundHere(hub, ws, copy.model, copy.name) : null;
   // Its opener named no model: what its starter uses most here (an opener from before this sends its own, inherited).
   const chosen = bound !== null ? bound.choice
@@ -407,6 +414,7 @@ async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: strin
     : { runtime: runtime as RuntimeName, model };
   const more = {
     fast: typeof request?.fast === "boolean" ? (request.fast as boolean) : null,
+    speed: modelSpeed(request?.speed),
     context: contextAsked(request?.context ?? undefined, stationLang()) ?? null,
     ...(copy !== null ? { presetCopy: copy } : {}),
     ...bound?.more,

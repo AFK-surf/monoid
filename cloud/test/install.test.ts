@@ -154,6 +154,25 @@ esac
   return { root, home, run, done: () => rmSync(root, { recursive: true, force: true }) };
 }
 
+test("the Mac service preserves XML characters in its data directory and PATH", () => {
+  const m = machine();
+  try {
+    const data = join(m.root, "station & <work>");
+    const extra = join(m.root, "tools & <local>");
+    const done = m.run(["tok"], { STILLFAIL_DATA: data, PATH: `${join(m.root, "stub")}:${extra}:/usr/bin:/bin:/usr/sbin:/sbin` });
+    assert.equal(done.status, 0, done.out);
+    // Parse the service launchd would read, rather than only checking the XML's spelling.
+    const plist = JSON.parse(execFileSync("python3", ["-c", "import json, plistlib, sys; print(json.dumps(plistlib.load(open(sys.argv[1], 'rb'))))", join(m.home, "Library/LaunchAgents/fail.still.station.plist")], { encoding: "utf8" }));
+    assert.deepEqual(plist.ProgramArguments, [join(data, "app/bin/stillfail"), "start"]);
+    assert.equal(plist.EnvironmentVariables.STILLFAIL_DATA, data);
+    assert.ok(plist.EnvironmentVariables.PATH.split(":").includes(extra));
+    assert.equal(plist.StandardOutPath, join(data, "stillfail.log"));
+    assert.equal(plist.StandardErrorPath, join(data, "stillfail.log"));
+  } finally {
+    m.done();
+  }
+});
+
 test("in WSL the station runs without Windows' PATH, and Windows keeps WSL up from its sign-in on", () => {
   const m = machine("wsl");
   try {

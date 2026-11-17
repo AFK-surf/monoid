@@ -1078,6 +1078,7 @@ let zh : Map[String, String] = {
   "web-main.model.effortLevel.minimal": "最低",
   "web-main.model.effortLevel.xhigh": "很高",
   "web-main.model.fastNote": "Fast 消耗更多额度或积分",
+  "web-main.model.ultrafastNote": "需 500 美元 Pro 或符合条件的 Enterprise/Edu；套餐额度 ×8，积分 ×6。",
   "web-main.model.models": "模型",
   "web-main.model.allModels": "全部模型",
   "web-main.model.likeModel": "喜欢 {model}",

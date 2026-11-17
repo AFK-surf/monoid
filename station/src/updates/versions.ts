@@ -21,26 +21,27 @@ export function channelOfId(id: string): Channel | null {
 export const feed = (channel: Channel, origin: string) => `${origin}/releases/${channel === "stable" ? "station" : "station-beta"}.json`;
 
 /// The channel the release in `app` came from, as its installer wrote it (CHANNEL); null from an installer before that.
-/// Read once a process when it says one: the release is the process's own (an update is another process), and the
-/// overview asks it each time it is made.
+/// Read once a process, what it says or that it says none: the release is the process's own (an update is another
+/// process, and an installer writes it before), and the overview, a session's pages and the move's switch ask it each
+/// time.
 export function releaseChannel(app: string): Channel | null {
   const known = releases.get(app);
   if (known !== undefined) return known;
   let channel: Channel | null = null;
   try {
-    channel = channelOfId(readFileSync(join(app, "CHANNEL"), "utf8"));
+    channel = channelOfId(readFileSync(join(app, "CHANNEL"), "utf8")); // sync: once a process, as Updates is made, before the station serves
   } catch {}
-  if (channel !== null) releases.set(app, channel);
+  releases.set(app, channel);
   return channel;
 }
-const releases = new Map<string, Channel>();
+const releases = new Map<string, Channel | null>();
 
 /// `releaseChannel` off the station's thread (kept as it keeps it).
 export async function releaseChannelSoon(app: string): Promise<Channel | null> {
   const known = releases.get(app);
   if (known !== undefined) return known;
   const channel = await readFile(join(app, "CHANNEL"), "utf8").then(channelOfId, () => null);
-  if (channel !== null) releases.set(app, channel);
+  releases.set(app, channel);
   return channel;
 }
 

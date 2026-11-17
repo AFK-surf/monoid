@@ -168,7 +168,7 @@ fn PanelField::keyed(self : PanelField, as_sheet : Bool) -> Bool {
 ///
 /// | caller | its field | shown |
 /// |---|---|---|
-/// | sfdesk files_go.mbt, 前往文件夹 | the path | a dialog in the middle (中屏, 大屏) |
+/// | sfpages files_go_node.mbt, 前往文件夹 | the path | a dialog in the middle (中屏, 大屏) |
 /// | sfpages workspace.mbt, 新建 workspace | its name | a sheet on 小屏, a dialog in the middle |
 pub fn panel_opens_in_node(field : @view.View) -> Unit {
   match field.lent(panel_field_lent) {

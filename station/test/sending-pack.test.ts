@@ -1,4 +1,4 @@
-// A chat's or a retired station's files sent a pack at a time, in zstd (replica/sending.ts `packBytes`, `receivePack`),
+// A chat's or a retired station's files sent a pack at a time, in zstd (replica/pack.ts `packBytes`, `receivePack`),
 // where the other station says it takes them so: a request a file was 252k requests in a row for one chat (the drill
 // of 2026-11-16, 182 s between a VM and its own host). A pack's file that changes or goes as it is read is called off
 // and the rest go on in the same stream (not held), or fails it (held); one meeting no answer is sent again of what the

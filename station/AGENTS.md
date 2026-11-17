@@ -51,7 +51,10 @@
   the delta applier it runs, `src/updates/delta.ts`). Those from before this rule stand until they are moved; the
   line that says the main thread was held (`src/main.ts`) names, by caller, those that still take time.
   `test/main-thread-waits.test.ts` counts what a day's scenarios make it wait on; a change may lower the counts, never
-  raise them.
+  raise them. `test/src-sync-calls.test.ts` reads the whole of src/ as it is (check.sh sees only what a change adds):
+  no process waited on, config.json written by `updateSoon`, the platform's lookups of the thread (`posixShell`,
+  `findCommand`, `browsers`, `makeCommand`) only where it lists them, and each file's synchronous calls marked with
+  `sync:` or on its list of those standing, which only shrinks.
 - The station's own background work yields the machine to the foreground: the MoonBit builders nobody waits on (its
   backfills, `MbBackfill`, the copies' export, a workspace's size: `src/read/mb-reader.ts` `BACKGROUND_BUILDERS`) are started under
   `platform.backgrounded` (`mbSpawned`; macOS's `taskpolicy -b`, which lowers its disk IO too where nice does not;

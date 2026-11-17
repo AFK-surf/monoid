@@ -147,7 +147,7 @@ public class MainActivity extends Activity {
             // after the app asked for it again, the app's still under way: Host.imeAwaited)
             boolean shown = insets.isVisible(WindowInsets.Type.ime());
             if (imeShown && !shown && Host.imeActive && !Host.imeAwaited && mbView.hasWindowFocus()) {
-                mbView.toGL(() -> Native.text(7, "", 0, 0));
+                mbView.toApp(() -> Native.text(7, "", 0, 0));
             }
             // a keyboard the system brought back with no field of the app's wanting it: put away, unless a native
             // view's field (a page's) has the focus. (The app sent behind with the keyboard up, its field let go of as
@@ -377,7 +377,7 @@ public class MainActivity extends Activity {
 
     // Back: while the app has a page to go back to (Host.backEnabled), the system's back is the app's, its
     // predictive back gesture followed as it goes (Android 14 on: OnBackAnimationCallback; 13: back only once
-    // done); otherwise the system's own (leaving the app). Told to MoonBit on the GL thread by the next frame (MBView.back).
+    // done); otherwise the system's own (leaving the app). Told to MoonBit on its thread by the next frame (MBView.back).
     private boolean backOn;
     private Object backCallback;
 

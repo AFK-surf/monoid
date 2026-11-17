@@ -1008,7 +1008,7 @@ pub fn drafts_given_read(key : String) -> Unit {
 }
 
 ///|
-/// What a row dragged now carries, as the frame that drags it says (sfdesk's drag.mbt), for a composer it goes over.
+/// What a row dragged now carries, as the frame that drags it says (sfpages files_drag.mbt, sfdesk drive_tab_rows.mbt), for a composer it goes over.
 // kept across runs: what the app says once as it starts
 pub let drag_carried : Ref[() -> Dragged?] = Ref(fn() { None })
 

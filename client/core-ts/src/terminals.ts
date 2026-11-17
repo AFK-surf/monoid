@@ -220,6 +220,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     let out: Queue.Queue<Uint8Array> | null = null;
     let again: Deferred.Deferred<void> | null = null;
     let inband = false;
+    let takePending = false;
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
@@ -238,10 +239,12 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         ask = control ? { ...ask, control: true, taken: undefined } : { ...ask, control: false, taken: undefined };
         if (inband && out !== null && state.phase === "live") {
           write(frame(KIND.control, utf8(JSON.stringify({ control, taken: control, cols: ask.cols, rows: ask.rows }))));
+          takePending = false;
           return;
         }
+        takePending = true;
         if (control) ask = { ...ask, taken: true };
-        if (again !== null) Deferred.doneUnsafe(again, Effect.void);
+        if (again !== null && id !== "new") Deferred.doneUnsafe(again, Effect.void);
       },
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
@@ -250,12 +253,13 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     /// One stream: opened, read until it ends, is to be opened again, or fails.
     const attempt = Effect.scoped(
       Effect.gen(function* () {
+        takePending = false; // This request carries the choice so far; a choice made while it opens still needs sending.
         const opened = yield* Effect.result(inner.stations.requests.terminalView(addr, id, ask, ctx));
         if (opened._tag === "Failure") return { failed: opened.failure } as const;
         const socket: WireSocket = opened.success;
         // A new one is opened once: its reopens are of the terminal it made.
-        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: ask.control };
-        else if (ask.taken) ask = { ...ask, taken: undefined };
+        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: ask.control, ...(takePending && ask.taken ? { taken: true } : {}) };
+        else if (ask.taken && !takePending) ask = { ...ask, taken: undefined };
         const queue = yield* Queue.unbounded<Uint8Array>();
         out = queue;
         yield* Effect.addFinalizer(() => Effect.sync(() => (out = out === queue ? null : out)));
@@ -300,6 +304,12 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
                 state.ended = isObject(s.ended) ? { code: typeof s.ended.code === "number" ? s.ended.code : null, signal: typeof s.ended.signal === "string" ? s.ended.signal : null } : null;
               }
               tell();
+              if (takePending && state.phase !== "ended") {
+                takePending = false;
+                if (!inband) return { reopen: true } as const;
+                write(frame(KIND.control, utf8(JSON.stringify({ control: ask.control, taken: ask.control, cols: ask.cols, rows: ask.rows }))));
+                ask = { ...ask, taken: undefined };
+              }
             }
           }
         }

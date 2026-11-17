@@ -185,7 +185,8 @@ fn menu_panel(
     }
     typeahead(c, pid, entries, ids, live)
   }
-  let (ww, _) = c.window_size()
+  // (as wide as the room the system's bars leave across the window at most)
+  let ww = c.window_size().0 - @ui.system_bars().left - @ui.system_bars().right
   c.focusable(pid, keys=0)
   // by its trigger, by its size as laid out (its first frame too), growing out of the side it went on (as this frame
   // lays it out; its first, the side asked for); its entries within the window (in_room: scrolling only where they are

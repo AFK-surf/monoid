@@ -90,7 +90,7 @@ fn station_pick_add(v : @view.View, key : String, then~ : () -> Unit) -> Unit {
     },
     fn() {
       for d in spick.ticked.get() {
-        files_into(key, d)
+        @sfbase.files_into(key, d)
       }
       spick.ticked.set([])
       then()
@@ -165,7 +165,7 @@ priv enum PlacesShow {
 ///|
 /// The stations lending folders in workspace `ws` (None while they are read the first time), and why they could not be
 /// read.
-fn pick_stations(src : Source, ws : String) -> (Array[DvStation]?, String?) {
+fn drive_pick_stations(src : Source, ws : String) -> (Array[DvStation]?, String?) {
   let (list, error) = dv_stations(src, ws)
   (list.map(fn(l) { l.filter(fn(s) { s.drive }) }), error)
 }
@@ -215,7 +215,7 @@ fn pick_place_key(l : (DvStation, String, String, String, Bool)) -> String {
 fn station_pick_places(v : @view.View, src : Source, ws : String) -> Unit {
   v.pick(
     fn() {
-      match pick_stations(src, ws).0 {
+      match drive_pick_stations(src, ws).0 {
         None => PlacesReading
         Some(l) => if l.length() == 0 { PlacesNone } else { PlacesListed }
       }
@@ -223,10 +223,10 @@ fn station_pick_places(v : @view.View, src : Source, ws : String) -> Unit {
     fn(b, shows) {
       match shows {
         PlacesReading =>
-          @sf.waiting_node(b, fn(w) { places_pick_sample(w) }, error=fn() { pick_stations(src, ws).1.unwrap_or("") })
+          @sf.waiting_node(b, fn(w) { places_pick_sample(w) }, error=fn() { drive_pick_stations(src, ws).1.unwrap_or("") })
         PlacesNone => narrow_empty_node(b, fn() { @sf.t("web-main.rail.filesNone") }, None)
         PlacesListed => {
-          let lines = fn() { place_lines(src, ws, pick_stations(src, ws).0.unwrap_or([])) }
+          let lines = fn() { place_lines(src, ws, drive_pick_stations(src, ws).0.unwrap_or([])) }
           @sf.panel_list_node(
             b,
             fn() { lines().map(pick_place_key) },
@@ -385,16 +385,17 @@ fn station_pick_folder(v : @view.View, src : Source, at : PickAt) -> Unit {
         FolderReading =>
           @sf.waiting_node(b, fn(w) {
             let names = [5, 9, 7, 12, 6]
-            for i, n in names {
-              let (label, note) = (@sf.sample_words(n), @sf.sample_words(if i == 0 { 14 } else { 6 }))
-              @sf.choice_row_node(w, fn() { label }, fn() { false }, note=fn() { note }, lead=mark(fn() {
+            w.each(fn() { Array::makei(names.length(), fn(i) { i }) }, fn(i) { i }, at_once=true, fn(r, i) {
+              let i = i.untracked()
+              let (label, note) = (@sf.sample_words(names[i]), @sf.sample_words(if i == 0 { 14 } else { 6 }))
+              @sf.choice_row_node(r, fn() { label }, fn() { false }, note=fn() { note }, lead=mark(fn() {
                 if i < 2 {
                   "folder"
                 } else {
                   "file"
                 }
               }))
-            }
+            })
           })
         FolderRead =>
           @sf.panel_list_node(

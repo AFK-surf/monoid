@@ -15,7 +15,7 @@ export type ProjectKey = { host: string; key: string; release: string };
 /// The key the admin page was built with; null for a build without one (then nothing can be reported).
 export function builtKey(uiDir: string): ProjectKey | null {
   try {
-    const v = JSON.parse(readFileSync(join(uiDir, "posthog.json"), "utf8"));
+    const v = JSON.parse(readFileSync(join(uiDir, "posthog.json"), "utf8")); // sync: read once, before the station serves
     return typeof v?.host === "string" && typeof v.key === "string" && typeof v.release === "string" ? { host: v.host, key: v.key, release: v.release } : null;
   } catch {
     return null;

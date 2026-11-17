@@ -1069,6 +1069,7 @@ web-main.model.effortLevel.medium
 web-main.model.effortLevel.minimal
 web-main.model.effortLevel.xhigh
 web-main.model.fastNote
+web-main.model.ultrafastNote
 web-main.model.models
 web-main.model.allModels
 web-main.model.likeModel

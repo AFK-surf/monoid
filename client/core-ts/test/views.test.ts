@@ -375,6 +375,12 @@ test("a notice that a chat's run changed says what changed, what it runs on now 
   assert.equal(shown(run, { ...run, effort: "low" }).words, "思考深度：高 → 低");
   assert.equal(shown(run, { ...run, effort: "low" }).sides, undefined);
   assert.equal(shown({ ...run, fast: false }, { ...run, fast: true }).short, "速度：Fast");
+  const codex = { ...run, runtime: "codex", model: "gpt-6-astra", fast: true };
+  notice = shown(codex, { ...codex, speed: "ultrafast" });
+  assert.equal(notice.words, "速度：Fast → Ultrafast");
+  assert.equal(notice.short, "速度：Ultrafast");
+  assert.ok(notice.lines[1].includes("Ultrafast"));
+  assert.equal(shown({ ...codex, speed: "ultrafast" }, { ...codex, speed: "standard" }).words, "速度：Ultrafast → 标准");
   // Another account alone (the station moved it, an allowance run out) is named; with another runtime it is the rest's.
   notice = shown(run, { ...run, profile: "cc2", account: "b@x.com" });
   assert.equal(notice.words, "账号：a@x.com → b@x.com");

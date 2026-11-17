@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigFile } from "../src/ops/config.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
-import { type Env, type Found, howToInstallSoon, howToUpdateSoon, findCommand, ownNode, pinNpmVersion, run, runLines, Unable, kindCommand, kindPackage } from "../src/updates/runtimes.ts";
+import { type Env, type Found, howToInstallSoon, howToUpdateSoon, findCommandSoon, ownNode, pinNpmVersion, run, runLines, Unable, kindCommand, kindPackage } from "../src/updates/runtimes.ts";
 import { hold } from "../src/updates/holds.ts";
 import { Updates, type UpdatesOptions } from "../src/updates/updates.ts";
 import { WINDOWS, platform as machine } from "../src/platform/index.ts";
@@ -211,11 +211,12 @@ describe("updates", { concurrency: true }, () => {
     assert.equal(releaseChannel(dir), null);
     assert.equal(channelOf({}, dir), "stable");
     assert.equal(channelOf({ updateChannel: "nonsense" }, dir), "stable");
-    // Installed from the beta: on it, until the config says otherwise.
-    writeFileSync(join(dir, "CHANNEL"), "beta\n");
-    assert.equal(channelOf({}, dir), "beta");
-    assert.equal(channelOf({ updateChannel: "stable" }, dir), "stable");
-    assert.equal(channelOf({ updateChannel: "beta" }, dir), "beta");
+    // Installed from the beta (its installer wrote CHANNEL before the station ran): on it, until the config says otherwise.
+    const beta = temp();
+    writeFileSync(join(beta, "CHANNEL"), "beta\n");
+    assert.equal(channelOf({}, beta), "beta");
+    assert.equal(channelOf({ updateChannel: "stable" }, beta), "stable");
+    assert.equal(channelOf({ updateChannel: "beta" }, beta), "beta");
   });
 
   test("an older version is offered only back from the beta", () => {
@@ -819,7 +820,7 @@ echo "added 1 package"
     const bin = join(home, ".local", "bin");
     mkdirSync(bin, { recursive: true });
     const env: Env = { PATH: withSystem(bin), HOME: home };
-    assert.equal(findCommand("npm", env), null, "no npm on the system's PATH");
+    assert.equal(await findCommandSoon("npm", env), null, "no npm on the system's PATH");
     const own = ownNode(data, "24.22.1")!;
     // Links an earlier release made into ~/.local/bin to that Node are taken away; others are left.
     if (!WINDOWS) {
@@ -840,14 +841,14 @@ echo "added 1 package"
     assert.deepEqual(readdirSync(join(data, "node")), [own.build.dist]);
     if (!WINDOWS) assert.deepEqual(readdirSync(bin), ["claude"]);
     assert.ok(machine.pathOf(env).endsWith(own.bin), machine.pathOf(env));
-    assert.equal(findCommand("npm", env)!.onPath.toLowerCase(), join(own.bin, own.build.npm).toLowerCase());
+    assert.equal((await findCommandSoon("npm", env))!.onPath.toLowerCase(), join(own.bin, own.build.npm).toLowerCase());
     // A station started again finds it there; Grok Build updated with that Node's npm.
     const again: Env = { PATH: withSystem(bin), HOME: home };
     const later = installed(data, "1300", null, { registry: base, nodeDist: `${base}/dist`, env: again });
     t.after(() => later.close());
     assert.equal(machine.pathOf(again), machine.pathOf(env));
     if (!WINDOWS) {
-      assert.deepEqual(await howToUpdateSoon("grok", findCommand("grok", env)!, env), { program: join(own.bin, "npm"), args: ["install", "-g", "@xai-official/grok@latest", "--prefix", own.at] });
+      assert.deepEqual(await howToUpdateSoon("grok", (await findCommandSoon("grok", env))!, env), { program: join(own.bin, "npm"), args: ["install", "-g", "@xai-official/grok@latest", "--prefix", own.at] });
     }
   });
 
@@ -910,13 +911,13 @@ END
     writeFileSync(join(dir, "vp.exe"), "");
     writeFileSync(join(dir, "codex.cmd"), "@echo codex-cli 0.1.0\r\n");
     const env: Env = { PATH: dir };
-    assert.deepEqual(await howToUpdateSoon("codex", findCommand("codex", env)!, env), { program: join(dir, "vp.exe"), args: ["install", "-g", "@openai/codex@latest"] });
+    assert.deepEqual(await howToUpdateSoon("codex", (await findCommandSoon("codex", env))!, env), { program: join(dir, "vp.exe"), args: ["install", "-g", "@openai/codex@latest"] });
     const prefix = temp();
     mkdirSync(join(prefix, "node_modules", "@anthropic-ai", "claude-code"), { recursive: true });
     writeFileSync(join(prefix, "claude.cmd"), "@echo 2.1.0\r\n");
     writeFileSync(join(prefix, "npm.cmd"), "");
     const there: Env = { PATH: prefix };
-    assert.deepEqual(await howToUpdateSoon("claude", findCommand("claude", there)!, there), {
+    assert.deepEqual(await howToUpdateSoon("claude", (await findCommandSoon("claude", there))!, there), {
       program: join(prefix, "npm.cmd"), args: ["install", "-g", "@anthropic-ai/claude-code@latest", "--prefix", prefix],
     });
   });
@@ -936,7 +937,7 @@ END
     const apps = temp();
     writeFileSync(join(apps, "winget.exe"), "");
     const env: Env = { PATH: [dir, apps].join(";") };
-    assert.deepEqual(await howToUpdateSoon("claude", findCommand("claude", env)!, env), {
+    assert.deepEqual(await howToUpdateSoon("claude", (await findCommandSoon("claude", env))!, env), {
       program: join(apps, "winget.exe"),
       noUpdate: 0x8a15002b,
       args: ["upgrade", "--id", "Anthropic.ClaudeCode", "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements", "--accept-package-agreements"],
@@ -970,7 +971,7 @@ END
     for (const kind of ["claude", "codex"] as const) {
       symlinkSync("vp", join(dir, kindCommand(kind)));
       const env: Env = { PATH: dir };
-      const f = findCommand(kindCommand(kind), env)!;
+      const f = (await findCommandSoon(kindCommand(kind), env))!;
       const how = await howToUpdateSoon(kind, f, env);
       assert.ok(!(how instanceof Unable));
       const [ok, said] = await run(how.program, how.args, env, 10_000);
@@ -996,7 +997,7 @@ printf '%s\\n' "$CODEX_HOME" "$CODEX_INSTALL_DIR"
 INSTALLER
 `);
     const env: Env = { PATH: `${bin}:/usr/bin:/bin`, CODEX_HOME: "/wrong/home" };
-    const f = findCommand("codex", env)!;
+    const f = (await findCommandSoon("codex", env))!;
     const how = await howToUpdateSoon("codex", f, env);
     assert.ok(!(how instanceof Unable));
     const [ok, said] = await run(how.program, how.args, env, 10_000);
@@ -1094,7 +1095,7 @@ describe("the station's update by a delta", { skip: WINDOWS && "install.sh is ma
       "station/next.delta": () => (body ? body(release!) : { type: "application/octet-stream", body: release!.delta }),
     });
     t.after(() => server.close());
-    const updates = installed(data, "1300", null, { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
+    const updates = installed(data, "1300", "stable\n", { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
     t.after(() => updates.close());
     mkdirSync(join(data, "app", "station"));
     writeFileSync(join(data, "app", "station", "main.js"), programBytes(200_000));

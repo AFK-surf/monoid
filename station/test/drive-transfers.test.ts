@@ -14,6 +14,7 @@ import { Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { routes as transferRoutes } from "../src/api/routes/transfers.ts";
 import type { Request } from "../src/api/request.ts";
 import { timeFiles } from "../src/ops/file-waits.ts";
+import { given } from "./hub-fakes.ts";
 
 /// A station's drive over a folder of its own: `root` pinned, deleted things to the place's own trash.
 function station(name: string) {
@@ -164,6 +165,52 @@ test("cancelled: stops between parts, what was not in place is not there", async
   await transfers.idle();
   assert.equal(transfers.get(id)!.state, "cancelled");
   assert.equal(existsSync(join(b.root, "f.txt")), false);
+});
+
+for (const move of [false, true]) test(`a ${move ? "move" : "copy"} cancelled while its destination is listed stays cancelled`, async () => {
+  const s = station("cancel-place");
+  mkdirSync(join(s.root, "src"));
+  mkdirSync(join(s.root, "dst"));
+  writeFileSync(join(s.root, "src", "f.txt"), "new");
+  writeFileSync(join(s.root, "src", "next.txt"), "next");
+  writeFileSync(join(s.root, "dst", "f.txt"), "old");
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const list = s.drive.list.bind(s.drive);
+  let held = false;
+  s.drive.list = async (...args) => {
+    if (args[1] === "dst" && !held) {
+      held = true;
+      entered.resolve();
+      await release.promise;
+    }
+    return list(...args);
+  };
+  const told: Transfer[] = [];
+  const transfers = transfersInto(s, {}, told);
+  try {
+    const t = transfers.start(spec({ move, from: { station: null, root: s.root, path: "src", names: ["f.txt"] }, to: { root: s.root, path: "dst" }, conflicts: { "f.txt": "replace" } }));
+    await given(entered.promise, "the destination listing starts");
+    transfers.cancel("a@x", t.id);
+    const next = transfers.start(spec({ from: { station: null, root: s.root, path: "src", names: ["next.txt"] }, to: { root: s.root, path: "dst" } }));
+    release.resolve();
+    await transfers.idle();
+    assert.equal(transfers.get(t.id)!.state, "cancelled");
+    assert.equal(readFileSync(join(s.root, "dst", "f.txt"), "utf8"), "old", "the cancelled replacement leaves the destination alone");
+    assert.equal(readFileSync(join(s.root, "src", "f.txt"), "utf8"), "new", "the cancelled move keeps its source");
+    assert.equal(transfers.get(next.id)!.state, "done", "the next transfer can run");
+    assert.equal(readFileSync(join(s.root, "dst", "next.txt"), "utf8"), "next");
+    const states = told.filter((v) => v.id === t.id).map((v) => v.state);
+    assert.deepEqual(states, ["queued", "walking", "cancelled"]);
+    await transfers.close();
+    const reopened = transfersInto(s);
+    try { assert.equal(reopened.get(t.id)!.state, "cancelled", "the cancellation survives a restart"); }
+    finally { await reopened.close(); }
+  } finally {
+    release.resolve();
+    s.drive.list = list;
+    await transfers.idle();
+    await transfers.close();
+  }
 });
 
 test("a file changed while it is read is read again from its start", async () => {

@@ -22,6 +22,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 cd "$A"
 # scene      script                           fixture    window
 table="home scroll-home long 390x844
+edge edge chat-long 1280x800
 home-again home-again long 390x844
 medium scroll-medium chat-long 690x840
 open open long 390x844
@@ -39,7 +40,9 @@ switch15 switch-ws switch-real:15 390x844
 switch25 switch-ws switch-real:25 390x844
 switch40 switch-ws switch-real:40 390x844
 switch100 switch-ws switch-real:100 390x844
-switchclose switch-ws-close switch-real:25 390x844"
+switchclose switch-ws-close switch-real:25 390x844
+edge4 edge-batch chat-long 1280x800
+edge4apart edge-apart chat-long 1280x800"
 gas() { "$MBUI_DIR/scripts/wasmgas" "$@"; }
 if [ "${1:-run}" = compare ]; then
   [ $# = 3 ] || { echo 'instrbench.sh compare BEFORE_OUT AFTER_OUT' >&2; exit 2; }

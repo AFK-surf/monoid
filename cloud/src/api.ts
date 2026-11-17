@@ -56,7 +56,7 @@ function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: bo
 
 /**
  * Those `addMembers` added told so by mail (mail.ts `sendAdded`), in the language of the app that added them (the
- * receiver's is not known): the emails that could not be sent, which the app says, let go of again by the Directory so
+ * receiver's is not known): the emails that could not be sent, which the app says and the Directory keeps waiting so
  * adding them again tries again. Nothing is sent by a cloud with no mail (a local one): none is said unsent then.
  */
 async function mailAdded(env: Env, lang: Lang, workspace: string, mail: AddedMail): Promise<string[]> {
@@ -64,7 +64,7 @@ async function mailAdded(env: Env, lang: Lang, workspace: string, mail: AddedMai
   const sent = await Promise.allSettled(mail.to.map((m) => sendAdded(env, lang, m.email, m.joined, mail.inviter, mail.workspace)));
   const failed = mail.to.filter((_, i) => sent[i]!.status === "rejected").map((m) => m.email);
   for (const s of sent) if (s.status === "rejected") console.warn(`an added member's mail not sent: ${(s.reason as { code?: string })?.code ?? s.reason}`);
-  if (failed.length > 0) await env.DIRECTORY.getByName("primary").mailFailed(workspace, failed);
+  await env.DIRECTORY.getByName("primary").mailFailed(workspace, failed, mail.to.filter((_, i) => sent[i]!.status === "fulfilled").map((m) => m.email));
   return failed;
 }
 
@@ -345,7 +345,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (kind === "invitations" && target && method === "DELETE") return directory(() => dir.revokeInvitation(sub, ws, target));
   if (kind === "members" && !target && method === "POST") {
     return directory(async () => {
-      const { mail, ...made } = await dir.addMembers(sub, ws, role(), input.emails);
+      const { mail, ...made } = await dir.addMembers(sub, ws, role(), input.emails, true);
       return { ...made, unmailed: await mailAdded(env, input.lang === "zh" || input.lang === "en" ? input.lang : requestLang(request), ws, mail) };
     });
   }

@@ -2,7 +2,7 @@
 // topic's BrowseView): the order its entries go in and whether hidden ones show (the device's, prefs `driveViews`),
 // each folder the place shows by its names in that order, what is chosen there, a tree's folders open, the columns'
 // widths dragged, the keys that act now. The phone's drive pages read the order from it; the desktop's files' page all
-// of it (src/sfdesk/browse.mbt). And the stations with a drive (`stations {scope, drive: true, here?}`).
+// of it (src/sfpages/files_browse.mbt). And the stations with a drive (`stations {scope, drive: true, here?}`).
 
 ///|
 /// How a folder's entries are shown (Arrangement): ordered by `by` (name, time, size or kind), the other way (`down`),

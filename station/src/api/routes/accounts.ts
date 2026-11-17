@@ -90,13 +90,13 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     route("POST", /^\/logins$/, (r) => answer(async (a) => ok(await a.newLogin(input(r), r.viewer, r.lang)))),
     route("PUT", /^\/*automatic-decisions\/*$/, (r) =>
       answer(async (a) => {
-        a.putAutomaticDecisions(input(r), r.viewer, r.lang);
+        await a.putAutomaticDecisions(input(r), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),
     route("PUT", /^\/*archiving\/*$/, (r) =>
       answer(async (a) => {
-        a.putArchiving(input(r), r.viewer, r.lang);
+        await a.putArchiving(input(r), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),
@@ -122,7 +122,7 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     route("PUT", /^\/*profiles\/+([^/]+)\/*$/, (r, [id]) =>
       answer(async (a) => {
         const profile = segment(id!);
-        a.putProfile(profile, input(r), r.viewer, r.lang);
+        await a.putProfile(profile, input(r), r.viewer, r.lang);
         const answered = ok(await view(r));
         // Its new state is reported once known.
         void a.check(profile).catch(() => {});
@@ -131,7 +131,7 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     ),
     route("DELETE", /^\/*profiles\/+([^/]+)\/*$/, (r, [id]) =>
       answer(async (a) => {
-        a.deleteProfile(segment(id!), r.viewer, r.lang);
+        await a.deleteProfile(segment(id!), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),

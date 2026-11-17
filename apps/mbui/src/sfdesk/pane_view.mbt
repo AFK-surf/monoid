@@ -136,6 +136,7 @@ priv struct FoldIs {
 /// What the frame off the tape is laid out by now, a window `ww` by `wh`: the place's sidebar gated or bare, its
 /// sidebar folded for the page's room, on a fold standing upright, closed to the bar, shown a while; the sidebar's
 /// width; the bars' room at the top and the foot.
+#derive(Eq)
 priv struct PaneRoom {
   gated : Bool
   bare : Bool
@@ -149,7 +150,53 @@ priv struct PaneRoom {
 }
 
 ///|
+/// The room worked out once for all that reads it: some sixty bindings each worked it out whole (lock_waiting's topic
+/// keys among it) at every move of the sidebar's edge dragged. Kept for the last source, workspace, width and board's
+/// source asked (board_frame_src is no signal).
+priv struct RoomHeld {
+  src : Source
+  board : Source?
+  w : Workspace
+  ww : Double
+  room : @signals.Computed[PaneRoom]
+}
+
+///|
+// kept across runs: the room last asked for, each window's own
+let room_held : Ref[RoomHeld?] = Ref(None)
+
+///|
+fn init {
+  @ui.window_kept_ref(room_held, fn() { None })
+}
+
+///|
 fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
+  let room = match room_held.val {
+    Some(h) if physical_equal(h.src, src) &&
+      h.ww == ww &&
+      (physical_equal(h.w, w) || h.w == w) &&
+      same_board(h.board, board_frame_src.val) => h.room
+    _ => {
+      let room = @signals.untracked(fn() { @signals.computed(fn(_) { pane_room_now(src, w, ww) }) })
+      room_held.val = Some({ src, board: board_frame_src.val, w, ww, room })
+      room
+    }
+  }
+  room.get()
+}
+
+///|
+fn same_board(a : Source?, b : Source?) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => physical_equal(x, y)
+    (None, None) => true
+    _ => false
+  }
+}
+
+///|
+fn pane_room_now(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let gated = lit_place() != "settings" && @settings.lock_waiting(settings_core(src, w), w.id)
   let bare = place_bare_now(lit_place())
   let own = !gated && !bare

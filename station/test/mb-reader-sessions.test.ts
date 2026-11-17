@@ -25,7 +25,7 @@ test("the MoonBit reader reads sessions' summaries and the session list as the w
   const session = (key: string, extra: Record<string, unknown> = {}) =>
     store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 100, ...extra } as Parameters<Store["insertSession"]>[0]);
   session("a1", { ws: "w", createdBy: "p@x", model: "opus", lastActiveAt: 500 });
-  session("a2", { ws: "w", runtime: "codex", createdBy: "local", lastActiveAt: 500 });
+  session("a2", { ws: "w", runtime: "codex", model: "gpt-6-astra", speed: "ultrafast", fast: true, createdBy: "local", lastActiveAt: 500 });
   session("a3", { ws: null, runtime: "dsh", createdBy: "slack:team:U1", lastActiveAt: 400 });
   session("s1", { connect: "team", ws: "w", lastActiveAt: 300 });
   session("old", { ws: "w", lastActiveAt: 200 });

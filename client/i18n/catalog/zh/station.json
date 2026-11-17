@@ -820,5 +820,7 @@
   "station.group.badRelay": "中继地址要以 https:// 或 http:// 开头",
   "station.group.noCode": "请填写加入码（邀请码或设备码，16 位）",
   "station.group.badCode": "加入码是 16 位字母数字，形如 XXXX-XXXX-XXXX-XXXX",
-  "station.group.longName": "成员名称最多 {most} 个字"
+  "station.group.longName": "成员名称最多 {most} 个字",
+  "station.speed.invalid": "请在支持速度设置的运行时选择标准、Fast 或 Ultrafast。",
+  "station.speed.ultrafast_unavailable": "Ultrafast 需要 Codex 下的 GPT-6 Astra 或 GPT-6.1 Sol 和 ChatGPT 订阅账号；请选择支持的模型及账号，或改选标准、Fast。"
 }

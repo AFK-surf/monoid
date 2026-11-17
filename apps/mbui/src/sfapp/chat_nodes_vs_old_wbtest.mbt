@@ -257,12 +257,15 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// paragraph with no link holds no room for its links' cards (sf words_links_node): before that phone card's 2744 and
 /// md's 1808 of the old one's nodes, its laid out bars loose (1230, 998) and brought to what is laid out now. Wide's laid
 /// out more (card 1115, md 1073 before) once the sidebar's foot is made as nodes (lists_foot_node): the new page laid
-/// out as before, the old one's old views a node less, its foot no old view of the shell's any more.
+/// out as before, the old one's old views a node less, its foot no old view of the shell's any more. Phone's and
+/// plp_narrow's laid out more (895, 939, 928, 885 before) once Home's transfers key is made as nodes (sfdesk
+/// transfers_key_node), not an old view of Home's: the new page laid out as before, the old one's opening, Home's old
+/// views a node less, laying out 4 fewer; the same at 60, 120, 24 and 7.
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2736, 895),
-  "phone md": (1788, 939),
-  "plp_narrow card": (2800, 928),
-  "plp_narrow md": (2216, 885),
+  "phone card": (2736, 903),
+  "phone md": (1788, 952),
+  "plp_narrow card": (2800, 934),
+  "plp_narrow md": (2216, 890),
   "tape card": (1350, 1192),
   "tape md": (1400, 1166),
   "wide card": (1280, 1117),
@@ -283,12 +286,13 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// table's cells are made with fewer nodes: before that md's 1419, 1750, 1419 and 1284 of the old one's nodes. Again
 /// once a paragraph with no link holds no room for its links' cards: before that 1721, 1405, 1759, 1736 of phone's and
 /// plp_narrow's (the most of the five rates, each rounded up). Wide's laid out more (1115, 1073 before) once the
-/// sidebar's foot is made as nodes, as chat_vs_bars' are.
+/// sidebar's foot is made as nodes, as chat_vs_bars' are. Phone card's and plp_narrow md's laid out more (1121, 1051
+/// before) once Home's transfers key is made as nodes, as chat_vs_bars' are: the most of the five rates, the default's.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1716, 1121),
+  "phone card": (1716, 1135),
   "phone md": (1390, 1065),
   "plp_narrow card": (1754, 980),
-  "plp_narrow md": (1709, 1051),
+  "plp_narrow md": (1709, 1060),
   "tape card": (1350, 1192),
   "tape md": (1400, 1166),
   "wide card": (1280, 1117),

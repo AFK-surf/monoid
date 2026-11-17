@@ -935,8 +935,9 @@ fn on_pointer(kind : Int, x : Double, y : Double, button : Int) -> Unit {
   if kind == 0 || kind == 2 || kind == 10 || kind == 12 {
     rows_steady_hand()
   }
-  // a touch screen's finger as the host has it, by the system's id for it (touches.mbt)
-  if kind >= 10 && kind <= 13 {
+  // a touch screen's finger as the host has it, by the system's id for it (touches.mbt); 14 a finger moved with more
+  // of the same batch of samples after it (touches.mbt: laid out once, at the batch's last)
+  if kind >= 10 && kind <= 14 {
     touch_in(kind - 10, button, x, y)
     return
   }
@@ -947,17 +948,41 @@ fn on_pointer(kind : Int, x : Double, y : Double, button : Int) -> Unit {
 
 ///|
 /// A pointer's event, with the keys held as it went down (0 for an event other than a press), and what it came from
-/// where the host says (`by`: 1 a finger, 0 a mouse or a pen; the hand of the moment from it on: pointing).
-fn pointer_in(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+/// where the host says (`by`: 1 a finger, 0 a mouse or a pen; the hand of the moment from it on: pointing). `more`: a
+/// move (1, 5) with more samples of the same batch after it (touches.mbt), taken at its moment but not laid out.
+fn pointer_in(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+) -> Unit {
   // (one event, at its own moment, the hand it came by so as of then: what was due before it sees the one before, what
   // takes it (the tree's nodes, what they take presses by bound to it, or the old view) this one: view_host.mbt)
+  // (a move of a batch after its first finds the tree as the batch's first did: brought to its moment by none of them
+  // but the last, after it is taken, view_pointed; nor as what takes it is found, view_pointer)
+  let moved = kind == 1 || kind == 5
+  let batched = moves_batched.val && moved
+  let more = more && moved
+  moves_batched.val = more
   view_event_said(fn() { pointing_said_by_host(by) }, fn() {
-    pointer_in_now(kind, x, y, button, mods, by~)
-  }, what="pointer", input=true)
+    pointer_in_now(kind, x, y, button, mods, by~, more~, batched~)
+  }, what="pointer", input=!batched)
 }
 
 ///|
-fn pointer_in_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+fn pointer_in_now(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+  batched? : Bool = false,
+) -> Unit {
   // (where the pointer, a mouse's or a finger's, last was: where a column's keys go, as an old view's list's did by
   // Ctx's px and py, @view's scroll_keys.mbt)
   if kind >= 0 && kind <= 2 {
@@ -968,7 +993,7 @@ fn pointer_in_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, 
   }
   // (what the event does to the fields' selections, the old view's and the tree's: told each field's as the event
   // is taken, EditorState::typed_told)
-  pointed_edits(fn() { pointer_event_now(kind, x, y, button, mods, by~) })
+  pointed_edits(fn() { pointer_event_now(kind, x, y, button, mods, by~, more~, batched~) })
 }
 
 ///|
@@ -995,17 +1020,33 @@ fn pointed_edits(f : () -> Unit) -> Unit {
 }
 
 ///|
-fn pointer_event_now(kind : Int, x : Double, y : Double, button : Int, mods : Int, by? : Int = -1) -> Unit {
+fn pointer_event_now(
+  kind : Int,
+  x : Double,
+  y : Double,
+  button : Int,
+  mods : Int,
+  by? : Int = -1,
+  more? : Bool = false,
+  batched? : Bool = false,
+) -> Unit {
   let args = [kind.to_double(), x, y, button.to_double(), mods.to_double()]
-  if by >= 0 {
+  if by >= 0 || more {
     args.push(by.to_double())
   }
+  // (a move with more of its batch after it: said on the tape, given again so: inputrec.mbt)
+  if more {
+    args.push(1.0)
+  }
+  // (what the pointer is over, the tree brought to the event's moment for it: once a batch of moves, at its last, what
+  // the samples before it did laid out with it, touches.mbt)
+  let pointed = fn() { if !more { view_pointed() } }
   // (where a mouse points, said before the event is taken; what it is over told once it is: view_host.mbt)
   view_point_said(kind, x, y)
   // (what the tree made once routes elsewhere than to the old view (a press on a node of its own, one outside the old
   // view's island) is no input of the old view's: taped alone, view_host.mbt)
-  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button) {
-    view_pointed()
+  if (kind <= 3 || view_holds()) && view_pointer(kind, x, y, button, brings=!batched) {
+    pointed()
     input_taped("pointer", h_event_time(), args)
     // (a press the window's tree took is outside every layer of the old frame's: what it dismisses so, at its moment,
     // as one the old frame takes is: overlay.mbt)
@@ -1017,14 +1058,14 @@ fn pointer_event_now(kind : Int, x : Double, y : Double, button : Int, mods : In
     }
   } else {
     took_input("pointer", h_event_time(), args)
-    view_pointed()
+    pointed()
     old_pointer_now(kind, x, y, button, mods, h_event_time())
     // (a hold of the old view's it has not made its own, moved: what of the tree's holds it may take it over)
     if kind == 1 {
       view_old_moved(x, y)
       // (what the old view found under the pointer as it moved, by its own targets, told it again as the tree finds it
       // there: nothing of its where something of the tree's is pointed at over it, View::points)
-      view_pointed()
+      pointed()
     }
   }
   // (a finger or button down, wherever it went (a node of the tree's, the old view): a press of its own from here, a

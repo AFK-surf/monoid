@@ -419,7 +419,7 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   // slice 8's panels over the chat (decide_fixture.mbt)
   open_decide_panels(mode, src)
   if mode == "files-add-folder" {
-    @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+    @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   }
   // (share-card-dark: over the dark theme; share-card-<key>: in that look, share_looks.mbt)
   if mode == "share-card" || mode.has_prefix("share-card-") {
@@ -453,8 +453,8 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
 ///|
 /// The first row's chat (opened by sffix for chat… modes): ＋'s Station 文件 in 文档, a file ticked.
 fn fixture_station_files(src : Source) -> Unit {
-  @sfdesk.station_files_pick(src, "ws1/st1:s-c1")
-  @sfdesk.station_pick_set({ station: "ws1/st1", station_name: "Willow", root: @sffixture.fix_docs, root_name: "文档", path: "" }, [
+  @sfpages.station_files_pick(src, "ws1/st1:s-c1")
+  @sfpages.station_pick_set({ station: "ws1/st1", station_name: "Willow", root: @sffixture.fix_docs, root_name: "文档", path: "" }, [
     {
       station: "ws1/st1",
       station_name: "Willow",
@@ -573,6 +573,15 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
+    if mode == "newchat-ultrafast-model" {
+      let n = @sffixture.new_fix
+      n.crowded = true
+      n.ultrafast = true
+      n.model = "gpt-6-astra"
+      n.runtime = "codex"
+      n.d_model = n.model
+      n.d_runtime = n.runtime
+    }
     // (with models starred: under 喜欢 in its model's panel)
     if mode.has_suffix("-liked") {
       @sffixture.new_fix.liked.push_iter(["claude-sonnet-5", "kimi-for-coding"].iter())
@@ -652,7 +661,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }
@@ -722,7 +731,7 @@ pub fn open_mode(mode : String) -> Unit {
         "station": "ws1/st1",
         "root": Json::string(@sffixture.fix_docs),
         "path": "",
-        "place": Json::string(@sfdesk.place_name("page/0")),
+        "place": Json::string(@sfpages.place_name("page/0")),
       }
       for k, v in params {
         o[k] = v
@@ -739,12 +748,12 @@ pub fn open_mode(mode : String) -> Unit {
       "files-tree" => {
         @sffixture.fix_browse_prefs_set({ "driveViews": { "page": "tree" } }) |> ignore
         browse({ "act": "tree", "folder": "设计稿", "view": "tree" })
-        @sfdesk.nav_open("ws1/st1")
+        @sfpages.nav_open("ws1/st1")
       }
       "files-list" => @sffixture.fix_browse_prefs_set({ "driveViews": { "page": "list" } }) |> ignore
       // a copy asked about a name there: 说明.txt into 会议记录, which has one
       "files-clash" =>
-        @sfdesk.drag_ask({
+        @sfpages.drag_ask({
           into: { station: "ws1/st1", root: Some(@sffixture.fix_docs), path: "会议记录" },
           into_name: "会议记录",
           total: 1,

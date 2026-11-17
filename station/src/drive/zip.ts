@@ -29,9 +29,12 @@ export const MAX_ENTRIES = 65_535;
 
 type Entry = { name: Buffer; crc: number; size: number; packed: number; method: number; at: number; time: number; date: number };
 
-/// A time as DOS has it (2-second steps, local time, from 1980).
+/// A time as DOS has it (2-second steps, local time, 1980 through 2107).
 function dos(ms: number): { time: number; date: number } {
-  const d = new Date(Math.max(ms, Date.UTC(1980, 0, 1)));
+  // Both bounds are local too: midnight UTC can belong to another year here.
+  const first = new Date(1980, 0, 1).getTime();
+  const last = new Date(2108, 0, 1).getTime() - 1;
+  const d = new Date(Math.max(first, Math.min(ms, last)));
   return {
     time: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
     date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),

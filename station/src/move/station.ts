@@ -91,7 +91,7 @@ export type MovesDeps = {
   previousPid?: number | null;
   changed?: () => void;
   /// config.json as written, for the settings that move (settings.ts).
-  config?: { raw(): Json; update(f: (raw: Json) => void): void };
+  config?: { raw(): Json; updateSoon(f: (raw: Json) => void): Promise<unknown> };
   /// This station's vault stores and the owners with secrets of a workspace here, the owners whose plain grants
   /// sessions hold (vault.ts).
   vault?: { owners(ws: string): string[]; grantOwners(keys: string[]): Map<string, string[]>; plain: VaultDeps["plain"]; vaults: VaultDeps["vaults"] };
@@ -239,7 +239,7 @@ export class Moves {
     const none = { owners: () => [], grantOwners: () => new Map<string, string[]>(), plain: { items: () => [], item: () => null, put: () => {}, forget: () => {} }, vaults: { vaults: () => [], vault: () => null, items: () => [], item: () => null, putVault: () => {}, putItem: () => {}, forgetItem: () => {}, forgetVault: () => {} } };
     const v = d.vault ?? none;
     this.vault = new VaultModule({ data: d.data, owners: (ws) => v.owners(ws), plain: v.plain, vaults: v.vaults, ask });
-    this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), update: () => {} } });
+    this.settings = new SettingsModule({ data: d.data, ask, config: d.config ?? { raw: () => ({}), updateSoon: async () => {} } });
     this.jobs = new JobsModule({
       data: d.data, up: d.jobs.up, stop: d.jobs.stop, start: d.jobs.start, ask: (s, r) => this.#ask(s, { ...r, fromData: d.data }), here,
       chatOf: (session) => this.handover.chatOf(session),

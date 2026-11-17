@@ -1,7 +1,7 @@
 // macOS and Linux (and another Unix as Linux): process groups and signals, /bin/sh, `/` paths, links. What the two
 // differ in (how the machine reads: sysctl and vm_stat, or /proc; the keychain and QuickLook) is said here too.
-import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { chmodSync, existsSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
 import { access, chmod, copyFile, lstat, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
@@ -26,6 +26,23 @@ const executable = (p: string) => {
     return false;
   }
 };
+const executableSoon = async (p: string) => {
+  const st = await stat(p).catch(() => null);
+  return st !== null && st.isFile() && (st.mode & 0o111) !== 0;
+};
+/// Where a Chrome may be (Platform.browsers), best first: macOS's apps, the machine's then the user's; elsewhere the
+/// commands on PATH (`onPath`: where one is found, none where it is not) and Google's own place.
+function browserPlaces<T>(env: Env, onPath: (name: string) => T): (string | T)[] {
+  const home = env.HOME ?? "";
+  const apps = (name: string, binary: string) => [`/Applications/${name}.app/Contents/MacOS/${binary}`, join(home, "Applications", `${name}.app`, "Contents", "MacOS", binary)];
+  return MACOS
+    ? [...apps("Google Chrome", "Google Chrome"), ...apps("Chromium", "Chromium"), ...apps("Microsoft Edge", "Microsoft Edge")]
+    : [
+        ...["google-chrome-stable", "google-chrome"].map(onPath),
+        "/opt/google/chrome/chrome",
+        ...["chromium", "chromium-browser", "microsoft-edge-stable", "microsoft-edge"].map(onPath),
+      ];
+}
 const real = (p: string) => {
   try {
     return realpathSync(p);
@@ -141,14 +158,12 @@ async function macMemory(): Promise<HostSample["memory"]> {
 
 const host: Host = {
   /// On macOS the CPUs' user, system, idle and nice time (os.cpus, from the same counters as Mach's
-  /// HOST_CPU_LOAD_INFO, in ms rather than ticks: the share is the same); elsewhere /proc/stat.
+  /// HOST_CPU_LOAD_INFO, in ms rather than ticks: the share is the same); elsewhere /proc/stat, read off the main
+  /// thread. Not os.cpus on Linux: libuv reads /proc/stat there itself, on the main thread, and each CPU's
+  /// cpufreq file besides.
   cpuTicks() {
     if (MACOS) return osCpuTicks();
-    try {
-      return procStatTicks(readFileSync("/proc/stat", "utf8"));
-    } catch {
-      return null;
-    }
+    return readFile("/proc/stat", "utf8").then(procStatTicks, () => null);
   },
   /// The memory on macOS as Activity Monitor counts it (app, wired and compressed pages, not reclaimable cache), its
   /// swap; elsewhere /proc's. Every command and file at once, none waited on.
@@ -393,6 +408,7 @@ export const unix: Platform = {
     }
   },
   runnable: (command, args) => ({ file: command, args }),
+  runnableSoon: async (command, args) => ({ file: command, args }),
   posixShell: () => "/bin/sh",
   posixShellSoon: async () => "/bin/sh",
   grouped: (program, args) => [program, args],
@@ -624,17 +640,14 @@ export const unix: Platform = {
   },
 
   browsers(env) {
-    const home = env.HOME ?? "";
-    const apps = (name: string, binary: string) => [`/Applications/${name}.app/Contents/MacOS/${binary}`, join(home, "Applications", `${name}.app`, "Contents", "MacOS", binary)];
-    const onPath = (names: string[]) => names.flatMap((n) => unix.findCommand(n, env)?.onPath ?? []);
-    const found = MACOS
-      ? [...apps("Google Chrome", "Google Chrome"), ...apps("Chromium", "Chromium"), ...apps("Microsoft Edge", "Microsoft Edge")]
-      : [
-          ...onPath(["google-chrome-stable", "google-chrome"]),
-          "/opt/google/chrome/chrome",
-          ...onPath(["chromium", "chromium-browser", "microsoft-edge-stable", "microsoft-edge"]),
-        ];
-    return [...new Set(found)].filter(executable);
+    const onPath = (name: string) => unix.findCommand(name, env)?.onPath ?? null;
+    return [...new Set(browserPlaces(env, onPath).flatMap((p) => p ?? []))].filter(executable);
+  },
+  async browsersSoon(env) {
+    const onPath = async (name: string) => (await unix.findCommandSoon(name, env))?.onPath ?? null;
+    const found = (await Promise.all(browserPlaces(env, onPath))).flatMap((p) => p ?? []);
+    const there = await Promise.all([...new Set(found)].map(async (p) => ({ p, is: await executableSoon(p) })));
+    return there.flatMap(({ p, is }) => (is ? [p] : []));
   },
   hasDisplay: (env) => MACOS || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY),
   async terminalSoon(program, args, cols, rows) {

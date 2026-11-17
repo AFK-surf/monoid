@@ -885,9 +885,10 @@ export class Hub {
     }
   }
 
-  /// A single-session connect's session being made, by the connect: one at a time.
+  /// A single-session connect's session made or chosen, by the connect: one at a time. A person's later binding must
+  /// not be replaced by a session still being made for an earlier choice or the connect's first message.
   private readonly singles = new Map<string, Promise<unknown>>();
-  private oneSingle<T>(connect: string, f: () => Promise<T>): Promise<T> {
+  oneSingle<T>(connect: string, f: () => Promise<T>): Promise<T> {
     const run = (this.singles.get(connect) ?? Promise.resolve()).then(f, f);
     const done = run.then(() => {}, () => {});
     this.singles.set(connect, done);

@@ -255,3 +255,52 @@ fn ripple_disc(d : @view.View, r : PressRipple, ink_now : () -> Int64) -> Unit {
   }))
   |> ignore
 }
+
+///|
+/// A row of a list that is pressed, held and asked for its menu as a file browser's is (a folder's entry: chosen by a
+/// press, opened by the second of two, its menu by a right click or a finger's hold), `v` itself: pressed with the
+/// keyboard's focus on it (Enter, Space) or by a screen reader `key_press`; let go where it was pressed (a tap, a
+/// mouse's click, moved or not) `pressed` told the press (View::twice says whether it is the second of two); held by a
+/// finger `held_ms` without leaving it, `held` (its menu, felt: menu_held_node; a mouse's held is a press as long as
+/// any); a mouse's secondary button, `menu` where
+/// it was pressed in the window. Its press rippling round `corner` (press_look's: a pointer's press shows nothing of its
+/// own, the row's ground lighting itself). What it is to a screen reader is the row's own to say.
+#callsite(autofill(loc))
+pub fn row_presses_node(
+  v : @view.View,
+  corner : @view.Live[Double],
+  key_press : () -> Unit,
+  pressed : (@view.Drag) -> Unit,
+  held : (@view.Drag) -> Unit,
+  menu : (Double, Double) -> Unit,
+  held_ms? : Double = @ui.long_press_ms,
+  loc~ : SourceLoc,
+) -> Unit {
+  v.presses(Is(true)).focusable(Is(true)).focus_ring_theme().on_press(key_press).on_menu(fn(m) { menu(m.wx, m.wy) }) |> ignore
+  let rippled = press_look(loc~, v, corner, fn() { false }, pointer=false)
+  let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
+  v.gesture(
+    @ui.touch_slop(),
+    press=rippled.down,
+    tap=fn(d) {
+      (rippled.tapped)(d)
+      if on_it(d) {
+        pressed(d)
+      }
+    },
+    // (a finger's hold: a mouse's held is a press as long as any)
+    hold=(held_ms, fn(d) {
+      if @ui.pointing() is Finger {
+        menu_held_node()
+        held(d)
+      }
+    }),
+    drag=fn(d) {
+      // (a mouse's moved on it past the slop and let go on it: still a press, as a click is)
+      if d.kind == Up && @ui.pointing() is Mouse && on_it(d) {
+        pressed(d)
+      }
+    },
+  )
+  |> ignore
+}

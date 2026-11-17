@@ -1404,7 +1404,7 @@ export class Handover {
                 else missing.add(f.hash);
               }
               // (one unchecked is said lacking too: an asker from before sends it rather than take it as in place)
-              // (`pack`: what it lacks it takes a pack at a time, sending.ts `receivePack`)
+              // (`pack`: what it lacks it takes a pack at a time, pack.ts `receivePack`)
               return {
                 lacking: hashes.filter((h: string) => lacking.has(h) && (olderOut || missing.has(h) || unchecked.has(h) || !placed.has(h))),
                 ...(unchecked.size > 0 ? { unchecked: [...unchecked].filter((h) => !missing.has(h)) } : {}),

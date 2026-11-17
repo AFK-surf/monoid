@@ -115,7 +115,7 @@ export class GrantServers {
       const door = path === null ? null : await openDoor(id, path, (p) => platform.tcpPortPids(p), this.#admit!);
       const port = door?.port ?? (await freePort());
       const env = path === null ? process.env : { ...process.env, ADB_SERVER_SOCKET: `localfilesystem:${path}` };
-      const r = platform.runnable(adb, path === null ? ["-P", String(port), "server", "nodaemon"] : ["server", "nodaemon"], env);
+      const r = await platform.runnableSoon(adb, path === null ? ["-P", String(port), "server", "nodaemon"] : ["server", "nodaemon"], env);
       const child = spawn(r.file, r.args, { env, stdio: "ignore", windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
       const closed = () => {
         door?.close();

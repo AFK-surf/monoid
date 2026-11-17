@@ -13,6 +13,7 @@ pub(all) struct NewFix {
   mut model : String
   mut runtime : String
   mut effort : String
+  mut speed : String
   mut d_model : String
   mut d_runtime : String
   mut d_effort : String
@@ -29,6 +30,8 @@ pub(all) struct NewFix {
   /// MBUI_FIXTURE=newchat-tall-model: as crowded, how hard it thinks and how fast as Codex offers them (2026-10-30: the
   /// column beside the models taller than they are at most)
   mut tall : Bool
+  /// MBUI_FIXTURE=newchat-ultrafast-model: the Codex speed selector on a station that offers all three speeds.
+  mut ultrafast : Bool
   /// MBUI_FIXTURE=newchat-crowded-unmarked: as crowded, its first station of no mark of its own (2026-11-13: a person's
   /// Studio, its control a bare chevron once its name gave way)
   mut unmarked : Bool
@@ -65,6 +68,7 @@ pub let new_fix : NewFix = {
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
+  speed: "",
   d_model: "claude-opus-5-5",
   d_runtime: "claude",
   d_effort: "high",
@@ -76,6 +80,7 @@ pub let new_fix : NewFix = {
   reading: 0,
   crowded: false,
   tall: false,
+  ultrafast: false,
   unmarked: false,
   preset: "",
   presets_late: false,
@@ -649,6 +654,7 @@ pub fn fix_pick() -> Json {
       "model": Json::string(model),
       "runtime": Json::string(runtime),
     }
+    if n.speed != "" { o["speed"] = Json::string(n.speed) }
     if effort != "" {
       o["effort"] = Json::string(effort)
     }
@@ -711,7 +717,8 @@ pub fn fix_pick() -> Json {
     } else {
       ["low", "medium", "high"]
     },
-    "fastAvailable": n.tall,
+    "fastAvailable": n.tall || n.ultrafast,
+    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6-astra",
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {
@@ -1261,6 +1268,12 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       Some(Ok(Json::object({})))
     }
     "pick.save" => {
+      take("speed", fn(s) { n.speed = s })
+      match field(p, "fast") {
+        Some(True) => n.speed = "fast"
+        Some(False) => n.speed = "standard"
+        _ => ()
+      }
       if text(p, "of") == "connect-new:preset" {
         preset_model_cleared.val = false
       }

@@ -105,18 +105,68 @@ fn iso_s(t : String) -> Double {
 }
 
 ///|
-fn gh_lines(args : String) -> Array[String]? {
-  match @sys.run_out("gh " + args) {
-    Some(o) =>
-      Some(
-        o
-        .split("\n")
-        .map(fn(l) { l.to_owned() })
-        .filter(fn(l) { l.length() > 0 })
-        .to_array(),
-      )
-    None => None
+/// How many times a call of GitHub's API is made before it counts as failed: the API answers a 5xx now and then
+/// ("gh: Server Error (HTTP 502)" listing the branches, run 43977844748), and this runs over a hundred times a day.
+let gh_tries : Int = 3
+
+///|
+/// `gh <args>`'s lines, made by `run` up to `gh_tries` times with `pause` between; None when every one failed, which
+/// lets nothing be deleted.
+fn gh_lines_by(
+  args : String,
+  run : (String) -> String?,
+  pause : () -> Unit,
+) -> Array[String]? {
+  for i in 0..<gh_tries {
+    if i > 0 {
+      pause()
+    }
+    match run("gh " + args) {
+      Some(o) =>
+        return Some(
+          o
+          .split("\n")
+          .map(fn(l) { l.to_owned() })
+          .filter(fn(l) { l.length() > 0 })
+          .to_array(),
+        )
+      None => ()
+    }
   }
+  None
+}
+
+///|
+fn gh_pause() -> Unit {
+  ignore(@sys.run_out("sleep 2"))
+}
+
+///|
+fn gh_lines(args : String) -> Array[String]? {
+  gh_lines_by(args, @sys.run_out, gh_pause)
+}
+
+///|
+/// A cache's delete, made by `delete` up to `gh_tries` times with `pause` between while it is `there`: None once it is
+/// done or gone, else the last answer. (Gone already, between the list and here: GitHub's own eviction, run
+/// 39606378560; or a 5xx for a delete that was done all the same, run 39620407496: what decides is whether it is
+/// still there.)
+fn delete_cache_by(
+  delete : () -> String,
+  there : () -> Bool,
+  pause : () -> Unit,
+) -> String? {
+  let mut r = ""
+  for i in 0..<gh_tries {
+    if i > 0 {
+      pause()
+    }
+    r = delete()
+    if r.contains("exit=0") || r.contains("HTTP 404") || !there() {
+      return None
+    }
+  }
+  Some(r)
 }
 
 ///|
@@ -332,12 +382,16 @@ fn cache_prune(args : Array[String]) -> Int {
       "\{if dry { "would delete" } else { "delete" }} \{c.key} (\{c.ref_}, \{c.size / 1000000L} MB)",
     )
     if !dry {
-      let r = @sys.run_out(
-        "gh api -X DELETE repos/\{repo}/actions/caches/\{c.id} 2>&1; echo \"exit=$?\"",
-      ).unwrap_or("exit=1")
-      // (gone already, between the list and here: GitHub's own eviction, run 39606378560; or a 5xx for a delete
-      // that was done all the same, run 39620407496: what decides is whether it is still there)
-      if !r.contains("exit=0") && !r.contains("HTTP 404") && still_there(repo, c) {
+      let failed = delete_cache_by(
+        fn() {
+          @sys.run_out(
+            "gh api -X DELETE repos/\{repo}/actions/caches/\{c.id} 2>&1; echo \"exit=$?\"",
+          ).unwrap_or("exit=1")
+        },
+        fn() { still_there(repo, c) },
+        gh_pause,
+      )
+      if failed is Some(r) {
         @sys.eprintln("chk cache-prune: deleting \{c.key}: \{trim(r)}")
         return 1
       }

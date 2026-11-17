@@ -102,6 +102,10 @@ HGLOBAL mb_dib_of_png(const void *png, size_t n);
 // an instance's image MB_STREAM_TEX + id is it (src/hostapi/stream.mbt)
 #define MB_STREAM_TEX 4194304
 void *mb_stream_srv(int id);
+// the frame stream id shows, whole, read back for an app's own native code (win_stream.cpp): `done` is handed its
+// BGRA rows on a thread of its own (NULL: not read), let go as it returns; 1 asked, 0 none shown
+typedef void (*mb_stream_grabbed_fn)(void *arg, const unsigned char *rows, int w, int h, int pitch, double ts);
+int mb_stream_grab(int id, mb_stream_grabbed_fn done, void *arg);
 // the images decoded (or failed) since the last call, each told once to f(1, id, state) on the calling thread (the
 // UI thread, between frames: host_native.mbt's set_outside); freed ones are not told
 void mb_images_tell(mb_outside_fn f);

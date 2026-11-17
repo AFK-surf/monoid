@@ -791,3 +791,13 @@ priv struct ChatBarFrom {
 ///|
 // kept across runs: put back by chat_page_reset
 let chat_bar_from : ChatBarFrom = { info_node: None, jobs_node: None }
+
+///|
+/// The larger of two whole numbers.
+fn dmax_int(a : Int, b : Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}

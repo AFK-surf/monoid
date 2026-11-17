@@ -221,6 +221,11 @@ fn tape_bar_head(b : @view.View, k : Int, made : Bool, tips : @sf.TipLayer) -> U
     if !made {
       return tb.said.get()
     }
+    // (文件 and a station's drive: a bar of their own, none over them, but a folder laid out narrow, which names
+    // itself to it)
+    if app.nav.page_of(k) is Some((Files | Drive(_), _)) && tb.page_said.get() is None {
+      return None
+    }
     match app.nav.page_of(k) {
       Some((p, u)) => {
         under.val = u
@@ -545,6 +550,18 @@ fn tape_made(
         context_node(p)
         @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
+    // 文件 and a station's drive (sfpages' files_page_node.mbt): a bar of their own (no tape bar over them:
+    // tape_bar_head), a folder opened from them another entry over them (files_go)
+    Files if pane_makes.val =>
+      made("files-home", fn(p, _core, _here, _stint, _told, _acts) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        @sfpages.files_home_node(p, src, w.id, frame=fn() { tape_made_frame }, width~, on_back=fn() { app.nav.pop() |> ignore }, tips~, ends=tape_files_ends)
+      })
+    Drive(at) if pane_makes.val =>
+      made("drive/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _stint, told, acts) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        @sfpages.drive_page_node(p, src, w.id, fn() { at }, frame=fn() { tape_made_frame }, width~, on_back=fn() { app.nav.pop() |> ignore }, go=files_go, tips~, bar=(told, acts), ends=tape_files_ends)
+      })
     Setting(KeptFiles) if pane_makes.val =>
       made("kept", fn(p, core, _here, _stint, told, _acts) {
         context_node(p)
@@ -717,4 +734,15 @@ fn tape_made_bar(under : Page?, place : Bool, said : @sf.PageSaid?) -> PaneBarSa
     Some(s) => { back, title: s.title, small: "", about: s.about }
     None => { back, title: "", small: "", about: "" }
   }
+}
+
+///|
+/// Where the files' page's own bar stands in the page's panel (no tape bar over it: tape_bar_head), as a page's bar
+/// there does (pane_bar_node's): its start clear of the panel's top left corner, its last button concentric with the top
+/// right one where it can be, on the tape's one line (how far down to it).
+fn tape_files_ends() -> (Double, Double, Double) {
+  let side = tape_shown_side()
+  let under = if side is None { tape_room_now().under } else { 0.0 }
+  let corners = beside_column(tape_pane_corners(Page, side is Some(_)), under)
+  (tape_bar_start_room(corners, true), tape_bar_end_room(corners), @sf.tape_bar_over())
 }

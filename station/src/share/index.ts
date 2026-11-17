@@ -500,7 +500,7 @@ export class Sharing {
       const key = name in shared ? null : await dirKey(join(skills, name));
       if (key !== null) free.set(key, name);
     }
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const to: Json = isObject(raw.sharedSkills) ? raw.sharedSkills : {};
       for (const [name, { id }] of gone) {
         const key = state.hosted[id]?.dir;
@@ -807,7 +807,7 @@ export class Sharing {
           // counted, twice)
           if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
-            await this.placedHome(this.placeProfile(id, had, got));
+            await this.placedHome(await this.placeProfile(id, had, got));
             const revision = Number(got?.quotaRevision ?? 0);
             if (had.version >= 0) had.profileUpdate = { reset: revision > (had.quotaRevision ?? 0) || had.profileUpdate?.reset === true };
             had.quotaRevision = revision;
@@ -867,12 +867,12 @@ export class Sharing {
 
   // ── copies of others' shares ──
 
-  /// The copy's profile made or changed in config.json, at once (one step with what its caller changes of the state): its
-  /// home, for `placedHome` to make.
-  private placeProfile(id: string, had: Borrowed, got: Json): string | null {
+  /// The copy's profile made or changed in config.json, taken at once and written before what its caller changes of
+  /// the state: its home, for `placedHome` to make.
+  private async placeProfile(id: string, had: Borrowed, got: Json): Promise<string | null> {
     const given = isObject(got?.profile) ? got.profile : null;
     if (!given) throw new Error("the host sent no profile");
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const at = list.findIndex((p) => isObject(p?.share) && p.share.id === id);
       // One kept from before (a station that handed it over keeps its id and home: its chats go on with it).
@@ -916,7 +916,7 @@ export class Sharing {
   /// A copy taken away (already gone from the state): its profile, or its skill's link and files.
   private async drop(id: string, had: Borrowed) {
     if (had.kind === "profile") {
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => !(isObject(p?.share) && p.share.id === id && p.share.borrowed === true));
       });
       return;
@@ -1580,7 +1580,7 @@ export class Sharing {
     // (the stations it reaches are said by the cloud: a station just started waits for them, as a login wanted does)
     if (on && among !== null) await this.rosterSaid();
     const stored: { allow: string[] | null } = { allow: null };
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       for (const x of raw.profiles ?? []) {
         if (x.id !== profileId) continue;
         if (!on) {
@@ -1627,7 +1627,7 @@ export class Sharing {
       if ((await lstat(dir)).isSymbolicLink()) throw new Error("this skill is another station's");
       if (!(await this.readSkill(dir)).hasSkillMd) throw new Error("no SKILL.md in that skill");
     }
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const skills: Json = isObject(raw.sharedSkills) ? raw.sharedSkills : {};
       if (on) skills[name] = { id: had ?? newId(), allow };
       else delete skills[name];
@@ -1689,7 +1689,7 @@ export class Sharing {
     try {
       if (sharing) {
         await shareFirst!(id);
-        this.deps.config.update((raw) => {
+        await this.deps.config.updateSoon((raw) => {
           for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, allow };
         });
         made = true;
@@ -1703,7 +1703,7 @@ export class Sharing {
       // (a station its stations do not include keeps no copy: it may not borrow it, and its host's word that it is
       // no longer for it may come before it has one, so it would keep it)
       keeps = allow === null || (me !== null && allow.includes(me));
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         if (!keeps) raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((x: Json) => x?.id !== profileId);
         else for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, borrowed: true, host: to, ...(email ? { email } : {}) };
       });
@@ -1716,7 +1716,7 @@ export class Sharing {
     } catch (e) {
       // (the share this move made, undone while the login is still here alone: as it was)
       if (made && !taken) {
-        this.deps.config.update((raw) => {
+        await this.deps.config.updateSoon((raw) => {
           for (const x of raw.profiles ?? []) if (x.id === profileId && isObject(x.share) && x.share.id === id) delete x.share;
         });
         log.info("share", "a share made to move a profile undone: the move failed", { profile: profileId, to, error: (e as Error).message });
@@ -1795,7 +1795,7 @@ export class Sharing {
     const had: Borrowed = state.borrowed[id] ?? { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
     had.host = peer;
     had.allow = allow;
-    const home = this.placeProfile(id, had, request);
+    const home = await this.placeProfile(id, had, request);
     had.version = Number(request?.version ?? 0);
     had.quotaRevision = Number(request?.quotaRevision ?? 0);
     had.stale = false;
@@ -1839,7 +1839,7 @@ export class Sharing {
       // (the other has it now: the login here goes, so that one station alone renews it)
       const home = this.home(p);
       for (const name of Object.keys(credentials)) await rm(join(home, name), { force: true });
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((x: Json) => x?.id !== p.id);
       });
     } finally {
@@ -1916,10 +1916,11 @@ export class Sharing {
     const withheld = this.withheldFor(request.served, request.lang);
     const localId = this.idFor(request.profileId, `moved-${randomBytes(4).toString("hex")}`);
     const home = join(this.deps.data, "homes", localId);
-    // The login written first, then the profile and what it was taken as in one step: nothing reads one without the other.
+    // The login written first, then the profile and what it was taken as, in this share's turn (`serially`): nothing of
+    // the shares reads one without the other.
     await mkdir(home, { recursive: true });
     await this.writeSignIns(home, given, request.credentials);
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const made: Json = { ...portable(given), access: given.access, id: localId, home: `homes/${localId}` };
       if (withheld !== null && withheld.length > 0) made.withheld = withheld;
@@ -1970,9 +1971,9 @@ export class Sharing {
     const made: Json = { ...portable(given), access: given.access, id: localId, home: `homes/${localId}`, share: { id, allow } };
     if (withheld !== null && withheld.length > 0) made.withheld = withheld;
     if (!isObject(made.env)) made.env = {};
-    // (hashed as it will be, its login written: the profile, the copy let go and the share then all in one step)
+    // (hashed as it will be, its login written: the profile, the copy let go and the share then, in this share's turn)
     const hash = await this.profileHash(made);
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const at = list.findIndex((x) => x.id === localId);
       if (at >= 0) list[at] = made;

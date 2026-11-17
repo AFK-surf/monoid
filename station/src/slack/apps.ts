@@ -460,7 +460,7 @@ export type SlackAppsOptions = {
   client: SlackClient;
   /// The configuration tokens as kept now (config.json), and how a rotated one is kept.
   load: () => ConfigToken[];
-  save: (token: ConfigToken) => void;
+  save: (token: ConfigToken) => Promise<void> | void;
 };
 
 /// The Slack app API with the configuration tokens: a person's own (`by`), one per Slack workspace; nobody uses
@@ -470,7 +470,7 @@ export type SlackAppsOptions = {
 export class SlackApps implements SlackService {
   readonly client: SlackClient;
   private load: () => ConfigToken[];
-  private save: (token: ConfigToken) => void;
+  private save: (token: ConfigToken) => Promise<void> | void;
   /// One rotation at a time per person and workspace: the refresh token works once.
   private rotating = new Map<string, Promise<unknown>>();
   /// Which workspace's token owns an app, once known.
@@ -584,7 +584,7 @@ export class SlackApps implements SlackService {
       log.info("slack", "slack configuration token rotated", { team: next.teamId });
       const kept: ConfigToken = { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt, teamId: next.teamId, by };
       if (now.owner !== undefined) kept.owner = now.owner;
-      this.save(kept);
+      await this.save(kept);
       return next.accessToken;
     });
     this.rotating.set(lock, mine);

@@ -3,6 +3,7 @@
 
 ///|
 /// One of the tabs (FilesTab): a folder, or two side by side (one of them in front).
+#derive(Eq)
 pub(all) struct FilesTab {
   id : String
   panes : Array[DriveAt]
@@ -11,6 +12,7 @@ pub(all) struct FilesTab {
 
 ///|
 /// The workspace's tabs (FilesTabsView): the tabs, the one shown, the pane in front of it.
+#derive(Eq)
 pub(all) struct FilesTabs {
   tabs : Array[FilesTab]
   current : String

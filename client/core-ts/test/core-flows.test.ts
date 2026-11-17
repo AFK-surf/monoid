@@ -1099,13 +1099,14 @@ test("an account's topic gives the app each station once when it has two copies"
 
 /// A core whose station has three profiles: p1 (unchecked) and p2 run Claude Code, p3 Codex (core/tests.rs
 /// `choosing_core`); `speed`: its session on Codex with `fast` as given, p3 offering `fast` as `profileFast`.
-async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false) {
+async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds = false) {
   const s = (key: string) => (speed ? { ...session(key), runtime: "codex", model: "gpt-6-astra", profile: "p3", fast: sessionFast } : session(key));
   return started({
     ...base(),
     "GET /overview": {
       ...overview,
       sessionRuntimeChange: switchRuntime,
+      ...(modelSpeeds ? { modelSpeeds: true } : {}),
       connectRuntimeChange: switchRuntime,
       ...(contexts ? { contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: { "claude-opus-5-5": 1_000_000 } } } : {}),
       connects: [{ id: "c1", name: "c1", kind: "slack", mode: "multi-session", requireMention: true, enabled: true, bind: { runtime: "claude", model: "claude-opus-5-5" }, connection: { state: "connected" }, slack: { appToken: "", botToken: "" }, sessions: 0 }],
@@ -4046,4 +4047,41 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
   const { runnableOn } = await import("../src/views/models.ts");
   assert.equal(runnableOn(stationOv, { runtime: "agy", model: "gemini-4-carbon-high", profile: "ag1" }, 0).length, 1);
   core.close();
+});
+
+
+test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
+  for (const available of [true, false]) {
+    const { host, core } = await choosing(true, false, null, false, false, available);
+    const ui = core.connect();
+    subscribe(core, ui, 1, { topic: "pick", station: "ws/st", of: "session:k1" });
+    subscribe(core, ui, 9, { topic: "newChat", scope: "ws" });
+    await host.settle();
+    const values = new Map();
+    apply(host, values);
+    assert.equal(v(values, 1).ultrafastAvailable === true, available);
+    if (!available) {
+      await assert.rejects(ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" }), /station/);
+    } else {
+      await ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" });
+      assert.equal(stationPosted(host, "/sessions/k1/settings").at(-1).speed, "ultrafast");
+      await ask(host, core, ui, 3, "pick.save", { station: "ws/st", of: "session:k1", fast: false });
+      const back = stationPosted(host, "/sessions/k1/settings").at(-1);
+      assert.equal(back.fast, false);
+      assert.equal(back.speed, undefined, "the old Fast switch clears the explicit tier");
+      await ask(host, core, ui, 4, "newChat.pick", { scope: "ws", station: "st", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      await ask(host, core, ui, 5, "newChat.create", { station: "ws/st" });
+      assert.equal(stationPosted(host, "/sessions").at(-1).speed, "ultrafast");
+      apply(host, values);
+      const frequent = (core.inner.store.get({ topic: "newChat", scope: "ws" }) as J).frequent;
+      assert.equal(frequent.length, 1);
+      assert.equal(frequent[0].speed, "ultrafast");
+      subscribe(core, ui, 7, { topic: "pick", station: "ws/st", of: "connect-new:preset" });
+      await host.settle();
+      await ask(host, core, ui, 6, "pick.save", { station: "ws/st", of: "connect-new:preset", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      apply(host, values);
+      assert.equal(v(values, 7).value.speed, "ultrafast");
+    }
+    core.close();
+  }
 });

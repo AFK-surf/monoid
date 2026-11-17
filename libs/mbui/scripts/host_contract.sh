@@ -752,7 +752,8 @@ INSTALL
       $ADB logcat -b all -c
       $ADB logcat -b main,system,crash,events -v brief > $O/play-behind.log 2>&1 &
       LC=$!
-      END='Fatal signal .*dev\.mbui|FATAL EXCEPTION|PLAYCHECK failed'
+      # (and played to its end behind, the app gone with it: said at once, not waited on for the stop that cannot come)
+      END='Fatal signal .*dev\.mbui|FATAL EXCEPTION|PLAYCHECK failed|PLAYCHECK ended behind'
       EMU_PORT=${SERIAL#emulator-} APP=kitdemo BENCH=-1 ENV="$(echo "MBUI_PLAYCHECK_BEHIND=1 $vars" | tr ' ' ';')" \
         bash scripts/android.sh run
       scripts/chk logwait --log $O/play-behind.log --line "PLAYCHECK playing|$END" --deadline 60 >/dev/null

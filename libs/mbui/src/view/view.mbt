@@ -1211,6 +1211,9 @@ pub struct Tree {
   mut before_causes : Int
   /// laying out where things stand before a change (Tree::stand_before_cause): not again inside it
   mut standing : Bool
+  /// a move of a system's batch of a finger's samples after its first being taken (Tree::moves_unlaid): found as the
+  /// batch's first found things, nothing laid out for it (Tree::drag_at)
+  mut moves_unlaid : Bool
   /// asked to be laid out and placed once the change under way is told whole (Tree::settle_after_change)
   mut settle_asked : Bool
   mut settle_at : Double
@@ -1585,6 +1588,7 @@ pub fn Tree::new(
     drawn_due: false,
     before_causes: 0,
     standing: false,
+    moves_unlaid: false,
     settle_asked: false,
     settle_at: 0.0,
     measured_gen: -1,
@@ -7405,6 +7409,17 @@ pub fn Tree::hold_lost_in(self : Tree, at : Int) -> Unit {
 }
 
 ///|
+/// `f`, a move of a system's batch of a finger's samples after its first (ui's touches.mbt), taken as the first found
+/// things: what takes it finds nothing laid out again for it (Tree::drag_at), what the batch changed laid out once, as
+/// its last is taken.
+pub fn Tree::moves_unlaid(self : Tree, f : () -> Unit) -> Unit {
+  let was = self.moves_unlaid
+  self.moves_unlaid = true
+  f()
+  self.moves_unlaid = was
+}
+
+///|
 /// Laid out as of the logic's moment (Tree::logic_at), what the change under way set so far pulled into its properties (as a
 /// computed read in a batch is: nothing told, no structure or effect run before the change ends), the clock put back
 /// where it was drawn at: for where things are as an event finds them (View::laid_size, Tree::drag_at).
@@ -7458,8 +7473,12 @@ pub fn Tree::drag_at(
   }
   let took = Ref(false)
   self.event(t, fn() {
-    // (where things are as of then, what the change under way set before it counted: an event inside another too)
-    self.laid_now(via=9) |> ignore
+    // (where things are as of then, what the change under way set before it counted: an event inside another too; a
+    // move of a batch after its first where the first found them, the batch laid out once, at its last: ui's
+    // touches.mbt)
+    if !self.moves_unlaid {
+      self.laid_now(via=9) |> ignore
+    }
     let holding = match self.held {
       Some(h) => h == id
       None => false

@@ -47,7 +47,7 @@ let ftab_places_said : Map[String, @signals.Signal[DriveAt??]] = Map([])
 /// The tab of `ws` put at `at` (None: the places).
 fn ftab_put(ws : String, at : DriveAt?) -> Unit {
   // (a folder pressed and read meanwhile, browse_switch's: waited for no more, the tab put elsewhere)
-  browse_switch_off("tab/" + ftab.chat)
+  @sfpages.browse_switch_off("tab/" + ftab.chat)
   ftab.places[ws] = at
   match ftab_places_said.get(ws) {
     Some(s) => s.set(Some(at))
@@ -214,7 +214,7 @@ pub fn files_tab(c : @ui.Ctx, src : Source, ws : String, chat : String, station 
 /// headings and rows stand in one line as a page's do.
 fn ftab_places(c : @ui.Ctx, src : Source, ws : String, stations : Array[DvStation]) -> Unit {
   let t = @sf.theme()
-  let favs = favorites(src, ws).filter(fn(f) { stations.iter().any(fn(s) { s.station == f.station }) })
+  let favs = @sfpages.favorites(src, ws).filter(fn(f) { stations.iter().any(fn(s) { s.station == f.station }) })
   c.box(style=ftab_list, fn() {
     if stations.length() == 0 {
       @sf.page_note(c, @sf.t("web-main.rail.filesNone"))
@@ -245,7 +245,7 @@ fn ftab_places(c : @ui.Ctx, src : Source, ws : String, stations : Array[DvStatio
           }
           let shown : Array[String] = []
           if s.anywhere {
-            match station_places_read(c, src, s) {
+            match @sfpages.station_places_read(src, s) {
               Some(places) if places.length() > 0 =>
                 for i, p in places {
                   let (name, path, disk) = p
@@ -306,11 +306,9 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
   let t = @sf.theme()
   let root = at.root.unwrap_or("")
   let here = dv_absolute(root, at.path)
-  let favs = favorites_in(src, ws, [st])
-  let kept = favorite_has(favs, at.station, root, at.path)
-  // (a list, whatever the files' page shows: picking from it needs no columns nor tree)
-  let view = "list"
-  let previewing = preview_shown(src, "tab")
+  let favs = @sfpages.favorites_in(src, ws, [st])
+  let kept = @sfpages.favorite_has(favs, at.station, root, at.path)
+  let previewing = @sfpages.preview_shown(src, "tab")
   // the way here: from the home (or the disk's top) for one who browses everywhere, else from the folder pinned
   let way : Array[(String, String)] = if st.anywhere {
     ftab_trail(here, st.home)
@@ -363,11 +361,11 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
     })
     |> ignore
     c.box(style=ftab_actions, fn() {
-      lit_button(c, "files-tab/favorite", "star", @sf.t(if kept { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", folder_name(st, at))]), kept, on_press=fn() {
+      lit_button(c, "files-tab/favorite", "star", @sf.t(if kept { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", @sfpages.folder_name(st, at))]), kept, on_press=fn() {
         if kept {
-          favorite_remove(src, ws, at.station, root, at.path)
+          @sfpages.favorite_remove(src, ws, at.station, root, at.path)
         } else {
-          favorite_add(src, ws, { station: at.station, root, path: at.path, name: folder_name(st, at) })
+          @sfpages.favorite_add(src, ws, { station: at.station, root, path: at.path, name: @sfpages.folder_name(st, at) })
         }
       })
       lit_button(
@@ -377,41 +375,29 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
         @sf.t(if previewing { "web-pages.files.hidePreview" } else { "web-pages.files.showPreview" }),
         previewing,
         on_press=fn() {
-          set_preview_shown(src, "tab", !previewing)
+          @sfpages.set_preview_shown(src, "tab", !previewing)
         },
       )
       @sf.icon_button(c, "copy", key="files-tab/copy", label=@sf.t("web-pages.drive.copyPath"), on_press=fn() {
-        copy_path(c, here)
+        @sfpages.copy_path(here)
       }) |> ignore
       @sf.icon_button(c, "refresh", key="files-tab/refresh", label=@sf.t("web-pages.drive.refresh"), on_press=fn() {
-        refresh_folder_told(c, src, at)
+        c.tell("files-tab/refresh", fn() { @sfpages.refresh_folder(src, at) })
       }) |> ignore
     })
     |> ignore
   })
   |> ignore
   // as on the files' page, but nothing here changes the files: ⏎ opens what is chosen rather than renaming it
-  let b_ref : Ref[Browse?] = Ref(None)
-  let held = fn(folder : String) {
-    @sfbase.dv_entries(src, at.station, root, folder).unwrap_or([])
-  }
-  // a folder's entries as shown (for a preview to step through the pictures beside it): the one shown's
-  let folder_of = fn(in_ : DriveAt) -> Array[DvEntry] {
-    match b_ref.val {
-      Some(b) if in_.path == at.path => b.arranged(in_.path, held(in_.path)).unwrap_or([])
-      _ => []
-    }
-  }
+  let held = fn(folder : String) { @sfbase.dv_entries(src, at.station, root, folder).unwrap_or([]) }
   let open = fn(in_ : DriveAt, e : DvEntry) {
-    open_entry(c, src, "tab", in_, e, folder_of(in_), fn(to) { ftab_go(to.station, to.root.unwrap_or(""), to.path) })
+    // (a folder's entries as shown, for a preview to step through the pictures beside it: the one shown's)
+    let near = if in_.path == at.path { tab_browse_of(src, at).arranged(src, in_.path).unwrap_or([]) } else { [] }
+    @sfpages.open_entry(src, "tab", in_, e, near, fn(to) { ftab_go(to.station, to.root.unwrap_or(""), to.path) })
   }
-  let b = browse(c, src, "tab/" + ftab.chat, "tab", view, at, false, {
-    open,
-    preview: open,
-    go: fn(p, _) { ftab_go(at.station, root, p) },
-    remove: fn(_) {  },
-  })
-  b_ref.val = Some(b)
+  let b = tab_browse_of(src, at)
+  // (the core told where the tab is as that changes: what it orders the folder by is the device's)
+  c.after_build("files-tab/at/" + ftab.chat, fn() { b.tell_at(src) })
   let dragged = fn(in_ : DriveAt, e : DvEntry) -> Dragged {
     let path = dv_join(in_.path, e.name)
     { station: in_.station, station_name: st.name, root, path, abs: dv_absolute(root, path), name: e.name, size: e.size, dir: e.dir }
@@ -421,12 +407,12 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
   let pressed = fn(in_ : DriveAt, e : DvEntry) {
     if e.dir {
       let path = dv_join(in_.path, e.name)
-      browse_switch(c, src, [(b, { ..b, at: { ..at, path, } })], b.key, fn(_, _) { [path] }, fn() { ftab_go(at.station, root, path) })
+      @sfpages.browse_switch(src, [(b, { view: "list", at: { ..at, path, } })], b.key, fn(_, _) { [path] }, fn() { ftab_go(at.station, root, path) })
     } else {
       ftab_pick(dragged(in_, e))
     }
   }
-  let row_of = fn(in_ : DriveAt, e : DvEntry) -> RowProps {
+  let row_of = fn(in_ : DriveAt, e : DvEntry) -> TabRowOf {
     {
       items: fn() {
         let abs = dv_absolute(root, dv_join(in_.path, e.name))
@@ -435,92 +421,77 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
         if !e.dir {
           out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.open"), icon="external", fn() { open(in_, e) })))
         }
-        match entry_beside(in_, e) {
+        match @sfpages.entry_beside(in_, e) {
           Some(f) => out.push(Some(@sf.menu_item_of(@sf.t("web-main.preview.openBeside"), icon="panel-open", f)))
           None => ()
         }
         out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.sendToChat"), icon="send", fn() { files_into(ftab.chat, dragged(in_, e)) })))
-        out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.copyPath"), icon="copy", fn() { copy_path(c, abs) })))
+        out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.copyPath"), icon="copy", fn() { @sfpages.copy_path(abs) })))
         if !e.dir {
-          out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.download"), icon="download", fn() { save_entry(c, src, in_, e) })))
+          out.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.download"), icon="download", fn() { @sfpages.save_entry(src, in_, e) })))
         }
         if e.dir {
           let path = dv_join(in_.path, e.name)
-          let saved = favorite_has(favs, at.station, root, path)
+          let saved = @sfpages.favorite_has(favs, at.station, root, path)
           out.push(Some(@sf.menu_item_of(@sf.t(if saved { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", e.name)]), icon="star", fn() {
             if saved {
-              favorite_remove(src, ws, at.station, root, path)
+              @sfpages.favorite_remove(src, ws, at.station, root, path)
             } else {
-              favorite_add(src, ws, { station: at.station, root, path, name: e.name })
+              @sfpages.favorite_add(src, ws, { station: at.station, root, path, name: e.name })
             }
           })))
         }
         out
       },
-      open: fn() { pressed(in_, e) },
       press: fn() { pressed(in_, e) },
-      menu: fn() {  },
       chosen: !e.dir && ftab_picked(dragged(in_, e)),
-      renaming: false,
-      rename: fn(_) {  },
-      drop: None,
     }
-  }
-  let shown : Shown = {
-    b,
-    row_of,
-    drop_on: fn(_) { None },
-    clear: fn() { b.clear(c, src) },
-    write: false,
-    transfers: false,
   }
   let lid = c.id("files-tab/list")
   // (a ground round its rows: a press there chooses none)
   c.cursor(lid, Arrow)
   c.box(style=ftab_list, id=lid, fn() {
-    {
-      let (value, error) = drive_folder(src, at.station, root, at.path)
-        match (value, error) {
-          (None, Some(e)) =>
-            c.box(style=ftab_problem, fn() {
-              c.text(e, style=tab_trouble) |> ignore
-              @sf.button(c, @sf.t("web-pages.drive.retry"), key="files-tab/retry", tone=Ghost, icon="retry", on_press=fn() {
-                refresh_folder_told(c, src, at)
+    let (value, error) = @sfpages.drive_folder_held(src, at.station, root, at.path)
+    match (value, error) {
+      (None, Some(e)) =>
+        c.box(style=ftab_problem, fn() {
+          c.text(e, style=tab_trouble) |> ignore
+          @sf.button(c, @sf.t("web-pages.drive.retry"), key="files-tab/retry", tone=Ghost, icon="retry", on_press=fn() {
+            c.tell("files-tab/retry", fn() { @sfpages.refresh_folder(src, at) })
+          }) |> ignore
+        })
+        |> ignore
+      (None, None) => @sf.waiting(c, fn() { tab_rows_sample(c, at, 5) })
+      _ =>
+        match b.arranged(src, at.path) {
+          None => @sf.waiting(c, fn() { tab_rows_sample(c, at, 5) })
+          Some([]) => c.text(@sf.t("web-pages.drive.emptyFolder"), style=ftab_note) |> ignore
+          Some(list) =>
+            tab_rows_view(c, src, "files-tab/rows/" + at.station + "/" + root + "/" + at.path, at, list, row_of, head=fn() {
+              // the folder shown, picked as a whole
+              let whole : Dragged = {
+                station: at.station,
+                station_name: st.name,
+                root,
+                path: at.path,
+                abs: here,
+                name: if at.path == "" { way[way.length() - 1].0 } else { dv_name(at.path) },
+                size: 0.0,
+                dir: true,
+              }
+              // (the folder as a whole, where it is under it: the library's row of choices, as the places' rows)
+              @sf.choice_row(c, "files-tab/whole", ftab_picked(whole), @sf.t("web-mobile.files.wholeFolder"), note=here, lead=fn() {
+                @sf.icon(c, "folder", size=tab_icon, color=t.p.muted) |> ignore
+              }, on_press=fn() {
+                ftab_pick(whole)
               }) |> ignore
             })
-            |> ignore
-          (None, None) => @sf.waiting(c, fn() { rows_sample(c, at, shown, 5, compact=true) })
-          _ =>
-            match b.arranged(at.path, held(at.path)) {
-              None => @sf.waiting(c, fn() { rows_sample(c, at, shown, 5, compact=true) })
-              Some([]) => c.text(@sf.t("web-pages.drive.emptyFolder"), style=ftab_note) |> ignore
-              Some(_) =>
-                rows_view(c, src, "files-tab/rows/" + at.station + "/" + root + "/" + at.path, at, shown, false, compact=true, head=fn() {
-                  // the folder shown, picked as a whole
-                  let whole : Dragged = {
-                    station: at.station,
-                    station_name: st.name,
-                    root,
-                    path: at.path,
-                    abs: here,
-                    name: if at.path == "" { way[way.length() - 1].0 } else { dv_name(at.path) },
-                    size: 0.0,
-                    dir: true,
-                  }
-                  // (the folder as a whole, where it is under it: the library's row of choices, as the places' rows)
-                  @sf.choice_row(c, "files-tab/whole", ftab_picked(whole), @sf.t("web-mobile.files.wholeFolder"), note=here, lead=fn() {
-                    @sf.icon(c, "folder", size=tab_icon, color=t.p.muted) |> ignore
-                  }, on_press=fn() {
-                    ftab_pick(whole)
-                  }) |> ignore
-                })
-            }
         }
     }
     // a press where there is no row: nothing chosen
     c.on_press(lid, fn() {
-      if !row_took(c) {
-        b.clear(c, src)
+      if !tab_row_took(c) {
+        b.clear(src)
       }
     })
   })
@@ -528,7 +499,7 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
   if previewing {
     // (what was picked last in the folder shown: what a pick is, seen before it goes into the message)
     let here_picked = ftab.picked.filter(fn(d) { d.station == at.station && !d.dir && dv_parent(d.path) == at.path })
-    let p : Previewed = match here_picked.last() {
+    let p : @sfpages.Previewed = match here_picked.last() {
       Some(d) =>
         match held(at.path).iter().find_first(fn(e) { e.name == d.name }) {
           Some(e) => One(at, e)
@@ -536,7 +507,7 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
         }
       None => Nothing
     }
-    drive_pane(
+    tab_pane(
       c,
       src,
       p,
@@ -549,13 +520,25 @@ fn ftab_folder(c : @ui.Ctx, src : Source, ws : String, st : DvStation, at : Driv
       },
       fn() {
         match p {
-          One(pat, e) => save_entry(c, src, pat, e)
+          One(pat, e) => @sfpages.save_entry(src, pat, e)
           _ => ()
         }
       },
-      fn(abs) { copy_path(c, abs) },
-      below=true,
     )
+  }
+}
+
+///|
+/// The tab's browsing of the folder `at` (the files' page's: its order, the core told where it is), as a list.
+fn tab_browse_of(src : Source, at : DriveAt) -> @sfpages.Browse {
+  ignore(src)
+  {
+    key: "tab/" + ftab.chat,
+    owner: "tab",
+    view: fn() { "list" },
+    at: fn() { at },
+    write: fn() { false },
+    does: { open: fn(_, _) {  }, preview: fn(_, _) {  }, go: fn(_, _) {  }, remove: fn(_) {  } },
   }
 }
 

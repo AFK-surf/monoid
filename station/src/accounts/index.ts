@@ -331,7 +331,7 @@ export class Accounts {
       if (busy) await busy;
       else await this.readQuota(id, false);
     });
-    this.uncheckOutdated();
+    this.#unchecking = this.uncheckOutdated().catch(() => {});
     // A finished sign-in changes what the profile can do; it is checked again right away.
     this.stops.push(
       this.logins.changes((id) => {
@@ -397,6 +397,7 @@ export class Accounts {
     for (const stop of this.stops.splice(0)) stop();
     await this.logins.close();
     await this.background.close();
+    await this.#unchecking;
   }
 
   /// Hears each change the overview shows of the accounts; gives the function that stops it.
@@ -523,9 +524,9 @@ export class Accounts {
   // ── edits ──
 
   /// Edits config.json (refused as 400 when the result does not pass), said in the log as `what`.
-  private save(viewer: Viewer, what: string, edit: (raw: Json) => void) {
+  private async save(viewer: Viewer, what: string, edit: (raw: Json) => void): Promise<void> {
     try {
-      this.deps.config.update(edit);
+      await this.deps.config.updateSoon(edit);
     } catch (e) {
       throw new Refusal(400, (e as Error).message);
     }
@@ -536,7 +537,7 @@ export class Accounts {
   /// joined workspaces whose sessions may run on it ([] or null: the home one's only), set by
   /// those who manage the station only; kept as those of the station's joined workspaces withheld from it, so one it
   /// joins later runs on it too.
-  putProfile(id: string, given: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()) {
+  async putProfile(id: string, given: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
     if (given.enabled !== undefined && typeof given.enabled !== "boolean") throw new Refusal(400, "enabled must be a boolean");
     // A copy of another station's is edited there; only whether this station uses it is its own to say (paused here,
     // kept as its host's copy is refreshed: share/index.ts placeProfile).
@@ -545,7 +546,7 @@ export class Accounts {
     const before = this.profile(id);
     if (given.enabled !== undefined && before?.machine === true) throw new Refusal(400, "a machine login cannot be paused here");
     if (pausing && before !== undefined && borrowed(this.rawProfile(id))) {
-      this.save(viewer, `profile ${id}`, (raw) => {
+      await this.save(viewer, `profile ${id}`, (raw) => {
         const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
         const existing = list.find((p) => p?.id === id);
         if (!existing) return;
@@ -569,7 +570,7 @@ export class Accounts {
     if (givenWorkspaces !== undefined && givenWorkspaces !== null && (!Array.isArray(givenWorkspaces) || !givenWorkspaces.every((w) => typeof w === "string" && /^[0-9A-Za-z_-]{1,128}$/.test(w)))) {
       throw new Refusal(400, "workspaces must be workspace ids");
     }
-    this.save(viewer, `profile ${id}`, (raw) => {
+    await this.save(viewer, `profile ${id}`, (raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
@@ -683,9 +684,9 @@ export class Accounts {
 
   /// DELETE /profiles/:id. Its home stays. Taken even while sessions or connects use it (the pages say so first): its
   /// sessions go on on another profile of their runtime, or stop when there is none.
-  deleteProfile(id: string, viewer: Viewer, lang: Lang = stationLang()) {
+  async deleteProfile(id: string, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
     this.own(id, lang);
-    this.save(viewer, `delete profile ${id}`, (raw) => {
+    await this.save(viewer, `delete profile ${id}`, (raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       if (!list.some((p) => p?.id === id)) throw new Error(`unknown profile ${id}`);
       raw.profiles = list.filter((p) => p?.id !== id);
@@ -751,7 +752,7 @@ export class Accounts {
       throw e;
     }
     try {
-      this.save(viewer, `profile ${id}`, (raw) => {
+      await this.save(viewer, `profile ${id}`, (raw) => {
         const made: Json = { id, name: label };
         if (kind === "env") made.runtime = runtime;
         made.access = { kind };
@@ -800,7 +801,7 @@ export class Accounts {
       // Its account, not "this machine": the profile is listed with the workspace's, read from other machines.
       const name = login.email ?? named(runtime);
       log.info("accounts", "profile on the machine's login made", { profile: id, runtime, by: viewer.email });
-      this.save(viewer, `profile ${id} on the machine's login`, (raw) => {
+      await this.save(viewer, `profile ${id} on the machine's login`, (raw) => {
         const made = { id, name, runtime, access: { kind: "subscription" }, home: `homes/${id}`, env: {}, machine: true };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
@@ -975,7 +976,7 @@ export class Accounts {
     const enterprise = p.access === "agy-enterprise";
     const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : enterprise ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription")) : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
     try {
-      this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
+      await this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
         // An OpenCode Go one runs every runtime its key does (it has none of its own).
         // A Kimi Code one runs Claude Code, its token read from its home (kimi.ts), never kept here.
         const made = signedIn
@@ -1017,7 +1018,7 @@ export class Accounts {
       return false;
     }
     try {
-      this.setConsoleKey(id, login.access, "signed in to OpenCode");
+      await this.setConsoleKey(id, login.access, "signed in to OpenCode");
       return true;
     } catch (e) {
       log.warn("accounts", "the OpenCode sign-in was not saved", { profile: id, error: (e as Error).message });
@@ -1026,8 +1027,8 @@ export class Accounts {
   }
 
   /// The key of a profile signed in to the OpenCode Console, set to its current token (the runtimes are given it).
-  private setConsoleKey(id: string, key: string, why: string) {
-    this.deps.config.update((raw) => {
+  private async setConsoleKey(id: string, key: string, why: string): Promise<void> {
+    await this.deps.config.updateSoon((raw) => {
       const p = (Array.isArray(raw.profiles) ? raw.profiles : []).find((x: Json) => x?.id === id);
       if (!p) throw new Error(`unknown profile ${id}`);
       p.access = { kind: "opencode-go", key, login: true };
@@ -1073,7 +1074,7 @@ export class Accounts {
         log.info("accounts", "an OpenCode token renewed for a profile no longer signed in to it; its key left as it is", { profile: id });
         return;
       }
-      this.setConsoleKey(id, token.access, "renewed");
+      await this.setConsoleKey(id, token.access, "renewed");
     })().finally(() => this.renewing.delete(id));
     this.renewing.set(id, run);
     return run;
@@ -1167,7 +1168,7 @@ export class Accounts {
   /// The models outdated on this station's profiles (models.ts) unchecked, each once: config.json keeps which were
   /// (`outdatedUnchecked`), so one checked again by hand stays. Worked out at the start and again as a check finds other
   /// models (a newer one offered, an old one gone).
-  private uncheckOutdated() {
+  private async uncheckOutdated(): Promise<void> {
     const found = (id: string) => {
       const c = this.checks.get(id);
       return c?.models ? [...c.models, ...expandDevinFusion(c.fusion)] : null;
@@ -1181,7 +1182,7 @@ export class Accounts {
     if (unchecked(structuredClone(this.deps.config.raw())).changes.length === 0) return;
     let changes: ReturnType<typeof unchecked>["changes"] = [];
     try {
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         const done = unchecked(raw);
         changes = done.changes;
         raw.outdatedUnchecked = done.now;
@@ -1237,7 +1238,7 @@ export class Accounts {
       JSON.stringify(before?.models ?? null) !== JSON.stringify(check.models) ||
       JSON.stringify(before?.fusion ?? null) !== JSON.stringify(check.fusion ?? null)
     ) {
-      this.uncheckOutdated();
+      this.#unchecking = this.uncheckOutdated().catch(() => {});
     }
     this.changed();
   }
@@ -1666,7 +1667,7 @@ export class Accounts {
   }
 
   /// PUT /automatic-decisions (a workspace manager's).
-  putAutomaticDecisions(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()) {
+  async putAutomaticDecisions(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
     if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.decisions.managersOnly"));
     try {
       checkAutomaticDecisions(input);
@@ -1678,7 +1679,7 @@ export class Accounts {
     if (config.completion.enabled && !this.decisionModels().some((m) => m.id === config.completion.model)) {
       throw new Refusal(400, tr(lang, "station.decisions.pickVerified"));
     }
-    this.save(viewer, "automatic decisions", (raw) => {
+    await this.save(viewer, "automatic decisions", (raw) => {
       raw.automaticDecisions = config;
     });
   }
@@ -1686,12 +1687,12 @@ export class Accounts {
   /// PUT /archiving (a workspace manager's): how chats go to the archive on their own (sessions/lifecycle.ts
   /// autoArchive): `days` idle (0: never), `slackDays` for Slack's sessions stopped at a block, and `reviewed`: only
   /// those the archive review recommended.
-  putArchiving(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()) {
+  async putArchiving(input: Record<string, unknown>, viewer: Viewer, lang: Lang = stationLang()): Promise<void> {
     if (!manages(viewer)) throw new Refusal(403, tr(lang, "station.archiving.managersOnly"));
     const days = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 365;
     if (!days(input.days) || !days(input.slackDays) || typeof input.reviewed !== "boolean") throw new Refusal(400, tr(lang, "station.archiving.badSettings"));
     const { days: idle, slackDays, reviewed } = input;
-    this.save(viewer, "archiving", (raw) => {
+    await this.save(viewer, "archiving", (raw) => {
       raw.autoArchiveDays = idle;
       raw.slackArchiveDays = slackDays;
       raw.autoArchiveReviewed = reviewed;
@@ -1892,6 +1893,8 @@ export class Accounts {
   /// What the last GET /profiles/pace read of the store, and in which minute; `#paceRev` counts the allowances kept since.
   #paceRead: { minute: number; rev: number; now: number; read: ReturnType<Store["profileHours"]> } | null = null;
   #paceRev = 0;
+  /// The outdated models' last unchecking, its config.json edit waited for as the accounts close.
+  #unchecking: Promise<void> = Promise.resolve();
 
   /// GET /profiles/:id/fusion: the Devin Fusion catalog from the profile's last check (null on borrowed or non-Devin profiles).
   fusionView(id: string): Json {

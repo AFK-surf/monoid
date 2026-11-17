@@ -209,6 +209,7 @@ fn wide_reset() -> Unit {
   wide.side_place = "chats"
   wide.side_key = ""
   board_frame_src.val = None
+  room_held.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
   wide.in_bar = false
@@ -1185,9 +1186,8 @@ fn main_page(
     Setting(r) => setting_page(c, src, w, r)
     // a place of the rail's other than the chats': its page, under its title
     Place(p) => place_page(c, src, w, p)
-    // 文件: a folder under its bar, as the web's
-    Files => files_home(c, src, w, settings_core(src, w), files_room(c))
-    Drive(at) => files_station(c, src, w, settings_core(src, w), at, files_room(c))
+    // 文件 and a station's drive: made once as nodes (pane_made, tape_made: sfpages' files_page_node.mbt)
+    Files | Drive(_) => ()
     // a new chat (newchat.mbt)
     NewChat => new_chat_page(c, src, w)
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in

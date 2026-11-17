@@ -31,6 +31,9 @@ let fault_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 ///|
 /// What this package keeps put back as the app begins anew (its reset).
 pub fn reset() -> Unit {
+  // (the files' pages: what they browse, keep, drag, preview and ask: files_browse.mbt)
+  files_reset()
+  station_pick_reset()
   screen_fix_mode.val = ""
   screen_fix_heard.val = None
   screens_open.clear()

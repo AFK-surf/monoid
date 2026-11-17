@@ -1,8 +1,8 @@
 #!/bin/bash
 # Type-check every target; print errors only. First the determinism lint (tools/detlint): its
 # report, and a failure stops here; then the hosts' H.264 conversion (scripts/avc_test.c) and log files
-# (scripts/log_files_test.c), and the renderers' own tests (scripts/apple_render_test.m on a Mac,
-# scripts/gles_render_test.c on Linux).
+# (scripts/log_files_test.c), Android's frame waiting (scripts/frame_mail_test.c, scripts/framemail_test.sh), and the
+# renderers' own tests (scripts/apple_render_test.m on a Mac, scripts/gles_render_test.c on Linux).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
 # the H.264 conversion the hosts share (src/host/avc.h), as still.fail's Android AvcTest tests it
@@ -10,6 +10,9 @@ mkdir -p "$D/../out"
 cc -Wall -I "$D/../src/host" "$D/avc_test.c" -o "$D/../out/avc_test" && "$D/../out/avc_test" || exit 1
 # what a host's log files may keep, the queue before them, which files (src/host/log_files.h)
 cc -Wall -I "$D/../src/host" "$D/log_files_test.c" -o "$D/../out/log_files_test" && "$D/../out/log_files_test" || exit 1
+# the frame waiting between Android's app thread and its GL thread (src/host/frame_mail.h; its Java side, FrameMail)
+cc -Wall -I "$D/../src/host" "$D/frame_mail_test.c" -lm -o "$D/../out/frame_mail_test" && "$D/../out/frame_mail_test" || exit 1
+sh "$D/framemail_test.sh" || exit 1
 . "$D/env.sh"
 if [ "$(uname)" = Darwin ]; then
   cc -Wall -fobjc-arc -I "$D/../src/host" -I "$MOON_HOME/include" "$D/apple_render_test.m" \

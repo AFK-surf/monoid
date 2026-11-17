@@ -7,6 +7,15 @@
 // go, nothing more of either told. The hosts hand each finger's events on as they come (pointer kinds 10 down, 11
 // moved, 12 up, 13 called off, the system's id where a press's button goes); what they come to is the app's input, as
 // it is kept on a tape (inputrec.mbt) and given again.
+//
+// A system hands a finger's moves in batches, a frame's samples together (Android's MotionEvent with its history, iOS's
+// coalesced touches): 2-4 a frame on a phone. Each sample is a move of its own, taken at its own moment (what follows
+// the hand, what it is let go at, sees every one), but what they changed is laid out once, as the batch's last is
+// taken: the host hands each sample but the last as 14 (moved, more of its batch after it), the last as 11. A move of
+// the app's pointer so (pointer_in's `more`) brings the tree to nothing, before it or after it, and the moves after it
+// in the batch find the tree as the first did, till the last is taken: one layout a batch, not one a sample (每帧安卓送
+// 2-4 个采样时整棵树排了 2-4 遍, 2026-11-16). What is laid out so is so as of the last's moment, the batch one input;
+// a tape keeps which moves had more after them (inputrec.mbt), so a replay does the same at any rate of frames.
 
 ///|
 /// The system's ids of the app's two fingers (any number, a negative one too), and whether each is there.
@@ -22,6 +31,7 @@ let touch_down : FixedArray[Bool] = FixedArray::make(2, false)
 fn touches_forget() -> Unit {
   touch_down[0] = false
   touch_down[1] = false
+  moves_batched.val = false
   perf_touch_at.val = -1.0
 }
 
@@ -71,6 +81,11 @@ fn touch_kind(phase : Int, id : Int) -> Int {
 }
 
 ///|
+/// Whether the pointer's last move had more of its batch after it (above): the next move finds the tree as it was.
+// kept across runs: put back as a run begins (touches_forget)
+let moves_batched : Ref[Bool] = Ref(false)
+
+///|
 /// The window no longer the app's: a finger of the app's down called off (3), all of it, as any called off is.
 fn touches_off() -> Unit {
   // A frame after the app returns is not an answer to a touch from before it left the foreground.
@@ -92,8 +107,10 @@ let last_touch_y : Ref[Double] = Ref(0.0)
 ///|
 /// A finger's event from the host (above), as one event at its own moment (view_host.mbt): what was due before it done
 /// first, then what it comes to worked out and taken as the app's pointer's, in the same event (what was due never
-/// sees a finger not down yet, nor misses one that is).
+/// sees a finger not down yet, nor misses one that is). `phase` 4: moved, more of its batch after it.
 fn touch_in(phase : Int, id : Int, x : Double, y : Double) -> Unit {
+  let more = phase == 4
+  let phase = if more { 1 } else { phase }
   if phase == 2 && ((touch_down[0] && touch_slots[0] == id) || (touch_down[1] && touch_slots[1] == id)) {
     perf_touch_started()
   }
@@ -112,7 +129,7 @@ fn touch_in(phase : Int, id : Int, x : Double, y : Double) -> Unit {
     }
     if kind >= 0 {
       // (in this event: at its moment)
-      pointer_in(kind, x, y, 0, if kind == 0 { mods_held() } else { 0 }, by=1)
+      pointer_in(kind, x, y, 0, if kind == 0 { mods_held() } else { 0 }, by=1, more~)
     }
   }, what~)
 }

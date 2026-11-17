@@ -606,7 +606,7 @@ export class Updates {
   async setAuto(on: boolean, lang: Lang = stationLang()) {
     this.refuseStationNote(lang);
     if (this.auto() !== on) {
-      this.config.update((raw) => {
+      await this.config.updateSoon((raw) => {
         raw.autoUpdate = on;
       });
       this.lastSetting = this.setting();
@@ -621,14 +621,14 @@ export class Updates {
   /// that channel.
   async setChannel(channel: Channel, lang: Lang = stationLang()) {
     this.refuseStationNote(lang);
-    this.keepChannel(channel);
+    await this.keepChannel(channel);
     await this.check();
   }
 
   /// Keeps `channel` in the config, when it is another one than now.
-  keepChannel(channel: Channel) {
+  async keepChannel(channel: Channel): Promise<void> {
     if (this.channel() === channel) return;
-    this.config.update((raw) => {
+    await this.config.updateSoon((raw) => {
       raw.updateChannel = channel;
     });
     this.lastSetting = this.setting();
@@ -641,8 +641,8 @@ export class Updates {
   /// while one is answered wait for it (each reads the ask the one before left).
   answerChannelAsk(): Promise<void> {
     const answered = this.answering.then(() =>
-      answerChannelAsk(join(this.data, "run"), (channel) => {
-        this.keepChannel(channel);
+      answerChannelAsk(join(this.data, "run"), async (channel) => {
+        await this.keepChannel(channel);
         this.spawn(() => this.check());
       }),
     );
@@ -1448,7 +1448,7 @@ export async function writeWhole(path: string, text: string): Promise<void> {
 
 /// The running station's side: takes the channel asked for in <run>/channel-ask (if any), sets it, and answers in
 /// <run>/channel-answer (`ok <channel>`, or `error <why>`). One at a time (Updates' `answerChannelAsk`).
-export async function answerChannelAsk(runDir: string, set: (channel: Channel) => void): Promise<void> {
+export async function answerChannelAsk(runDir: string, set: (channel: Channel) => Promise<void> | void): Promise<void> {
   const ask = join(runDir, CHANNEL_ASK);
   const asked = await readFile(ask, "utf8").catch(() => null);
   if (asked === null) return;
@@ -1458,7 +1458,7 @@ export async function answerChannelAsk(runDir: string, set: (channel: Channel) =
   if (channel === null) answer = `error ${tr(stationLang(), "station.cli.unknownChannel", { channel: asked.trim() })}`;
   else {
     try {
-      set(channel);
+      await set(channel);
       answer = `ok ${channel}`;
     } catch (e) {
       answer = `error ${(e as Error).message}`;

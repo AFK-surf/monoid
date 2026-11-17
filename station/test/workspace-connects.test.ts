@@ -51,7 +51,7 @@ function workspace(): { h: Station; s: Station; close(): Promise<void> } {
         data: rig.dir,
         hub: () => rig.hub,
         store: rig.store,
-        config: { raw: () => rig.raw, update: (f) => f(rig.raw) },
+        config: { raw: () => rig.raw, updateSoon: async (f) => f(rig.raw) },
         bus,
         here: () => id,
         home: () => "ws",

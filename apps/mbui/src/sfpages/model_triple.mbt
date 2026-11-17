@@ -1770,24 +1770,44 @@ fn triple_foot_node(
         |> ignore
       })
       // how fast it runs (2026-11-02 用户「速度放在面板下面，跟账号差不多的位置」): its name and how fast it runs; pressed,
-      // the two ways in a pick. None picked, how fast its account runs it, said as that (`fastPlan`; 2026-11-02 用户
+      // the speeds the station offers in a pick. None picked, how fast its account runs it, said as that (`fastPlan`; 2026-11-02 用户
       // 「谁知道订阅是什么，应该直接显示具体值」)
       row.show(fn() { flag(v(), "fastAvailable") }, fn(x) {
         let head = @sf.t("web-main.model.speed")
-        let choices = [
-          @sf.choice("standard", @sf.t("web-main.model.standard")),
-          // (Fast its bolt)
-          @sf.choice("fast", "Fast", note=@sf.t("web-main.model.fastNote"), icon="zap"),
-        ]
+        let choices = fn() {
+          let cs = [
+            @sf.choice("standard", @sf.t("web-main.model.standard")),
+            // (Fast its bolt)
+            @sf.choice("fast", "Fast", note=@sf.t("web-main.model.fastNote"), icon="zap"),
+          ]
+          if flag(v(), "ultrafastAvailable") {
+            cs.push(@sf.choice("ultrafast", "Ultrafast", note=@sf.t("web-main.model.ultrafastNote"), icon="zap"))
+          }
+          cs
+        }
         let now = fn() {
-          match field(field(v(), "draft"), "fast") {
-            Some(True) => "fast"
-            Some(False) => "standard"
-            _ => if flag(v(), "fastPlan") { "fast" } else { "standard" }
+          let speed = text(field(v(), "draft"), "speed")
+          if speed != "" {
+            speed
+          } else {
+            match field(field(v(), "draft"), "fast") {
+              Some(True) => "fast"
+              Some(False) => "standard"
+              _ => if flag(v(), "fastPlan") { "fast" } else { "standard" }
+            }
           }
         }
-        triple_chip_node(x, head, fn() { choices.search_by(fn(ch) { ch.key == now() }).map(fn(i) { choices[i].label }).unwrap_or("") }, fn(c) {
-          @sf.pick(head, choices, @signals.untracked(now), fn(k) { pick_save(src, station, of, { "fast": Json::boolean(k == "fast") }) }, from=Node(c), search=false)
+        triple_chip_node(x, head, fn() {
+          let cs = choices()
+          cs.search_by(fn(ch) { ch.key == now() }).map(fn(i) { cs[i].label }).unwrap_or("")
+        }, fn(c) {
+          @sf.pick(head, @signals.untracked(choices), @signals.untracked(now), fn(k) {
+            if k == "ultrafast" {
+              pick_save(src, station, of, { "speed": Json::string(k) })
+            } else {
+              pick_save(src, station, of, { "fast": Json::boolean(k == "fast") })
+            }
+          }, from=Node(c), search=false)
         })
         |> ignore
       })
@@ -2081,7 +2101,7 @@ fn triple_model_row_node(
         let p : Map[String, Json] = { "model": Json::string(id) }
         match field(oo, "usual") {
           Some(Object(u)) =>
-            for k in ["runtime", "effort", "fast", "context"] {
+            for k in ["runtime", "effort", "fast", "speed", "context"] {
               p[k] = u.get(k).unwrap_or(Json::null())
             }
           _ => ()
@@ -2234,7 +2254,7 @@ fn triple_combo_row_node(
   let params = fn() {
     let xx = @signals.untracked(x)
     let p : Map[String, Json] = { "model": Json::string(text(xx, "model")) }
-    for k in ["runtime", "effort", "fast", "context"] {
+    for k in ["runtime", "effort", "fast", "speed", "context"] {
       p[k] = field(xx, k).unwrap_or(Json::null())
     }
     p
@@ -2324,10 +2344,15 @@ fn triple_combo_row_node(
 /// A configuration's row's key: its model, runtime, how hard it thinks, how fast and how much context, so two of one
 /// model are two.
 fn triple_combo_key(x : Json?) -> String {
-  let fast = match field(x, "fast") {
-    Some(True) => "fast"
-    Some(False) => "standard"
-    _ => ""
+  let speed = text(x, "speed")
+  let fast = if speed != "" {
+    speed
+  } else {
+    match field(x, "fast") {
+      Some(True) => "fast"
+      Some(False) => "standard"
+      _ => ""
+    }
   }
   let context = match field(x, "context") {
     Some(Number(n, ..)) => n.to_int64().to_string()

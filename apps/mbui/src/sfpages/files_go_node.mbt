@@ -28,8 +28,6 @@ priv struct Go {
   folders : @signals.Signal[(String, String, Array[String])?]
   asked : @signals.Signal[String]
   switching : @signals.Signal[Int]
-  /// its dialog as presented (@sf.last_presented; 0 none)
-  mut shown : Int
   /// how many times ↓ ↑ moved what is chosen: the chosen row brought into view as it changes
   keyed : @signals.Signal[Int]
 }
@@ -46,7 +44,6 @@ let go : Go = {
   folders: @signals.signal(None),
   asked: @signals.signal("", same=fn(a, b) { a == b }),
   switching: @signals.signal(0, same=fn(a, b) { a == b }),
-  shown: 0,
   keyed: @signals.signal(0, same=fn(a, b) { a == b }),
 }
 
@@ -61,15 +58,7 @@ fn go_reset() -> Unit {
   go.folders.set(None)
   go.asked.set("")
   go.switching.set(0)
-  go.shown = 0
   go.keyed.set(0)
-}
-
-///|
-/// ⌘⇧G's dialog opened, empty.
-pub fn go_to_open() -> Unit {
-  go_reset()
-  go.open.set(true)
 }
 
 ///|
@@ -132,28 +121,25 @@ fn place_of(stations : Array[DvStation], station : String, abs : String) -> Driv
 }
 
 ///|
-/// ⌘⇧G (GoTo) of workspace `ws` from `here` (the side in front), while it is asked for (go_to_open): the library's
-/// dialog (@sf.panel_nodes, opened by nothing: what it holds nodes of the window's tree, made once as it opens); closed
-/// (Esc, ✕, a press outside), not asked for any more. `to`: a folder gone to.
-pub fn go_to(c : @ui.Ctx, src : Source, ws : String, here : DriveAt, to : (DriveAt) -> Unit) -> Unit {
-  ignore(c)
-  if go.open.get() && go.shown == 0 {
-    @sf.panel_nodes(
-      @sf.t("web-pages.files.goTo"),
-      fn(v, _) { go_body(v, src, ws, here, to) },
-      from=Unanchored,
-      description=@sf.t("web-pages.files.goToNote"),
-      gone=fn() {
-        go.open.set(false)
-        go.shown = 0
-      },
-    )
-    go.shown = @sf.last_presented()
-  } else if !go.open.get() && go.shown > 0 {
-    // (a folder gone to: down)
-    @sf.close_presented_of(go.shown)
-    go.shown = 0
-  }
+/// ⌘⇧G (GoTo) of workspace `ws` from `here` (the side in front), asked for (from a press's or a key's handler): the
+/// library's dialog (@sf.panel_nodes, opened by nothing: what it holds nodes of the window's tree, made once as it
+/// opens); closed (Esc, ✕, a press outside), or down as a folder is gone to. `to`: a folder gone to.
+pub fn go_to_ask(src : Source, ws : String, here : DriveAt, to : (DriveAt) -> Unit) -> Unit {
+  go_reset()
+  go.open.set(true)
+  @sf.panel_nodes(
+    @sf.t("web-pages.files.goTo"),
+    fn(v, close) {
+      // (a folder gone to: down)
+      v.reacts(fn() { go.open.get() }, fn(open) { if !open { close() } }, at_start=false)
+      go_body(v, src, ws, here, to)
+    },
+    from=Unanchored,
+    description=@sf.t("web-pages.files.goToNote"),
+    gone=fn() {
+      go.open.set(false)
+        },
+  )
 }
 
 ///|
@@ -379,34 +365,42 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
 }
 
 ///|
-/// The station's button before a folder's trail (StationSwitch), the folder `f` shows: the workspace's stations with a
-/// drive (the one shown checked; one away not to be picked; this machine and the one shown said); picked, the same
-/// folder there when it has one, else its home (said so); ⌥ held, in a new tab. `front_it`: what is pressed in a side
-/// puts it in front first.
-fn station_switch(c : @ui.Ctx, src : Source, f : FolderOf, front_it : () -> Unit) -> Unit {
-  let t = @sf.theme()
-  let at = f.at
+/// The station's button before a folder's trail (StationSwitch) in `parent`, of the folder `at` station `st` shows in
+/// workspace `ws`: the workspace's stations with a drive (the one shown checked; one away not to be picked; this
+/// machine and the one shown said); picked, the same folder there when it has one, else its home (said so); ⌥ held, in
+/// a new tab (`open_in`). `go`: a folder shown in its place; `front_it`: what is pressed in a side puts it in front
+/// first.
+fn station_switch_node(
+  parent : @view.View,
+  src : Source,
+  ws : String,
+  at : DriveAt,
+  st : () -> DvStation,
+  go : (DriveAt) -> Unit,
+  open_in : ((DriveAt, Bool) -> Unit)?,
+  front_it : () -> Unit,
+) -> Unit {
   let here = this_machine()
-  let chip = c.id("files/station-switch/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path)
-  let stations = drive_stations(src, f.ws).0.unwrap_or([])
+  let switching = @signals.signal(0)
   // picked: the same folder there when it has one, else its home (said so); ⌥ held as it is picked, in a new tab
-  let picked = fn(st : String) {
-    match stations.iter().find_first(fn(s) { s.station == st }) {
-      Some(s) if st != at.station && s.online => {
+  let picked = fn(station : String) {
+    let stations = drive_stations(src, ws).0.unwrap_or([])
+    match stations.iter().find_first(fn(s) { s.station == station }) {
+      Some(s) if station != at.station && s.online => {
         let tab = (@ui.mods_held() & @ui.mod_alt) != 0
         let open_at = fn(root : String, same : Bool) {
           if !same {
-            say(c, @sf.t("web-pages.files.notThere", args=[("name", s.name)]))
+            toast_later(@sf.t("web-pages.files.notThere", args=[("name", s.name)]))
           }
-          let pane : DriveAt = { station: st, root: Some(root), path: "" }
-          match f.open_in {
+          let pane : DriveAt = { station, root: Some(root), path: "" }
+          match open_in {
             Some(o) if tab => o(pane, false)
-            _ => (f.go)(pane, false)
+            _ => go(pane)
           }
         }
         let abs = dv_absolute(at.root.unwrap_or(""), at.path)
         if s.anywhere && s.home != "" {
-          (src.call)("drive.folders", { "station": Json::string(st), "path": Json::string(abs) }, fn(r) {
+          (src.call)("drive.folders", { "station": Json::string(station), "path": Json::string(abs) }, fn(r) {
             match r {
               Ok(v) if !flag(Some(v), "unreadable") => open_at(abs, true)
               _ => open_at(s.home, false)
@@ -422,36 +416,56 @@ fn station_switch(c : @ui.Ctx, src : Source, f : FolderOf, front_it : () -> Unit
       _ => ()
     }
   }
-  c.on_press(chip, fn() {
-    front_it()
-    // the stations with a drive (this machine, the one shown, one away said beside each), the one shown chosen: the
-    // library's pick under it
-    let choices = stations.map(fn(s) {
-      let meta : Array[String] = []
-      if s.station == here {
-        meta.push(@sf.t("web-pages.files.thisMachine"))
-      }
-      if s.station == at.station {
-        meta.push(@sf.t("web-pages.files.current"))
-      }
-      if !s.online {
-        meta.push(@sf.t("web-pages.stations.offline"))
-      }
-      // (each by its mark, as the chip names the one shown)
-      @sf.choice(s.station, s.name, value=meta.join(" · "), mark=fn(c, size) {
-        @sf.station_icon(c, s.emoji, s.icon, size, @sf.theme().p.muted, here=s.station == here)
+  let open = fn() { switching.get() != 0 && @sf.presented_drawn_of(switching.get()) }
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { switch_button }, in_row=true)
+    @sf.hover_ground_node(b)
+    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    @sf.presses_node(b, fn() {
+      front_it()
+      // the stations with a drive (this machine, the one shown, one away said beside each), the one shown chosen: the
+      // library's pick under it
+      let stations = drive_stations(src, ws).0.unwrap_or([])
+      let choices = stations.map(fn(s) {
+        let meta : Array[String] = []
+        if s.station == here {
+          meta.push(@sf.t("web-pages.files.thisMachine"))
+        }
+        if s.station == at.station {
+          meta.push(@sf.t("web-pages.files.current"))
+        }
+        if !s.online {
+          meta.push(@sf.t("web-pages.stations.offline"))
+        }
+        // (each by its mark, as the chip names the one shown)
+        @sf.choice(s.station, s.name, value=meta.join(" · "), mark=fn(c, size) {
+          @sf.station_icon(c, s.emoji, s.icon, size, @sf.theme().p.muted, here=s.station == here)
+        })
       })
+      @sf.pick(@sf.t("web-pages.files.switchNote"), choices, at.station, picked, from=Node(b))
+      switching.set(@sf.last_presented())
     })
-    @sf.pick(@sf.t("web-pages.files.switchNote"), choices, at.station, picked, from=Of(chip))
-    go.switching.set(@sf.last_presented())
+    b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.files.switchStation"), expanded=open())) })) |> ignore
+    station_mark_of_node(b, st, switch_icon, here)
+    @sf.words_node(b, fn() { st().name }, fn() { switch_words }) |> ignore
+    @sf.icon_node(b, "chevron-down", switch_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
   })
-  let b = c.box(style=switch_button, id=chip, fn() {
-    @sf.station_icon(c, f.st.emoji, f.st.icon, switch_icon, t.p.muted, here=f.st.station == here)
-    c.text(f.st.name, style=switch_words) |> ignore
-    @sf.icon(c, "chevron-down", size=switch_chevron, color=t.p.muted) |> ignore
+  |> ignore
+}
+
+///|
+/// A station's mark in `parent`, `size` across (station_icon's, as nodes): its own mark where it has one, else this
+/// machine's or a station's.
+pub fn station_mark_of_node(parent : @view.View, st : () -> DvStation, size : Double, here : String) -> Unit {
+  parent.pick(fn() {
+    let s = st()
+    (@sf.has_station_mark(s.emoji, s.icon), s.station == here)
+  }, at_once=true, fn(m, which) {
+    match which {
+      (true, _) => @sf.station_mark_node(m, fn() { st().emoji }, fn() { st().icon }, size, fn() { @sf.theme().p.muted }, fn() { 0 })
+      (false, mine) => @sf.icon_node(m, if mine { "monitor" } else { "server" }, size, By(fn() { @sf.theme().p.muted })) |> ignore
+    }
   })
-  let open = go.switching.get() != 0 && @sf.presented_drawn_of(go.switching.get())
-  c.semantics(b, Button, id=chip, label=@sf.t("web-pages.files.switchStation"), expanded=open)
 }
 
 ///|
@@ -529,7 +543,7 @@ let go_keys_box : @ui.Style = @ui.css("w=Full pt=S2_5")
 /// the options'.
 // kept across runs: a value (no field of it changes)
 let switch_button : @ui.Style = @ui.css((
-  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B1 border_color=Line hovered{bg=Hover}
+  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B1 border_color=Line
 ))
 
 ///|

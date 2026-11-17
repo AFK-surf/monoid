@@ -362,18 +362,20 @@ agent_path=$(printf '%s' "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PAT
 # The service's definition, as this release has it: written below, and compared with the one running now.
 if [ "$os" = Darwin ]; then
   service_file="$plist"
+  # Paths and PATH are XML text: an ampersand or angle bracket in either must survive launchd's parser.
+  xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }
   cat > "$tmp/service" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key><string>$label</string>
-    <key>ProgramArguments</key><array><string>$app/bin/stillfail</string><string>start</string></array>
-    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$agent_path</string><key>STILLFAIL_DATA</key><string>$data</string></dict>
+    <key>ProgramArguments</key><array><string>$(xml "$app/bin/stillfail")</string><string>start</string></array>
+    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xml "$agent_path")</string><key>STILLFAIL_DATA</key><string>$(xml "$data")</string></dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$data/stillfail.log</string>
-    <key>StandardErrorPath</key><string>$data/stillfail.log</string>
+    <key>StandardOutPath</key><string>$(xml "$data/stillfail.log")</string>
+    <key>StandardErrorPath</key><string>$(xml "$data/stillfail.log")</string>
 </dict>
 </plist>
 PLIST

@@ -1,18 +1,38 @@
 package dev.mbui;
 
-/** libmbui.so: the MoonBit app, its runtime and the C side of the host. */
+/**
+ * libmbui.so: the MoonBit app, its runtime and the C side of the host. What calls into MoonBit (start, frame, the
+ * input, what it is told) runs on the app's thread (MBView's: the GL thread's with MBView.ONE); what draws, on the GL
+ * thread.
+ */
 final class Native {
     static {
         System.loadLibrary("mbui");
     }
 
     static native void start();
-    static native void surfaceCreated();
+    /** MoonBit on a thread of its own, the frames handed over to the GL thread (MBView, before start). */
+    static native void twoThreads();
+    /** Drawing set up in the GL context now current; whether one was set up before (its textures lost). */
+    static native boolean surfaceCreated();
     static native void resize(int w, int h);
     /** A frame at `now`, the one before it `late` ms late to the screen (@hostapi.frame_late). */
     static native boolean frame(float w, float h, float scale, double now, double late);
     /** The last frame drawn again as it was presented, the native views' pictures as they are now (android_host.c). */
     static native void redraw();
+    /** The frame the app made handed over (its thread, under MBView's lock): whether it made one. */
+    static native boolean publish();
+    /**
+     * The frame handed over taken as the one kept (GL thread, under MBView's lock): to be drawn ({@code shown}), or only
+     * read back (MBView.glSync: the next frame drawn whole); whether there was one.
+     */
+    static native boolean take(boolean shown);
+    /** The frame handed over let go undrawn (under MBView's lock: made before the GL context it would be drawn in). */
+    static native void dropPending();
+    /** The frame taken drawn (GL thread). */
+    static native void draw();
+    /** What the app's thread waits for of the GL context done (GL thread: MBView.glSync). */
+    static native void glSync();
     static native void pointer(int kind, float x, float y, double time);
     /** A touch screen's finger (kind 10 down, 11 moved, 12 up, 13 called off), by its pointer id, at its own time. */
     static native void touch(int kind, int id, float x, float y, double time);
@@ -37,8 +57,15 @@ final class Native {
 
     static native int colourAtlasTexture();
     static native boolean snapshot(String path);
-    static native void imageDone(int id, int tex, int w, int h, int ow, int oh);
-    /** What the host did for the app is done (android_host.c's mb_host_set_outside): on the GL thread. */
+    /** Image `id` uploaded as `tex` (0: not decoded), GL thread: whether the app is to be told (imageTold). */
+    static native boolean imageDone(int id, int tex);
+    /** Image `id`'s upload told to the app (its thread). */
+    static native void imageTold(int id, boolean ok, int w, int h, int ow, int oh);
+    /** Every image's upload to be told again (the app's thread: a new context). */
+    static native void imagesUntold();
+    /** Image `id` freed: its texture let go (GL thread). */
+    static native void imageGone(int id);
+    /** What the host did for the app is done (android_host.c's mb_host_set_outside): on the app's thread. */
     static native void outside(int kind, int id, int state);
 
     // The kinds of what the host does for the app (src/ui/hostcall.mbt's outside_*, named as there).
@@ -46,13 +73,13 @@ final class Native {
             OUTSIDE_GRAB = 6, OUTSIDE_UPDATE = 7, OUTSIDE_CLIP = 9, OUTSIDE_NATIVE = 10, OUTSIDE_POSTED = 11,
             OUTSIDE_STREAMED = 12, OUTSIDE_STOOD = 13, OUTSIDE_AUTOFILL = 16;
 
-    /** Something posted since (Host.posted, on the GL thread): the app told, or a frame asked for (android_host.c). */
+    /** Something posted since (Host.posted, on the app's thread): the app told, or a frame asked for (android_host.c). */
     static native void posted();
 
-    /** `outside` told on the GL thread, between frames, from any thread here (and a frame asked for). */
+    /** `outside` told on the app's thread, between frames, from any thread here (and a frame asked for). */
     static void tell(int kind, int id, int state) {
         MBView v = Host.view;
-        if (v != null) v.toGL(() -> outside(kind, id, state));
+        if (v != null) v.toApp(() -> outside(kind, id, state));
         Host.requestFrame();
     }
     /** A run to a declared moment (MBView: Host.shotAt): the app's clock is its frames' (mb_host_now). */

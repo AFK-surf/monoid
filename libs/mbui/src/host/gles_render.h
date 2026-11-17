@@ -10,8 +10,13 @@
 //                                     (Android's; Linux's players): a view's run for which the host's
 //                                     static int view_under(int tid) is true takes the canvas away where it shows
 //                                     (draw_kept below)
+//   MB_HOST_THREADS (optional)        the app runs on another thread than draws (Android's): the host defines
+//                                     mb_host_render_dirty (what a frame says differs goes with the frame, handed to
+//                                     gl_dirty_add as it is drawn), mb_render_drawn_pixels and mb_render_pixels_of
+//                                     (done on the drawing thread: gles_drawn_pixels, gles_pixels_of) itself
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
+#define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
 #include "contained.h"
 #include "bands.h"
 // the groups of instances the host keeps, drawn out as gl_present takes a frame
@@ -656,7 +661,7 @@ static int pictures_missing, encode_missing;
 static int cut_on;
 static int cut[4];
 
-void mb_host_render_dirty(double x, double y, double w, double h) {
+static void gl_dirty_add(double x, double y, double w, double h) {
   dirty_told = 1;
   if (w < 0 || h < 0) {
     dirty_whole = 1;
@@ -675,6 +680,10 @@ void mb_host_render_dirty(double x, double y, double w, double h) {
     }
   }
 }
+
+#ifndef MB_HOST_THREADS
+void mb_host_render_dirty(double x, double y, double w, double h) { gl_dirty_add(x, y, w, h); }
+#endif
 
 // The parts of the frame the next one draws, from what was said of them (taken: a frame nothing was said for is drawn
 // whole), into `r` (as `cut`): how many (0 none), -1 all of it. `kept`: the target holds the frame before. In the
@@ -1076,14 +1085,27 @@ static int views_drawn_in(void) {
 // target_fb as well (capture: the surface's own framebuffer is read as GLES 3 reads any, its rows and the app's part,
 // vy0 and vhp, the same). The canvas then holds no frame (canvas_ok): the first frame drawn in part after it is drawn
 // whole into the canvas and shown, those after only the parts that differ.
+static void gl_present_kept(int32_t count, double r, double g, double b);
+
+// The floats a frame of `count` instances needs (`fbuf`'s room): its instances, its ground after them, and a row of
+// the shapes' pieces more (segs_upload reads whole rows).
+static size_t gl_frame_floats(int32_t count) {
+  return (size_t)(count > 0 ? count : 0) * MB_INST + MB_INST + SEGS_ROW * 4;
+}
+
 static void gl_present(const double *buf, int32_t count, double r, double g, double b) {
-  size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
-  // (and the frame's ground after it, and a row of the shapes' pieces more: segs_upload reads whole rows)
-  if (fcap < n + MB_INST + SEGS_ROW * 4) {
-    fcap = n * 2 + MB_INST + SEGS_ROW * 4;
+  size_t n = gl_frame_floats(count);
+  if (fcap < n) {
+    fcap = n * 2;
     fbuf = (float *)realloc(fbuf, fcap * sizeof(float));
   }
   mb_groups_floats(fbuf, buf, count);
+  gl_present_kept(count, r, g, b);
+}
+
+// The frame in fbuf (`count` instances as floats, its groups drawn out: gl_present's, or Android's made on the app's
+// thread and handed over) kept and drawn, as gl_present says.
+static void gl_present_kept(int32_t count, double r, double g, double b) {
   kept_count = count;
   kept_r = r;
   kept_g = g;
@@ -1148,7 +1170,7 @@ static void draw_kept_read(void) {
 // That frame's pixels in the rectangle x, y, w × h (from the top left) into `out` as RGBA, premultiplied, rows from
 // the top (host_native.mbt drawn_pixels; on the thread MoonBit runs on, its context current): 1 when read, 0 where the
 // rectangle is not all in the frame.
-int32_t mb_render_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t out) {
+static int32_t gles_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t out) {
   if (kept_count <= 0 || fb_w <= 0 || fb_h <= 0 || w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > fb_w || y + h > fb_h)
     return 0;
   if ((size_t)Moonbit_array_length(out) < (size_t)w * h * 4) return 0;
@@ -1170,8 +1192,8 @@ int32_t mb_render_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonb
 // picture of their own w × h (their 0, 0 its top left), on the ground r, g, b, and its pixels into `out` as
 // mb_render_drawn_pixels gives the frame's: the frame kept, and the size frames are drawn at, set aside while they are
 // drawn in its place, then put back (what a native view's picture redraws is the frame as it was). 1 when read.
-int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double g, double b, double scale, int32_t w,
-                            int32_t h, moonbit_bytes_t out) {
+static int32_t gles_pixels_of(const double *inst, int32_t count, double r, double g, double b, double scale,
+                              int32_t w, int32_t h, moonbit_bytes_t out) {
   if (count <= 0 || !(scale > 0) || w <= 0 || h <= 0) return 0;
   float *kf = fbuf;
   size_t kc = fcap;
@@ -1193,7 +1215,7 @@ int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double 
   cur_scale = scale;
   cur_w = w / scale;
   cur_h = h / scale;
-  int32_t ok = mb_render_drawn_pixels(0, 0, w, h, out);
+  int32_t ok = gles_drawn_pixels(0, 0, w, h, out);
   free(fbuf);
   fbuf = kf;
   fcap = kc;
@@ -1208,6 +1230,17 @@ int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double 
   cur_scale = ks;
   return ok;
 }
+
+#ifndef MB_HOST_THREADS
+int32_t mb_render_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t out) {
+  return gles_drawn_pixels(x, y, w, h, out);
+}
+
+int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double g, double b, double scale, int32_t w,
+                            int32_t h, moonbit_bytes_t out) {
+  return gles_pixels_of(inst, count, r, g, b, scale, w, h, out);
+}
+#endif
 
 // The frame kept drawn whole onto the surface again (a native view's picture changed: Android's Native.redraw),
 // straight onto it as a frame presented whole is (gl_present): the canvas then holds no frame.

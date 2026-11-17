@@ -718,7 +718,8 @@ describe("the Codex driver", { concurrency: true }, () => {
 
   test("a subscription's turns say their service tier; models and rate limits come from the app-server", async () => {
     let fast: boolean | undefined = true;
-    const d = driver({ fast: () => fast });
+    let speed: "standard" | "fast" | "ultrafast" | null = null;
+    const d = driver({ fast: () => fast, speed: () => speed });
     const p = profile({ access: { kind: "subscription" } });
     const { push, until } = listen();
     const session = await d.open(options(p), push);
@@ -729,6 +730,13 @@ describe("the Codex driver", { concurrency: true }, () => {
     await until(ended(2));
     const tiers = stdin(p.dump).filter((m) => m.method === "turn/start").map((m) => m.params.serviceTier);
     assert.deepEqual(tiers, ["fast", null], "an explicit null clears a tier chosen before");
+    fast = true;
+    for (const [i, next] of (["ultrafast", "standard", "fast", null] as const).entries()) {
+      speed = next;
+      await session.prompt(`say:speed-${i}`);
+      await until(ended(i + 3));
+    }
+    assert.deepEqual(stdin(p.dump).filter((m) => m.method === "turn/start").map((m) => m.params.serviceTier), ["fast", null, "ultrafast", null, "fast", "fast"], "Standard clears Ultrafast even with Fast as the account default");
     const started = starts(p.dump)[0];
     assert.deepEqual(started.argv, ["app-server", "-c", "features.apps=false", "-c", "features.recommended_plugins=false", "--listen", "stdio://"]);
     const catalog = await d.models(p);

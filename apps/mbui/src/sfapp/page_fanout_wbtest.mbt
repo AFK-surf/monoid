@@ -54,7 +54,7 @@ test "全部密钥: a secret used runs the bindings of its own row alone, a vaul
     assert_true(used <= 6, msg="\{win.0} \{mode} vaultItems/used: ran \{used} bindings, over its own row's (6)")
     // (a secret more: its row made, the pieces of the card it moves, the list's keys)
     let item = items.get("vaultItems vault=plain/item").unwrap_or(0)
-    assert_true(item <= 20, msg="\{win.0} \{mode} vaultItems/item: ran \{item} bindings, over what a row more brings (20)")
+    assert_true(item <= 8, msg="\{win.0} \{mode} vaultItems/item: ran \{item} bindings, over what a row more brings (8)")
     // (the vault's own row in the library (how many it holds): no secret's row shows it)
     let vault = page_fanout_of(mode, win, "vaults").get("vaults/item").unwrap_or(0)
     assert_eq(vault, 0, msg="\{win.0} \{mode} vaults/item: ran \{vault} bindings, nothing it shows changed")

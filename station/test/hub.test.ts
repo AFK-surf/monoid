@@ -3492,6 +3492,33 @@ test("fast is per session, on Codex and Claude Code, and null restores the accou
   await r.close();
 });
 
+test("Ultrafast is per chat, persists through other changes and legacy Fast clears it", async () => {
+  const r = new Rig();
+  Object.assign(r.raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6-astra", "gpt-6.1-sol", "gpt-5.5"] });
+  r.config = hubConfig(r.raw, r.dir);
+  const [a] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra", speed: "ultrafast" });
+  const [b] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra" });
+  r.store.setRuntimeSessionId(a, "thread-ultra");
+  r.store.setRuntimeSessionId(b, "thread-default");
+  assert.equal(r.session(a).speed, "ultrafast");
+  assert.equal(r.session(a).fast, true, "old clients still see accelerated speed");
+  await configure(r.hub, a, {});
+  assert.equal(r.store.codexSessionSpeed("thread-ultra"), "ultrafast");
+  assert.equal(r.store.codexSessionSpeed("thread-default"), null);
+  await configure(r.hub, a, { fast: false });
+  assert.equal(r.store.codexSessionSpeed("thread-ultra"), null);
+  assert.equal(r.store.codexSessionFast("thread-ultra"), false);
+  await configure(r.hub, a, { speed: "ultrafast" });
+  await configure(r.hub, a, { speed: "standard" });
+  assert.equal(r.session(a).fast, false);
+  await configure(r.hub, a, { speed: null });
+  assert.equal(r.session(a).fast, null, "null restores the account default");
+  await assert.rejects(configure(r.hub, a, { model: "gpt-5.5", speed: "ultrafast" }), /Ultrafast/);
+  assert.equal(r.session(a).model, "gpt-6-astra", "invalid settings leave the chat intact");
+  await assert.rejects(newSession(r.hub, { ...chat("claude"), speed: "ultrafast" }), /Ultrafast/);
+  await r.close();
+});
+
 /// A machine with one Claude Code session and one Codex session (machine_sessions/tests.rs `machine`).
 function machine(root: string, project: string) {
   const roots = { claude: join(root, ".claude/projects"), codex: join(root, ".codex/sessions") };

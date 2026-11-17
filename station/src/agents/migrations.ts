@@ -172,6 +172,7 @@ export const NOTES: [number, string][] = [
   [165, "Pi is available where the station has Pi 1.0 or newer installed and a profile it runs on (a provider's key, an OpenCode Go or Anthropic key, or custom variables): chat_create takes runtime \"pi\"."],
   [166, "Messages can come from group (IM) chats, via=\"group\": a conversation's thread is its id twice (a private chat calls you with every message, a group with an @ of your name); mention people as @name; a card shows there as its question and numbered options in the text, and the answer comes as the option's words; chat_leave stops following a group until someone mentions you again."],
   [167, "Antigravity CLI (agy) sessions now load the workspace's and preset's skills, tell a repository's AGENTS.md and CLAUDE.md files when tools touch it, and default multi-level models to medium unless another level is chosen; after an account or runtime switch on a spent limit, post a brief progress note if what remains will take more than a couple of minutes and people have not yet been told the plan."],
+  [168, "chat_create takes speed: standard, fast or ultrafast. Ultrafast needs GPT-6 Astra or GPT-6.1 Sol on a Codex subscription with an eligible OpenAI plan; the legacy fast switch still works."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

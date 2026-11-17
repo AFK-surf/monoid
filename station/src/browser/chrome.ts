@@ -172,6 +172,9 @@ async function stillThere(r: Running): Promise<boolean> {
   return started !== null && (r.started === null || Math.abs(started - r.started) < 5000) && groupAlive(r.pid);
 }
 
+/// How long which Chrome is here is taken to stay as it was last looked for.
+const BROWSERS_MS = 10_000;
+
 export type ChromeOptions = {
   /// <data>/browser: the profile in it, and state.json.
   dir: string;
@@ -185,6 +188,15 @@ export function chromeHost(o: ChromeOptions): ChromeHost {
   const profile = join(o.dir, "profile");
   const activePort = join(profile, "DevToolsActivePort");
   const state = new BrowserState(o.dir);
+  // Which Chrome is here: looked for once as the station starts, before it serves; looked for again off the main
+  // thread as it is started, and as whether there is one is asked over BROWSERS_MS after the last look (the answer
+  // given meanwhile is the last look's). A program given needs no look.
+  let best: { at: number; binary: string | undefined } | null = o.binary !== undefined ? null : { at: wall.now(), binary: platform.browsers(process.env)[0] }; // sync: read once, before the station serves
+  let looking: Promise<string | undefined> | null = null;
+  const look = (): Promise<string | undefined> =>
+    (looking ??= platform.browsersSoon(process.env)
+      .then((found) => (best = { at: wall.now(), binary: found[0] }).binary, () => (best = best && { at: wall.now(), binary: best.binary })?.binary)
+      .finally(() => (looking = null)));
   const readActive = async () => {
     try {
       return parseActivePort(await readFile(activePort, "utf8"));
@@ -218,7 +230,7 @@ export function chromeHost(o: ChromeOptions): ChromeHost {
   /// `retried`: started again for its user agent; `anyPort`: the port it had last time was not had; `windowless`:
   /// headless whatever the machine says.
   async function launch(retried = false, anyPort = false, windowless = false): Promise<Running> {
-    const binary = o.binary ?? platform.browsers(process.env)[0];
+    const binary = o.binary ?? (await look());
     if (binary === undefined) throw new Error("There is no Chrome on this machine: install Google Chrome (or Chromium or Edge) and ask again.");
     const headless = windowless || (o.headless ?? true);
     await mkdir(profile, { recursive: true });
@@ -297,7 +309,11 @@ export function chromeHost(o: ChromeOptions): ChromeHost {
 
   return {
     find,
-    installed: () => (o.binary ?? platform.browsers(process.env)[0]) !== undefined,
+    installed() {
+      if (best === null) return true;
+      if (wall.now() - best.at >= BROWSERS_MS) void look();
+      return best.binary !== undefined;
+    },
     async launch() {
       try {
         return await launch();

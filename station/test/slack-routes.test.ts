@@ -60,7 +60,9 @@ async function rig(o: Setup = {}) {
   );
   const fake = await FakeSlack.start();
   bot(fake, { teamId: o.teamId ?? "T1" });
+  // Watched, as the station's own is (services.ts StationConfig): an edit is told as it is taken.
   const config = new ConfigFile(data);
+  config.watch();
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const claude = new FakeDriver("claude");
   let hub: Hub | undefined;
@@ -130,6 +132,8 @@ async function rig(o: Setup = {}) {
   const close = async () => {
     await slack.close();
     await hub!.shutdown();
+    config.unwatch();
+    await config.written();
     store.close();
     await fake.close();
     rmSync(data, { recursive: true, force: true });
@@ -437,7 +441,10 @@ test("a connect's app is looked up by its bot token, made for it when it has non
     t.fake.answer("bots.info", (s) => (s.auth === "xoxb-gone" ? { ok: false, error: "invalid_auth" } : { ok: true, bot: { app_id: "A0LEARNED" } }));
     await t.ask("PUT", "/connects/lookup", { bind: { runtime: "claude" }, slack: { appToken: "xapp-5", botToken: "xoxb-5" } });
     assert.deepEqual(await t.ask("POST", "/connects/lookup/slack-app", {}), [400, { error: "此连接已有 Slack app" }]);
-    assert.equal(t.fake.calls("bots.info").length, 1);
+    // Looked up by its bot token (the station bringing a connected app up to date may look it up too, as its socket
+    // comes up: that one is its own, and races this ask).
+    assert.ok(t.fake.calls("bots.info").length >= 1);
+    assert.ok(t.fake.calls("bots.info").every((s) => s.auth === "xoxb-5"));
     await t.ask("PUT", "/connects/gone", { bind: { runtime: "claude" }, slack: { appToken: "xapp-6", botToken: "xoxb-gone" } });
     const gone = await t.get("/connects/gone/slack-app");
     assert.deepEqual([gone.state, gone.appId, gone.error], ["no_app", null, "配置 token 无效，请重新填写"]);

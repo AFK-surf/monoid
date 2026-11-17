@@ -32,12 +32,13 @@
 /// (选择运行的 station, 标签页; its group labels' line, so moved with them or not at all)); the same day, each language's
 /// windows in two halves, a run each (corners_check): rule 4's 84 Chinese 4 and 80, its 86 English 5 and 81, the two
 /// wide windows' chats' heads in the second half); 2026-11-16, rule 4's one fewer in each first half: a table's head
-/// (its stage of nodes) a row scrolled across with its rows, its ground and its cells as far in as theirs.
+/// (its stage of nodes) a row scrolled across with its rows, its ground and its cells as far in as theirs; 2026-11-17,
+/// rule 4's one fewer in each half: 文件 and a station's drive made once as nodes, its folder 12 in from its frame's sides.
 let gaps_known : Map[String, Int] = {
   "zh 0/2 rule 1": 0,
   "zh 0/2 rule 2": 0,
   "zh 0/2 rule 3": 0,
-  "zh 0/2 rule 4": 3,
+  "zh 0/2 rule 4": 2,
   "zh 0/2 rule 5": 1,
   "zh 0/2 rule 6": 0,
   "zh 0/2 rule 7": 0,
@@ -46,7 +47,7 @@ let gaps_known : Map[String, Int] = {
   "zh 1/2 rule 1": 0,
   "zh 1/2 rule 2": 0,
   "zh 1/2 rule 3": 0,
-  "zh 1/2 rule 4": 80,
+  "zh 1/2 rule 4": 79,
   "zh 1/2 rule 5": 0,
   "zh 1/2 rule 6": 0,
   "zh 1/2 rule 7": 0,
@@ -55,7 +56,7 @@ let gaps_known : Map[String, Int] = {
   "en 0/2 rule 1": 0,
   "en 0/2 rule 2": 0,
   "en 0/2 rule 3": 0,
-  "en 0/2 rule 4": 4,
+  "en 0/2 rule 4": 3,
   "en 0/2 rule 5": 1,
   "en 0/2 rule 6": 0,
   "en 0/2 rule 7": 0,
@@ -64,7 +65,7 @@ let gaps_known : Map[String, Int] = {
   "en 1/2 rule 1": 0,
   "en 1/2 rule 2": 0,
   "en 1/2 rule 3": 0,
-  "en 1/2 rule 4": 81,
+  "en 1/2 rule 4": 80,
   "en 1/2 rule 5": 0,
   "en 1/2 rule 6": 0,
   "en 1/2 rule 7": 0,

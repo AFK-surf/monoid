@@ -167,6 +167,21 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
 }
 
 ///|
+/// Whether the pane's page of entry `k` shows (Nav::shows), for what it holds put to rest while another covers it in
+/// the pane; as it last was while what is on top is over the whole window (a drive's text read, a film played, a
+/// station's screen: the pane under it as it was, back to it as it was left), and once its entry has left the stack,
+/// let go as it is, never put to rest on the way.
+fn pane_shows(k : Int) -> () -> Bool {
+  let last = Ref(true)
+  fn() {
+    if app.nav.page_of(k) is Some(_) && !(app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) {
+      last.val = app.nav.shows(k)
+    }
+    last.val
+  }
+}
+
+///|
 fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   @ui.nav_flat_view(
     v,
@@ -211,9 +226,9 @@ fn pane_made(
   // (the stations' and the profiles' places have no old view: made so whatever pane_makes says)
   guard pane_makes.val || page is Place("stations" | "profiles") else { return None }
   // (made in the workspace in view, its settings' core, under what it was opened from, as wide as the frame gives it)
-  let made = fn(
+  let made_k = fn(
     kind : String,
-    f : (@view.View, @settings.Core, () -> @settings.Here, () -> Int, () -> @sf.PageFrame, () -> Double) -> Unit,
+    f : (@view.View, @settings.Core, () -> @settings.Here, () -> Int, () -> @sf.PageFrame, () -> Double, Int) -> Unit,
   ) {
     Some(
       (
@@ -251,13 +266,19 @@ fn pane_made(
             }
             p.box(fn(a) {
               a.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-              f(a, core, here, stint, frame, width)
+              f(a, core, here, stint, frame, width, k)
             })
             |> ignore
           })
         },
       ),
     )
+  }
+  let made = fn(
+    kind : String,
+    f : (@view.View, @settings.Core, () -> @settings.Here, () -> Int, () -> @sf.PageFrame, () -> Double) -> Unit,
+  ) {
+    made_k(kind, fn(a, core, here, stint, frame, width, _k) { f(a, core, here, stint, frame, width) })
   }
   match page {
     // (Home: the board while it is chosen, else its ground: board.mbt)
@@ -299,6 +320,35 @@ fn pane_made(
     Setting(Memory(address)) =>
       made("memory/" + address, fn(a, core, here, _stint, frame, width) {
         @sfpages.memory_node(a, core, here, address, on_back=core.pop, frame~, width~, tips~)
+      })
+    // 文件 and a station's drive (sfpages' files_page_node.mbt): one kind for all of them, the files' page's tabs kept
+    // as the folder in front changes (its address, the page as it is now)
+    Files =>
+      made_k("files-home", fn(a, _core, _here, _stint, frame, width, k) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        // (at rest while a page covers it in the pane: shown=)
+        @sfpages.files_home_node(a, src, w.id, frame~, width~, on_back=fn() { @sfbase.go_back() |> ignore }, tips~, shown=pane_shows(k), arrives=fn() { app.nav.top() is Files })
+      })
+    Drive(_) =>
+      made_k("files", fn(a, _core, _here, _stint, frame, width, k) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        // (its own entry's folder, as it is now (what it became in place): kept shown while the page in its place
+        // waits, it shows what it showed, never that one's)
+        let own = fn() {
+          match app.nav.page_of(k) {
+            Some((Drive(d), _)) => Some(d)
+            _ => None
+          }
+        }
+        let last = Ref(@signals.untracked(own).unwrap_or({ station: "", root: None, path: "" }))
+        let at = fn() {
+          match own() {
+            Some(d) => last.val = d
+            None => ()
+          }
+          last.val
+        }
+        @sfpages.drive_page_node(a, src, w.id, at, frame~, width~, on_back=fn() { @sfbase.go_back() |> ignore }, go=files_go, tips~, shown=pane_shows(k), arrives=fn() { app.nav.top() is Drive(_) })
       })
     // (已归档, none of its chats beside the sidebar's list of them: what it is)
     Archived => made("archived", fn(a, _core, _here, _stint, _frame, _width) { archive_main_node(a) })

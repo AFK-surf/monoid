@@ -205,6 +205,9 @@ pub fn reader_key(at : DriveAt) -> String {
 /// left, how it is read and saved).
 pub fn drive_reader_node(parent : @view.View, src : Source, at : DriveAt, back : () -> Unit) -> Unit {
   let file = @signals.untracked(fn() { drive_viewer_file(src, at) })
+  // (its folder, as listed, held while it is read: the folder's page under it at rest, its listing not let go of, as
+  // what is gone back to shows)
+  parent.reacts(fn() { dv_entries(src, at.station, at.root.unwrap_or(""), dv_parent(at.path)) is Some(_) }, fn(_) {  }) |> ignore
   @sf.reader_node(
     parent,
     reader_key(at),

@@ -1,6 +1,6 @@
 // What the station's main thread waits on as it shares profiles and skills with the other stations of its workspaces
-// (src/share/index.ts): nothing of node:fs's synchronous calls (station/AGENTS.md, the main thread waits on nothing)
-// but config.json's own (ConfigFile `stamp`, `update`: its write is one step with what it holds). A copied skill's
+// (src/share/index.ts): nothing of node:fs's synchronous calls (station/AGENTS.md, the main thread waits on nothing),
+// config.json's neither (watched, its edits written behind them: ConfigFile `updateSoon`). A copied skill's
 // link was made, checked and taken away there, a shared login read for its hash and its account at every pass, one
 // handed over written there before `share.take` answered.
 import assert from "node:assert/strict";
@@ -24,8 +24,11 @@ const WS = "w";
 
 const dirs: string[] = [];
 const made: Sharing[] = [];
+const configs: ConfigFile[] = [];
 after(async () => {
   await Promise.all(made.map((s) => s.close()));
+  for (const c of configs) c.unwatch();
+  await Promise.all(configs.map((c) => c.written()));
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
@@ -46,8 +49,11 @@ function station(id: string, others: Map<string, Station>, profiles: unknown[] =
   const data = mkdtempSync(join(tmpdir(), "share-main-thread-"));
   dirs.push(data);
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
+  // Watched, as the station's own is (services.ts StationConfig): read and written off the main thread.
   const config = new ConfigFile(data);
   config.check = checkConfig;
+  config.watch();
+  configs.push(config);
   mkdirSync(join(data, "agent", "skills"), { recursive: true });
   const sharing = new Sharing({
     data, config, cloud: cloudFor(id),
@@ -78,9 +84,6 @@ const settle = async (...stations: Station[]) => {
   }
   await Promise.all(stations.map((s) => s.sharing.stateWritten()));
 };
-
-/// The calls but config.json's own.
-const others = (calls: string[]) => calls.filter((c) => !/ConfigFile\.(stamp|update)/.test(c));
 
 /// The watches a station keeps, and its own ways to them.
 const watching = (s: Station) => s.sharing as unknown as { watchers: Map<string, unknown>; stopWatch(key: string): void; watchBorrowed(id: string, dir: string): Promise<void>; watchHosted(name: string, dir: string): Promise<void> };
@@ -140,7 +143,7 @@ test("a skill shared, copied and linked, renamed, shown under a name taken and t
     await begun;
     await settle(a, b);
   });
-  assert.deepEqual(others(calls), []);
+  assert.deepEqual(calls, []);
   assert.match(linked.ember ?? "", /share\/sh-[0-9a-f]+\/skill$/, "linked to its copy");
   assert.equal(linked.own, "other", "B's own stays");
   assert.match(renamedTo, /share\/sh-[0-9a-f]+\/skill$/);
@@ -209,7 +212,7 @@ test("subscriptions shared, lent, hashed by their logins, named by their account
     moved.cur = await a.sharing.moveProfile("cur", B);
     await settle(a, b);
   });
-  assert.deepEqual(others(calls), []);
+  assert.deepEqual(calls, []);
   assert.ok(lentUntil > Date.now() + 2 * 86400_000, "the renewed login lent");
   assert.equal(lentRefresh, "lent-by-another-station");
   const taken = b.config.raw().profiles.find((p: any) => p.runtime === "codex");

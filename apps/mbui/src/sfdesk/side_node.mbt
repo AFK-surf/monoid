@@ -30,6 +30,8 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
         match place {
           // (the settings' list beside their pages: settings_frame.mbt)
           "settings" => settings_side_node(s, src, tips, at)
+          // (the files' places: files_side_node.mbt)
+          "files" => files_side_node(s, src, tips, at)
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
@@ -57,7 +59,7 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 ///|
 /// Whether the sidebar of `place` (side_place's) is made once over the block, not drawn by its old view (sidebar's).
 fn side_made(place : String) -> Bool {
-  !(place is ("files" | "stations" | "profiles"))
+  !(place is ("stations" | "profiles"))
 }
 
 ///|

@@ -613,6 +613,11 @@ pub let trace_switches : Array[String] = [
   // not decoded yet (sfbase's pictures_in, Source.picture_waits). A trace without it opens each chat as what it reads is
   // answered, as its run's app did)
   "MBUI_PAGE_PICTURES",
+  // (the page a scripted run's app was started on (`#env MBUI_OPEN_PAGE`, src/stillfail/main.mbt), opened as its replay's
+  // app starts too, before its first frame, as the run's was: what a page made once as nodes asks as it is made then
+  // asked with the start. Only the replay reads it: a trace without it has its replay open the page as a step
+  // (Flow::open_page), as its run's old view, built only once drawn, asked nothing of it till then)
+  "MBUI_START_PAGE",
 ]
 
 ///|

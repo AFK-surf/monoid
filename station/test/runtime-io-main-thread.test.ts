@@ -484,8 +484,10 @@ test("an OpenCode Console and a Kimi sign-in renewed wait on no file of their ow
       ],
     }),
   );
+  // Watched, as the station's own is (services.ts StationConfig): read and written off the main thread.
   const config = new ConfigFile(data);
   config.check = checkConfig;
+  config.watch();
   const accounts = new Accounts({
     data,
     store: Store.open(":memory:", null),
@@ -503,16 +505,14 @@ test("an OpenCode Console and a Kimi sign-in renewed wait on no file of their ow
       await accounts.renewKimi("kimi-code");
       await accounts.renewConsole("go");
     });
-    // What is left is config.json read and the profile's key written to it (ops/config.ts), not the sign-in's files.
-    assert.deepEqual(
-      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
-      [],
-    );
+    assert.deepEqual(calls, []);
     assert.deepEqual([(await readKimi(join(data, "homes", "kimi-code")))?.access, (await readConsole(join(data, "homes", "go")))?.refresh], ["kt_2", "rt_2"]);
     assert.equal(await readFile(join(data, "homes", "kimi-code", KIMI_TOKEN_FILE), "utf8"), "kt_2");
   } finally {
     await accounts.close();
     await p.close();
+    config.unwatch();
+    await config.written();
   }
 });
 
@@ -525,8 +525,10 @@ test("a new profile made from a Cursor sign-in reads its home with no synchronou
     if (a.url === "/backend/aiserver.v1.DashboardService/GetMe") return { status: 200, body: { email: "cu@example.com" } };
     return { status: 404, body: {} };
   });
+  // Watched, as the station's own is (services.ts StationConfig): read and written off the main thread.
   const config = new ConfigFile(data);
   config.check = checkConfig;
+  config.watch();
   const accounts = new Accounts({
     data,
     store: Store.open(":memory:", null),
@@ -548,15 +550,13 @@ test("a new profile made from a Cursor sign-in reads its home with no synchronou
       made = await upon((wake) => accounts.onChange(wake), () => accounts.loginsView().find((l) => l.id === id)?.created, "profile");
     });
     assert.equal(made, "cu-example-com");
-    // What is left is config.json read and written (ops/config.ts): the homes listed for the ids taken and the new home
-    // moved to its name off the thread too.
-    assert.deepEqual(
-      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
-      [],
-    );
+    // The homes listed for the ids taken and the new home moved to its name off the thread too, config.json's edit too.
+    assert.deepEqual(calls, []);
   } finally {
     await accounts.close();
     await p.close();
+    config.unwatch();
+    await config.written();
   }
 });
 
@@ -668,8 +668,10 @@ test("a profile made of a key, one on the machine's login, and a sign-in for a n
   const m = machine({ codex: "echo 'Logged in using ChatGPT'" });
   mkdirSync(join(m.home, ".codex"), { recursive: true });
   writeFileSync(join(m.home, ".codex", "auth.json"), JSON.stringify({ tokens: { access_token: "at", account_id: "acc" } }));
+  // Watched, as the station's own is (services.ts StationConfig): read and written off the main thread.
   const config = new ConfigFile(data);
   config.check = checkConfig;
+  config.watch();
   const accounts = new Accounts({
     data,
     store: Store.open(":memory:", null),
@@ -696,11 +698,7 @@ test("a profile made of a key, one on the machine's login, and a sign-in for a n
       ({ id: dropped } = await accounts.newLogin({ runtime: "cursor" }, owner, "en"));
       await accounts.dropLogin(dropped);
     });
-    // What is left is config.json read and written (ops/config.ts).
-    assert.deepEqual(
-      calls.filter((c) => !/ ConfigFile\.(stamp|update) /.test(c)),
-      [],
-    );
+    assert.deepEqual(calls, []);
     assert.deepEqual(made, ["opencode-go", "anthropic-api", "anthropic-api-2", "machine-codex"]);
     assert.deepEqual((await readdir(join(data, "homes"))).sort(), [...made].sort(), "the dropped sign-in's home taken away");
     assert.equal(await readlink(join(data, "homes", "machine-codex", "auth.json")), join(m.home, ".codex", "auth.json"));
@@ -708,5 +706,7 @@ test("a profile made of a key, one on the machine's login, and a sign-in for a n
   } finally {
     await accounts.close();
     await p.close();
+    config.unwatch();
+    await config.written();
   }
 });

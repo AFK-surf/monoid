@@ -5,9 +5,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Which vsync the app's next frame is drawn for, and what rate the surface says of the display (MBView's, kept apart
  * from Android so a test can run it: FramePacerTest, on its own clock and threads). MBView hands it the system's
- * vsyncs, the frames' work and the hand; it asks MBView's Platform for a vsync, a frame drawn and a rate said. Its
- * threads are MBView's: the main thread's (vsyncs, the hand), the drawing thread's (frames, the rate), any (a frame
- * wanted).
+ * vsyncs, the frames' work and the hand; it asks MBView's Platform for a vsync, a frame made and a rate said. Its
+ * threads are MBView's: the main thread's (vsyncs, the hand), the drawing thread's (the app's thread, which makes the
+ * frames, the GL thread drawing each it hands over; the GL thread itself with MBView.ONE: frames, the rate), any (a
+ * frame wanted).
  */
 final class FramePacer {
     /** What the pacer asks of the system (MBView's; the test's own). */
@@ -27,7 +28,7 @@ final class FramePacer {
         /** {@code r} run on the drawing thread once the next vsync has come (asked on the main thread). */
         void atNextVsyncOnDrawing(Runnable r);
 
-        /** A frame drawn on the drawing thread, as soon as it can (GLSurfaceView's requestRender). */
+        /** A frame made on the drawing thread, as soon as it can (MBView.makeFrame; GLSurfaceView's requestRender with ONE). */
         void requestRender();
 
         /** The surface says the display's rate {@code rate} (0: nothing); false where it cannot be said. */

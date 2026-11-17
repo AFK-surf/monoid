@@ -629,5 +629,7 @@
   "core-logic.notice.run.to": "Now {now}",
   "core-logic.notice.run.toLead": "Now",
   "core-logic.notice.run.was": "Before: {run}",
-  "core-logic.format.connection.no_group": "No Group"
+  "core-logic.format.connection.no_group": "No Group",
+  "core-logic.choose.error.station_model_speeds": "Update this station to use Ultrafast, or choose Standard or Fast.",
+  "core-logic.choose.error.ultrafast_unavailable": "Choose GPT-6 Astra or GPT-6.1 Sol in Codex with a ChatGPT subscription to use Ultrafast, or choose Standard or Fast."
 }

@@ -264,7 +264,6 @@
       "src/sfapp/app.mbt": 2,
       "src/sfapp/bar.mbt": 28,
       "src/sfapp/chat.mbt": 46,
-      "src/sfapp/drive.mbt": 11,
       "src/sfapp/drive_parts.mbt": 14,
       "src/sfapp/home.mbt": 3,
       "src/sfapp/pages.mbt": 9,
@@ -293,7 +292,6 @@
       "src/sfapp/app.mbt": 1,
       "src/sfapp/bar.mbt": 16,
       "src/sfapp/chat.mbt": 30,
-      "src/sfapp/drive.mbt": 5,
       "src/sfapp/drive_parts.mbt": 5,
       "src/sfapp/home.mbt": 2,
       "src/sfapp/pages.mbt": 4,
@@ -326,7 +324,6 @@
     },
     "page-screen": {},
     "page-look": {
-      "src/sfdesk/files_start.mbt": 4,
       "src/sfdesk/frame.mbt": 2,
       "src/sfpages/appearance.mbt": 1,
       "src/sfpages/connects.mbt": 8,
@@ -351,8 +348,7 @@
     "cursor-hand": {},
     "tier-outside-shell": {
       "src/sfapp/chat.mbt": 3,
-      "src/sfapp/drive.mbt": 5,
-      "src/sfapp/drive_parts.mbt": 2,
+      "src/sfapp/drive_parts.mbt": 1,
       "src/sfapp/newchat.mbt": 2,
       "src/sfapp/service.mbt": 2,
       "src/sfapp/settings/core.mbt": 3,
@@ -388,10 +384,6 @@
       "src/sfbase/viewer.mbt": 1,
       "src/sfbase/viz_page.mbt": 2,
       "src/sfdesk/chat_layers.mbt": 2,
-      "src/sfdesk/drag.mbt": 2,
-      "src/sfdesk/drive.mbt": 1,
-      "src/sfdesk/drive_views.mbt": 1,
-      "src/sfdesk/files.mbt": 1,
       "src/sfdesk/pane_page.mbt": 1,
       "src/sfpages/chat_ref.mbt": 1,
       "src/sfpages/composer.mbt": 1,
@@ -458,8 +450,6 @@
       "src/sf/player.mbt": 2,
       "src/sf/presenters.mbt": 1,
       "src/sf/side_rows.mbt": 1,
-      "src/sfdesk/drive_pane.mbt": 2,
-      "src/sfdesk/files_nav.mbt": 1,
       "src/sfkit/glass.mbt": 1,
       "src/sfkit/kit.mbt": 2,
       "src/sfpages/chat_list.mbt": 1,
@@ -486,7 +476,6 @@
       "src/sf/stage_node.mbt": 2,
       "src/sfapp/app.mbt": 3,
       "src/sfapp/entry_tree.mbt": 1,
-      "src/sfapp/home_node.mbt": 1,
       "src/sfapp/narrow_shell.mbt": 2,
       "src/sfapp/tape_shell.mbt": 4,
       "src/sfdesk/frame.mbt": 1,
@@ -549,9 +538,7 @@
       "src/sfapp/viewer_flight_wbtest.mbt": 1
     },
     "scoped-computed": {},
-    "raw-effect": {
-      "src/sfdesk/drag.mbt": 1
-    },
+    "raw-effect": {},
     "pick-loop": {
       "src/sf/image_reveal_node.mbt": 1,
       "src/sf/quota_lines_node.mbt": 1,
@@ -566,7 +553,6 @@
       "src/sfbase/viz_mbui_node.mbt": 3,
       "src/sfdesk/jobs_pop_node.mbt": 1,
       "src/sfdesk/letters.mbt": 1,
-      "src/sfdesk/station_pick.mbt": 1,
       "src/sfpages/accounts.mbt": 1,
       "src/sfpages/attach.mbt": 1,
       "src/sfpages/automatic_decisions.mbt": 2,
@@ -639,7 +625,6 @@
     "corners-each": {
       "src/sf/tokens.mbt": 1,
       "src/sfdesk/chat_page.mbt": 2,
-      "src/sfdesk/drive_views.mbt": 1,
       "src/sfpages/screen_debug.mbt": 1
     },
     "cursor-hand": {},

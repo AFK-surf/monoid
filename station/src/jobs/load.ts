@@ -27,7 +27,7 @@ export type Load = {
 
 export type LoadParts = {
   /// (its sample says the GPUs too, as far as they answered within a moment: api/host.ts `sample`)
-  host: { sample(): Promise<any>; recentBusy(): { busy: number; seconds: number } | null };
+  host: { sample(): Promise<any>; recentBusy(): Promise<{ busy: number; seconds: number } | null> | { busy: number; seconds: number } | null };
   gpus: { read(): Promise<Gpu[] | null> };
   running(): Load["running"];
   relay(): Load["relay"];
@@ -41,7 +41,7 @@ const num = (v: unknown): number | null => (typeof v === "number" && Number.isFi
 export async function measure(parts: LoadParts): Promise<Load> {
   const info = await parts.host.sample();
   const gpus: Gpu[] | null = info?.gpus !== undefined ? info.gpus : await parts.gpus.read().catch(() => null);
-  const recent = parts.host.recentBusy();
+  const recent = await parts.host.recentBusy();
   const cpus = num(info?.cpus);
   const total = num(info?.memory?.totalBytes);
   const used = num(info?.memory?.usedBytes);

@@ -1,33 +1,35 @@
 // What is dragged on the files' page (still.fail web/src/drive/drag.ts, browse.ts takes / effectOf / dropInto, transfer.ts,
-// FilesNav.tsx useFolderDrop): a row pressed and moved past a few points carries its file or folder under the pointer;
-// let go on a folder (a folder's row, a column, the folder shown, a folder of the sidebar) it goes there: within its
-// station moved (⌥: copied), to another station copied (⌘: moved), as Finder does across disks; a folder let go on 个人
-// 收藏 is kept there. A move within a station by a root both places are under (the core's `drive.moves`) is a rename
-// there (a copy kept beside one of the same name named by `drive.name`), anything else the core's `drive.transfer`
-// (the stations copy between them; the bar's 传输 follows it); a name already there is asked about first (替换, 保留两者,
-// 跳过). Files from the computer (Finder) let go on a folder go up into it, a folder of them made there and filled.
+// FilesNav.tsx useFolderDrop), as nodes of the window's tree: a row pressed with a mouse and moved past a few points
+// carries its file or folder under the pointer (its node taking the hold over: View::claims); let go on a folder (a
+// folder's row, a column, the folder shown, a folder of the sidebar) it goes there: within its station moved (⌥:
+// copied), to another station copied (⌘: moved), as Finder does across disks; a folder let go on 个人收藏 is kept there.
+// A move within a station by a root both places are under (the core's `drive.moves`) is a rename there (a copy kept
+// beside one of the same name named by `drive.name`), anything else the core's `drive.transfer` (the stations copy
+// between them; the bar's 传输 follows it); a name already there is asked about first (替换, 保留两者, 跳过). Files from
+// the computer (Finder) let go on a folder go up into it (@ui.files_onto), a folder of them made there and filled.
+// Where something is let go is found among the places that take it by where each node is placed, at the moment of the
+// hand's event, in its handler.
 
 ///|
-/// Where something dragged can be let go: its id (the box it is drawn as), its key, the folder it is (None: 个人收藏),
-/// its name, whether its station takes files written there and copies from others, and how deep it lies (a folder's
-/// row over the folder shown it is in); what it was built with (the core it asks, the workspace whose 个人收藏 it is).
-priv struct FTarget {
-  id : Int
+/// Where something dragged can be let go: its node, its key, the folder it is (None: 个人收藏), its name, whether its
+/// station takes files written there and copies from others, and how deep it lies (a folder's row over the folder
+/// shown it is in); whether it takes the computer's files (a folder of the sidebar does not); the core it asks, the
+/// workspace whose 个人收藏 it is.
+priv struct NTarget {
+  node : @view.View
   key : String
   into : DriveAt?
   name : String
   write : Bool
   transfers : Bool
   depth : Int
-  /// whether it takes the computer's files (a folder of the sidebar does not)
   outside : Bool
   src : Source
   ws : String
 }
 
 ///|
-/// A name already where files go, asked about: what comes (its size, its station's name) and what
-/// is there.
+/// A name already where files go, asked about: what comes (its size, its station's name) and what is there.
 pub(all) struct Clash {
   name : String
   dir : Bool
@@ -37,8 +39,8 @@ pub(all) struct Clash {
 }
 
 ///|
-/// What is asked now: where they go, its name, how many go, the names there, the answers so far,
-/// whether the next is said for all the rest, and what is done with the answers.
+/// What is asked now: where they go, its name, how many go, the names there, the answers so far, whether the next is
+/// said for all the rest, and what is done with the answers.
 pub(all) struct Asking {
   into : DriveAt
   into_name : String
@@ -50,130 +52,102 @@ pub(all) struct Asking {
 }
 
 ///|
-/// The drag: a row pressed (what it would carry, where the press went down, whether it is a chat's 文件 tab's), what is
-/// carried once the press moved past the slop and whether it came off the tab, the places it can be let go (by the id
-/// of the box each is drawn as), the one what is held is over, what is asked, and what waits on something read.
-/// Changed only as the hand, the host or the core says (a press's steps: fdrag_follow; files from outside held or let
-/// go: fdrag_files; a folder or a pick read: fdrag_when), never as a frame is built.
-priv struct FDrag {
-  mut press : (Dragged, Double, Double, Bool)?
-  /// (told as it changes: what shows it carried, built before what takes it in the frame, built again for it)
+/// The drag: what is carried once a row's hold was taken over, where the pointer is with it and the keys held (for its
+/// picture and what a drop would do), the places it can be let go (by key, each its node's while it lives), the one what
+/// is held is over, what is asked, and what waits on something read. Changed only as the hand, the host or the core
+/// says (a row's drag's steps, files from outside held or let go, a folder or a pick read), never as a frame is built.
+priv struct NDrag {
   item : @signals.Signal[Dragged?]
-  mut off_tab : Bool
-  /// (said where each is built, kept with what keeps it unbuilt, let go with its page: what a drop is let go on is
-  /// what of these is drawn where it is let go)
-  targets : Map[Int, FTarget]
-  /// the key of the target what is held is over ("" none): told as it changes, what reads it built again
+  at : @signals.Signal[(Double, Double)]
+  mods : @signals.Signal[Int]
+  targets : Map[String, NTarget]
   over : @signals.Signal[String]
   mut asking : Asking?
-  /// what waits on a folder to be read (a drop into it: what is there by their names asked about first) or a pick's
-  /// files (dropped from outside): each stopped once done, or with the drag (drag_reset)
   later : Array[(Ref[Bool], () -> Unit)]
 }
 
 ///|
-// kept across runs: the drag's state (drag_reset puts it back)
-let fdrag : FDrag = {
-  press: None,
+// kept across runs: the drag's state (ndrag_reset puts it back)
+let ndrag : NDrag = {
   item: @signals.signal(None),
-  off_tab: false,
-  targets: {},
+  at: @signals.signal((0.0, 0.0)),
+  mods: @signals.signal(0),
+  targets: Map([]),
   over: @signals.signal(""),
   asking: None,
   later: [],
 }
 
 ///|
-fn drag_reset() -> Unit {
-  fdrag.press = None
-  fdrag.item.set(None)
-  fdrag.off_tab = false
-  fdrag.targets.clear()
-  fdrag.over.set("")
-  fdrag.asking = None
-  for w in fdrag.later {
+/// The drag let go (a run anew).
+pub fn ndrag_reset() -> Unit {
+  ndrag.item.set(None)
+  ndrag.over.set("")
+  ndrag.mods.set(0)
+  ndrag.targets.clear()
+  ndrag.asking = None
+  for w in ndrag.later {
     (w.1)()
   }
-  fdrag.later.clear()
-  fclash_shown.val = 0
-  fclash_last.val = None
+  ndrag.later.clear()
+  clash_shown_serial.val = 0
+  clash_last.val = None
   clash_changed()
 }
 
 ///|
 /// How far a press moves before it is a drag (a click's slop).
-let fdrag_slop : Double = 4.0
+let ndrag_slop : Double = 4.0
 
 ///|
-/// Row `id`, which would carry `item` (`tab`: a chat's 文件 tab's), followed as it is pressed (Ctx::follow_press):
-/// pressed, moved past the slop it carries it, let go it drops it where it is let go. Not while `live` is not (the row
-/// busy, its name being changed).
-fn fdrag_source(c : @ui.Ctx, id : Int, item : Dragged, tab : Bool, live : Bool) -> Unit {
-  c.follow_press(id, fn(step) {
-    if live {
-      fdrag_follow(c, item, tab, step)
+/// Node `v` (a row) carrying what `item` says as a mouse holds it and moves it past the slop (a finger moving on a row
+/// moves the list, as the web's rows, which a touch drags nothing of; a file is moved there by its menu): moved, it is
+/// over what is under the pointer; let go, it goes where it is let go. Not while `live` says not (the row busy, its
+/// name being changed).
+pub fn drag_source_node(v : @view.View, item : () -> Dragged, live : () -> Bool) -> Unit {
+  v
+  .claims(fn(dx, dy) {
+    @sf.pointer_rests() && @signals.untracked(live) && ((dx.abs() > ndrag_slop) || (dy.abs() > ndrag_slop))
+  })
+  .on_drag(fn(d) {
+    match d.kind {
+      Down => {
+        ndrag.mods.set(@ui.mods_held())
+        ndrag.at.set((d.wx, d.wy))
+        ndrag.item.set(Some(@signals.untracked(item)))
+        ndrag_over(d.wx, d.wy)
+      }
+      Moved => {
+        ndrag.mods.set(@ui.mods_held())
+        ndrag.at.set((d.wx, d.wy))
+        ndrag_over(d.wx, d.wy)
+      }
+      Up => {
+        match ndrag.item.untracked() {
+          Some(i) =>
+            match ndrag_at(d.wx, d.wy) {
+              Some(t) => ndrag_drop(i, t, @ui.mods_held())
+              None => ()
+            }
+          None => ()
+        }
+        ndrag.over.set("")
+        ndrag.item.set(None)
+      }
+      Off => {
+        ndrag.over.set("")
+        ndrag.item.set(None)
+      }
     }
   })
-}
-
-///|
-/// A step of a press on a row that would carry `item` (fdrag_source), as the hand takes it.
-fn fdrag_follow(c : @ui.Ctx, item : Dragged, tab : Bool, step : @ui.PressStep) -> Unit {
-  match step {
-    // (a mouse's: a finger moving on a row moves the list, as the web's rows, which a touch drags nothing of; a file is
-    // moved there by its menu)
-    Down(x, y, _) =>
-      if @sf.pointer_rests() && fdrag.item.get() is None {
-        fdrag.press = Some((item, x, y, tab))
-      }
-    Moving(x, y) => {
-      match (fdrag.press, fdrag.item.get()) {
-        (Some((i, x0, y0, t)), None) if (x - x0).abs() > fdrag_slop || (y - y0).abs() > fdrag_slop => {
-          fdrag.press = None
-          fdrag.off_tab = t
-          // (another carried: what was let go before and not taken is not for it)
-          ftab.let_go = None
-          fdrag.item.set(Some(i))
-        }
-        _ => ()
-      }
-      if fdrag.item.get() is Some(_) {
-        fdrag_over(c, x, y)
-      }
-    }
-    Up(x, y) => {
-      fdrag.press = None
-      match fdrag.item.get() {
-        Some(i) => {
-          match fdrag_at(c, x, y) {
-            Some(t) => fdrag_drop(c, i, t, @ui.mods_held())
-            None => ()
-          }
-          // a row let go off the tab, where: for the chat's composer to take (tab_take_drop)
-          if fdrag.off_tab {
-            ftab.let_go = Some((i, x, y))
-          }
-          fdrag.off_tab = false
-          fdrag.over.set("")
-          fdrag.item.set(None)
-        }
-        None => ()
-      }
-    }
-    Off => {
-      fdrag.press = None
-      fdrag.off_tab = false
-      fdrag.over.set("")
-      fdrag.item.set(None)
-    }
-  }
+  |> ignore
 }
 
 ///|
 /// What is held is over (x, y) now: the target there that takes it, lit.
-fn fdrag_over(c : @ui.Ctx, x : Double, y : Double) -> Unit {
-  fdrag.over.set(
-    match fdrag_at(c, x, y) {
+fn ndrag_over(x : Double, y : Double) -> Unit {
+  ndrag.over.set(
+    match ndrag_at(x, y) {
       Some(t) => t.key
       None => ""
     },
@@ -183,7 +157,7 @@ fn fdrag_over(c : @ui.Ctx, x : Double, y : Double) -> Unit {
 ///|
 /// What a drop of `item` into a folder of `station` does (browse.ts effectOf): across stations a copy (⌘: a move),
 /// within one a move (⌥: a copy).
-fn fdrag_effect(item : Dragged, station : String, mods : Int) -> String {
+fn ndrag_effect(item : Dragged, station : String, mods : Int) -> String {
   if item.station != station {
     if (mods & @ui.mod_cmd) != 0 {
       "move"
@@ -201,8 +175,8 @@ fn fdrag_effect(item : Dragged, station : String, mods : Int) -> String {
 /// Whether `t` takes what is held over the window now (browse.ts takes): a folder written to, the station's own or one
 /// that copies from others (not into what is carried itself); 个人收藏 a folder; the computer's files any folder
 /// written to.
-fn fdrag_takes(t : FTarget) -> Bool {
-  match (fdrag.item.get(), t.into) {
+fn ndrag_takes(t : NTarget) -> Bool {
+  match (ndrag.item.untracked(), t.into) {
     (Some(i), None) => i.dir
     (Some(i), Some(into)) => {
       let root = into.root.unwrap_or("")
@@ -217,135 +191,147 @@ fn fdrag_takes(t : FTarget) -> Bool {
 }
 
 ///|
-/// The target under (x, y), of those drawn where the hand is now, that takes what is held: the deepest, the smaller of
-/// two as deep (what is drawn in the other).
-fn fdrag_at(c : @ui.Ctx, x : Double, y : Double) -> FTarget? {
-  let mut best : (FTarget, Double)? = None
-  for _, t in fdrag.targets {
-    if !fdrag_takes(t) {
+/// The target under (x, y) in the window, of those placed there now, that takes what is held: the deepest, the smaller
+/// of two as deep (what is drawn in the other).
+fn ndrag_at(x : Double, y : Double) -> NTarget? {
+  let mut best : (NTarget, Double)? = None
+  for _, t in ndrag.targets {
+    if !t.node.alive() || t.node.shown_nowhere() || !ndrag_takes(t) {
       continue
     }
-    match c.rect_of(t.id) {
-      Some((rx, ry, rw, rh)) if x >= rx && x < rx + rw && y >= ry && y < ry + rh =>
-        match best {
-          Some((b, _)) if b.depth > t.depth => ()
-          Some((b, area)) if b.depth == t.depth && area <= rw * rh => ()
-          _ => best = Some((t, rw * rh))
-        }
-      _ => ()
+    let (rx, ry, rw, rh) = t.node.placed_window_now()
+    if x >= rx && x < rx + rw && y >= ry && y < ry + rh {
+      match best {
+        Some((b, _)) if b.depth > t.depth => ()
+        Some((b, area)) if b.depth == t.depth && area <= rw * rh => ()
+        _ => best = Some((t, rw * rh))
+      }
     }
   }
   best.map(fn(b) { b.0 })
 }
 
 ///|
-/// `key` a place something can be let go (`id` the box it is drawn as; `src` the core it asks, `ws` the workspace
-/// whose 个人收藏 it is, where it is that): what a drop there would do, while what is held is over it ("move", "copy",
-/// "upload", "keep"), else None. Said where it is built: kept with what keeps it unbuilt, let go with its page.
-fn fdrag_target(
-  c : @ui.Ctx,
+/// Node `v` a place something can be let go, `key` its key (`src` the core it asks, `ws` the workspace whose 个人收藏 it
+/// is, where it is that): said as it is made, let go with it. What a drop there would do, while what is held is over it
+/// ("move", "copy", "upload", "keep"), else None: read as that changes.
+pub fn drop_target_node(
+  v : @view.View,
   src : Source,
-  id : Int,
   key : String,
   into : DriveAt?,
   name : String,
-  write : Bool,
-  transfers : Bool,
+  write : () -> Bool,
+  transfers : () -> Bool,
   depth : Int,
   outside? : Bool = true,
   ws? : String,
-) -> String? {
+) -> () -> String? {
   let ws = match (ws, into) {
     (Some(w), _) => w
     (None, Some(at)) => @sfbase.workspace_of(at.station)
     (None, None) => ""
   }
-  fdrag.targets[id] = { id, key, into, name, write, transfers, depth, outside, src, ws }
-  c.on_page_release("files/drop-target/" + key, fn() { fdrag.targets.remove(id) })
-  if fdrag.over.get() != key {
-    return None
+  let put = fn() {
+    ndrag.targets[key] = {
+      node: v,
+      key,
+      into,
+      name,
+      write: @signals.untracked(write),
+      transfers: @signals.untracked(transfers),
+      depth,
+      outside,
+      src,
+      ws,
+    }
   }
-  match (fdrag.item.get(), into) {
-    (Some(_), None) => Some("keep")
-    (Some(i), Some(at)) => Some(fdrag_effect(i, at.station, @ui.mods_held()))
-    (None, Some(_)) => Some("upload")
-    (None, None) => None
+  put()
+  // (what it may take as the station's rights come: said again then)
+  v.reacts(fn() { (write(), transfers()) }, fn(_) { put() }, at_start=false)
+  v.owns(fn() {
+    match ndrag.targets.get(key) {
+      Some(t) if physical_equal(t.node, v) => ndrag.targets.remove(key)
+      _ => ()
+    }
+  })
+  |> ignore
+  fn() {
+    if ndrag.over.get() != key {
+      return None
+    }
+    match (ndrag.item.get(), into) {
+      (Some(_), None) => Some("keep")
+      (Some(i), Some(at)) => Some(ndrag_effect(i, at.station, ndrag.mods.get()))
+      (None, Some(_)) => Some("upload")
+      (None, None) => None
+    }
   }
 }
 
 ///|
-/// Box `page` takes files from the computer let go on a folder drawn in it (Finder's, Explorer's: Ctx::on_files): held
-/// over one, it says where they go; let go there, read as a pick's, then up into it. Let go elsewhere they are not
+/// Node `v` (a page) takes files from the computer let go on a folder drawn in it (Finder's, Explorer's: @ui.files_onto):
+/// held over one, it says where they go; let go there, read as a pick's, then up into it. Let go elsewhere they are not
 /// taken here (what is there may take them otherwise: a field, by their paths).
-fn fdrag_files(c : @ui.Ctx, page : Int) -> Unit {
-  c.on_files(
-    page,
+pub fn files_from_outside_node(v : @view.View) -> Unit {
+  @ui.files_onto(
+    v,
     held=fn(at) {
-      if fdrag.item.get() is None {
+      if ndrag.item.untracked() is None {
         match at {
-          Some((x, y)) => fdrag_over(c, x, y)
-          None => fdrag.over.set("")
+          Some((x, y)) => ndrag_over(x, y)
+          None => ndrag.over.set("")
         }
       }
     },
     take=fn(x, y) {
-      match fdrag_at(c, x, y) {
+      match ndrag_at(x, y) {
         Some({ into: Some(into), src, .. }) =>
           Some(fn(pick : @ui.Pick) {
             // (up once their reading is done: its answer)
             let files : Ref[Array[@hostapi.Picked]?] = Ref(None)
-            fdrag_when(
+            ndrag_when(
               fn() {
                 if files.val is None {
                   files.val = pick.files()
                 }
                 files.val is Some(_)
               },
-              fn() { fdrag_put_up(src, into, files.val.unwrap_or([])) },
+              fn() { ndrag_put_up(src, into, files.val.unwrap_or([])) },
             )
           })
         _ => None
       }
     },
   )
+  |> ignore
 }
 
 ///|
 /// `go` done once `ready` says so: now, or as what it read changes (a folder's listing come from the core, a pick's
-/// files read by the host), outside any build. What waits is let go with the drag (drag_reset).
-fn fdrag_when(ready : () -> Bool, go : () -> Unit) -> Unit {
+/// files read by the host), outside any build. What waits is let go with the drag (ndrag_reset).
+fn ndrag_when(ready : () -> Bool, go : () -> Unit) -> Unit {
   // (those done before: let go of what they read)
-  let gone = fdrag.later.filter(fn(w) { w.0.val })
+  let gone = ndrag.later.filter(fn(w) { w.0.val })
   for w in gone {
     (w.1)()
   }
-  fdrag.later.retain(fn(w) { !w.0.val })
-  let done = Ref(false)
-  // (owned by nothing: what waits is no part of what reads now, let go only by `stop`. Made so as it is made where
-  // nothing reads and no owner is set: a drop from outside is handed on as the frame begins, outside its reading (ui's
-  // take_messages), a row let go in the press's handler. One made as a frame is read would be that frame's, and is a
-  // fault: @signals.effect_in_watch)
-  let stop = @signals.effect(fn() {
-    if !done.val && ready() {
-      done.val = true
-      @signals.untracked(go)
-    }
-  })
-  if done.val {
-    stop()
-  } else {
-    fdrag.later.push((done, stop))
+  ndrag.later.retain(fn(w) { !w.0.val })
+  let (done, stop) = @sfbase.drive_when(ready, go)
+  if !done.val {
+    ndrag.later.push((done, stop))
   }
 }
 
 ///|
 /// Files from the computer into `into` (browse.ts dropInto, putFolder): each folder made there first (one there already
 /// filled, as Finder merges), then each file up into its folder.
-fn fdrag_put_up(src : Source, into : DriveAt, files : Array[@hostapi.Picked]) -> Unit {
+fn ndrag_put_up(src : Source, into : DriveAt, files : Array[@hostapi.Picked]) -> Unit {
   let root = into.root.unwrap_or("")
   let folders = files.filter(fn(f) { f.name.has_suffix("/") }).map(fn(f) { f.name.exact_view(end=f.name.length() - 1).to_owned() })
   let up = files.filter(fn(f) { !f.name.has_suffix("/") })
   let send = fn() {
+    let ups = @sfbase.ups
     for f in up {
       let dir = dv_join(into.path, dv_parent(f.name))
       ups.serial += 1
@@ -382,14 +368,12 @@ fn fdrag_put_up(src : Source, into : DriveAt, files : Array[@hostapi.Picked]) ->
 
 ///|
 /// What is carried let go on `t`: kept in 个人收藏 (a folder), or moved or copied into its folder.
-fn fdrag_drop(c : @ui.Ctx, item : Dragged, t : FTarget, mods : Int) -> Unit {
+fn ndrag_drop(item : Dragged, t : NTarget, mods : Int) -> Unit {
   let src = t.src
   match t.into {
-    None => {
-      favorite_add(src, t.ws, { station: item.station, root: item.abs, path: "", name: item.name })
-    }
+    None => favorite_add(src, t.ws, { station: item.station, root: item.abs, path: "", name: item.name })
     Some(into) => {
-      let moves = fdrag_effect(item, into.station, mods) == "move"
+      let moves = ndrag_effect(item, into.station, mods) == "move"
       let anywhere = match dv_stations(src, t.ws).0 {
         Some(l) =>
           match l.iter().find_first(fn(s) { s.station == into.station }) {
@@ -398,50 +382,35 @@ fn fdrag_drop(c : @ui.Ctx, item : Dragged, t : FTarget, mods : Int) -> Unit {
           }
         None => false
       }
-      fdrag_transfer(c, src, item, into, moves, t.name, anywhere)
+      ndrag_transfer(src, item, into, moves, t.name, anywhere)
     }
   }
 }
 
 ///|
-/// `item` into the folder `into`: not into itself, nor where it is already; a name there asked
-/// about first, once the folder is read (now, or as it is: fdrag_when). Moved within its station by a root both places
-/// are under (the core's `drive.moves`), it is a rename there (the one there to the trash first, or this one beside it
-/// named as Finder names a copy kept: `drive.name`); anything else the stations' transfer (`drive.transfer`).
-fn fdrag_transfer(
-  c : @ui.Ctx,
-  src : Source,
-  item : Dragged,
-  into : DriveAt,
-  moves : Bool,
-  into_name : String,
-  anywhere : Bool,
-) -> Unit {
+/// `item` into the folder `into`: not into itself, nor where it is already; a name there asked about first, once the
+/// folder is read (now, or as it is: ndrag_when).
+fn ndrag_transfer(src : Source, item : Dragged, into : DriveAt, moves : Bool, into_name : String, anywhere : Bool) -> Unit {
   let into_root = into.root.unwrap_or("")
   if item.station == into.station &&
     item.root == into_root &&
     (dv_parent(item.path) == into.path || into.path == item.path || into.path.has_prefix(item.path + "/")) {
     return
   }
-  fdrag_when(fn() { !(drive_folder(src, into.station, into_root, into.path) is (None, None)) }, fn() {
-    fdrag_send(c, src, item, into, moves, into_name, anywhere)
+  ndrag_when(fn() { !(drive_folder_held(src, into.station, into_root, into.path) is (None, None)) }, fn() {
+    ndrag_send(src, item, into, moves, into_name, anywhere)
   })
 }
 
 ///|
-/// `item` into the folder `into`, read (fdrag_transfer): a name there asked about first.
-fn fdrag_send(
-  c : @ui.Ctx,
-  src : Source,
-  item : Dragged,
-  into : DriveAt,
-  moves : Bool,
-  into_name : String,
-  anywhere : Bool,
-) -> Unit {
+/// `item` into the folder `into`, read (ndrag_transfer): a name there asked about first. Moved within its station by a
+/// root both places are under (the core's `drive.moves`), it is a rename there (the one there to the trash first, or
+/// this one beside it named as Finder names a copy kept: `drive.name`); anything else the stations' transfer
+/// (`drive.transfer`).
+fn ndrag_send(src : Source, item : Dragged, into : DriveAt, moves : Bool, into_name : String, anywhere : Bool) -> Unit {
   let into_root = into.root.unwrap_or("")
-  let entries = match drive_folder(src, into.station, into_root, into.path) {
-    (Some(_), _) => @sfbase.dv_entries(src, into.station, into_root, into.path).unwrap_or([])
+  let entries = match drive_folder_held(src, into.station, into_root, into.path) {
+    (Some(_), _) => dv_entries(src, into.station, into_root, into.path).unwrap_or([])
     // (one that cannot be read: no names there to ask about)
     _ => []
   }
@@ -467,7 +436,7 @@ fn fdrag_send(
         "move": Json::boolean(moves),
         "conflicts": Json::object(conflicts),
       },
-      act_done(c, what),
+      act_said(what),
     )
   }
   // renamed within its station: the one there to the trash first, or this one kept beside it under a name of its own
@@ -479,7 +448,7 @@ fn fdrag_send(
       (src.call)(
         "drive.rename",
         { "station": Json::string(into.station), "root": Json::string(root), "from": Json::string(from), "to": Json::string(to) },
-        act_done(c, what),
+        act_said(what),
       )
     }
     match answer {
@@ -535,7 +504,7 @@ fn fdrag_send(
                 [m] => rename(Some(m), answer)
                 _ => transfer(answer)
               }
-            Err(e) => act_done(c, what)(Err(e))
+            Err(e) => (act_said(what))(Err(e))
           }
         },
       )
@@ -544,8 +513,8 @@ fn fdrag_send(
     }
   }
   match entries.iter().find_first(fn(e) { e.name.to_lower() == item.name.to_lower() }) {
-    Some(e) => {
-      fdrag.asking = Some({
+    Some(e) =>
+      drag_ask({
         into,
         into_name,
         total: 1,
@@ -554,72 +523,23 @@ fn fdrag_send(
         all: false,
         done: go,
       })
-      clash_changed()
-    }
     None => go({})
   }
 }
 
 ///|
-/// What is asked about a name already where files go: each name in turn (or all the rest
-/// the same way): 跳过, 保留两者, 替换; let go, nothing goes. The library's dialog of nodes (@sf.panel_nodes, opened by
-/// nothing), up while something is asked: its title, what it is about, what it holds and its foot as the name asked
-/// about now says them.
-fn clash_dialog(c : @ui.Ctx) -> Unit {
-  ignore(c)
-  // (read as told: what builds it, a part kept as its nodes too, built again as something is asked or all answered)
-  clash_told.get() |> ignore
-  match fdrag.asking {
-    Some(_) if fclash_shown.val == 0 => {
-      @sf.panel_nodes(
-        "",
-        fn(v, _) { clash_body_node(v) },
-        from=Unanchored,
-        foot=fn(v, _) { clash_foot_node(v) },
-        live=fn() {
-          match clash_now() {
-            (Some(a), Some(n)) =>
-              (
-                @sf.t(if n.dir { "web-pages.files.clashFolder" } else { "web-pages.files.clash" }, args=[
-                  ("folder", a.into_name),
-                  ("name", n.name),
-                ]),
-                "",
-                if a.clashes.length() > 1 {
-                  @sf.t("web-pages.files.clashCount", args=[
-                    ("n", a.total.to_string()),
-                    ("clashes", a.clashes.length().to_string()),
-                  ])
-                } else {
-                  ""
-                },
-              )
-            _ => ("", "", "")
-          }
-        },
-        // let go (Escape, ✕, a press outside): nothing goes
-        gone=fn() {
-          fdrag.asking = None
-          fclash_shown.val = 0
-          clash_changed()
-        },
-      )
-      fclash_shown.val = @sf.last_presented()
-    }
-    None if fclash_shown.val > 0 => {
-      // (all answered: down)
-      @sf.close_presented_of(fclash_shown.val)
-      fclash_shown.val = 0
-    }
-    _ => ()
-  }
+/// What is carried now (a row dragged), for what it goes over to show it.
+pub fn node_dragged() -> Dragged? {
+  ndrag.item.get()
 }
 
+// ── a name already there, asked about ──
+
 ///|
-/// What is asked, as it was last told (fdrag.asking set or let go, a name answered, all the rest chosen the same way):
+/// What is asked, as it was last told (ndrag.asking set or let go, a name answered, all the rest chosen the same way):
 /// the asking itself, how many names it has answered, whether all the rest go one way. What reads it (clash_now: the
 /// dialog's title and what it says, what it holds, its foot) follows it, as that changes.
-// kept across runs: said again as it changes (drag_reset among them)
+// kept across runs: said again as it changes (ndrag_reset among them)
 let clash_told : @signals.Signal[(Asking?, Int, Bool)] = @signals.signal_by((None, 0, false), same=fn(a, b) {
   let same_asking = match (a.0, b.0) {
     (Some(x), Some(y)) => physical_equal(x, y)
@@ -633,7 +553,7 @@ let clash_told : @signals.Signal[(Asking?, Int, Bool)] = @signals.signal_by((Non
 /// What is asked changed: told (clash_told).
 fn clash_changed() -> Unit {
   clash_told.set(
-    match fdrag.asking {
+    match ndrag.asking {
       Some(a) => (Some(a), a.answers.length(), a.all)
       None => (None, 0, false)
     },
@@ -642,14 +562,58 @@ fn clash_changed() -> Unit {
 
 ///|
 /// The asking's dialog as presented (@sf.last_presented; 0 none).
-// kept across runs: put back by drag_reset
-let fclash_shown : Ref[Int] = Ref(0)
+// kept across runs: put back by ndrag_reset
+let clash_shown_serial : Ref[Int] = Ref(0)
+
+///|
+/// A name already where files go asked about (a drop's; a page shown at that moment: the fixture's): what is asked
+/// about a name already where files go, each name in turn (or all the rest the same way): 跳过, 保留两者, 替换; let go,
+/// nothing goes. The library's dialog of nodes (@sf.panel_nodes, opened by nothing), up while something is asked: its
+/// title, what it is about, what it holds and its foot as the name asked about now says them.
+pub fn drag_ask(a : Asking) -> Unit {
+  ndrag.asking = Some(a)
+  clash_changed()
+  if clash_shown_serial.val != 0 {
+    return
+  }
+  @sf.panel_nodes(
+    "",
+    fn(v, _) { clash_body_node(v) },
+    from=Unanchored,
+    foot=fn(v, _) { clash_foot_node(v) },
+    live=fn() {
+      match clash_now() {
+        (Some(a), Some(n)) =>
+          (
+            @sf.t(if n.dir { "web-pages.files.clashFolder" } else { "web-pages.files.clash" }, args=[
+              ("folder", a.into_name),
+              ("name", n.name),
+            ]),
+            "",
+            if a.clashes.length() > 1 {
+              @sf.t("web-pages.files.clashCount", args=[("n", a.total.to_string()), ("clashes", a.clashes.length().to_string())])
+            } else {
+              ""
+            },
+          )
+        _ => ("", "", "")
+      }
+    },
+    // let go (Escape, ✕, a press outside): nothing goes
+    gone=fn() {
+      ndrag.asking = None
+      clash_shown_serial.val = 0
+      clash_changed()
+    },
+  )
+  clash_shown_serial.val = @sf.last_presented()
+}
 
 ///|
 /// What is asked now, and the name asked about (the first not answered).
 fn clash_now() -> (Asking?, Clash?) {
   clash_told.get() |> ignore
-  match fdrag.asking {
+  match ndrag.asking {
     Some(a) =>
       match a.clashes.iter().find_first(fn(x) { !a.answers.contains(x.name) }) {
         Some(n) => (Some(a), Some(n))
@@ -660,7 +624,8 @@ fn clash_now() -> (Asking?, Clash?) {
 }
 
 ///|
-/// `said` (skip, keep, replace) for the name asked about, or all the rest; all answered, what goes goes.
+/// `said` (skip, keep, replace) for the name asked about, or all the rest; all answered, the dialog down and what goes
+/// goes.
 fn clash_answer(a : Asking, n : Clash, said : String) -> Unit {
   let left = a.clashes.filter(fn(x) { !a.answers.contains(x.name) })
   if a.all {
@@ -672,8 +637,12 @@ fn clash_answer(a : Asking, n : Clash, said : String) -> Unit {
   }
   clash_changed()
   if a.clashes.iter().all(fn(x) { a.answers.contains(x.name) }) {
-    fdrag.asking = None
+    ndrag.asking = None
     clash_changed()
+    if clash_shown_serial.val > 0 {
+      @sf.close_presented_of(clash_shown_serial.val)
+      clash_shown_serial.val = 0
+    }
     (a.done)(a.answers)
   }
 }
@@ -684,17 +653,17 @@ fn clash_answer(a : Asking, n : Clash, said : String) -> Unit {
 fn clash_shown() -> (Asking, Clash)? {
   match clash_now() {
     (Some(a), Some(n)) => {
-      fclash_last.val = Some((a, n))
+      clash_last.val = Some((a, n))
       Some((a, n))
     }
-    _ => fclash_last.val
+    _ => clash_last.val
   }
 }
 
 ///|
 /// The name the dialog last asked about (clash_shown).
-// kept across runs: put back by drag_reset
-let fclash_last : Ref[(Asking, Clash)?] = Ref(None)
+// kept across runs: put back by ndrag_reset
+let clash_last : Ref[(Asking, Clash)?] = Ref(None)
 
 ///|
 /// How many names are left to answer of what is asked now (the one asked about among them).
@@ -786,29 +755,37 @@ fn clash_foot_node(v : @view.View) -> Unit {
   @sf.button_node(v, fn() { @sf.t("web-pages.drive.replace") }, answer("replace"), tone=Primary, icon="trash") |> ignore
 }
 
+// ── what is carried, under the pointer ──
+
 ///|
-/// What is carried, under the pointer (the drag's picture): its mark and its name on a raised chip, and what a drop
-/// where it is would do.
-fn drag_ghost(c : @ui.Ctx, page : Int) -> Unit {
-  let t = @sf.theme()
-  match (fdrag.item.get(), c.rect_of(page)) {
-    (Some(i), Some((x0, y0, _, _))) => {
-      let (px, py, _) = c.pointer()
-      c.layer(fn() {
-        c.box(style=fdrag_ghost_place, tx=px - x0 + fdrag_ghost_off, ty=py - y0 + fdrag_ghost_off, fn() {
-          c.box(style=fdrag_ghost_chip, fn() {
-            @sf.icon(c, dv_kind_icon(if i.dir { "folder" } else { dv_kind_of(i.name) }), size=drag_icon, color=t.p.muted)
-            |> ignore
-            c.text(i.name, style=drag_chip_words) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
+/// What is carried, under the pointer (the drag's picture), in node `v` (the page's, as large as it, over it): its mark
+/// and its name on a raised chip, following the pointer from where the page is placed. Nothing to the hand.
+pub fn drag_ghost_node(v : @view.View) -> Unit {
+  v.show(fn() { ndrag.item.get() is Some(_) }, at_once=true, fn(g) {
+    let item = fn() { ndrag.item.get() }
+    g
+    .presses(Is(false))
+    .offset(By(fn() {
+      let (px, py) = ndrag.at.get()
+      let (x0, y0, _, _) = v.placed_window_now()
+      (px - x0 + fdrag_ghost_off, py - y0 + fdrag_ghost_off)
+    }))
+    |> ignore
+    g.box(fn(chip) {
+      @sf.style_node(chip, fn() { fdrag_ghost_chip })
+      // (its shadow and its opacity, which style_node does not set: shadow=Lg, a little see-through)
+      chip.shadow(By(fn() { (15.0, 10.0, @ui.tree_theme().shadow) })).alpha(Is(0.9)) |> ignore
+      @sf.icon_node(chip, "", drag_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
+        match item() {
+          Some(i) => dv_kind_icon(if i.dir { "folder" } else { dv_kind_of(i.name) })
+          None => "file"
+        }
       })
       |> ignore
-    }
-    _ => ()
-  }
+      @sf.words_node(chip, fn() { item().map(fn(i) { i.name }).unwrap_or("") }, fn() { drag_chip_words }) |> ignore
+    })
+    |> ignore
+  })
 }
 
 ///|
@@ -827,45 +804,6 @@ fn dv_kind_of(name : String) -> String {
 }
 
 ///|
-/// A folder of the sidebar that takes a drop: its row, ringed while what it takes is over it,
-/// saying what a drop does; its corner the row's (the theme's chats' list's `side_drop`: a row's, as the row it rings,
-/// flush in it, is round).
-fn fdrag_side_row(
-  c : @ui.Ctx,
-  src : Source,
-  key : String,
-  into : DriveAt,
-  name : String,
-  write : Bool,
-  transfers : Bool,
-  row : () -> Unit,
-) -> Unit {
-  let id = c.id("files/drop/" + key)
-  let lit = fdrag_target(c, src, id, "side/" + key, Some(into), name, write, transfers, 1, outside=false)
-  let drop = @sf.theme().chat_list.side_drop
-  let look = if lit is Some(_) { drop.then(fdrag_side_on) } else { drop }
-  c.box(style=look, id~, fn() {
-    row()
-    match lit {
-      Some(l) =>
-        c.layer(fn() {
-          c.box(style=fdrag_says_place, fn() {
-            c.box(style=fdrag_says, fn() {
-              c.text(@sf.t(if l == "copy" { "web-pages.files.copyHereShort" } else { "web-pages.files.moveHereShort" }), style=fdrag_says_words)
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      None => ()
-    }
-  })
-  |> ignore
-}
-
-///|
 /// The drag's picture this far from the pointer (down and right of it).
 let fdrag_ghost_off : Double = 12.0
 
@@ -880,46 +818,12 @@ let fclash_facts : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S3 radius=X
 let fclash_all : @ui.Style = @ui.css("row min_h=S9 gap=S2 align=ACenter")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let fdrag_ghost_place : @ui.Style = @ui.css("w=Full h=Full align=AStart")
-
-///|
 /// The picture carried: a chip on the raised ground, its shadow under it.
 // kept across runs: a value (no field of it changes)
 let fdrag_ghost_chip : @ui.Style = @ui.css((
-  #|row h=S8 px=S3 gap=S2 align=ACenter radius=Lg bg=Raised shadow=Lg opacity=O90
+  #|row h=S8 px=S3 gap=S2 align=ACenter radius=Lg bg=Raised
 ))
 
-///|
-/// What a drop over it would land in: ringed in the accent on its wash.
-// kept across runs: a value (no field of it changes)
-let fdrag_side_on : @ui.Style = @ui.css("bg=AccentBg border=B1 border_color=Accent")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fdrag_says_place : @ui.Style = @ui.css("row w=Full h=Full pr=S2 align=ACenter justify=JEnd")
-
-///|
-/// What a drop there does (dropSays: a capsule in the accent, 7 in, its words 11 bold on it).
-// kept across runs: a value (no field of it changes)
-let fdrag_says : @ui.Style = @ui.css("px=S1_5 py=SPx radius=Full bg=Accent")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fdrag_says_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, color=OnPrimary, wrap=false)
-
-///|
-/// What is carried now (a row dragged), for what it goes over to show it (a chat's composer).
-pub fn dragged() -> Dragged? {
-  fdrag.item.get()
-}
-
-///|
-/// A name already where files go asked about, as a drop does (a page shown at that moment: the fixture's).
-pub fn drag_ask(a : Asking) -> Unit {
-  fdrag.asking = Some(a)
-  clash_changed()
-}
 ///|
 /// The clash's facts (4 by 12 between; what is said muted).
 // kept across runs: a value (no field of it changes)

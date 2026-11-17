@@ -2208,7 +2208,7 @@ fn panel_centred(c : @ui.Ctx, key : String, p : Presented, x : PanelOf) -> (Bool
       // what would scroll in itself lays itself out whole (panel_whole); one a share of the window caps (`tall`, not a
       // form) filling it, as tall as what it holds where its lists say so (measured_body), as in a sheet
       if x.tall > 0.0 && !x.form {
-        let (_, wh) = c.window_size()
+        let wh = c.window_size().1 - @ui.system_bars().top - @ui.system_bars().bottom
         let id = c.id("sf-present/capped/\{p.serial}")
         let share = x.tall * wh - dialog_frame_h
         let h = match capped_want(c, p.serial, id) {
@@ -2318,7 +2318,7 @@ fn dialog_page(
     if x.tall > 0.0 && !x.form {
       // (a share of the window tall, as a dialog that goes in no steps has it (panel_centred): each step that tall,
       // or as tall as what it holds where its lists say so, laid out in it)
-      let (_, wh) = c.window_size()
+      let wh = c.window_size().1 - @ui.system_bars().top - @ui.system_bars().bottom
       let id = c.id("sf-present/capped/\{p.serial}/\{s.n}")
       let share = x.tall * wh - dialog_frame_h
       let h = match capped_want(c, p.serial, id) {

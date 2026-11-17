@@ -87,7 +87,7 @@ import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
 import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
-import { CREATE, CREATE_PRESET, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
+import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
 import { chatsTouched, forPeer, READ } from "./others.ts";
 import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
@@ -262,6 +262,8 @@ export const AgentsLive = (control: Control) =>
         takenUp: takenUp.promise,
         taking: () => control.taking(),
         currentProfile: (id) => settings().profiles.find((p) => p.id === id),
+        fast: (thread) => store.codexSessionFast(thread) ?? undefined,
+        speed: (thread) => store.codexSessionSpeed(thread),
         lent: {
           borrowed: (p) => borrowed(p),
           write: (p) => sharing!.lendCodex(p, false),
@@ -466,6 +468,8 @@ export const AgentsLive = (control: Control) =>
             return putForPeer(hub, peer, request, ws);
           case CREATE:
           case CREATE_PRESET:
+          case CREATE_SPEED:
+          case CREATE_PRESET_SPEED:
             return createForPeer(hub, peer, request, ws);
           case ARCHIVE:
             return archiveForPeer(hub, request, ws);

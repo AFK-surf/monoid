@@ -3331,3 +3331,65 @@ pub fn row_words_foot() -> Double {
     Wide => wide_row_pad
   }
 }
+
+///|
+/// What stands over a group's rows and tells of them (rows_head's, as nodes), in `parent`: in as far as their words
+/// (narrow, those on its card; wide, a wide list's rows'), 6 between its lines, the rows as far under it as under any
+/// small title over a card; `first`, its own room over it (narrow 2, wide 12). `body` makes what it holds.
+#callsite(autofill(loc))
+pub fn rows_head_node(parent : @view.View, body : (@view.View) -> Unit, first? : Bool = false, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(h) {
+    style_node(h, fn() {
+      match look_node(h) {
+        Narrow => if first { rows_head_narrow_first } else { rows_head_narrow }
+        Wide => if first { rows_head_wide_first } else { rows_head_wide }
+      }
+    })
+    body(h)
+  })
+  |> ignore
+}
+
+///|
+/// A page made once laid out by the width of the box it is given (`width`), as page_node lays one out: `wide` makes it
+/// where that is wide, `narrow` where narrow, each lent its arrangement (look_node), made again only as the arrangement
+/// changes. For a page whose two arrangements are not a page_node's (the files' page: Finder's window wide, a folder
+/// in its own frame narrow).
+#callsite(autofill(loc))
+pub fn by_look_node(
+  parent : @view.View,
+  width : () -> Double,
+  wide : (@view.View) -> Unit,
+  narrow : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.box(made_for=loc, fn(b) {
+    b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    b.pick(fn() { look_for(width()) }, at_once=true, fn(p, look) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      look_lent(p, look)
+      match look {
+        Wide => wide(p)
+        Narrow => narrow(p)
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// What a row of a page's list keeps under it, as group_rows_node lays its rows apart (a wide list's 2: desk_list_gap;
+/// on a narrow card none, its rows meeting), laid on `v` (the row's room): its padding under it as the page is laid out.
+#callsite(autofill(loc))
+pub fn row_apart_node(v : @view.View, loc~ : SourceLoc) -> Unit {
+  v.padding(
+    loc~,
+    By(fn() {
+      match look_node(v) {
+        Wide => (0.0, 0.0, 0.0, desk_list_gap)
+        Narrow => (0.0, 0.0, 0.0, 0.0)
+      }
+    }),
+  )
+  |> ignore
+}

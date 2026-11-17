@@ -93,14 +93,26 @@ export class FakeSlack {
     this.send({ type: "events_api", envelope_id: id, payload: { event } });
   }
 
-  /// Resolves once `f` holds (looked at whenever the stand-in heard something, and every 20 ms). No deadline: what is
-  /// waited for comes, however slow the machine, or the test hangs.
-  async until(_what: string, f: () => boolean) {
-    while (!f()) {
-      await new Promise<void>((resolve) => {
-        this.waiters.push(resolve);
-        setTimeout(resolve, 20);
-      });
+  /// Resolves once `f` holds (looked at whenever the stand-in heard something, and every 20 ms). What never comes fails
+  /// the test after `most` ms, saying what it waited for: a deadline far past what any of these waits takes on a slow
+  /// machine (milliseconds), so that one that hangs (a config edit lost, 2026-11-17) is that test's failure, not its
+  /// CI slice cancelled at five minutes with nothing said.
+  async until(what: string, f: () => boolean, most = 60_000) {
+    let over = false;
+    const deadline = setTimeout(() => {
+      over = true;
+      this.tell();
+    }, most);
+    try {
+      while (!f()) {
+        if (over) throw new Error(`FakeSlack.until timed out waiting for ${what}`);
+        await new Promise<void>((resolve) => {
+          this.waiters.push(resolve);
+          setTimeout(resolve, 20);
+        });
+      }
+    } finally {
+      clearTimeout(deadline);
     }
   }
 
