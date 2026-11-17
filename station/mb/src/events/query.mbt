@@ -1,11 +1,6 @@
 // GET /events's query (station/src/api/routes/events.ts): what a stream is asked to follow.
 
 ///|
-fn js_white(c : Int32) -> Bool {
-  @jscase.is_white_space(c)
-}
-
-///|
 /// `Number(s)` of a string, as JavaScript reads one.
 pub fn js_number(s : String) -> Double {
   let t = @jscase.trim(s)
@@ -113,7 +108,6 @@ pub fn js_number(s : String) -> Double {
     Some(Num(d)) => d
     _ => {
       // (past what a double holds: JSON's reading says null)
-      ignore(js_white)
       if sign == "-" {
         @double.neg_infinity
       } else {
