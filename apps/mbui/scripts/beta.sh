@@ -28,9 +28,14 @@
 #   apps/mbui/scripts/beta.sh publish win|linux|linux-arm64
 #                                        what `win` or `linux` made put (scripts/release-put.sh) with the deltas to it
 #                                        from the builds before (scripts/release-deltas.ts, STILLFAIL_DELTAS_SECONDS: 60 s
-#                                        at most, never a reason not to put it), fetched back from where it is served and
-#                                        checked (size, SHA-256), then its feed: https://app.still.fail/
-#                                        releases/latest/win-mbui (linux-mbui) is the newest from then on
+#                                        at most, and no later than 25 s before the job's end, JOB_END, when it is
+#                                        set; none at all when that leaves none: never a reason not to put it),
+#                                        fetched back from where it is served and checked (size, SHA-256), then its
+#                                        feed: https://app.still.fail/releases/latest/win-mbui (linux-mbui) is the
+#                                        newest from then on
+#   apps/mbui/scripts/beta.sh deltas-deadline [NOW]
+#                                        the seconds publish gives the deltas at NOW (epoch seconds; now when none),
+#                                        0 or less: none (scripts/beta-deadline-test.sh)
 # MBUI_FRESH=1 (GitHub's runners, .github/workflows/preview.yml): the checkout built in place (WORK=apps/mbui), what stays
 # between runs the Actions cache's (MBC_STORE, MBC_LTO_CACHE, HBC_CACHE, the core's parts in out/core), the release in
 # MBUI_CACHE ($RUNNER_TEMP's).
@@ -359,8 +364,24 @@ check_put() {
   return 1
 }
 
+# The seconds the deltas may take at NOW ($1, epoch seconds; now when none): STILLFAIL_DELTAS_SECONDS (60), and no
+# more than leaves 25 s of the job (JOB_END, written by its first step) for the put after them (release-put.sh --files
+# ~5 s, check_put, --feeds ~2 s, the job's end: 10-12 s in all). 0 or less: no deltas, the package put without them.
+# (main 44efbac9, preview 43981921907, 2026-11-17: linux x64 began its put with 60 s of the job left, gave them all to
+# its deltas and was cancelled 11 ms after its feed was put; the Windows app's, 24 s left, spent them on its deltas
+# and its signed installer never went out)
+deltas_deadline() {
+  local dl=${STILLFAIL_DELTAS_SECONDS:-60} t=${1:-} room
+  [ -n "$t" ] || t=$(date +%s)
+  if [ -n "${JOB_END:-}" ]; then
+    room=$(( JOB_END - t - 25 ))
+    [ "$room" -ge "$dl" ] || dl=$room
+  fi
+  echo "$dl"
+}
+
 publish() {
-  local part=${1:-} t0=$(now) name n dir
+  local part=${1:-} t0=$(now) name n dir dl
   dir=$RELEASE_DIR/$part
   n=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["versionCode"])' "$dir/$part/mbui/latest.json")
   name=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["file"])' "$dir/$part/mbui/latest.json")
@@ -368,7 +389,12 @@ publish() {
   # (wrangler's, when Cloudflare's API cannot be used: without the token)
   [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || (cd "$REPO/cloud" && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
   rm -rf "$C/put-receipts"
-  node "$REPO/scripts/release-deltas.ts" "$dir" --releases "$ORIGIN/releases" --deadline "${STILLFAIL_DELTAS_SECONDS:-60}" || echo "beta: no deltas" >&2
+  dl=$(deltas_deadline)
+  if [ "$dl" -gt 0 ]; then
+    node "$REPO/scripts/release-deltas.ts" "$dir" --releases "$ORIGIN/releases" --deadline "$dl" || echo "beta: no deltas" >&2
+  else
+    echo "::warning::beta: ${JOB_END:+$(( JOB_END - $(date +%s) )) s of the job left: }no deltas, so that $name goes out" >&2
+  fi
   STILLFAIL_PUT_RECEIPTS="$C/put-receipts" sh "$REPO/scripts/release-put.sh" --files "$dir"
   local tp=$(secs $t0)
   check_put "$name" "$C/last-$part" || { echo "beta: $name did not come back as made: the feed stays as it was" >&2; exit 1; }
@@ -385,5 +411,6 @@ case "${1:-}" in
   linux) linux ;;
   changed) changed "$2" ;;
   publish) publish "$2" ;;
+  deltas-deadline) deltas_deadline "${2:-}" ;;
   *) sed -n '2,20p' "$0"; exit 1 ;;
 esac

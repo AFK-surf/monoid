@@ -406,8 +406,10 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 35 s before the job is: it begins
-      # some 60 s in, and the stop, the key and the save take some 30 s)
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 22 s before the job is: the upload,
+      # the key and both saves after a whole build took 14 s (43981912517), the stop, the key and the save after a cut
+      # 7.5 s (43981921907, cut 35 s before with its link done and only the .ipa's zip left). The .ipa: the app moved
+      # into Payload/ and back, not copied, and zipped fast (-1: upload-artifact zips it again))
       - name: The iOS app for a device, as an .ipa
         id: build
         run: |
@@ -415,10 +417,10 @@ jobs:
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s)-$RANDOM" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 35)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 22)) bash -ec '
             bash apps/mbui/scripts/ios.sh build
-            cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && cp -R MBUI.app Payload/
-            zip -qry stillfail-mbui.ipa Payload && ls -la stillfail-mbui.ipa'
+            cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && mv MBUI.app Payload/
+            zip -1qry stillfail-mbui.ipa Payload && mv Payload/MBUI.app . && rm -rf Payload && ls -la stillfail-mbui.ipa'
       # (for people: no later job downloads it, so a reset of the artifact service fails nothing that passed, main
       # 391fece4's ios, its CreateArtifact timed out five times, 2026-11-11)
       - uses: actions/upload-artifact@v4
@@ -503,6 +505,10 @@ jobs:
           $t = Get-Date
           Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
           "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
+      # (when the job is cut, as the Linux and iOS jobs say it: the installer's put gives its deltas only what leaves it
+      # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on them)
+      - name: The job's end
+        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
       # the natives' keys are git's blobs: the checkout as git has it
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
