@@ -261,36 +261,52 @@ pub fn message_text(m : J?) -> String {
 ///|
 /// The files shared with a message (`{id, name, size, url}`). Ones Slack keeps back or that live elsewhere have no url.
 pub fn message_files(m : J?) -> Array[J] {
-  arr(at(m, "files"))
-  .filter(f => text(at(Some(f), "id")) != "")
-  .map(f => {
-    let ff = Some(f)
-    let held = !["tombstone", "hidden_by_limit", "external"].contains(text(at(ff, "mode")))
-    let url = match text(at(ff, "url_private_download")) {
-      "" => text(at(ff, "url_private"))
-      u => u
+  arr(at(m, "files")).filter(f => text(at(Some(f), "id")) != "").map(file_of)
+}
+
+///|
+/// A file as the station takes it (`{id, name, size, url}`), from an event's or files.info's.
+pub fn file_of(f : J) -> J {
+  let ff = Some(f)
+  let held = !["tombstone", "hidden_by_limit", "external"].contains(text(at(ff, "mode")))
+  let url = match text(at(ff, "url_private_download")) {
+    "" => text(at(ff, "url_private"))
+    u => u
+  }
+  let name = match text(at(ff, "name")) {
+    "" =>
+      match text(at(ff, "title")) {
+        "" => text(at(ff, "id"))
+        t => t
+      }
+    n => n
+  }
+  jo([
+    ("id", js(text(at(ff, "id")))),
+    ("name", js(name)),
+    (
+      "size",
+      match at(ff, "size") {
+        Some(Num(_) as n) => n
+        _ => ji(0)
+      },
+    ),
+    ("url", if held && url != "" { js(url) } else { Null }),
+  ])
+}
+
+///|
+/// Ids of the files of an event that Slack gave only as `{ id, file_access: "check_file_info" }`: their name, size
+/// and url are files.info's to give (Socket Mode's events often carry a file so, files:read or not).
+pub fn files_to_look_up(m : J?) -> Array[String] {
+  let ids : Array[String] = []
+  for f in arr(at(m, "files")) {
+    let id = text(at(Some(f), "id"))
+    if id != "" && text(at(Some(f), "file_access")) == "check_file_info" && !ids.contains(id) {
+      ids.push(id)
     }
-    let name = match text(at(ff, "name")) {
-      "" =>
-        match text(at(ff, "title")) {
-          "" => text(at(ff, "id"))
-          t => t
-        }
-      n => n
-    }
-    jo([
-      ("id", js(text(at(ff, "id")))),
-      ("name", js(name)),
-      (
-        "size",
-        match at(ff, "size") {
-          Some(Num(_) as n) => n
-          _ => ji(0)
-        },
-      ),
-      ("url", if held && url != "" { js(url) } else { Null }),
-    ])
-  })
+  }
+  ids
 }
 
 ///|

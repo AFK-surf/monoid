@@ -250,6 +250,7 @@ fn Harness::pure(self : Harness, name : String, args : Array[J]) -> J raise {
     // surface.ts
     "messageText" => js(message_text(arg(args, 0)))
     "messageFiles" => ja(message_files(arg(args, 0)))
+    "filesToLookUp" => ja(files_to_look_up(arg(args, 0)).map(js))
     "answerFiles" => ja(answer_files(arg(args, 0)))
     "toEvent" => opt_j(to_event(arg(args, 0), sarg(args, 1), sarg(args, 2)))
     "personOf" => person_of(arg(args, 0))
