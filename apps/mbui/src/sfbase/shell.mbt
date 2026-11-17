@@ -27,6 +27,9 @@ pub(all) struct Shell {
   /// already, by whatever key it was opened with), none where it has nowhere (what asked opens it over the whole
   /// window). What open_preview calls, never a page itself
   beside : (String) -> String?
+  /// a file's tab put in the place of another of the page in view's side panel (`beside_for(tab, was)`: a picture's tab
+  /// stepped to the one beside it, viewer_tab.mbt), in front: the tab it put there, none where it has no such panel
+  beside_for : (String, String) -> String?
   /// whether the layout has such a side panel for the page in view now: what offers to open a file there asks
   beside_room : () -> Bool
   /// what back does where the layout has it (the tiers' table), none where back is the
@@ -59,6 +62,7 @@ pub fn bare_shell() -> Shell {
     open_over: stack_open,
     detail: fn(_, _, _) {  },
     beside: fn(_) { None },
+    beside_for: fn(_, _) { None },
     beside_room: fn() { false },
     back: stack_back,
     show: fn() {  },

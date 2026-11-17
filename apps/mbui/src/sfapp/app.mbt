@@ -163,6 +163,12 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
     open_over: fn(p) { open_over_where(src, p) },
     detail: detail_where,
     beside: fn(tab) { beside_where(src, wide, tab) },
+    beside_for: fn(tab, was) {
+      match app.nav.top() {
+        Chat(r) if wide => Some(@sfdesk.view_step(src, r, tab, was))
+        _ => None
+      }
+    },
     beside_room: fn() { wide && app.nav.top() is Chat(_) },
     back: fn() { back_where(src) },
     show: fn() {

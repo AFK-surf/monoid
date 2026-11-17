@@ -58,6 +58,37 @@ pub fn side_change(src : Source, r : ChatRef, action : String, tab : String?) ->
 }
 
 ///|
+/// File tab `tab` put beside chat `r` in the place of tab `was` (a picture's tab stepped to the one beside it: sfbase's
+/// viewer_tab.mbt), in front; a tab of that file open there already (view_beside's same_file), that one brought to the
+/// front, `was` closed; `was` over the whole window, the tab put there. The tab put in front.
+pub fn view_step(src : Source, r : ChatRef, tab : String, was : String) -> String {
+  let now = side_now(src, r)
+  let open = match @sfbase.view_tab_file(tab) {
+    Some(f) =>
+      now.0
+      .iter()
+      .find_first(fn(t) {
+        match @sfbase.view_tab_file(t) {
+          Some(g) => f.same_file(g)
+          None => false
+        }
+      })
+    None => None
+  }
+  let put = open.unwrap_or(tab)
+  let full = @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, was) })
+  side_changing(chat_key(r), now.0, now.1, true)
+  tab_let_go(src, r, was)
+  tab_kept(r, put)
+  let params : Map[String, Json] = { "chat": Json::string(tabs_key(r)), "tab": Json::string(put), "was": Json::string(was) }
+  (src.call)("chat.tabs.replace", Json::object(params), @sfbase.answer_unread)
+  if full {
+    @sfbase.tab_full_open(r, put)
+  }
+  put
+}
+
+///|
 /// What waits for a tab pressed to the front (side_front_pressed): one at a time, given up as another is pressed.
 // kept across runs: put back by chat_page_reset
 let side_front_wait : Ref[@sfbase.PressWait?] = Ref(None)

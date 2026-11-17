@@ -1,5 +1,6 @@
-// A picture's viewer and a visualization over the whole window, on a wide window, each opened its own way in (a picture
-// tapped in its message, a visualization's 全屏 under its page): what is open over the other, and what back closes.
+// A picture and a visualization over the whole window, on a wide window, each opened its own way in (a picture pressed
+// in its message with the command key held, its tab over the whole window; a visualization's 全屏 under its page):
+// what is open over the other, and what back closes.
 
 ///|
 /// A window tall enough for a chat's last messages to show a picture and a visualization's page at once.
@@ -54,9 +55,35 @@ fn back_closes(t : @ui.Tester) -> Unit {
 
 ///|
 /// Whether the visualization is over the whole window: on its own, or as its chat's tab (a wide window's: sfbase's
-/// tab_full.mbt).
+/// tab_full.mbt), not a file's.
 fn viz_over() -> Bool {
-  @sfbase.viz_full.get() is Some(_) || @sfbase.tab_full.get() is Some(_)
+  @sfbase.viz_full.get() is Some(_) ||
+  (match @sfbase.tab_full.get() {
+    Some(f) => @sfbase.view_tab_file(f.tab) is None
+    None => false
+  })
+}
+
+///|
+/// Whether the picture is over the whole window, its tab's (sfbase's tab_full.mbt).
+fn picture_over() -> Bool {
+  match @sfbase.tab_full.get() {
+    Some(f) =>
+      match @sfbase.view_tab_file(f.tab) {
+        Some(v) => v.file.name == viz_chat_picture
+        None => false
+      }
+    None => false
+  }
+}
+
+///|
+/// A press with the command key held at (`x`, `y`), the moves it sets off done: what it opens over the whole window.
+fn press_over_all(t : @ui.Tester, x : Double, y : Double) -> Unit {
+  t.hold_mods(@ui.mod_cmd)
+  t.tap(x, y)
+  t.hold_mods(0)
+  t.run_for(@ui.move_most_ms)
 }
 
 ///|
@@ -66,9 +93,9 @@ fn page_now() -> (Page, Int) {
 }
 
 ///|
-test "a wide window, a picture and a visualization's 全屏 both on the screen, each opening its own with nothing over it; a picture opened over all of it, the 全屏 under it opening nothing (the press the viewer's, as its contract says), back closing the picture, the page under it as it was" {
+test "a wide window, a picture and a visualization's 全屏 both on the screen, each opening its own with nothing over it; a picture opened over all of it, the 全屏 under it opening nothing, back closing the picture, the page under it as it was" {
   let (t, picture, full) = viz_chat()
-  let ((px, py), (fx, fy)) = both_seen(picture, full)
+  let ((_, _), (fx, fy)) = both_seen(picture, full)
   let page = page_now()
   // (nothing over them: each opens its own)
   t.tap(fx, fy)
@@ -77,49 +104,39 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen, 
   assert_true(viz_over(), msg="the 全屏 there opens the visualization")
   back_closes(t)
   assert_true(!viz_over(), msg="closed again")
-  t.tap(px, py)
-  t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get().map(fn(v) { v.in_tree }).unwrap_or(false), msg="the picture there opens the tree's viewer")
-  // (back, nothing pressed between: the picture closed, the page as it was)
+  let ((px, py), _) = both_seen(seen_now(t).0, seen_now(t).1)
+  press_over_all(t, px, py)
+  assert_true(picture_over(), msg="the picture there opens over the whole window")
+  // (back, nothing pressed between: the picture back beside the chat, the page as it was)
   back_closes(t)
-  assert_true(viewer.get() is None && pv_leaving.get() is None, msg="back: the picture closed")
+  assert_true(!picture_over(), msg="back: the picture no longer over the whole window")
   assert_true(page_now() == page, msg="back: the page as it was")
-  // (opened again, the 全屏 where it was pressed under it)
-  t.tap(px, py)
-  t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get() is Some(_), msg="opened again")
+  // (opened again, the 全屏 where it is pressed under it)
+  let ((px, py), (fx, fy)) = both_seen(seen_now(t).0, seen_now(t).1)
+  press_over_all(t, px, py)
+  assert_true(picture_over(), msg="opened again")
   t.tap(fx, fy)
   t.frame()
   t.frame()
-  assert_true(!viz_over(), msg="under the viewer: no visualization opened")
-  let open = viewer.get().map(fn(v) { !v.closing }).unwrap_or(false)
-  println("viewer over the 全屏: the press there left the viewer \{if open { "open" } else { "closing" }}")
-  if open {
-    // (the viewer's to keep: back closes it, the page as it was)
-    back_closes(t)
-    assert_true(viewer.get() is None && pv_leaving.get() is None, msg="back: the picture closed")
-  } else {
-    // (a click round the picture closes it, as the viewer's contract says: closed, nothing through it)
-    t.run_for(@ui.move_most_ms)
-    t.run_for(@sfpages.reveal_ms)
-    assert_true(viewer.get() is None && pv_leaving.get() is None, msg="the click closed the picture")
-  }
-  assert_true(!viz_over(), msg="nothing else opened")
+  assert_true(!viz_over(), msg="under the picture: no visualization opened")
+  assert_true(picture_over(), msg="the picture still over the whole window")
+  back_closes(t)
+  assert_true(!picture_over() && !viz_over(), msg="back: the picture back beside the chat, nothing else opened")
   assert_true(page_now() == page, msg="the page as it was")
 }
 
 ///|
 test "a wide window, a picture and a visualization's 全屏 both on the screen; the visualization over the whole window, the picture under it opening nothing, back closing the visualization, the page under it as it was" {
   let (t, picture, full) = viz_chat()
-  let ((px, py), (fx, fy)) = both_seen(picture, full)
+  let ((px, py), _) = both_seen(picture, full)
   let page = page_now()
   // (nothing over it: the picture opens)
-  t.tap(px, py)
-  t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get() is Some(_), msg="the picture there opens the viewer")
+  press_over_all(t, px, py)
+  assert_true(picture_over(), msg="the picture there opens over the whole window")
   back_closes(t)
-  assert_true(viewer.get() is None && pv_leaving.get() is None, msg="closed again")
+  assert_true(!picture_over(), msg="closed again")
   // (the visualization, back with nothing pressed between: closed, the page as it was)
+  let (_, (fx, fy)) = both_seen(seen_now(t).0, seen_now(t).1)
   t.tap(fx, fy)
   t.frame()
   t.frame()
@@ -130,20 +147,16 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen; 
   // (its tab beside the chat now, on a wide window: both where they are drawn now)
   let (picture, full) = seen_now(t)
   let ((px, py), (fx, fy)) = both_seen(picture, full)
-  // (opened again, the picture where it was pressed under it)
+  // (opened again, the picture where it is pressed under it)
   t.tap(fx, fy)
   t.frame()
   t.frame()
   assert_true(viz_over(), msg="opened again")
-  t.tap(px, py)
-  t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get() is None, msg="under the visualization: no picture opened")
-  let open = viz_over()
-  println("the visualization over the picture: the press there left it \{if open { "open" } else { "closed" }}")
-  if open {
-    back_closes(t)
-    assert_true(!viz_over(), msg="back: the visualization closed")
-  }
-  assert_true(viewer.get() is None, msg="nothing else opened")
+  press_over_all(t, px, py)
+  assert_true(!picture_over(), msg="under the visualization: no picture opened")
+  assert_true(viz_over(), msg="the visualization still over the whole window")
+  back_closes(t)
+  assert_true(!viz_over(), msg="back: the visualization closed")
+  assert_true(!picture_over() && viewer.get() is None, msg="nothing else opened")
   assert_true(page_now() == page, msg="the page as it was")
 }

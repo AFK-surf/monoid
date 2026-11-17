@@ -17,7 +17,7 @@
 
 ## Unified beside-chat tabs
 
-- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): a chat side-panel tab by default on wide screens, fullscreen over the window on Cmd+click or 全屏, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio stay in the whole-window viewer until tabs support flight, marking, and stepping.
+- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): a chat side-panel tab by default on wide screens, fullscreen over the window on Cmd+click or 全屏, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio open as beside-chat tabs too: a picture tab supports in-place marking (`apps/mbui/src/sfbase/viewer_tab.mbt`) and stepping via `chat.tabs.replace`, leaving the whole-window viewer for 小屏 and draft files.
 
 ## Topic subscriptions, unread calls, and feature registry
 

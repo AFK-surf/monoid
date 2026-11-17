@@ -561,7 +561,7 @@ export class ViewCalls {
         try: () => {
           const kept = get(get(inner.data.get({ topic: "prefs" }), "chatTabs"), c.chat);
           const [chat, session] = this.#chatOf(c.chat);
-          const next = chatTabs.changed(kept, arr(get(chat, "agents")), get(chat, "noChat") === true, session, { action: c.action, tab: c.tab, auto: c.auto });
+          const next = chatTabs.changed(kept, arr(get(chat, "agents")), get(chat, "noChat") === true, session, { action: c.action, tab: c.tab, auto: c.auto, ...(c.was !== undefined ? { was: c.was } : {}) });
           if (next !== null) prefs.set(inner.data, { chatTabs: { [c.chat]: next } }, false, inner.host.nowMs());
           return null;
         },

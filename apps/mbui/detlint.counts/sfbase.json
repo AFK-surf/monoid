@@ -24,7 +24,7 @@
     },
     "ui-current": {
       "src/sfbase/fresh.mbt": 1,
-      "src/sfbase/viewer_tree.mbt": 16
+      "src/sfbase/viewer_tree.mbt": 14
     },
     "build-motion": {
       "src/sfbase/chat_list.mbt": 4,
@@ -44,7 +44,7 @@
       "src/sfbase/pages.mbt": 1,
       "src/sfbase/screen_links_node.mbt": 2,
       "src/sfbase/viewer.mbt": 2,
-      "src/sfbase/viewer_tree.mbt": 6,
+      "src/sfbase/viewer_tree.mbt": 5,
       "src/sfbase/workspace_switch.mbt": 2
     },
     "page-headless": {

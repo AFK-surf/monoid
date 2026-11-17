@@ -60,6 +60,8 @@ fn fake_core(
         "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.pasted" | "paste.info" => (base.call)(name, params, done)
         // the chat's draft, as the core keeps it (the composer's: sfpages, its fixture compose_fixture.mbt)
         _ if name.has_prefix("composer.") => (base.call)(name, params, done)
+        // the chat's side panel's tabs, as the core keeps them (what a file opened beside it puts there)
+        _ if name.has_prefix("chat.tabs.") => (base.call)(name, params, done)
         _ => ()
       }
     },

@@ -1,14 +1,15 @@
 // A viewer closed sets out no way once it has landed: its layer (viewer_tree's `viewer_node`) and a thumbnail's flight
 // slot are let go with nothing left to show of them, so they go at once (the coordinator of the migration, 2026-11-13:
 // a way is set out only for a cause; these set out one at +300 ms or so, as the leaving viewer was let go, with no
-// frame of it to see). A picture and a film, in a phone's window by touch and a wide one by the mouse, at four rates.
+// frame of it to see). A picture and a film, in a phone's window by touch and a desktop's 小屏 wide by the mouse (on
+// 中屏 and 大屏 they open in a tab beside the chat), at four rates.
 
 ///|
 test "a viewer closed sets out no way after it lands, and the thumbnail it landed on opens it again" {
   for film in [false, true] {
     for wide in [false, true] {
       for period in [1000.0 / 7.0, 1000.0 / 24.0, 1000.0 / 60.0, 1000.0 / 120.0] {
-        let (w, p) = if wide { (1280.0, 0) } else { (390.0, 2) }
+        let (w, p) = if wide { (560.0, 0) } else { (390.0, 2) }
         let (t, x, y) = if film {
           film_in_chat(platform=p, w~)
         } else {

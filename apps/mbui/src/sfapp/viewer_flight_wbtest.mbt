@@ -136,6 +136,7 @@ test "a chat's picture whose own has not come, opened and read whole in the view
     let t = @ui.Tester::new(
       fn(c) { view(c, src) },
       tree=app_tree(src),
+      // (a desktop's 大屏: it opens beside the chat, read whole by its tab's viewer; a phone's over the whole window)
       w=if platform == 0 { 1280.0 } else { 390.0 },
       h=6000.0,
       platform~,
@@ -148,6 +149,11 @@ test "a chat's picture whose own has not come, opened and read whole in the view
     t.click(Button, label=@sf.t("web-main.file.view", args=[("name", name)]))
     t.run_for(@ui.move_most_ms)
     assert_true(whole() > 0, msg="\{platform}: the viewer shows \{name} whole")
+    if platform == 0 {
+      // (its tab beside the chat, the chat in view: its message shows it whole as well as the tab)
+      assert_true(whole() > 1, msg="\{platform}: \{name} shown in its message beside its tab: \{Repr(t.drawlist_images())}")
+      continue
+    }
     t.back()
     t.run_for(@ui.move_most_ms + @sf.dur_ms)
     // back in the chat: its message shows it, its own still not here

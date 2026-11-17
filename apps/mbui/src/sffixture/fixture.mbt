@@ -180,8 +180,8 @@ pub fn fixture_with_tabs(f : Fixture, params : Map[String, Json], value : Json?)
 }
 
 ///|
-/// `chat.tabs.open / close / front / clear` (`chat`: its key, `tab`, `auto`): what is kept for the chat changed as the
-/// core changes it (nothing, where it says nothing changes).
+/// `chat.tabs.open / close / front / clear / replace` (`chat`: its key, `tab`, `auto`; `was`, the tab replaced): what
+/// is kept for the chat changed as the core changes it (nothing, where it says nothing changes).
 pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Json, Json] {
   let key = text(Some(params), "chat")
   let chat = match key.find(":") {
@@ -239,11 +239,17 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
     f.changed()
     return Ok(Json::null())
   }
-  let change : Json = {
+  let change : Map[String, Json] = {
     "action": Json::string(act),
     "tab": if tab_str != "" { Json::string(tab_str) } else { Json::null() },
     "auto": Json::boolean(!(field(Some(params), "auto") is Some(False))),
   }
+  // (a tab put in another's place: the one it replaces)
+  match field(Some(params), "was") {
+    Some(String(w)) => change["was"] = Json::string(w)
+    _ => ()
+  }
+  let change = Json::object(change)
   match fixture_kept("chat.tabs", fixture_tabs_ask(f, key, chat, Some(change)), None) {
     Some(Ok((r, _))) => {
       match (field(Some(r), "next"), field(Some(r), "tabs")) {
@@ -2605,7 +2611,7 @@ pub fn fixture(mode : String) -> Source {
           done(Ok(Json::object({})))
         }
         "screen.settings" | "screen.setSetting" => done(Ok({ "appearance": "light", "textSize": "large" }))
-        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" =>
+        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" | "chat.tabs.replace" =>
           done(fixture_tabs_call(f, name, params))
         "decision.show" => done(Ok(Json::null()))
         "keys.set" => {

@@ -233,3 +233,42 @@ fn tool_shapes(name : String) -> Array[@ui.Shape] {
     None => []
   }
 }
+///|
+/// 复制 as a tool of a bar in `parent` (a file tab's tools' row, the whole window's viewer's bar): `copy` done at its
+/// press, true where it copied, a check said in its place copied_ms after the press, its end its own, another press
+/// another end (let go with the node). The node.
+#callsite(autofill(loc))
+pub fn copy_tool_node(
+  parent : @view.View,
+  ink : () -> ViewerInk,
+  corner : @view.Live[Double],
+  copy : () -> Bool,
+  tip? : TipLayer,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let copied : @signals.Signal[Bool] = @signals.signal(false)
+  let copied_end : Ref[() -> Unit] = Ref(fn() {  })
+  let n = tool_node(
+    parent,
+    fn() {
+      if copied.get() {
+        { icon: "check", label: t("common.copied"), on: false, disabled: false }
+      } else {
+        { icon: "copy", label: t("common.copy"), on: false, disabled: false }
+      }
+    },
+    ink,
+    corner,
+    fn() {
+      if copy() {
+        (copied_end.val)()
+        copied.set(true)
+        copied_end.val = parent.at_moment(parent.cause_at() + copied_ms, fn() { copied.set(false) })
+      }
+    },
+    tip?,
+    loc~,
+  )
+  n.owns(fn() { (copied_end.val)() }) |> ignore
+  n
+}

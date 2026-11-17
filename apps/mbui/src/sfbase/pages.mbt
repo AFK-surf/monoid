@@ -279,7 +279,7 @@ pub fn column_set_off_each(n : @view.View, f : () -> Unit) -> Unit {
 ///|
 /// How many times a chat's column has set off on the page's way to another width (column_sets_off): what is bound to the
 /// column's place on that way only once it has set off follows it (chat_jump_node's stands).
-// kept across runs: a count what follows it reads as it changes, never its value
+// put back by reset: what is first drawn reads whether any column has set off yet (chat_body_node's clip)
 let columns_set_off_said : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
@@ -1641,6 +1641,8 @@ pub fn reset() -> Unit {
   // (no page on its way: a frame with no wide page in it says none, the last run's left as it was)
   page_way_said("", 0.0, ends=0.0)
   columns_laid.clear()
+  // (no column set off yet: a run's first page is cut at rest as the app's first is, the last run's way forgotten)
+  columns_set_off_said.set(0)
   // where it has been (app_history.mbt)
   history_reset()
   last_reset()

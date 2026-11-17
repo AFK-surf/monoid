@@ -4497,8 +4497,9 @@ fn film_words_in(t : @ui.Tester, s : String, box : (Double, Double, Double, Doub
 
 ///|
 test "a film flying into the viewer from a quote's video carries its length in a quote's corner, as its card draws it; one in a draft carries none" {
-  // (an agent's recording quoted and sent: its quote's video in the new message, its length where its card has it)
-  let (t, _) = film_page("chat-download", "timeout 20000\nuntil 0:13\nwait 600\nrightclick 0:13\nwait 400\ntap 引用\nwait 900\ntap icon:arrow-up\nwait 1500\nexit\n", w=1280.0, h=800.0, platform=0)
+  // (an agent's recording quoted and sent: its quote's video in the new message, its length where its card has it;
+  // 小屏-wide mouse window since 中屏 and 大屏 open films in a side tab: view_beside_wbtest.mbt)
+  let (t, _) = film_page("chat-download", "timeout 20000\nuntil 0:13\nwait 600\nrightclick 0:13\nwait 400\ntap 引用\nwait 900\ntap icon:arrow-up\nwait 1500\nexit\n", w=560.0, h=800.0, platform=0)
   let lengths = t.words().filter(fn(w) { w.0 == "0:13" })
   lengths.sort_by(fn(a, b) { b.2.compare(a.2) })
   guard lengths.get(0) is Some((_, lx, ly, _, _, _)) else { fail("no quote's video") }

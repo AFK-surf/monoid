@@ -810,7 +810,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
                 v.down_ly < ry + rh => {
                 v.caught = true
                 @ui.haptic(LongPress)
-                v.picture_menu_at(@ui.current(), v.down_x, v.down_y, b)
+                v.picture_menu_at(v.down_x, v.down_y, b)
               }
               _ => ()
             }
@@ -982,7 +982,7 @@ fn Viewer::menu_on(self : Viewer, m : @view.Menu) -> Unit {
   }
   match (self.zoom.rect_at(m.at), self.bytes.get()) {
     (Some((rx, ry, rw, rh)), Some(b)) if m.x >= rx && m.x < rx + rw && m.y >= ry && m.y < ry + rh =>
-      self.picture_menu_at(@ui.current(), m.wx, m.wy, b)
+      self.picture_menu_at(m.wx, m.wy, b)
     _ => ()
   }
 }
@@ -1567,9 +1567,6 @@ fn image_tools(
 ) -> Unit {
   let whole = fn() { vw.bytes.get() is Some(_) }
   let dl = fn() { vw.download(src) }
-  // (copied: a check from the press, its end its own, another press another end)
-  let copied : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-  let copied_end : Ref[() -> Unit] = Ref(fn() {  })
   // 预览 / 源码: a table's, a page's, an mbui widget's once read (Markdown read in the reader, its own bar): the library's
   // segmented choice, its nodes (@sf.seg_node), what it chooses told (Viewer::set_source)
   row.show(fn() { whole() && vf_has_source(vw) }, fn(r) {
@@ -1606,15 +1603,8 @@ fn image_tools(
   // 复制: the whole picture on the clipboard, a check a moment after; one too big to show
   // too, once read
   row.show(fn() { whole() && vw.shown_kind() == Some(KImage) }, fn(r) {
-    let t = @sf.tool_node(
+    @sf.copy_tool_node(
       r,
-      fn() {
-        if copied.get() {
-          { icon: "check", label: @sf.t("common.copied"), on: false, disabled: false }
-        } else {
-          { icon: "copy", label: @sf.t("common.copy"), on: false, disabled: false }
-        }
-      },
       ink,
       corner,
       fn() {
@@ -1622,17 +1612,14 @@ fn image_tools(
           Some(b) => {
             @ui.current().copy_image(b)
             vw.copied += 1
-            (copied_end.val)()
-            copied.set(true)
-            copied_end.val = r.at_moment(r.cause_at() + @sf.copied_ms, fn() { copied.set(false) })
+            true
           }
-          None => ()
+          None => false
         }
       },
       tip=tips,
     )
-    ignore(t)
-    r.owns(fn() { (copied_end.val)() }) |> ignore
+    |> ignore
   })
   // 移到侧边: where the shell has a side panel for the page under it, a file that opens there (beside_offered): the
   // whole window closed for its tab

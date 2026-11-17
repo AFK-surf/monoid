@@ -4,7 +4,7 @@
 // nowhere, and the viewer has no way to the chat's other pictures nor says which of them it is), and goes back to the
 // row it was pressed in as it closes; pressed before the core has it, it is asked by that name as the core takes it
 // over (the row keeping the key it was sent as: chat_body_rows' `sent_as`, given the viewer by sfbase's rows_sent_as).
-// On 小屏 and 大屏.
+// On 小屏 over the whole window, and on 大屏 in its tab beside the chat.
 
 ///|
 /// The core's outbox row `out-1` taking over words "." sent from here quoting picture `file` (named `name`), once
@@ -76,10 +76,24 @@ fn cnsq_check(w : Double, platform : Int, early : Bool) -> Unit raise {
     msg="\{w}, taken over \{if early { "as it shows" } else { "before" }}: the viewer asked the core by \{Repr(asked)}, not by its row's name there",
   )
   t.run_for(@ui.move_most_ms)
-  t.back()
+  // (a phone's over the whole window, back closing it; a desktop's 大屏 a tab beside the chat, closed by its ×)
+  if w == 390.0 {
+    t.back()
+  } else {
+    t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", name)]))
+  }
   t.run_for(@ui.move_most_ms * 2.0)
   let back = t.locate("img:" + name)
-  assert_true(back.length() == 1 && back[0] == pictures[0], msg="\{w}: closed, not back in its row: \{Repr(back)}")
+  // (beside its tab its row laid out at the narrower width and back again, to a tenth of a point where it was; over the
+  // whole window, flown back to its very place)
+  let near = fn(a : (Double, Double), b : (Double, Double)) {
+    if w == 390.0 {
+      a == b
+    } else {
+      (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5
+    }
+  }
+  assert_true(back.length() == 1 && near(back[0], pictures[0]), msg="\{w}: closed, not back in its row: \{Repr(back)} (was \{Repr(pictures[0])})")
 }
 
 ///|

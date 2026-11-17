@@ -1086,8 +1086,8 @@ pub fn preview_rest() -> Double {
 ///|
 /// Opens `a` of the chat on `station` (kept by the session `key`); `steps`: what an image steps through; `named`: a
 /// file a message names by its path (`a.path`), not one sent with it. Where the shell has a side panel for the page in
-/// view (Shell's `beside`), a tab there (beside_first: what opens there by default; a film or a song played there at
-/// once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏 pressed; by default as the
+/// view (Shell's `beside`), a tab there by default, whatever it is (a picture stepping through its chat's there, marked
+/// there; a film or a song played there at once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏 pressed; by default as the
 /// command key is held: full_held); `beside`: asked beside the page and no more (a menu's 在侧边打开, the preview's
 /// 移到侧边), or, false, over everything in the viewer of its own. Anything not put in a tab opens over everything in that
 /// viewer, what the tabs beside the page play paused; `start`: where a film or a song starts there (ms), else where it
@@ -1109,15 +1109,18 @@ pub fn open_preview(
     (None, Some(_)) => false
     (None, None) => full_held()
   }
-  let beside = match beside {
-    Some(asked) => asked
-    None => full || beside_first(a)
-  }
+  let beside = beside.unwrap_or(true)
   if beside && opens_beside(a.path, a.name) {
     let tab = view_tab_key(station, key, a, drive, named)
     tab_facts_said(tab, a)
+    // (what it steps through as it was opened, its picture's size as its message says it, which of its message's it
+    // is, for its tab's viewer as it is made: laid out at its size from its first frame, decoded once at it)
+    let said = tab_steps_said(tab, steps, a.width, a.height, None, at)
     if beside_open(tab, 0.0, full~) {
       return
+    }
+    if said {
+      tab_moved_dropped(tab)
     }
   }
   close_now()
@@ -1569,6 +1572,10 @@ pub fn leaving_done() -> Unit {
 pub fn Viewer::let_go(self : Viewer) -> Unit {
   // read in a desktop's reader (@sf.reader): what it read let go with it
   @sf.reader_let_go(self.read_key())
+  // (a tab's that marked: marking left with it)
+  if marks_tab.val is Some(v) && physical_equal(v, self) {
+    marks_leave()
+  }
   match self.media {
     Some(m) => {
       m.close()
@@ -2536,8 +2543,15 @@ pub fn Viewer::finish_marks(self : Viewer, to_draft : Bool) -> Unit {
 
 
 ///|
-/// A marked image drawn by the host, come: kept, or into the chat's draft (the viewer closes back to it).
+/// A marked image drawn by the host, come: kept, or into the chat's draft (the whole window's viewer closes back to it).
 pub fn Viewer::marks_frame(self : Viewer, c : @ui.Ctx) -> Unit {
+  self.marks_came(fn(name, mime, png) { keep_bytes(c, name, mime, png) }, fn() { self.shut(c) })
+}
+
+///|
+/// A marked image drawn by the host, come (Viewer::marks_frame's, at a cause: a tab's as the host says it is drawn):
+/// kept by `keep`, or into the chat's draft, `shut` then where this viewer is not a tab's.
+pub fn Viewer::marks_came(self : Viewer, keep : (String, String, Bytes) -> Unit, shut : () -> Unit) -> Unit {
   match marking.job {
     Some(j) =>
       match j.made() {
@@ -2552,11 +2566,14 @@ pub fn Viewer::marks_frame(self : Viewer, c : @ui.Ctx) -> Unit {
             let key = self.draft_key()
             draft_give(key, Marked(marking.job_name, png, quotes, "image"))
             marks_leave()
-            // (closed back to the chat, where the picture and its quotes show in the composer: nothing said of it)
-            self.shut(c)
+            // (closed back to the chat, where the picture and its quotes show in the composer: nothing said of it; a
+            // tab's stays beside it, marking left)
+            if !self.beside {
+              shut()
+            }
           } else {
             // (the host's picture of the marks, said once)
-            keep_bytes(c, marking.job_name, "image/png", png)
+            keep(marking.job_name, "image/png", png)
           }
           marks_changed()
         }
@@ -2877,13 +2894,15 @@ pub fn Viewer::flight_from(self : Viewer, c : @ui.Ctx) -> Thumb? {
 
 ///|
 /// The picture's own menu at (`x`, `y`), its whole `b` here.
-fn Viewer::picture_menu_at(self : Viewer, c : @ui.Ctx, x : Double, y : Double, b : Bytes) -> Unit {
+/// (a handler's: what it does is asked of the host as its item is chosen)
+fn Viewer::picture_menu_at(self : Viewer, x : Double, y : Double, b : Bytes) -> Unit {
   let (label, glyph) = @sf.picture_out_way()
   let out = fn() {
     if @sf.picture_to_album() {
-      keep_bytes(c, self.name, self.mime, b, way=Photos)
+      keep_bytes_now(self.name, self.mime, b, way=Photos)
     } else {
-      c.copy_image(b)
+      @hostapi.clipboard_set_image(b)
+      @ui.haptic(KeyboardTap)
       self.copied += 1
     }
   }
@@ -2897,13 +2916,14 @@ fn Viewer::picture_menu_at(self : Viewer, c : @ui.Ctx, x : Double, y : Double, b
 ///|
 /// The images beside this one (after): a chat's as the core tells them (`imageNear`, each with
 /// the session that keeps it), a folder's by its order; their viewers kept (and read ahead) while they are beside it.
-pub fn Viewer::near(self : Viewer, src : Source) -> (Viewer?, Viewer?) {
+/// `kept`: where they are kept (the whole window's strip's; a tab's own: viewer_tab.mbt).
+pub fn Viewer::near(self : Viewer, src : Source, kept? : Map[String, Viewer] = pv_strip.near) -> (Viewer?, Viewer?) {
   self.near_by(src, fn(id, f) {
-    match pv_strip.near.get(id) {
+    match kept.get(id) {
       Some(n) => n
       None => {
         let n = f()
-        pv_strip.near[id] = n
+        kept[id] = n
         n
       }
     }
@@ -3065,8 +3085,15 @@ pub fn Viewer::stand_in(self : Viewer, src : Source) -> String {
 
 ///|
 /// The images beside the one shown read ahead after its bytes came or failed, so they do not compete with it on a slow
-/// link. A step can still open either at once; those no longer beside it are let go.
-pub fn Viewer::read_near(self : Viewer, src : Source, before : Viewer?, after : Viewer?) -> Unit {
+/// link. A step can still open either at once; those no longer beside it are let go (of `kept`, where they are kept:
+/// Viewer::near's).
+pub fn Viewer::read_near(
+  self : Viewer,
+  src : Source,
+  before : Viewer?,
+  after : Viewer?,
+  kept? : Map[String, Viewer] = pv_strip.near,
+) -> Unit {
   let ids = []
   let ready = self.bytes.get() is Some(_) || self.error.get() is Some(_)
   for n in [before, after] {
@@ -3094,9 +3121,9 @@ pub fn Viewer::read_near(self : Viewer, src : Source, before : Viewer?, after : 
     }
   }
   let gone = []
-  pv_strip.near.each(fn(id, _) { if !ids.contains(id) && id != self.thumb_id() { gone.push(id) } })
+  kept.each(fn(id, _) { if !ids.contains(id) && id != self.thumb_id() { gone.push(id) } })
   for id in gone {
-    pv_strip.near.remove(id)
+    kept.remove(id)
   }
 }
 

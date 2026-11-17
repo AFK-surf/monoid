@@ -22,9 +22,11 @@ let answers_still_known : Array[(String, String, Int)] = []
 let answers_ms : Array[Double] = [0.0, 16.0, 120.0, 250.0, 400.0, 700.0]
 
 ///|
-/// A step: its name, and what it does (a person's act: true where it could be done on this screen).
+/// A step: its name, optional setup run before the step's moment is timed, and what it does (a person's act: true where
+/// it could be done on this screen).
 priv struct AnswerStep {
   name : String
+  prepare : ((@ui.Tester) -> Unit)?
   act : (@ui.Tester) -> Bool
 }
 
@@ -35,6 +37,7 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
   if mode.has_prefix("chat") {
     steps.push({
       name: "another chat",
+      prepare: None,
       act: fn(_) {
         open_chat({ station: "ws1/st1", session: "s-c2", title: "首页的列表改成按天分组", station_name: "Willow" })
         true
@@ -42,6 +45,7 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
     })
     steps.push({
       name: "back to its chat",
+      prepare: None,
       act: fn(_) {
         open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
         true
@@ -49,11 +53,13 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
     })
     steps.push({
       name: "a picture opened",
-      act: fn(t) {
+      prepare: Some(fn(t) {
         // (the chat walked up a row at a time till its picture shows, a step of its own before the press)
         walk_to_image(t, "compare.png")
         t.run_for(@ui.move_most_ms)
         t.ways_set_out() |> ignore
+      }),
+      act: fn(t) {
         match t.locate("img:compare.png") {
           [(x, y), ..] => {
             t.tap(x, y)
@@ -65,6 +71,7 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
     })
     steps.push({
       name: "the picture stepped",
+      prepare: None,
       act: fn(t) {
         if viewer.get() is None {
           return false
@@ -75,6 +82,7 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
     })
     steps.push({
       name: "the picture closed",
+      prepare: None,
       act: fn(t) {
         if viewer.get() is None {
           return false
@@ -85,7 +93,7 @@ fn answer_steps(mode : String) -> Array[AnswerStep] {
     })
   }
   for place in ["files", "profiles", "archive", "usage", "chats"] {
-    steps.push({ name: "to " + place, act: fn(_) { @sfbase.go_place(place) } })
+    steps.push({ name: "to " + place, prepare: None, act: fn(_) { @sfbase.go_place(place) } })
   }
   steps
 }
@@ -116,6 +124,10 @@ fn answers_walk(s : Screen, mode : String, ms : Double) -> Array[LateWays] {
   t.ways_set_out() |> ignore
   let out = []
   for step in answer_steps(mode) {
+    match step.prepare {
+      Some(p) => p(t)
+      None => ()
+    }
     let from = t.time()
     if !(step.act)(t) {
       continue

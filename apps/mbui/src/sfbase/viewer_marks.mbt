@@ -298,10 +298,37 @@ pub let marking : Marking = {
 }
 
 ///|
+/// Marking begun in the whole window's viewer.
 pub fn marks_start() -> Unit {
   marks_leave()
   marking.on = true
   marks_changed()
+}
+
+///|
+/// The viewer of a tab beside a chat that marks (viewer_tab.mbt: its picture, its tools' row, the foot under it),
+/// none where the whole window's does or none marks. One marks at a time: the whole window's viewer opened leaves it
+/// (close_now), as its tab closing, stepping or no longer shown does.
+// kept across runs: put back by marks_leave
+pub let marks_tab : Ref[Viewer?] = Ref(None)
+
+///|
+/// Marking begun in viewer `vw`'s tab.
+pub fn Viewer::marks_start_here(self : Viewer) -> Unit {
+  marks_leave()
+  marking.on = true
+  marks_tab.val = Some(self)
+  marks_changed()
+}
+
+///|
+/// Whether viewer `vw`'s tab marks now. As marking is told.
+pub fn Viewer::marks_here(self : Viewer) -> Bool {
+  marks_said()
+  match marks_tab.val {
+    Some(v) => marking.on && physical_equal(v, self)
+    None => false
+  }
 }
 
 ///|
@@ -326,6 +353,7 @@ pub fn marks_said() -> Unit {
 ///|
 pub fn marks_leave() -> Unit {
   marking.on = false
+  marks_tab.val = None
   marking.tool = Rect
   marking.palette = false
   marking.shapes = []

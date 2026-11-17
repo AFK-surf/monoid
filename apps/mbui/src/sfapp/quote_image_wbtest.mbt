@@ -253,7 +253,8 @@ test "a quoted picture and the original open and close at the pressed picture wi
 
 ///|
 test "a quoted picture and the original open and close at the clicked picture with a mouse" {
-  quoted_preview_places(0, 1280.0, 1)
+  // (a window 小屏 wide: on 中屏 and 大屏 a picture opens in a tab beside the chat)
+  quoted_preview_places(0, 560.0, 1)
 }
 
 ///|
@@ -737,12 +738,14 @@ test "an image right clicked: its one menu, again on that menu still the one; in
   assert_eq(@sf.last_presented(), menu)
   assert_true(@sf.presented_open_of(menu))
   assert_eq(quotes(), before + 1)
-  // closed, and the image opened over the whole window
+  // closed, and the image opened over the whole window (its tab, the command key held: on 大屏 a press opens it beside)
   t.key(@ui.key_escape)
   t.draw()
+  t.hold_mods(@ui.mod_cmd)
   t.tap(x, y)
+  t.hold_mods(0)
   t.run_for(@ui.move_most_ms)
-  assert_true(viewer.get() is Some(_))
+  assert_true(@sfbase.tab_full.get() is Some(_))
   // where the chat's image is under it: never that image's menu (its 引用 into the draft the preview covers)
   t.right_click(x, y)
   assert_eq(quotes(), 0)
@@ -751,7 +754,7 @@ test "an image right clicked: its one menu, again on that menu still the one; in
     t.key(@ui.key_escape)
     t.draw()
   }
-  assert_true(viewer.get() is Some(_))
+  assert_true(@sfbase.tab_full.get() is Some(_))
   // on its picture, in the middle: its own menu, 复制图片 (as its bar's 复制)
   t.right_click(640.0, 422.0)
   assert_true(t.reachable("复制图片").length() > 0)
