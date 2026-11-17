@@ -957,6 +957,8 @@ fn main {
         _ => Some(@activity.activity_step(db))
       })
       })
+    (Some("harness-terminals-logins"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @terminals_logins.harness(host))
     (Some("post-blocks"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "post block", (db, ask) => match ask {
         { "thread": Number(thread, ..), "after": Number(after, ..), .. } =>
