@@ -130,7 +130,7 @@ pub(all) struct TerminalDeps {
   home : String
   /// A chat's folder, if it is one of this station's.
   chat_dir : (String) -> String?
-  changed : () -> Unit
+  changed : (String) -> Unit
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone : (String) -> Unit
   new_id : () -> String
@@ -291,10 +291,10 @@ fn Terminals::add(self : Terminals, t : Terminal) -> Unit {
     if t.views.length() == 0 {
       self.drop(t)
     }
-    (self.deps.changed)()
+    (self.deps.changed)(t.workspace)
   })
   |> ignore
-  (self.deps.changed)()
+  (self.deps.changed)(t.workspace)
 }
 
 ///|
@@ -356,7 +356,7 @@ pub fn Terminals::end(self : Terminals, id : String, by : String, workspace : St
   (self.deps.log)("ended by a member", jo([("id", js(id)), ("by", js(by))]))
   if t.link.over() {
     self.drop(t)
-    (self.deps.changed)()
+    (self.deps.changed)(t.workspace)
   } else {
     t.link.kill()
   }
@@ -407,7 +407,7 @@ fn Terminals::tell_all(self : Terminals, t : Terminal) -> Unit {
   for _, v in t.views {
     (v.tell)(self.state(t, v))
   }
-  (self.deps.changed)()
+  (self.deps.changed)(t.workspace)
 }
 
 ///|
