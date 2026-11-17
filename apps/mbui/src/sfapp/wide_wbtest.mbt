@@ -2470,7 +2470,7 @@ test "wide: a file an agent names by its path opens itself in the preview as its
 }
 
 ///|
-test "wide: a reference to a chat in a message has the chat's card while the pointer rests on it, as the list has it (RefPreview)" {
+test "wide: a reference to a chat in a message has the chat's card while the pointer rests on it, as its whole row has it (RefPreview)" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-peeks")
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
@@ -2481,7 +2481,7 @@ test "wide: a reference to a chat in a message has the chat's card while the poi
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
   // read by the core as the pointer came onto it, once each link in the run (peeks.mbt chats_named: kept across runs,
-  // so asked again by none after one has read it), the chat found in the workspace's list: where it stands
+  // so asked again by none after one has read it), the chat found by its whole row (`chatRow`): where it stands
   assert_true(calls.filter(fn(m) { m.name == "link.parse" }).length() <= 1)
   assert_eq(word(said).length(), 1, msg="where it stands")
   t.move_to(900.0, 100.0)
