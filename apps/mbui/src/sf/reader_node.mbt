@@ -977,7 +977,32 @@ fn reader_contents_node(col : @view.View, r : Reading, paper : () -> ReaderPaper
 /// tint under the hand.
 fn reader_row_look(b : @view.View, s : @headless.Button) -> Unit {
   style_node(b, fn() { reader_row_box })
-  b.ground(By(fn() { if s.focus_shown() || s.hovered() || s.pressed() { @ui.tree_theme().color(Tint) } else { no_ground } })) |> ignore
+  reader_lit_over(b, s)
+}
+
+///|
+/// The tint over what a reader's control `b` stands on (hover_ground_node's) while the hand or the keyboard is on it
+/// or it is held (its state `s`, a button's or a toggle's), and `on` says so (a toggle not on already: its own ground
+/// says it then).
+fn[S : ReaderLit] reader_lit_over(b : @view.View, s : S, on? : () -> Bool = fn() { true }) -> Unit {
+  hover_ground_node(b, on~, lit=Some(fn() { s.lit() }), color=fn() { @ui.tree_theme().color(Tint) })
+}
+
+///|
+/// What of a reader's control's state lights it (reader_lit_over): the keyboard's focus shown on it, the pointer over
+/// it, a finger or the pointer held on it.
+priv trait ReaderLit {
+  lit(Self) -> Bool
+}
+
+///|
+impl ReaderLit for @headless.Button with lit(s) {
+  s.focus_shown() || s.hovered() || s.pressed()
+}
+
+///|
+impl ReaderLit for @headless.Toggle with lit(s) {
+  s.focus_shown() || s.hovered() || s.pressed()
 }
 
 ///|
@@ -1085,8 +1110,7 @@ fn reader_find_node(col : @view.View, r : Reading, paper : () -> ReaderPaper, do
           },
           fn(b, s) {
             style_node(b, fn() { desk_hit_row })
-            b.ground(By(fn() { if s.focus_shown() || s.hovered() || s.pressed() { @ui.tree_theme().color(Tint) } else { no_ground } }))
-            |> ignore
+            reader_lit_over(b, s)
             b.box(fn(w) {
               w
               .words_runs(By(fn() {
@@ -1233,8 +1257,7 @@ fn reader_narrow_chrome(
           style_node(start, fn() { narrow_top_end })
           @headless.button(start, back_label, fn(_) { back() }, fn(b, s) {
             style_node(b, fn() { narrow_back_box })
-            b.ground(By(fn() { if s.focus_shown() || s.hovered() || s.pressed() { @ui.tree_theme().color(Tint) } else { no_ground } }))
-            |> ignore
+            reader_lit_over(b, s)
             icon_node(b, "chevron-left", viewer_back_icon, By(fn() { paper().ink })) |> ignore
           })
           |> ignore
@@ -1275,21 +1298,14 @@ fn reader_narrow_chrome(
             reader_toggle_panel(r, Find)
           }, fn(b, s) {
             style_node(b, fn() { narrow_top_button })
-            b.ground(By(fn() {
-              if r.panel.get() == Find || s.focus_shown() || s.hovered() || s.pressed() {
-                @ui.tree_theme().color(Tint)
-              } else {
-                no_ground
-              }
-            }))
-            |> ignore
+            b.ground(By(fn() { if r.panel.get() == Find { @ui.tree_theme().color(Tint) } else { no_ground } })) |> ignore
+            reader_lit_over(b, s, on=fn() { r.panel.get() != Find })
             icon_node(b, "search", viewer_back_icon, By(fn() { paper().ink })) |> ignore
           })
           |> ignore
           @headless.button(end, fn() { t("web-main.preview.download") }, fn(_) { (file.save)() }, fn(b, s) {
             style_node(b, fn() { narrow_top_button })
-            b.ground(By(fn() { if s.focus_shown() || s.hovered() || s.pressed() { @ui.tree_theme().color(Tint) } else { no_ground } }))
-            |> ignore
+            reader_lit_over(b, s)
             icon_node(b, "download", viewer_back_icon, By(fn() { paper().ink })) |> ignore
           })
           |> ignore
@@ -1435,16 +1451,9 @@ fn narrow_tool_node(
     b
     .width(By(fn() { Some(w()) }))
     .radius(By(fn() { @ui.concentric(@ui.tree_theme().corner(Xl3), narrow_foot_in) }))
-    .ground(By(fn() {
-      if r.panel.get() == panel {
-        alpha(paper().ink, narrow_tool_on)
-      } else if s.focus_shown() || s.hovered() || s.pressed() {
-        @ui.tree_theme().color(Tint)
-      } else {
-        no_ground
-      }
-    }))
+    .ground(By(fn() { if r.panel.get() == panel { alpha(paper().ink, narrow_tool_on) } else { no_ground } }))
     |> ignore
+    reader_lit_over(b, s, on=fn() { r.panel.get() != panel })
     icon_node(b, icon, viewer_back_icon, By(fn() { paper().ink })) |> ignore
     words_node(b, fn() { t(label) }, fn() { narrow_tool_words.then(@ui.text_style(color=Data(paper().ink))) }) |> ignore
   })

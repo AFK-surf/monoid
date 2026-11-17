@@ -635,12 +635,7 @@ pub fn vault_items_node(
             let (x, y, w, h) = k.placed_window_now()
             vault_add(core, @signals.untracked(here), from=At(x, y, w, h))
           }
-          k.pick(fn() { @sf.look_node(k) }, fn(p, look) {
-            match look {
-              Wide => @sf.button_node(p, fn() { @sf.t("web-pages.vault.add") }, add, tone=Ghost, icon="plus") |> ignore
-              Narrow => @sf.icon_button_node(p, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
-            }
-          })
+          @sf.page_action_node(k, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
           // (a fixture's mode's 添加, from this one, at the moment the page is made: laid out by then, so it stands beside
           // it as when it is pressed)
           if fx_vault_add_up.val {

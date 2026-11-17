@@ -1704,6 +1704,13 @@ pub fn Tester::views(self : Tester) -> Array[String] {
 }
 
 ///|
+/// The nodes of the window's tree that hold a native view now (ui's native), in the order they were made: one made
+/// again for what it shows is another node, though its view (kept past it) stays open.
+pub fn Tester::native_nodes(_self : Tester) -> Array[@view.NodeId] {
+  tree_natives.keys().collect()
+}
+
+///|
 /// A site view's host says `event` (its JSON text, as view_site_next gives it: a request, one let go, a link left by),
 /// taken on the next frame.
 pub fn Tester::site_says(self : Tester, event : String) -> Unit {
