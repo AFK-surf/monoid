@@ -993,6 +993,45 @@ each("a_screen_only_the_viewers_own_views_drive_opens_driving", async (seed) => 
   core.close();
 });
 
+each("a_control_choice_while_a_browser_tab_is_being_made_survives_its_automatic_mode", async (seed) => {
+  for (const control of [false, true]) {
+    const tab = { id: "browser:u_0123456789ab", kind: "browser", title: "", width: 1280, height: 800, viewers: [], controlledBy: control ? ["agent: 修登录"] : [] };
+    const answers = { ...base(), "GET /screens": { browser: true, screens: [] as unknown[] }, "POST /screens/browser": { screen: tab.id } };
+    const made = Deferred.makeUnsafe<void>();
+    const wire = screenWire(seed);
+    const { host, core } = await started(answers, 0, (host) => {
+      const station = wire.make(host);
+      return {
+        ...station,
+        request: (s, head, body) => head.method === "POST" && head.path.endsWith("/screens/browser")
+          ? Deferred.await(made).pipe(Effect.andThen(station.request(s, head, body)))
+          : station.request(s, head, body),
+      };
+    });
+    const ui = core.connect();
+    const log: J[] = [];
+    subscribe(core, ui, 1, { topic: "screens", station: "ws/st" });
+    await host.settle();
+    call(core, ui, 2, "screen.openBrowser", { station: "ws/st", url: "", id: "u_0123456789ab" });
+    call(core, ui, 3, "screen.view", { station: "ws/st", screen: tab.id, view: "n", codecs: ["jpeg"] });
+    await host.settle();
+    said(host, log);
+    assert.equal(wire.views.length, 0, "the tab is still being made");
+    assert.equal(lastState(log, 3).phase, "connecting");
+    assert.equal(lastState(log, 3).may, true, "the connecting page offers its control switch");
+    call(core, ui, 4, "screen.control", { view: "n", control });
+    await host.settle();
+
+    answers["GET /screens"].screens = [tab];
+    Deferred.doneUnsafe(made, Effect.void);
+    await host.settle();
+    assert.equal(wire.views.length, 1);
+    assert.equal(wire.views[0]!.ask.control, control, "the explicit choice wins over who the new list says is driving");
+    assert.equal(wire.views[0]!.ask.taken, control ? true : undefined);
+    core.close();
+  }
+});
+
 test("a_screen_the_station_does_not_list_is_not_opened", async () => {
   const { host, core, ui, views } = await viewing(1);
   const log: J[] = [];

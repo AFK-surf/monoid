@@ -630,7 +630,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     let driving: string[] | null = null;
     // Every view on it as the view's own stream says (else as the station's list does).
     let onViews: unknown = null;
-    // Decided once the station's list is read (below) for a view opened with no `control` asked.
+    // Decided once the station's list is read (below), unless the person chose while the view was connecting.
+    let automatic = c.auto;
     let wanted = c.ask.control && may;
     // What the station is asked for: as the view opened, its size, 画质 and 帧率 as last asked (`screen.bounds`), and which
     // device it is on (who is on the screen, for those who look).
@@ -773,6 +774,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
         Queue.offerUnsafe(looks, undefined);
       },
       control: (on) => {
+        automatic = false;
         const next = on && may;
         // Asked by its person: over having been made to only look (hub.ts `mayDrive`), then and when it opens again.
         if (next) bounds = { ...bounds, taken: true };
@@ -837,7 +839,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
     // person) drives it, so a person who opens it to watch does not hold the agent off; else driving. The viewer's own
     // views are not someone else, however many the list names: another window of theirs, or one of an app killed with
     // the view open, which the station still holds until it finds the connection gone.
-    if (c.auto) wanted = may && names(get(listedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
+    if (automatic) wanted = may && names(get(listedItem(), "controlledBy")).every((n) => mine.includes(n.toLowerCase()));
     tell();
 
     /// One stream (`ready`: opened already, as the one before it ended): opened, its frames read until it ends, is to be
