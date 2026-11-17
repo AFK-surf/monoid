@@ -1125,6 +1125,8 @@ fn main {
           Some(p.step(ws, home))
         })
       })
+    (Some("harness-ops-platform"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @ops_platform.harness(host))
     (Some("usage-check"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_checker(host, db))
     (Some("cc-index"), Some(db), _) =>
