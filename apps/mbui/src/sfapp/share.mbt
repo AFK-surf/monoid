@@ -418,12 +418,7 @@ fn share_opened(
     None => if session == "" { "new:" + @sfbase.workspace_of(station) } else { station + ":" + session }
   }
   if files.length() > 0 {
-    let list = shared_into.get(key).unwrap_or([])
-    for f in files {
-      list.push({ name: f.name, bytes: f.bytes, held: 0, size: f.bytes.length().to_double(), src: "" })
-    }
-    shared_into[key] = list
-    @sfbase.draft_given(key)
+    @sfbase.draft_give(key, Shared(files.map(fn(f) { { name: f.name, bytes: f.bytes, held: 0, size: f.bytes.length().to_double(), src: "" } })))
   }
   // (what the sheet shows kept as it was while it sinks away, let go of once it has: share_in_frame)
   share_in.raised.set(false)

@@ -169,7 +169,6 @@ let composing : Composing = {
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
   composer_set_off.val = ("", 0.0)
-  picked_waiting.clear()
   composing.let_go.set(false)
   composing.let_go_at = @double.neg_infinity
   composing.warmed.clear()
@@ -615,32 +614,80 @@ fn with_composer(c : @ui.Ctx, i : Int, key : String, shaped : (String, @motion.S
 /// web's paste takes the clipboard's files), the rows the 文件 tab's 添加到消息 put in (named by their path, or as files where this chat
 /// takes what is dragged in so).
 fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files : Bool) -> Unit {
-  // (what was put into the draft from elsewhere: built again as it is)
-  @sfbase.drafts_given_read(w.key)
-  match picked_waiting.get(w.key) {
-    Some(list) => {
-      picked_waiting.remove(w.key)
-      if !no_files {
-        @signals.untracked(fn() {
-          for f in list {
-            writing_add_picked(src, w, spec.station, f)
-          }
-        })
-      }
-    }
-    None => ()
-  }
-  // files shared into the app from another, for this draft (share.mbt)
-  match shared_into.get(w.key) {
-    Some(list) if !no_files => {
-      shared_into.remove(w.key)
-      c.tell("composer/shared/" + w.key, fn() {
-        for f in list {
-          writing_add_picked(src, w, spec.station, f)
+  // what was put into the draft from elsewhere (sfbase's compose_given.mbt), as it was given: each as before, what
+  // writes to the core told after the build (Ctx::tell) but what the system's picker answered, taken in before the
+  // box is laid out (the host's word that it answered brings this frame)
+  let dropped : Array[Dragged] = []
+  for g in @sfbase.draft_taken(w.key) {
+    match g {
+      Picked(list) =>
+        if !no_files {
+          @signals.untracked(fn() {
+            for f in list {
+              writing_add_picked(src, w, spec.station, f)
+            }
+          })
         }
-      })
+      // files shared into the app from another, for this draft (share.mbt)
+      Shared(list) =>
+        if !no_files {
+          c.tell("composer/shared/" + w.key, fn() {
+            for f in list {
+              writing_add_picked(src, w, spec.station, f)
+            }
+          })
+        }
+      // a message's file quoted from its menu (sfpages menus.mbt): a quote with its file in its card
+      Quoted(author, ts, role, file) =>
+        if !no_files {
+          c.tell("composer/quoted/" + w.key, fn() {
+            writing_quote(
+              src,
+              w,
+              {
+                "author": Json::string(author),
+                "text": Json::string(text(Some(file), "name")),
+                "ts": Json::string(ts),
+                "role": Json::string(role),
+              },
+              file~,
+            )
+          })
+        }
+      // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
+      Followed(words) => {
+        let now = w.field.text()
+        let said = if now.trim() == "" { words } else { now.trim_end().to_owned() + "\n" + words }
+        w.field.set(said)
+        c.tell("composer/followed/" + w.key, fn() { writing_text(src, w, said) })
+        c.focus_field(w.field)
+      }
+      // a picture marked for this chat (a service's page, an image viewed), going up with a quote per mark (what is
+      // said of it its comment): a page's mark's screenshot as its quote's picture, an image's as a file beside them
+      Marked(name, bytes, quotes, kind) =>
+        if !no_files {
+          c.tell("composer/marked/" + w.key, fn() {
+            if kind != "page" {
+              writing_add(src, w, spec.station, name, bytes)
+            }
+            for q in quotes {
+              let quote : Json = {
+                "author": Json::string(q.0),
+                "text": Json::string(q.1),
+                "comment": Json::string(q.2),
+                "role": Json::string(kind),
+              }
+              if kind == "page" {
+                writing_quote(src, w, quote, picture=(spec.station, name, bytes))
+              } else {
+                writing_quote(src, w, quote)
+              }
+            }
+          })
+        }
+      // a 文件 row put in (添加到消息) or let go on the chat
+      Dropped(d) => dropped.push(d)
     }
-    _ => ()
   }
   match c.field_files(composer_field_key) {
     Some(files) if !no_files =>
@@ -651,74 +698,8 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   }
   // the videos waiting that the host has no picture of: their first frames, made from their bytes
   @sfbase.writing_stills(c)
-  // a message's files quoted from their menus (sfpages menus.mbt): each a quote with its file in its card
-  match quoted_into.get(w.key) {
-    Some(list) if !no_files => {
-      quoted_into.remove(w.key)
-      c.tell("composer/quoted/" + w.key, fn() {
-        for q in list {
-          let name = text(Some(q.3), "name")
-          writing_quote(
-            src,
-            w,
-            {
-              "author": Json::string(q.0),
-              "text": Json::string(name),
-              "ts": Json::string(q.1),
-              "role": Json::string(q.2),
-            },
-            file=q.3,
-          )
-        }
-      })
-    }
-    _ => ()
-  }
-  // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
-  match followed_into.get(w.key) {
-    Some(words) => {
-      followed_into.remove(w.key)
-      let now = w.text.get()
-      let said = if now.trim() == "" { words } else { now.trim_end().to_owned() + "\n" + words }
-      w.field.set(said)
-      c.tell("composer/followed/" + w.key, fn() { writing_text(src, w, said) })
-      c.focus_field(w.field)
-    }
-    None => ()
-  }
-  // pictures marked for this chat (a service's page, an image viewed: sfbase's marked_into), each going up with a quote
-  // per mark (what is said of it its comment): a page's mark's screenshot as its quote's picture, an image's as a file
-  // beside its marks' quotes; taken once, whichever build takes them
-  match marked_into.get(w.key) {
-    Some(list) if !no_files => {
-      marked_into.remove(w.key)
-      c.tell("composer/marked/" + w.key, fn() {
-        for x in list {
-          let (name, bytes, quotes, kind) = x
-          if kind != "page" {
-            writing_add(src, w, spec.station, name, bytes)
-          }
-          for q in quotes {
-            let quote : Json = {
-              "author": Json::string(q.0),
-              "text": Json::string(q.1),
-              "comment": Json::string(q.2),
-              "role": Json::string(kind),
-            }
-            if kind == "page" {
-              writing_quote(src, w, quote, picture=(spec.station, name, bytes))
-            } else {
-              writing_quote(src, w, quote)
-            }
-          }
-        }
-      })
-    }
-    _ => ()
-  }
-  let sent = @sfbase.files_taken(w.key)
-  if !sent.is_empty() && !no_files {
-    writing_drop(src, w, spec.station, sent.map(dropped_of), drops_as_files(src, w.key))
+  if !dropped.is_empty() && !no_files {
+    writing_drop(src, w, spec.station, dropped.map(dropped_of), drops_as_files(src, w.key))
   }
 }
 
@@ -1004,20 +985,12 @@ fn attach(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files 
 }
 
 ///|
-/// Files the system's picker answered for each draft, waiting for its composer (`take_in`).
-// kept across runs: cleared by composing_reset
-let picked_waiting : Map[String, Array[@hostapi.Picked]] = Map([])
-
-///|
-/// Files the system's picker answered for draft `key`, put where its composer takes them (`take_in`) and told (`draft_given`).
+/// Files the system's picker answered for draft `key`, given to its composer (sfbase's draft_give).
 fn picked_into(key : String, files : Array[@hostapi.Picked]) -> Unit {
   if files.is_empty() {
     return
   }
-  let list = picked_waiting.get(key).unwrap_or([])
-  list.push_iter(files.iter())
-  picked_waiting[key] = list
-  @sfbase.draft_given(key)
+  @sfbase.draft_give(key, Picked(files))
 }
 
 ///|

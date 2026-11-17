@@ -3,11 +3,13 @@
 // pages), taken in here by name.
 
 pub using @sfbase {
+  draft_give,
+  draft_waiting,
+  type Given,
   // the app's words (strings.mbt and its tables)
   tr,
   fill,
   feel_hold,
-  shared_into,
   station_files_asked,
   files_into,
   archive_ease,
@@ -16,7 +18,6 @@ pub using @sfbase {
   archive_tween,
   close_gap,
   under_rest,
-  quoted_into,
   quote_file_into,
   attachment_json,
   open_detail,
@@ -29,7 +30,6 @@ pub using @sfbase {
   peeks_reset,
   peeks_stop_all,
   screen_links,
-  followed_into,
   viz_chat_left,
   viz_close_full,
   viz_file_of,
@@ -143,7 +143,6 @@ pub using @sfbase {
   link_send,
   link_token,
   mark_where,
-  marked_into,
   no_fragment,
   page_bridge_js,
   page_js_path,

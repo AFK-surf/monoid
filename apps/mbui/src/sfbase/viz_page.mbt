@@ -603,20 +603,11 @@ pub fn viz_icon(c : @ui.Ctx, id : Int, icon : String, label : String, subtle : I
 /// drawn.
 pub fn viz_follow_up(station : String, session : String) -> (String) -> Bool {
   fn(words) {
-    let key = station + ":" + session
-    followed_into[key] = match followed_into.get(key) {
-      Some(w) => w + "\n" + words
-      None => words
-    }
-    draft_given(key)
+    draft_give(station + ":" + session, Followed(words))
     true
   }
 }
 
-///|
-/// Words a visualization asked to send, by the draft key of the chat whose composer they go into: taken by it.
-// kept across runs: put back by viz_pages_reset (sfbase's reset)
-pub let followed_into : Map[String, String] = Map([])
 
 ///|
 /// The visualization a message of chat `session` on `station` places, kept by session `key`, drawn there; the ways
@@ -1027,5 +1018,4 @@ pub fn viz_pages_reset() -> Unit {
   viz_mbui_states_clear()
   viz_full.set(None)
   mermaid_charts.clear()
-  followed_into.clear()
 }

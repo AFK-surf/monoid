@@ -6,10 +6,10 @@ test "desk: a page's marks waiting for the chat go into its composer's draft, ea
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat")
   t.frame()
-  marked_into["ws1/st1:s-c1"] = [("首页-标注1-120000.png", b"\x89PNG", [("网页 首页 标注 1", "按钮「发送」", "颜色太浅")], "page")]
+  draft_give("ws1/st1:s-c1", Marked("首页-标注1-120000.png", b"\x89PNG", [("网页 首页 标注 1", "按钮「发送」", "颜色太浅")], "page"))
   t.frame()
   t.frame()
-  assert_true(marked_into.get("ws1/st1:s-c1") is None, msg="taken once")
+  assert_true(draft_waiting("ws1/st1:s-c1").is_empty(), msg="taken once")
   let quoted = named(calls, "composer.quote")
   assert_eq(quoted.length(), 1)
   let q = field(Some(quoted[0].params), "quote")
