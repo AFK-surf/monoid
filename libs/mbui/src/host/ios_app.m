@@ -2757,6 +2757,18 @@ void mb_host_notice_cancel(moonbit_string_t tag) {
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   [center removeDeliveredNotificationsWithIdentifiers:@[ t ]];
   [center removePendingNotificationRequestsWithIdentifiers:@[ t ]];
+  // a push the system showed is not under the tag: its identifier is the push's collapse id (a digest of the tag), and
+  // the tag is its thread and its payload's `tag`
+  [center getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *shown) {
+    NSMutableArray<NSString *> *gone = [NSMutableArray array];
+    for (UNNotification *n in shown) {
+      UNNotificationContent *c = n.request.content;
+      id said = c.userInfo[@"tag"];
+      if ([c.threadIdentifier isEqualToString:t] || ([said isKindOfClass:NSString.class] && [said isEqualToString:t]))
+        [gone addObject:n.request.identifier];
+    }
+    if (gone.count) [center removeDeliveredNotificationsWithIdentifiers:gone];
+  }];
 }
 
 // 0: what the system allows (1 granted, 2 denied, 3 not asked, 0 not known yet); 1: asked (the system's alert), when

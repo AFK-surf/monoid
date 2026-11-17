@@ -175,6 +175,24 @@ test "tapped, the notice's chat opens over Home at its message, which flashes; i
 }
 
 ///|
+test "a chat on top as the app goes behind: a notification of it come meanwhile taken off as the app is shown on it again" {
+  let calls : Array[Made] = []
+  let sys = fake_system()
+  let t = notify_core(calls, sys)
+  open_chat({ station: "ws1/st1", session: "s-c2", title: "首页的列表改成按天分组", station_name: "Willow" })
+  t.run_for(@ui.move_most_ms)
+  assert_eq(sys.cancelled.filter(fn(tag) { tag == "ws1/st1/s-c2" }).length(), 1)
+  // behind (a push of it shown by the system meanwhile), then shown again on the same chat
+  t.app_state(false, false)
+  t.app_state(true, true)
+  t.frame()
+  assert_eq(sys.cancelled.filter(fn(tag) { tag == "ws1/st1/s-c2" }).length(), 2)
+  // frames on while it shows: not again
+  t.frame()
+  assert_eq(sys.cancelled.filter(fn(tag) { tag == "ws1/st1/s-c2" }).length(), 2)
+}
+
+///|
 test "共享调试's notification tapped (AdbShare.java): settings' 共享调试 opens over Home" {
   let calls : Array[Made] = []
   let sys = fake_system()
