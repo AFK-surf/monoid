@@ -139,7 +139,7 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   assert_true(!words.contains(".log") && !words.contains(".tar") && !words.contains("已隐藏 1 处"), msg=words)
   assert_true(words.contains("still.fail"), msg=words)
   // kept in the photo album, at the usual chat column's width and the screen's scale, said once it is
-  assert_eq(t.kept_ways().map(fn(k) { (k.0, k.1.to_string()) }), [("still.fail.png", "Photos")])
+  assert_eq(t.kept_ways().map(fn(k) { (k.0, Show::to_string(k.1)) }), [("still.fail.png", "Photos")])
   match png_size(t.kept()[0].2) {
     Some((pw, ph)) => assert_true(pw == 1520 && ph > 600, msg="\{Repr((pw, ph))}")
     None => fail("not a PNG")
@@ -204,7 +204,7 @@ test "分享图片 on an iPhone Duo: the system's tabs put away, its way back an
     // 保存到相册 chosen there: the picture kept in the photo album
     t.post(@hostapi.system_channel, "{\"nav\":\"over/act\"}")
     t.run_for(@kit.presence_in_ms)
-    assert_eq(t.kept_ways().map(fn(k) { (k.0, k.1.to_string()) }), [("still.fail.png", "Photos")])
+    assert_eq(t.kept_ways().map(fn(k) { (k.0, Show::to_string(k.1)) }), [("still.fail.png", "Photos")])
     // 复制图片 chosen there: the picture on the clipboard, nothing more in the album, 已复制 there a moment
     t.post(@hostapi.system_channel, "{\"nav\":\"over/copy\"}")
     t.run_for(@ui.move_most_ms / 4.0)

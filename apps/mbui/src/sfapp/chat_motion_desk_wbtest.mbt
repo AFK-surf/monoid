@@ -285,7 +285,7 @@ test "大屏: a picture sent with a file and words, past the station delivering 
   // row sent from here drawn in the box of a picture whose size nobody said yet, the core's that takes it over in its
   // own, as the station read it)
   t.add_image("pick://看图", 1500, 1000)
-  @sfbase.writing_add_held(src, draft, "ws1/st1", { name: "看图.png", bytes: Bytes::new(0), held: 1, size: 4000.0, src: "pick://看图" })
+  @sfbase.writing_add_held(src, draft, "ws1/st1", { name: "看图.png", bytes: Bytes::make(0, b'\x00'), held: 1, size: 4000.0, src: "pick://看图" })
   @sfbase.writing_add(src, draft, "ws1/st1", "构建日志.log", @utf8.encode("夜里的构建日志"))
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
   guard composer_field(t) is Some((x, y, w, h)) else { fail("no composer's field") }
