@@ -7,9 +7,9 @@
 // flat and one an agent ran in falls; before a station kept hours, the window's percent used so far spread over its
 // hours by what they spent (evenly where nothing was counted). The future is an hourly simulation: each hour's demand
 // leans from the last hours' pace (an exponential weighting) to the week's, shaped by the hour of the day people work
-// at, and is taken from the account whose week resets soonest that has room in both its week and its five hours; a
-// week refills at its reset, five hours at theirs, and what no account can take is the pool going without. What a pool
-// has left is its weeks' alone (station sessions/pool.ts: the week is what is spent and refilled, five hours only how
+// at, and is spread over the accounts with room in both their week and their five hours, each by its week's pace, as
+// the station's pool spreads sessions; a week refills at its reset, five hours at theirs, and what no account can take
+// is the pool going without. What a pool has left is its weeks' alone (station sessions/pool.ts: the week is what is spent and refilled, five hours only how
 // fast it may be taken): five hours spent hold an account back from being used now (`ready`) and from what the
 // simulation can take of it, never take its week out of the pool's line to put it back as they come back.
 const HOUR_MS = 3_600_000;
@@ -36,6 +36,10 @@ const DIURNAL_MAX = 2.4;
 const SHORT_OF_LONG = 12;
 /// The most accounts said to be needed.
 const NEEDED_MOST = 999;
+/// What a pool with so many more accounts may still go without over the week foreseen, in percent of the pool as it
+/// is: a few hours' tenths of a percent, where accounts with their week left have spent their five hours, are no
+/// account more (the owner, 2026-11-17: 5 said where the week went without two days and three would do).
+const NEEDED_SLACK = 1;
 
 export type OverviewPool = {
   title: string;
@@ -448,40 +452,50 @@ function simulate(start: Tank[], demand: (h: number) => number): { avail: number
   const avail: number[] = [];
   const taken: number[] = [];
   const unmet: number[] = [];
-  const order = tanks.map((_, i) => i);
-  let reordered = true;
   for (let h = 1; h <= FUTURE_HOURS; h++) {
     for (const t of tanks) {
       if (t.resetIn <= h) {
         t.left = t.share;
         t.resetIn += t.cycle;
-        reordered = true;
       }
       if (t.short !== null && t.short.resetIn !== null && t.short.resetIn <= h) {
         t.short.used = 0;
         t.short.resetIn = null;
       }
     }
-    // (soonest week's refill first: its order changes only as one refills)
-    if (reordered) order.sort((a, b) => tanks[a]!.resetIn - tanks[b]!.resetIn);
-    reordered = false;
+    // The hour's demand spread as the station's pool spreads sessions (station sessions/pool.ts `urgency`): over the
+    // accounts that can take some, each by its week's pace (what it has left over the hours to its refill, a day at
+    // least), what one cannot take of its part going to the others. Never one drained after another: the last weeks
+    // left would be a few accounts' alone, held to their five hours, an hour going without where the pool's weeks
+    // still had plenty (the owner, 2026-11-17: an account more said for tenths of a percent).
     let want = Math.max(0, demand(h));
     let took = 0;
-    for (const i of order) {
-      if (want <= 1e-9) break;
-      const t = tanks[i]!;
-      if (t.left <= 1e-9 || h <= t.lockedTill || t.share <= 0) continue;
-      let room = t.left;
-      if (t.short !== null) room = Math.min(room, ((100 - t.short.used) * t.share * t.short.ofLong) / 1e4);
-      const take = Math.min(want, room);
-      if (take <= 0) continue;
-      t.left -= take;
-      if (t.short !== null) {
-        t.short.used = Math.min(100, t.short.used + (take * 1e4) / (t.share * t.short.ofLong));
-        if (t.short.resetIn === null) t.short.resetIn = h - 1 + t.short.hours;
+    const roomOf = (t: Tank) => {
+      if (t.left <= 1e-9 || h <= t.lockedTill || t.share <= 0) return 0;
+      return t.short === null ? t.left : Math.min(t.left, ((100 - t.short.used) * t.share * t.short.ofLong) / 1e4);
+    };
+    let open = tanks.filter((t) => roomOf(t) > 1e-9);
+    while (want > 1e-9 && open.length > 0) {
+      const paceOf = (t: Tank) => t.left / Math.max(t.resetIn - h + 1, 24);
+      const whole = open.reduce((a, t) => a + paceOf(t), 0);
+      let given = 0;
+      const full: Tank[] = [];
+      for (const t of open) {
+        const room = roomOf(t);
+        const take = Math.min(room, (want * paceOf(t)) / whole);
+        if (take >= room - 1e-9) full.push(t);
+        if (take <= 0) continue;
+        t.left -= take;
+        if (t.short !== null) {
+          t.short.used = Math.min(100, t.short.used + (take * 1e4) / (t.share * t.short.ofLong));
+          if (t.short.resetIn === null) t.short.resetIn = h - 1 + t.short.hours;
+        }
+        given += take;
       }
-      want -= take;
-      took += take;
+      want -= given;
+      took += given;
+      if (full.length === 0) break;
+      open = open.filter((t) => !full.includes(t) && roomOf(t) > 1e-9);
     }
     // (what is left of the weeks: five hours spent only hold back what is taken, as `unmet` says)
     let a = 0;
@@ -610,12 +624,11 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
     starveSpans.push(h, end);
   }
   const overPace = recent > sustainable || exhaustHours !== null;
-  // (what the week foreseen asks an hour, on the whole: now's pace leaning to the week's by the day's shape, as its
-  // line is drawn; where nothing is left now, the cycles' so far if faster: an hour it could not spend in is no pace
-  // of its. Never now's pace alone, as if an hour of work went on night and day: 13 more said where 1 would do)
-  let asked = 0;
-  for (let h = 1; h <= FUTURE_HOURS; h++) asked += Math.max(0, demand(h));
-  const pace = Math.max(asked / FUTURE_HOURS, nowAvail <= 0.3 ? cycleAvg : 0);
+  // (what the weeks after ask an hour: the week's pace as it was spent (`base`), never now's leaning to it, as if the
+  // last hours' run went on in every week after (the owner, 2026-11-17: 4 said for the weeks after where its week's
+  // pace asks 3); where nothing is left now, the cycles' so far if faster: an hour it could not spend in is no pace
+  // of its)
+  const pace = Math.max(base, nowAvail <= 0.3 ? cycleAvg : 0);
   const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demand, pace) : null;
   // (over it, or going without within the week: said against the faster of now's pace and the week's, never above
   // -0.1, so it falls as either rises)
@@ -649,10 +662,10 @@ function mode(xs: number[]): number | null {
 
 /// The fewest accounts of the pool's usual plan (its accounts' most common weight, cycle and five hours, a five hours
 /// the share of its week its own are read to be), each full and its week begun now, that put beside its own keep it
-/// from going without: the week foreseen (`demand`) goes without in no hour, and their cycles give back what it asks
-/// an hour on the whole (`pace`), so the weeks after go on so. Each is reckoned at the pool's shares with them in
-/// (`scale`), as the pools made again of those accounts would be, so that with so many more it goes without in no
-/// hour of the week. None (null) where it goes without in none as it is; most `NEEDED_MOST`.
+/// from going without: the week foreseen (`demand`) goes without by no more than `NEEDED_SLACK` in all, and their
+/// cycles give back what it asks an hour on the whole (`pace`), so the weeks after go on so. Each is reckoned at the
+/// pool's shares with them in (`scale`), as the pools made again of those accounts would be. None (null) where it
+/// goes without by no more than that as it is; most `NEEDED_MOST`.
 function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demand: (h: number) => number, pace: number): number | null {
   const unitWeight = mode(active.map((s) => s.weight))!;
   const unitShare = (unitWeight / weight) * 100;
@@ -672,7 +685,8 @@ function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank
       scaled.push({ share: unitShare * scale, left: unitShare * scale, resetIn: unitCycle, cycle: unitCycle, lockedTill: 0, short: unitShort === null ? null : { ...unitShort } });
     }
     const forecast = simulate(scaled, (h) => demand(h) * scale);
-    return !forecast.avail.some((_, h) => starves(forecast, h));
+    // (what it goes without, back in percent of the pool as it is)
+    return forecast.unmet.reduce((a, u) => a + u, 0) / scale <= NEEDED_SLACK;
   };
   if (canKeepUp(0)) return null;
   // (lo: so few do not keep it from going without; hi: so many do)

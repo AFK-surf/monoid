@@ -264,7 +264,7 @@ test "under the page: the whole screen, its name and a close over it; back close
 }
 
 ///|
-test "the whole window with the window's buttons in the app's top row (a Mac's): the bar every file opened has, clear of them; its way back closes it" {
+test "the whole window with the window's buttons in the app's top row (a Mac's): the bar every file opened has, clear of them; its way back by the chat's name puts it back beside" {
   new_run()
   let src = fixture("chat-viz")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -274,18 +274,22 @@ test "the whole window with the window's buttons in the app's top row (a Mac's):
   viz_open_full("release.html", "ws1/st1", "s-c1", "work/s-c1/release.html", "s-c1")
   t.frame()
   t.frame()
-  // (the host's buttons: 16 from the window's left, 54 across: mbui's mac_app.m)
-  let name = t.words().filter(fn(w) { w.0 == "release.html" })
-  assert_true(name.length() > 0, msg=t.words().map(fn(w) { w.0 }).join("|"))
-  let back = t.find(tr("common.back"))
-  match back {
-    Some((x, _)) => assert_true(x > 16.0 + 54.0, msg="\{x}")
-    None => fail("no way back")
-  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="its tab over the whole window")
+  // (the host's buttons: 16 from the window's left, 54 across: mbui's mac_app.m; the bar's words over the page's, at
+  // its top)
+  let bar = t.words().filter(fn(w) { w.2 < 45.0 })
+  let name = bar.filter(fn(w) { w.0 == "release.html" })
+  assert_true(name.length() > 0, msg=bar.map(fn(w) { w.0 }).join("|"))
   assert_true(name[0].1 > 16.0 + 54.0, msg="\{Repr(name[0])}")
-  t.tap_text(tr("common.back"))
-  t.frame()
-  t.frame()
+  // (the leftmost: the chat's own head, under the layer, is further in)
+  let back = bar.filter(fn(w) { w.0 == "整理发布清单" && w.1 < name[0].1 })
+  back.sort_by(fn(a, b) { a.1.compare(b.1) })
+  assert_true(back.length() > 0, msg="its way back by the chat's name: \{Repr(bar.map(fn(w) { (w.0, w.1) }))}")
+  assert_true(back[0].1 > 16.0 + 54.0, msg="\{Repr(back[0])}")
+  t.tap(back[0].1 + 4.0, back[0].2 + back[0].4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="back beside")
   assert_true(@sfbase.viz_full.get() is None)
 }
 
@@ -399,7 +403,7 @@ test "on the tape what shows of a visualization's page beside the sidebar in use
 }
 
 ///|
-test "a page opened over the chat on a wide window shows over the chat's visualization still painted under it, not under it" {
+test "a page opened over the chat on a wide window (its tab over the whole window) shows over the chat's visualization still painted under it, not under it" {
   new_run()
   let src = fixture("chat-viz")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -411,7 +415,9 @@ test "a page opened over the chat on a wide window shows over the chat's visuali
   viz_open_full("release.html", "ws1/st1", "s-c1", "work/s-c1/release.html", "s-c1")
   t.frame()
   t.frame()
-  let full = opened_views(t, 2)
+  // (its tab over the whole window: its page a site view of its own, sfbase's tab_full.mbt)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="its tab over the whole window")
+  let full = opened_views(t, 3)
   let top = full[full.length() - 1]
   assert_true(view_rect(t, top) is Some(_))
   // the chat's page still painted under the one opened over it: the host told to stack that one over it

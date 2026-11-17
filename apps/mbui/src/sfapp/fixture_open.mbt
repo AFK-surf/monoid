@@ -459,6 +459,17 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   if mode == "share-card" || mode.has_prefix("share-card-") {
     @sfpages.share_card_open(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" })
   }
+  // (the subscriptions' allowances to share, and the overview's pool to share, of the four kinds' accounts:
+  // share_quota.mbt)
+  if mode == "share-accounts" || mode == "share-pool" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    let ws : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }
+    if mode == "share-accounts" {
+      @sfpages.accounts_share_open(settings_core(src, ws), fn() { "ws1" })
+    } else {
+      @sfpages.pool_share_open(settings_core(src, ws), fn() { "ws1" })
+    }
+  }
   if mode == "chat-station-files" {
     fixture_station_files(src)
   }

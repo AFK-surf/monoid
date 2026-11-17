@@ -83,7 +83,8 @@ fn init_pieces(text : Bytes) -> Array[(Bytes, Bytes, Bytes)]? {
     return None
   }
   // the locals moonc declares (no initial value), and the statements in runs by the package they set
-  let floating : Map[Bytes, Bytes] = Map([])
+  // (each by the place it first came in: a merged piece's are written in that order)
+  let floating : Map[Bytes, (Int, Bytes)] = Map([])
   let runs : Array[Run] = []
   let mut pending : Array[Bytes] = []
   let mut pending_locals = BSet::new()
@@ -91,7 +92,10 @@ fn init_pieces(text : Bytes) -> Array[(Bytes, Bytes, Bytes)]? {
     let bst = blank(st)
     match init_decl(bst) {
       Some(m) if is_local(m) && !has_byte(bst, b'=') => {
-        floating[m] = st
+        floating[m] = match floating.get(m) {
+          Some((o, _)) => (o, st)
+          None => (floating.length(), st)
+        }
         continue
       }
       _ => ()
@@ -182,20 +186,28 @@ fn init_pieces(text : Bytes) -> Array[(Bytes, Bytes, Bytes)]? {
   let out = []
   for m in merged {
     let decls = Buffer()
-    for n, d in floating {
-      if m.locs.has(n) {
-        // (.strip('\n'))
-        let mut a = 0
-        let mut e = d.length()
-        while a < e && d[a] == b'\n' {
-          a += 1
-        }
-        while e > a && d[e - 1] == b'\n' {
-          e -= 1
-        }
-        decls.write_bytesview(d[a:e])
-        decls.write_byte(b'\n')
+    // (the piece's locals that moonc declared, in the order they were declared: each piece looks up its own locals,
+    // never every declaration)
+    let mine : Array[(Int, Bytes)] = []
+    for n in m.locs.t.keys {
+      match floating.get(n) {
+        Some(x) => mine.push(x)
+        None => ()
       }
+    }
+    for x in stable_sort(mine, fn(a, b) { a.0 - b.0 }) {
+      let d = x.1
+      // (.strip('\n'))
+      let mut a = 0
+      let mut e = d.length()
+      while a < e && d[a] == b'\n' {
+        a += 1
+      }
+      while e > a && d[e - 1] == b'\n' {
+        e -= 1
+      }
+      decls.write_bytesview(d[a:e])
+      decls.write_byte(b'\n')
     }
     out.push((m.p, decls.to_bytes(), cat(m.sts)))
   }
@@ -207,9 +219,9 @@ fn init_pieces(text : Bytes) -> Array[(Bytes, Bytes, Bytes)]? {
 /// compound literal), sizeof, a member or an element through a variable declared as one or a pointer to one; None
 /// when that cannot be told (a member through anything else). `globals`: {name: (type, pointers)} of the externs.
 fn defined_needed(
-  texts : Array[Bytes],
-  globals : Map[Bytes, (Bytes, Int)],
-  fields : Map[Bytes, Map[Bytes, (Bytes, Int)]],
+  texts : Array[BytesView],
+  globals : BTab[(Bytes, Int)],
+  fields : Map[Bytes, BTab[(Bytes, Int)]],
 ) -> BSet? {
   let need = BSet::new()
   for t in texts {
@@ -222,53 +234,79 @@ fn defined_needed(
     if member_after_bracket(rest) {
       return None
     }
-    for n in sizeof_all(b) {
+    let sizes = []
+    let by_value = []
+    let vars = []
+    struct_mentions(b, sizes, by_value, vars)
+    for n in sizes {
       need.add(n)
     }
-    for n in by_value_all(b) {
+    for n in by_value {
       if !(starts(n, b"enum") && boundary(n, 4)) {
         need.add(n)
       }
     }
-    let locals : Map[Bytes, (Bytes, Int)] = Map([])
-    for v in decl_vars(b) {
-      locals[v.0] = (v.1, v.2)
+    let locals : BTab[(Bytes, Int)] = BTab::new()
+    for v in vars {
+      locals.set(v.0, (v.1, v.2))
     }
-    let type_of = fn(n : Bytes) -> (Bytes, Int)? {
-      match locals.get(n) {
-        Some(v) => Some(v)
-        None => globals.get(n)
+    // (a name's type and pointers: a local's, else a global's; looked up where it is in the text)
+    let type_at = fn(s : Int, e : Int) -> (Bytes, Int)? {
+      let h = hash_range(b, s, e)
+      let i = locals.find_hashed(b, s, e, h)
+      if i >= 0 {
+        return Some(locals.vals[i])
+      }
+      let g = globals.find_hashed(b, s, e, h)
+      if g >= 0 {
+        Some(globals.vals[g])
+      } else {
+        None
       }
     }
-    var_uses(b, fn(name, op) {
-      match type_of(name) {
-        Some(v) =>
-          if v.1 == 0 || (v.1 == 1 && (op == b"->" || op == b"[")) {
-            need.add(v.0)
-          }
-        None => ()
-      }
-    })
-    // (a member's member: through the struct's definition, the member's type)
-    accesses(b, fn(name, steps) {
-      let mut v = type_of(name)
-      for st in steps {
-        let (op, field) = st
-        match v {
-          None => break
-          Some(tv) => {
-            if (op == b"->") != (tv.1 == 1) {
-              break
+    member_uses(
+      b,
+      fn(s, e, op) {
+        match type_at(s, e) {
+          Some(v) =>
+            if v.1 == 0 || (v.1 == 1 && op != 2) {
+              need.add(v.0)
             }
-            need.add(tv.0)
-            v = match fields.get(tv.0) {
-              Some(f) => f.get(field)
-              None => None
+          None => ()
+        }
+      },
+      // (a member's member: through the struct's definition, the member's type)
+      fn(s, e, steps) {
+        let mut v = type_at(s, e)
+        let mut i = 0
+        while i < steps.length() {
+          let op = steps[i]
+          let fs = steps[i + 1]
+          let fe = steps[i + 2]
+          i += 3
+          match v {
+            None => break
+            Some(tv) => {
+              if (op == 0) != (tv.1 == 1) {
+                break
+              }
+              need.add(tv.0)
+              v = match fields.get(tv.0) {
+                Some(f) => {
+                  let at = f.find_range(b, fs, fe)
+                  if at >= 0 {
+                    Some(f.vals[at])
+                  } else {
+                    None
+                  }
+                }
+                None => None
+              }
             }
           }
         }
-      }
-    })
+      },
+    )
   }
   Some(need)
 }

@@ -22,7 +22,7 @@ fn stage_node(
   gone? : () -> Unit = fn() {  },
   covered? : () -> Bool = fn() { false },
 ) -> Unit {
-  guard x.nodes is Some(nodes) else { return }
+  let nodes = x.nodes
   // (its night its own, whoever else dims what is under it (scrim_owner leaves a stage out): as kit's dialog draws a
   // stage's scrim)
   dialog_layer_node(parent, open, cancel, outside=true, scrim=fn() { stage_scrim }, night_with_ground=true, shown~, gone~, covered~, fn(across, layer, look, _veil) {

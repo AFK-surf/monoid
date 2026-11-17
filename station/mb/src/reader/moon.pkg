@@ -89,6 +89,7 @@ import {
   "station/drive",
   "station/updates",
   "station/mesh_runtime",
+  "station/station_main",
 }
 
 pkgtype(kind: "executable")

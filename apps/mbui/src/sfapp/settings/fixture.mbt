@@ -334,6 +334,12 @@ let fx_new_login_done : Ref[Bool] = Ref(false)
 let fx_google_profiles : Ref[Bool] = Ref(false)
 
 ///|
+/// Claude 主账号 named by an email as long as an account's (settings-profiles-long-name): its plan leaves its row's line
+/// in the sidebar before its name is cut short.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_long_name : Ref[Bool] = Ref(false)
+
+///|
 /// 连接 (MBUI_FIXTURE=settings-connects): a Slack app made and not connected yet over the connects, one connect with its
 /// own picture and one with its platform's mark.
 let fx_connects_waiting : Ref[Bool] = Ref(false)
@@ -451,6 +457,7 @@ fn fixture_reset() -> Unit {
   fx_google_login.val = ""
   fx_new_login_done.val = false
   fx_google_profiles.val = false
+  fx_long_name.val = false
   fx_connects_waiting.val = false
 }
 
@@ -841,6 +848,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-quota-failed" => fx.trouble = "quota"
     "settings-profile-quota-login" => fx.trouble = "quota-login"
     "settings-profile-quota-expiry" => fx.reset_expiry = true
+    "settings-profiles-long-name" => fx_long_name.val = true
     "settings-profile-quota-kinds" => fx.reset_kinds = true
     "settings-profile-blocked" => fx.trouble = "blocked"
     "settings-profile-signin" => fx.trouble = "login"
@@ -992,7 +1000,7 @@ pub fn fixture_page(mode : String) -> String {
     // (its prices of the same workspace's: usage_real's)
     "settings-usage-real-prices" => "prices"
     "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
-    | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
+    | "settings-profiles-google" | "settings-profiles-sum-a" | "settings-profiles-long-name" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -1135,9 +1143,19 @@ pub fn fixture_profiles() -> Array[Json] {
 }
 
 ///|
+/// Claude 主账号's name: an email as long as an account's where fx.long_name says (settings-profiles-long-name).
+fn fx_cc_name() -> String {
+  if fx_long_name.val {
+    "someone.with.a.long.name@company.example"
+  } else {
+    "Claude 主账号"
+  }
+}
+
+///|
 fn fx_profiles() -> Array[Json] {
   let profiles = [
-    fx_profile("cc", "Claude 主账号", "subscription", fx_cc_tone(), "可用", "claude", "Claude 订阅", fx_cc_with([
+    fx_profile("cc", fx_cc_name(), "subscription", fx_cc_tone(), "可用", "claude", "Claude 订阅", fx_cc_with([
       ("share", obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("users", ["st2"])])),
       ("fast", Json::boolean(false)),
       ("backgroundOnMessage", Json::boolean(true)),

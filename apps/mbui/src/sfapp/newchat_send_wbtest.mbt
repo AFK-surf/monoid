@@ -40,6 +40,7 @@ fn held_core(
   w? : Double = 390.0,
   h? : Double = 844.0,
   platform? : Int = 2,
+  finger? : Bool = false,
 ) -> @ui.Tester {
   new_run()
   let base = fixture("home")
@@ -66,7 +67,11 @@ fn held_core(
     },
   }
   both_way()
-  @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  if finger {
+    @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, pointing=Finger, native=Finger)
+  } else {
+    @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  }
 }
 
 ///|
@@ -727,4 +732,43 @@ test "a new chat's first words the station has not taken yet: in its outbox, not
   assert_eq(field, "")
   assert_eq(restored, [], msg="its words put back in the composer")
   assert_true(@sfbase.toast_words().contains("Willow 没有回应"))
+}
+
+///|
+/// Sent from a new chat with the screen's keyboard up, it stays up as the page becomes the chat, the next words typed
+/// into the chat's composer: though its field is another draft's, and a chat come to takes the cursor only where the
+/// keyboard is at hand, the cursor is held where the composer's field is built (held so 2026-11-17, asked of a report).
+test "a new chat's first words sent with the keyboard up: the chat it becomes written in at once, its keyboard kept up" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let unread = @signals.signal(false)
+    // (the screen's keyboard: a finger the native input)
+    let t = held_core(held, unread, finger=true)
+    let (_, y) = bar_places_at()
+    t.tap(195.0, y - 28.0 - 4.0)
+    t.run_for(@ui.move_most_ms)
+    t.tap_text("做任何事")
+    keyboard_up(t, 336.0)
+    t.type_text("第一条")
+    t.draw()
+    tap_send(t)
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is Chat(_))
+    let (active, _, _, _) = t.ime()
+    assert_true(active, msg="the keyboard went down as the new chat became the chat")
+    t.type_text("第二条")
+    t.draw()
+    let (_, words, _, _) = t.ime()
+    assert_eq(words, "第二条")
+    for name in ["newChat.create", "chat.send"] {
+      match held.get(name) {
+        Some(give) => give()
+        None => fail("\{name} not asked")
+      }
+      t.draw()
+    }
+    t.run_for(new_leave_ms)
+    let (active, _, _, _) = t.ime()
+    assert_true(active)
+  })
 }

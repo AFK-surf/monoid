@@ -75,7 +75,7 @@ pub struct Machine {
   agy_install : How
   devin_install : How
   /// The applier run apart (release.ts applyApart): Node and the module it runs (a checkout's scripts/delta.ts, or
-  /// the release's main.js).
+  /// the release's main.js); "" where `exec_path` is the station's own program (stillfail-reader), run with no module.
   exec_path : String
   applier : String
 }
@@ -93,6 +93,32 @@ let machine : Ref[Machine] = Ref({
   exec_path: "node",
   applier: "main.js",
 })
+
+///|
+/// The machine of a station's own program (station_main): its system and processor, its installers' kind, Node
+/// (`exec_path`) and the applier it runs (`applier`: "" where `exec_path` is the station's own program).
+pub fn Machine::of(
+  build_os~ : String?,
+  arch~ : String?,
+  windows~ : Bool,
+  cwd~ : String,
+  exec_path~ : String,
+  applier~ : String,
+) -> Machine {
+  let sh = if windows { "powershell.exe" } else { "/bin/sh" }
+  {
+    build_os,
+    arch,
+    installer_ext: if windows { "ps1" } else { "sh" },
+    codex_standalone: true,
+    plat: if windows { Windows(cwd) } else { Unix },
+    claude_install: how_of(jo([("program", js(sh))]), mark="claude"),
+    agy_install: how_of(jo([("program", js(sh))]), mark="agy"),
+    devin_install: how_of(jo([("program", js(sh))]), mark="devin"),
+    exec_path,
+    applier,
+  }
+}
 
 ///|
 pub fn set_machine(m : Machine) -> Unit {

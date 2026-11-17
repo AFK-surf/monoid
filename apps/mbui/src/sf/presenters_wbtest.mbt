@@ -11,20 +11,22 @@ let desk : (Int, Double, Double) = (0, 1280.0, 800.0)
 ///|
 test "an anchored panel animates both entering and leaving before its presenter is removed" {
   let t = presenting_tester(desk, fn(from) {
-    panel("动画面板", from~, fn(c, _) { c.text("面板内容") |> ignore })
+    panel_nodes("动画面板", from~, fn(v, _) { words_node(v, fn() { "面板内容" }, fn() { paragraph }) |> ignore })
   })
+  // (how far its words are seen, as drawn: None where they are not)
+  let seen = fn() { t.words().iter().find_first(fn(w) { w.0 == "面板内容" }).map(fn(w) { w.5 }) }
   t.tap_text("打开")
   t.run_for(@kit.pop_ms / 2.0)
-  let (_, _, entering) = t.look_of("面板内容").unwrap()
-  assert_true(entering > 0.0 && entering < 1.0)
+  let entering = seen().unwrap()
+  assert_true(entering > 0.0 && entering < 1.0, msg="entering \{entering}")
   t.run_for(@kit.pop_ms)
   close_presented()
   t.frame()
   t.run_for(@kit.pop_out_ms / 2.0)
-  let (_, _, leaving) = t.look_of("面板内容").unwrap()
-  assert_true(leaving > 0.0 && leaving < 1.0)
+  let leaving = seen().unwrap()
+  assert_true(leaving > 0.0 && leaving < 1.0, msg="leaving \{leaving}")
   t.run_for(@kit.pop_out_ms)
-  assert_true(t.look_of("面板内容") is None)
+  assert_true(seen() is None)
 }
 
 ///|
@@ -82,11 +84,12 @@ test "a panel's long list draws its rows in the panel's arrangement" {
   for at in [phone, desk] {
     let seen : Array[Look] = []
     let t = presenting_tester(at, fn(from) {
-      panel("账号", from~, tall=0.8, grows=true, fn(c, _) {
-        panel_list(c, "accounts", 12, 48.0, fn(i) {
-          seen.push(look())
-          c.text("账号 " + i.to_string()) |> ignore
-        }) |> ignore
+      panel_nodes("账号", from~, tall=0.8, grows=true, fn(v, _) {
+        panel_list_node(v, fn() { Array::makei(12, fn(i) { i }) }, fn(b, i) {
+          seen.push(look_node(b))
+          words_node(b, fn() { "账号 " + i.to_string() }, fn() { paragraph }) |> ignore
+        }, est=48.0)
+        |> ignore
       })
     })
     open_it(t)
@@ -100,21 +103,23 @@ test "a panel's long list draws its rows in the panel's arrangement" {
 }
 
 ///|
-test "a capped sheet measures lists that arrive after it opens" {
-  let shown = Ref(false)
+test "a capped sheet lays out lists that arrive after it opens" {
+  let shown = @signals.signal(false)
   let t = presenting_tester(phone, fn(from) {
-    panel("内容", from~, tall=0.8, fn(c, _) {
-      button(c, "显示列表", on_press=fn() {
-        shown.val = true
-      }) |> ignore
-      if shown.val {
-        panel_list(c, "late-a", 1, 20.0, fn(_) {
-          c.box(style=@ui.style(w=Full, h=Fixed(96.0)), fn() { c.text("第一组") |> ignore }) |> ignore
-        }) |> ignore
-        panel_list(c, "late-b", 1, 20.0, fn(_) {
-          c.box(style=@ui.style(w=Full, h=Fixed(80.0)), fn() { c.text("第二组") |> ignore }) |> ignore
-        }) |> ignore
-      }
+    panel_nodes("内容", from~, tall=0.8, fn(v, _) {
+      button_node(v, fn() { "显示列表" }, fn() { shown.set(true) }) |> ignore
+      v.show(fn() { shown.get() }, fn(l) {
+        panel_list_node(l, fn() { [0] }, fn(b, _) {
+          b.height(Is(Some(96.0))) |> ignore
+          words_node(b, fn() { "第一组" }, fn() { paragraph }) |> ignore
+        }, est=20.0)
+        |> ignore
+        panel_list_node(l, fn() { [0] }, fn(b, _) {
+          b.height(Is(Some(80.0))) |> ignore
+          words_node(b, fn() { "第二组" }, fn() { paragraph }) |> ignore
+        }, est=20.0)
+        |> ignore
+      })
     })
   })
   open_it(t)
@@ -308,23 +313,22 @@ test "a long pick with a finger at Small: the search in its sheet finds by the w
 }
 
 ///|
-/// A panel: its words, and a button at its foot that closes it (a small panel's: PanelText, PanelFoot, PanelButton).
-fn panel_body(said : Array[String]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, close) {
-    panel_text(c, fn() { c.text("面板里的话", style=paragraph) |> ignore })
-    panel_foot(c, fn() {
-      panel_button(c, "ok", "好的", tone=Filled, on_press=fn() {
-        said.push("ok")
-        close()
-      }) |> ignore
-    })
+/// A panel: its words, and a button under them that closes it.
+fn panel_body(said : Array[String]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, close) {
+    words_node(v, fn() { "面板里的话" }, fn() { paragraph }) |> ignore
+    button_node(v, fn() { "好的" }, fn() {
+      said.push("ok")
+      close()
+    }, tone=Primary)
+    |> ignore
   }
 }
 
 ///|
 test "a panel with a finger at Small: a sheet; back closes it" {
   let said : Array[String] = []
-  let t = presenting_tester(phone, fn(from) { panel("面板", panel_body(said), from~) })
+  let t = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(said), from~) })
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   assert_true(t.find("面板里的话") is Some(_))
@@ -339,7 +343,7 @@ test "a panel with a finger at Small: a sheet; back closes it" {
 ///|
 test "a panel with a mouse at Large: beside what opened it; a press outside closes it" {
   let said : Array[String] = []
-  let t = presenting_tester(desk, fn(from) { panel("面板", panel_body(said), from~) })
+  let t = presenting_tester(desk, fn(from) { panel_nodes("面板", panel_body(said), from~) })
   open_it(t)
   assert_eq(presented_how, [AsPopover])
   let (_, by) = where_is(t, "打开")
@@ -350,24 +354,24 @@ test "a panel with a mouse at Large: beside what opened it; a press outside clos
 }
 
 ///|
-/// A panel's body of `n` lines (第1行 … 第n行), saying in `held` whether it was drawn held short of them (panel_held).
-fn lines_body(n : Int, held : Ref[Bool]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _) {
-    held.val = panel_held()
+/// A panel's body of `n` lines (第1行 … 第n行).
+fn lines_body(n : Int) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _) {
     for i in 1..=n {
-      c.text("第\{i}行", style=paragraph) |> ignore
+      words_node(v, fn() { "第\{i}行" }, fn() { paragraph }) |> ignore
     }
   }
 }
 
 ///|
 /// A panel's foot: 好的, which says so and closes it.
-fn ok_foot(said : Array[String]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, close) {
-    button(c, "好的", key="ok", tone=Primary, on_press=fn() {
+fn ok_foot(said : Array[String]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, close) {
+    button_node(v, fn() { "好的" }, fn() {
       said.push("ok")
       close()
-    }) |> ignore
+    }, tone=Primary)
+    |> ignore
   }
 }
 
@@ -379,9 +383,9 @@ test "a sheet's action buttons keep their words whole, sharing the row or going 
     ("Doesn't match, deny", "Turn off security mode", true, false),
   ] {
     let t = presenting_tester((2, 320.0, 844.0), fn(from) {
-      panel("Actions", from~, fn(c, _) { c.text("Content") |> ignore }, foot=fn(c, _) {
-        button(c, first, key="first") |> ignore
-        button(c, second, key="second", tone=Primary, disabled~) |> ignore
+      panel_nodes("Actions", from~, fn(v, _) { words_node(v, fn() { "Content" }, fn() { paragraph }) |> ignore }, foot=fn(v, _) {
+        button_node(v, fn() { first }, fn() {  }) |> ignore
+        button_node(v, fn() { second }, fn() {  }, tone=Primary, disabled=fn() { disabled }) |> ignore
       })
     })
     open_it(t)
@@ -407,12 +411,10 @@ fn drawn_span(t : @ui.Tester, words : String) -> (Double, Double) raise {
 }
 
 ///|
-test "a panel with a mouse beside what opened it, as tall as what it holds where that fits: not held" {
-  let held = Ref(true)
-  let t = presenting_tester(desk, fn(from) { panel("面板", lines_body(3, held), from~, foot=ok_foot([])) })
+test "a panel with a mouse beside what opened it, as tall as what it holds where that fits" {
+  let t = presenting_tester(desk, fn(from) { panel_nodes("面板", lines_body(3), from~, foot=ok_foot([])) })
   open_it(t)
   assert_eq(presented_how, [AsPopover])
-  assert_true(!held.val)
   // its foot right under what it holds
   let (_, last) = drawn_span(t, "第3行")
   let (foot, _) = drawn_span(t, "好的")
@@ -421,21 +423,18 @@ test "a panel with a mouse beside what opened it, as tall as what it holds where
 
 ///|
 test "a panel with a mouse opened at the window's foot, with the room over it: over it, as tall as what it holds" {
-  let held = Ref(true)
   let short = (0, 1280.0, 360.0)
-  let t = presenting_tester(short, fn(from) { panel("面板", lines_body(3, held), from~, foot=ok_foot([])) }, button_at=JEnd)
+  let t = presenting_tester(short, fn(from) { panel_nodes("面板", lines_body(3), from~, foot=ok_foot([])) }, button_at=JEnd)
   let (_, by) = where_is(t, "打开")
   open_it(t)
   let (_, bottom) = drawn_span(t, "好的")
   assert_true(bottom < by, msg="not over what opened it")
-  assert_true(!held.val)
 }
 
 ///|
 test "a panel with a mouse taller than the room on either side of what opened it, not than the window: moved over it to stay in, as tall as what it holds" {
-  let held = Ref(true)
   let mid = (0, 1280.0, 400.0)
-  let t = presenting_tester(mid, fn(from) { panel("面板", lines_body(10, held), from~, foot=ok_foot([])) }, button_at=JCenter)
+  let t = presenting_tester(mid, fn(from) { panel_nodes("面板", lines_body(10), from~, foot=ok_foot([])) }, button_at=JCenter)
   let (_, by) = where_is(t, "打开")
   open_it(t)
   // all of it in the window, over the button rather than shortened
@@ -443,23 +442,20 @@ test "a panel with a mouse taller than the room on either side of what opened it
   let (_, bottom) = drawn_span(t, "好的")
   assert_true(top > 0.0 && bottom < mid.2, msg="out of the window")
   assert_true(top < by && bottom > by, msg="not moved over what opened it")
-  assert_true(!held.val, msg="shortened while the window has the room for it")
   assert_true(drawn_span(t, "第10行").1 < bottom)
 }
 
 ///|
 test "a panel with a mouse taller than the window: as tall as the window lets it, its title and foot in it, what it holds scrolled to" {
   let said : Array[String] = []
-  let held = Ref(false)
   let short = (0, 1280.0, 320.0)
-  let t = presenting_tester(short, fn(from) { panel("面板", lines_body(40, held), from~, foot=ok_foot(said)) })
+  let t = presenting_tester(short, fn(from) { panel_nodes("面板", lines_body(40), from~, foot=ok_foot(said)) })
   open_it(t)
   assert_eq(presented_how, [AsPopover])
   let (top, _) = drawn_span(t, "面板")
   let (_, bottom) = drawn_span(t, "好的")
   assert_true(top > 0.0, msg="its title out of the window")
   assert_true(bottom < short.2, msg="its foot out of the window")
-  assert_true(held.val, msg="what it holds not told it scrolls as one")
   // its last line under the foot until what it holds is scrolled, then over it
   let (foot, _) = drawn_span(t, "好的")
   assert_true(drawn_span(t, "第40行").0 > foot)
@@ -542,10 +538,9 @@ test "a question with a mouse at Large: a dialog with its line; Enter says it" {
 test "one over another: a confirm from a menu's item comes when the menu has gone; back closes the topmost first" {
   let said : Array[String] = []
   let t = presenting_tester(phone, fn(from) {
-    panel("面板", fn(c, _) {
-      button(c, "删除它", key="del", on_press=fn() {
-        confirm("删掉吗？", "删掉后不能恢复。", "删掉", fn() { said.push("deleted") }, danger=true)
-      }) |> ignore
+    panel_nodes("面板", fn(v, _) {
+      button_node(v, fn() { "删除它" }, fn() { confirm("删掉吗？", "删掉后不能恢复。", "删掉", fn() { said.push("deleted") }, danger=true) })
+      |> ignore
     }, from~)
   })
   open_it(t)
@@ -564,16 +559,17 @@ test "one over another: a confirm from a menu's item comes when the menu has gon
 /// as it closes unsaid.
 fn dialog_panel(said : Array[String]) -> (Anchor) -> Unit {
   fn(_) {
-    panel(
+    panel_nodes(
       "添加一项",
-      fn(c, _) { c.text("填好下面的内容", style=paragraph) |> ignore },
+      fn(v, _) { words_node(v, fn() { "填好下面的内容" }, fn() { paragraph }) |> ignore },
       from=Unanchored,
       description="每项都会加密保存",
-      foot=fn(c, close) {
-        button(c, "确认添加", key="add", on_press=fn() {
+      foot=fn(v, close) {
+        button_node(v, fn() { "确认添加" }, fn() {
           said.push("added")
           close()
-        }) |> ignore
+        })
+        |> ignore
       },
       gone=fn() { said.push("gone") },
     )
@@ -611,14 +607,12 @@ fn veiled_in(rects : Array[(Double, Double, Double, Double, Int64)], w : Double,
 /// A panel (opened by 打开, `from` it or by nothing) with 删掉 in it, which asks a confirm over it.
 fn panel_with_confirm(at : (Int, Double, Double), by_nothing? : Bool = false) -> @ui.Tester {
   presenting_tester(at, fn(from) {
-    panel(
+    panel_nodes(
       "面板",
       from=if by_nothing { Unanchored } else { from },
-      fn(c, _) {
-        c.text("面板内容") |> ignore
-        button(c, "删掉", key="drop", on_press=fn() {
-          confirm("删掉这个？", "删掉后找不回来。", "确认删掉", fn() {  }, danger=true)
-        }) |> ignore
+      fn(v, _) {
+        words_node(v, fn() { "面板内容" }, fn() { paragraph }) |> ignore
+        button_node(v, fn() { "删掉" }, fn() { confirm("删掉这个？", "删掉后找不回来。", "确认删掉", fn() {  }, danger=true) }) |> ignore
       },
     )
   })
@@ -847,16 +841,19 @@ test "what a sheet's item opens with a finger at Small: a sheet in its place, fr
 /// let go of unsaid.
 fn panel_with_more(said : Array[String]) -> (Anchor) -> Unit {
   fn(_) {
-    panel(
+    panel_nodes(
       "信息",
-      fn(c, close) {
-        c.text("信息内容") |> ignore
-        c.text("信息的第二行") |> ignore
-        c.text("信息的第三行") |> ignore
-        button(c, "看详情", key="more", on_press=fn() {
+      fn(v, close) {
+        words_node(v, fn() { "信息内容" }, fn() { paragraph }) |> ignore
+        words_node(v, fn() { "信息的第二行" }, fn() { paragraph }) |> ignore
+        words_node(v, fn() { "信息的第三行" }, fn() { paragraph }) |> ignore
+        button_node(v, fn() { "看详情" }, fn() {
           close()
-          panel("详情", fn(c, _) { c.text("详情内容") |> ignore }, from=Unanchored, gone=fn() { said.push("detail gone") })
+          panel_nodes("详情", fn(v, _) { words_node(v, fn() { "详情内容" }, fn() { paragraph }) |> ignore }, from=Unanchored, gone=fn() {
+            said.push("detail gone")
+          })
         })
+        |> ignore
       },
       from=Unanchored,
       gone=fn() { said.push("info gone") },
@@ -956,8 +953,7 @@ test "a panel a panel's button opens as it closes, with a mouse at Large: a step
 
 ///|
 /// Each kind of presenter, presented by what `from` opened: what in it is called `word` (a menu's item, a pick's
-/// choice, a confirm's and a question's action, a button in a panel of an old body, of nodes, of nodes a share of the
-/// window tall) closes it and does `then`.
+/// choice, a confirm's and a question's action, a button in a panel of nodes, of nodes a share of the window tall) closes it and does `then`.
 fn kinds_of(from : Anchor, word : String, then : () -> Unit) -> Array[(String, () -> Unit)] {
   let beside = beside_of(from)
   [
@@ -965,22 +961,6 @@ fn kinds_of(from : Anchor, word : String, then : () -> Unit) -> Array[(String, (
     ("a pick", fn() { pick("选一个", [choice("a", "别的"), choice("b", word)], "a", fn(_) { then() }, from=beside) }),
     ("a confirm", fn() { confirm("确定吗？", "这里说明它做什么。", word, then, from~) }),
     ("a question", fn() { ask("写一句", word, fn(_) { then() }, empty=true, from~) }),
-    (
-      "a panel",
-      fn() {
-        panel(
-          "面板",
-          fn(c, close) {
-            c.text("面板里的内容") |> ignore
-            button(c, word, key="then", on_press=fn() {
-              close()
-              then()
-            })
-          },
-          from=Unanchored,
-        )
-      },
-    ),
     (
       "a panel of nodes",
       fn() {

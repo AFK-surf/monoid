@@ -157,13 +157,31 @@ fn long_source(l : LongChat, mode? : String = "chat") -> Source {
             done(Ok(Json::boolean(true)))
           })
         }
+        // (by its number, or a quote's by its time, ts<n>: none past the chat's messages)
         "chat.around" => {
-          let seq = number(Some(params), "seq").to_int()
-          l.asked.push("around \{seq}")
+          let ts = text(Some(params), "ts")
+          let seq = if ts == "" {
+            number(Some(params), "seq").to_int()
+          } else {
+            let mut n = 0
+            for ch in ts.exact_view(start=2) {
+              n = if ch >= '0' && ch <= '9' && n >= 0 { n * 10 + (ch.to_int() - '0'.to_int()) } else { -1 }
+            }
+            if n >= 1 && n <= long_count {
+              n
+            } else {
+              -1
+            }
+          }
+          l.asked.push(if ts == "" { "around \{seq}" } else { "around \{ts}" })
           answer(fn() {
+            if seq < 0 {
+              done(Ok({ "seq": Json::null() }))
+              return
+            }
             l.first.set(long_max(1, seq - long_page))
             l.last.set(long_min(long_count, seq + long_page - 1))
-            done(Ok(Json::null()))
+            done(Ok({ "seq": Json::number(seq.to_double()) }))
           })
         }
         // (what ⌘F finds: message 20's words, there alone)
@@ -677,4 +695,62 @@ test "a chat gone to a message with less than a screen above it and more in the 
     "小屏: 173 reached true, the page before asked 0 while it stands, 2 at the first step back, 2 read back",
     "大屏: 173 reached true, the page before asked 0 while it stands, 1 at the first step back, 1 read back",
   ])
+}
+
+///|
+test "a quote's card naming a message before a chat's told window, on a chat's page made as nodes, 小屏 and 大屏: the window moved about it by its time (chat.around), then gone to, in view; one the chat has nowhere said so" {
+  for s in long_screens {
+    let l = long_chat()
+    let (name, w, h, platform) = s
+    new_run()
+    @sfbase.chat_page_nodes.set(true)
+    let src = long_source(l)
+    open_chat(long_ref)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
+      @sfbase.window_tall.val = h
+    })
+    long_run(t, l, long_opened_ms)
+    // (as the card's press asks it: what is shown holds it not)
+    @signals.start_batch()
+    @sfbase.go_to_quoted(src, long_ref, Some(7.0), None, "ts20", "")
+    @signals.end_batch()
+    for _ in 0..<6 {
+      long_run(t, l, @ui.move_most_ms)
+    }
+    assert_true(l.asked.contains("around ts20"), msg="\{name}: \{@ui.list_text(l.asked)}")
+    assert_true(!l.asked.iter().any(fn(a) { a.has_prefix("older") }), msg="\{name}: \{@ui.list_text(l.asked)}")
+    assert_true(long_drawn(t, 20, h), msg="\{name}: \{Repr(t.words().map(fn(w) { w.0 }))}")
+    // (one the chat has nowhere: said, nothing gone to)
+    @signals.start_batch()
+    @sfbase.go_to_quoted(src, long_ref, Some(7.0), None, "ts999", "")
+    @signals.end_batch()
+    long_run(t, l, @ui.move_most_ms)
+    assert_eq(@sfbase.toast_words(), @sf.t("web-main.quote.gone"), msg=name)
+    assert_true(!@sfbase.go_tos.contains(long_ref.station + "\u{1}" + long_ref.session), msg=name)
+  }
+}
+
+///|
+test "a chat's page made as nodes gone to a message before its told window, 小屏 and 大屏: the window moved about it (chat.around), no page before asked one at a time, then in view" {
+  for s in long_screens {
+    let l = long_chat()
+    let (name, w, h, platform) = s
+    new_run()
+    @sfbase.chat_page_nodes.set(true)
+    let src = long_source(l)
+    open_chat(long_ref)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
+      @sfbase.window_tall.val = h
+    })
+    long_run(t, l, long_opened_ms)
+    @signals.start_batch()
+    @sfbase.go_to(long_ref, 20.0)
+    @signals.end_batch()
+    for _ in 0..<6 {
+      long_run(t, l, @ui.move_most_ms)
+    }
+    assert_true(l.asked.contains("around 20"), msg="\{name}: \{@ui.list_text(l.asked)}")
+    assert_true(!l.asked.iter().any(fn(a) { a.has_prefix("older") }), msg="\{name}: \{@ui.list_text(l.asked)}")
+    assert_true(long_drawn(t, 20, h), msg="\{name}: \{Repr(t.words().map(fn(w) { w.0 }))}")
+  }
 }

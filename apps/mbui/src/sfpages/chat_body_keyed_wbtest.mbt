@@ -228,3 +228,62 @@ test "words streamed into a chat's last message read that message alone, by key,
   assert_eq((read50, read150), (5, 5))
   assert_true(did150 == did50, msg="150 messages \{Repr(did150)}, 50 \{Repr(did50)}")
 }
+
+///|
+/// The chat's messages by key the source keeps another list of (its chat read again: sfbase's chat_messages, by the
+/// list's object): the page's list goes on by that one, what came in it shown, not the list given first.
+test "a chat's messages by key given anew by its source: the page's list goes on by the new one, its message shown" {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  absolute_times.set(false)
+  let first = scale_chat(3)
+  let chat = @signals.signal(first)
+  // (a list held by its object, as the source holds it: another one given is the change)
+  let list = @signals.signal_ref(keyed_of(first))
+  let src : Source = {
+    ..@sfbase.made_source(call=fn(_, _, done) { done(Ok(Json::null())) }),
+    topic_read: fn(name, _) {
+      if name == "chat" {
+        { value: Some(chat.get()), error: None, version: 1 }
+      } else {
+        { value: None, error: None, version: 0 }
+      }
+    },
+    topic_keyed: fn(name, _, _, _) { if name == "chat" { Some(list.get()) } else { None } },
+  }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(f) {
+        f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chat_page_body_node(f, src, scale_ref, tips~, stint=fn() { 0 }, shows=fn() { true })
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    platform=2,
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(scale_words(0)) is Some(_))
+  // (read again: another list, a message more in it, and the head another with it)
+  let again = keyed_with(scale_chat(3), {
+    "title": Json::string("很长的对话（又读了一遍）"),
+    "messages": Json::array(
+      items(Some(scale_chat(3)), "messages") + [scale_message(4, scale_put)],
+    ),
+  })
+  @signals.start_batch()
+  list.set(keyed_of(again))
+  chat.set(again)
+  @signals.end_batch()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(scale_put) is Some(_), msg="the message in the list given anew not shown")
+}

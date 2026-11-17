@@ -661,10 +661,25 @@ fn SlackSurface::message(self : SlackSurface, conn : WsConn, data : String, hand
       )
     e => e
   }
+  let look_up = files_to_look_up(at(payload, "event"))
   self.run(async fn() {
     let taken = try Ok({
       match event {
         Some(e) => {
+          let e = if str_of(at(Some(e), "type")) == Some("message") && look_up.length() > 0 {
+            match at(at(Some(e), "message"), "files") {
+              Some(Arr(files)) => {
+                let looked = []
+                for f in files {
+                  looked.push(if look_up.contains(text(at(Some(f), "id"))) { self.file_info(f) } else { f })
+                }
+                put(e, "message", put(at(Some(e), "message").unwrap(), "files", ja(looked)))
+              }
+              _ => e
+            }
+          } else {
+            e
+          }
           if str_of(at(Some(e), "type")) == Some("message") {
             let m = at(Some(e), "message")
             self.heard(text(at(m, "channel")), text(at(m, "threadTs")), text(at(m, "ts")))
@@ -681,6 +696,22 @@ fn SlackSurface::message(self : SlackSurface, conn : WsConn, data : String, hand
     }
   })
   false
+}
+
+///|
+/// A file Slack's event gave by its id alone, as files.info gives it; as it was where that fails (named as missing).
+async fn SlackSurface::file_info(self : SlackSurface, file : J) -> J {
+  let id = text(at(Some(file), "id"))
+  let info = self.client.api("files.info", [("file", id)], self.bot_token) catch {
+    e => {
+      self.log("warn", "files.info failed", fields=[("file", js(id)), ("error", js(message_of(e)))])
+      return file
+    }
+  }
+  match at(Some(info), "file") {
+    Some(Null) | None => file
+    Some(f) => file_of(f)
+  }
 }
 
 ///|

@@ -34,16 +34,6 @@ test "a run begins with no menu open, none going, no submenu pointed at, no mark
 }
 
 ///|
-test "a run begins with no page's blocks as the run before made them, no page's keys left said" {
-  ker_run() |> ignore
-  page_lists["甲"] = @ui.ListRows::new()
-  page_keyed.val = Some([("a", "b")])
-  ker_run() |> ignore
-  assert_true(page_lists.is_empty())
-  assert_true(page_keyed.val is None)
-}
-
-///|
 test "a run begins with no text read, the reader's layout as at first and its panel shut, whatever the run before left" {
   ker_run() |> ignore
   reading_for("甲") |> ignore
