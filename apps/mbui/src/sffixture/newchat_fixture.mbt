@@ -549,8 +549,8 @@ fn fix_shown_models() -> Array[Json] {
       if o is Object(m) { m["availability"] = Json::string(availability) }
       o
     }
-    let local = if n.station_empty { [] } else { [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")] }
-    if n.other_stations { local + [sourced("gpt-6", "borrowable")] } else { local }
+    let here = if n.station_empty { [] } else { [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")] }
+    if n.other_stations { here + [sourced("gpt-6", "borrowable")] } else { here }
   } else if n.tall {
     fix_crowded_models.map(fix_model) + fix_tall_models.map(fix_model)
   } else if n.providers {
