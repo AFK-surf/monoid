@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [ebb9f966a](https://github.com/AFK-surf/monoid/commit/ebb9f966ae6d2111562b9e2beeec1d4cfb5ee5ed) mbui: what is read as pointed at is pointed at, wh | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 | [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.86 | 120.08 |
-| [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.56 |
 | [ebb9f966a](https://github.com/AFK-surf/monoid/commit/ebb9f966ae6d2111562b9e2beeec1d4cfb5ee5ed) mbui: what is read as pointed at is pointed at, wh | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
 | [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
-| [44efbac96](https://github.com/AFK-surf/monoid/commit/44efbac96d6cc61f7e586cf00b58337c5eb755ea) mbui: a system's batch of a finger's samples laid  | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
