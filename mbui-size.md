@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 122.81 |
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 125.31 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 2.51 | 3.54 | 15.21 | 36.6 | 60.53 | 32.07 | 67.25 | 95.83 | 122.38 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 96.11 | 118.63 |
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
-| [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.64 | 65.84 | 95.78 | 120.38 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
-| [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
