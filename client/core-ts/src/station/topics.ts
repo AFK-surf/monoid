@@ -28,7 +28,7 @@ import * as logins from "./machine-logins.ts";
 import { laterSleep } from "../runtime.ts";
 import { timed } from "../spent.ts";
 import * as looks from "../looks.ts";
-import { freeText, moveShown } from "../move.ts";
+import { freeText, moveShown, moveWhy } from "../move.ts";
 
 /// A chat shows a window of its thread's entries: at most this many of what it shows (shownTo).
 export const WINDOW = 3 * PAGE;
@@ -386,22 +386,25 @@ export class StationTopics implements Owner {
     }
   }
 
-  /// What the station said of moving to `topic.to` as its page draws it (move.ts): the workspace's other stations online
-  /// that offer moving (their overview's `move.offered`), each with its room; the viewer may move as an owner or admin.
+  /// What the station said of moving to `topic.to` as its page draws it (move.ts): the workspace's other stations, each
+  /// with its room, those that cannot be moved to (offline, or not offering it: their overview's `move.offered`) after
+  /// the rest with why (move.ts `moveWhy`); the viewer may move as an owner or admin.
   #moveShown(topic: Topic, raw: unknown): unknown {
     const station = topic.station as string;
     const ws = ofAddress(station);
     const to = typeof topic.to === "string" ? topic.to : "";
-    const targets = (this.#core.views.stations(ws) ?? []).flatMap((s) => {
-      if (s.address === station || !s.online) return [];
+    // (every other station, those it may go to first: one it may not says why and what makes it one)
+    const all = (this.#core.views.stations(ws) ?? []).flatMap((s) => {
+      if (s.address === station) return [];
       const overview = this.#core.data.shared({ topic: "overview", station: s.address });
-      if (get(get(overview, "move"), "offered") !== true) return [];
-      return [{ station: s.id, name: s.name, free: freeText(overview) }];
+      const why = moveWhy(s.online, overview);
+      return [{ station: s.id, name: s.name, free: s.online ? freeText(overview) : "", why }];
     });
+    const targets = [...all.filter((x) => x.why === ""), ...all.filter((x) => x.why !== "")];
     const role = get(this.#core.data.shared({ topic: "workspace", workspace: ws }), "role");
     // (no station chosen, its station's page: the one the last move went to, as the station says)
     const toId = to !== "" ? to : (typeof get(get(raw, "last"), "station") === "string" ? (get(get(raw, "last"), "station") as string) : "");
-    const toName = toId === "" ? "" : (targets.find((x) => x.station === toId)?.name ?? this.#core.views.stationName(`${ws}/${toId}`));
+    const toName = toId === "" ? "" : (all.find((x) => x.station === toId)?.name ?? this.#core.views.stationName(`${ws}/${toId}`));
     return moveShown(raw, { to, toName, module: typeof topic.module === "string" ? topic.module : "", targets, canMove: role === "owner" || role === "admin" });
   }
 

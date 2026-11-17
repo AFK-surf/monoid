@@ -78,8 +78,9 @@ pub fn at_point(x : Double, y : Double) -> Beside {
 ///|
 /// One to pick (`pick`): what it is known by, its words, what it is (`note`: a sentence, a line under its words), what
 /// it is at now (`value`: a word or two, a state, a count, at its row's end on its line), its icon (by name), or its
-/// mark (`mark`: what marks it elsewhere, drawn as large as the row's mark column says: a station's, a maker's). A page
-/// says which each is; the presenter lays each out as what it is, on every screen.
+/// mark (`mark`: what marks it elsewhere, drawn as large as the row's mark column says: a station's, a maker's);
+/// `disabled`: shown faint and not to be chosen (its note says why). A page says which each is; the presenter lays each
+/// out as what it is, on every screen.
 pub(all) struct Choice {
   key : String
   label : String
@@ -87,6 +88,7 @@ pub(all) struct Choice {
   value : String
   icon : String
   mark : ChoiceMark?
+  disabled : Bool
 }
 
 ///|
@@ -127,8 +129,9 @@ pub fn choice(
   value? : String = "",
   icon? : String = "",
   mark? : ChoiceMark,
+  disabled? : Bool = false,
 ) -> Choice {
-  { key, label, note, value, icon, mark }
+  { key, label, note, value, icon, mark, disabled }
 }
 
 ///|

@@ -9,6 +9,7 @@ import { HostWire, type RequestHead, type StationWire } from "../src/station/wir
 import type { StationAddr } from "../src/station/addr.ts";
 import type { FakeHost } from "../src/testing.ts";
 import { apply as applyOps } from "../src/delta.ts";
+import { moveWhy } from "../src/move.ts";
 import { call, subscribe } from "./helpers.ts";
 import { overview, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -104,8 +105,11 @@ test("the page's value is what the station's GET /move says, a module's items on
   assert.equal(r.reads.length, 0, "not read until a page shows it");
   const v = await r.show(1, { to: "st2", module: "chats" });
   assert.deepEqual(r.reads, ["st /move?to=st2&module=chats&limit=50"]);
-  // (the stations it may go to: the others online that offer moving, each with its room; lab offers none)
-  assert.deepEqual(v.targets, [{ station: "st2", name: "mini", free: "空闲 120 GB" }]);
+  // (the other stations, each with its room, those it may go to first; lab offers none: why, and what makes it one)
+  assert.deepEqual(v.targets, [
+    { station: "st2", name: "mini", free: "空闲 120 GB", why: "" },
+    { station: "st3", name: "lab", free: "空闲 30 GB", why: "正式版：在它的「软件与更新」里打开「测试版」后可选" },
+  ]);
   assert.equal(v.toName, "mini");
   assert.equal(v.canMove, true);
   assert.equal(v.moving.line, "聊天 · 修复登录 · 12 MB / 40 MB");
@@ -439,4 +443,15 @@ test("the turn under way stopped: move.stop at once, stopping said till it ends;
   assert.equal(r.view(2).allThere, true);
   assert.equal(r.view(2).allMove ?? null, null);
   r.core.close();
+});
+
+test("a station it may not go to says why and what makes it one", () => {
+  const stable = { move: { offered: false }, updates: [{ id: "station", channel: "stable" }] };
+  assert.equal(moveWhy(true, { move: { offered: true } }), "");
+  assert.equal(moveWhy(false, { move: { offered: true } }), "离线：它上线后可选");
+  assert.equal(moveWhy(true, undefined), "正在读取…");
+  assert.equal(moveWhy(true, { disk: {} }), "版本太旧：更新后可选");
+  assert.equal(moveWhy(true, stable), "正式版：在它的「软件与更新」里打开「测试版」后可选");
+  assert.equal(moveWhy(true, { move: { offered: false } }), "正式版：在它的「软件与更新」里打开「测试版」后可选");
+  assert.equal(moveWhy(true, { ...stable, updates: [{ id: "station", channel: "beta" }] }), "它的 config.json 关掉了迁移（move: false）：去掉后可选");
 });

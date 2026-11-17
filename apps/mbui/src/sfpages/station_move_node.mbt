@@ -48,7 +48,7 @@ pub fn station_move_node(
   let targets = fn() { items(view(), "targets") }
   let chosen = fn() {
     let t = to()
-    t != "" && targets().iter().any(fn(x) { text(Some(x), "station") == t })
+    t != "" && targets().iter().any(fn(x) { text(Some(x), "station") == t && move_target_can(x) })
   }
   let modules = fn() { items(view(), "modules") }
   // (the module open: the one pressed open, else the first that opens by itself; "" none)
@@ -245,8 +245,15 @@ fn move_module_of(v : Json?, id : String) -> Json? {
 }
 
 ///|
-/// Where its things go (in `b`): one row, the station chosen among those the core offers (each its name and its room,
-/// a chevron after the name chosen), or that there is none to go to; at its end the page's main action once one is
+/// Whether the things may go to `x`, a station the core lists (none: its `why` says what stands in the way).
+fn move_target_can(x : Json) -> Bool {
+  text(Some(x), "why") == ""
+}
+
+///|
+/// Where its things go (in `b`): one row, the station chosen among the others of the workspace (each its name and its
+/// room; one it may not go to faint, why and what makes it one under it; a chevron after the name chosen), or that
+/// there is no other; at its end the page's main action once one is
 /// chosen (`v`, what the core says of it then): 全部迁移, asked once; with all of it there, 移出 workspace (`remove`, the
 /// station's own); none while a turn runs, nor the chevron or the choice.
 fn station_move_to_node(
@@ -260,7 +267,7 @@ fn station_move_to_node(
 ) -> Unit {
   let name = fn() {
     let t = to()
-    match targets().iter().find_first(fn(x) { text(Some(x), "station") == t }) {
+    match targets().iter().find_first(fn(x) { text(Some(x), "station") == t && move_target_can(x) }) {
       Some(x) => text(Some(x), "name")
       None => @sf.t("web-pages.stations.move.choose")
     }
@@ -284,15 +291,17 @@ fn station_move_to_node(
         fn(at) {
           // (none to choose while a turn runs: its chevron absent, a press nothing)
           guard !(field(@signals.untracked(v), "moving") is Some(Object(_))) else { return }
-          let now = @signals.untracked(to)
           let all = @signals.untracked(targets).map(fn(x) {
-            let id = text(Some(x), "station")
-            let free = text(Some(x), "free")
-            let label = if free == "" { text(Some(x), "name") } else { text(Some(x), "name") + " · " + free }
-            Some(@sf.menu_item_of(label, chosen=id == now, fn() { @settings.move_target_set(core, address, id) }))
+            @sf.choice(
+              text(Some(x), "station"),
+              text(Some(x), "name"),
+              note=text(Some(x), "why"),
+              value=text(Some(x), "free"),
+              disabled=!move_target_can(x),
+            )
           })
           guard !all.is_empty() else { return }
-          @sf.menu(all, from=Node(at), along=End)
+          @sf.pick("", all, @signals.untracked(to), fn(id) { @settings.move_target_set(core, address, id) }, from=Node(at), along=End)
         },
         value=fn() { if targets().is_empty() { @sf.t("web-pages.stations.move.none") } else { name() } },
         // (a chevron after its name while there is a station to choose, before the action at its end)
