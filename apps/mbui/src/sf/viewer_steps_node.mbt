@@ -73,8 +73,8 @@ fn step_disc(
   // (there while the bars are, or the hand is on it or holds it: a mouse's button held down on it and moved off it, it
   // stays, as one lit or pressed does)
   let woke = fn() { awake() || hot() || b.pressed() }
-  let seen = EdgeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
-  b.reacts(woke, fn(on) { seen.go(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
+  let seen = @motion.NodeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
+  b.reacts(woke, fn(on) { seen.go_ms(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
   b
   .width(By(fn() { Some(disc()) }))
   .height(By(fn() { Some(disc()) }))
@@ -91,11 +91,7 @@ fn step_disc(
   .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
   .alpha(By(fn() { seen.shown(b) * shown(b) }))
   // (taking a press while any of it shows: on its way in, there, or on its way out)
-  .presses(By(fn() {
-    seen.way.said()
-    seen.ended.get() |> ignore
-    seen.way.target() > 0.0 || seen.way.goes_at(b.logic_at())
-  }))
+  .presses(By(fn() { seen.target() > 0.0 || seen.goes(b) }))
   .says(By(fn() { Some(@view.said(Button, label=t(label))) }))
   .on_press(fn() { go(dir) })
   |> ignore

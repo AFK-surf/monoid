@@ -191,6 +191,9 @@ export class Directory extends DurableObject<Env> {
     for (const column of ["ways_at INTEGER", "ways_station TEXT"]) {
       if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === column.split(" ")[0])) this.#run(`ALTER TABLE workspaces ADD COLUMN ${column}`);
     }
+    // Nor whether whoever signs in through the cloud's OpenID provider joins it (1: joinBySignIn), before a machine's
+    // cloud let its organization's people in so (selfhost/setup.ts).
+    if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "sign_in_joins")) this.#run("ALTER TABLE workspaces ADD COLUMN sign_in_joins INTEGER");
     // Nor did push keep a device's language, before there were languages.
     if (!this.#rows("PRAGMA table_info(push)").some((r) => r.name === "lang")) this.#run("ALTER TABLE push ADD COLUMN lang TEXT");
     // Nor what a device shows of notices (JSON: noticeText.ts Shows; null all, in full), before a device said.
@@ -676,6 +679,66 @@ export class Directory extends DurableObject<Env> {
       this.#run("UPDATE users SET admitted = 'invitation' WHERE sub = ? AND admitted IS NULL", sub);
     });
     for (const row of rows) this.#changed(row.workspace as string, true);
+  }
+
+  /**
+   * A self-hosted cloud's workspace that whoever its OpenID provider (OIDC_ISSUER) signs in joins as a member, or no
+   * longer does (selfhost/setup.ts `open_to_sign_in`): a machine's cloud whose provider lets in only its organization's
+   * people (monoid's console) lets each of them in, not only the first to sign in. Those already in stay.
+   */
+  openToSignIn(workspace: string, open: boolean): void {
+    this.#run("UPDATE workspaces SET sign_in_joins = ? WHERE id = ?", open ? 1 : null, workspace);
+  }
+
+  /**
+   * Someone the cloud's OpenID provider has just vouched for (login.ts, before their session is made), in each
+   * workspace open to its sign-in (openToSignIn), with `role`, the one the provider gives them (OIDC_ROLE_CLAIM; null:
+   * it gives none). Not yet in it: added as addMembers adds an email (an invitation to it replaced), as a member
+   * where it gives none (an invitation of their own then left for them to accept), so the session's upsertUser makes them one (#joinAdded). In it: their role made the
+   * provider's, as setRole makes it, but for its last owner's (the workspace keeps one). Not beyond its seats. Taken
+   * out, they are in again as they sign in again: who is in, and as what, is the provider's to say.
+   */
+  async joinBySignIn(email: string, role: Role | null = null): Promise<void> {
+    const address = email.toLowerCase();
+    if (role !== null && !ROLES.includes(role)) role = null;
+    const open = this.#rows("SELECT id, created_by FROM workspaces WHERE sign_in_joins = 1");
+    const changed = new Map<string, string[]>();
+    this.ctx.storage.transactionSync(() => {
+      for (const row of open) {
+        const workspace = row.id as string;
+        const members = this.#rows("SELECT m.sub, m.role FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?", workspace, address);
+        if (members.length > 0) {
+          if (role === null) continue;
+          for (const m of members) {
+            if (m.role === role) continue;
+            const owners = this.#one("SELECT COUNT(*) AS n FROM members WHERE workspace = ? AND role = 'owner'", workspace)!.n as number;
+            if (m.role === "owner" && owners <= 1) continue;
+            this.#run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", role, workspace, m.sub);
+            // (the credentials it holds name its old role, as setRole's)
+            this.#revoke(workspace, "sub", m.sub as string);
+            changed.set(workspace, [...(changed.get(workspace) ?? []), m.sub as string]);
+          }
+          continue;
+        }
+        const added = this.#one("SELECT role FROM added WHERE workspace = ? AND email = ?", workspace, address);
+        if (added && (role === null || added.role === role)) continue;
+        const invited = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, address, nowSeconds())!.n as number;
+        // (without a role of the provider's, an invitation of their own is theirs to accept, with its role)
+        if (role === null && invited > 0) continue;
+        const replaces = added ? 1 : invited;
+        if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) continue;
+        this.#run("DELETE FROM invitations WHERE workspace = ? AND email = ?", workspace, address);
+        this.#run(`INSERT INTO added (workspace, email, role, added_by, added_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (workspace, email) DO UPDATE SET role = excluded.role`, workspace, address, role ?? "member", row.created_by, nowSeconds());
+        changed.set(workspace, changed.get(workspace) ?? []);
+      }
+    });
+    for (const [workspace, also] of changed) {
+      this.#changed(workspace, true, also);
+      this.#tell(also, LIST);
+    }
+    if (changed.size > 0) this.#tell(this.#byEmail(address), LIST);
+    if ([...changed.values()].some((also) => also.length > 0)) await this.#delivered();
   }
 
   /** An account signing in with an email the admin gave rights to before it had one: they are its from now on. */
@@ -1389,8 +1452,9 @@ export class Directory extends DurableObject<Env> {
     await this.#delivered();
   }
 
-  /** A person no longer in a workspace: the rigs they added there leave it with them. */
+  /** A person no longer in a workspace: their rigs and unused rig enrollment tokens leave it with them. */
   #rigsGone(workspace: string, sub: string): void {
+    this.#run("DELETE FROM enrollments WHERE workspace = ? AND created_by = ? AND rig = 1", workspace, sub);
     for (const r of this.#rows("SELECT station FROM station_members WHERE workspace = ? AND rig = 1 AND enrolled_by = ?", workspace, sub)) {
       const station = r.station as string;
       const home = this.#memberships(station)[0]!;
@@ -1466,8 +1530,11 @@ export class Directory extends DurableObject<Env> {
     // (pasted after a command: never beginning with `-`, auth.ts pastedSecret)
     const token = pastedSecret();
     const expires = nowSeconds() + ENROLLMENT_TTL_SEC;
+    const hash = await digest(token);
+    // They may have left while the token's hash was made: leave no new rig token after #rigsGone took theirs.
+    if (rig) this.#role(sub, workspace);
     this.#run("DELETE FROM enrollments WHERE expires_at <= ?", nowSeconds());
-    this.#run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", await digest(token), workspace, clean, sub, expires, rig ? 1 : null);
+    this.#run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", hash, workspace, clean, sub, expires, rig ? 1 : null);
     return { token, expires_at: expires };
   }
 
@@ -1493,6 +1560,8 @@ export class Directory extends DurableObject<Env> {
     if ((row!.rig === 1) !== rig) fail(409, row!.rig === 1 ? "rig_enrollment" : "station_enrollment");
     if (rig && join) fail(409, "rig_enrollment");
     const workspace = row!.workspace as string;
+    // A token kept by a Directory from before #rigsGone took unused tokens must not bring a departed person's rig back.
+    if (rig && !this.#one("SELECT 1 AS x FROM members WHERE workspace = ? AND sub = ?", workspace, row!.created_by)) fail(404, "enrollment_not_found");
     const was = this.#memberships(station);
     // A rig stays one, a station a station, where it is: its kind changes only by removing it first.
     if (join && this.#one("SELECT 1 AS x FROM station_members WHERE station = ? AND rig = 1", station)) fail(409, "rig_enrollment");
@@ -2656,7 +2725,7 @@ export type DirectoryLoad = {
 
 /** What each of the directory's calls serves, as its load is counted (adminLoad); "other" for one not listed. */
 const FAMILIES: Record<string, string> = {
-  accountFor: "signin", upsertUser: "signin",
+  accountFor: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
   me: "me", invitationsFor: "me", setOwnPicture: "me", deleteAccount: "me", revokeSessions: "me",
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",

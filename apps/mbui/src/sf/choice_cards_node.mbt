@@ -44,8 +44,8 @@ pub fn choice_cards_node(
         let on = fn() { item.chosen() }
         // (the hand on it, as a button's: how far its ground has gone towards its warmed one)
         let lit = fn() { !on() && (item.hovered() || item.focus_shown() || item.pressed()) }
-        let hand = EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-        c.reacts(lit, fn(l) { hand.go(c, if l { 1.0 } else { 0.0 }, dur_ms) })
+        let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+        c.reacts(lit, fn(l) { hand.go_ms(c, if l { 1.0 } else { 0.0 }, dur_ms) })
         let ink = fn() { if on() { theme().p.text } else { theme().p.muted } }
         c
         .row(Is(false))

@@ -832,7 +832,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     fn(r) {
       me.call = 0
       me.audio_ready.set(false)
-      match me.stream { Some(st) => st.audio(Bytes::new(0)); None => () }
+      match me.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () }
       match r {
         Ok(_) => me.finished.set(true)
         Err(e) => me.failure.set(Some(text(Some(e), "message")))
@@ -868,7 +868,7 @@ fn ScreenSess::asked_again(self : ScreenSess, src : Source) -> Unit {
 /// Stops viewing (the app went out of sight); the last frame stays, `open` goes on from it.
 fn ScreenSess::pause(self : ScreenSess, src : Source) -> Unit {
   self.audio_ready.set(false)
-  match self.stream { Some(st) => st.audio(Bytes::new(0)); None => () }
+  match self.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () }
   if self.call != 0 {
     (src.cancel)(self.call)
     self.call = 0
@@ -1263,7 +1263,7 @@ let clip_png_max : Int = 8 * 1024 * 1024
 fn ScreenSess::toggle_audio(self : ScreenSess) -> Unit {
   let muted = !self.audio_muted.untracked()
   self.audio_muted.set(muted)
-  if muted { match self.stream { Some(st) => st.audio(Bytes::new(0)); None => () } }
+  if muted { match self.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () } }
   // Muted, the station sends the view no sound till it is on again.
   if self.call != 0 {
     screen_tell(self.src, "screen.sound", { "view": Json::string(self.view), "on": Json::boolean(!muted) })

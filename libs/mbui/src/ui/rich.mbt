@@ -1690,7 +1690,7 @@ fn Ctx::emit_rich_glyphs(
     if g.gw <= 0.0 {
       continue
     }
-    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c], g.ox / z, sc)
+    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c], g.ox / z, sc, z~)
     let gy = glyph_row(oy, lay.line_y[l] + lay.line_base[l], g.oy / z, sc)
     let (gw, gh) = (g.gw / z, g.gh / z)
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a

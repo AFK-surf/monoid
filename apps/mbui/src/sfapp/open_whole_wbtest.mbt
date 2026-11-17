@@ -252,6 +252,12 @@ fn station_open(wide : Bool, gates : Bool, late? : (String) -> Double = station_
   }
   let (w, h) = if wide { (1280.0, 800.0) } else { (390.0, 844.0) }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~)
+  // (without the gate, the app before MBUI_OPEN_WHOLE, which no device runs since: opened at once on its bones and
+  // grown to its whole as what it reads comes, mid-way through its page's slide, what the gate is for; how it moves is
+  // not judged, as open_agent_card's)
+  if !gates {
+    t.motion_unjudged(true)
+  }
   t.draw()
   t.run_for(@ui.move_most_ms * 2.0)
   let before = app.nav.top()
@@ -377,6 +383,12 @@ fn late_act(
   }
   let (w, h) = if wide { (1280.0, 800.0) } else { (390.0, 844.0) }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~)
+  // (without the gate, the app before MBUI_OPEN_WHOLE, which no device runs since: opened at once on its bones and
+  // grown to its whole as what it reads comes, mid-way through its page's slide, what the gate is for; how it moves is
+  // not judged, as open_agent_card's)
+  if !gates {
+    t.motion_unjudged(true)
+  }
   t.draw()
   t.run_for(@ui.move_most_ms * 2.0)
   act(t, src)

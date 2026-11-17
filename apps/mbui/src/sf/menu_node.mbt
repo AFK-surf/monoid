@@ -55,23 +55,7 @@ pub fn menu_node(
       let t = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
-      let way = EdgeWay::new(0.0)
-      way.go(layer, 1.0, @kit.pop_ms)
-      layer.reacts(fn() { layer.leaving() }, at_start=false, fn(going) {
-        if going {
-          way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
-        } else {
-          way.go(layer, 1.0, @kit.pop_ms)
-        }
-      })
-      let look = fn() {
-        let p = way.shown(layer)
-        if layer.leaving() {
-          @kit.pop_out.at(p, p)
-        } else {
-          @kit.pop_in.at(p, p)
-        }
-      }
+      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
       let live = fn() { !layer.leaving() }
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }

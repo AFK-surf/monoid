@@ -213,8 +213,8 @@ export class HermesSession extends AcpSession {
   }
 
   /// The station's instructions go with each prompt, as context before the message: ACP has no system prompt of a
-  /// client's.
+  /// client's. Hermes can otherwise apply its persona only to the internal final output, leaving chat_post plain.
   protected promptText(text: string) {
-    return this.instructions ? `<stillfail-context>\n${this.instructions}\n</stillfail-context>\n\n${text}` : text;
+    return this.instructions ? `<stillfail-context>\n${this.instructions}\n\nYour Hermes persona and communication preferences from SOUL.md and memories apply to the text you send with chat_post, including progress updates. Use the configured form of address and tone in those tool arguments: they are the messages people read; ordinary assistant output stays internal.\n</stillfail-context>\n\n${text}` : text;
   }
 }

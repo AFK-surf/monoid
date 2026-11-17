@@ -1,0 +1,631 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/feishu"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn accounts_base(Net, String) -> String
+
+pub fn accounts_of(String) -> String
+
+pub fn addons() -> JV
+
+pub fn answered_card(Words, String, String, String, String) -> JV
+
+pub fn api_code(Error) -> Double?
+
+pub fn api_method(String) -> (String, String)?
+
+pub fn base64(BytesView) -> String
+
+pub fn base64url(BytesView) -> String
+
+pub let boundary : String
+
+pub fn card_answer_of(JV?, String) -> CardAnswer?
+
+pub let card_chars : Int32
+
+pub fn credentials(FeishuConnect) -> String?
+
+pub fn decode(BytesView) -> Frame raise FeishuError
+
+pub fn decode_uri_component(String) -> String raise FeishuError
+
+pub fn deflate(BytesView) -> Bytes
+
+pub fn domain_of(JV?) -> String
+
+pub fn done_card(Words, Double, String?, String) -> JV
+
+pub fn encode(Frame) -> Bytes
+
+pub fn encode_addons(JV) -> String
+
+pub fn encode_uri_component(String) -> String raise FeishuError
+
+pub fn ended_card(String, String) -> JV
+
+pub fn ended_words(Words, JV?, CardEnd, String?, String) -> String
+
+pub fn entity(String) -> String
+
+pub fn error_words(Error) -> String
+
+pub fn extname(String) -> String
+
+pub async fn feishu_api_run(ToolWorld?, (String) -> Bool, String, JV) -> String
+
+pub fn feishu_api_tool() -> JV
+
+pub fn feishu_connects(JV) -> Array[FeishuConnect]
+
+pub fn file_name(String, String) -> String
+
+pub fn file_type(String) -> String
+
+pub fn gzip(BytesView) -> Bytes
+
+pub async fn harness(@host.Host) -> Unit
+
+pub async fn harness_case(JV) -> JV
+
+pub fn has(String, String) -> Bool
+
+pub fn header(Frame, String) -> String?
+
+pub fn host_disk(@host.Host, sep? : String) -> Disk
+
+pub fn host_log() -> Log
+
+pub fn host_net(@host.Host, stand_in? : String?) -> Net
+
+pub fn host_random_hex(@host.Host) -> (Int32) -> String
+
+pub async fn identity_of(FeishuClient) -> BotIdentity
+
+pub fn inline(JV) -> String
+
+pub fn is_finite(Double) -> Bool
+
+pub fn is_image_name(String) -> Bool
+
+pub fn is_js_space(Int32) -> Bool
+
+pub fn is_json_type(String) -> Bool
+
+pub fn is_record(JV?) -> Bool
+
+pub fn iso(Int64) -> String
+
+pub fn jat(JV?, Int32) -> JV?
+
+pub fn jdelete(JV, String) -> Unit
+
+pub fn jget(JV?, String) -> JV?
+
+pub fn jint(Int32) -> JV
+
+pub fn jitems(JV?) -> Array[JV]
+
+pub fn jkeys(JV) -> Array[String]
+
+pub fn jnum(Double) -> JV
+
+pub fn jnumber(JV?) -> Double?
+
+pub fn jobj(Array[(String, JV?)]) -> JV
+
+pub fn jopt(String?) -> JV
+
+pub fn jput(JV, String, JV) -> Unit
+
+pub fn js(String) -> JV
+
+pub fn js_number(String) -> Double
+
+pub fn js_round(Double) -> Double
+
+pub fn js_string(JV?) -> String
+
+pub fn jstr(JV?) -> String?
+
+pub fn jvalues(JV) -> Array[JV]
+
+pub fn listed_as_event(JV?) -> JV
+
+pub async fn make_feishu(@effect.Runtime, String, String, Net, Words, Log, Disk, (Int32) -> String, String) -> Feishu
+
+pub fn mask_secret(String) -> String
+
+pub let members_ms : Int64
+
+pub fn message_of(JV?, String) -> FeishuMessage?
+
+pub let method_control : Int64
+
+pub let method_data : Int64
+
+pub let min_interval_ms : Int32
+
+pub fn multipart(JV?, Array[FilePart]) -> Bytes
+
+pub fn nullish(JV?, JV) -> JV
+
+pub fn num_text(Double) -> String
+
+pub fn open_base(Net, String) -> String
+
+pub fn open_of(String) -> String
+
+pub fn or_null(JV?) -> JV
+
+pub fn parse(String) -> JV raise @jsjson.SyntaxError
+
+pub let ping_ms : Int32
+
+pub fn points(String) -> Array[String]
+
+pub fn question_card(Words, String, JV?, String, String) -> JV
+
+pub async fn registration_post(Net, String, Array[(String, String)]) -> JV
+
+pub fn replace_every(String, String, String) -> String
+
+pub fn resource_of(String) -> (String, String, String)?
+
+pub fn resource_url(String, String, String) -> String
+
+pub fn seen_patch(FeishuConnect, BotIdentity) -> ((JV) -> Unit)?
+
+pub fn service_of(String) -> Double raise FeishuError
+
+pub fn shown(JV, BotIdentity?) -> JV
+
+pub fn shown_registration(JV) -> JV
+
+pub fn slice_js(String, Int32, b? : Int32) -> String
+
+pub let stale_ms : Int32
+
+pub fn starts(String, String) -> Bool
+
+pub fn stringify(JV) -> String
+
+pub fn text(JV?) -> String
+
+pub fn text_posts(String) -> Array[String]
+
+pub fn to_int32(Double) -> Int32
+
+pub fn took(Words, Double, String) -> String
+
+pub fn trim_end_js(String) -> String
+
+pub fn trim_js(String) -> String
+
+pub fn try_parse(String) -> JV?
+
+pub fn url_with(String, Array[(String, String)]) -> String raise FeishuError
+
+pub fn utf8(String) -> Bytes
+
+pub fn utf8_text(BytesView, bom? : Bool) -> String
+
+pub async fn verify_feishu_app(Net, Words, String, String, String, lang? : String) -> (BotIdentity?, Array[String])
+
+pub fn whole(Double) -> Int64
+
+pub fn working_card(String) -> JV
+
+pub fn wrap64(Double) -> Int64
+
+// Errors
+pub(all) suberror ApiError {
+  ApiError(String, Double)
+}
+
+pub(all) suberror FeishuError {
+  FeishuError(String)
+}
+
+// Types and methods
+pub(all) enum Answered {
+  Data(JV)
+  File(Bytes, String, String)
+}
+pub fn Answered::data(Self) -> JV
+
+pub(all) struct Attachment {
+  path : String
+  name : String
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Big {
+  hi : UInt64
+  lo : UInt64
+}
+pub fn Big::of(UInt64) -> Self
+pub fn Big::to_decimal(Self) -> String
+pub fn Big::to_double(Self) -> Double
+
+#derive(Eq, @debug.Debug)
+pub(all) struct BotIdentity {
+  team : String
+  team_id : String
+  url : String
+  bot_user_id : String
+  bot_name : String
+  bot_image : String?
+  bot_id : String
+}
+pub fn BotIdentity::to_jv(Self) -> JV
+
+pub(all) struct CardAnswer {
+  chat : String
+  message : String
+  user : String
+  event : String
+  value : JV
+  form : JV
+}
+pub fn CardAnswer::to_jv(Self) -> JV
+
+pub(all) enum CardEnd {
+  ByMessage(String, String)
+  Replaced
+  Withdrawn
+  Closed
+}
+
+pub(all) struct ChatMessage {
+  ts : String
+  user : String
+  text : String
+  from_bot : Bool
+  files : Array[InboundFile]
+}
+pub fn ChatMessage::to_jv(Self) -> JV
+
+pub(all) struct Disk {
+  read : async (String) -> Bytes?
+  write_private : async (String, Bytes) -> Unit
+  mkdir : async (String) -> Unit
+  put_new : async (String, Bytes) -> Unit
+}
+
+pub struct Feishu {
+  threads : FeishuThreads
+  registrations : Registrations
+  // private fields
+}
+pub async fn Feishu::close(Self) -> Unit
+pub fn Feishu::create(Self, FeishuConnect, NameBook?) -> FeishuSurface raise FeishuError
+pub fn Feishu::overview(Self, String, String?) -> JV
+pub fn Feishu::tool(Self, () -> ToolWorld?, (String) -> Bool) -> (JV, async (String, JV) -> String)
+
+pub struct FeishuClient {
+  base : String
+  app_id : String
+  // private fields
+}
+pub async fn FeishuClient::api(Self, String, String, body? : JV?, query? : Array[(String, String)], files? : Array[FilePart], take_file? : Bool) -> Answered
+pub async fn FeishuClient::call(Self, String, String, body? : JV?, query? : Array[(String, String)], files? : Array[FilePart]) -> JV
+pub async fn FeishuClient::endpoint(Self) -> (String, Double)
+pub fn FeishuClient::new(Net, String, String, domain? : String, base? : String) -> Self
+pub async fn FeishuClient::resource(Self, String, String, String) -> Bytes
+pub async fn FeishuClient::tenant_token(Self) -> String
+
+#derive(Eq, @debug.Debug)
+pub(all) struct FeishuConnect {
+  id : String
+  enabled : Bool
+  app_id : String
+  app_secret : String
+  domain : String
+  threads : Bool
+  bot_name : String?
+  bot_image : String?
+  bot_open_id : String?
+  tenant : (String, String)?
+  workspace : String?
+}
+pub fn FeishuConnect::to_jv(Self) -> JV
+
+pub(all) struct FeishuMessage {
+  chat : String
+  topic : String?
+  root : String?
+  parent : String?
+  id : String
+  user : String
+  text : String
+  addressed : Bool
+  fresh : Bool
+  p2p : Bool
+  files : Array[InboundFile]
+  at : Double
+}
+pub fn FeishuMessage::to_jv(Self) -> JV
+
+pub struct FeishuStatus {
+  line : StatusLine
+  // private fields
+}
+pub fn FeishuStatus::new(@effect.Runtime, StatusCalls, Words, Log, lang? : String) -> Self
+pub fn FeishuStatus::say(Self, String, message_ts? : String?, page? : String?) -> Unit
+pub fn FeishuStatus::spoke(Self) -> Unit
+
+pub struct FeishuSurface {
+  connect : String
+  client : FeishuClient
+  domain : String
+  mut me : BotIdentity?
+  // private fields
+}
+pub async fn FeishuSurface::address(Self) -> String
+pub async fn FeishuSurface::api(Self, String, JV) -> Answered
+pub async fn FeishuSurface::begin(Self, String, String) -> (ThreadRef, String)
+pub fn FeishuSurface::bot_name(Self) -> String
+pub fn FeishuSurface::bot_user_id(Self) -> String
+pub async fn FeishuSurface::card_ended(Self, ThreadRef, String, String, JV?, CardEnd) -> Unit
+pub async fn FeishuSurface::catch_up(Self, async (JV) -> Unit) -> Unit
+pub async fn FeishuSurface::channel_name(Self, String) -> String?
+pub async fn FeishuSurface::download(Self, InboundFile) -> Bytes
+pub async fn FeishuSurface::edit(Self, ThreadRef, String, String) -> Bool
+pub async fn FeishuSurface::history(Self, ThreadRef, String, Int32) -> Array[ChatMessage]
+pub async fn FeishuSurface::identify(Self) -> BotIdentity
+pub fn FeishuSurface::known_channel(Self, String) -> String?
+pub fn FeishuSurface::known_person(Self, String) -> Person?
+pub async fn FeishuSurface::look_up(Self, String) -> Person?
+pub async fn FeishuSurface::look_up_email(Self, String) -> String?
+pub fn FeishuSurface::mention(Self, String) -> String
+pub fn FeishuSurface::new(FeishuSurfaceOptions) -> Self raise FeishuError
+pub async fn FeishuSurface::people_in(Self, String) -> Array[Member]
+pub fn FeishuSurface::permalink(Self, ThreadRef) -> String raise FeishuError
+pub async fn FeishuSurface::places(Self) -> Array[Place]
+pub fn FeishuSurface::platform(Self) -> String
+pub async fn FeishuSurface::post(Self, ThreadRef, String, Array[Attachment], card? : JV?) -> String
+pub async fn FeishuSurface::quoted(Self, ThreadRef, String) -> ChatMessage?
+pub async fn FeishuSurface::send(Self, ThreadRef, String, String) -> String
+pub fn FeishuSurface::session_link(Self) -> String?
+pub fn FeishuSurface::socket_hooks(Self, String, async (JV) -> Unit) -> SocketHooks raise FeishuError
+pub fn FeishuSurface::stop(Self) -> Unit
+pub async fn FeishuSurface::take(Self, JV, async (JV) -> Unit) -> JV?
+pub fn FeishuSurface::usable(Self, BotIdentity) -> Unit raise FeishuError
+pub async fn FeishuSurface::user_email(Self, String) -> String?
+pub async fn FeishuSurface::user_name(Self, String) -> String?
+pub async fn FeishuSurface::user_of(Self, String) -> String?
+pub fn FeishuSurface::was_called_by(Self, String) -> Bool
+pub fn FeishuSurface::working(Self, ThreadRef, String?, String, page? : String?) -> Unit
+pub fn FeishuSurface::workspace(Self) -> String?
+
+pub(all) struct FeishuSurfaceOptions {
+  connect : String
+  app_id : String
+  app_secret : String
+  domain : String
+  threads : FeishuThreads
+  thread_mode : Bool
+  book : NameBook?
+  client : FeishuClient?
+  net : Net
+  words : Words
+  log : Log
+  disk : Disk
+  rt : @effect.Runtime
+}
+
+pub struct FeishuThreads {
+  path : String
+  // private fields
+}
+pub fn FeishuThreads::begin(Self, String, String, String) -> Unit raise FeishuError
+pub fn FeishuThreads::conversations(Self, String) -> Array[(String, JV)]
+pub fn FeishuThreads::current(Self, String, String) -> JV?
+pub fn FeishuThreads::heard(Self, String, String, Double) -> Unit raise FeishuError
+pub fn FeishuThreads::heard_topic(Self, String, String, String) -> Unit raise FeishuError
+pub fn FeishuThreads::kept_jv(Self) -> JV
+pub async fn FeishuThreads::open(Disk, Log, String) -> Self
+pub fn FeishuThreads::topic_root(Self, String, String) -> String?
+pub async fn FeishuThreads::written(Self) -> Unit
+
+pub(all) struct FilePart {
+  field : String
+  bytes : Bytes
+  name : String
+  mime : String
+}
+
+pub(all) struct Frame {
+  seq_id : Big
+  log_id : Big
+  service : Int64
+  meth : Int64
+  headers : Array[(String, String)]
+  payload_encoding : String?
+  payload_type : String?
+  payload : Bytes?
+  log_id_new : String?
+}
+
+pub(all) struct HttpRequest {
+  url : String
+  verb : String
+  headers : Array[(String, String)]
+  body : Bytes?
+  timeout_ms : Int32
+}
+
+pub(all) struct HttpResponse {
+  status : Int32
+  headers : Array[(String, String)]
+  body : Bytes
+}
+pub fn HttpResponse::header(Self, String) -> String?
+pub fn HttpResponse::ok(Self) -> Bool
+
+#derive(Eq, @debug.Debug)
+pub(all) struct InboundFile {
+  id : String
+  name : String
+  size : Int32
+  url : String?
+}
+pub fn InboundFile::to_jv(Self) -> JV
+
+#derive(Eq)
+pub(all) enum JV {
+  Null
+  Bool(Bool)
+  Num(Double)
+  Str(String)
+  Arr(Array[JV])
+  Obj(Array[(String, JV)])
+}
+pub fn JV::from_json(@json.Json) -> Self
+pub fn JV::get(Self, String) -> Self?
+pub fn JV::to_json(Self) -> @json.Json
+
+pub(all) struct Log {
+  say : (String, String, String, JV) -> Unit
+}
+pub fn Log::error(Self, String, String, JV) -> Unit
+pub fn Log::info(Self, String, String, JV) -> Unit
+pub fn Log::warn(Self, String, String, JV) -> Unit
+
+pub(all) struct Member {
+  id : String
+  name : String
+}
+
+pub(all) struct NameBook {
+  person : (String, async () -> Person?, (Person, Double) -> Bool) -> Person?
+  channel : (String, async () -> String?) -> String?
+}
+
+pub(all) struct Net {
+  fetch : async (HttpRequest) -> HttpResponse
+  now : () -> Int64
+  sleep : async (Int32) -> Unit
+  stand_in : String?
+}
+
+pub struct Parts {
+  // private fields
+}
+pub fn Parts::add(Self, Frame, Int64) -> Bytes? raise FeishuError
+pub fn Parts::drop(Self, Int64) -> Unit
+pub fn Parts::new() -> Self
+pub fn Parts::open_count(Self) -> Int32
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Person {
+  name : String
+  email : String
+}
+pub fn Person::to_jv(Self) -> JV
+
+pub(all) struct Place {
+  id : String
+  name : String
+  kind : String
+}
+
+pub struct PrivateFile {
+  path : String
+  // private fields
+}
+pub fn PrivateFile::new(Disk, String) -> Self
+pub fn PrivateFile::write(Self, String) -> @effect.Deferred[Unit]
+pub async fn PrivateFile::written(Self) -> Unit
+
+pub struct Reg {
+  r : JV
+  // private fields
+}
+pub fn Reg::jv(Self) -> JV
+
+pub struct Registrations {
+  // private fields
+}
+pub fn Registrations::all_jv(Self) -> JV
+pub async fn Registrations::begin(Self, String, String, String?, context? : JV, workspace? : String?) -> Reg
+pub async fn Registrations::cancel(Self, String, String, workspace? : String) -> Bool
+pub async fn Registrations::close(Self) -> Unit
+pub async fn Registrations::complete(Self, String, String, String, async (Reg) -> String) -> String?
+pub fn Registrations::get(Self, String) -> Reg?
+pub fn Registrations::new(@effect.Runtime, RegistrationsOptions) -> Self
+pub fn Registrations::of(Self, String, workspace? : String) -> Array[JV]
+pub fn Registrations::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn Registrations::ready(Self) -> Unit
+pub fn Registrations::start(Self, async (Reg) -> String) -> Unit
+pub async fn Registrations::written(Self) -> Unit
+
+pub(all) struct RegistrationsOptions {
+  post : async (String, Array[(String, String)]) -> JV
+  file : String?
+  disk : Disk
+  log : Log
+  words : Words
+  random_hex : (Int32) -> String
+  exec_path : String
+}
+
+pub(all) struct Socket {
+  send : (Bytes) -> Unit
+  is_open : () -> Bool
+}
+
+pub(all) struct SocketHooks {
+  opened : (Socket) -> Unit
+  message : (Socket, Bytes, Int64) -> Unit raise FeishuError
+  ping : (Socket) -> Unit raise FeishuError
+}
+
+pub(all) struct StatusCalls {
+  api : async (String, String, JV?) -> JV
+  send : async (String, String) -> String
+  called : (String) -> Bool
+}
+
+pub struct StatusLine {
+  mut message_ts : String?
+  mut page : String?
+  // private fields
+}
+pub fn StatusLine::new(@effect.Runtime, Int32, async (String, Int64) -> Bool) -> Self
+pub fn StatusLine::say(Self, String, message_ts? : String?, page? : String?) -> Unit
+
+#derive(Eq, @debug.Debug)
+pub(all) struct ThreadRef {
+  channel : String
+  thread_ts : String
+}
+
+pub(all) struct ToolWorld {
+  session : (String) -> (String?, String)?
+  recent_connects : (String) -> Array[String]
+  target : (String, JV) -> String raise
+  chat_api : (String) -> (async (String, JV) -> Answered)?
+  now : () -> Int64
+  uuid : () -> String
+  disk : Disk
+  sep : String
+}
+
+pub(all) struct Words {
+  tr : (String, String, Map[String, @json.Json]) -> String
+  station_lang : () -> String
+}
+
+// Type aliases
+
+// Traits

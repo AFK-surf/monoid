@@ -32,7 +32,7 @@ pub fn reset() -> Unit {
   rail_native_reset()
   page_switch_reset()
   history_reset()
-  find_close()
+  find_reset()
   jobs_reset()
   open_jobs_reset()
   letters_reset()
