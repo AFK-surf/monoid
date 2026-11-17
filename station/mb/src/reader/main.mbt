@@ -873,6 +873,8 @@ fn main {
       }))
     (Some("harness-accounts-oauth"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_oauth.harness(host))
+    (Some("harness-connects-hub"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
     (Some("closed-cards"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "closed card", (db, ask) => match ask {
         { "thread": Number(thread, ..), .. } => Some(@lookups.closed_step(db, thread.to_int64()))

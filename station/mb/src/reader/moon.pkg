@@ -20,6 +20,7 @@ import {
   "station/accounts_pool",
   "station/letters",
   "station/cc",
+  "station/connects_hub",
   "station/store_threads",
   "station/usage",
   "station/recent",
