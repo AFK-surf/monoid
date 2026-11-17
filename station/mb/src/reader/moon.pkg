@@ -26,6 +26,7 @@ import {
   "station/usagecount",
   "station/signin",
   "station/vaultuses",
+  "station/cloud_net",
   "station/locate",
   "station/searchscope",
   "station/search",

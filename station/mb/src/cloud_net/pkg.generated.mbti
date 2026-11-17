@@ -1,0 +1,645 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/cloud_net"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "station/host",
+}
+
+// Values
+pub fn add_relay(Ways, String, String, String?) -> WaysRecord raise WaysRefusal
+
+pub fn answer_marks(StationMarks, @json.Json, String) -> @json.Json raise NetError
+
+pub fn answer_ways(Ways, @json.Json, String) -> @json.Json raise NetError
+
+pub fn apply_frame(PlaneCloud, @json.Json, (@json.Json) -> Unit) -> Unit
+
+pub fn apply_state(PlaneCloud, String, (@json.Json) -> Unit) -> Unit
+
+pub fn can_parse(String) -> Bool
+
+pub let close_removed : Int32
+
+pub let close_replaced : Int32
+
+pub fn cloud_entry(@json.Json) -> CloudEntry? raise NetError
+
+pub let cloud_origin : String
+
+pub fn cloud_said(@json.Json, (CloudSaid) -> Unit) -> Bool
+
+pub let comma_spec : ProviderSpec
+
+pub let conflict_backoff_ms : Int32
+
+pub let conflict_error : String
+
+pub let dial_cancelled : String
+
+pub fn dial_cloud(DialIO, String, CloudEntry?, Int32, (Result[TlsSocket, DialError]) -> Unit) -> () -> Unit
+
+pub let dial_failed : String
+
+pub let dial_timed_out : String
+
+pub fn disabled_key(PeerDisabled?) -> String
+
+pub fn error_words(Error) -> String
+
+pub fn failure_text(DialError) -> String
+
+pub fn follow_marks(StationMarks, PeerCall, After, log? : (String) -> Unit) -> () -> Unit
+
+pub fn follow_ways(Ways, PeerCall, After, log? : (String) -> Unit) -> () -> Unit
+
+pub let gather_ms : Int32
+
+pub fn goes_through(String?, Array[String]?) -> Bool
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn harness_case(@json.Json) -> @json.Json
+
+pub fn host_dial_io(@host.Host) -> DialIO
+
+pub fn host_http(@host.Host) -> Http
+
+pub fn host_kept(@host.Host, String) -> Kept
+
+pub fn host_pinger(Http, pinged? : (String, Int64) -> Unit) -> Pinger
+
+pub fn host_ws(@host.Host) -> WsIO
+
+pub let http_budget : Int32
+
+pub fn is_revocation(@json.Json) -> Bool
+
+pub fn joined_of(@json.Json?) -> Array[@json.Json]
+
+pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit) -> Unit
+
+pub fn mark_emoji(@json.Json?) -> String?
+
+pub fn mark_icon(@json.Json?) -> String?
+
+pub fn mark_name(@json.Json?) -> String?
+
+pub fn mark_of(@json.Json?) -> MarkRecord?
+
+pub fn marks_json(Array[(String, MarkRecord)]) -> @json.Json
+
+pub let max_batch : Int32
+
+pub let max_own_relays : Int32
+
+pub let mode_pending_s : Int64
+
+pub fn off_relays(Ways, String) -> Array[String]
+
+pub fn otlp_body(String, Array[@json.Json]) -> String
+
+pub fn ours_off(Ways) -> Bool
+
+pub fn parse_url(String) -> Url?
+
+pub fn peer_disabled(Ways, String) -> PeerDisabled?
+
+pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String]
+
+pub let ping_ms : Int32
+
+pub fn plane_teller(PlaneCloud, (@json.Json) -> Unit, () -> Bool) -> (() -> Unit, () -> Unit)
+
+pub async fn presence(PresenceParts) -> Unit
+
+pub fn provider_of(@json.Json?) -> Provider
+
+pub let providers : Array[Provider]
+
+pub let put_most : Int32
+
+pub fn record_of(@json.Json?) -> WaysRecord?
+
+pub let relay_check_ms : Int32
+
+pub fn relay_url(@json.Json, insecure? : Bool) -> String?
+
+pub fn remove_relay(Ways, String, String) -> WaysRecord raise WaysRefusal
+
+pub let replaced_in_a_row : Int32
+
+pub let retry_most_ms : Int32
+
+pub let retry_ms : Int32
+
+pub fn rigs_of(@json.Json?) -> Array[@json.Json]
+
+pub let roster_grace_ms : Int32
+
+pub fn same_url(String) -> String
+
+pub fn set_relays(Ways, String, Array[@json.Json], String?) -> WaysRecord raise WaysRefusal
+
+pub fn set_way(Ways, String, String, Bool) -> WaysRecord raise WaysRefusal
+
+pub fn sha256_hex(String) -> String
+
+pub fn signed_headers(Array[String], String, Int64, (String) -> String, extra? : Array[(String, String)]) -> Headers
+
+pub async fn signed_post(CloudView, (String) -> String, Int64, String, String, @json.Json, String, async (HttpRequest) -> HttpResponse) -> @json.Json?
+
+pub fn spec_of(Provider) -> ProviderSpec
+
+pub fn state_json(Map[String, @json.Json]) -> @json.Json
+
+pub fn station_addr(Ways, String, workspace? : String) -> StationAddr
+
+pub let station_author : String
+
+pub fn still_fails(CloudView) -> Array[String]
+
+pub let stillfail_spec : ProviderSpec
+
+pub fn tell_marks(StationMarks, Tell) -> () -> Unit
+
+pub fn tell_ways(Ways, Tell) -> () -> Unit
+
+pub fn unsupported(String) -> Bool
+
+pub let upgrade_budget : Int32
+
+pub fn wanted_relays(Ways) -> Array[String]
+
+pub let way_kinds : Array[String]
+
+pub fn ways_said_of(@json.Json?) -> WaysSaid?
+
+pub fn ways_teller(Ways, (@json.Json) -> Unit, () -> Bool) -> () -> Unit
+
+pub fn workspace_relays(Ways, String) -> Array[String]
+
+// Errors
+pub(all) suberror MarkRefusal {
+  MarkRefusal(String)
+}
+pub impl Show for MarkRefusal
+
+pub(all) suberror NetError {
+  NetError(String)
+}
+pub impl Show for NetError
+
+pub(all) suberror WaysRefusal {
+  WaysRefusal(String)
+}
+pub impl Show for WaysRefusal
+
+// Types and methods
+pub(all) struct Accepted {
+  issuers : Array[String]
+  types : Array[String]
+}
+
+pub(all) struct After {
+  after : (Int32, () -> Unit) -> () -> Unit
+}
+pub fn After::effect(@effect.Runtime) -> Self
+
+pub(all) struct CloudEntry {
+  origin : String
+  host : String
+  port : Int32
+}
+
+pub(all) enum CloudSaid {
+  Release
+  Models(String?)
+}
+pub fn CloudSaid::to_json(Self) -> @json.Json
+
+pub struct CloudTransport {
+  entry : () -> CloudEntry?
+  io : DialIO
+  pending : Map[Int32, () -> Unit]
+  mut next : Int32
+  mut closed : Bool
+}
+pub fn CloudTransport::close(Self) -> Unit
+pub fn CloudTransport::dial(Self, Int32, (Result[TlsSocket, DialError]) -> Unit) -> () -> Unit
+pub fn CloudTransport::eligible(Self, String, provider? : Provider) -> Bool raise NetError
+pub async fn CloudTransport::fetch(Self, Http, Pool, HttpRequest) -> HttpResponse
+pub fn CloudTransport::new(() -> CloudEntry?, DialIO) -> Self
+pub fn CloudTransport::pending_dials(Self) -> Int32
+pub fn CloudTransport::websocket(Self, String, Headers, WsIO, WsEvents) -> WsSocket
+
+pub(all) struct CloudView {
+  station : () -> String?
+  origin : () -> String?
+  is_rig : () -> Bool
+  stillfail_relays : () -> Array[String]?
+  relays : () -> Array[String]
+  memberships : () -> Array[Membership]
+  membership : (String) -> Membership?
+  rigs : (String) -> Array[String]
+  ways_said : (String) -> WaysSaid?
+  peers_current : () -> Bool
+  listen : (() -> Unit) -> () -> Unit
+}
+
+pub struct ControlPlane {
+  state : CloudView
+  // private fields
+}
+pub fn ControlPlane::credential(Self) -> Accepted
+pub async fn ControlPlane::logs(Self, String) -> Unit
+pub fn ControlPlane::new(CloudView, () -> Provider, (String) -> String, () -> Int64, CloudTransport, Http, provider? : Provider) -> Self
+pub async fn ControlPlane::notify(Self, Array[@json.Json], workspace? : String) -> Unit
+pub fn ControlPlane::release_base(Self) -> String?
+pub fn ControlPlane::said(Self, CloudSaid) -> Unit
+pub fn ControlPlane::spec(Self) -> ProviderSpec
+pub fn ControlPlane::told(Self, String, (CloudSaid) -> Unit) -> Unit
+pub async fn ControlPlane::traces(Self, Array[@json.Json]) -> Unit
+
+pub(all) struct DialError {
+  message : String
+  errors : Array[String]
+}
+
+pub(all) struct DialIO {
+  after : (Int32, () -> Unit) -> () -> Unit
+  tls : (String, Int32, String, TlsEvents) -> TlsSocket raise
+}
+
+pub(all) struct Ended {
+  why : String
+  code : Int32?
+  held : Bool
+}
+
+pub(all) struct Headers {
+  pairs : Array[(String, String)]
+}
+pub fn Headers::get(Self, String) -> String?
+pub fn Headers::new() -> Self
+pub fn Headers::set(Self, String, String) -> Unit
+pub fn Headers::to_json(Self) -> @json.Json
+
+pub(all) struct Holding {
+  disabled_relays : async (String, Array[String], Bool) -> Unit
+}
+
+pub(all) struct Http {
+  fetch : async (HttpRequest) -> HttpResponse
+  over : async (HttpRequest, TlsSocket) -> HttpResponse
+}
+
+pub(all) struct HttpRequest {
+  url : String
+  http_method : String
+  headers : Headers
+  body : String?
+  timeout_ms : Int32
+}
+
+pub(all) struct HttpResponse {
+  status : Int32
+  body : String
+}
+
+pub(all) struct Kept {
+  read : () -> String?
+  write : (String) -> Unit
+}
+pub fn Kept::memory(text? : String) -> (Self, @ref.Ref[String?])
+
+pub struct Listeners {
+  // private fields
+}
+pub fn Listeners::add(Self, () -> Unit) -> () -> Unit
+pub fn Listeners::new() -> Self
+pub fn Listeners::tell(Self) -> Unit
+
+pub(all) struct LockHooks {
+  pinned : (String?) -> Bool
+  seq : (String?) -> Int32?
+  genesis : (String?) -> String?
+  pending : (String?) -> String?
+  left_out : (String) -> String?
+  after : (Int32, String?) -> Array[@json.Json]
+  kept : (String?) -> Array[@json.Json]
+  hash_of : (@json.Json) -> String
+  as_entry : (@json.Json) -> @json.Json?
+  names_station : (Array[@json.Json]) -> Bool
+  take : (Array[@json.Json], String?) -> Unit raise
+  offer_moved : (String, Array[@json.Json]) -> Unit
+  pending_taken : (String?) -> Unit
+  succeed : (String) -> Bool
+  filtered : (Array[@json.Json], Array[String]?) -> (Array[@json.Json], Array[String]?)
+  locked : () -> Bool
+}
+pub fn LockHooks::unlocked(() -> (Array[@json.Json]?, Array[String]?)) -> Self
+
+pub(all) struct MarkRecord {
+  name : String
+  emoji : String
+  icon : String
+  at : Int64
+}
+pub fn MarkRecord::to_json(Self) -> @json.Json
+
+pub(all) struct Membership {
+  workspace : String
+  home : Bool
+  peers : Array[@json.Json]
+}
+
+pub struct Notifier {
+  // private fields
+}
+pub fn Notifier::close(Self) -> Unit
+pub fn Notifier::new(NotifyParts, Int64) -> Self
+pub fn Notifier::queue(Self, Array[@json.Json]) -> Unit
+
+pub(all) struct NotifyParts {
+  last_turn_ended : (String) -> Int64?
+  led : (String) -> Bool
+  session_ws : (String) -> String?
+  subscribe : ((StoreChange) -> Unit) -> () -> Unit
+  read : (String, @json.Json, (Result[@json.Json, String]) -> Unit) -> Unit
+  lang : () -> String
+  enrolled : () -> Bool
+  home : () -> String?
+  member_of : (String) -> Bool
+  post : (Array[@json.Json], String?, (Result[Unit, String]) -> Unit) -> Unit
+  timers : After
+  log : (String) -> Unit
+}
+
+pub(all) struct OwnRelay {
+  url : String
+  by : String?
+}
+pub fn OwnRelay::to_json(Self) -> @json.Json
+
+pub(all) struct PeerCall {
+  call : (String, String?, @json.Json, (Result[@json.Json, String]) -> Unit) -> Unit
+}
+
+pub(all) struct PeerDisabled {
+  relays : Array[String]
+  public : Bool
+}
+pub fn PeerDisabled::to_json(Self) -> @json.Json
+
+pub struct PeerRelays {
+  mut supported : Bool
+  // private fields
+}
+pub async fn PeerRelays::again(Self) -> Unit
+pub fn PeerRelays::close(Self) -> Unit
+pub fn PeerRelays::held_of(Self, String) -> String?
+pub async fn PeerRelays::hold(Self, String) -> Unit
+pub fn PeerRelays::new(Holding, Ways, @effect.Runtime, log? : (String) -> Unit) -> Self
+pub async fn PeerRelays::restore(Self) -> Unit
+
+pub(all) struct Pinger {
+  ping : async (String) -> Bool
+  pinged : ((String, Int64) -> Unit)?
+}
+
+pub struct PlaneCloud {
+  cloud : StateCloud
+  lock : LockHooks
+  mut plane_lock_seq : Int32?
+  plane_lock_seqs : Map[String, Int32?]
+  plane_lock_hashes : Map[String, String]
+  plane_parted : Map[String, String]
+  mut reached : Bool
+  mut rosters_said : Int32
+  mut plane_peers : Array[@json.Json]?
+  mut plane_gateways : Array[String]?
+  now_secs : () -> Int64
+  reload : () -> Unit
+  rig_grants_gone : () -> Unit
+  tool_calls : ((@json.Json, (Result[@json.Json, String]) -> Unit) -> Unit)?
+  log : (String) -> Unit
+}
+pub fn PlaneCloud::lapse(Self, After) -> Unit
+pub fn PlaneCloud::new(StateCloud, () -> Int64, lock? : LockHooks, reload? : () -> Unit, rig_grants_gone? : () -> Unit, tool_calls? : (@json.Json, (Result[@json.Json, String]) -> Unit) -> Unit, log? : (String) -> Unit) -> Self
+
+pub struct Pool {
+  // private fields
+}
+pub fn Pool::new() -> Self
+
+pub(all) struct PresenceParts {
+  plane : PlaneCloud
+  ways : Ways
+  spec : () -> ProviderSpec
+  sign : (String) -> String
+  version : String
+  up : Up
+  ws : WsIO
+  transport : CloudTransport
+  said : (CloudSaid) -> Unit
+  every : (Int32, () -> Unit) -> () -> Unit
+  timers : After
+  write_presence : (Bool, String?, Bool) -> Unit
+}
+
+pub(all) enum Provider {
+  Stillfail
+  Comma
+}
+pub fn Provider::name(Self) -> String
+
+pub(all) struct ProviderSpec {
+  provider : Provider
+  name : String
+  enroll_path : String
+  enroll_prefixes : Array[String]
+  join_path : String
+  connect_path : String
+  connect_prefixes : Array[String]
+  notify_path : String
+  notify_tag : String
+  telemetry : Telemetry?
+  release_under : String?
+  credential : Accepted
+  feedback : Bool
+  pages : Bool
+  tools : Bool
+}
+pub fn ProviderSpec::release_base(Self, String) -> String
+
+pub(all) struct RelayEndpoint {
+  insert_relay : async (String) -> Unit
+  remove_relay : async (String) -> Unit
+  keep : (Array[String]) -> Unit
+  home : () -> String?
+  public_relays : async (Bool) -> Unit
+}
+
+pub struct Replaced {
+  mut in_a_row : Int32
+  mut conflict : Bool
+  // private fields
+}
+pub fn Replaced::ended(Self, Int32?, Bool) -> Unit
+pub fn Replaced::new(told? : (Bool) -> Unit) -> Self
+pub fn Replaced::steady(Self) -> Unit
+
+pub(all) struct SaidEntry {
+  n : Int64
+  kind : String
+  author_kind : String
+  text : String?
+  at : Int64
+}
+pub fn SaidEntry::to_json(Self) -> @json.Json
+
+pub struct StateCloud {
+  state : Map[String, @json.Json]?
+  mut peers_current : Bool
+  told : Listeners
+}
+pub fn StateCloud::membership(Self, String) -> Membership?
+pub fn StateCloud::memberships(Self) -> Array[Membership]
+pub fn StateCloud::new(@json.Json?) -> Self
+pub fn StateCloud::relays(Self) -> Array[String]
+pub fn StateCloud::removed(Self) -> Bool
+pub fn StateCloud::rigs(Self, String) -> Array[String]
+pub fn StateCloud::tell(Self) -> Unit
+pub fn StateCloud::update(Self, (Map[String, @json.Json]) -> Unit) -> Unit
+pub fn StateCloud::view(Self) -> CloudView
+pub fn StateCloud::ways_said(Self, String) -> WaysSaid?
+
+pub(all) struct StationAddr {
+  id : String
+  relays : Array[String]
+  disabled_relays : Array[String]
+}
+pub fn StationAddr::to_json(Self) -> @json.Json
+
+pub struct StationMarks {
+  cloud : CloudView
+  // private fields
+}
+pub fn StationMarks::change(Self, name? : @json.Json?, emoji? : @json.Json?, icon? : @json.Json?, (String, String, String)) -> MarkRecord raise MarkRefusal
+pub fn StationMarks::listen(Self, (String) -> Unit) -> () -> Unit
+pub fn StationMarks::me(Self) -> String
+pub fn StationMarks::new(CloudView, Kept, () -> Int64) -> Self
+pub fn StationMarks::of(Self, String) -> Array[(String, MarkRecord)]
+pub fn StationMarks::record(Self, String) -> MarkRecord?
+pub fn StationMarks::stations_of(Self, String) -> Array[String]
+pub fn StationMarks::take(Self, String, MarkRecord) -> Bool
+
+pub(all) enum StoreChange {
+  SessionChanged(String)
+  ThreadSaid(Int64, Array[SaidEntry])
+}
+
+pub(all) struct Telemetry {
+  path : String
+  logs : String?
+  prefixes : Array[String]
+}
+
+pub(all) struct Tell {
+  tell : (String, @json.Json, String, String) -> Unit
+}
+
+pub(all) struct TlsEvents {
+  error : (String) -> Unit
+  secure : () -> Unit
+}
+
+pub(all) struct TlsSocket {
+  id : Int32
+  host : String
+  port : Int32
+  destroy : () -> Unit
+}
+
+pub struct Told[X] {
+  // private fields
+}
+pub fn[X] Told::add(Self[X], (X) -> Unit) -> () -> Unit
+pub fn[X] Told::new() -> Self[X]
+pub fn[X] Told::tell(Self[X], X) -> Unit
+
+pub struct Up {
+  mut value : Bool
+  // private fields
+}
+pub fn Up::new(Bool) -> Self
+pub fn Up::set(Self, Bool) -> Unit
+pub async fn Up::until(Self, Bool) -> Unit
+
+pub struct Url {
+  scheme : String
+  username : String
+  password : String
+  host : String?
+  port : Int32?
+  path : String
+  query : String?
+  fragment : String?
+}
+pub fn Url::hash(Self) -> String
+pub fn Url::hostname(Self) -> String
+pub fn Url::href(Self) -> String
+pub fn Url::origin(Self) -> String
+pub fn Url::search(Self) -> String
+
+pub struct Ways {
+  cloud : CloudView
+  // private fields
+}
+pub fn Ways::change(Self, String, (Array[OwnRelay], Array[String]) -> (Array[OwnRelay], Array[String]) raise WaysRefusal) -> WaysRecord raise WaysRefusal
+pub fn Ways::listen(Self, (String) -> Unit) -> () -> Unit
+pub fn Ways::new(CloudView, Kept, () -> Int64) -> Self
+pub fn Ways::record(Self, String) -> WaysRecord?
+pub fn Ways::relays(Self) -> Array[String]
+pub fn Ways::take(Self, String, WaysRecord) -> Bool
+pub fn Ways::view(Self, String) -> WaysRecord
+
+pub(all) struct WaysRecord {
+  relays : Array[OwnRelay]
+  off : Array[String]
+  at : Int64
+  station : String
+}
+pub fn WaysRecord::to_json(Self) -> @json.Json
+
+pub(all) struct WaysSaid {
+  relays : Array[String]
+  off : Array[String]
+}
+pub fn WaysSaid::to_json(Self) -> @json.Json
+
+pub(all) struct WsEvents {
+  open : () -> Unit
+  message : (String) -> Unit
+  unexpected : (Int32) -> Unit
+  error : (String) -> Unit
+  close : (Int32, String) -> Unit
+}
+
+pub(all) struct WsIO {
+  open : (String, Headers, TlsSocket?, WsEvents) -> WsSocket raise
+}
+
+pub(all) struct WsSocket {
+  send : (String) -> Unit
+  close : () -> Unit
+  terminate : () -> Unit
+  is_open : () -> Bool
+}
+
+// Type aliases
+
+// Traits

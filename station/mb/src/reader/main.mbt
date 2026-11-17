@@ -947,6 +947,8 @@ fn main {
           Some(@posts.step(db, thread.to_int64(), after.to_int64()))
         _ => None
       }))
+    (Some("harness-cloud-net"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_net.harness(host))
     (Some("usage-retire"), Some(db), _) =>
       // (asked a step at a time: `{"drop": true}` the retired statistics, else the fill; each answers whether it is done)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "usage retirement", (db, ask) => match ask {
