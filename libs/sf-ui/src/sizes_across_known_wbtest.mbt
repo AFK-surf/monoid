@@ -6,7 +6,6 @@
 ///|
 fn init {
   @ui.sizes_across_known([
-    ("src/slider_node_wbtest.mbt", 1),
     ("src/switch_node_wbtest.mbt", 1),
     ("src/video_capsule_wbtest.mbt", 1),
   ])

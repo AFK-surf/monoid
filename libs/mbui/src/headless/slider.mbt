@@ -13,6 +13,7 @@ pub struct Slider {
   priv min : Double
   priv max : Double
   priv off : () -> Bool
+  priv hand : Ref[Bool]
 }
 
 ///|
@@ -42,6 +43,14 @@ pub fn Slider::disabled(self : Slider) -> Bool {
 /// Whether a finger or the pointer is held on it now (View::pressed).
 pub fn Slider::pressed(self : Slider) -> Bool {
   self.node.pressed()
+}
+
+///|
+/// Whether what moved its value last was the hand on it (a press along it, a drag), not a key or a screen reader's
+/// step: said before `change` is told, so a look reading it as the value changes follows the hand at once and takes a
+/// step its own way (a knob gliding to End).
+pub fn Slider::in_hand(self : Slider) -> Bool {
+  self.hand.val
 }
 
 ///|
@@ -127,9 +136,10 @@ pub fn slider(
       change(next)
     }
   }
+  let hand = Ref(false)
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
     let able = fn() { !disabled() }
-    look(v, { node: v, now: value, min, max, off: disabled })
+    look(v, { node: v, now: value, min, max, off: disabled, hand })
     v
     .presses(By(able))
     .focusable(By(able))
@@ -140,10 +150,12 @@ pub fn slider(
     }))
     .on_step(fn(by) {
       if !disabled() {
+        hand.val = false
         go(value() + by.to_double() * step_by)
       }
     })
     .on_drag(fn(d) {
+      hand.val = true
       if !disabled() && drag is Some(f) {
         f(d)
       } else if !disabled() {
@@ -185,6 +197,7 @@ pub fn slider(
       }
       match to {
         Some(t) => {
+          hand.val = false
           go(t)
           true
         }
