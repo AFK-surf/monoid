@@ -53,6 +53,7 @@ import {
   "station/pi",
   "station/api_routes",
   "station/pieces",
+  "station/jobs_host",
   "station/nodepath",
   "station/admit",
   "moonbitlang/core/encoding/base64",

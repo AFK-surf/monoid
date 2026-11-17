@@ -1074,6 +1074,8 @@ fn main {
           }
         })
       })
+    (Some("harness-jobs-host"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @jobs_host.harness(host))
     (Some("page-letters"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => {
         let letters : Ref[@letters.Letters?] = Ref(None)

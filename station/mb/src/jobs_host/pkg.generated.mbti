@@ -1,0 +1,556 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/jobs_host"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/cloud_net",
+  "station/host",
+}
+
+// Values
+pub fn amd_integrated(String?) -> Bool
+
+pub fn apple_gpu(String) -> Gpu?
+
+pub let awake_ms : Double
+
+pub let back_kept_ms : Double
+
+pub let back_tidy_ms : Double
+
+pub fn blob_id(Bytes) -> String
+
+pub async fn body_up_to(Answer, Int32, until_head? : Bool) -> Bytes
+
+pub async fn bounded(Int32, async () -> @json.Json) -> Got?
+
+pub async fn bring_back(@host.Host, Bulk, async (String, @json.Json, Body?) -> (@json.Json, Body?), @json.Json, String?, String) -> @json.Json
+
+pub let check_ms : Double
+
+pub fn checks_counted(@json.Json?) -> @json.Json?
+
+pub let chunk : Int32
+
+pub let default_limit : Double
+
+pub fn describe_answer(String, String, String, @json.Json?, @json.Json?) -> @json.Json
+
+pub fn detailed(@json.Json) -> @json.Json
+
+pub async fn download(@host.Host, Bulk, async (@json.Json) -> (@json.Json, Body?), @json.Json, String, Bool) -> Double
+
+pub fn encode_uri_component(String) -> String
+
+pub fn exit_code_of(String) -> Double?
+
+pub async fn fetch_file(@host.Host, Bulk, async (@json.Json) -> (@json.Json, Body?), String, Double) -> Bytes?
+
+pub async fn fetch_public(LinkIo, @cloud_net.Url, String) -> Answer?
+
+pub async fn file_get(@host.Host, String, @json.Json) -> (@json.Json, Body?)
+
+pub async fn file_path(@host.Host, String, String, Bool) -> String
+
+pub async fn file_put(@host.Host, String, @json.Json, Body?) -> @json.Json
+
+pub let follow_look_ms : Int32
+
+pub fn frame(Int32, Bytes) -> Bytes
+
+pub let frame_binary : Int32
+
+pub let frame_close : Int32
+
+pub let frame_text : Int32
+
+pub fn from_base64(String) -> Bytes raise
+
+pub async fn get_at_on(@host.Host, @cloud_net.Url, Array[String], String) -> Answer?
+
+pub let gets_max : Int32
+
+pub let gib_size : Double
+
+pub async fn github_api_on(@host.Host, String) -> @json.Json
+
+pub fn github_path(String) -> (String, String, Bool, Double)?
+
+pub let give_up_ms : Double
+
+pub let gpu_wait_ms : Int32
+
+pub async fn harness(@host.Host) -> Unit
+
+pub async fn harness_case(@host.Host, @json.Json) -> @json.Json
+
+pub fn head_of(String, @cloud_net.Url) -> @json.Json
+
+pub fn heard(Got?, @json.Json) -> @json.Json
+
+pub fn held_claims(String?) -> @json.Json
+
+pub fn html_text(String) -> String
+
+pub let idle_ms : Double
+
+pub fn ip_kind(String) -> Int32
+
+pub fn is_ipv4(String) -> Bool
+
+pub fn is_ipv6(String) -> Bool
+
+pub fn is_public(String) -> Bool
+
+pub fn iso_time(String) -> Double?
+
+pub fn issue_preview(String, String, Double, @json.Json, @json.Json) -> @json.Json
+
+pub let job_command : String
+
+pub let job_command_name : String
+
+pub fn job_file_id(String, String) -> String?
+
+pub let job_files_orphan_ms : Double
+
+pub fn job_json(@json.Json) -> @json.Json
+
+pub let job_log_cap : Double
+
+pub let job_logs_kept_ms : Double
+
+pub fn job_named(String, String, Double?) -> String
+
+pub fn js_number(Double) -> String
+
+pub fn js_round(Double) -> Double
+
+pub async fn latest_in(@host.Host, String, most? : Int32) -> Double
+
+pub let latest_most : Int32
+
+pub async fn linux_gpus(LinuxIo, root? : String) -> Array[LinuxGpu]
+
+pub let list_alone_wait_ms : Int32
+
+pub async fn list_stations(@json.Json, String, String, async () -> @json.Json, async (String) -> @json.Json, Array[Sandbox], (async (@json.Json, @json.Json?) -> @json.Json)?) -> @json.Json
+
+pub let list_wait_ms : Int32
+
+pub let load_wait_ms : Int32
+
+pub let log_lines : Int32
+
+pub async fn lookup_on(@host.Host, String) -> Array[String]
+
+pub fn mac_discrete_gpus(String) -> Array[VendorGpu]
+
+pub let mac_displays_keep_ms : Double
+
+pub let max_file : Double
+
+pub async fn measure(async () -> @json.Json, async () -> @json.Json, async () -> (Double, Double)?, () -> @json.Json, () -> @json.Json) -> @json.Json
+
+pub async fn measured_load((async () -> @json.Json)?) -> @json.Json
+
+pub let measured_most : Int32
+
+pub let mirror_idle_ms : Double
+
+pub let mirror_recent_ms : Double
+
+pub let mode_exec : String
+
+pub let mode_file : String
+
+pub let mode_link : String
+
+pub fn moved_said(String, String?, String, Double?, String?) -> String
+
+pub let notices_shown : Int32
+
+pub let notify_body_limit : Int32
+
+pub async fn notify_endpoint(String?, Bytes, async (String, String) -> Unit) -> (Int32, @json.Json)
+
+pub fn nvidia_gpus(String) -> Array[Gpu]
+
+pub let nvidia_keep_ms : Double
+
+pub fn oembed_of(@cloud_net.Url) -> String?
+
+pub let older : String
+
+pub async fn open_socket(@host.Host, Array[(String, String)], Int32, String, String, asker? : Asker) -> ServiceSocket raise SocketRefused
+
+pub async fn output_at(@host.Host, String) -> Double?
+
+pub async fn patch_of(@host.Host, String, String, String, Array[Change]) -> Patch?
+
+pub fn pci_names(String) -> Map[String, String]
+
+pub fn portable_component(String) -> String
+
+pub fn preview_target(String) -> (Int32, String)?
+
+pub fn preview_words(String, String, Array[(String, String)]) -> String
+
+pub async fn proxy_preview(@host.Host, String, Array[(String, String)], Bytes?, Int32, String, String, asker? : Asker) -> PreviewAnswer
+
+pub fn pull_preview(String, String, Double, @json.Json, @json.Json, @json.Json?) -> @json.Json
+
+pub async fn pump_socket(@effect.Runtime, ServiceSocket, FrameReader, ByteSink) -> Unit
+
+pub fn queues(String) -> Bool
+
+pub async fn read_body(@host.Host, Body, Double) -> Bytes
+
+pub fn record_closing(@json.Json?, Double) -> @json.Json?
+
+pub fn record_used(@json.Json?, String, String, String) -> @json.Json? raise
+
+pub let remind_ms : Double
+
+pub fn remote_budget(Double?) -> Double
+
+pub let remote_budget_most : Double
+
+pub fn remote_hash(@json.Json) -> String
+
+pub fn resolve_url(String, @cloud_net.Url) -> @cloud_net.Url?
+
+pub let room_recent_ms : Double
+
+pub async fn rotate_in_place(@host.Host, String, Double, keep? : Double) -> Bool
+
+pub async fn run_on(@host.Host, String, Array[String], Int32) -> Ran
+
+pub fn rust_arch(String) -> String
+
+pub fn rust_lines(String) -> Array[String]
+
+pub async fn screen_endpoint(String?, Bytes, async (String, String, Double) -> @json.Json) -> (Int32, @json.Json)
+
+pub fn sha1(BytesView) -> Bytes
+
+pub fn sha1_hex(BytesView) -> String
+
+pub fn shown_name(String, String) -> String
+
+pub async fn station_file(@host.Host, Bulk, async (String, @json.Json, Body?) -> (@json.Json, Body?), String, @json.Json, @json.Json, String) -> @json.Json
+
+pub fn station_named(String, Array[String], @json.Json?) -> String raise
+
+pub let stop_grace_ms : Int32
+
+pub let stop_look_ms : Int32
+
+pub let stop_settle_ms : Int32
+
+pub fn summary(@json.Json) -> String
+
+pub let sync_answer_ms : Int32
+
+pub let sync_packed : Int32
+
+pub let sync_raw : Int32
+
+pub async fn tail(@host.Host, String, Int32) -> String
+
+pub fn targets_of(@json.Json?, String) -> @json.Json?
+
+pub fn task_workspace(@json.Json, String?) -> String raise
+
+pub let tasks_kept_ms : Double
+
+pub async fn tidy_back(@host.Host, Array[String], Double) -> Array[String]
+
+pub async fn tidy_landing(@host.Host, String, Int32, async (Int32) -> Bool) -> Unit
+
+pub fn tree_bytes(String) -> Double
+
+pub let unprotected_words : String
+
+pub fn windows_amd_gpus(String) -> Array[Gpu]
+
+pub fn words_of(Error) -> String
+
+pub let wrapper : String
+
+pub async fn write_body(@host.Host, String, Body, Double, Double) -> Double
+
+// Errors
+pub(all) suberror HostError {
+  HostError(String)
+}
+pub impl Show for HostError
+
+pub(all) suberror PeerError {
+  Refused(String)
+  NoLink(String)
+  NoBytes(String)
+  Unreached(String)
+}
+
+pub(all) suberror SocketRefused {
+  SocketRefused(Int32, String)
+}
+
+// Types and methods
+pub(all) struct Answer {
+  status : Int32
+  headers : Array[(String, String)]
+  next : async () -> Bytes?
+  close : async () -> Unit
+  url : String
+}
+pub fn Answer::header(Self, String) -> String?
+
+#derive(Eq, Show)
+pub(all) enum Asker {
+  Preview
+  Peer
+}
+
+pub(all) enum Body {
+  Data(Bytes)
+  File(String, Double, Double)
+}
+
+pub struct Bulk {
+  // private fields
+}
+pub fn Bulk::new() -> Self
+pub async fn[X] Bulk::run(Self, async () -> X) -> X
+
+pub(all) struct ByteSink {
+  write : async (Bytes) -> Unit
+  finish : async () -> Unit
+}
+
+pub(all) struct Change {
+  path : String
+  old : String
+  mode : String
+  after : Bytes?
+  after_mode : String?
+}
+
+pub struct FrameReader {
+  // private fields
+}
+pub fn FrameReader::new(async () -> Bytes?, carry? : Bytes) -> Self
+pub async fn FrameReader::next(Self) -> (Int32, Bytes)?
+
+pub(all) enum Got {
+  Answered(@json.Json)
+  Failed(Error)
+}
+
+#derive(Eq, Show)
+pub(all) struct Gpu {
+  name : String
+  cores : Double?
+  memory_total : Double?
+  memory_used : Double?
+  busy : Double?
+}
+pub fn Gpu::to_json(Self) -> @json.Json
+
+pub struct Gpus {
+  // private fields
+}
+pub fn Gpus::cached(Self) -> Array[Gpu]?
+pub fn Gpus::new(async (String, Array[String], Int32) -> Ran, String, String, () -> Double, async () -> Array[LinuxGpu]) -> Self
+pub async fn Gpus::read(Self) -> Array[Gpu]?
+
+pub(all) struct JobStart {
+  id : String
+  name : String
+  command : String
+  cwd : String
+  port : Double?
+  token : String
+  log : String
+  session : String
+}
+pub fn JobStart::from_json(@json.Json) -> Self
+
+pub struct JobsHost {
+  dir : String
+  // private fields
+}
+pub async fn JobsHost::cap_log(Self, String) -> Bool
+pub async fn JobsHost::clear_files(Self, Array[(String, String)]) -> Array[String]
+pub async fn JobsHost::collect(Self, Double, Array[String], (String) -> @json.Json?) -> Array[String]
+pub async fn JobsHost::end_group(Self, Int32, Int32) -> Unit
+pub fn JobsHost::exit_file(Self, String) -> String
+pub fn JobsHost::follow(Self, String, Int32, Double) -> Unit
+pub fn JobsHost::follows(Self, Int32) -> Bool
+pub async fn JobsHost::grace(Self, String) -> Unit
+pub async fn JobsHost::held_claims(Self) -> @json.Json
+pub fn JobsHost::is_running(Self, String) -> Bool
+pub fn JobsHost::job_env(Self, JobStart, Map[String, String], String) -> Map[String, String]
+pub async fn JobsHost::keep_claims(Self, @json.Json) -> Unit
+pub fn JobsHost::lost_file(Self, String) -> String
+pub async fn JobsHost::new(@host.Host, String, procs? : Processes, now? : () -> Double) -> Self
+pub fn JobsHost::on_ended(Self, async (String, Int32, Double?, Double) -> Unit) -> Unit
+pub async fn JobsHost::pid_alive(Self, Int32) -> Bool
+pub async fn JobsHost::read_exit(Self, String) -> Double?
+pub fn JobsHost::set_notify_url(Self, String) -> Unit
+pub fn JobsHost::shutdown(Self) -> Unit
+pub async fn JobsHost::signal(Self, Int32, String) -> Unit
+pub async fn JobsHost::spawn(Self, JobStart, extra? : Map[String, String], nice? : Int32) -> Int32
+pub async fn JobsHost::still_ours(Self, Int32, Double) -> Bool
+
+pub(all) struct LinkIo {
+  lookup : async (String) -> Array[String]
+  get_at : async (@cloud_net.Url, Array[String], String) -> Answer?
+  github_api : async (String) -> @json.Json
+  thumbnail : async (String, Bytes) -> (String, Bytes)?
+}
+pub fn LinkIo::shell(@host.Host) -> Self
+
+pub struct LinkPreviews {
+  // private fields
+}
+pub fn LinkPreviews::new(LinkIo) -> Self
+pub async fn LinkPreviews::preview(Self, String, Double) -> @json.Json?
+
+#derive(Eq, Show)
+pub(all) struct LinuxGpu {
+  vendor : String
+  gpu : Gpu
+}
+
+pub(all) struct LinuxIo {
+  read : async (String) -> String?
+  realpath : async (String) -> String?
+  readdir : async (String) -> Array[String]
+  run : async (String, Array[String], Int32) -> Ran
+}
+pub fn LinuxIo::shell(@host.Host, async (String, Array[String], Int32) -> Ran) -> Self
+
+#derive(Eq, Show)
+pub(all) enum Message {
+  Text(Bytes)
+  Binary(Bytes)
+  Close(Int32, Bytes)
+}
+
+pub struct Net {
+  // private fields
+}
+pub fn Net::attach(Self, () -> String?) -> () -> Unit
+pub fn Net::new() -> Self
+pub fn Net::pinged(Self, String, Double) -> Unit
+pub fn Net::seen(Self) -> @json.Json
+
+pub(all) struct Patch {
+  patch : String
+  missing : Array[String]
+}
+
+pub(all) struct PreviewAnswer {
+  status : Int32
+  headers : Array[(String, String)]
+  next : async () -> Bytes?
+}
+
+pub(all) struct Processes {
+  signal_group : async (Int32, String) -> Unit
+  group_alive : async (Int32) -> Bool
+  pid_alive : async (Int32) -> Bool
+  start_time : async (Int32) -> Double?
+}
+pub fn Processes::shell(@host.Host) -> Self
+
+#derive(Eq, Show)
+pub(all) enum Ran {
+  Out(String)
+  Failed
+  Absent
+}
+
+pub struct Rooms {
+  root : String
+  // private fields
+}
+pub async fn Rooms::close_room(Self, String, Array[String], Double?) -> @json.Json
+pub fn Rooms::forget_seen(Self, String) -> Unit
+pub fn Rooms::new(@host.Host, String) -> Self
+pub fn Rooms::room(Self, String, String, String) -> String
+pub async fn Rooms::seen(Self, String, String, String, Double) -> @json.Json
+pub fn Rooms::seen_at(Self, String) -> Double?
+
+pub(all) struct Sandbox {
+  name : String
+  described : @json.Json
+}
+
+pub struct ServiceSocket {
+  protocol : String?
+  // private fields
+}
+pub async fn ServiceSocket::close(Self, Int32, String) -> Unit
+pub async fn ServiceSocket::next(Self) -> Message
+pub async fn ServiceSocket::send(Self, Bool, Bytes) -> Bool
+pub async fn ServiceSocket::terminate(Self) -> Unit
+
+#derive(Eq, Show)
+pub(all) struct VendorGpu {
+  vendor : String
+  gpu : Gpu
+}
+
+pub(all) struct WatchIo {
+  now : () -> Double
+  readings : async () -> Array[WorkspaceReading]
+  working : (String) -> Bool
+  notify : async (String, String) -> Unit
+  warn : (String, String) -> Unit
+}
+
+pub struct WorkspaceReader {
+  // private fields
+}
+pub fn WorkspaceReader::close(Self) -> Unit
+pub fn WorkspaceReader::kept(Self) -> Int32
+pub fn WorkspaceReader::new(() -> Double, async (String, Double) -> WorkspaceSize, (async () -> Unit) -> Unit, warn? : (String, String) -> Unit) -> Self
+pub fn WorkspaceReader::size(Self, String, limit? : Double) -> WorkspaceSize?
+
+#derive(Eq, Show)
+pub(all) struct WorkspaceReading {
+  session : String
+  station : String
+  name : String
+  path : String
+  bytes : Double
+  complete : Bool
+}
+pub fn WorkspaceReading::from_json(@json.Json) -> Self?
+
+#derive(Eq, Show)
+pub(all) struct WorkspaceSize {
+  bytes : Double
+  complete : Bool
+  truncated : Bool
+}
+pub fn WorkspaceSize::to_json(Self) -> @json.Json
+
+pub struct WorkspaceWatch {
+  // private fields
+}
+pub async fn WorkspaceWatch::forget(Self, String) -> Unit
+pub fn WorkspaceWatch::limit(Self, String, String) -> Double
+pub async fn WorkspaceWatch::look(Self) -> Unit
+pub async fn WorkspaceWatch::new(@host.Host, String, WatchIo) -> Self
+pub async fn WorkspaceWatch::set_limit(Self, String, String, Double) -> Double
+pub fn WorkspaceWatch::start(Self, @effect.Runtime) -> @effect.Fiber[Unit]
+
+// Type aliases
+pub type Ask = async (String, @json.Json, Body?) -> (@json.Json, Body?)
+
+// Traits
