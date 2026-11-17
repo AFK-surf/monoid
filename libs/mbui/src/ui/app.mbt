@@ -136,6 +136,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   let c = g()
   let fed = inputs_since.val
   inputs_since.val = false
+  press_moment.val = -1.0
   let taken = inputs_taken.val
   inputs_taken.val = false
   in_frame.val = true
@@ -154,6 +155,21 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (the host's settings, each read of the host so: what read one built again as it changes, host_said.mbt)
   host_settings_arrive()
   env_at_frame()
+  // (what words are measured in and the pixels they are set on, as this frame has them, before the window's tree is
+  // brought (view_frame) and lays out and measures anything of it: its first frame measured once, in the faces given
+  // from outside and the host's glyphs as they are now (asked of the host once a frame), never in what it had before
+  // them and then all of it again as they come; frame_body says the scale and the faces again, for a frame with no
+  // window (frame_offscreen): done, nothing more). And the window as this frame has it: what reads Ctx::window_size
+  // as the tree is brought reads this frame's, never the one the last frame (or the run before's) was built in
+  c.width = w
+  c.height = h
+  c.window_w = w
+  c.window_h = h
+  c.scale = scale
+  c.whole_px = whole_px_layout()
+  faces_from_env()
+  atlas_said.val = Some(h_atlas_generation())
+  text_arrive()
   // (built whole where what it read changed, painted alone where only what its paint read did, or of its looks by the
   // clock alone: frame_watch.mbt)
   // what is made once laid out, placed and drawn as its frame does; the old view in the room its node is given
@@ -954,6 +970,35 @@ fn on_pointer(kind : Int, x : Double, y : Double, button : Int) -> Unit {
 }
 
 ///|
+/// A press that goes down between two frames, where the old view drew what it takes presses at: that view drawn at
+/// the press's moment first, as the window's tree is brought to it (@view's Tree::input), so that what it goes down on
+/// is where it is then, not where the frame before drew it (the user, 2026-11-17: a sheet's button coming in, drawn
+/// 133 ms before at 7 frames a second, not yet there; at 60 there: what a press takes was the display's rate's). The
+/// frame drawn so is the host's next one come early: the same window, its moment the press's.
+fn frame_at_press() -> Unit {
+  let c = g()
+  // (the window's frame drawn last, as the host gave it: its moment, and its size and scale before its zoom; none drawn
+  // yet in this window, none)
+  let t = c.last_now
+  if t < 0.0 || frame_running.val || in_frame.val || event_depth.val > 0 {
+    return
+  }
+  // (nothing of the old view's that takes a press drawn: nothing to bring)
+  if c.hit_ids.is_empty() {
+    return
+  }
+  let at = h_event_time()
+  // (and none where a press or a let-go came at this same moment, not taken yet: one moment's, taken together by the
+  // frame that comes (a hold handed through let go and another press down at its moment: kit's pick_through_test))
+  if at <= t + 0.5 || at <= press_moment.val + 0.5 {
+    return
+  }
+  let z = window_zoom_drawn.val
+  let (w, h, scale) = (c.window_w * z, c.window_h * z, c.scale / z)
+  on_frame(w, h, scale, at)
+}
+
+///|
 /// A pointer's event, with the keys held as it went down (0 for an event other than a press), and what it came from
 /// where the host says (`by`: 1 a finger, 0 a mouse or a pen; the hand of the moment from it on: pointing). `more`: a
 /// move (1, 5) with more samples of the same batch after it (touches.mbt), taken at its moment but not laid out.
@@ -971,6 +1016,12 @@ fn pointer_in(
   // (a move of a batch after its first finds the tree as the batch's first did: brought to its moment by none of them
   // but the last, after it is taken, view_pointed; nor as what takes it is found, view_pointer)
   let moved = kind == 1 || kind == 5
+  if kind == 0 {
+    frame_at_press()
+  }
+  if kind == 0 || kind == 2 || kind == 3 {
+    press_moment.val = h_event_time()
+  }
   let batched = moves_batched.val && moved
   let more = more && moved
   moves_batched.val = more

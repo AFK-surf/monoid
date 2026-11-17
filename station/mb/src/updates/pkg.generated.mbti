@@ -1,0 +1,698 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/updates"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/ops_platform",
+}
+
+// Values
+pub let agy_manifests : String
+
+pub fn all_digits(String) -> Bool
+
+pub fn allowed(@jsjson.JValue, Double?, String, String?) -> Bool
+
+pub async fn answer_channel_ask(World, String, async (String) -> Unit) -> Unit
+
+pub fn append_path(Array[(String, String)], String) -> Unit
+
+pub async fn apply(Header, Bytes, Bytes, async (Bytes) -> Unit, async (Bytes) -> Bytes) -> Unit
+
+pub fn apply_apart(World) -> async (String, String, String, Signal) -> Unit
+
+pub async fn apply_file(World, Old, String, String, async (Bytes) -> Bytes) -> Unit
+
+pub fn base64_bytes(String) -> Bytes
+
+pub fn base64_of(Bytes) -> String
+
+pub fn bundled_installer(String, String) -> String
+
+pub fn bytes_of(@jsjson.JValue?) -> Bytes
+
+pub async fn can_switch_codex(World, Found, Array[(String, String)]) -> Bool
+
+pub async fn can_switch_codex_soon(World, Found, Array[(String, String)]) -> Bool
+
+pub async fn capture_codex_soon(World, Found, Array[(String, String)]) -> CodexEntry?
+
+pub let channel_answer : String
+
+pub let channel_ask : String
+
+pub async fn channel_command(World, Array[String], String) -> Int32
+
+pub fn channel_from(@jsjson.JValue, String?) -> String
+
+pub async fn channel_of(World, @jsjson.JValue, String) -> String
+
+pub fn channel_of_id(String) -> String?
+
+pub async fn channel_of_soon(World, @jsjson.JValue, String) -> String
+
+pub fn check_path(String) -> Unit raise
+
+pub let chunk_size : Int32
+
+pub let cloud_origin : String
+
+pub async fn codex_binary_soon(World, Found) -> String?
+
+pub fn codex_features(World) -> async (String, Array[(String, String)]) -> String?
+
+pub fn curl_percent(String) -> Int32?
+
+pub fn decimal(String) -> Double
+
+pub let default_timing : Timing
+
+pub fn del(@jsjson.JValue, String) -> @jsjson.JValue
+
+pub fn delta_for(@jsjson.JValue, @jsjson.JValue, String?, Double?, String) -> Delta?
+
+pub let delta_magic : Bytes
+
+pub let delta_ms : Double
+
+pub let devin_manifest : String
+
+pub fn downloading(String, Double, Double?) -> (Words, Int32?)
+
+pub fn ends_with(String, String) -> Bool
+
+pub fn env_get(Array[(String, String)], String) -> String?
+
+pub fn env_j(Array[(String, String)]) -> @jsjson.JValue
+
+pub fn env_of(@jsjson.JValue) -> Array[(String, String)]
+
+pub fn error_j(Error) -> @jsjson.JValue
+
+pub fn exe(String) -> String
+
+pub fn expected(@jsjson.JValue, String?) -> @jsjson.JValue raise
+
+pub fn fail(String) -> Error
+
+pub fn feed(String, String) -> String
+
+pub let feed_again_ms : Array[Double]
+
+pub fn field_of(Error, String) -> @jsjson.JValue?
+
+pub async fn find_command_soon(World, String, Array[(String, String)]) -> Found?
+
+pub async fn find_missing_codex_host(World, String, Array[(String, String)]) -> Missing?
+
+pub fn flag(Array[String], String) -> String?
+
+pub fn floor(Double) -> Double
+
+pub fn forget_releases() -> Unit
+
+pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub async fn has_codex_host_soon(World, String) -> Bool
+
+pub fn hex(Bytes) -> String
+
+pub fn hold() -> () -> Unit
+
+pub fn holding() -> Int32
+
+pub fn home_of(Array[(String, String)]) -> String?
+
+pub fn host_world(@host.Host, async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (String, Array[@jsjson.JValue]) -> Unit, Clock, async (String, (String?) -> Unit) -> (async () -> Unit)) -> World
+
+pub fn how_of(@jsjson.JValue, mark? : String) -> How
+
+pub async fn how_to_install_soon(World, String, Array[(String, String)], OwnNode?) -> HowOr
+
+pub async fn how_to_update_soon(World, String, Found, Array[(String, String)]) -> HowOr
+
+pub fn includes(String, String) -> Bool
+
+pub fn index_of(String, String) -> Int32
+
+pub let installing : Words
+
+pub fn is_npm_install(How) -> Bool
+
+pub fn is_safe_integer(@jsjson.JValue?) -> Bool
+
+pub fn is_sha(String) -> Bool
+
+pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn jb(Bool) -> @jsjson.JValue
+
+pub fn jbytes(Bytes) -> @jsjson.JValue
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_number(String) -> Double
+
+pub fn js_round(Double) -> Double
+
+pub fn js_string(@jsjson.JValue) -> String
+
+pub fn jstrs(Array[String]) -> @jsjson.JValue
+
+pub fn key(String, args? : Array[(String, @jsjson.JValue)]) -> Words
+
+pub fn key_id(String) -> String
+
+pub fn keys_of(@jsjson.JValue) -> Array[String]
+
+pub fn kind_command(String) -> String
+
+pub fn kind_name(String) -> String
+
+pub fn kind_of(Error) -> String
+
+pub fn kind_package(String) -> String
+
+pub let kinds : Array[String]
+
+pub fn last_index_of(String, String) -> Int32
+
+pub async fn link_beside_npm(World, String, How, Array[(String, String)]) -> Bool
+
+pub fn message_of(Error) -> String
+
+pub async fn missing_codex_host(World, Found, Array[(String, String)], features? : async (String, Array[(String, String)]) -> String?) -> Missing?
+
+pub fn newer(String, String) -> Bool
+
+pub async fn npm_install_soon(World, Array[(String, String)], OwnNode?, Array[String], String) -> HowOr
+
+pub fn num(@jsjson.JValue?) -> Double?
+
+pub fn num_text(Double) -> String
+
+pub fn offer(String?, String?, String, String) -> (Bool, Bool)
+
+pub fn on_let_go(() -> Unit) -> () -> Unit
+
+pub fn on_the_way(Error) -> Bool
+
+pub async fn own_node(World, String, String) -> OwnNode?
+
+pub fn own_node_home(String) -> String
+
+pub fn parse(String) -> @jsjson.JValue raise
+
+pub fn parse_header(Bytes) -> Header raise
+
+pub async fn patch(Header, Bytes, Bytes, async (Bytes) -> Unit) -> Unit
+
+pub fn pbasename(String) -> String
+
+pub fn pdirname(String) -> String
+
+pub fn pin_npm_version(How, String, String) -> How
+
+pub fn pis_absolute(String) -> Bool
+
+pub fn pjoin(Array[String]) -> String
+
+pub async fn plan_update(World, String, String, String, String, String, Array[(String, String)]?, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Plan
+
+pub fn platform() -> String?
+
+pub fn prepend_path(Array[(String, String)], String) -> Array[(String, String)]
+
+pub async fn put_own_nodes(World, Array[(String, String)], String) -> Unit
+
+pub async fn put_own_nodes_soon(World, Array[(String, String)], String) -> Unit
+
+pub async fn read_feed(World, String, String, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> @jsjson.JValue
+
+pub async fn read_json_file(World, String) -> @jsjson.JValue
+
+pub async fn read_old(World, Header, Old) -> Bytes
+
+pub async fn release_base_in(World, String) -> String?
+
+pub fn release_build(@jsjson.JValue) -> Double
+
+pub async fn release_channel(World, String) -> String?
+
+pub async fn release_channel_soon(World, String) -> String?
+
+pub let release_keys : Array[String]
+
+pub fn release_version(@jsjson.JValue) -> String
+
+pub async fn remove_own_node_links(World, Array[(String, String)], String) -> Unit
+
+pub fn replace_all(String, String, String) -> String
+
+pub fn request_by(World, String) -> async (String, String?) -> Response
+
+pub async fn restore_codex(World, String, String, String) -> Unit
+
+pub async fn run(World, String, Array[String], Array[(String, String)], Double, lang? : String) -> (Bool, String)
+
+pub async fn run_both(World, String, Array[String], Array[(String, String)], Double, async (String) -> Unit, String) -> (Bool, String, String, String, Double?)
+
+pub async fn run_lines(World, String, Array[String], Array[(String, String)], Double, async (String) -> Unit, lang? : String) -> (Bool, String, Double?)
+
+pub let runtime_kinds : Array[String]
+
+pub fn runtime_label(String) -> String
+
+pub fn same(@jsjson.JValue, @jsjson.JValue) -> Bool
+
+pub fn same_words(Words?, Words?) -> Bool
+
+pub fn say(Words, String) -> String
+
+pub fn separator() -> String
+
+pub fn set(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn set_channel(World, String, String, Double, station? : async (Double) -> Bool) -> Unit
+
+pub async fn set_channel_in(World, String, String) -> Unit
+
+pub fn set_env_release_keys(String?) -> Unit
+
+pub fn set_machine(Machine) -> Unit
+
+pub fn set_path_sep(String) -> Unit
+
+pub fn set_process(String?, Int32) -> Unit
+
+pub fn set_station_lang(String) -> Unit
+
+pub fn set_words(@json.Json, @json.Json) -> Unit
+
+pub fn sha256(Bytes) -> String
+
+pub fn slice(String, Int32, end? : Int32) -> String
+
+pub fn software_version(String, String, Bool, String?, String?, Bool, Bool, String?, Bool?, Bool, Bool, String?, String, String?, Int32?, String?, String?, Double?) -> @jsjson.JValue
+
+pub fn split(String, String) -> Array[String]
+
+pub fn split_units(String, (Int32) -> Bool) -> Array[String]
+
+pub fn spread(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn starts_with(String, String) -> Bool
+
+pub async fn station_download_percent(World, String) -> Int32?
+
+pub fn station_lang() -> String
+
+pub async fn station_version(World, String) -> String?
+
+pub async fn station_version_soon(World, String) -> String?
+
+pub fn step_of(String) -> Words?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub async fn switch_codex(World, CodexEntry, String, Array[(String, String)]) -> String
+
+pub fn tail(String, String) -> String
+
+pub async fn take_delta(World, Plan, String, async (String, String, String, Signal) -> Unit, Signal, progress? : async (Int32) -> Unit, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Array[(String, String)]
+
+pub fn text(@jsjson.JValue?) -> String?
+
+pub fn thrown(String, String, more? : Array[(String, @jsjson.JValue)]) -> Error
+
+pub fn timed_out() -> Error
+
+pub fn tr(String, String, args? : @jsjson.JValue) -> String
+
+pub fn trim(String) -> String
+
+pub fn trim_end(String) -> String
+
+pub fn trusted_keys(String?) -> Array[(String, String)]
+
+pub fn truthy(@jsjson.JValue?) -> Bool
+
+pub fn unhex(String) -> Bytes
+
+pub async fn update_command(World, Array[String], String, Array[(String, String)]?, async (Bytes) -> Bytes) -> Int32
+
+pub fn uses_codex_host(String) -> Bool
+
+pub fn utf8_text(Bytes) -> String
+
+pub async fn verified_or_null(World, @jsjson.JValue, Array[(String, String)]?) -> (@jsjson.JValue?, String?)
+
+pub async fn verify_feed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue
+
+pub async fn verify_signed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue
+
+pub fn version_in(String) -> String?
+
+pub fn watch_agy_download(World, AgyWatch) -> () -> Unit
+
+pub async fn with_shell_command(World, String, Array[(String, String)]) -> Array[(String, String)]
+
+pub fn within(String, String) -> Bool
+
+pub async fn write_whole(World, String, String) -> Unit
+
+// Errors
+pub(all) suberror Thrown {
+  Thrown(String, @jsjson.JValue)
+}
+
+// Types and methods
+pub struct AgyWatch {
+  manifests : String
+  build : async () -> String?
+  staging : async (String) -> String?
+  after : (Double, async () -> Unit) -> () -> Unit
+  said : async (String, Double, Double) -> Unit
+}
+
+pub struct Clock {
+  now : () -> Double
+  sleep : async (Double) -> Unit
+}
+
+pub struct CodexEntry {
+  found : Found
+  entry : Identity
+  target : Identity
+}
+
+pub struct Config {
+  mut raw : @jsjson.JValue
+  listeners : Array[(Int32, () -> Unit)]
+  mut serial : Int32
+}
+pub fn Config::listen(Self, () -> Unit) -> () -> Unit
+pub fn Config::new(@jsjson.JValue) -> Self
+pub fn Config::tell(Self) -> Unit
+pub async fn Config::update_soon(Self, World, String, @jsjson.JValue) -> Unit
+
+pub struct Delta {
+  from : Double
+  url : String
+  sha256 : @jsjson.JValue
+  size : Double
+  raw_sha256 : @jsjson.JValue
+  raw_size : @jsjson.JValue
+}
+pub fn Delta::to_j(Self) -> @jsjson.JValue
+
+pub struct Fibers {
+  w : World
+  what : String
+  mut closed : Bool
+  live : Array[@effect.Fiber[Unit]]
+}
+pub fn Fibers::after(Self, Double, async () -> Unit) -> () -> Unit
+pub fn Fibers::close(Self) -> Unit
+pub fn Fibers::every(Self, Double, async () -> Unit) -> () -> Unit
+pub fn Fibers::fork(Self, async () -> Unit) -> @effect.Fiber[Unit]
+pub fn Fibers::new(World, String) -> Self
+pub fn Fibers::now(Self) -> Double
+pub async fn Fibers::sleep(Self, Double) -> Unit
+pub fn Fibers::spawn(Self, async () -> Unit) -> Unit
+
+pub struct Found {
+  on_path : String
+  real : String
+}
+pub fn Found::to_j(Self) -> @jsjson.JValue
+
+pub struct Header {
+  files : Array[String]
+  inflate : Array[Range]
+  old_size : Double
+  old_sha256 : String
+  deflate : Array[Range]
+  made_size : Double
+  payload : Int32
+}
+
+pub struct How {
+  program : String
+  args : Array[String]
+  node : OwnNode?
+  no_update : Double?
+  mark : String
+}
+pub fn How::to_j(Self) -> @jsjson.JValue
+
+pub(all) enum HowOr {
+  Can(How)
+  Cannot(Unable)
+}
+pub fn HowOr::to_j(Self) -> @jsjson.JValue
+
+pub struct Identity {
+  dev : Double
+  ino : Double
+  size : Double
+  mtime_ms : Double
+}
+
+pub struct Machine {
+  build_os : String?
+  arch : String?
+  installer_ext : String
+  codex_standalone : Bool
+  plat : @ops_platform.Plat
+  claude_install : How
+  agy_install : How
+  devin_install : How
+  exec_path : String
+  applier : String
+}
+
+pub struct Missing {
+  binary : String
+  helper : String
+}
+pub fn Missing::to_j(Self) -> @jsjson.JValue
+
+pub(all) enum Old {
+  Dir(String)
+  Apk(String)
+}
+
+pub struct OwnNode {
+  version : String
+  build : @jsjson.JValue
+  at : String
+  bin : String
+}
+pub fn OwnNode::to_j(Self) -> @jsjson.JValue
+
+pub struct Plan {
+  release : @jsjson.JValue
+  script : String
+  env : Array[(String, String)]
+  delta : Delta?
+}
+pub fn Plan::to_j(Self) -> @jsjson.JValue
+
+pub struct Range {
+  at : Double
+  len : Double
+}
+
+pub struct Response {
+  status : Int32
+  headers : @jsjson.JValue
+  chunks : Array[Bytes]
+  has_body : Bool
+  breaks : Error?
+}
+pub fn Response::bytes(Self) -> Bytes
+pub fn Response::header(Self, String) -> String?
+pub async fn Response::json(Self, World) -> @jsjson.JValue
+pub fn Response::ok(Self) -> Bool
+pub fn Response::text(Self) -> String
+
+pub struct Signal {
+  mut aborted : Bool
+  mut reason : Error?
+}
+pub fn Signal::abort(Self, reason? : Error) -> Unit
+pub fn Signal::new() -> Self
+pub fn Signal::throw_if_aborted(Self) -> Unit raise
+
+pub struct Stat {
+  size : Double
+  file : Bool
+  dir : Bool
+  symlink : Bool
+  dev : Double
+  ino : Double
+  mtime_ms : Double
+}
+
+pub struct Timing {
+  every : Double
+  runtime_limit : Double
+  station_limit : Double
+  done_shown : Double
+  follow_look : Double
+  delta_limit : Double
+}
+
+pub struct Unable {
+  key : String
+  args : @jsjson.JValue
+}
+pub fn Unable::say(Self, String) -> String
+
+pub struct Updates {
+  w : World
+  app : String
+  data : String
+  config : Config
+  origin : () -> String?
+  env : Array[(String, String)]
+  registry : String
+  devin_manifest : String
+  claude_releases : String
+  agy_manifests : String
+  node_dist : String
+  timing : Timing
+  trusted : Array[(String, String)]?
+  node_version_given : String
+  installed : String
+  release : String?
+  mut tried : String?
+  mut running : () -> Double
+  mut runtime_changed : (String, Bool, Bool) -> Unit
+  kinds : Array[String]
+  // private fields
+}
+pub async fn Updates::answer_channel_ask(Self) -> Unit
+pub fn Updates::auto(Self) -> Bool
+pub fn Updates::changes(Self, () -> Unit) -> () -> Unit
+pub fn Updates::channel(Self) -> String
+pub async fn Updates::check(Self, station? : Bool) -> Unit
+pub async fn Updates::close(Self) -> Unit
+pub fn Updates::count_running(Self, () -> Double) -> Unit
+pub async fn Updates::follow_started(Self) -> Unit
+pub fn Updates::get(Self, String) -> Array[@jsjson.JValue]
+pub async fn Updates::keep_channel(Self, String) -> Unit
+pub fn Updates::missing(Self, String) -> Unit
+pub async fn Updates::new(World, UpdatesOptions) -> Self
+pub fn Updates::on_runtime_changed(Self, (String, Bool, Bool) -> Unit) -> Unit
+pub fn Updates::poke(Self, String, @jsjson.JValue) -> Unit
+pub async fn Updates::repair_codex(Self, String) -> Unit
+pub async fn Updates::set_auto(Self, Bool, String) -> Unit
+pub async fn Updates::set_channel(Self, String, String) -> Unit
+pub fn Updates::start(Self) -> Unit
+pub async fn Updates::station_with(Self, String, String) -> @jsjson.JValue
+pub fn Updates::to_update_to(Self) -> String?
+pub async fn Updates::update(Self, String, String) -> Unit
+pub async fn Updates::update_old_codex(Self, String?, String) -> Unit
+
+pub struct UpdatesOptions {
+  app : String
+  data : String
+  config : Config
+  origin : () -> String?
+  env : Array[(String, String)]
+  registry : String
+  devin_manifest : String
+  claude_releases : String
+  agy_manifests : String
+  node_dist : String
+  running : () -> Double
+  station_only : Bool
+  timing : Timing
+  trusted : Array[(String, String)]?
+  node_version : String
+}
+
+pub(all) enum Words {
+  Key(String, @jsjson.JValue?)
+  Text(String)
+}
+pub fn Words::to_j(Self) -> @jsjson.JValue
+
+pub struct World {
+  ask : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  say_now : (String, Array[@jsjson.JValue]) -> Unit
+  wall_after : async (Double, async () -> Unit) -> (() -> Unit)
+  clock : Clock
+  rt : @effect.Runtime
+  json_error : async (String) -> String
+  verify : async (Bytes, Bytes, Bytes) -> Bool
+  watch : async (String, (String?) -> Unit) -> (async () -> Unit)
+  hash_stream : (async (String) -> (String, Double))?
+}
+pub async fn World::access(Self, String, mode? : Int32) -> Unit
+pub async fn World::accessible(Self, String) -> Bool
+pub async fn World::call(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::exists_soon(Self, String) -> Bool
+pub async fn World::fetch(Self, String, String, meth? : String) -> Response
+pub fn World::go(Self, async () -> Unit) -> Unit
+pub async fn World::handle_size(Self, String) -> Double
+pub async fn World::hash_file(Self, String) -> (String, Double)
+pub fn World::info(Self, String, String, fields? : @jsjson.JValue) -> Unit
+pub async fn World::json(Self, String) -> @jsjson.JValue
+pub async fn World::lstat(Self, String) -> Stat
+pub async fn World::mkdir(Self, String, opts? : @jsjson.JValue) -> Unit
+pub fn World::now(Self, String, Array[@jsjson.JValue]) -> Unit
+pub async fn World::read_at(Self, String, Int32, Double) -> Bytes?
+pub async fn World::read_stream(Self, String) -> Bytes
+pub async fn World::read_text(Self, String) -> String
+pub async fn World::read_text_or_null(Self, String) -> String?
+pub async fn World::readdir(Self, String) -> Array[String]
+pub async fn World::realpath(Self, String) -> String
+pub async fn World::realpath_or_null(Self, String) -> String?
+pub async fn World::rename(Self, String, String) -> Unit
+pub async fn World::rm(Self, String, recursive? : Bool) -> Unit
+pub async fn World::rm_quiet(Self, String, recursive? : Bool) -> Unit
+pub async fn World::stat(Self, String) -> Stat
+pub async fn World::tell(Self, String, Array[@jsjson.JValue]) -> Unit
+pub fn World::warn(Self, String, String, fields? : @jsjson.JValue) -> Unit
+pub async fn World::write_file(Self, String, String) -> Unit
+pub async fn World::write_stream(Self, String) -> WriteStream
+
+pub struct WriteStream {
+  w : World
+  path : String
+  buf : @buffer.Buffer
+}
+pub async fn WriteStream::end(Self) -> Unit
+pub fn WriteStream::write(Self, Bytes) -> Unit
+
+// Type aliases
+pub type Applier = async (String, String, String, Signal) -> Unit
+
+pub type Env = Array[(String, String)]
+
+pub type Events = Array[@jsjson.JValue]
+
+pub type Features = async (String, Array[(String, String)]) -> String?
+
+pub using @jsjson {type JValue as J}
+
+pub type Request = async (String, String?) -> Response
+
+pub type Wait = async (Double) -> Unit
+
+// Traits

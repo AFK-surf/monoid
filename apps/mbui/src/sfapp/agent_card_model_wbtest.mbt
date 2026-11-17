@@ -1,12 +1,14 @@
 // An agent's card on a phone (sheets.mbt agent_body): what it runs on under its own name, apart from who runs it.
 
 ///|
-/// A phone with fixture `chat-agent`'s card of its agent open over the chat.
-fn phone_agent_card() -> @ui.Tester {
+/// A phone with fixture `chat-agent`'s card of its agent open over the chat, the Tester made where it is asked for
+/// (`loc`: what a check of its frames finds is said of that file).
+#callsite(autofill(loc))
+fn phone_agent_card(loc~ : SourceLoc) -> @ui.Tester {
   new_run()
   let src = fixture("chat-agent")
   open_fixture_over("chat-agent", src)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, loc~)
   t.run_for(@ui.move_most_ms)
   sheet_rested(t, "sf-present")
   t

@@ -27,7 +27,8 @@ async function listen(h: Harness, token: string) {
   const ws = response.webSocket!;
   ws.accept();
   const got: AccountEvent[] = [];
-  ws.addEventListener("message", (event) => void (event.data === "pong" || got.push(JSON.parse(event.data as string))));
+  // (the console's own `admin` events, to whoever opened it, are admin.test.ts's: alice opens it here to let bob in)
+  ws.addEventListener("message", (event) => void (event.data === "pong" || JSON.parse(event.data as string).type === "admin" || got.push(JSON.parse(event.data as string))));
   return {
     ws,
     // Every event of the calls before (h.heard).

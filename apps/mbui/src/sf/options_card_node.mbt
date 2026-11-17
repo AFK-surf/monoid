@@ -98,12 +98,12 @@ fn option_row_node(
     // one being sent turning at its end: each over dur_ms from the moment it changed, as a control answers)
     let picked_here = fn() { !history && chosen() == Some(i()) }
     let there_of = fn() { if history || enabled() || chosen() == Some(i()) { 1.0 } else { 0.5 } }
-    let there = EdgeWay::new(@signals.untracked(there_of))
-    let ticked = EdgeWay::new(if @signals.untracked(picked_here) { 1.0 } else { 0.0 })
-    let turning = EdgeWay::new(if @signals.untracked(fn() { busy() == Some(i()) }) { 1.0 } else { 0.0 })
-    row.reacts(there_of, fn(to) { there.go(row, to, dur_ms) })
-    row.reacts(picked_here, fn(on) { ticked.go(row, if on { 1.0 } else { 0.0 }, dur_ms) })
-    row.reacts(fn() { busy() == Some(i()) }, fn(on) { turning.go(row, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let there = @motion.NodeWay::new(@signals.untracked(there_of))
+    let ticked = @motion.NodeWay::new(if @signals.untracked(picked_here) { 1.0 } else { 0.0 })
+    let turning = @motion.NodeWay::new(if @signals.untracked(fn() { busy() == Some(i()) }) { 1.0 } else { 0.0 })
+    row.reacts(there_of, fn(to) { there.go_ms(row, to, dur_ms) })
+    row.reacts(picked_here, fn(on) { ticked.go_ms(row, if on { 1.0 } else { 0.0 }, dur_ms) })
+    row.reacts(fn() { busy() == Some(i()) }, fn(on) { turning.go_ms(row, if on { 1.0 } else { 0.0 }, dur_ms) })
     row.alpha(By(fn() { there.shown(row) })) |> ignore
     // its number's disc
     row.box(fn(disc) {

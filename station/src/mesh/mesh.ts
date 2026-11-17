@@ -2,7 +2,7 @@
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
 // the endpoint and every connection and loop it started.
 import { closePeerRelays } from "./peer-relays.ts";
-import { Cause, Effect, FiberSet, Layer, Option, Stream } from "effect";
+import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
@@ -255,11 +255,22 @@ export const MeshLive = Layer.effectDiscard(
         closing: STOPPING,
       });
     });
-    yield* Effect.forkScoped(Effect.scoped(run).pipe(Effect.tapCause((cause) => Effect.sync(() => {
-      if (!Cause.hasInterruptsOnly(cause)) log.error("mesh", "mesh stopped", { error: Cause.pretty(cause) });
-    }))));
+    yield* Effect.forkScoped(keptRunning(run));
   }),
 );
+
+/// The mesh's run (a station's, a rig's) in a scope of its own, started again after a backoff whenever it fails. A
+/// failed start (including a synchronous database error) must not leave a live process without its mesh: everything
+/// the attempt acquired is closed before binding again, and an interruption (the process stopping) is never retried.
+export function keptRunning<E, R>(run: Effect.Effect<void, E, R>, what = "mesh"): Effect.Effect<void, Cause.Cause<E>, Exclude<R, Scope.Scope>> {
+  const attempt = Effect.scoped(run).pipe(Effect.catchCause((cause) => {
+    if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+    log.error("mesh", `${what} stopped; trying again`, { error: Cause.pretty(cause) });
+    return Effect.fail(cause);
+  }));
+  const backoff = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("30 seconds")]); // timer: backoff after a mesh failure
+  return attempt.pipe(Effect.retry(backoff));
+}
 
 /// Follows the saved network settings on a running endpoint: a congestion controller chosen applies to the connections
 /// made from then on. Gives what stops following.

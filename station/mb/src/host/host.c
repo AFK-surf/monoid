@@ -93,6 +93,10 @@ static void push(uint8_t kind, uint64_t id, const uint8_t *a, size_t al) {
   unlock(&queue_lock);
 }
 
+/// What a system call of the program's own C (station_main's sys.c: a child's output and end, a lock taken, a line of
+/// the launcher's, a signal) tells it as event `id` (kind 4), from whatever thread it is on.
+void sfh_push_sys(uint64_t id, const uint8_t *a, size_t al) { push(4, id, a, al); }
+
 /// A piece of stdin, once the queue has room for it (read_input's thread alone).
 static void push_stdin(const uint8_t *a, size_t al) {
   event_t *e = event_of(1, 0, al);

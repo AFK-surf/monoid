@@ -39,6 +39,9 @@ fn wide_page_node(
   near_foot : (Double, () -> Bool, () -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (its blocks as last read, and whether their last change put another set in their place: pg_blocks_read)
+  let was : Ref[Set[String]] = Ref(Set([]))
+  let other = Ref(false)
   let items = fn() -> Array[WideItem] {
     let f = frame()
     let out = []
@@ -50,7 +53,7 @@ fn wide_page_node(
     } else if lead() != "" {
       out.push(WideLead)
     }
-    for k in blocks() {
+    for k in pg_blocks_read(was, other, blocks()) {
       out.push(WideBlock(k))
     }
     out.push(WideFoot)
@@ -60,8 +63,18 @@ fn wide_page_node(
     sc.grow(Is(1.0)) |> ignore
     // (only the block coming to be first or ceasing to be so lays out its top room again, not every block as blocks() grows)
     let is_first = sc.selected(fn() { blocks().get(0) })
-    // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-    sc.scrolls_window(scroll, items, bar=@ui.tree_scroll_bar(), est=pg_block_est, at_once=true, near_foot?, fn(s, item) {
+    // (a block of the page's come or gone by data makes its way, the list's (View::comes); what the frame keeps over it
+    // (a status bar's room, its head as the frame's bar names it or not) there and gone at once, as the window and the
+    // frame are no cause of a way)
+    sc.scrolls_window(
+      scroll,
+      items,
+      bar=@ui.tree_scroll_bar(),
+      est=pg_block_est,
+      comes=fn(k) { !other.val && k is WideBlock(_) },
+      goes=fn(k) { !other.val && k is WideBlock(_) },
+      near_foot?,
+      fn(s, item) {
       match item {
         // the room the frame keeps over it (a status bar's)
         WideTop => s.height(By(fn() { Some(frame().top) })) |> ignore
@@ -582,6 +595,7 @@ fn wide_link_row_node(
   note_look : (@ui.TextStyle) -> @ui.TextStyle,
   lead : RowLead,
   face : Bool,
+  by_side : Bool,
   lead_ink : () -> Int64,
   goes : Bool,
   ends : Bool,
@@ -601,6 +615,7 @@ fn wide_link_row_node(
   value_cut : Bool,
   chevron_room : Bool,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -723,7 +738,8 @@ fn wide_link_row_node(
             // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
             // the line leaves it less: link_row's title_line; its title the same words all along)
             t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-            t.box(fn(w) {
+            // (hidden by dots where it says so: a picture shared, masked_words_box)
+            masked_words_box(t, title_masked, fn(w) {
               w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               styled_words(w, title, fn() {
                 if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
@@ -733,7 +749,6 @@ fn wide_link_row_node(
                 w.ink(By(fn() { link_ink() })) |> ignore
               }
             })
-            |> ignore
             match title_after {
               Some(after) =>
                 t.show(title_after_shown, fn(a) {
@@ -776,7 +791,7 @@ fn wide_link_row_node(
         } else if chevron_room {
           first.box(fn(e) { e.width(Is(Some(desk_chevron))).height(Is(Some(desk_chevron))) |> ignore }) |> ignore
         }
-        row_control_node(first, control, under, face, false)
+        row_control_node(first, control, under, by_side, false)
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
@@ -789,7 +804,7 @@ fn wide_link_row_node(
       }
     })
     |> ignore
-    row_control_node(r, control, under, face, true)
+    row_control_node(r, control, under, by_side, true)
     })
     |> ignore
   })

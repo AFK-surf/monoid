@@ -23,6 +23,7 @@ pub fn profiles_list_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
+  bar_add? : Bool = true,
   on_show_overview? : () -> Unit = fn() { @settings.profiles_narrow_overview.set(true) },
 ) -> Unit {
   let tips = match tips {
@@ -70,11 +71,26 @@ pub fn profiles_list_node(
     }
   }
   let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+  // (the subscriptions' allowances shared as a picture, the workspace's list's: share_quota.mbt)
   let actions = fn(l : @view.View) {
+    if only == "" {
+      accounts_share_node(l, core, here, fn() { !frame().named }, Some(tips))
+    }
     l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
   }
   match bar_actions {
-    Some(f) => f(fn(l) { l.show(add, fn(a) { @sf.page_add_node(a, label, adding) }) }, fn(_) { @sf.button_height() })
+    Some(f) =>
+      f(
+        fn(l) {
+          if only == "" {
+            accounts_share_node(l, core, here, fn() { true }, Some(tips), bar=true)
+          }
+          if bar_add {
+            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+          }
+        },
+        fn(_) { @sf.button_height() },
+      )
     None => ()
   }
   let wait = fn() { field(profiles().value, "wait") }
@@ -904,6 +920,7 @@ pub fn profiles_page_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
+  bar_add? : Bool = true,
 ) -> Unit {
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   let held = src.owned_by(v)
@@ -914,14 +931,14 @@ pub fn profiles_page_node(
   v.pick(fn() { overview.get() }, fn(p, shown) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     if shown {
-      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_accounts=fn() {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_accounts=fn() {
         overview.set(false)
       })
       // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
       @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
       // (概览 once what it shows is answered, the list meanwhile: overview_switch)
-      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, on_show_overview=fn() {
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_overview=fn() {
         (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
       })
     }

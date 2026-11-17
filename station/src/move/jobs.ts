@@ -54,6 +54,11 @@ export class JobsModule implements Module {
     for (const k of this.#k.values()) if ("kept" in k) this.#index(k.kept, true);
   }
 
+  /// Once what it was asked to keep is on disk (kept.ts `settled`).
+  settled(): Promise<void> {
+    return this.#k.settled();
+  }
+
   #index(j: CarriedJob, kept: boolean): void {
     const set = this.#keptOf.get(j.session) ?? new Set<string>();
     if (kept) set.add(jobItemId(j));

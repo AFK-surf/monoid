@@ -166,7 +166,7 @@ test "the card to share on a phone: the picture as wide as its sheet lets it, no
   assert_true(t.query(Button, label="复制图片") is None)
   t.click(Button, label="保存到相册")
   t.run_for(@kit.presence_in_ms)
-  assert_eq(t.kept_ways().map(fn(k) { (k.0, k.1.to_string()) }), [("still.fail.png", "Photos")])
+  assert_eq(t.kept_ways().map(fn(k) { (k.0, Show::to_string(k.1)) }), [("still.fail.png", "Photos")])
   match png_size(t.kept()[0].2) {
     Some((pw, ph)) => assert_true(pw == 1080 && ph > 900, msg="\{Repr((pw, ph))}")
     None => fail("not a PNG")
@@ -534,4 +534,104 @@ fn picture_drawn_k(t : @ui.Tester) -> Double {
   } else {
     1.0
   }
+}
+
+///|
+/// How long after it starts share-card-motion's made-up view has made all its changes (fixture_fleet's steps: 2 s, then
+/// one each 1.6 s), and a little more.
+let share_motion_done_ms : Double = 6000.0
+
+///|
+test "the card to share follows what the view says as it changes, made once: its figures and today's bar bound, nothing made again; a model come its own line, made alone" {
+  for look in ["夜色", "小票", "终端"] {
+    let src = fixture_app("share-card-motion")
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=430.0, h=932.0, platform=2)
+    t.run_for(@kit.presence_in_ms)
+    if look != "夜色" {
+      t.click(Button, label=look)
+      t.run_for(@kit.presence_in_ms)
+    }
+    assert_true(picture_says(t, "2.1 亿"), msg=look)
+    assert_true(!picture_says(t, "GPT-6 Astra"), msg=look)
+    t.tree_frames_from_now()
+    t.run_for(share_motion_done_ms)
+    // (the figures as the view says them now: the first model's tokens, the week's and today's chats archived)
+    assert_true(picture_says(t, "2.3 亿"), msg=look)
+    assert_true(!picture_says(t, "2.1 亿"), msg=look)
+    assert_true(picture_says(t, "GPT-6 Astra"), msg=look)
+    // (what the view's changes made: the new model's line alone, in one frame; nothing let go)
+    let frames = t.tree_frames()
+    let making = frames.filter(fn(f) { f.made > 0 })
+    assert_true(making.length() == 1 && making[0].made <= share_motion_model_nodes, msg="\{look} \{Repr(making)}")
+    assert_true(frames.iter().all(fn(f) { f.let_go == 0 }), msg=look)
+    assert_eq(t.corner_faults(), [])
+  }
+}
+
+///|
+/// The most nodes a model's line of the card is made of (its box, its dot or key, its words, what is between them).
+let share_motion_model_nodes : Int = 6
+
+///|
+test "the subscriptions' allowances and Profile's 概览's pool as pictures to share: each on the stage, saying what it shares, nothing cut short, handed out 1080 across" {
+  for at in [(1440.0, 1000.0, 0), (390.0, 844.0, 2)] {
+    for mode in [("share-accounts", "个订阅账号", "Claude 订阅"), ("share-pool", "Fable", "个账号可用")] {
+      let src = fixture_app(mode.0)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=at.0, h=at.1, platform=at.2)
+      t.run_for(@kit.presence_in_ms)
+      assert_true(picture_says(t, mode.1), msg="\{Repr((at, mode))}")
+      assert_true(picture_says(t, mode.2), msg="\{Repr((at, mode))}")
+      assert_true(picture_says(t, "一生万物，万物归一"), msg="\{Repr((at, mode))}")
+      assert_eq(t.squeeze_faults(), [])
+      assert_eq(t.corner_faults(), [])
+      assert_eq(t.contrast_faults(), [])
+      let png = if at.2 == 2 {
+        t.click(Button, label="保存到相册")
+        t.run_for(@kit.presence_in_ms)
+        t.kept()[t.kept().length() - 1].2
+      } else {
+        t.click(Button, label="复制图片")
+        t.frame()
+        t.clipboard_png().unwrap()
+      }
+      // (three pixels a point: the pools' picture as wide as its charts side by side take, share_quota.mbt)
+      let across = if mode.0 == "share-pool" { 2040 } else { 1080 }
+      assert_true(png_size(png).map(fn(s) { s.0 }) == Some(across), msg="\{Repr((at, mode, png_size(png)))}")
+    }
+  }
+}
+
+///|
+test "Profile offers 分享订阅额度 by the settings (概览's title wide) and 分享额度与恢复图 at its chart: each opens its picture" {
+  for at in [(1280.0, 800.0, 0), (390.0, 844.0, 2)] {
+    for mode in [("place-profiles-sum-overview", "分享订阅额度", "个订阅账号"), ("place-profiles-sum-overview", "分享额度与恢复图", "个账号可用")] {
+      let src = fixture_app(mode.0)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=at.0, h=at.1, platform=at.2)
+      t.run_for(@kit.presence_in_ms)
+      assert_eq(@sf.presenting(), false)
+      t.click(Button, label=mode.1)
+      t.run_for(@kit.presence_in_ms)
+      assert_eq(@sf.presenting(), true)
+      assert_true(picture_says(t, mode.2), msg="\{Repr((at, mode))}")
+    }
+  }
+}
+
+///|
+test "the subscriptions' picture: 完全打码 over it keeps each name laid out as it is, dots drawn in its place; 部分打码 back to its email's first two letters" {
+  let src = fixture_app("share-accounts")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@kit.presence_in_ms)
+  assert_true(picture_says(t, "af•••@proton.me"))
+  assert_true(!picture_says(t, "afkdev1"))
+  t.click(Tab, label="完全打码")
+  t.run_for(@kit.presence_in_ms)
+  // (the name itself kept, its line as long, drawn none: tiles in its place, @sf masked_words_box)
+  assert_true(!picture_says(t, "afkdev1"))
+  assert_true(!picture_says(t, "af•••"))
+  assert_eq(t.squeeze_faults(), [])
+  assert_eq(t.corner_faults(), [])
+  t.click(Tab, label="部分打码")
+  t.run_for(@kit.presence_in_ms)
+  assert_true(picture_says(t, "af•••@proton.me"))
 }

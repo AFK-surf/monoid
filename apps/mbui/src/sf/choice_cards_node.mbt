@@ -1,4 +1,4 @@
-// A choice of a few ways of showing one thing, as cards side by side (a panel's 列表 | 看板 at its top): each an icon
+// A choice of a few ways of showing one thing, as cards side by side (列表 | 看板, say, at a panel's top): each an icon
 // over its one line of words in its middle, as wide as the others, the one chosen lifted (the theme's lifted, a
 // hairline round it and its shadow, as a segmented choice's thumb), the others quiet on a faint ground that the hand
 // warms; each chosen by a press, the arrows along them, a screen reader's Activate, read out as a radio of a group
@@ -44,8 +44,8 @@ pub fn choice_cards_node(
         let on = fn() { item.chosen() }
         // (the hand on it, as a button's: how far its ground has gone towards its warmed one)
         let lit = fn() { !on() && (item.hovered() || item.focus_shown() || item.pressed()) }
-        let hand = EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-        c.reacts(lit, fn(l) { hand.go(c, if l { 1.0 } else { 0.0 }, dur_ms) })
+        let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+        c.reacts(lit, fn(l) { hand.go_ms(c, if l { 1.0 } else { 0.0 }, dur_ms) })
         let ink = fn() { if on() { theme().p.text } else { theme().p.muted } }
         c
         .row(Is(false))

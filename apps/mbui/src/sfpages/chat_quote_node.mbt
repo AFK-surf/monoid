@@ -50,8 +50,8 @@ fn chat_quote_take(src : Source, draft : String, rows : ChatBodyList) -> Unit {
 ///|
 /// What `p` says is picked, of message `m`, quoted into draft `draft` as chat_quote_take quotes it, and let go: as it
 /// was when what quotes it was made (the bar over a finger's pick), not found again as it is pressed.
-fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message) -> Unit {
-  let text = p.text.trim(chars=" \n\t").to_owned()
+fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message, whole? : Bool = false) -> Unit {
+  let text = chat_picked_words(p, m, whole).trim(chars=" \n\t").to_owned()
   if text != "" {
     let author = if m.mine { @sf.t("web-main.chat.you") } else { m.by.name }
     let role = if !m.mine && m.author_kind == "agent" { "agent" } else { "person" }
@@ -66,14 +66,45 @@ fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message)
 }
 
 ///|
+/// What is picked of message `m` as `p` says it, or all of its words where all of it was picked (`whole`: 全选 over a
+/// finger's pick): those as the message has them, not what its rows drawn round what shows hold of them (a long
+/// message's pieces past them made of none, its words picked of them cut short).
+fn chat_picked_words(p : @ui.WordsPicked, m : Message, whole : Bool) -> String {
+  if whole && m.text.trim(chars=" \n\t") != "" {
+    m.text
+  } else {
+    p.text
+  }
+}
+
+///|
 /// Over chat `r`'s list in `v` (its rows `rows`, each message's words, from where they are read, said of its key:
 /// picked_of, so 全选 over a finger's pick takes all of that message's, @ui's finger_select_all):
 /// the pill 引用 over a mouse's pick within one message, quoting it into the chat's draft (writing_quote, its text
 /// trimmed, nothing where that is empty), what is picked let go then. One for each pick (its `made`). A finger's pick
 /// in what `v` holds has the page's bar over it instead (@sf.pick_bar_node: 引用, 复制, 全选, the message's own items, its
 /// MessageShare in the chat `here` is: message_share_of).
-fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNodeHere, rows : ChatBodyList) -> Unit {
+fn chat_quote_node(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  here : MessageNodeHere,
+  rows : ChatBodyList,
+  place : @view.ListPlace[String],
+) -> Unit {
   let draft = r.station + ":" + r.session
+  // (a finger's pick whose words' block was put by as the list moved on (View::park: kept to be taken for another
+  // key's, no longer let go): let go of, the bar with it, as the list says what it has in sight then)
+  place.on_sight(fn(_) {
+    match chat_finger_picked(rows) {
+      Some((p, _)) =>
+        match @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) {
+          Some(end) if !end.shown_nowhere() => ()
+          _ => @ui.picked_let_go()
+        }
+      None => ()
+    }
+  })
   // (a finger's pick: the bar over it, the page's own, not the system's text menu: 引用, 复制, 全选, and what the message
   // offers of itself, its turn shared and its link copied; one bar for each pick as it is let go of, made anew as what
   // is picked changes, 全选's too)
@@ -86,19 +117,29 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
   let bar_in = fn(at : @view.View) {
     at.pick(fn() { chat_finger_picked(rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(rows) }) is Some((_, m)) else { return }
+      // (where the words it ends in are no more, made of none of a list's rows round what shows as it was moved on, or
+      // put by to be another's: no bar beside nothing, and what was picked let go as they go, the bar with it)
+      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
+      // (all of the message picked by 全选: its words whole, quoted and copied)
+      let whole = alled.val == p.made
       let items : Array[@sf.PickBarItem] = [
-        { label: @sf.t("android-chat.pick.quote"), icon: if p.ends_at_start { "quote-open" } else { "quote" }, mark: false, press: fn() { chat_quote_of(src, draft, p, m) } },
+        {
+          label: @sf.t("android-chat.pick.quote"),
+          icon: if p.ends_at_start { "quote-open" } else { "quote" },
+          mark: false,
+          press: fn() { chat_quote_of(src, draft, p, m, whole~) },
+        },
         {
           label: @sf.t("common.copy"),
           icon: "copy",
           mark: false,
           press: fn() {
-            @sfbase.copy_out(p.text, said=@sf.t("android-chat.annotate.copied"))
+            @sfbase.copy_out(chat_picked_words(p, m, whole), said=@sf.t("android-chat.annotate.copied"))
             @ui.picked_let_go()
           },
         },
       ]
-      if alled.val != p.made {
+      if !whole {
         items.push({
           label: @sf.t("android-chat.annotate.selectAll"),
           icon: "",
@@ -137,6 +178,15 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
         None => ()
       }
       holds.box(fn(b) {
+        let gone = fn() {
+          if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
+            @ui.picked_let_go()
+          }
+        }
+        let unkept = end.owns_while(gone)
+        b.owns(unkept) |> ignore
+        // (taken for another message's words: View::scrolls_window's `reused`)
+        end.on_reused(gone)
         @ui.keeps_picked(b)
         .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p))
         |> ignore

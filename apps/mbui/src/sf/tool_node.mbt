@@ -37,7 +37,9 @@ let tool_faint : Double = 0.35
 /// the window's tips' layer `tip`, as viewer_tool's. `lights` false: neither its ground nor its ink answers the hand (a
 /// marking tool's, picture_button's: only on or not; the keyboard's focus still shown on it). `ripples`: a press
 /// ripples over it and, where its ground is one of its own (@ui.stands_alone), sinks it (press_look: picture_button's).
-/// The node.
+/// `roving`: its hover ground the one its row's tools share (roving_hover_node: going from the tool the hand came from
+/// to this one), drawn over its chosen ground, under its icon, in place of its own; none given, the one what holds it
+/// lends (rove_lent), if any. The node.
 #callsite(autofill(loc))
 pub fn tool_node(
   parent : @view.View,
@@ -48,8 +50,14 @@ pub fn tool_node(
   tip? : TipLayer,
   lights? : Bool = true,
   ripples? : Bool = false,
+  roving? : RovingHover,
   loc~ : SourceLoc,
 ) -> @view.View {
+  // (the hover ground its row shares: given it, else lent it by what holds it, a bar's row of tools: rove_lent)
+  let roving = match roving {
+    Some(r) => Some(r)
+    None => parent.lent(rove_lent)
+  }
   let rippled : Ref[PressLook?] = Ref(None)
   let hand : Ref[TipHand?] = Ref(None)
   let down : ((@view.Drag) -> Unit)? = if ripples {
@@ -99,6 +107,10 @@ pub fn tool_node(
         let s = said()
         let i = ink()
         let under = if s.on { i.chosen } else { 0L }
+        // (the hover ground its row's tools share: drawn by that, over this)
+        if roving is Some(_) {
+          return under
+        }
         if !s.disabled && lit() {
           if under != 0L {
             @ui.over(under, i.hover)
@@ -126,6 +138,15 @@ pub fn tool_node(
         } else {
           k.muted
         }
+      }
+      // (the hover ground its row shares, under its icon)
+      match roving {
+        Some(r) =>
+          roving_hover_node(r, v, fn() { !said().disabled && lit() }, fn() { ink().hover }, corner, fn() {
+            @ui.pointing() is Finger
+          })
+          |> ignore
+        None => ()
       }
       v.box(fn(i) {
         i

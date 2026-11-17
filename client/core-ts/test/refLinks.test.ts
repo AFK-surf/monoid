@@ -86,6 +86,7 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
   ]);
   // What a link is to, as every client draws it: a screen's, a station's 共享调试, a chat's web service's.
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/screen/browser%3Atab1"), { card: "screen", station: "ws1/st1", screen: "browser:tab1" });
+  assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/terminal/term-1"), { card: "terminal", station: "ws1/st1", terminal: "term-1" });
   assert.deepEqual(linkTo("/w/ws1/s/st1/adb"), { card: "adb", station: "ws1/st1" });
   assert.deepEqual(linkTo("https://app.still.fail/o/ws1/st1/c-1?service=job_1"), { chat: true, card: "service", station: "ws1/st1", job: "job_1" });
   assert.equal(linkTo("https://example.com/a"), null);

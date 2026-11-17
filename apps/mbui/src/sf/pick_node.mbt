@@ -28,53 +28,55 @@ pub fn pick_node(
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
 ) -> Unit {
-  parent.show(open, fn(layer) {
-    shown()
-    layer.owns(gone) |> ignore
-    let th = theme()
-    // (how far in it is, from the moment it opened)
-    let way = EdgeWay::new(0.0)
-    way.go(layer, 1.0, @kit.pop_ms)
-    let look = fn() {
-      let p = way.shown(layer)
-      @kit.pop_in.at(p, p)
-    }
-    let words_in = fn() { look().words }
-    // (what is found by the words typed, as they are now)
-    let found = fn() { pick_found(choices, line.text()) }
-    // (said once: the first choice, or a close)
-    let said = Ref(false)
-    let go = fn(k : String) {
-      if !said.val {
-        said.val = true
-        choose(k)
+  parent.show(
+    open,
+    fn(layer) {
+      shown()
+      layer.owns(gone) |> ignore
+      let th = theme()
+      // (how far in it is, from the moment it opened)
+      let way = @motion.NodeWay::new(0.0)
+      way.go_ms(layer, 1.0, @kit.pop_ms)
+      let look = fn() {
+        let p = way.shown(layer)
+        @kit.pop_in.at(p, p)
       }
-    }
-    layer
-    .over(Is(true))
-    .modal(Is(true))
-    .held_back_goes_on()
-    // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
-    .presses(Is(true))
-    .on_drag(fn(d) {
-      if d.kind == Down {
-        cancel()
+      let words_in = fn() { look().words }
+      // (what is found by the words typed, as they are now)
+      let found = fn() { pick_found(choices, line.text()) }
+      // (said once: the first choice, or a close)
+      let said = Ref(false)
+      let go = fn(k : String) {
+        if !said.val {
+          said.val = true
+          choose(k)
+        }
       }
-    })
-    .on_key(fn(k) {
-      // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
-      if k.code == @ui.key_escape && line.text() != "" {
-        line.set("")
-        true
-      } else if k.code == @ui.key_escape {
-        cancel()
-        true
-      } else {
-        false
-      }
-    })
-    .takes_back(fn() { cancel() })
-    |> ignore
+      layer
+      .over(Is(true))
+      .modal(Is(true))
+      .held_back_goes_on()
+      // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
+      .presses(Is(true))
+      .on_drag(fn(d) {
+        if d.kind == Down {
+          cancel()
+        }
+      })
+      .on_key(fn(k) {
+        // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
+        if k.code == @ui.key_escape && line.text() != "" {
+          line.set("")
+          true
+        } else if k.code == @ui.key_escape {
+          cancel()
+          true
+        } else {
+          false
+        }
+      })
+      .takes_back(cancel)
+      |> ignore
     // (what opened it, where it is drawn: what its panel goes beside)
     let at = anchor(layer)
     let reach = menu_row_reach(th.rows.pick)
@@ -95,6 +97,7 @@ pub fn pick_node(
       .clips(Is(true))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside)
+      .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
       // (a press on it its own: on what of it takes none, nothing, not outside it)
       |> ground_node
@@ -106,7 +109,7 @@ pub fn pick_node(
         s.alpha(By(words_in)) |> ignore
         search.val = Some(
           input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
-            match @signals.untracked(found).get(0) {
+            match @signals.untracked(found).iter().find_first(fn(x) { !x.disabled }) {
               Some(x) => go(x.key)
               None => ()
             }
@@ -165,7 +168,8 @@ pub fn pick_node(
       layer.focus_opens(search.val.unwrap()) |> ignore
     })
     |> ignore
-  })
+    },
+  )
 }
 
 ///|
@@ -196,10 +200,13 @@ fn pick_row_node(
     .gap(Is(gap))
     .radius(Is(small_panel_inner(r_menu)))
     // det-ok(raw-hover-ground): roving radio picker bar moves at once across items without trailing fade
-    .ground(By(fn() { if r.pointed() || (r.focused() && r.focus_shown()) { library_theme().p.hover } else { 0L } }))
-    .presses(Is(true))
-    .focusable(Is(true))
-    .on_press(go)
+    .ground(By(fn() {
+      if !x.disabled && (r.pointed() || (r.focused() && r.focus_shown())) { library_theme().p.hover } else { 0L }
+    }))
+    // (one not to be chosen: faint, taking no press and no focus, its note saying why)
+    .presses(Is(!x.disabled))
+    .focusable(Is(!x.disabled))
+    .on_press(fn() { if !x.disabled { go() } })
     .says(Is(Some(@view.said(MenuItemRadio, label=said.join(" "), check=if on { On } else { Off }))))
     |> ignore
     let first_line = fn(into : @view.View) {
@@ -218,7 +225,15 @@ fn pick_row_node(
         .grow(Is(1.0))
         // (20 a line, as menu_item sets its words)
         .words(Is(x.label), look={ ..toast_words_look(Ui, L5, if on { 500 } else { 400 }, false), line: pick_row_line })
-        .ink(By(fn() { if on { library_theme().p.accent_text } else { library_theme().p.text } }))
+        .ink(By(fn() {
+          if x.disabled {
+            @ui.tree_theme().color(Subtle)
+          } else if on {
+            library_theme().p.accent_text
+          } else {
+            library_theme().p.text
+          }
+        }))
         |> ignore
       })
       |> ignore

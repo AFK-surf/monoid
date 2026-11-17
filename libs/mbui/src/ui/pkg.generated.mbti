@@ -571,6 +571,8 @@ pub fn pointing() -> Pointing
 
 pub let press_enter : Int32
 
+pub fn press_rules_now() -> PressRules
+
 pub let press_slop : Double
 
 pub let press_space : Int32
@@ -650,6 +652,8 @@ pub fn set_motion_chosen(Bool?) -> Unit
 pub fn set_platform(Int32?) -> Unit
 
 pub fn set_pointing(Pointing?) -> Unit
+
+pub fn set_press_rules(PressRules) -> Unit
 
 pub fn set_tree_theme(() -> Theme) -> Unit
 
@@ -2436,6 +2440,12 @@ pub(all) struct Press {
   mods : Int32
 }
 
+pub(all) struct PressRules {
+  finger : Double
+  mouse : Double
+  large_from : Double?
+}
+
 #derive(Eq, @debug.Debug)
 pub(all) enum PressStep {
   Down(Double, Double, (Double, Double, Double, Double)?)
@@ -3079,6 +3089,7 @@ pub fn Tester::said(Self) -> String
 pub fn Tester::scroll_all_to_end(Self) -> Int32
 pub fn Tester::scroll_to(Self, Int32) -> Unit
 pub fn Tester::scroll_to_end(Self) -> Unit
+pub fn Tester::seen_bounds_of(Self, SemNode) -> (Double, Double, Double, Double)
 pub fn Tester::semantics(Self) -> Array[SemNode]
 pub fn Tester::semantics_dump(Self) -> String
 pub fn Tester::set_a11y(Self, Bool) -> Unit

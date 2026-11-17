@@ -53,6 +53,10 @@ let corners_everywhere_known : Map[String, Int] = {
   known["desk-en settings-profile-account"] = 1
   known["desk-win-zh settings-profile-account"] = 3
   known["desk-win-en settings-profile-account"] = 3
+  // 待处理 open beside the rail's bell in a Windows window's 中屏 (home-shared-bell): the rail's one on the tape, said
+  // twice (the bell's panel holds the rail drawn as it was pressed, rail_drawn, beside the rail itself).
+  known["desk-win-zh home-shared-bell"] = 2
+  known["desk-win-en home-shared-bell"] = 2
   known
 }
 
@@ -67,7 +71,7 @@ let corners_everywhere_known : Map[String, Int] = {
 let corners_tape_rail : Array[String] = [
   // (a station's terminals among its screens, a terminal's page over the frame: the rail on the tape under them)
   "settings-station-terminals", "terminal", "terminal-taken",
-  "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
+  "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu",
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
@@ -84,7 +88,9 @@ let corners_tape_rail : Array[String] = [
   "archived", "history", "history-details", "drive",
   "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
-  "files-transfers", "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents",
+  "files-transfers", "files-tree", "place-stations", "place-profiles",
+  // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
+  "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
   "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
   // (a preset's dialog over 新对话 and its steps further in: the rail behind them, not the panel)
@@ -94,7 +100,7 @@ let corners_tape_rail : Array[String] = [
   "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
     "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
   "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized",
-  "service-stopped", "share-in", "share-in-files", "share-in-stations", "lock-security", "lock-upgrade", "lock-needs-app-security",
+  "service-stopped", "share-in", "share-in-files", "share-in-stations", "lock-security", "lock-upgrade", "lock-needs-app-security", "lock-out-security",
   "screen-agent-driving",
   "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
   "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
@@ -122,10 +128,10 @@ let corners_tape_rail : Array[String] = [
   "settings-connect-run", "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan",
   "settings-new-connect-app", "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu", "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group", "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage",
   "settings-archive", "settings-kept", "settings-kept-many", "settings-vault-off", "settings-vault-plain",
-  "settings-vault-waits", "settings-vault-words", "settings-vault-add", "settings-vault-editor", "settings-vault-recover",
-  "settings-lock-prompt", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
+  "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add", "settings-vault-editor", "settings-vault-recover",
+  "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
   "settings-policy", "settings-policy-text", "settings-policy-option", "settings-security-join",
-  "settings-security-off", "settings-security-pending", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-ask", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts",
+  "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts",
   "settings-fonts-code", "settings-decisions", "settings-completion", "settings-bars", "settings-about",
   "settings-changelog", "settings-prices", "settings-notify-off", "settings-notify-denied", "share-card-poster",
   "share-card-receipt", "share-card-senren-adv", "share-card-senren-affection", "share-card-senren-cg",
@@ -150,17 +156,13 @@ let corners_outgrown_known : Map[String, Int] = Map([])
 /// What is pressed side by side another height than the rest of its row (mbui's Tester::height_faults; the user,
 /// 2026-10-30: what can be pressed is one height) on every screen in every window (corners_wbtest.mbt), by window,
 /// language and screen: the bar it may only fall from, counted as the rule first ran (2026-11-14). A screen not listed
-/// has none. Listed: 连接's 继续 (a connect's session waiting to go on) in the wide windows, its button 36 and the
+/// has none, and none is now. Listed till then: 连接's 继续 (a connect's session waiting to go on) in the wide windows, its button 36 and the
 /// icon's button beside it 32. And what old views hosted in the window's tree show, not measured till the spacing rules
 /// took the tree's nodes in each after its parent (2026-11-14): 屏幕's pages in the wide windows till their ＋ was as
 /// high as their tabs (2026-11-17; their address field beside 后退, 2026-11-15); a chat's 任务 beside it in the
-/// wide windows till it was made of nodes (2026-11-15).
-let corners_heights_known : Map[String, Int] = Map([
-  ("wide-zh settings-connects", 1),
-  ("wide-win-zh settings-connects", 1),
-  ("wide-en settings-connects", 1),
-  ("wide-win-en settings-connects", 1),
-])
+/// wide windows till it was made of nodes (2026-11-15); 连接's waiting app's ⋯ beside its 继续 till it was
+/// as high as its row's first line (2026-11-17).
+let corners_heights_known : Map[String, Int] = Map([])
 
 ///|
 /// A mark beside a block of several lines off its first line (mbui's Tester::first_line_faults; the user, 2026-11-14:
@@ -176,9 +178,7 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("phone-en history-details", 2),
   ("phone-zh history-details", 2),
   ("desk-en newchat-preset-new-browse", 2),
-  ("desk-en settings-stations-command", 1),
   ("desk-win-en newchat-preset-new-browse", 2),
-  ("desk-win-en settings-stations-command", 1),
   ("desk-win-zh newchat-preset-new-browse", 2),
   ("desk-zh newchat-preset-new-browse", 2),
   ("phone-en settings-connects", 2),
@@ -208,7 +208,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("tablet-en settings-new-connect-platform-group", 2),
   ("tablet-en settings-new-connect-group", 2),
   ("tablet-en settings-new-connect-scan", 2),
-  ("tablet-en settings-stations-command", 1),
   ("tablet-zh chat-outline-find", 1),
   ("tablet-zh chat-publish", 2),
   ("tablet-zh newchat-preset-new-browse", 2),
@@ -223,7 +222,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("touch-en chat-outline-find", 1),
   ("touch-en chat-publish", 2),
   ("touch-en newchat-preset-new-browse", 2),
-  ("touch-en settings-stations-command", 1),
   ("touch-zh chat-outline-find", 1),
   ("touch-zh chat-publish", 2),
   ("touch-zh newchat-preset-new-browse", 2),
@@ -237,7 +235,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-en settings-new-connect-platform-group", 2),
   ("wide-en settings-new-connect-group", 2),
   ("wide-en settings-new-connect-scan", 2),
-  ("wide-en settings-stations-command", 1),
   ("wide-win-en chat-publish", 2),
   ("wide-win-en newchat-preset-new-browse", 2),
   ("wide-win-en settings-connects", 2),
@@ -248,7 +245,6 @@ let corners_first_line_known : Map[String, Int] = Map([
   ("wide-win-en settings-new-connect-platform-group", 2),
   ("wide-win-en settings-new-connect-group", 2),
   ("wide-win-en settings-new-connect-scan", 2),
-  ("wide-win-en settings-stations-command", 1),
   ("wide-win-zh chat-publish", 2),
   ("wide-win-zh newchat-preset-new-browse", 2),
   ("wide-win-zh settings-connects", 2),

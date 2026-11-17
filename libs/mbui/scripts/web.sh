@@ -1,5 +1,7 @@
 #!/bin/bash
 # Build the browser version (APP=demo|photos): scripts/web.sh build | bundle [OUT] | test
+# MODE=release|debug (default release; debug builds without --release, for a quick look while working). MODE=debug or
+# MBUI_QUICK=1 leaves out bundle's brotli (quality 11: seconds), unless MBUI_WEB_BROTLI says otherwise.
 set -e
 D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
@@ -9,13 +11,18 @@ CALLER_PWD=$PWD
 cd "${MBUI_APP_MOD:-$ROOT}"
 OUT=out/web
 APP=${APP:-demo}
+MODE=${MODE:-release}
+FLAG=; [ "$MODE" = release ] && FLAG=--release
+QUICK=${MBUI_QUICK:-0}; [ "$MODE" = debug ] && QUICK=1
+# (milliseconds now: Node, which bundle needs too)
+now_ms() { node -p "Date.now()"; }
 [ -z "${MBUI_WEB_HOOK:-}" ] || . "$MBUI_WEB_HOOK"
 case "${1:-build}" in
   build)
-    T0=$(python3 -c 'import time;print(time.time())')
-    moon build --target js --release src/$APP 2>&1 | "$D/chk" errs
+    T0=$(now_ms)
+    moon build --target js $FLAG src/$APP 2>&1 | "$D/chk" errs
     mkdir -p $OUT
-    cp $(pkg_build $APP js release)/$APP.js $OUT/demo.js
+    cp $(pkg_build $APP js $MODE)/$APP.js $OUT/demo.js
     if [ $APP = photos ]; then
       # the made-up pictures (scripts/test_images.swift --gallery)
       gallery_pictures
@@ -24,8 +31,8 @@ case "${1:-build}" in
     fi
     cp $ROOT/web/index.html $ROOT/web/host.js $OUT/
     if type app_build >/dev/null 2>&1; then app_build "$OUT"; fi
-    T1=$(python3 -c 'import time;print(time.time())')
-    echo "built in $(python3 -c "print(round($T1-$T0,2))") s"
+    T1=$(now_ms)
+    echo "built ($MODE) in $(node -p "(($T1 - $T0) / 1000).toFixed(2)") s"
     ls -la $OUT
     gzip -9 -c $OUT/demo.js | wc -c | xargs echo "demo.js gzip bytes:"
     ;;
@@ -48,7 +55,7 @@ case "${1:-build}" in
       npx --yes esbuild@$ESBUILD --minify "$OUT/demo.js" --outfile="$DST/app.js" --log-level=error
     fi
     [ "$ROOT/web/host.js" -ef "$DST/host.js" ] || cp "$ROOT/web/host.js" "$DST/host.js"
-    if [ "${MBUI_WEB_BROTLI:-1}" != 0 ]; then
+    if [ "${MBUI_WEB_BROTLI:-$([ "$QUICK" = 1 ] && echo 0 || echo 1)}" != 0 ]; then
       for f in app.js host.js; do
         node -e 'const z = require("node:zlib"), fs = require("node:fs"), [src, dst] = process.argv.slice(1), b = fs.readFileSync(src);
 fs.writeFileSync(dst, z.brotliCompressSync(b, { params: { [z.constants.BROTLI_PARAM_QUALITY]: 11,

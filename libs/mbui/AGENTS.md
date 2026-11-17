@@ -55,7 +55,11 @@ yet and you can add one, add it.
   2026-11-09). A way turned back slows at one rate to rest and from there sets back out still and gaining as it slowed,
   its place, speed and gain going on where the two meet (flex's `come_turned`, `come_back_path`). Along a row it is the
   same way on its width (flex's `come_across`, `src/view/along_row.mbt`). What makes its way, down a column or along a
-  row, is cut to itself as it goes (`Content::clips_self`).
+  row, is cut to itself as it goes, along its way alone, never across where nothing goes (`Content::clips_self`,
+  `clips_way`). What is laid out is where things rest; how they get there is drawn: no structure holds a size while it
+  changes (a pick's place is laid out at once as the change has it, what it showed drawn where it stood as it fades:
+  `src/view/pick_leave.mbt`; the user, 2026-11-17, after 刚刚 came in from the start of a place held as wide as what it
+  took the place of and jumped to its end).
 - A structure can keep what it switches off, at rest: `View::each`'s `keeps` puts a row whose key left by
   (`View::park`: held by no node, so not laid out, drawn, pressed, focused or read out; what it binds `@signals.rest`ed)
   and takes the same nodes in again as the key comes back, at once, no way in (`src/view/each_kept.mbt`); a stack's
@@ -63,6 +67,13 @@ yet and you can add one, add it.
   what it reads lets go of it and reads it anew as it wakes, but a `View::at_moment` still comes due and a way read by
   the clock is where the clock has it on waking (`src/view/at_rest_today_wbtest.mbt`), and a bare `@signals.effect`
   rests not at all: what a kept part holds is held by watches (`View::reacts`, a binding), never by an effect.
+- A block of a page's list taken for another key (`View::scrolls_window`'s `reused`) is a new block to everything but
+  the allocator, what its parts keep of their own too (the coordinator of the migration, 2026-11-17: 「复杂性由框架扛，
+  应用层只写外观」): how far a row or column in it is scrolled (`View::scrolls`, but one scrolled beside others as one,
+  `Scroll::beside`), a switch it keeps (`View::reused_bool`) and what it calls off as the block is taken
+  (`View::on_reused`) are its key's, kept by the list as the block leaves that key and given back as one shows it again
+  (`src/view/reused_state.mbt`), a part passing no key down for it. Never by a closure looked up as a frame reads where
+  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key.
 - A page's list holds its head (`View::scrolls_window`'s `head`: over its keys, in what scrolls, never the anchor, where
   its keys start) and its foot (`foot`: pinned over the foot of what shows, as tall as it is laid out the room under
   the last block, nothing to the hand but what it holds that takes it). A page puts no row of room among its keys and
@@ -104,8 +115,11 @@ yet and you can add one, add it.
   key once (`View::keyed_by`) is read by each row by its key and a choice of one (the one picked, the one in the hand)
   by member (`View::selected`), so a change tells the rows it is about alone (`src/view/keyed_by.mbt`); a size or a
   room of the layout worked out of a way as it is drawn (`layout-drawn-while`: `drawn_while`, `shown_on` in `width`,
-  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead. What
-  truly is so says why on its line (`det-ok`).
+  `padding`…), laid out again and its words broken again every frame it goes, where what is drawn moves instead; a pick
+  or a show switched by the width its room is given (`width-structure`), where a binding follows the width; a reused
+  block reading its key untracked as it is made (`reused-untracked-key`), keeping the key it was first made for; a
+  part faded out by hand, its own `EdgeWay`, `at_moment` and `show` (`manual-fade-way`, an app's pages and library),
+  where a structure leaves over its time (`View::show`'s `leave`). What truly is so says why on its line (`det-ok`).
 - State that what is made reads is a signal: a mutable value read by a binding that is not one is never seen to
   change. No check finds such a read: detlint's `built-by-hand` only refuses the two ways of covering one by hand
   (`Ctx::forget_parts`, `built_from_changed`). What shows one is the Tester keeping rows and parts as a device does

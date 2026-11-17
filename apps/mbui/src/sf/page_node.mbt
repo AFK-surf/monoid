@@ -214,7 +214,7 @@ pub fn ripple_button_node(
 ///|
 /// Words of `style` in node `w`, `words` as they are said, cut short on their line where `style` says so: `w=Cut`, or,
 /// on one line, filling it (`w=Full`), as an old view's line of `Fill` says it may be cut (ui's Ctx::squeeze_cut_said).
-fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.TextStyle) -> @view.View {
+pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.TextStyle) -> @view.View {
   w
   .words(By(words))
   .words_look(By(fn() { @ui.style_words(style()) }))
@@ -450,6 +450,10 @@ fn narrow_page_node(
     head is Some(_) && f.back is Some(_) && !f.named
   }
   v.lends(head_back_holds, back_holds) |> ignore
+  // (its blocks as last read, and whether their last change put another set in their place: another part of the page, or
+  // what it shows as it is answered in place of what it showed waiting or empty, there at once: pg_blocks_read)
+  let was : Ref[Set[String]] = Ref(Set([]))
+  let other = Ref(false)
   let items = fn() -> Array[PageItem] {
     let f = frame()
     let out = []
@@ -467,7 +471,7 @@ fn narrow_page_node(
     if lead() != "" {
       out.push(Lead)
     }
-    for k in blocks() {
+    for k in pg_blocks_read(was, other, blocks()) {
       out.push(Block(k))
     }
     out.push(Foot)
@@ -475,7 +479,9 @@ fn narrow_page_node(
   }
   v.box(made_for=loc, fn(sc) {
     sc.grow(Is(1.0)) |> ignore
-    // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
+    // (a block of the page's come or gone by data makes its way, the list's (View::comes); what the frame keeps over it
+    // (a status bar's room, a back line, a title as the frame names it or not) there and gone at once, as the window
+    // and the frame are no cause of a way)
     // (what stands over it (a status bar) coming to another height after the page is laid out while it is at its top:
     // its top brought to the top again, back and its title under it, never held where it was read, under the bar)
     let place : @view.ListPlace[PageItem] = @view.ListPlace::new()
@@ -493,7 +499,8 @@ fn narrow_page_node(
       items,
       bar=@ui.tree_scroll_bar(),
       est=pg_block_est,
-      at_once=true,
+      comes=fn(k) { !other.val && k is Block(_) },
+      goes=fn(k) { !other.val && k is Block(_) },
       near_foot?,
       place~,
       fn(s, item) {
@@ -908,9 +915,10 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 /// setting's: setting_link_node). Its words as they are said. `value_lit`: what it says in the link's ink (what it does
 /// pressed); `danger`: its title in red, where it takes something away (离开, 删除); `lacks`: its note in amber, where it
 /// says what is not as it should be. `control`: what is done at its end, last (a button, a switch: what is done here, no
-/// chevron), on its first line where lines are under it, as high as that line; `face`: its `lead` a round picture (a
-/// person's), which stands across the row's middle, and its control too where lines are under its first (wide under a
-/// finger, so is a control with lines under it: the row is wide enough for its lines beside it).
+/// chevron), on its first line where lines are under it, as high as that line (wide under a finger, by the whole row's
+/// side: a wide row's first line is too low for a finger's least room, and the row is wide enough for its lines beside
+/// it); `face`: its `lead` a round picture (a person's), which stands across the row's middle, in no corner of the row
+/// (on its first line it would stand in the row's top corner, not concentric with it: the corner rule's).
 /// `title_cut`, `value_cut`: its title, what it says, a summary cut short on its line where it has less room;
 /// `value_wraps`: what it says, where it goes under its title and has not the room even on a line of its own there,
 /// taking more lines under it, never cut (a narrow row's: what a moved item waits for, its whole name);
@@ -957,6 +965,7 @@ pub fn link_row_node(
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -997,6 +1006,7 @@ pub fn link_row_node(
     value_wraps~,
     chevron_room~,
     lines_from_lead~,
+    title_masked?,
   )
 }
 
@@ -1124,6 +1134,7 @@ fn link_row_made(
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
@@ -1156,22 +1167,20 @@ fn link_row_made(
       Some(w) => w
       None => note
     }
-    // (wide under a finger, a control with lines under its first by the whole row's side, as a face's: a wide row's
-    // first line is too low for a finger's least room, and the row is wide enough for its lines beside it)
-    let face = face || (control is Some(_) && native_input() is Finger)
-    // (a face's row with a control at its end, lines under its first: its words cut short where the control leaves
-    // them less, the control by the whole row's side rather than its first line's: link_row's)
-    let note_cut = fn() { note_cut || (face && control is Some(_) && under()) }
+    // (wide under a finger, a control with lines under its first by the whole row's side: a wide row's first line is
+    // too low for a finger's least room, and the row is wide enough for its lines beside it; its words cut short where
+    // the control leaves them less, and the row laid out across its middle, as a face's)
+    let by_side = control is Some(_) && native_input() is Finger
+    let note_cut = fn() { note_cut || (by_side && under()) }
     wide_link_row_node(
-      parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead, face,
+      parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead,
+      face || by_side, by_side,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?,
     )
     return
   }
-  // (a face's row with a control at its end, lines under its first: its words cut short where the control leaves them
-  // less, the control by the whole row's side rather than its first line's: link_row's)
-  let note_cut_now = fn() { note_cut || (face && control is Some(_) && under()) }
+  let note_cut_now = fn() { note_cut }
   // (where it stands across in a panel's body, row_line's: panel_row_at, not on a card; round there as the old one's
   // ground is where it stands in from the panel's sides (panel_row_corner), a small panel's inner corner in one;
   // elsewhere a card's row, as ever)
@@ -1285,7 +1294,8 @@ fn link_row_made(
               // where the line leaves it less, link_row's title_line; its title the same words all along)
               let after_now = fn() { title_after is Some(_) && title_after_shown() }
               t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-              t.box(fn(w) {
+              // (hidden by dots where it says so: a picture shared, masked_words_box)
+              masked_words_box(t, title_masked, fn(w) {
                 w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 styled_words(w, title, fn() {
                   if after_now() || (note_cut_now() && value() == "") || title_cut { plain().then(cut_words) } else { plain() }
@@ -1295,7 +1305,6 @@ fn link_row_made(
                   w.ink(By(fn() { link_ink() })) |> ignore
                 }
               })
-              |> ignore
               match title_after {
                 Some(after) =>
                   t.show(title_after_shown, fn(a) {
@@ -1347,9 +1356,8 @@ fn link_row_made(
           first.box(fn(e) { e.width(Is(Some(pg_chevron))).height(Is(Some(pg_chevron))).margin(By(fn() { on_line(pg_chevron) })) |> ignore })
           |> ignore
         }
-        // (what is done here, at its end: on its first line where lines are under it, as high as that line; a face's
-        // by the whole row's side there, below)
-        row_control_node(first, control, under, face, false)
+        // (what is done here, at its end: on its first line where lines are under it, as high as that line)
+        row_control_node(first, control, under, false, false)
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
@@ -1374,7 +1382,6 @@ fn link_row_made(
       }
     })
     |> ignore
-    row_control_node(r, control, under, face, true)
   })
   |> ignore
 }
@@ -1404,19 +1411,20 @@ fn row_tail_node(
 }
 
 ///|
-/// What is done at a row's end (link_row's `control`), made in `at`: on its first line (`by_row` false) where it is
-/// not a face's with lines under it, as high as that line where lines are under it (line_end_node), else as it is; by
-/// the whole row's side, across its middle (`by_row`), where it is a face's with lines under it. Each while that says.
-fn row_control_node(at : @view.View, control : ((@view.View) -> Unit)?, under : () -> Bool, face : Bool, by_row : Bool) -> Unit {
+/// What is done at a row's end (link_row's `control`), made in `at`: on its first line (`by_row` false) where it does not
+/// stand `by_side`, as high as that line where lines are under it (line_end_node), else as it is; by the whole row's
+/// side, across its middle (`by_row`), where it stands `by_side` with lines under it (wide under a finger). Each while
+/// that says.
+fn row_control_node(at : @view.View, control : ((@view.View) -> Unit)?, under : () -> Bool, by_side : Bool, by_row : Bool) -> Unit {
   guard control is Some(make) else { return }
   if by_row {
-    at.show(fn() { face && under() }, fn(e) {
+    at.show(fn() { by_side && under() }, fn(e) {
       e.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
       make(e)
     })
     return
   }
-  at.pick(fn() { if face && under() { 0 } else if under() { 1 } else { 2 } }, fn(e, k) {
+  at.pick(fn() { if by_side && under() { 0 } else if under() { 1 } else { 2 } }, fn(e, k) {
     e.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
     match k {
       1 => line_end_node(e, make)
@@ -1461,6 +1469,73 @@ pub fn row_end_key_grown(v : @view.View) -> Double {
 }
 
 ///|
+/// Where what stands `t` under a container's top, in its corner of `corner`, stands in from its top and end to be
+/// concentric with it, and how round: at the ladder's step (corner_ladder) nearest at or above `t`, none where it stands
+/// out of the corner's reach or the ladder has no step there.
+fn corner_step(corner : Double, t : Double) -> (Double, Double)? {
+  if t >= corner || t <= 0.0 {
+    return None
+  }
+  let mut at : (Double, Double)? = None
+  for r in corner_ladder {
+    if r < corner - 0.5 && corner - r <= t + 0.5 {
+      match at {
+        Some((_, was)) if was <= r => ()
+        _ => at = Some((corner - r, r))
+      }
+    }
+  }
+  at
+}
+
+///|
+/// A round key `k` last on its card's first row's first line (link_row_node's `control`: an icon's, `w` across), laid
+/// out: as high as that line, its ground grown over, under and past it at its end into the card's top end corner,
+/// concentric with it (the corner rule's), its icon where it was. A narrow row stands in its own corner
+/// (row_end_key_grown); a wide one's first line stands under its card's top (row_corner_button_node's reckoning), its
+/// ground grown to the ladder's step nearest at or above it; wide under a finger, by the whole row's side, it is only
+/// as high as that line. How round it is, as it changes.
+pub fn row_corner_key_look(k : @view.View, w : Double) -> () -> Double {
+  let narrow = look_node(k) is Narrow
+  let th = fn() { @ui.tree_theme() }
+  let line = fn() {
+    if narrow {
+      node_sp(k, th().text_size(Body).1)
+    } else {
+      node_sp(k, th().leading(L6).unwrap_or(th().text_size(Ui).1))
+    }
+  }
+  // (how far it grows over and under, how far past its end, and how round)
+  let grown = fn() -> (Double, Double, Double) {
+    if narrow {
+      let g = row_end_key_grown(k)
+      return (g, g, if g > 0.0 { small_corner } else { line() / 2.0 })
+    }
+    if @signals.untracked(native_input) is Finger {
+      return (0.0, 0.0, line() / 2.0)
+    }
+    let (pad, corner) = list_card_in(k)
+    let ends = if in_pane_node(k) { card_pad - wide_row_over } else { pad }
+    let top = ends + wide_row_over
+    match corner_step(corner, top) {
+      Some((e, r)) => (dmax(0.0, top - e), dmax(0.0, pad + text_in - e), r)
+      None => (0.0, 0.0, line() / 2.0)
+    }
+  }
+  k
+  .width(By(fn() { Some(w + grown().1) }))
+  .height(By(fn() { Some(line() + 2.0 * grown().0) }))
+  .margin(By(fn() {
+    let (o, e, _) = grown()
+    (0.0, -o, -e, -o)
+  }))
+  .padding(By(fn() { (0.0, 0.0, grown().1, 0.0) }))
+  .radius(By(fn() { grown().2 }))
+  |> ignore
+  fn() { grown().2 }
+}
+
+///|
 /// A button of words alone at the end of its card's first row (row_end_button_node's), where lines are under that row's
 /// first: on that line as row_end_button_node's, its words where they are, its ground grown over, under and past them
 /// at its end, as much past them at its start, till it stands as far in from the card's top as from its end, at the
@@ -1500,22 +1575,7 @@ pub fn row_corner_button_node(
   // there, at a step of the ladder's (corner_ladder: the corner rule's), the nearest at or above its top, its ground
   // grown as much over and under its words, which stay where line_end_node has them; none where it stands out of the
   // corner's reach, row_end_button_node's)
-  let stands = fn() -> (Double, Double)? {
-    let t = top()
-    if t >= corner || t <= 0.0 {
-      return None
-    }
-    let mut at : (Double, Double)? = None
-    for r in corner_ladder {
-      if r < corner - 0.5 && corner - r <= t + 0.5 {
-        match at {
-          Some((_, was)) if was <= r => ()
-          _ => at = Some((corner - r, r))
-        }
-      }
-    }
-    at
-  }
+  let stands = fn() -> (Double, Double)? { corner_step(corner, top()) }
   let grown = fn() {
     match stands() {
       Some((e, _)) => dmax(0.0, top() - e)
@@ -1616,7 +1676,8 @@ let status_dot_side : Double = 7.0
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`
 /// for a screen reader; turned by a tap, a press held however long and let go on it, Space or Enter, a screen reader's
 /// press: `turn` told what it is to be (the caller says it so: `on` follows it), a light tick felt under a finger. Its
-/// knob slides to its side (switch_ms, eased out) and its track's colour with it, from where it is at that moment;
+/// knob springs to its side (@motion.knob_spring) and its track's colour with it, from where it is at that moment, the knob
+/// drawn longer as fast as it goes (@motion.velocity_capsule), round at rest;
 /// held by a finger, the knob a lens growing as a lift does. In the room a finger's press takes round it, up and down.
 /// `small`: 26 by 16 (switch_size's). While `disabled()`, at half (@kit.switch's look's), taking no press nor the focus.
 /// What the keys' focus and a screen reader find is one node, its room: a switch by its name, on or off.
@@ -1656,11 +1717,13 @@ pub fn switch_node(
     room.box(fn(v) {
       // (its track in the middle of that room, up and down: switch_reach's)
       v.min_height(By(fn() { Some(theme().items.least) })).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-      let knob = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-      let held = EdgeWay::new(0.0)
-      v.reacts(on, fn(now) { knob.go(v, if now { 1.0 } else { 0.0 }, @kit.switch_ms) })
+      let knob = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+      let held = @motion.NodeWay::new(0.0)
+      // (sent to its side by a crisp spring from where it is then and as fast: a turn told again mid-way goes on from
+      // there, never from a stop; still within switch_settle_ms)
+      v.reacts(on, fn(now) { knob.go(v, if now { 1.0 } else { 0.0 }, @motion.knob_spring) })
       v.reacts(fn() { sw.pressed() && @ui.pointing() is Finger }, fn(down) {
-        held.go_by(v, if down { 1.0 } else { 0.0 }, @motion.lift_spring)
+        held.go(v, if down { 1.0 } else { 0.0 }, @motion.lift_spring)
       })
       v.alpha(By(fn() { if disabled() { switch_disabled_alpha } else { 1.0 } })) |> ignore
       let size = fn() { switch_size(small) }
@@ -1671,7 +1734,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(p.line_strong, p.accent, knob.shown(track))
+          @kit.blend(p.line_strong, p.accent, dmin(1.0, dmax(0.0, knob.shown(track))))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1690,6 +1753,13 @@ pub fn switch_node(
             .ground(Is(0xFFFFFFFFL))
             .shadow(Is((2.0, 1.0, 0x00000033L)))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            // (drawn longer along its way as fast as it flies, a capsule, round again as it comes to rest: its way's
+            // speed at the moment drawn, its ground alone; none while a finger holds it as a lens)
+            .ground_drawn(By(fn() {
+              let (_, speed) = knob.motion(track)
+              let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
+              @motion.velocity_capsule(d(), d(), speed * travel() * calm, 0.0)
+            }))
             .alpha(By(fn() { 1.0 - dmin(1.0, lens()) }))
             |> ignore
           })
@@ -2325,4 +2395,34 @@ pub fn first_line_node(
     |> ignore
     make(l)
   })
+}
+
+///|
+/// A list's keys `now` as read, `was` the ones read last kept anew, `other` whether they are another set in place of
+/// the one before (some of these new and some of those gone in one change: another part or tab of the page, what it
+/// shows as it is answered in place of what it showed waiting or empty, another folder): there at once, not each block
+/// opening over the other's closing. Keys only come (more came) or only go (one taken away, the last one too) make
+/// their way; read again with nothing changed, what the change was stays (page_node, wide_page_node,
+/// panel_list_node).
+pub fn[K : Hash + Eq] pg_blocks_read(was : Ref[Set[K]], other : Ref[Bool], now : Array[K]) -> Array[K] {
+  let seen : Set[K] = Set([])
+  let mut came = false
+  for k in now {
+    seen.add(k)
+    if !was.val.contains(k) {
+      came = true
+    }
+  }
+  let mut went = false
+  for k in was.val {
+    if !seen.contains(k) {
+      went = true
+    }
+  }
+  // (read again with nothing changed (the same change's list reading its keys once more): what that change was stays)
+  if came || went {
+    other.val = came && went
+  }
+  was.val = seen
+  now
 }

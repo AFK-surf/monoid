@@ -251,7 +251,7 @@ let core_source : @sfapp.Source = {
           if call_log {
             @hostapi.log("ANSWER \{name} ok \{logged(name, v)} with \{bytes.map(fn(b) { b.length() }).unwrap_or(0)} bytes")
           }
-          done(Ok((v, bytes.unwrap_or(Bytes::new(0)))))
+          done(Ok((v, bytes.unwrap_or(Bytes::make(0, b'\x00')))))
         }
         Err(e) => {
           if call_log {
@@ -276,7 +276,7 @@ let core_source : @sfapp.Source = {
           if call_log {
             @hostapi.log("ANSWER \{name} ok \{logged(name, v)} with \{bytes.map(fn(b) { b.length() }).unwrap_or(0)} bytes")
           }
-          done(Ok((v, bytes.unwrap_or(Bytes::new(0)))))
+          done(Ok((v, bytes.unwrap_or(Bytes::make(0, b'\x00')))))
         }
         Err(e) => {
           if call_log {

@@ -808,10 +808,15 @@ export class Sharing {
           if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
             await this.placedHome(await this.placeProfile(id, had, got));
+            // (lent meanwhile, or heard of again, while it was placed: that one's copy in its place, as above)
+            if (state.borrowed[id] !== had) continue;
             const revision = Number(got?.quotaRevision ?? 0);
             if (had.version >= 0) had.profileUpdate = { reset: revision > (had.quotaRevision ?? 0) || had.profileUpdate?.reset === true };
             had.quotaRevision = revision;
-          } else await this.placeSkill(id, had, got);
+          } else {
+            await this.placeSkill(id, had, got);
+            if (state.borrowed[id] !== had) continue;
+          }
           had.version = Number(got?.version ?? 0);
           had.allow = Array.isArray(got?.allow) ? got.allow : null;
           had.stale = false;
@@ -1792,9 +1797,12 @@ export class Sharing {
     const allow: string[] | null = Array.isArray(request?.allow) ? request.allow : null;
     if (allow !== null && (me === null || !allow.includes(me))) throw new Error("this station is not among those it is shared with");
     const state = this.readState();
-    const had: Borrowed = state.borrowed[id] ?? { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
-    had.host = peer;
-    had.allow = allow;
+    // (a copy put in the place of what was had, never that one changed where it is: a pass of `reconcile` waiting on its
+    // host holds it, and finds by that it was taken over, as `heard` does)
+    const before = state.borrowed[id];
+    const had: Borrowed = before
+      ? { ...before, host: peer, allow }
+      : { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
     const home = await this.placeProfile(id, had, request);
     had.version = Number(request?.version ?? 0);
     had.quotaRevision = Number(request?.quotaRevision ?? 0);
@@ -1996,17 +2004,24 @@ export class Sharing {
 
   // ── the overview ──
 
-  /// What the overview says of a profile's sharing (null: not shared).
-  profileView(p: Json): ShareView | null {
+  /// What the overview says of a profile's sharing (null: not shared). `workspace`: the viewer's; the stations it names
+  /// (`users`, `allow`) are this one and those of that workspace only, so a member never sees a station of a workspace of
+  /// this station's they are not in, which they could only show by its id (null: all of them).
+  profileView(p: Json, workspace: string | null = null): ShareView | null {
     if (!isObject(p?.share) || typeof p.share.id !== "string") return null;
     const id = p.share.id as string;
+    const me = this.me();
+    const rosters = workspace === null ? null : this.rosters();
+    const seen = (station: string) => rosters === null || station === me || rosters.get(station)?.includes(workspace!) === true;
     if (p.share.borrowed === true) {
+      // The allowance is the host's, naming the stations of each of its workspaces: only this one's and the viewer's.
       const host = String(p.share.host ?? "");
       const had = this.readState().borrowed[id];
-      return { id, role: "user", host, allow: had?.allow ?? null, reachable: !this.unreachable.has(host), pausable: true };
+      return { id, role: "user", host, allow: had?.allow?.filter(seen) ?? null, reachable: !this.unreachable.has(host), pausable: true };
     }
     const told = this.readState().hosted[id]?.told ?? {};
-    return { id, role: "host", host: this.me() ?? "", allow: Array.isArray(p.share.allow) ? p.share.allow : null, reachable: null, users: Object.entries(told).filter(([, v]) => v >= 0).map(([k]) => k) };
+    const users = Object.entries(told).filter(([k, v]) => v >= 0 && seen(k)).map(([k]) => k);
+    return { id, role: "host", host: me ?? "", allow: Array.isArray(p.share.allow) ? p.share.allow.filter(seen) : null, reachable: null, users };
   }
 
   /// What the memory page says of a skill's sharing (null: not shared): by its name in the agents' skills.

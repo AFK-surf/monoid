@@ -30,7 +30,7 @@ let corner_windows : Array[(String, Double, Double, Int, String)] = [
 let corner_modes : Array[String] = {
   let modes = [
     // (webdemo: the web's demo workspace, its chats' rows with people's faces, which chat's fixture has none)
-    "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
+    "webdemo", "home", "board", "home-bars", "home-jobs", "home-shared-bell", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
     "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
@@ -47,7 +47,7 @@ let corner_modes : Array[String] = {
     "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
-    "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
+    "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
     "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
@@ -60,7 +60,7 @@ let corner_modes : Array[String] = {
     "share-in-files", "share-in-stations", "lock-checking", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
     "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong",
     // (a web page left out of an upgraded workspace that nobody can approve there: its waiting page, its 安全)
-    "lock-needs-app", "lock-needs-app-security", "screen-agent-driving",
+    "lock-needs-app", "lock-needs-app-security", "lock-out", "lock-out-security", "screen-agent-driving",
     "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
     "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
     "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",
@@ -97,10 +97,10 @@ let corner_modes : Array[String] = {
     // (Group offered and picked, a new group connect's server filled in, and a group connect's page)
     "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group",
     "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
-    "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-words", "settings-vault-add",
-    "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-add-people",
+    "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add",
+    "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people",
     "settings-workspace-mark", "settings-local-fonts", "settings-policy", "settings-policy-text",
-    "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-pending", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-ask", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
+    "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
     "settings-run", "settings-run-models", "settings-run-accounts", "settings-fonts", "settings-fonts-code",
     "settings-decisions", "settings-completion", "settings-bars", "settings-about", "settings-changelog", "settings-prices",
     "settings-notify-off", "settings-notify-denied",

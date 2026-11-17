@@ -158,6 +158,19 @@ pub let sheet_spring : Spec = motion_spring(0.32, threshold=0.5)
 pub let lift_spring : Spec = motion_spring(0.25, bounce=0.35)
 
 ///|
+/// What a control's thumb flung to its other side goes by (a switch's knob, a segment's thumb sent on): crisp, a little
+/// past it and back, at rest within its length (motionSpring(.2, bounce .12)); its speed drawn by it as it flies
+/// (velocity_capsule).
+// kept across runs: a constant: its fields are not mut, nothing changes it
+pub let knob_spring : Spec = motion_spring(0.2, bounce=0.12)
+
+///|
+/// What a digit rolled in to its place goes by (an odometer's figure: motionSpring(.2), critically damped: it comes to
+/// its line and stays, never past it and back, a figure beside a still one never a pixel off it).
+// kept across runs: a constant: its fields are not mut, nothing changes it
+pub let digit_spring : Spec = motion_spring(0.2)
+
+///|
 /// A cover's spring (@ui.Ctx::cover's: a sliding thumb sent to another item), for what moves one otherwise: its way
 /// solved as the cover's is (@ui.cover_spring_at), at rest when the cover's is (@ui.cover_spring_end). Gone from 0 (where
 /// it set out from) to 1 (the item it goes to), the way a cover's is.

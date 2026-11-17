@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { latest as latestNote } from "../src/agents/migrations.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
@@ -326,8 +327,16 @@ test("sessions: made, set, read, counted, kept in memory and forgotten as the Ty
   await p.c("modelStars", "w1", "ann");
   await p.c("putModelStars", "w1", "ann", '["a","b"]');
   await p.c("modelStars", "w1", "ann");
+  // (#6960) the first write waits for no other writer: refused at once while another connection holds the lock, read
+  // without the lock once it is kept
+  const holders = ["a", "b"].map((side) => new DatabaseSync(join(p.dir, side, "stillfail.db")));
+  for (const h of holders) h.exec("BEGIN IMMEDIATE");
+  assert.deepEqual(await p.c("deviceBuildsSince", 3), { error: "device builds write is busy", data: null });
+  for (const h of holders) h.exec("ROLLBACK");
   await p.c("deviceBuildsSince", 5);
-  await p.c("deviceBuildsSince", 9);
+  for (const h of holders) h.exec("BEGIN IMMEDIATE");
+  assert.equal(await p.c("deviceBuildsSince", 9), 5);
+  for (const h of holders) { h.exec("ROLLBACK"); h.close(); }
   // (a session's workspace kept in memory: forgotten as all of its workspace move)
   await p.c("setSessionsWs", null, "home");
   for (const k of ["s1", "s2", "s4"]) await p.c("sessionWs", k);
@@ -654,6 +663,18 @@ test("turns, identities, profiles, processes, jobs and widgets", () => withPair(
   await p.c("jobStarted", "j1", 4242, false);
   await p.c("jobStarted", "j2", 4243, true);
   await p.c("jobStarted", "nope", 1, true);
+  // one that waited in the queue started when it left it; one that did not, and one started again, keep theirs
+  await p.c("insertJob", job("remote_j5", { sessionKey: "t2", queued: true }));
+  const queuedAt = p.now;
+  p.now += 60_000;
+  await p.c("jobStarted", "remote_j5", 4244, false);
+  const started = await p.c("getJob", "remote_j5");
+  assert.equal(started.startedAt, p.now);
+  assert.equal(started.queued, undefined);
+  assert.equal((await p.c("getJob", "j1")).startedAt, queuedAt - 3);
+  p.now += 1;
+  await p.c("jobStarted", "remote_j5", 4245, true);
+  assert.equal((await p.c("getJob", "remote_j5")).startedAt, p.now - 1);
   await p.c("getJob", "j4");
   await p.c("getJob", "none");
   await p.c("jobByToken", "jt-j2");

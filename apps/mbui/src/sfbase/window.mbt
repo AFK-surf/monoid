@@ -52,6 +52,19 @@ pub fn window_text(p : Page) -> String? {
           } : Json
         ).stringify(),
       )
+    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" =>
+      Some(
+        (
+          {
+            "terminal": {
+              "station": Json::string(at.station),
+              "terminal": Json::string(at.terminal),
+              "watch": Json::boolean(at.watch),
+              "cwd": Json::string(at.cwd),
+            },
+          } : Json
+        ).stringify(),
+      )
     _ => None
   }
 }
@@ -60,14 +73,29 @@ pub fn window_text(p : Page) -> String? {
 /// The page a window of its own was started to show (window_text's), None when it names none.
 pub fn window_page(s : String) -> Page? {
   let v = @json.parse(s) catch { _ => return None }
-  guard v is Object(m) && m.get("screen") is Some(Object(at)) else { return None }
-  guard at.get("station") is Some(String(station)) && station != "" else { return None }
-  guard at.get("screen") is Some(String(screen)) && screen != "" else { return None }
-  let title = match at.get("title") {
-    Some(String(t)) => t
-    _ => ""
+  guard v is Object(m) else { return None }
+  match m.get("screen") {
+    Some(Object(at)) => {
+      guard at.get("station") is Some(String(station)) && station != "" else { return None }
+      guard at.get("screen") is Some(String(screen)) && screen != "" else { return None }
+      let title = match at.get("title") {
+        Some(String(t)) => t
+        _ => ""
+      }
+      Some(Screen({ station, screen, title, until_gone: false }))
+    }
+    _ =>
+      match m.get("terminal") {
+        Some(Object(at)) => {
+          guard at.get("station") is Some(String(station)) && station != "" else { return None }
+          guard at.get("terminal") is Some(String(terminal)) && terminal != "" else { return None }
+          let watch = at.get("watch") == Some(Json::boolean(true))
+          let cwd = match at.get("cwd") { Some(String(c)) => c; _ => "" }
+          Some(Terminal({ station, terminal, watch, cwd }))
+        }
+        _ => None
+      }
   }
-  Some(Screen({ station, screen, title, until_gone: false }))
 }
 
 ///|
@@ -138,7 +166,8 @@ pub let window_page_given : Ref[(Page, Int) -> Unit] = Ref(fn(_, _) {  })
 /// What `p` is, whichever way it was opened (its title aside): None for a page that goes in no window.
 fn window_key(p : Page) -> String? {
   match p {
-    Screen(at) => Some(at.station + "\n" + at.screen)
+    Screen(at) => Some("screen\n" + at.station + "\n" + at.screen)
+    Terminal(at) if at.terminal != "" && terminal_base_id(at.terminal) != "new" => Some("terminal\n" + at.station + "\n" + at.terminal)
     _ => None
   }
 }
@@ -155,6 +184,12 @@ pub fn window_here_page(wid : Int) -> Page? {
 /// opened, is that window's to let go of, not the page it left here.
 pub fn window_has_screen(station : String, screen : String) -> Bool {
   windows_here_show.values().any(fn(p) { p is Screen(at) && at.station == station && at.screen == screen })
+}
+
+///|
+/// Whether a window of this run beside its first shows `terminal` on `station` now.
+pub fn window_has_terminal(station : String, terminal : String) -> Bool {
+  windows_here_show.values().any(fn(p) { p is Terminal(at) && at.station == station && at.terminal == terminal })
 }
 
 ///|

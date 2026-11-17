@@ -30,7 +30,6 @@ pub let bar_update_in : Double
 
 pub let bar_update_inset : Double
 
-pub fn attention_any(@sfbase.Source, @sfbase.Workspace) -> Bool
 
 pub fn bell_lit(@sfbase.Source, @sfbase.Workspace) -> Bool
 
@@ -336,6 +335,8 @@ pub let side_panel_style : @ui.Style
 
 pub fn side_place() -> String
 
+pub fn side_screen_shown(@sfbase.Source, String, String) -> Bool
+
 pub fn side_slide_reset() -> Unit
 
 pub let side_tab_close : @ui.Style
@@ -453,6 +454,7 @@ pub(all) struct ArchiveSide {
   mut q : String
   mut limit : Int32
   mut last : @json.Json?
+  mut last_ws : String
   mut landed : Bool
 }
 

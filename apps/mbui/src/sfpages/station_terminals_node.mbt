@@ -43,9 +43,14 @@ fn terminal_title(t : Json?) -> String {
 let terminals_here_kept : Ref[Bool?] = Ref(None)
 
 ///|
+fn init {
+  @sfbase.terminals_capable_fn.val = terminals_here
+}
+
+///|
 /// Whether this device's host keeps terminals (libghostty-vt linked in: @hostapi.Terminal), asked once by opening one
 /// and letting it go: a host with none shows no terminal's row, which would open on nothing.
-fn terminals_here() -> Bool {
+pub fn terminals_here() -> Bool {
   match terminals_here_kept.val {
     Some(ok) => ok
     None => {

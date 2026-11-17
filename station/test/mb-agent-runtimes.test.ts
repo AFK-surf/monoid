@@ -250,7 +250,7 @@ describe("instructions.ts, migrations.ts: every text word for word", { skip }, (
   });
 
   test("a conversation's address read back", async () => {
-    const values = ["CHAT/1794883188.900000", " C12/1.2 ", "oc_abc123/om_x9", "oc_abc/omt_9", "oc_/om_1", "0123456789abcdef/0123456789abcdef", "0123456789abcdef/x", "c1/1.2", "C1/1", "C1/.1", "C1/1.", "nothing", "/1.2", "C-1/1.2", "C1/1.2/3"];
+    const values = ["CHAT/1794883188.900000", " C12/1.2 ", "oc_abc123/om_x9", "oc_abc/omt_9", "oc_/om_1", "0123456789abcdef/0123456789abcdef", "d_0123456789abcdef01234567/d_0123456789abcdef01234567", "s_0123456789abcdef01234567/t_0123456789abcdef", "s_0123456789abcdef01234567/t_0123456789abcdeF", "x_0123456789abcdef01234567/x_0123456789abcdef01234567", "0123456789abcdef/x", "c1/1.2", "C1/1", "C1/.1", "C1/1.", "nothing", "/1.2", "C-1/1.2", "C1/1.2/3"];
     await same("parseThreadAddress", values.map((v) => [v]), I.parseThreadAddress);
     await same("threadAddress", [["C", "1.2"]], I.threadAddress);
   });
@@ -403,6 +403,13 @@ describe("sandbox.ts, sandbox-name.ts, no-keychain.ts, machine-logins.ts, repo-r
       for (const args of [[], ["--x", "it's"]]) assert.equal(await call("hookCommand", rules.hookNode(file), file, args), rules.hookCommand(file, ...args));
       for (const os of ["windows", "macos", "linux"]) assert.equal(await call("agyHookCommand", rules.hookNode(file), "/a \"b\"/hook.mjs", os), rules.agyHookCommand("/a \"b\"/hook.mjs", os));
     }
+    // A release with no Node: the station's own program beside the hook runs it (a release with Node keeps its Node).
+    for (const [has, node] of [
+      [["/app/station/stillfail-reader"], "/app/station/stillfail-reader"],
+      [["/app/station/stillfail-reader.exe"], "/app/station/stillfail-reader.exe"],
+      [["/app/node/bin/node", "/app/station/stillfail-reader"], "/app/node/bin/node"],
+      [["/elsewhere/station/stillfail-reader"], process.execPath],
+    ] as const) assert.equal(await call("hookNode", file, has, process.execPath), node, `hookNode with ${has.join(", ")}`);
     assert.equal(await call("hookCommand", rules.hookNode(rules.REPO_RULES_HOOK), rules.REPO_RULES_HOOK, []), rules.REPO_RULES_COMMAND);
     await same("peerHttpBase", [["http://127.0.0.1:1/mcp"], ["http://x/mcp/y"], ["http://x/mcpx"]], (u) => u.replace(/\/mcp$/, "/peer"));
   });

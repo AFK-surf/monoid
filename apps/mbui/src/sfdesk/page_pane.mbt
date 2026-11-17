@@ -86,7 +86,7 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   page_switch_said(v, fn() { @sfbase.workspace_in_view(src).0 is Some(_) && !gated() })
   // (what waits in its place giving back the focus as it goes, to what had it as it came: the page under it kept, laid
   // out nowhere meanwhile (none of it built, pressed or read out), the focus in it let go of then, after it is kept)
-  v.show(gated, fn(g) {
+  v.show(gated, at_once=true, fn(g) {
     g.grow(Is(1.0)).focus_returns() |> ignore
     pane_gate_node(g, src)
   })
@@ -104,7 +104,7 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 /// system's tabs are the rail (gate_heading_node).
 fn pane_gate_node(g : @view.View, src : Source) -> Unit {
   g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  g.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+  g.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
     // (all of the pane, as the page it is in the place of; what waits clear of the column of the system's bars down
     // the window's trailing edge, an iPhone Duo's on its side (@sf.native_clear), the page's ground on under it)
     p.over(Is(true)).padding(By(fn() { (0.0, 0.0, @sf.native_clear(), 0.0) })) |> ignore
@@ -236,7 +236,7 @@ fn pane_made(
       (
         kind,
         fn(v : @view.View, page : () -> Page, under : Page?, stint : () -> Int, k : Int) {
-          v.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
             let core = settings_core(src, w)
             let here = fn() { @settings.here_of(core, w.id, w.name) }
@@ -309,6 +309,29 @@ fn pane_made(
       made("place/stations", fn(a, core, here, stint, frame, width) {
         stations_place_node(a, src, core, here, stint, frame, width, tips~)
       })
+    Place("remote") =>
+      Some(
+        (
+          "place/remote",
+          fn(v, _page, _under, _stint, k) {
+            v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
+              guard ws_id is Some(wid) else { return }
+              pane_made_host(p, src, k)
+              let ends = pane_chat_bar_ends(src, p)
+              let width = fn() { pane_w_at(src, p) }
+              @sfpages.remote_workbench_node(
+                p,
+                src,
+                fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
+                tips,
+                start_pad=fn() { dmax(12.0, (ends.start)()) },
+                end_pad=fn() { (ends.end)(false, false) },
+                width~,
+              )
+            })
+          },
+        ),
+      )
     // (a place of the rail's whose page is one of those: that page, at the stack's root (no back over it, place_page's),
     // made under its own kind)
     Place(name) =>
@@ -533,7 +556,7 @@ fn pane_made(
                 key=tape_island_key,
                 drawn=fn(serial) { pane_page_wait.draws(serial) },
                 over=fn(o, src, page, stint) {
-                  chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o), tips, stint)
+                  chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
                 // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
                 body=fn(col, s, r, composer, shows) {
@@ -547,6 +570,13 @@ fn pane_made(
                   match @sfbase.workspace_in_view(s).0 {
                     Some(w) => with_side(c, s, w, r, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
                     None => chat_composer_nodes(c, s, r, wide.tape.get())
+                  }
+                },
+                foot_node=fn(n, s, r) { @sfpages.chat_composer_node(n, s, r, tips, apart=wide.tape.get()) },
+                leaving=fn(c, s, r) {
+                  match @sfbase.workspace_in_view(s).0 {
+                    Some(w) => new_chat_after(c, s, w, r)
+                    None => ()
                   }
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
@@ -571,7 +601,11 @@ fn pane_made(
 /// shown a while; its end at the window's corner while no panel is open beside it (window_end_in: its buttons'
 /// corner the window's, followed), clear of a corner too square for ⌘F's field (a capsule: window_corner_past), the
 /// bar's own padding beside a panel.
-fn pane_chat_bar_ends(src : Source, n : @view.View) -> ChatBarEnds {
+fn pane_chat_bar_ends(
+  src : Source,
+  n : @view.View,
+  page? : () -> Page? = fn() { None },
+) -> ChatBarEnds {
   let look = fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
@@ -597,7 +631,26 @@ fn pane_chat_bar_ends(src : Source, n : @view.View) -> ChatBarEnds {
       }
     },
     end: fn(beside, finding) {
-      if beside {
+      let col_w = match page() {
+        Some(Chat(r)) if pane_w_at(src, n) >= side_both_least => {
+          let key = chat_key(r)
+          let _ = side_way(key)
+          if panel_own.asked.get() == key {
+            0.0
+          } else {
+            side_col(src, n, key, beside)
+          }
+        }
+        _ => 0.0
+      }
+      if col_w > 0.5 {
+        if @ui.window_keys_own() {
+          bar_in
+        } else {
+          dmax(bar_in, @sf.window_corner_past(4.0, roots=@ui.tree_corner_roots_now()) - col_w)
+        }
+      } else if beside {
+        // (beside what the pane shows next to it, not a chat's side column: a history's, as before)
         bar_in
       } else if finding {
         if @ui.window_keys_own() {

@@ -55,7 +55,15 @@ pub fn link_target(v : Json) -> LinkTarget {
       Some(Number(n, ..)) if n > 0.0 => Some(n)
       _ => None
     },
-    screen: text(j, "screen"),
+    // (a terminal's link says its id as `terminal`: kept as `screen`, told apart by `opens`)
+    screen: {
+      let s = text(j, "screen")
+      if s != "" {
+        s
+      } else {
+        text(j, "terminal")
+      }
+    },
     login: text(j, "login"),
   }
 }
@@ -317,6 +325,12 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?) -
       }
       open_screen(address, t.screen, None)
     }
+    "terminal" => {
+      if t.screen == "" || t.station == "" {
+        return false
+      }
+      open_terminal(address, t.screen, "", "")
+    }
     _ => return false
   }
   if outside && t.opens != "invite" {
@@ -402,6 +416,12 @@ pub fn open_item(
 /// until the core says one (screen_view.mbt).
 pub fn open_screen(station : String, screen : String, title : String?) -> Unit {
   open_page(Screen({ station, screen, title: title.unwrap_or(""), until_gone: false }))
+}
+
+///|
+/// One of a station's terminals in the viewer (`terminal` "new" opens one).
+pub fn open_terminal(station : String, terminal : String, cwd : String, chat : String, watch? : Bool = false) -> Unit {
+  open_page(Terminal({ station, terminal: terminal_with_chat(terminal, chat), watch, cwd }))
 }
 
 ///|

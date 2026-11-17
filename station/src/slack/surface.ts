@@ -19,6 +19,7 @@ import { modelOptions, modelValue, newChatBlocks, newChatView, submittedChat } f
 import { ThreadStatus } from "./status.ts";
 import { type Params, SlackClient, field } from "./web.ts";
 import { wall } from "../ops/fibers.ts";
+import { connectBlocked, zipOne } from "./zip.ts";
 
 type Json = any;
 /// A message the bot posted, as it posted it.
@@ -138,13 +139,19 @@ export function messageText(m: Json): string {
 /// The files shared with a message. Ones Slack keeps back (over a free workspace's limit, deleted) or that live
 /// elsewhere (external: Google Drive and the like) have no url.
 export function messageFiles(m: Json): InboundFile[] {
-  return (Array.isArray(m?.files) ? m.files : [])
-    .filter((f: Json) => text(f?.id) !== "")
-    .map((f: Json) => {
-      const held = !["tombstone", "hidden_by_limit", "external"].includes(text(f?.mode));
-      const url = text(f?.url_private_download) || text(f?.url_private);
-      return { id: text(f.id), name: text(f?.name) || text(f?.title) || text(f.id), size: typeof f?.size === "number" ? f.size : 0, url: held && url !== "" ? url : null };
-    });
+  return (Array.isArray(m?.files) ? m.files : []).filter((f: Json) => text(f?.id) !== "").map(fileOf);
+}
+
+function fileOf(f: Json): InboundFile {
+  const held = !["tombstone", "hidden_by_limit", "external"].includes(text(f?.mode));
+  const url = text(f?.url_private_download) || text(f?.url_private);
+  return { id: text(f.id), name: text(f?.name) || text(f?.title) || text(f.id), size: typeof f?.size === "number" ? f.size : 0, url: held && url !== "" ? url : null };
+}
+
+/// Ids of the files of an event that Slack gave only as `{ id, file_access: "check_file_info" }`: their name, size
+/// and url are files.info's to give (Socket Mode's events often carry a file so, files:read or not).
+export function filesToLookUp(m: Json): Set<string> {
+  return new Set((Array.isArray(m?.files) ? m.files : []).filter((f: Json) => text(f?.id) !== "" && text(f?.file_access) === "check_file_info").map((f: Json) => text(f.id)));
 }
 
 /// The files of a Web API answer: its messages' (conversations.replies, conversations.history), or a message's or a file's.
@@ -365,9 +372,13 @@ export class SlackSurface extends ConnectedSurface {
         if (envelope?.type !== "events_api") return;
         const event = toEvent(envelope.payload?.event ?? null, bot, botId);
         if (event?.type === "stop") event.localAt = this.client.localTimeUpper(event.ts);
+        const lookUp = filesToLookUp(envelope.payload?.event ?? null);
         const envelopeId = envelope.envelope_id ?? null;
         void (async () => {
           try {
+            if (event?.type === "message" && event.message.files && lookUp.size > 0) {
+              event.message.files = await Promise.all(event.message.files.map((f) => (lookUp.has(f.id) ? this.fileInfo(f) : f)));
+            }
             if (event?.type === "message") this.heard(event.message.channel, event.message.threadTs, event.message.ts);
             if (event !== null) await handler(event);
           } catch (error) {
@@ -384,10 +395,15 @@ export class SlackSurface extends ConnectedSurface {
   /// Posted as written, in a markdown block (Slack draws the agent's Markdown as still.fail does, tables too); a long
   /// message goes out in parts, the first part's ts standing for the whole. A question (`card`: options or a field), or
   /// a login's field for its page's code, is one message with its buttons (cards.ts). Files are uploaded before anything is posted (an app without
-  /// `files:write` fails there, with nothing said), then shared into the thread below the text.
+  /// `files:write` fails there, with nothing said), then shared into the thread below the text. In a channel shared
+  /// with another organization, an installer or executable Slack Connect refuses goes as `<name>.zip` (zip.ts).
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
     const uploaded: [string, string][] = [];
-    for (const file of files) uploaded.push(await this.upload(file));
+    const zipped = files.some((f) => connectBlocked(f.name)) && (await this.sharedOut(thread.channel));
+    for (const file of files) {
+      const bytes = await readFile(file.path);
+      uploaded.push(zipped && connectBlocked(file.name) ? await this.upload(`${file.name}.zip`, await zipOne(file.name, bytes)) : await this.upload(file.name, bytes));
+    }
     let first: string | null = null;
     const send = async (said: string, blocks: Json[], question = false) => {
       const posted = await this.client.api(
@@ -911,19 +927,18 @@ export class SlackSurface extends ConnectedSurface {
   }
 
   /// Sends a file's bytes to Slack (not yet shared anywhere): its file id and title.
-  private async upload(file: Attachment): Promise<[string, string]> {
-    const bytes = await readFile(file.path);
+  private async upload(name: string, bytes: Uint8Array): Promise<[string, string]> {
     const url = await this.client.api(
       "files.getUploadURLExternal",
       [
-        ["filename", file.name],
+        ["filename", name],
         ["length", String(bytes.length)],
       ],
       this.botToken,
     );
     if (typeof url?.upload_url !== "string" || typeof url?.file_id !== "string") throw new Error("slack files.getUploadURLExternal: no upload_url");
-    await this.client.upload(url.upload_url, bytes, file.name);
-    return [url.file_id, file.name];
+    await this.client.upload(url.upload_url, bytes, name);
+    return [url.file_id, name];
   }
 
   /// The ts of the message files were shared in, which Slack fills in a moment after the share.
@@ -1040,6 +1055,17 @@ export class SlackSurface extends ConnectedSurface {
       const earlier = all.filter((m) => (number(m.ts) ?? 0) < until);
       return earlier.slice(Math.max(0, earlier.length - limit));
     })();
+  }
+
+  /// A file Slack's event gave by its id alone, as files.info gives it; as it was where that fails (named as missing).
+  private async fileInfo(file: InboundFile): Promise<InboundFile> {
+    try {
+      const info = await this.client.api("files.info", [["file", file.id]], this.botToken);
+      return info?.file ? fileOf(info.file) : file;
+    } catch (error) {
+      log.warn("slack", "files.info failed", { file: file.id, error: (error as Error).message });
+      return file;
+    }
   }
 
   /// A shared file's bytes, read as the bot (files:read).

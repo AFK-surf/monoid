@@ -42,17 +42,24 @@ const STATUS: Record<string, number> = {
 
 const FEEDBACK_STATUSES: readonly FeedbackStatus[] = ["new", "triaged", "fixed", "wontfix"];
 
+/** still.fail's station image (.github/workflows/station-docker.yml). */
+const DOCKER_IMAGE = "ghcr.io/afk-surf/stillfail-station";
+
 /**
  * An enrollment with what to run for it. A machine without still.fail installs it and joins at once; one with it joins.
  * On the test channel the installer is the test channel's, which gets its release (index.ts): from its host, or, with
  * no such host, ?channel=beta. The station joins PUBLIC_ORIGIN either way.
  */
-function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: boolean): T & { install: string; installWindows: string; command: string } {
+function withCommands<T extends { token: string }>(env: Env, made: T, ofBeta: boolean): T & { install: string; installWindows: string; installDocker: string; command: string } {
   const beta = betaOrigin(env);
   const installer = (file: string) => (!ofBeta ? `${env.PUBLIC_ORIGIN}/${file}` : beta ? `${beta}/${file}` : `${env.PUBLIC_ORIGIN}/${file}?channel=beta`);
   // Quoted when it asks: zsh (macOS's shell) takes an unquoted ? for a file name to match, and stops.
   const sh = installer("install.sh").includes("?") ? `'${installer("install.sh")}'` : installer("install.sh");
-  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, command: `stillfail station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
+  // still.fail's station container (station/docker): its entrypoint runs the installer of the cloud it is told, on the
+  // channel it is told, with the same arguments after the image.
+  const told = [`-e STILLFAIL_ORIGIN=${env.PUBLIC_ORIGIN}`, ...(ofBeta ? ["-e STILLFAIL_CHANNEL=beta"] : [])];
+  const installDocker = ["docker run -d --restart unless-stopped -v stillfail:/home/stillfail", ...told, DOCKER_IMAGE, made.token].join(" ");
+  return { ...made, install: `curl -fsSL ${sh} | sh -s -- ${made.token}`, installWindows: `& ([scriptblock]::Create((irm ${installer("install.ps1")}))) ${made.token}`, installDocker, command: `stillfail station enroll ${env.PUBLIC_ORIGIN} ${made.token}` };
 }
 
 /**
@@ -283,8 +290,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (path === "/v1/me" && method === "GET") {
     // (`operator`: whether `/v1/admin/me` would answer this same request (on the console's host, index.ts), so that a device reads the operator's lists only
     // where it is one: every device of everyone asked it at every open of its events socket, the locks' end to end,
-    // 2026-11-15)
-    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator: adminOrigins(env).includes(new URL(request.url).origin) && (await consoleAdmin(request, env, claims.email)) }));
+    // 2026-11-15). `console`: asked on the console's host, which serves no workspace's calls (index.ts CONSOLE_CALLS).
+    // An operator is noted, to be told when the console's lists change (directory.ts `noteOperator`).
+    const onConsole = adminOrigins(env).includes(new URL(request.url).origin);
+    const operator = onConsole && (await consoleAdmin(request, env, claims.email));
+    if (operator) await dir.noteOperator(sub, claims.email);
+    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator, ...(onConsole ? { console: true as const } : {}) }));
   }
   // The person's own lock, which the cloud keeps and carries but does not decide (personal-lock.ts).
   if (path === "/v1/me/personal-lock") {
@@ -500,6 +511,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     return reply({ error: "invalid_request" }, 400);
   }
   const dir = env.DIRECTORY.getByName("primary");
+  await dir.noteOperator(claims.sub, claims.email);
   if (path === "/v1/admin/me" && method === "GET") return reply({ email: claims.email });
   // With the emails given rights before anyone signed in with them (`pending`; a console from before reads no such list).
   if (path === "/v1/admin/users" && method === "GET") return directory(async () => ({ users: await dir.adminUsers(), pending: await dir.adminPending() }));
@@ -522,11 +534,12 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
     return directory(() => dir.setMayCreate(mayCreate[1]!, input.on as boolean));
   }
-  // Blocks an account (signs it out everywhere) or lets it back: { on: boolean }. Not the admin's own.
+  // Blocks an account (signs it out everywhere) or lets it back: { on: boolean }. Not the operator's own, nor ADMIN_EMAIL's
+  // (with Access, others of the team operate the console too).
   const block = /^\/v1\/admin\/users\/([A-Za-z0-9_-]{1,128})\/block$/.exec(path);
   if (block && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
-    if (block[1] === claims.sub) return reply({ error: "forbidden" }, 403);
+    if (block[1] === claims.sub || (await dir.isAdminAccount(block[1]!))) return reply({ error: "forbidden" }, 403);
     return blockAccount(env, block[1]!, input.on as boolean);
   }
   if (path === "/v1/admin/workspaces" && method === "GET") return directory(async () => ({ workspaces: await dir.adminWorkspaces() }));

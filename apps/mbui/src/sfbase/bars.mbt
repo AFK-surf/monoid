@@ -5,13 +5,22 @@
 /// Every place a bar can hold (the core's BAR_PLACES).
 // kept across runs: a table, never written
 let bar_places : Array[String] = [
-  "chats", "files", "stations", "profiles", "connects", "usage", "archive", "vault",
+  "chats", "files", "remote", "stations", "profiles", "connects", "usage", "archive", "vault",
 ]
 
 ///|
-/// The bars before the core has said (BARS_DEFAULT).
+/// The bars before the core has said (BARS_DEFAULT; legacy before remote for older replays).
+fn default_bars_for(remote : Bool) -> (Array[Array[String]], Int) {
+  if remote {
+    ([["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]], 0)
+  } else {
+    ([["chats", "files", "profiles", "stations"], ["archive", "usage", "connects", "vault"]], 0)
+  }
+}
+
+///|
 fn default_bars() -> (Array[Array[String]], Int) {
-  ([["chats", "files", "profiles", "stations"], ["archive", "usage", "connects", "vault"]], 0)
+  default_bars_for(true)
 }
 
 ///|
@@ -67,7 +76,7 @@ pub fn bars_in(src : Source, ws : String) -> (Array[Array[String]], Int) {
         _ =>
           match field(prefs, "bars") {
             Some(Object(_)) as b => bars_of(b)
-            _ => default_bars()
+            _ => default_bars_for(@signals.untracked(fn() { (src.asks_terminals)() }))
           }
       }
     }
@@ -93,6 +102,7 @@ pub fn place_icon(place : String) -> String {
   match place {
     "chats" => "chats"
     "files" => "folder"
+    "remote" => "monitor"
     "profiles" => "quota"
     "connects" => "plug"
     "usage" => "chart"
@@ -114,6 +124,21 @@ fn place_reads(src : Source, ws : String, scope : String, place : String, shown 
   let stations = stations_asked(ws)
   match place {
     "files" => [("workspace", { "workspace": of }), ("stations", stations)]
+    "remote" => {
+      let reads : Array[(String, Map[String, Json])] = [("stations", stations)]
+      if shown && hold(src, scope, "stations", stations).get().value is Some(Array(all)) {
+        let terms_on = @signals.untracked(fn() { (src.asks_terminals)() })
+        for s in all {
+          if field(Some(s), "online") == Some(Json::boolean(true)) && field(Some(s), "station") is Some(String(address)) {
+            reads.push(("screens", { "station": Json::string(address) }))
+            if terms_on {
+              reads.push(("terminals", { "station": Json::string(address) }))
+            }
+          }
+        }
+      }
+      reads
+    }
     "stations" => {
       let reads : Array[(String, Map[String, Json])] = [("stations", stations)]
       // (each station up as it is reached: sampled while shown, the core's rule 2, so only with a finger on the tab)
@@ -292,7 +317,7 @@ pub fn places_ahead_node(v : @view.View, src : Source, bar : () -> String?) -> U
       match bar() {
         Some(ws) if pressed != "" => {
           // (Station's: each station up reached, as the stations come to be known)
-          if pressed == "stations" {
+          if pressed == "stations" || pressed == "remote" {
             station_rows(src, ws) |> ignore
           }
           Some((ws, pressed, ends))

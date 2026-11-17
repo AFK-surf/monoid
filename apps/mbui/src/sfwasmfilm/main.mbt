@@ -193,6 +193,14 @@ fn scene_arg(name : String) -> String {
   }
 }
 ///|
+/// A scene is no test: the pictures it shows held as a host holds them, a viewer's whole picture among them; no bar of
+/// a test's (fake_host.mbt's host_image_bytes_known) holds it to the few bytes of a test's thumbnails (its picture's
+/// Tester made here, its film's in mbui's film scene).
+fn init {
+  @ui.host_image_bytes_known([("src/sfwasmfilm/main.mbt", 64 * 1024 * 1024), ("src/film/scene.mbt", 64 * 1024 * 1024)])
+}
+
+///|
 pub fn draw() -> Int {
   // (the app as it runs on a host: what faults shown by its boundary, as there, and said on the log)
   @view.faults_stop.val = false

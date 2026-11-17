@@ -59,6 +59,62 @@ test "密钥, at each width and with either hand, a vault of the viewer's waitin
 }
 
 ///|
+test "密钥, at each width and with either hand, this device to be verified once: why, and 验证 asking lock.confirmSigner once, a ring on it meanwhile; then the library" {
+  for case in page_cases {
+    let (w, platform) = case
+    let asked : Array[(String, Json)] = []
+    let answers : Array[(Result[Json, Json]) -> Unit] = []
+    let t = setting_tester(Vault, w, platform~, mode="settings-vault-confirm", over=fn(base) {
+      {
+        ..base,
+        call: fn(name, params, done) {
+          if name == "lock.confirmSigner" {
+            asked.push((name, params))
+            @settings.fixture_lock_doing(name, params) |> ignore
+            answers.push(done)
+          } else {
+            (base.call)(name, params, done)
+          }
+        },
+      }
+    })
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("此设备需完成一次验证后才能使用密钥库") is Some(_), msg=at)
+    // (not the way to 安全, where nothing would end it)
+    assert_true(t.find("去安全设置") is None, msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    tap_words(t, "验证")
+    t.frame()
+    tap_words(t, "验证")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(asked[0].1, { "workspace": "ws1" }, msg=at)
+    @settings.fixture_lock_done()
+    answers[0](Ok(Json::null()))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("此设备需完成一次验证后才能使用密钥库") is None, msg=at)
+    assert_true(t.find("git push origin main") is Some(_), msg=at)
+  }
+}
+
+///|
+test "密钥, at each width and with either hand, the members still syncing: what it waits for, nothing to press" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Vault, w, platform~, mode="settings-vault-syncing")
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("正在同步安全模式的成员名单，同步完成后即可使用") is Some(_), msg=at)
+    assert_true(t.find("去安全设置") is None, msg=at)
+    assert_true(t.find("验证") is None, msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+  }
+}
+
+///|
 test "全部密钥, at each width and with either hand: 添加 asks what; every secret a row of one list, its kind and what is worth knowing of it under its name; the profiles' accounts folded at its foot; found by any of their words" {
   for case in page_cases {
     let (w, platform) = case

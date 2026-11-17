@@ -61,14 +61,18 @@
 // gives. A look keeps the node: it can say anything of it later (in a handler, a reaction); and other words of a node
 // change what the component promised without touching its own: hides (not read out), in_use (no keys), bones (no
 // press), modal, takes (where a finger is taken), on_drag and gesture (the pointer theirs, never reaching on_press: the
-// icon button's debt above). So it is a convention, held by no check: of a component's node a look says what is drawn and
-// laid out, and none of these.
+// icon button's debt above). So it is a convention: of a component's node a look says what is drawn and laid out, and
+// none of these; only on_drag said on it is held by a check (detlint's `headless-on-drag`).
 //
 // A control of several parts (radio_group.mbt: a group of radio buttons or a bar's tabs, its items fixed or made by
 // `each`): the component makes the group's node, hands it and the group (`RadioGroup[K]`) to its look once, and each
 // `RadioGroup::item` makes that item's node, hands it and what is read of it (`RadioItem`) to the item's look once,
 // and says the item's own words after its look has run, keeping the roving Tab stop and the arrow keys across the
 // living enabled items.
+//
+// A part of several parts that takes no press of its own (table.mbt: a table, its rows, its cells) is the same, and
+// each part may be the node a structure made for it (`in_node`: a row of `View::each`), said to be what it is and no
+// node more, so a look already laid out by rows and cells takes it without a box more.
 //
 // A component is tested under a look of the tests' own, found by role and name, each window made by the tests'
 // `window` (window_test.mbt), which holds of every node in it that nothing said from this package's own files is drawn

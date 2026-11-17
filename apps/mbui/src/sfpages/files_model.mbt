@@ -429,7 +429,7 @@ pub fn save_entry(src : Source, at : DriveAt, e : DvEntry) -> Unit {
 /// meanwhile (drive_fetch), then the system's share sheet; said when nothing takes it.
 pub fn share_entry(src : Source, at : DriveAt, e : DvEntry) -> Unit {
   let root = at.root.unwrap_or("")
-  let all = Buffer(size_hint=if e.size > 0.0 { e.size.to_int() } else { 0 })
+  let all = Buffer(capacity=if e.size > 0.0 { e.size.to_int() } else { 0 })
   @sfbase.drive_fetch(
     src,
     at.station,

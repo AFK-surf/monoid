@@ -133,20 +133,45 @@ pub fn nav_item_node(
 
 ///|
 /// A row's title (nav_title's) in `parent`: a chat's title's look, as long as there is room (cut short where the row
-/// has not); `away()`, what it names is not there now: muted.
+/// has not); `away()`, what it names is not there now: muted. `after` right after it on its line while `after_shown()`
+/// says (a tag: an account's plan), 8 apart across their middle, the first to leave the line where it has not the room
+/// for both: the title is never cut short for it (the user, 2026-11-14: the plan cut the name short in the narrowest
+/// sidebar; 2026-11-17: 「侧栏加回套餐，窄了先收起」).
 #callsite(autofill(loc))
-pub fn nav_title_node(parent : @view.View, words : () -> String, away? : () -> Bool = fn() { false }, loc~ : SourceLoc) -> Unit {
+pub fn nav_title_node(
+  parent : @view.View,
+  words : () -> String,
+  away? : () -> Bool = fn() { false },
+  after? : (@view.View) -> Unit,
+  after_shown? : () -> Bool = fn() { true },
+  loc~ : SourceLoc,
+) -> Unit {
+  let look = fn() {
+    let look = theme().chat_list.title.then(nav_cut)
+    if away() {
+      look.then(nav_title_away)
+    } else {
+      look
+    }
+  }
   parent.box(made_for=loc, fn(w) {
     w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    words_node(w, words, fn() {
-      let look = theme().chat_list.title.then(nav_cut)
-      if away() {
-        look.then(nav_title_away)
-      } else {
-        look
+    match after {
+      None => words_node(w, words, look) |> ignore
+      Some(a) => {
+        w.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(true)) |> ignore
+        // (the title kept whole while what follows may leave for it: cut short only once that has gone)
+        w.box(fn(x) {
+          x.shrink(Is(1.0)).min_width(Is(Some(0.0))).fit_whole(Is(true)) |> ignore
+          words_node(x, words, look) |> ignore
+        })
+        |> ignore
+        w.show(after_shown, fn(s) {
+          s.margin(Is((8.0, 0.0, 0.0, 0.0))).drops(Is(1)) |> ignore
+          a(s)
+        })
       }
-    })
-    |> ignore
+    }
   })
   |> ignore
 }

@@ -253,7 +253,7 @@ test("a station added on the test channel installs its release: on its host, or 
     await h.as(aliceTokens, "admin")("POST", `/v1/admin/users/${aliceTokens.subject}/beta`, { on: true });
     const alice = h.as(aliceTokens);
     const home = (await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as { id: string };
-    type Made = { token: string; install: string; installWindows: string; command: string };
+    type Made = { token: string; install: string; installWindows: string; installDocker: string; command: string };
     const add = async (on: "main" | "beta") => {
       const made = await h.as(aliceTokens, on)("POST", `/v1/workspaces/${home.id}/enrollments`, { name: "willow" });
       return (await made.json()) as Made;
@@ -266,11 +266,15 @@ test("a station added on the test channel installs its release: on its host, or 
     const stable = await add("main");
     assert.equal(stable.install, `curl -fsSL ${h.origin}/install.sh | sh -s -- ${stable.token}`);
     assert.equal(stable.installWindows, `& ([scriptblock]::Create((irm ${h.origin}/install.ps1))) ${stable.token}`);
+    // still.fail's container, told the cloud the station joins.
+    assert.equal(stable.installDocker, `docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=${h.origin} ghcr.io/afk-surf/stillfail-station ${stable.token}`);
     for (const made of [await add("beta"), await fromApp()]) {
       // The test channel's installer, from its host (the station joins the stable host all the same).
       assert.equal(made.install, `curl -fsSL ${h.betaOrigin}/install.sh | sh -s -- ${made.token}`);
       assert.equal(made.installWindows, `& ([scriptblock]::Create((irm ${h.betaOrigin}/install.ps1))) ${made.token}`);
       assert.equal(made.command, `stillfail station enroll ${h.origin} ${made.token}`);
+      // The container joins the stable host too, its release the test channel's.
+      assert.equal(made.installDocker, `docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=${h.origin} -e STILLFAIL_CHANNEL=beta ghcr.io/afk-surf/stillfail-station ${made.token}`);
     }
     const windows = await (await h.fetchBeta("/install.ps1")).text();
     assert.match(windows, /else \{ 'beta' \}/);

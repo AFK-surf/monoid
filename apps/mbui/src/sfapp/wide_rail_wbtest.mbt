@@ -389,6 +389,40 @@ test "wide: 自定义侧边条 from the rail's menu: what can be added beside th
 }
 
 ///|
+test "wide: every rail remove button, including the last, fits in its place and can be pressed with the bar open or folded" {
+  for folded in [false, true] {
+    let calls : Array[Made] = []
+    let t = wide_tester(calls)
+    if folded {
+      t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
+      t.move_to(1000.0, 400.0)
+      t.run_for(@ui.move_most_ms)
+    }
+    let (x, y, w, h) = t.query(Button, label="文件").unwrap().rect
+    t.right_click(x + w / 2.0, y + h / 2.0)
+    t.frame()
+    t.tap_text("自定义侧边条")
+    t.run_for(@ui.move_most_ms)
+    for name in ["待处理", "对话", "文件", "Profile", "连接", "用量"] {
+      let (px, py, pw, ph) = t.query(Button, label=name).unwrap().rect
+      let (rx, ry, rw, rh) = t.query(Button, label="从侧边条移除" + name).unwrap().rect
+      assert_true(
+        rx >= px && ry >= py && rx + rw <= px + pw && ry + rh <= py + ph,
+        msg="\{name}: remove \{Repr((rx, ry, rw, rh))} outside its place \{Repr((px, py, pw, ph))}, folded=\{folded}",
+      )
+    }
+    // The last button is in the scroll area's foot; pressing it removes the intended place.
+    let (rx, ry, rw, rh) = t.query(Button, label="从侧边条移除用量").unwrap().rect
+    t.tap(rx + rw / 2.0, ry + rh / 2.0)
+    t.frame()
+    match field(field(Some(named(calls, "prefs.set").last().unwrap().params), "rails"), "ws1") {
+      Some(Array(a)) => assert_false(a.contains(Json::string("usage")))
+      _ => fail("no rail saved after removing 用量")
+    }
+  }
+}
+
+///|
 /// The wide frame over the home fixture with what the core would say of `changed` topics, the prefs set kept as the
 /// core keeps them (a `trouble` set: there at once).
 fn wide_with(calls : Array[Made], changed : Map[String, Json]) -> @ui.Tester {

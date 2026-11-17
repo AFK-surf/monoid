@@ -97,25 +97,22 @@ test "a picture of a chat made as nodes, pressed: the viewer flies from its thum
   let t = pv_chat(fn() { [media_one()] })
   t.tap(media_test_w / 2.0, 200.0 + media_test_h / 2.0)
   let v = @sfbase.viewer.get().unwrap()
-  assert_true(v.flies && !v.fly_back, msg="flies from its thumbnail")
-  assert_eq(@sfbase.pv_hidden.get(), v.thumb_id())
-  // its first frame: one picture seen, where the thumbnail is (never a frame of nothing, never two)
+  // its first frame: flown by the window's tree from its thumbnail (View::shared, the thumbnail the end that stays, drawn
+  // nowhere meanwhile), one picture seen, where the thumbnail is (never a frame of nothing, never two)
   t.draw()
+  assert_true(t.flight_of(v.thumb_id()) is Some(_), msg="flies from its thumbnail")
   let first = pv_seen(t)
   assert_eq(first.length(), 1, msg="\{Repr(first)}")
   assert_true(pv_at(first[0], 0.0, 200.0, media_test_w, media_test_h), msg="\{Repr(first)}")
-  // landed: the thumbnail its own again under the viewer
+  // landed: no flight left
   t.run_for(@ui.move_most_ms)
-  assert_eq(@sfbase.pv_hidden.get(), "")
+  assert_true(t.flight_of(v.thumb_id()) is None, msg="landed")
   t.back()
-  match @sfbase.pv_leaving.get() {
-    Some(l) => assert_true(l.flies && l.fly_back, msg="back into its thumbnail")
-    None => fail("closed at once")
-  }
-  assert_eq(@sfbase.pv_hidden.get(), v.thumb_id())
+  t.draw()
+  assert_true(t.flight_of(v.thumb_id()) is Some(_), msg="back into its thumbnail")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.viewer.get() is None && @sfbase.pv_leaving.get() is None)
-  assert_eq(@sfbase.pv_hidden.get(), "")
+  assert_true(t.flight_of(v.thumb_id()) is None, msg="landed back")
   // landed: the thumbnail alone, where it was
   t.draw()
   let last = pv_seen(t)
@@ -173,15 +170,14 @@ test "a video of a chat made as nodes, pressed: the viewer flies from its thumbn
   let t = pv_chat(fn() { [video_one()] })
   pv_video_tap(t)
   let v = @sfbase.viewer.get().unwrap()
-  assert_true(v.flies && !v.fly_back, msg="flies from its thumbnail")
-  assert_eq(@sfbase.pv_hidden.get(), v.thumb_id())
   t.draw()
+  assert_true(t.flight_of(v.thumb_id()) is Some(_), msg="flies from its thumbnail")
   let (bw, bh) = video_box()
   let first = pv_seen(t)
   assert_eq(first.length(), 1, msg="\{Repr(first)}")
   assert_true(pv_at(first[0], 0.0, 200.0, bw, bh), msg="\{Repr(first)}")
   t.run_for(@ui.move_most_ms)
-  assert_eq(@sfbase.pv_hidden.get(), "")
+  assert_true(t.flight_of(v.thumb_id()) is None, msg="landed")
 }
 
 ///|
@@ -350,16 +346,31 @@ test "a tall picture of a chat made as nodes, cut from its top in its box: the v
   let tall = files_one("pic.png", width=200.0, height=4000.0)
   let t = pv_chat(fn() { [tall] })
   t.tap(60.0, 220.0)
-  match @sfbase.viewer.get() {
-    Some(v) => assert_true(v.flies && v.fly_from.map(fn(f) { f.start_crop }) == Some(true), msg="from its top")
-    None => fail("not opened")
+  // (its first frame and its last: the picture as tall as the box cuts it from its top, its top at the box's top, the
+  // thumbnail's image_covers_at that the flight draws it by)
+  let from_top = fn(what : String) raise {
+    let seen = pv_seen(t)
+    assert_true(seen.length() == 1 && (seen[0].1 - 200.0).abs() < 1.0 && seen[0].3 > seen[0].2, msg="\{what}: \{Repr(seen)}")
   }
+  guard @sfbase.viewer.get() is Some(v) else { fail("not opened") }
+  t.draw()
+  assert_true(t.flight_of(v.thumb_id()) is Some(_), msg="flies")
+  from_top("from its top")
   t.run_for(@ui.move_most_ms)
+  // (back: its last frame on the way, near the thumbnail, its top at the box's top as well)
+  let last : Ref[Array[(Double, Double, Double, Double)]] = Ref([])
+  t.each_frame(
+    Some(fn() {
+      if t.flight_of(v.thumb_id()) is Some(_) {
+        last.val = pv_seen(t)
+      }
+    }),
+  )
   t.back()
-  match @sfbase.pv_leaving.get() {
-    Some(l) => assert_true(l.fly_back && l.fly_from.map(fn(f) { f.start_crop }) == Some(true), msg="back to its top")
-    None => fail("closed at once")
-  }
+  t.run_shown(@ui.move_most_ms)
+  t.each_frame(None)
+  let seen = last.val
+  assert_true(seen.length() == 1 && (seen[0].1 - 200.0).abs() < 2.0 && seen[0].3 > seen[0].2, msg="back to its top: \{Repr(seen)}")
   // (closed whole: nothing of it left to a test after this one)
   t.run_for(@ui.move_most_ms)
 }

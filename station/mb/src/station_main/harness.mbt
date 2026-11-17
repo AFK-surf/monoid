@@ -1,0 +1,289 @@
+// What station/test/mb-station-e2e.test.ts asks of station_main's parts one at a time (the reader's `--builder
+// harness-station-main`): a line a call, `{"id", "op", …}`, answered `{"id", "ok"}` or `{"id", "error"}`.
+// - "prepareLocalLinks" {text, paths, workspace}: local.rs `prepare_local_links` on this machine's files;
+// - "thumbnail" {image, dir}, "thumbhash" {image, dir?}: the drive's codecs;
+// - "machine", "lanAddrs", "diskOf" {path}, "env" {name}, "envSet" {name, value}, "platform", "wallMs", "hostname",
+//   "homedir", "tmpdir", "parentPid", "pidAlive" {pid}, "processUsage" {pids}: what sys.c says of the machine;
+// - "spawn" {program, args, env?, cwd?, input?, group?, stdout?, stderr?}: a child run to its end ({code, signal,
+//   stdout, stderr}), what it is given written on its stdin; "kill" {pid, signal, group};
+// - "fileLock" {path}: the lock taken ({handle}), "fileUnlock" {handle};
+// - "words": the catalogs the program carries; "iso" {ms}: an instant as toISOString says it;
+// - "loopback" {path, query, ready, place, lang}: what the loopback port says.
+
+///|
+pub async fn harness(host : @host.Host) -> Unit {
+  let locks : Map[Int, FileLock] = Map([])
+  let mut next_lock = 0
+  while host.line() is Some(line) {
+    if line == "" {
+      continue
+    }
+    let ask = attempt(() => @json.parse(line)).unwrap_or(Json::null())
+    let id = match ask {
+      Object(m) => m.get("id").unwrap_or(Json::null())
+      _ => Json::null()
+    }
+    let s = (k : String) => match ask {
+      Object(m) =>
+        match m.get(k) {
+          Some(String(v)) => v
+          _ => ""
+        }
+      _ => ""
+    }
+    let v = (k : String) => match ask {
+      Object(m) => m.get(k)
+      _ => None
+    }
+    let strs = (k : String) => match v(k) {
+      Some(Array(xs)) => xs.filter_map(x => match x { String(t) => Some(t); _ => None })
+      _ => []
+    }
+    let op = s("op")
+    let answer : Result[Json, String] = match op {
+      "prepareLocalLinks" =>
+        match prepare_local_links(s("text"), strs("paths"), s("workspace")) {
+          Ok((text, paths)) => Ok({ "text": Json::string(text), "paths": Json::array(paths.map(Json::string(_))) })
+          Err(why) => Err(why)
+        }
+      "thumbnail" =>
+        Ok(
+          match thumbnail(s("image"), s("dir")) {
+            Some(t) => { "path": Json::string(t.path), "type": Json::string(t.type_) }
+            None => Json::null()
+          },
+        )
+      "thumbhash" =>
+        Ok(
+          match thumbhash(s("image"), match v("dir") { Some(String(d)) => Some(d); _ => None }) {
+            Some((hash, w, h)) => { "hash": Json::string(hash), "width": Json::number(w), "height": Json::number(h) }
+            None => Json::null()
+          },
+        )
+      "machine" => Ok(machine())
+      "lanAddrs" => Ok(Json::array(lan_addrs()))
+      "diskOf" =>
+        Ok(
+          match disk_of(s("path")) {
+            Some((f, t)) => { "free": Json::number(f), "total": Json::number(t) }
+            None => Json::null()
+          },
+        )
+      "env" =>
+        Ok(
+          match env_get(s("name")) {
+            Some(e) => Json::string(e)
+            None => Json::null()
+          },
+        )
+      "envSet" => {
+        env_set(s("name"), s("value"))
+        Ok(Json::null())
+      }
+      "platform" => Ok({ "platform": Json::string(platform()), "arch": Json::string(arch()) })
+      "wallMs" => Ok(Json::number(wall_ms().to_double()))
+      "hostname" => Ok(Json::string(hostname()))
+      "homedir" => Ok(Json::string(homedir()))
+      "tmpdir" => Ok(Json::string(tmpdir()))
+      "parentPid" => Ok(Json::number(parent_pid().to_double()))
+      "pidAlive" =>
+        Ok(Json::boolean(match v("pid") { Some(Number(p, ..)) => pid_alive(p.to_int()); _ => false }))
+      "processUsage" => {
+        let pids = match v("pids") {
+          Some(Array(xs)) => xs.filter_map(x => match x { Number(p, ..) => Some(p.to_int()); _ => None })
+          _ => []
+        }
+        Ok(Json::array(process_usage(pids).map(u => u.unwrap_or(Json::null()))))
+      }
+      "spawn" => {
+        let sink = (k : String) => match v(k) {
+          Some(String("pipe")) | None => Piped
+          Some(String("ignore")) => Ignored
+          Some(String(file)) => Appended(file)
+          _ => Piped
+        }
+        let env = match v("env") {
+          Some(Object(m)) => Some(m.iter().filter_map(kv => match kv.1 { String(t) => Some((kv.0, t)); _ => None }).collect())
+          _ => None
+        }
+        let input = v("input")
+        let spawned = try {
+          Ok(
+            spawn(
+              host,
+              s("program"),
+              strs("args"),
+              env?=env,
+              cwd?=match v("cwd") { Some(String(c)) => Some(c); _ => None },
+              stdin_piped=input is Some(String(_)),
+              stdout=sink("stdout"),
+              stderr=sink("stderr"),
+              group=v("group") is Some(True),
+            ),
+          )
+        } catch {
+          SysError(why) => Err(why)
+        }
+        match spawned {
+          Ok(p) => {
+            if input is Some(String(t)) {
+              ignore(p.write(@utf8.encode(t)))
+              p.end_input()
+            }
+            if v("detach") is Some(True) {
+              Ok({ "pid": Json::number(p.pid.to_double()) })
+            } else {
+              let (code, signal, out, err) = p.finished()
+              Ok({
+                "pid": Json::number(p.pid.to_double()),
+                "code": match code { Some(c) => Json::number(c.to_double()); None => Json::null() },
+                "signal": match signal { Some(g) => Json::string(g); None => Json::null() },
+                "stdout": Json::string(@utf8.decode_lossy(out)),
+                "stderr": Json::string(@utf8.decode_lossy(err)),
+              })
+            }
+          }
+          Err(why) => Err(why)
+        }
+      }
+      "kill" =>
+        Ok(
+          Json::boolean(
+            match v("pid") {
+              Some(Number(p, ..)) => kill(p.to_int(), s("signal"), group=v("group") is Some(True))
+              _ => false
+            },
+          ),
+        )
+      "fileLock" =>
+        match (try { Ok(file_lock(host, s("path"))) } catch { e => Err("\{e}") }) {
+          Ok(l) => {
+            next_lock += 1
+            locks[next_lock] = l
+            Ok({ "handle": Json::number(next_lock.to_double()) })
+          }
+          Err(why) => Err(why)
+        }
+      "fileUnlock" => {
+        let k = match v("handle") {
+          Some(Number(h, ..)) => h.to_int()
+          _ => 0
+        }
+        match locks.get(k) {
+          Some(l) => {
+            l.release()
+            locks.remove(k)
+            Ok(Json::boolean(true))
+          }
+          None => Ok(Json::boolean(false))
+        }
+      }
+      "words" => {
+        let (zh, en) = catalogs_json()
+        Ok({ "zh": zh, "en": en })
+      }
+      "iso" => Ok(Json::string(iso_time(match v("ms") { Some(Number(m, ..)) => m; _ => 0.0 })))
+      "loopback" => {
+        let r = loopback_answer(
+          s("path"),
+          match v("query") { Some(String(q)) => Some(q); _ => None },
+          v("ready") is Some(True),
+          match v("place") { Some(Null) | None => None; p => p },
+          s("lang"),
+        )
+        Ok({
+          "status": Json::number(r.status.to_double()),
+          "headers": Json::object(Map::from_array(r.headers.map(h => (h.0, Json::string(h.1))))),
+          "body": Json::string(@utf8.decode_lossy(r.body)),
+        })
+      }
+      "parts" => Ok(parts_exercised(host))
+      other => Err("no op \{other}")
+    }
+    let said : Json = match answer {
+      Ok(ok) => { "id": id, "ok": ok }
+      Err(why) => { "id": id, "error": Json::string(why) }
+    }
+    host.say(said.stringify())
+  }
+}
+
+///|
+/// The parts' registry as the e2e test holds it to parts.ts: each of its sayings and askings once.
+async fn parts_exercised(host : @host.Host) -> Json {
+  ignore(host)
+  let parts = StationParts::new()
+  let on = Ref(false)
+  let tool = (name : String) => ({
+    name,
+    declared: { "name": Json::string(name) },
+    call: async fn(_args, _ctx) { Json::null() },
+  } : PartTool)
+  parts.tools([tool("always")])
+  parts.tools([tool("offered")], offered=() => on.val)
+  let tool_names = () => Json::array(parts.all_tools().map(t => Json::string(t.name)))
+  let tools_off = tool_names()
+  on.val = true
+  let tools = tool_names()
+  // what came before a part was made, taken by it as it is made; what one gives, by its name
+  parts.take_up({ "late": { "kept": true }, "a": { "n": 2 } })
+  let took_early : Map[String, Json] = Map([])
+  let took_now : Map[String, Json] = Map([])
+  let twice = []
+  try {
+    parts.carry("a", async fn() { { "n": 1 } }, what => took_now["a"] = what)
+    parts.carry("b", async fn() { Json::string("two") }, _ => ())
+    parts.carry("late", async fn() { Json::null() }, what => took_early["late"] = what)
+    parts.carry("a", async fn() { Json::null() }, _ => ())
+  } catch {
+    PartTwice(why) => twice.push(Json::string(why))
+  }
+  let carried = parts.carried()
+  carried.remove("late")
+  parts.door({ prefix: "peer", request: async fn(_r, _c) { None } })
+  let door = ["/peer", "/peer/x", "/peers", "/other"].map(p => match parts.door_route_of(p) {
+    Some(_) => Json::string(p)
+    None => Json::null()
+  })
+  try {
+    parts.card_choice("retire", { may: (_v, _c, _a) => None, chosen: (_v, _c, _o, _a) => () })
+    parts.streams("adb", async fn(_ask) {  })
+    parts.overview("f", async fn(_viewer, lang) { Json::string("\{lang}:me") })
+    parts.overview("f", async fn(_viewer, _lang) { Json::null() })
+  } catch {
+    PartTwice(why) => twice.push(Json::string(why))
+  }
+  let card = [
+    if parts.card_choice_of({ "retire": {}, "options": [] }) is Some(_) { Json::string("retire") } else { Json::null() },
+    if parts.card_choice_of({ "retire": [] }) is Some(_) { Json::string("retire") } else { Json::null() },
+  ]
+  let stream = [
+    Json::boolean(parts.stream_of({ "adb": { "x": 1 } }) is Some(_)),
+    Json::boolean(parts.stream_of({ "adb": "no" }) is Some(_)),
+  ]
+  parts.viewer_may((m, p) => m == "PUT" && p == "/marks")
+  let ended = []
+  parts.session_ended(s => ended.push(Json::string(s)))
+  parts.end_session("s1")
+  let connected = Ref(0)
+  parts.member_connected(() => connected.val += 1)
+  parts.member_connected(() => connected.val += 1)
+  parts.connected()
+  parts.door_open("http://127.0.0.1:1/mcp")
+  {
+    "tools": tools,
+    "toolsOff": tools_off,
+    "carried": Json::object(carried),
+    "tookEarly": Json::object(took_early),
+    "tookNow": Json::object(took_now),
+    "door": Json::array(door),
+    "card": Json::array(card),
+    "stream": Json::array(stream),
+    "twice": Json::array(twice),
+    "mayView": [Json::boolean(parts.may_view("PUT", "/marks")), Json::boolean(parts.may_view("POST", "/marks"))],
+    "overview": Json::object(parts.overview_of(Json::null(), "zh")),
+    "ended": Json::array(ended),
+    "connected": Json::number(connected.val.to_double()),
+    "doorUrl": match parts.door_url() { Some(u) => Json::string(u); None => Json::null() },
+  }
+}

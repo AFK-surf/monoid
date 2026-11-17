@@ -10,7 +10,7 @@
 /// panel to the window's corner first where `away`: the Tester as the row is back and its Move over.
 fn sub_back_a_frame_on(away : Bool) -> @ui.Tester raise {
   let shown = @signals.signal(true)
-  let t = sub_panel(false, Unanchored, [], shown)
+  let t = sub_panel(Unanchored, [], shown)
   let (x, y) = sub_mid(t, "甲")
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)

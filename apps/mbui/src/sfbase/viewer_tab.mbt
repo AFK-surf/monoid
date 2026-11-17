@@ -9,28 +9,16 @@
 // the whole window's, which stays the cinema);
 // told of, coming, failed, as the whole window's stage says them (viewer_tree.mbt). Over it a row of tools as tall as a
 // service's bar: the file's name and what it is, 预览 / 源码 where the whole window's bar has them, the reader's 目录, 搜索
-// and 排版, 下载, 全屏 (the whole window's preview of it, the tab staying; a film or a song there from where the tab's
-// was). Nothing of the whole window's is the tab's: no marking, no stepping to the pictures beside it, no flight from a
-// thumbnail, no keys of the window's.
+// and 排版, 下载, 全屏 (the tab over the whole window: tab_full.mbt; none there once it is). Nothing of the whole
+// window's viewer is the tab's: no marking, no stepping to the pictures beside it, no flight from a thumbnail, no keys
+// of the window's.
 //
-// How a file comes here: open_preview defaults text files beside, or is asked beside (the command key held: beside_held; a menu's
-// 在侧边打开; the whole window's 移到侧边), said to the shell (Shell's `beside`), which puts it where the layout has a side
-// panel for the page in view, and says whether it did. A film or a song asked so plays at once (the whole window's from
+// How a file comes here: open_preview puts it beside by default (beside_first), or as asked (a menu's 在侧边打开; the
+// whole window's 移到侧边; over the whole window as its tab, the command key held), said to the shell (Shell's
+// `beside`), which puts it where the layout has a side panel for the page in view, and says whether it did. A film or a song asked so plays at once (the whole window's from
 // where it was); a tab only shown again (the app begun, the chat opened, the tab or the panel back) plays from its play
 // key. It is paused as its tab is no longer shown (another tab in front, the panel closed, the page gone, no panel on
 // 小屏) and as the whole window's viewer opens over it, and never plays again by itself.
-
-///|
-/// Whether the command key of the system the person types with is held now (@ui.keys_system: ⌘ on Apple's, Ctrl
-/// elsewhere; a browser's the system under it, so ⌘ in one on a Mac, where Ctrl and a press is the context menu): a press
-/// with it asks for its file beside the page (open_preview's default). Read here once, never by a page.
-pub fn beside_held() -> Bool {
-  let primary = match @ui.keys_system() {
-    0 | 1 => @ui.mod_cmd
-    _ => @ui.mod_ctrl
-  }
-  (@ui.mods_held() & primary) != 0
-}
 
 ///|
 /// Whether a file at `path` named `name` opens beside the page when that is asked: anything the viewer shows, a film and
@@ -40,6 +28,14 @@ pub fn beside_held() -> Bool {
 pub fn opens_beside(path : String, name : String) -> Bool {
   ignore(name)
   !path.has_prefix("draft:")
+}
+
+///|
+/// Whether file `a` opens beside the page by default where there is a side panel for it (open_preview's): any but a
+/// picture, a film or a song, which open over the whole window in the viewer of its own (its flight, marking, the
+/// pictures beside it).
+pub fn beside_first(a : Attachment) -> Bool {
+  !(preview_kind(a.name).0 is Some(KImage | KVideo | KAudio))
 }
 
 ///|
@@ -172,11 +168,13 @@ pub fn ViewTab::same_file(self : ViewTab, other : ViewTab) -> Bool {
 }
 
 ///|
-/// A tab's viewer, how many nodes draw it, and whether its tab was closed while one did (let go as the last goes).
+/// A tab's viewer, how many nodes draw it, whether its tab was closed while one did (let go as the last goes), and
+/// whether what it plays goes on as its tab moves between the panel and the whole window (tab_viewer_moves).
 priv struct TabViewer {
   viewer : Viewer
   mut drawn : Int
   mut closing : Bool
+  mut goes_on : Bool
 }
 
 ///|
@@ -241,11 +239,21 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
             None => file
           }
           let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, beside=true)
-          tab_viewers[id] = { viewer: v, drawn: 0, closing: false }
+          tab_viewers[id] = { viewer: v, drawn: 0, closing: false, goes_on: false }
           Some(v)
         }
         _ => None
       }
+  }
+}
+
+///|
+/// Tab `tab` of chat `chat` about to move between its panel and the whole window (tab_full.mbt): what it plays goes on
+/// there as it was, playing or paused, not paused as the node that drew it goes.
+fn tab_viewer_moves(chat : String, tab : String) -> Unit {
+  match tab_viewers.get(tab_viewer_id(chat, tab)) {
+    Some(t) => t.goes_on = true
+    None => ()
   }
 }
 
@@ -340,7 +348,13 @@ priv struct PlayAsked {
 /// from `at` (ms; 0 where it was left): whether the shell put it there. The tab the shell put in front may be another
 /// of the same file (opened by another key: sfdesk's view_beside), the one asked of then. Its tab drawn in front
 /// already (the same file asked again), no node is made for it: its viewer told here.
-fn beside_open(tab : String, at : Double, plays? : Bool = true, how? : (Double, Double, Bool)? = None) -> Bool {
+fn beside_open(
+  tab : String,
+  at : Double,
+  plays? : Bool = true,
+  how? : (Double, Double, Bool)? = None,
+  full? : Bool = false,
+) -> Bool {
   let at : PlayAsked = { at, plays, how }
   // (said before the shell is asked: its tab's node may be made as the shell puts it there)
   tab_asked[tab] = at
@@ -361,6 +375,13 @@ fn beside_open(tab : String, at : Double, plays? : Bool = true, how? : (Double, 
       t.viewer.play_asked(at)
     }
   })
+  // (over the whole window as its tab, asked so: the chat in view's, where the shell put it)
+  if full {
+    match app.nav.top() {
+      Chat(r) => tab_full_open(r, put)
+      _ => ()
+    }
+  }
   true
 }
 
@@ -475,45 +496,30 @@ pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
 }
 
 ///|
-/// 全屏 (a tab's tools): its file over the whole window, as it opens from where it is listed (a picture stepping through
-/// `steps`; a film or a song from where the tab's player is, the tab's paused), the tab staying.
-pub fn Viewer::full_window(self : Viewer, steps : Stepping) -> Unit {
-  let at = match self.media {
-    Some(m) => m.position()
-    None => -1.0
-  }
-  open_preview(
-    self.station,
-    self.key,
-    self.file,
-    drive=self.drive,
-    steps=if self.shown_kind() == Some(KImage) { steps } else { NoSteps },
-    named=self.named,
-    beside=false,
-    start=at,
-  )
-}
-
-///|
 /// The file of tab `tab` beside the chat whose tabs are kept by `chat`, in node `q` (the panel under its bar): its tools
 /// (tab_tools_node), then its stage, the rest: a picture its nodes (tab_picture_node), anything else as the whole
 /// window's stage shows it (viewer_stage_node), told of, coming or failed its nodes
 /// (viewer_note_node); a film or a song its player embedded (tab_player_node). What it reads
 /// asked of the core as what it needs comes; 下载 told the core as it is asked. Made as the person asked the file beside
-/// just now (tab_asked), its film or song plays at once; let go (the tab no longer shown), it is paused. `steps`: what
-/// its picture steps through over the whole window (全屏); `width()`, how wide the tab is.
+/// just now (tab_asked), its film or song plays at once; let go (the tab no longer shown), it is paused. `width()`, how
+/// wide the tab is; `full`, what puts it over the whole window (its 全屏); `tools`, whether its tools' row is drawn over
+/// it (not over the whole window, where the bar has them: viewer_tab_bar_tools).
 pub fn viewer_tab_node(
   q : @view.View,
   src : Source,
   chat : String,
   tab : String,
-  steps : () -> Stepping,
   width : () -> Double,
+  full : (() -> Unit)?,
+  tools? : Bool = true,
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
   match tab_viewers.get(id) {
-    Some(t) => t.drawn += 1
+    Some(t) => {
+      t.drawn += 1
+      t.goes_on = false
+    }
     None => ()
   }
   // (asked beside just now: its film or song played at once, before its player is made below)
@@ -525,17 +531,20 @@ pub fn viewer_tab_node(
     None => ()
   }
   q.owns(fn() {
-    // (its tab no longer shown: what it plays paused, played again only from its play key)
-    vw.pause_player()
+    // (its tab no longer shown: what it plays paused, played again only from its play key; not where it is shown
+    // elsewhere now, or is to be as it moves between the panel and the whole window)
     match tab_viewers.get(id) {
       Some(t) => {
         t.drawn -= 1
+        if t.drawn <= 0 && !t.goes_on {
+          vw.pause_player()
+        }
         if t.drawn <= 0 && t.closing {
           t.viewer.let_go()
           tab_viewers.remove(id)
         }
       }
-      None => ()
+      None => vw.pause_player()
     }
   })
   |> ignore
@@ -564,8 +573,8 @@ pub fn viewer_tab_node(
   })
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
-  if !is_mbui_viz(vw.file.name) {
-    q.box(fn(row) { tab_tools_node(row, src, vw, fn() { vw.full_window(steps()) }, tips) }) |> ignore
+  if tools && !is_mbui_viz(vw.file.name) {
+    q.box(fn(row) { tab_tools_node(row, src, vw, full, tips) }) |> ignore
   }
   q.box(fn(s) {
     s
@@ -611,15 +620,9 @@ pub fn viewer_tab_node(
 /// The tools over a file's tab in `row` (as tall as a service's bar, PreviewBar's): its name and the line about it (its
 /// size, its kind), cut short where the tab is narrow; then 预览 / 源码 (a table's, a page's, once read: as the whole
 /// window's bar has them), the reader's 目录, 搜索 and 排版 (Markdown and words read in it: its panels opened from here,
-/// the layout's in the tab's stage, viewer_tab_node's), 下载 (a ring while the core downloads it), 全屏 (`full`). Each
-/// done at its press's moment; their tips in `tips`.
-fn tab_tools_node(
-  row : @view.View,
-  src : Source,
-  vw : Viewer,
-  full : () -> Unit,
-  tips : @sf.TipLayer,
-) -> Unit {
+/// the layout's in the tab's stage, viewer_tab_node's), 下载 (a ring while the core downloads it), 全屏 (`full`, where it
+/// is given). Each done at its press's moment; their tips in `tips`.
+fn tab_tools_node(row : @view.View, src : Source, vw : Viewer, full : (() -> Unit)?, tips : @sf.TipLayer) -> Unit {
   row
   .row(Is(true))
   .lines_up(Is(Some(Middle)))
@@ -653,82 +656,99 @@ fn tab_tools_node(
     })
   })
   |> ignore
-  row.box(fn(r) {
-    r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
-    // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
-    // Viewer::set_source)
-    r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
-      x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.seg_node(
-        x,
-        fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
-        fn() {
-          vw.source_told.get() |> ignore
-          if vw.source {
-            1
-          } else {
-            0
-          }
-        },
-        fn(k) { vw.set_source(k == 1) },
-        item_w=vf_tabs_item,
-      )
-      |> ignore
-    })
-    // the reader's panels, opened from here (the layout's in the tab's stage)
-    r.show(fn() { vf_reads(vw) }, fn(x) {
-      x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
-      let panels = [
-        (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents")),
-        (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find")),
-        (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout")),
-      ]
-      for p in panels {
-        let (panel, icon, label) = p
-        @sf.tool_node(
-          x,
-          fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
-          ink,
-          corner,
-          fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
-          tip=tips,
-        )
-        |> ignore
-      }
-    })
-    // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
-    let dl = fn() { vw.download(src) }
-    r.show(fn() { !vw.coming() && !downloading(dl()) }, fn(x) {
+  row.box(fn(r) { tab_keys_node(r, src, vw, ink, corner, full, tips) }) |> ignore
+}
+
+///|
+/// A file tab's keys in row `r` (tab_tools_node's, and the bar's over the whole window: viewer_tab_bar_tools): 预览 /
+/// 源码, the reader's panels, 下载 and 全屏 (`full`, where it is given), in `ink`, each `corner` round, their tips in
+/// `tips`.
+fn tab_keys_node(
+  r : @view.View,
+  src : Source,
+  vw : Viewer,
+  ink : () -> @sf.ViewerInk,
+  corner : @view.Live[Double],
+  full : (() -> Unit)?,
+  tips : @sf.TipLayer,
+) -> Unit {
+  r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
+  // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
+  // Viewer::set_source)
+  r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
+    x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    @sf.seg_node(
+      x,
+      fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
+      fn() {
+        vw.source_told.get() |> ignore
+        if vw.source {
+          1
+        } else {
+          0
+        }
+      },
+      fn(k) { vw.set_source(k == 1) },
+      item_w=vf_tabs_item,
+    )
+    |> ignore
+  })
+  // the reader's panels, opened from here (the layout's in the tab's stage)
+  r.show(fn() { vf_reads(vw) }, fn(x) {
+    x.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
+    let panels = [
+      (@sf.ReaderPanel::Contents, "list", @sf.t("web-pages.drive.reader.contents")),
+      (@sf.ReaderPanel::Find, "search", @sf.t("web-pages.drive.reader.find")),
+      (@sf.ReaderPanel::Layout, "text", @sf.t("web-pages.drive.reader.layout")),
+    ]
+    for p in panels {
+      let (panel, icon, label) = p
       @sf.tool_node(
         x,
-        fn() {
-          // (a film or a song played as it comes: read whole as it is asked)
-          let saving = vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
-          { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
-        },
+        fn() { { icon, label, on: @sf.reader_panel_of(vw.read_key()) == panel, disabled: false } },
         ink,
         corner,
-        fn() { vw.save_now() },
+        fn() { @sf.reader_panel_toggle(vw.read_key(), panel) },
         tip=tips,
       )
       |> ignore
-    })
-    r.show(fn() { !vw.coming() && downloading(dl()) }, fn(x) {
-      @sf.tool_ring_node(x, fn() { number(dl(), "progress") }, fn() { @sf.t("web-main.preview.download") }, ink, corner)
-      |> ignore
-    })
-    // 全屏: over the whole window, the tab staying
+    }
+  })
+  // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
+  let dl = fn() { vw.download(src) }
+  r.show(fn() { !vw.coming() && !downloading(dl()) }, fn(x) {
     @sf.tool_node(
-      r,
-      fn() { { icon: "expand", label: @sf.t("web-main.preview.fullWindow"), on: false, disabled: false } },
+      x,
+      fn() {
+        // (a film or a song played as it comes: read whole as it is asked)
+        let saving = vw.bytes.get() is Some(_) || ((vw.told_of() || vw.played()) && !vw.asked_now())
+        { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
+      },
       ink,
       corner,
-      full,
+      fn() { vw.save_now() },
       tip=tips,
     )
     |> ignore
   })
-  |> ignore
+  r.show(fn() { !vw.coming() && downloading(dl()) }, fn(x) {
+    @sf.tool_ring_node(x, fn() { number(dl(), "progress") }, fn() { @sf.t("web-main.preview.download") }, ink, corner)
+    |> ignore
+  })
+  // 全屏: the tab over the whole window (tab_full.mbt)
+  match full {
+    Some(f) =>
+      @sf.tool_node(
+        r,
+        fn() { { icon: "expand", label: @sf.t("web-main.preview.fullWindow"), on: false, disabled: false } },
+        ink,
+        corner,
+        f,
+        tip=tips,
+      )
+      |> ignore
+    None => ()
+  }
 }
 
 ///|
@@ -742,6 +762,32 @@ fn tab_words(size : @ui.TextSize, line : @ui.Leading, weight : Int) -> @view.Wor
   let th = @ui.tree_theme()
   let (px, own) = th.text_size(size)
   { size: px, weight, line: th.leading(line).unwrap_or(own), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+}
+
+///|
+/// The keys of file tab `tab` of the chat whose tabs are kept by `chat` in the row of the bar over the whole window
+/// (`row`, each `corner` round as the bar has them; sfdesk's tab_full_node.mbt): as its tools' row beside the chat has
+/// them, but 全屏.
+pub fn viewer_tab_bar_tools(
+  row : @view.View,
+  corner : @view.Live[Double],
+  src : Source,
+  chat : String,
+  tab : String,
+  tips : @sf.TipLayer,
+) -> Unit {
+  guard tab_viewer(chat, tab) is Some(vw) else { return }
+  row.box(fn(r) { tab_keys_node(r, src, vw, fn() { @sf.page_viewer_ink() }, corner, None, tips) }) |> ignore
+}
+
+///|
+/// The name of file tab `tab` of the chat whose tabs are kept by `chat` and the line about it (its size, its kind), as
+/// its tools' row says them: the bar's over the whole window.
+pub fn viewer_tab_title(src : Source, chat : String, tab : String) -> (String, String) {
+  match tab_viewer(chat, tab) {
+    Some(vw) => (vw.file.name, vf_meta(vw, src))
+    None => ("", "")
+  }
 }
 
 ///|

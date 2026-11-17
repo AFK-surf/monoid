@@ -173,7 +173,7 @@ pub fn chat_list(
             // (ListRows::enter, leave); its turn over, it stays while its messages come out of its avatar (chat_tick)
             rd.fresh.remove(keys[i]) |> ignore
             let leaving = rd.rows.went(keys[i]) is Some(_)
-            let here = here_of(r, v, rk, turns, em, None, core, inline=narrow, gutter~)
+            let here = here_of(src, r, v, rk, turns, em, None, core, inline=narrow, gutter~)
             let came = rd.rows.came(keys[i])
             // (a turn begun and over between two ticks, nothing of it coming out: no room, unseen, chat_tick)
             let unseen = rd.answered_unseen.contains(a.key) ||
@@ -201,7 +201,7 @@ pub fn chat_list(
             }
             // (or the row words sent before those went to, still on their way as those were sent: they go on)
             let flying = if flies { flight } else { @sfbase.flight_to(draft, keys[i]) }
-            let here = here_of(r, v, rk, turns, em, flying, core, inline=narrow, gutter~)
+            let here = here_of(src, r, v, rk, turns, em, flying, core, inline=narrow, gutter~)
             // what it moves for where it shows: what was sent from here not in the chat yet, the newest that came in
             // over it; any other row, the newest that came in over the rows at the end as the list followed it
             let cause = match e {
@@ -324,6 +324,11 @@ pub fn chat_list(
       }
       found_centre(c, rd, key, list_box_id, pick, find_chat() == rk)
     }
+    // (laid out where it is on this visit: what floats over it goes by it from the frame after, floats_settled)
+    @sfbase.floats_laid(c, rd, match la.info {
+      Some(i) => i.first >= 0
+      None => false
+    })
     // the way to the newest: away from its end, or short of the chat's end
     let jump = la.away || v.newer
     rd.jump = jump
@@ -423,8 +428,10 @@ let sample_messages : Array[(Bool, Array[Int])] = [
 ]
 
 ///|
-/// Where a row of chat `r`'s list is, and how it moves there.
+/// Where a row of chat `r`'s list is, and how it moves there; a quote's card pressed in it goes to what it quotes
+/// (`src` asked where the window holds it not: sfbase's go_to_quoted).
 pub fn here_of(
+  src : Source,
   r : ChatRef,
   v : ChatView,
   rk : String,
@@ -439,7 +446,10 @@ pub fn here_of(
     station: r.station,
     session: r.session,
     view: v,
-    go: Some(fn(seq, passage) { @sfbase.go_to(r, seq, passage~) }),
+    go: Some(fn(ts, passage) {
+      let shown = v.messages.iter().find_first(fn(m) { m.ts == ts }).map(fn(m) { m.seq })
+      @sfbase.go_to_quoted(src, r, v.thread, shown, ts, passage)
+    }),
     inline: inline,
     gutter: gutter,
     list: Some({ rk, turns, emits: em, flight }),
@@ -471,6 +481,21 @@ pub fn list_key(r : ChatRef) -> String {
 }
 
 ///|
+/// How what floats over chat `r`'s list, `name`, looks as it is `shown` (@motion.presence, float_trans): coming and
+/// going by its motion, its chat's own (its key the chat's), once its list is past its opening (@sfbase.floats_settled);
+/// till then standing as it is found, no motion set out by the list coming to its place nor by another chat's.
+fn chat_float_look(c : @ui.Ctx, r : ChatRef, name : String, shown : Bool) -> @ui.Look? {
+  let rk = r.station + "\u{1}" + r.session
+  if @sfbase.floats_settled(c, @sfbase.reading_of(rk)) {
+    @motion.presence(c, name + "/" + rk, shown, enter=float_trans(), exit=float_trans())
+  } else if shown {
+    Some(float_trans().at(1.0, 1.0))
+  } else {
+    None
+  }
+}
+
+///|
 /// The way to the newest (ToLatest): over the list right over the send button, a round button with ↓ (and, short of
 /// the chat's end, how many new messages wait there), fading in and out; pressed, the list glides to its end and
 /// follows it again; short of the chat's end, the chat's latest page is put in place of what shows (`chat.latest`),
@@ -479,8 +504,8 @@ pub fn list_key(r : ChatRef) -> String {
 /// the end.
 fn to_latest(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, shown : Bool, room : Double) -> Unit {
   let p = @sf.theme().p
-  let look = match
-    @motion.presence(c, "chat-jump", shown, enter=float_trans(), exit=float_trans()) {
+  // (its motion its chat's own, standing as it is found while the chat opens: chat_float_look)
+  let look = match chat_float_look(c, r, "chat-jump", shown) {
     Some(l) => l
     None => return
   }
@@ -553,7 +578,7 @@ fn to_ask(
     None => false
   }
   let shown = asks.length() > 0 && laid && !asks_in_view(ask_rows, info)
-  let look = match @motion.presence(c, "chat-ask", shown, enter=float_trans(), exit=float_trans()) {
+  let look = match chat_float_look(c, r, "chat-ask", shown) {
     Some(l) => l
     None => return shown
   }
@@ -571,14 +596,21 @@ fn to_ask(
   // move_spring), set off as their coming and going is, as this is built for it; laid out where it goes, drawn the
   // rest of its way short of there)
   let lift = under.to_double() * float_above
-  let lifting = @motion.told(c, "chat-ask/lift", lift, spec=@sf.move_spring)
+  // (while the chat opens, where it is found: chat_float_look)
+  let rk = r.station + "\u{1}" + r.session
+  let lifting = if @sfbase.floats_settled(c, @sfbase.reading_of(rk)) {
+    let told = @motion.told(c, "chat-ask/lift/" + rk, lift, spec=@sf.move_spring)
+    fn() { told.get(c) }
+  } else {
+    fn() { lift }
+  }
   c.layer(fn() {
     float_box(c, float_right(c), room + float_lift + lift, fn() {
       let b = c.box(style=if c.hovered(id) { float_button_hot } else { float_button }, id~, fn() {
         @sf.icon(c, "bell", size=float_icon, color=p.text) |> ignore
       })
       c.semantics(b, Button, id~, label=@sf.t("web-main.chat.asks.go"))
-      c.look_by(b, fn() { { ..look, dy: look.dy + lift - lifting.get(c) } })
+      c.look_by(b, fn() { { ..look, dy: look.dy + lift - lifting() } })
       @motion.leaving(c, b, shown)
       b
     })
@@ -662,6 +694,8 @@ pub fn chat_find_list(r : ChatRef) -> FindList {
       go_to_words[k] = words
     },
     forget: fn() { find_forget() },
+    // (the old list's rows not counted: the core's count of each message's words)
+    drawn: fn(_, _) { Map([]) },
   }
 }
 
@@ -692,6 +726,7 @@ fn list_reset() -> Unit {
   find_around.val = -1.0
   outline_entries.clear()
   outline_presets.clear()
+  find_goes.clear()
   rail_said.set({})
   rail_asking.clear()
 }

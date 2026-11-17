@@ -1,0 +1,600 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/terminals_logins"
+
+import {
+  "mbui/effect",
+  "station/host",
+  "station/jsjson",
+  "station/ops_platform",
+}
+
+// Values
+pub const COLS : Int32 = 200
+
+pub const KIND_CONTROL : Int32 = 18
+
+pub const KIND_INPUT : Int32 = 16
+
+pub const KIND_OUT : Int32 = 2
+
+pub const KIND_RESIZE : Int32 = 17
+
+pub const KIND_SCREEN : Int32 = 1
+
+pub const KIND_STATE : Int32 = 3
+
+pub const MAX_IN : Int32 = 65536
+
+pub const MOST : Int32 = 16
+
+pub const QUIET_MS : Int32 = 500
+
+pub const ROWS : Int32 = 40
+
+pub const STALL_MS : Int32 = 180000
+
+pub const TERMINAL_RUNNER : String = "term-"
+
+pub const TERMINAL_TYPE : String = "application/x-stillfail-terminal"
+
+pub const TIMEOUT_MS : Int32 = 900000
+
+pub async fn act(Logins, @jsjson.JValue, Acting) -> String
+
+pub fn asked(@jsjson.JValue?) -> Asked?
+
+pub fn base64_of(Bytes) -> String
+
+pub fn channel_from(@jsjson.JValue?, String?) -> String
+
+pub fn check(LoginRun, Callback) -> Unit raise Refused
+
+pub fn control_of(Bytes) -> Control?
+
+pub fn encode_uri_component(String) -> String
+
+pub fn ended_notice(@jsjson.JValue, String?, where_? : Where) -> String
+
+pub fn feature_on_channel(String?, Bool, String) -> Bool
+
+pub fn form_get(String, String) -> String?
+
+pub fn from_base64(String) -> Bytes
+
+pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn is_terminal_runner(String) -> Bool
+
+pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn jb(Bool) -> @jsjson.JValue
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_string_of(@jsjson.JValue) -> String
+
+pub fn js_trim_end(String) -> String
+
+pub fn jstrs(Array[String]) -> @jsjson.JValue
+
+pub fn key_code(String) -> String?
+
+pub fn keychain_out_of_git(Map[String, String]) -> Unit
+
+pub let keys : Array[(String, String)]
+
+pub fn last_lines(String) -> String
+
+pub fn limited(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn login_tool() -> @jsjson.JValue
+
+pub fn loopback_json(@ops_platform.Loopback) -> @jsjson.JValue
+
+pub fn meta_of(@jsjson.JValue?) -> TerminalMeta?
+
+pub fn num(@jsjson.JValue?) -> Double?
+
+pub fn parse(String) -> @jsjson.JValue raise
+
+pub fn past_screen(Out, Double) -> Bytes?
+
+pub fn pretty(@jsjson.JValue) -> String
+
+pub fn prompt_notice(Logins, @jsjson.JValue, String?, where_? : Where) -> String
+
+pub fn prompt_notice_with(Screen?, @jsjson.JValue, String?, where_? : Where) -> String
+
+pub fn read_only(String) -> Bool
+
+pub async fn relay(LoginRun, RelayIo, Callback) -> Answered
+
+pub async fn run_login_tool(LoginToolDeps, String, @jsjson.JValue) -> String
+
+pub fn runner_wire(RunnerSocket) -> Wire
+
+pub fn screen_for(Screen?, @jsjson.JValue) -> String
+
+pub let scrubbed : Array[String]
+
+pub fn shell_of(String, String?) -> (String, Array[String])
+
+pub fn size_of(Bytes) -> (Int32, Int32)?
+
+pub fn slack_page(@jsjson.JValue) -> @jsjson.JValue?
+
+pub fn state_of(Callback) -> String?
+
+pub fn station_page(LoginRun) -> String?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub fn tab_screen(String) -> String
+
+pub fn text(@jsjson.JValue?) -> String?
+
+pub fn told(Logins, @jsjson.JValue, String?, where_? : Where) -> String
+
+pub fn told_with(Screen?, @jsjson.JValue, String?, where_? : Where) -> String
+
+pub fn utf8_of(String) -> Bytes
+
+pub fn utf8_text(Bytes) -> String
+
+// Errors
+pub suberror BusRefused {
+  BusRefused(String)
+}
+
+pub suberror Refused {
+  Refused(Int32, String)
+}
+
+pub suberror SendFailed {
+  SendFailed(String, String)
+}
+
+pub suberror TerminalRefused {
+  TerminalRefused(Int32, String)
+}
+
+// Types and methods
+pub(all) struct Acting {
+  starter : () -> Starter
+  link : (String) -> String?
+  where_ : Where?
+  mine : ((String) -> Bool)?
+}
+
+pub(all) struct Answered {
+  status : Int32
+  headers : Array[(String, String)]
+  body : String
+}
+pub fn Answered::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct Asked {
+  cols : Int32
+  rows : Int32
+  control : Bool
+  taken : Bool
+  cwd : String?
+  chat : String?
+}
+pub fn Asked::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct Callback {
+  method_ : String
+  path : String
+  headers : Array[(String, String)]
+  body : String?
+}
+
+pub(all) struct Child {
+  pid : Int32?
+  writable : () -> Bool
+  write : (String) -> Unit
+  end_stdin : () -> Unit
+  on_output : ((Int32, Bytes) -> Unit) -> Unit
+  on_close : ((Int32?, String?) -> Unit) -> Unit
+}
+
+pub(all) struct Control {
+  control : Bool
+  taken : Bool
+  size : (Int32, Int32)?
+}
+pub fn Control::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct Ended {
+  code : @jsjson.JValue
+  signal : @jsjson.JValue
+}
+pub fn Ended::to_json(Self) -> @jsjson.JValue
+
+pub struct Listeners[T] {
+  // private fields
+}
+pub fn[T] Listeners::add(Self[T], T) -> Int32
+pub fn[T] Listeners::delete(Self[T], Int32) -> Unit
+pub fn[T] Listeners::each(Self[T], (T) -> Unit) -> Unit
+pub fn[T] Listeners::new() -> Self[T]
+pub fn[T] Listeners::size(Self[T]) -> Int32
+
+pub struct LoginPages {
+  // private fields
+}
+pub fn LoginPages::can(Self) -> Bool
+pub fn LoginPages::changes(Self, (String) -> Unit) -> () -> Unit
+pub fn LoginPages::close(Self, String) -> Unit
+pub fn LoginPages::new(PagesBrowser, (() -> Unit) -> Unit, (String, @jsjson.JValue) -> Unit) -> Self
+pub async fn LoginPages::open(Self, String, String, options? : @jsjson.JValue) -> String
+pub fn LoginPages::screen_of(Self, String) -> String?
+pub fn LoginPages::url_of(Self, String) -> String?
+
+pub struct LoginRun {
+  id : String
+  command : Array[String]
+  started_at : Double
+  expires_at : Double
+  mut state : String
+  mut step : String?
+  mut url : String?
+  mut loopback : @ops_platform.Loopback?
+  mut code : String?
+  mut code_url : String?
+  mut waiting : Bool
+  mut paste : Bool
+  mut echo : Bool
+  mut error : String?
+  mut ended_at : Double?
+  mut relayed : Bool
+  mut timed_out : Bool
+  mut had_browser_step : Bool
+  // private fields
+}
+pub fn LoginRun::active(Self) -> Bool
+pub fn LoginRun::answered_now(Self) -> Unit
+pub fn LoginRun::ask_paste(Self, Bool) -> Bool
+pub fn LoginRun::cancel(Self) -> Unit
+pub fn LoginRun::close(Self) -> Unit
+pub fn LoginRun::input(Self, text? : String, key? : String) -> Unit
+pub fn LoginRun::new(RunOptions, RunIo) -> Self
+pub fn LoginRun::next_quiet(Self) -> @effect.Deferred[Unit]
+pub fn LoginRun::output(Self, String) -> Unit
+pub async fn LoginRun::pids(Self) -> Array[Int32]
+pub fn LoginRun::relayed_now(Self) -> Unit
+pub fn LoginRun::screen(Self) -> Screen
+pub fn LoginRun::secret(Self) -> Bool
+pub async fn LoginRun::start(Self) -> Unit
+
+pub(all) struct LoginToolDeps {
+  logins : () -> Logins?
+  remote : (async (String, String, @jsjson.JValue) -> String)?
+  starter : (String) -> Starter
+  link : (String, String) -> String?
+}
+
+pub struct Logins {
+  // private fields
+}
+pub fn Logins::answer(Self, String, @jsjson.JValue?, by? : Person) -> @jsjson.JValue raise Refused
+pub async fn Logins::callback(Self, String, Callback, by? : Person) -> Answered
+pub fn Logins::cancel(Self, String, by? : Person) -> @jsjson.JValue raise Refused
+pub fn Logins::changes(Self, (String) -> Unit) -> () -> Unit
+pub async fn Logins::close(Self) -> Unit
+pub fn Logins::follow(Self, String, (Screen) -> Unit) -> () -> Unit
+pub fn Logins::get(Self, String) -> @jsjson.JValue?
+pub fn Logins::had_browser_step(Self, String) -> Bool
+pub fn Logins::heard(Self, String) -> Bool
+pub fn Logins::history(Self) -> Array[@jsjson.JValue]
+pub fn Logins::input(Self, String, text? : @jsjson.JValue, key? : @jsjson.JValue) -> Unit raise Refused
+pub fn Logins::logins(Self) -> Array[@jsjson.JValue]
+pub async fn Logins::new(LoginsIo, pages? : LoginPages) -> Self
+pub fn Logins::on_ended(Self, (@jsjson.JValue, Starter) -> Unit) -> () -> Unit
+pub async fn Logins::open_page(Self, String, by? : Person) -> String
+pub fn Logins::paste(Self, String, Bool) -> @jsjson.JValue raise Refused
+pub fn Logins::screen(Self, String) -> Screen?
+pub async fn Logins::settle(Self, String, Int32) -> @jsjson.JValue?
+pub async fn Logins::settle_finish(Self, String, @effect.Deferred[Unit]?, Int32) -> @jsjson.JValue?
+pub fn Logins::settle_start(Self, String) -> @effect.Deferred[Unit]?
+pub fn Logins::spawn(Self, async () -> Unit) -> Unit
+pub async fn Logins::start(Self, @jsjson.JValue, Starter) -> @jsjson.JValue
+pub fn Logins::starter_of(Self, String) -> Starter?
+pub async fn Logins::wait_ready(Self) -> Unit
+pub async fn Logins::written(Self) -> Unit
+
+pub(all) struct LoginsHost {
+  session_ws : (String) -> String?
+  session_row : (String) -> (String?, String?)?
+  close_login_cards : (String) -> Array[String] raise
+  machine_logins : (@jsjson.JValue, @jsjson.JValue, String) -> Unit
+  notify : (String, String) -> Unit raise
+  chat_title : (String) -> String? raise
+  name_of : (String) -> String?
+  place : () -> (String, String)?
+  page_base : () -> (String, String, String)?
+  station_name : (String) -> String
+  peer_named : (String) -> String raise
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  spawn : (async () -> Unit) -> Unit
+  log : (String, @jsjson.JValue) -> Unit
+}
+
+pub(all) struct LoginsIo {
+  data : String
+  env : () -> Map[String, String]
+  lang : () -> String
+  run : RunIo
+  mkdir : async (String) -> Unit
+  make_command : async (String, String) -> Unit
+  write_private : async (String, String) -> Unit
+  sleep : async (Int32) -> Unit
+  random4 : () -> String
+  relay : RelayIo
+}
+
+pub struct LoginsPart {
+  logins : Logins
+  // private fields
+}
+pub async fn LoginsPart::heard_peer(Self, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+pub fn LoginsPart::here(Self) -> Where
+pub fn LoginsPart::link(Self, String?, String) -> String?
+pub fn LoginsPart::new(Logins, LoginsHost) -> Self
+pub fn LoginsPart::slack_answer(Self, String, String, Person) -> Unit raise Refused
+pub fn LoginsPart::slack_card(Self, String) -> @jsjson.JValue?
+pub fn LoginsPart::starter_of(Self, String) -> Starter
+pub fn LoginsPart::tool(Self) -> LoginToolDeps
+
+pub(all) struct Opening {
+  cols : Int32
+  rows : Int32
+  cwd : String?
+  chat : String?
+  by : String
+  workspace : String
+}
+
+pub(all) struct Out {
+  at : Double
+  bytes : Bytes
+}
+
+pub(all) struct PagesBrowser {
+  available : () -> Bool
+  open_tab : async (String, @jsjson.JValue?) -> String
+  has_tab : (String) -> Bool
+  close_tab : (String) -> Unit
+  tab_url : ((String) -> String?)?
+}
+
+pub(all) struct Person {
+  email : String
+  name : String
+}
+pub fn Person::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct RelayIo {
+  listening : async (Array[Int32], Int32) -> Array[String]?
+  send : async (String, Int32, String, String, Array[(String, String)], Bytes) -> Answered
+}
+
+pub(all) struct RunIo {
+  now : () -> Double
+  after : (Int32, () -> Unit) -> () -> Unit
+  spawn : (async () -> Unit) -> Unit
+  home : (Map[String, String]) -> String?
+  prepend_path : (Map[String, String], String) -> Map[String, String]
+  exe : (String) -> String
+  with_shell_command : async (String, Map[String, String]) -> Map[String, String]?
+  terminal : async (String, Array[String], Int32, Int32) -> (String, Array[String])?
+  runnable : async (String, Array[String], Map[String, String]) -> (String, Array[String])
+  start_command : (String, Array[String], String, Map[String, String]) -> Child raise
+  started : async (Child) -> String?
+  end_command : (Child, String) -> Unit
+  descendants : async (Int32) -> Array[Int32]
+  echoes : async (Int32) -> Bool?
+  commands : async (Array[Int32]) -> Array[String]
+  read_file : async (String) -> String
+  watch : (String, (String?) -> Unit) -> (() -> Unit) raise
+  tr : (String, String, Map[String, String]) -> String
+  log : (String, @jsjson.JValue) -> Unit
+}
+
+pub(all) struct RunOptions {
+  id : String
+  command : Array[String]
+  env : Map[String, String]
+  cwd : String
+  shims : String
+  opened : String
+  lang : String
+  changed : () -> Unit
+  drawn : () -> Unit
+}
+
+pub(all) struct RunnerInfo {
+  id : String
+  pty : @jsjson.JValue?
+  cols : @jsjson.JValue?
+  rows : @jsjson.JValue?
+}
+
+pub struct RunnerLines {
+  // private fields
+}
+pub fn RunnerLines::new() -> Self
+pub fn RunnerLines::read(Self, Bytes) -> Array[Said]
+
+pub(all) struct RunnerSocket {
+  write : (String) -> Unit
+  end : () -> Unit
+  writable : () -> Bool
+  on_data : ((Bytes) -> Unit) -> Unit
+  on_close : (() -> Unit) -> Unit
+  says_leave : Bool
+}
+
+pub(all) enum Said {
+  Line(@jsjson.JValue)
+  Output(Double, Bytes)
+}
+
+pub(all) struct Screen {
+  rows : Array[String]
+  cursor : (Int32, Int32)
+  echo : Bool
+  live : Bool
+}
+pub fn Screen::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct Shown {
+  at : Double
+  data : Bytes
+  size : (Double, Double)?
+}
+
+pub(all) struct Starter {
+  by : Person
+  workspace : String?
+  chat : String?
+  chat_title : String?
+  peer : (String, String)?
+}
+
+pub(all) struct Stream {
+  read : async () -> Bytes?
+  write : async (Bytes) -> Unit
+  finish : async () -> Unit
+}
+
+pub(all) struct TerminalDeps {
+  start : async (String, Opening, String, TerminalMeta) -> TerminalLink
+  home : String
+  chat_dir : (String) -> String?
+  changed : () -> Unit
+  gone : (String) -> Unit
+  new_id : () -> String
+  offered : (() -> Bool)?
+  now : () -> Double
+  spawn : (async () -> Unit) -> Unit
+  log : (String, @jsjson.JValue) -> Unit
+}
+
+pub struct TerminalLink {
+  // private fields
+}
+pub fn TerminalLink::detach(Self) -> Unit
+pub fn TerminalLink::ended(Self, (Ended?) -> Unit) -> () -> Unit
+pub fn TerminalLink::kill(Self) -> Unit
+pub fn TerminalLink::listen(Self, (Out) -> Unit) -> () -> Unit
+pub fn TerminalLink::new(Wire) -> Self
+pub fn TerminalLink::over(Self) -> Bool
+pub fn TerminalLink::resize(Self, Int32, Int32) -> Unit
+pub fn TerminalLink::screen(Self) -> @effect.Deferred[Result[Shown, String]]
+pub fn TerminalLink::type_(Self, Bytes) -> Unit
+
+pub(all) struct TerminalMeta {
+  by : String
+  at : Double
+  cwd : String
+  chat : String?
+  workspace : String
+}
+pub fn TerminalMeta::to_json(Self) -> @jsjson.JValue
+
+pub struct Terminals {
+  // private fields
+}
+pub async fn Terminals::answer(Self, Stream, Bytes, @jsjson.JValue, Viewer) -> Unit
+pub fn Terminals::detach(Self) -> Unit
+pub fn Terminals::end(Self, String, String, String) -> Bool
+pub fn Terminals::keep(Self, String, TerminalLink, TerminalMeta, (@jsjson.JValue?, @jsjson.JValue?)) -> Unit
+pub fn Terminals::list(Self, String) -> @jsjson.JValue
+pub fn Terminals::new(TerminalDeps) -> Self
+pub fn Terminals::workspaces(Self) -> Array[String]
+
+pub(all) struct TerminalsIo {
+  data : String
+  home : String
+  os : String
+  shell : String?
+  session_dir : (String) -> String?
+  random_hex : () -> String
+  offered : () -> Bool
+  tell : (String, @jsjson.JValue) -> Unit
+  mkdir : async (String) -> Unit
+  write_file : async (String, String) -> Unit
+  remove : async (String) -> Unit
+  read_file : async (String) -> String
+  start_runner : async (String, String, Array[String], String, Int32, Int32) -> RunnerInfo
+  live_runners : async () -> Array[RunnerInfo]
+  listening_soon : async (RunnerInfo) -> Bool
+  wire : (RunnerInfo) -> Wire
+  now : () -> Double
+  spawn : (async () -> Unit) -> Unit
+  log : (String, @jsjson.JValue) -> Unit
+}
+
+pub struct TerminalsPart {
+  terminals : Terminals
+  // private fields
+}
+pub fn TerminalsPart::detach(Self) -> Unit
+pub fn TerminalsPart::end_asked(Self, String, Viewer) -> (Int32, String)
+pub fn TerminalsPart::listed(Self, String) -> (Int32, String)
+pub async fn TerminalsPart::start(TerminalsIo) -> Self
+
+pub struct Utf8Decoder {
+  // private fields
+}
+pub fn Utf8Decoder::new() -> Self
+pub fn Utf8Decoder::write(Self, Bytes) -> String
+
+pub(all) struct Viewer {
+  name : String
+  email : String
+  role : String
+  workspace : String
+  device : String
+}
+
+pub struct Vt {
+  // private fields
+}
+pub fn Vt::cursor_x(Self) -> Int32
+pub fn Vt::cursor_y(Self) -> Int32
+pub fn Vt::new(Int32, Int32, Int32) -> Self
+pub fn Vt::on_data(Self, (String) -> Unit) -> Unit
+pub fn Vt::osc(Self, Int32, (String) -> Bool) -> Unit
+pub fn Vt::row(Self, Int32) -> String
+pub fn Vt::rows(Self) -> Int32
+pub fn Vt::write(Self, String) -> Unit
+
+pub(all) struct Where {
+  station : String
+  name : String
+}
+
+pub(all) struct Wire {
+  write : (String) -> Unit
+  end : () -> Unit
+  on_line : ((Said) -> Unit) -> Unit
+  on_close : (() -> Unit) -> Unit
+}
+
+// Type aliases
+pub type Env = Map[String, String]
+
+pub using @jsjson {type JValue as J}
+
+// Traits

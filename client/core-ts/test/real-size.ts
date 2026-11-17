@@ -18,7 +18,7 @@ import { PENDING_MOST, type Pending } from "../src/lock-pending.ts";
 import type { Topic } from "../src/protocol.ts";
 import { PAGE } from "../src/station/channel-kinds.ts";
 import { localDay } from "../src/views/usage.ts";
-import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown } from "../src/move.ts";
+import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown, moveWhy } from "../src/move.ts";
 import { hostOf, link, overview, rows, sessions, threads, workspace } from "./views-rig.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -829,9 +829,10 @@ function usageOf(now: number, station: number): J {
 }
 
 /// A station's jobs (its `GET /jobs`): the chat's agent's dev server and its watch of the PR's CI, a Slack chat's agent's
-/// watch of a deploy, and the rest a chat each; a soak that has run a day telling how it goes (`stillfail-job notify`).
+/// watch of a deploy, and the rest a chat each, one of them another member's (its logs tailed: jobs.ts `longJobs`'
+/// `otherGroups`); a soak that has run a day telling how it goes (`stillfail-job notify`).
 function jobsOf(now: number, station: number): J[] {
-  const sessions = [0, 0, 6, 9, 12, 15, 1];
+  const sessions = [0, 0, 6, 9, 13, 15, 1];
   return Array.from({ length: 7 }, (_, j) => ({
     id: `job-${STATIONS[station]!.id}-${j}`, session: keyOf(station, sessions[j]!), name: pick(["dev server", "watch CI #5244", "storybook", "e2e soak", "tail prod logs", "benchmark", "watch deploy #812"], j),
     state: j === 5 ? "exited" : "running", port: j === 0 ? 5173 : j === 2 ? 6006 : null, exitCode: j === 5 ? 0 : null, startedAt: now - (j + 1) * 5 * HOUR, endedAt: j === 5 ? now - HOUR : null,
@@ -840,6 +841,8 @@ function jobsOf(now: number, station: number): J[] {
     // (the soak tells each round, `stillfail-job notify`: as many as the station shows, station/src/jobs/jobs.ts NOTICES_SHOWN)
     notices: j === 1
       ? [{ at: now - 20 * MIN, text: "CI 绿了：check-mbui native 5 分 12 秒" }]
+      : j === 4
+      ? [{ at: now - 2 * HOUR, text: "错误率回到 0.1% 以下" }]
       : j === 3
       ? Array.from({ length: 20 }, (_, r) => ({ at: now - (20 - r) * 45 * MIN, text: r % 6 === 5 ? `第 ${393 + r} 轮：1 个失败，chat-scroll 第 3 次重试后通过` : `第 ${393 + r} 轮：全部通过（平均 3 分 ${String(8 + (r % 5)).padStart(2, "0")} 秒）` }))
       : [],
@@ -1605,7 +1608,10 @@ export function moveOf(now: number, asked: { to: string; module: string; limit?:
     stopped: [1, 2, 3].map((k) => ({ item: `chats ${keyOf(0, 30 + step + k)}`, waitsFor: "accounts i0" })),
     last: { at: now - 5 * MIN, by: PEOPLE[0]!.email, done: [], refused: [{ item: `chats ${keyOf(0, 40 + step)}`, why: "它要的连接「Slack · Acme」还没迁到 Willow：先迁连接，或用全部迁移" }], stopped: [], resumed: [], failed: null },
   };
-  const targets = STATIONS.slice(1, UP_COUNT).map((s, i) => ({ station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }) }));
+  // (the other stations up, then those down, each saying why)
+  const targets = STATIONS.slice(1).map((s, i) => (i + 1 < UP_COUNT
+    ? { station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }), why: "" }
+    : { station: s.id, name: s.name, free: "", why: moveWhy(false, undefined) }));
   return moveShown(raw, { to: asked.to, toName: asked.to === "" ? "" : "Willow", module: asked.module, targets, canMove: true });
 }
 

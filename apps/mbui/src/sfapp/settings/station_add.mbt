@@ -13,8 +13,8 @@ priv struct Adding {
   existing : @signals.Signal[Bool]
   /// one that only runs tasks (the mode's second side; a member's only one)
   tasks : @signals.Signal[Bool]
-  /// the commands made: (macOS's and Linux's, Windows' in PowerShell: "" from a cloud that gives none)
-  made : @signals.Signal[(String, String)?]
+  /// the commands made: (macOS's and Linux's, Windows' in PowerShell, Docker's: "" from a cloud that gives none)
+  made : @signals.Signal[(String, String, String)?]
   /// why the command could not be made, or a station not joined
   error : @signals.Signal[String]
   /// why adding this machine via `station.join` failed
@@ -544,7 +544,7 @@ fn make_station_command(core : Core, here : Here, tasks : Bool, name : String) -
     if tasks { obj([("workspace", str(here.workspace)), ("name", str(name))]) } else { obj([("workspace", str(here.workspace)), ("name", str(name)), ("account", str(here.sub))]) },
     fn(r) {
       match r {
-        Ok(v) => adding.made.set(Some((text(Some(v), "install"), text(Some(v), "installWindows"))))
+        Ok(v) => adding.made.set(Some((text(Some(v), "install"), text(Some(v), "installWindows"), text(Some(v), "installDocker"))))
         Err(e) => adding.error.set(error_text(e))
       }
     },
@@ -555,7 +555,8 @@ fn make_station_command(core : Core, here : Here, tasks : Bool, name : String) -
 /// The steps in node `v` (add_station_steps', its buttons the panel's foot): the name's line (`label`), its field
 /// (`placeholder` in it while it is empty) and why the
 /// command could not be made; joined, said in green; else the commands to run there (macOS's and Linux's, Windows'
-/// where the cloud gave it), each under its system's name and copied from here, and the wait.
+/// and still.fail's container's where the cloud gave them), each under its system's name and copied from here, and
+/// the wait.
 fn add_station_steps_node(
   v : @view.View,
   core : Core,
@@ -578,22 +579,33 @@ fn add_station_steps_node(
         _ => {
           @sf.words_node(b, fn() { tr("android-settings.station.run") }, fn() { step_run_words }) |> ignore
           @sf.words_node(b, fn() { tr("android-settings.station.runUnix") }, fn() { step_label_words }) |> ignore
-          command_box_node(b, core, fn() {
+          command_node(b, fn() {
             match adding.made.get() {
-              Some((install, _)) => install
+              Some((install, _, _)) => install
               None => ""
             }
           })
           let windows = fn() {
             match adding.made.get() {
-              Some((_, w)) => w
+              Some((_, w, _)) => w
               None => ""
             }
           }
           b.show(fn() { windows() != "" }, fn(w) {
             @sf.style_node(w, fn() { steps_column })
             @sf.words_node(w, fn() { tr("android-settings.station.runWindows") }, fn() { step_label_words }) |> ignore
-            command_box_node(w, core, windows)
+            command_node(w, windows)
+          })
+          let docker = fn() {
+            match adding.made.get() {
+              Some((_, _, d)) => d
+              None => ""
+            }
+          }
+          b.show(fn() { docker() != "" }, fn(d) {
+            @sf.style_node(d, fn() { steps_column })
+            @sf.words_node(d, fn() { tr("android-settings.station.runDocker") }, fn() { step_label_words }) |> ignore
+            command_node(d, docker)
           })
           @sf.words_node(b, fn() { fill("android-settings.station.runNote", [("app", "still.fail")]) }, fn() { step_note_words })
           |> ignore
@@ -601,6 +613,13 @@ fn add_station_steps_node(
         }
       }
     })
+}
+
+///|
+/// A command to run on the machine in `parent`, `words` as they are now: the library's block of a command to copy
+/// (`@sf.code_block_node`'s `command`), as every command of the app is.
+fn command_node(parent : @view.View, words : () -> String) -> Unit {
+  parent.box(fn(b) { @sf.code_block_node(b, words, fn() { "" }, fn() { None }, command=true) }) |> ignore
 }
 
 ///|
@@ -652,59 +671,6 @@ let joined_line : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S2 align=ACe
 /// 「name」已加入: the interface's size, 20 a line (its ink the palette's green).
 // kept across runs: a value (no field of it changes)
 let joined_words : @ui.TextStyle = @ui.text_style(size=Ui, w=Full, leading=L6)
-
-///|
-/// A command to run elsewhere (command_box's, as nodes) in `parent`, `words` as they are now: on surface2 alone, its
-/// words in the code face (12, 18 a line) wrapped, its copy button at its end, two of its lines high; pressed, the
-/// words copied and 已复制 said. Its words as far in from its start as its button from its end and its top
-/// (corner_inset: the button concentric with its corner; the words were 12 in, the button 8, rule 4, 2026-11-15).
-fn command_box_node(parent : @view.View, core : Core, words : () -> String) -> Unit {
-  parent.box(fn(b) {
-    @sf.style_node(b, fn() { command_room })
-    b
-    .ground(By(fn() { @sf.theme().p.card2 }))
-    .radius(Is(@sf.command_box_corner))
-    .padding(Is((@sf.corner_inset, @sf.corner_inset, @sf.corner_inset, @sf.corner_inset)))
-    |> ignore
-    b.box(fn(w) {
-      w.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-      w.box(fn(x) {
-        x
-        .words_runs(By(fn() { [@ui.span(words(), mono=true)] }), look=command_words)
-        .ink(By(fn() { @sf.theme().p.text }))
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    b.box(fn(k) {
-      k
-      .width(Is(Some(command_copy)))
-      .height(Is(Some(command_copy)))
-      .radius(Is(@sf.small_corner))
-      .ground(By(fn() { @sf.theme().p.chip }))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      |> ignore
-      @sf.icon_node(k, "copy", 16.0, By(fn() { @sf.theme().p.text })) |> ignore
-      @sf.rippled_node(k, fn() {
-        @ui.clipboard_set(@signals.untracked(words))
-        (core.say)(tr("common.copied"))
-      }, @sf.small_corner, fn() { @sf.t("common.copy") })
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let command_room : @ui.Style = @ui.css("row w=Full gap=S2")
-
-///|
-/// A command's words: the code face's 12, two to its copy button.
-// kept across runs: a value (no field of it changes)
-let command_words : @view.WordsLook = { size: 12.0, weight: 400, line: command_line, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
 
 ///|
 /// 添加这台 Mac in node `v` (add_this_machine's): what it does, its button; pressed, joins via `station.join` when
@@ -769,10 +735,4 @@ fn station_joined(core : Core, here : Here) -> Json? {
   }
 }
 
-///|
-/// A command's line, and its copy button: two of its lines high.
-let command_line : Double = 18.0
-
-///|
-let command_copy : Double = command_line * 2.0
 

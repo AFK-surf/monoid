@@ -195,8 +195,15 @@ pub fn View::beside(
   // (beside another anchor now, or as wide as what it holds: what it was made as wide as before none of its own; said
   // beside one for the first time, none kept of a node let go before at its index)
   match n.beside {
-    Some(was) if was.anchor != anchor || width == Own => self.tree.beside_narrowed(self.at, width == Own)
-    Some(_) => ()
+    Some(was) => {
+      // (beside another anchor: the point of the one before the pointer was last at nothing of this one's)
+      if was.anchor != anchor {
+        n.beside_point = None
+      }
+      if was.anchor != anchor || width == Own {
+        self.tree.beside_narrowed(self.at, width == Own)
+      }
+    }
     None => self.tree.beside_widths.remove(self.at)
   }
   n.beside = Some({ anchor, side, along, offset, padding, at_pointer, width, along_offset, holds_side })
@@ -212,6 +219,148 @@ pub fn View::beside(
   st.set_inset_bottom(Auto)
   self.tree.layout_marked_at(self.at)
   self
+}
+
+///|
+/// Placed beside the node `anchor` says as that changes (View::beside, all else as it says): bound as any property is
+/// (View::bind: set again as what it reads changes, at that change's moment, before anything is laid out or worked out
+/// for it, so what reads where it goes as of that moment, Moves of @motion among them, reads it beside its new anchor,
+/// View::laid_window_now), let go with the node. Another anchor: beside it as the tree is next placed, at once, from the
+/// side it is on where `holds_side` says so and it has the room there; nothing of where the pointer was on the one
+/// before kept, and as wide as the new one where `width` says `Anchor`. What carries it there on a way is its own
+/// (@motion's moves_for, by the same that says its anchor): where it is placed is only ever beside its anchor now.
+#callsite(autofill(loc))
+pub fn View::beside_by(
+  self : View,
+  anchor : Live[NodeId],
+  side? : Side = Bottom,
+  along? : Along = Middle,
+  offset? : Double = 4.0,
+  padding? : Double = 8.0,
+  at_pointer? : Bool = false,
+  width? : BesideWidth = Own,
+  piece? : (Double, Double) -> (Double, Double, Double, Double)?,
+  along_offset? : Double = 0.0,
+  holds_side? : Bool = false,
+  loc~ : SourceLoc,
+) -> View {
+  self.bind(loc~, BesideOf, anchor, Place, fn(a) {
+    self.beside(a, side~, along~, offset~, padding~, at_pointer~, width~, piece?, along_offset~, holds_side~)
+    |> ignore
+  })
+  self
+}
+
+///|
+/// Where node `at` is laid out in the window as of the layout under way (Tree::measured_now's), across and down: each
+/// that holds it where it is laid out in what holds it, its offset with it (Tree::off_now), up to the first of them
+/// (it too) that goes beside another, which is where it goes beside it as that is laid out (Tree::beside_laid), not
+/// its holder's top left where its own layout has it. `seen`: those going beside another whose places are being worked
+/// out under this one (a ring of them goes beside nothing: Tree::besides_placed's).
+fn Tree::laid_window_at(self : Tree, at : Int, seen : Array[Int]) -> (Double, Double) {
+  let mut x = 0.0
+  let mut y = 0.0
+  let mut i = at
+  while i >= 0 {
+    let m = self.nodes[i]
+    match self.beside_laid(i, seen) {
+      Some((bx, by)) => return (x + bx, y + by)
+      None => ()
+    }
+    // (a slot lays out nothing of its own: what it holds is placed in the one that holds it)
+    if !m.slot {
+      let (dx, dy) = self.off_now(m)
+      x = x + m.flex.left + dx
+      y = y + m.flex.top + dy
+    }
+    i = m.parent
+  }
+  (x, y)
+}
+
+///|
+/// How wide node `at` is laid out as of the layout under way: as wide as its anchor is where it goes beside it so
+/// (BesideWidth's Anchor: what Tree::beside_widened will make it as it is placed), else its own.
+fn Tree::laid_width_of(self : Tree, at : Int) -> Double {
+  let n = self.nodes[at]
+  match n.beside {
+    Some(b) if b.width == Anchor && self.alive_id(b.anchor) && !self.leaving_at(at) && !self.out_at(b.anchor.at) && !self.leaving_at(b.anchor.at) =>
+      self.nodes[b.anchor.at].flex.width
+    _ => n.flex.width
+  }
+}
+
+///|
+/// Where node `at`, said to go beside another (View::beside), goes in the window as of the layout under way: as
+/// Tree::besides_placed places it, worked out the same way of where its anchor and it are laid out (Tree::
+/// laid_window_at, its anchor's width and height, the piece of it, the pointer's point on it, the side it holds,
+/// place_beside) and setting nothing of what that keeps; leaving, its anchor gone, drawn nowhere or no piece of it
+/// there, where it last went beside it (Node's beside_last, from where what holds it is laid out), as besides_placed
+/// keeps it. None where it goes beside nothing (none said, beside itself or what it holds, a ring of them, never placed
+/// beside it yet): where its own layout has it.
+fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Double)? {
+  let n = self.nodes[at]
+  guard n.beside is Some(b) else { return None }
+  guard !seen.contains(at) else { return None }
+  let stay = fn() -> (Double, Double)? {
+    match n.beside_last {
+      Some((lx, ly, _, _)) => {
+        let (hx, hy) = if n.parent >= 0 { self.laid_window_at(n.parent, seen) } else { (0.0, 0.0) }
+        Some((hx + lx, hy + ly))
+      }
+      None => None
+    }
+  }
+  guard self.alive_id(b.anchor) else { return stay() }
+  if self.leaving_at(at) || self.out_at(b.anchor.at) || self.leaving_at(b.anchor.at) {
+    return stay()
+  }
+  // (beside itself or what it holds: where it is laid out)
+  let mut i = b.anchor.at
+  while i >= 0 {
+    if i == at {
+      return None
+    }
+    i = self.nodes[i].parent
+  }
+  seen.push(at)
+  let (ax, ay) = self.laid_window_at(b.anchor.at, seen)
+  seen.pop() |> ignore
+  let a = self.nodes[b.anchor.at]
+  let (aw, ah) = (a.flex.width, a.flex.height)
+  let (ax, ay, aw, ah) = match n.beside_piece {
+    None => (ax, ay, aw, ah)
+    Some(f) =>
+      match @signals.untracked(fn() { f(aw, ah) }) {
+        Some((x, y, w, h)) => (ax + x, ay + y, w, h)
+        None => return stay()
+      }
+  }
+  let (px, py) = self.pointer_xy
+  let rect = if b.at_pointer && px >= ax && py >= ay && px < ax + aw && py < ay + ah {
+    (px, py, 0.0, 0.0)
+  } else {
+    match (b.at_pointer, n.beside_point) {
+      (true, Some((ox, oy))) => (ax + ox, ay + oy, 0.0, 0.0)
+      _ => (ax, ay, aw, ah)
+    }
+  }
+  let on = if b.holds_side { n.went } else { None }
+  let (x, y, _) = place_beside(
+    rect,
+    self.laid_width_of(at),
+    n.flex.height,
+    self.last_w,
+    self.last_h,
+    side=b.side,
+    on?,
+    along=b.along,
+    offset=b.offset,
+    along_offset=b.along_offset,
+    padding=b.padding,
+    clear=self.clear.untracked(),
+  )
+  Some((x, y))
 }
 
 ///|
@@ -414,6 +563,33 @@ fn Tree::beside_widened(self : Tree, at : Int, w : Double) -> Unit {
   // layout)
   self.sizes_due = true
   self.hits_bump()
+}
+
+///|
+/// What goes beside another as wide as it (BesideWidth's Anchor), in a layout read before it is placed (Tree::
+/// measured_now): each made as wide as its anchor is laid out in it, where it was not already, and laid out alone so in
+/// what holds it (what it holds broken into lines again, as tall as that makes it), nothing placed: placed by that
+/// layout as the rest of it is (Tree's alone_laid, walked as the frame places what was laid out), where Tree::
+/// besides_placed finds it as wide already. So where it goes and how big it is, read of that layout (View::
+/// laid_window_now), is what the frame places it at, its height too.
+fn Tree::besides_widened_now(self : Tree) -> Unit {
+  for at in self.besides_at {
+    let n = self.nodes[at]
+    guard n.live && n.beside is Some(b) && b.width == Anchor && n.parent >= 0 else { continue }
+    guard self.alive_id(b.anchor) && !self.leaving_at(at) && !self.out_at(b.anchor.at) && !self.leaving_at(b.anchor.at) else {
+      continue
+    }
+    let w = self.nodes[b.anchor.at].flex.width
+    if self.beside_widths.get(at) == Some(w) {
+      continue
+    }
+    self.beside_widths[at] = w
+    n.flex.style.set_width(Pt(w))
+    n.flex.dirty = true
+    let gen = self.laid_over_alone(at, n.parent)
+    self.alone_laid.push((at, gen))
+    self.sizes_due = true
+  }
 }
 
 ///|

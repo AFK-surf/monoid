@@ -43,7 +43,7 @@ pub(all) struct Fixture {
   /// the first row's chat: how many older pages have come in
   mut older : Int
   /// "home-motion": how far the list's changes have gone (a chat with news to the top, a new chat, one archived,
-  /// a mark come)
+  /// a mark come); "share-card-motion": how far the card's figures have changed (fixture_fleet)
   mut step : Int
   /// each chat's side panel's tabs as kept on this device (the prefs' `chatTabs`, by `<station>:<session>` and
   /// `new:<workspace>`), changed by `chat.tabs.*` as the core's chat-tabs.ts changes them (its answers kept, src/sfkept);
@@ -81,6 +81,7 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-service-side" => { "ws1/st1:s-c1": kept("service:j-web") }
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }
+    "chat-terminal-side" => { "ws1/st1:s-c1": { "tabs": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "active": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
     "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" =>
       { "ws1/st1:s-c1": kept(fixture_view_tab(mode)) }
     _ => {}
@@ -115,6 +116,7 @@ pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
   match mode {
     "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
+    "chat-terminal-side" => { "ws1/st1:s-c1": { "open": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "shown": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
     "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {
       let tab = fixture_view_tab(mode)
       { "ws1/st1:s-c1": { "open": [Json::string(tab)], "shown": Json::string(tab) } }
@@ -185,12 +187,56 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
       })
     _ => None
   }
+  let act = name.exact_view(start="chat.tabs.".length()).to_owned()
+  let tab_str = match field(Some(params), "tab") {
+    Some(String(t)) => t
+    _ => ""
+  }
+  let existing_open = items(f.tabs_shown.get(key), "open")
+  if tab_str.has_prefix("terminal:") || existing_open.any(fn(x) { x is String(s) && s.has_prefix("terminal:") }) {
+    let cur : Array[String] = []
+    for x in existing_open {
+      if x is String(s) && !cur.contains(s) {
+        cur.push(s)
+      }
+    }
+    let mut shown = text(f.tabs_shown.get(key), "shown")
+    match act {
+      "open" => {
+        if tab_str != "" && !cur.contains(tab_str) {
+          cur.push(tab_str)
+        }
+        if tab_str != "" {
+          shown = tab_str
+        }
+      }
+      "front" => if cur.contains(tab_str) { shown = tab_str }
+      "close" => {
+        let idx = cur.search(tab_str)
+        match idx {
+          Some(i) => cur.remove(i) |> ignore
+          None => ()
+        }
+        if shown == tab_str {
+          shown = cur.last().unwrap_or("")
+        }
+      }
+      "clear" => {
+        cur.clear()
+        shown = ""
+      }
+      _ => ()
+    }
+    let arr = Json::array(cur.map(fn(s) { Json::string(s) }))
+    let shown_json = if shown == "" { Json::null() } else { Json::string(shown) }
+    f.chat_tabs[key] = { "tabs": arr, "active": shown_json }
+    f.tabs_shown[key] = { "open": arr, "shown": shown_json }
+    f.changed()
+    return Ok(Json::null())
+  }
   let change : Json = {
-    "action": Json::string(name.exact_view(start="chat.tabs.".length()).to_owned()),
-    "tab": match field(Some(params), "tab") {
-      Some(String(t)) => Json::string(t)
-      _ => Json::null()
-    },
+    "action": Json::string(act),
+    "tab": if tab_str != "" { Json::string(tab_str) } else { Json::null() },
     "auto": Json::boolean(!(field(Some(params), "auto") is Some(False))),
   }
   match fixture_kept("chat.tabs", fixture_tabs_ask(f, key, chat, Some(change)), None) {
@@ -1384,6 +1430,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "chatTabs": Json::object(f.chat_tabs),
         "listFilter": Json::object(lf),
         "sidebars": Json::object(f.sidebars),
+        "remoteTabs": Json::object(f_remote_tabs(f)),
+        "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
@@ -1436,7 +1484,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "archive" => @settings.fixture_topic(f.mode, name, params)
     // (the web's demo has none)
     "workspaceMarks" if f.mode == "webdemo" => Some({ "workspaces": { "ws1": {} } })
-    "workspaceMarks" if f.mode == "home-attention" => Some(fix_attention_marks())
+    "workspaceMarks" if f.mode == "home-attention" || f.mode.has_prefix("home-shared") =>
+      Some(fix_attention_marks())
     "workspaceMarks" if board_mode(f.mode) => Some(board_marks())
     "workspaceMarks" =>
       Some({
@@ -1473,7 +1522,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (chat-screens-pc: the same chat on a device with no adb to lend, a Mac's or a PC's)
     "adbCard" if f.mode == "chat-screens-pc" =>
       Some({ "title": "共享调试", "line": "仅安卓 app 支持共享调试", "sharing": false, "lendable": false })
-    "screenCard" | "adbCard" => fixture_link_card(name, params)
+    "screenCard" | "adbCard" | "terminalCard" => fixture_link_card(name, params)
     // (a chat's agent's run settings, a settings page: the settings' own)
     "pick" if f.mode == "settings-run" || f.mode == "settings-run-models" || f.mode == "settings-run-accounts" || f.mode == "settings-run-runtime" =>
       @settings.fixture_topic(f.mode, name, params)
@@ -1512,7 +1561,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (a preset whole, and the other members': the new chat's preset menu's and its dialog's)
     "preset" => fix_preset_one(text(Some(Json::object(params)), "id"))
     "otherPresets" => Some(fix_other_presets())
-    "newChat" | "pick" => fixture_new_topic(f, name)
+    "newChat" | "pick" => fixture_new_topic(f, name, scope=text(Some(Json::object(params)), "scope"))
     // none left up long, as the core answers it (the first page waits for it); decide_fixture.mbt's modes say theirs
     "longJobs" if !decide_mode(f.mode) => Some({ "groups": [], "lit": false, "ids": [] })
     _ =>
@@ -1928,6 +1977,7 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
   ("chatPage", true),
+  ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
 ]
@@ -1978,6 +2028,60 @@ fn fixture_experimental(mode : String) -> Map[String, Bool] {
 }
 
 ///|
+/// Where a fixture's own number is kept in its `windows` (whose keys are a workspace's, a scope's and a filter's, each
+/// line apart: never this): what is kept of it apart from `Fixture` (its remote tabs, its terminals' zoom) is kept by
+/// that number, so `Fixture`'s shape, which every unit that reads one is compiled by, stays as it was.
+let fixture_id_key = "\u{0}fixture_id"
+
+///|
+priv struct FixtureIds {
+  mut last : Int
+}
+
+///|
+fn FixtureIds::next(self : FixtureIds) -> Int {
+  self.last += 1
+  self.last
+}
+
+///|
+// kept across runs: only ever counts up, each fixture's its own
+let fixture_ids : FixtureIds = { last: 0 }
+
+///|
+// kept across runs: by fixture_ids', each fixture's alone
+let fixture_remote_tabs : Map[Int, Map[String, Json]] = Map([])
+
+///|
+// kept across runs: by fixture_ids', each fixture's alone
+let fixture_terminal_zooms : Map[Int, String] = Map([])
+
+///|
+fn fixture_id(f : Fixture) -> Int {
+  f.windows.get(fixture_id_key).unwrap_or(0)
+}
+
+///|
+/// The fixture's remote workbench's tabs as the prefs keep them (`remoteTabs`, by workspace).
+fn f_remote_tabs(f : Fixture) -> Map[String, Json] {
+  let id = fixture_id(f)
+  match fixture_remote_tabs.get(id) {
+    Some(m) => m
+    None => {
+      let m : Map[String, Json] = Map([])
+      fixture_remote_tabs[id] = m
+      m
+    }
+  }
+}
+
+///|
+/// The fixture's terminals' zoom as the prefs keep it (`terminalZoom`, "" none).
+fn f_terminal_zoom(f : Fixture) -> String {
+  fixture_terminal_zooms.get(fixture_id(f)).unwrap_or("")
+}
+
+///|
 /// A made-up core of `mode` as it begins (fixture: what it serves).
 fn made_fixture(mode : String) -> Fixture {
   {
@@ -2008,8 +2112,8 @@ fn made_fixture(mode : String) -> Fixture {
     chat_tabs: fixture_chat_tabs(mode),
     tabs_shown: fixture_tabs_shown(mode),
     sidebars: {},
-    windows: {},
-    share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" {
+    windows: Map::from_array([(fixture_id_key, fixture_ids.next())]),
+    share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" && mode != "share-card-motion" {
       // (share-card-<key>-coming, -failed: its files of the looks on their way, not had)
       let look = mode.unsafe_substring(start="share-card-".length(), end=mode.length())
       if look.has_suffix("-coming") || look.has_suffix("-failed") {
@@ -2055,6 +2159,12 @@ pub fn fixture(mode : String) -> Source {
     // the workspace changing on its own: a person and a station come at 2 s, one of each goes at 3.6 s
     fix_later(2000.0, fn() { @settings.fixture_motion(1) })
     fix_later(3600.0, fn() { @settings.fixture_motion(2) })
+  }
+  if f.mode == "share-card-motion" {
+    // the card's figures changing on their own, a step every 1.6 s from 2 s (fixture_fleet)
+    for k in 1..=3 {
+      fix_later(2000.0 + (k - 1).to_double() * 1600.0, fn() { f.step = k })
+    }
   }
   if f.mode == "home-motion" {
     // the list changing on its own, a step every 1.6 s from MBUI_MOTION_AT ms (2000) after it starts: rows moving,
@@ -2117,7 +2227,7 @@ pub fn fixture(mode : String) -> Source {
   let read_bytes = fn(name : String, params : Json, done : (Result[(Json, Bytes), Json]) -> Unit) {
     match fixture_kept(name, params, None) {
       Some(r) => {
-        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::new(0))) }))
+        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::make(0, b'\x00'))) }))
         return
       }
       None => ()
@@ -2227,6 +2337,15 @@ pub fn fixture(mode : String) -> Source {
       if name == "chat.archive" && field(Some(params), "archived") is Some(False) {
         f.archived.remove(text(Some(params), "session").clamped_view(start=2).to_owned())
         f.changed()
+      }
+      // safe mode's change of this device (verified once, on again as it was): at work a moment, as its station takes it,
+      // then done
+      if @settings.fixture_lock_doing(name, params) {
+        fix_later(1200.0, fn() {
+          @settings.fixture_lock_done()
+          done(Ok(Json::null()))
+        })
+        return
       }
       match @settings.fixture_call(name, params) {
         Some(r) => {
@@ -2386,6 +2505,13 @@ pub fn fixture(mode : String) -> Source {
             ],
           }))
         "screen.relaunch" => done(Ok(Json::object({})))
+        // 远程's new tab of a station's browser (a heading's ＋, place-remote modes): made, and listed by the station
+        // from now on (a blank tab: settings' fx_remote_tabs)
+        "screen.openBrowser" if f.mode.has_prefix("place-remote") => {
+          let p = Some(params)
+          @settings.fixture_remote_made_said(text(p, "station"), "browser:" + text(p, "id"))
+          done(Ok(Json::object({})))
+        }
         "screen.settings" | "screen.setSetting" => done(Ok({ "appearance": "light", "textSize": "large" }))
         "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" =>
           done(fixture_tabs_call(f, name, params))
@@ -2464,6 +2590,21 @@ pub fn fixture(mode : String) -> Source {
               }
             _ => ()
           }
+          match field(Some(params), "remoteTabs") {
+            Some(Object(m)) =>
+              for k, v in m {
+                match v {
+                  Null => f_remote_tabs(f).remove(k)
+                  _ => f_remote_tabs(f)[k] = v
+                }
+              }
+            _ => ()
+          }
+          match field(Some(params), "terminalZoom") {
+            Some(String(z)) => fixture_terminal_zooms[fixture_id(f)] = z
+            Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
+            _ => ()
+          }
           // the board's (board_fixture.mbt)
           board_prefs_set(params)
           // the drive's ways, the files' page's tabs, its favourites
@@ -2540,7 +2681,7 @@ pub fn fixture(mode : String) -> Source {
         }
         return 0
       }
-      fixture_stream(name, params, on_value, done)
+      fixture_stream(name, params, on_value, done, mode=f.mode)
     },
     cancel: fn(_) {  },
     waits: fn(_, _) { false },
@@ -2675,7 +2816,9 @@ pub fn fixture_kept(name : String, params : Json, bytes : Bytes?) -> Result[(Jso
 /// The card shared of the agents at work (the core's `fleet` view, views/fleet.ts), as the made-up workspace has it:
 /// its one Claude subscription's tokens, Willow's one chat at work; the card to share's (share-card, share-card-…) three
 /// kinds of subscription (six Claude accounts' 2.5 亿 tokens, two ChatGPT's, two OpenCode Go's: 3.1 亿 in all, as the
-/// week's input tokens say), nine chats at work on three stations, and their week.
+/// week's input tokens say), nine chats at work on three stations, and their week. share-card-motion's changes on its
+/// own, a step at a time (Fixture's `step`): the first model's tokens and what they cost, and the week's (1); a chat
+/// archived today, one fewer at work (2); a model of ChatGPT's come (3).
 pub fn fixture_fleet(f : Fixture) -> Json {
   if !f.mode.has_prefix("share-card") {
     return {
@@ -2700,9 +2843,23 @@ pub fn fixture_fleet(f : Fixture) -> Json {
       "devices": 1,
     }
   }
-  // each day's chats archived (57 in all, 12 today), as a share of the most on a day
-  let counts = [5, 7, 4, 10, 8, 11, 12]
-  let shares = counts.map(fn(n) { n.to_double() / 12.0 })
+  // (how far the card's figures have changed, share-card-motion's)
+  let step = if f.mode == "share-card-motion" { f.step } else { 0 }
+  let (opus, opus_cost, week_tokens, week_cost, today_cost) = if step >= 1 {
+    ("2.3 亿", "$1,556", "3.3 亿", "$2,047", "$498")
+  } else {
+    ("2.1 亿", "$1,420", "3.1 亿", "$1,911", "$362")
+  }
+  // each day's chats archived (57 in all, 12 today; 58 and 13 once one more is), as a share of the most on a day
+  let counts = [5, 7, 4, 10, 8, 11, if step >= 2 { 13 } else { 12 }]
+  let most = counts[6].to_double()
+  let shares = counts.map(fn(n) { n.to_double() / most })
+  let gpt : Array[Json] = [
+    { "name": "GPT-5.5 Codex", "tokens": 47000000, "tokensText": "4700 万", "costText": "$262", "lineText": "4700 万 · $262", "of": "token，折合 $262" },
+  ]
+  if step >= 3 {
+    gpt.push({ "name": "GPT-6 Astra", "tokens": 6000000, "tokensText": "600 万", "costText": "$41", "lineText": "600 万 · $41", "of": "token，折合 $41" })
+  }
   let labels = ["10/20", "10/21", "10/22", "10/23", "10/24", "10/25", "10/26"]
   {
     "at": "10月26日 04:12",
@@ -2716,7 +2873,14 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         "share": 0.81,
         "lead": "用 6 个 Claude 订阅账号消耗了",
         "models": [
-          { "name": "Opus 5.5", "tokens": 210000000, "tokensText": "2.1 亿", "costText": "$1,420", "lineText": "2.1 亿 · $1,420", "of": "token，折合 $1,420" },
+          {
+            "name": "Opus 5.5",
+            "tokens": if step >= 1 { 230000000 } else { 210000000 },
+            "tokensText": opus,
+            "costText": opus_cost,
+            "lineText": "\{opus} · \{opus_cost}",
+            "of": "token，折合 \{opus_cost}",
+          },
           { "name": "Sonnet 5.5", "tokens": 38000000, "tokensText": "3800 万", "costText": "$171", "lineText": "3800 万 · $171", "of": "token，折合 $171" },
           { "name": "Haiku 4.5", "tokens": 4000000, "tokensText": "400 万", "costText": "$13.20", "lineText": "400 万 · $13.20", "of": "token，折合 $13.20" },
         ],
@@ -2729,9 +2893,7 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         "tokens": 47000000,
         "share": 0.15,
         "lead": "用 2 个 ChatGPT 订阅账号消耗了",
-        "models": [
-          { "name": "GPT-5.5 Codex", "tokens": 47000000, "tokensText": "4700 万", "costText": "$262", "lineText": "4700 万 · $262", "of": "token，折合 $262" },
-        ],
+        "models": Json::array(gpt),
       },
       {
         "kind": "opencode",
@@ -2747,8 +2909,8 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         ],
       },
     ],
-    "chats": 9,
-    "chatsText": "9 个对话正在运行",
+    "chats": if step >= 2 { 8 } else { 9 },
+    "chatsText": if step >= 2 { "8 个对话正在运行" } else { "9 个对话正在运行" },
     "where": "今天用了 3 台设备",
     "devices": 3,
     "tasks": 312,
@@ -2756,14 +2918,17 @@ pub fn fixture_fleet(f : Fixture) -> Json {
     "tasksPer": "平均每个对话 5.2 个",
     "today": {
       "title": "今天",
-      "stats": [{ "label": "归档的对话", "value": "12 个" }, { "label": "折合费用", "value": "$362" }],
+      "stats": [
+        { "label": "归档的对话", "value": "\{counts[6]} 个" },
+        { "label": "折合费用", "value": today_cost },
+      ],
     },
     "week": {
       "title": "近 7 天",
       "stats": [
-        { "label": "归档的对话", "value": "57 个" },
-        { "label": "输入 token", "value": "3.1 亿" },
-        { "label": "折合费用", "value": "$1,911" },
+        { "label": "归档的对话", "value": if step >= 2 { "58 个" } else { "57 个" } },
+        { "label": "输入 token", "value": week_tokens },
+        { "label": "折合费用", "value": week_cost },
       ],
       "days": Json::array(
         shares.mapi(fn(i, x) {

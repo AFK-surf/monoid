@@ -59,6 +59,7 @@ pub fn markdown_node(
   piece? : MdPiece? = None,
   piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
   serif? : () -> Bool = fn() { false },
@@ -114,6 +115,7 @@ pub fn markdown_node(
       block_at: -1,
       table_rows: piece.bind(fn(p) { p.rows }),
       across_of,
+      tracks_of,
       text_face,
       code_face,
       serif,
@@ -197,6 +199,112 @@ pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
 }
 
 ///|
+/// Which of `pieces` (markdown_pieces' of `text` as `tree` reads it) holds what a go-to brings before the eyes: the
+/// `passage` a quote quoted, where a paragraph of it has it (find_passage, as passage_marks lights it), else the `at`th
+/// time (0 the first; less than 0, found_all among them, the first) `words` are in it as a find counts and marks them
+/// (md_found_in's: paragraphs, headings, quotes, lists' items); 0 where none does.
+pub fn markdown_piece_with(
+  text : String,
+  tree : Json?,
+  pieces : Array[MdPiece],
+  passage? : String = "",
+  words? : Array[String] = [],
+  at? : Int = -1,
+) -> Int {
+  let blocks = blocks_of(text, tree)
+  if passage != "" {
+    for i, pc in pieces {
+      for b in pc.from..<pc.upto {
+        if blocks.get(b) is Some(block) && md_has_passage(block, passage, pc.rows) {
+          return i
+        }
+      }
+    }
+    return 0
+  }
+  guard words.length() > 0 else { return 0 }
+  let want = if at < 0 { 0 } else { at }
+  let mut n = 0
+  for i, pc in pieces {
+    for b in pc.from..<pc.upto {
+      match blocks.get(b) {
+        Some(block) => n = n + md_words_in(block, words, pc.rows)
+        None => ()
+      }
+    }
+    if n > want {
+      return i
+    }
+  }
+  0
+}
+
+///|
+/// How many times `words` are in `text` as markdown_node draws it (`tree` its read) and marks them: what a find counts
+/// in a message drawn so (md_found_in's of all its blocks).
+pub fn markdown_found_count(text : String, tree : Json?, words : Array[String]) -> Int {
+  blocks_of(text, tree).fold(init=0, fn(n, b) { n + md_words_in(b, words, None) })
+}
+
+///|
+/// How many times `words` are in block `b` as md_found_in counts them, of its list's items `rows` alone where it is a
+/// piece of one (none: all).
+fn md_words_in(b : MdBlock, words : Array[String], rows : (Int, Int)?) -> Int {
+  match b {
+    Paragraph(xs) | Heading(_, xs) => find_words(md_plain(xs), words).length()
+    Quote(bs) => bs.fold(init=0, fn(n, x) { n + md_words_in(x, words, None) })
+    List(l) => {
+      let mut n = 0
+      for i, it in l.items {
+        if rows is Some((from, upto)) && (i < from || i >= upto) {
+          continue
+        }
+        n = n + it.blocks.fold(init=0, fn(k, x) { k + md_words_in(x, words, None) })
+      }
+      n
+    }
+    _ => 0
+  }
+}
+
+///|
+/// Whether a paragraph of block `b` (of its list's items or its table's rows `rows` alone where it is a piece of one)
+/// has `passage` (find_passage's).
+fn md_has_passage(b : MdBlock, passage : String, rows : (Int, Int)?) -> Bool {
+  let within = fn(i : Int) {
+    match rows {
+      Some((from, upto)) => i >= from && i < upto
+      None => true
+    }
+  }
+  match b {
+    Paragraph(xs) | Heading(_, xs) => find_passage(md_plain(xs), passage) is Some(_)
+    Quote(bs) => bs.iter().any(fn(x) { md_has_passage(x, passage, None) })
+    List(l) => {
+      for i, it in l.items {
+        if within(i) && it.blocks.iter().any(fn(x) { md_has_passage(x, passage, None) }) {
+          return true
+        }
+      }
+      false
+    }
+    Table(t) => {
+      let cells = fn(row : Array[Array[MdInline]]) { row.iter().any(fn(c) { find_passage(md_plain(c), passage) is Some(_) }) }
+      if within(0) && cells(t.head) {
+        return true
+      }
+      for i, row in t.rows {
+        if within(i + 1) && cells(row) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 /// What every block of a markdown_node is drawn with (Md's, of the window's tree).
 priv struct MdNode {
   size : () -> Double
@@ -239,6 +347,9 @@ priv struct MdNode {
   table_rows : (Int, Int)?
   /// what the table at a block scrolls across with (markdown_node's `across_of`: the pieces of one table as one)
   across_of : (Int) -> @view.Scroll
+  /// what the pieces of the table at a block keep of its columns together (markdown_node's `tracks_of`: measured once
+  /// for all of them, View::tracks' `kept`), none: each its own
+  tracks_of : (Int) -> @view.TracksKept?
   /// faces tried for prose and code, as they are now (markdown_node's `text_face`, `code_face`; Md's: None the chosen
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
@@ -366,22 +477,12 @@ fn md_blocks_node(
           }
         }, same=fn(a, b) { a == b })
         slot.padding(By(fn() { (0.0, top_pad.get(), 0.0, 0.0) })) |> ignore
-        let kind_sig = @signals.computed(
-          fn(_) {
-            match block.get() {
-              Some(x) => {
-                let kind = md_block_kind(md, x)
-                (kind, if kind == 7 { at() } else { -1 })
-              }
-              None => (-1, -1)
-            }
-          },
-          same=fn(a, b) { a == b },
-        )
-        slot.pick(fn() { kind_sig.get() }, fn(p, made_as) {
-          let i = if made_as.1 >= 0 { made_as.1 } else { @signals.untracked(at) }
-          let here = { ..md, before: fn() { (md.before)() + md_found_in(md, blocks(), at()) }, block_at: i }
-          md_block_node(p, here, made_as.0, fn() { block.get() }, tight)
+        let kind_sig = @signals.computed(fn(_) { block.get().map(fn(x) { md_block_kind(md, x) }).unwrap_or(-1) }, same=fn(a, b) { a == b })
+        // (the same nodes whichever block it is of its kind: what scrolls in it scrolled as that block's message has it,
+        // the list's, @view.View::reused_bool's)
+        slot.pick(fn() { kind_sig.get() }, fn(p, kind) {
+          let here = { ..md, before: fn() { (md.before)() + md_found_in(md, blocks(), at()) }, block_at: @signals.untracked(at) }
+          md_block_node(p, here, kind, fn() { block.get() }, tight)
         })
       })
       |> ignore
@@ -678,28 +779,34 @@ fn md_block_node(
       |> ignore
     6 => p.height(Is(Some(md_rule_h))).ground(By(fn() { web().line })) |> ignore
     7 =>
-      // (made again as what it scrolls across with is another's: a block taken for another message's row)
-      // (the box the pick makes for it its own: no box of its own in that)
-      p.pick(at_once=true, fn() { (md.across_of)(md.block_at).serial() }, fn(outer, _) {
-        md_table_body_node(
-          outer,
-          fn() {
-            match block() {
-              Some(Table(t)) => Some(t)
-              _ => None
-            }
-          },
-          By(md.bleed),
-          md.copy,
-          md.on_link,
-          md.on_link_hold,
-          fit=md.fit,
-          rows=md.table_rows,
-          across=@signals.untracked(fn() { (md.across_of)(md.block_at) }),
-          cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
-        )
-      })
-      |> ignore
+      // (a long table's pieces scrolled across as one, by the block it is (never one block of a list taken for another's
+      // row); a table in one block scrolled across on its own, as far as the message it is of has it where its block is
+      // taken for another's: the list's, reused_state.mbt)
+      md_table_body_node(
+        p,
+        fn() {
+          match block() {
+            Some(Table(t)) => Some(t)
+            _ => None
+          }
+        },
+        By(md.bleed),
+        md.copy,
+        md.on_link,
+        md.on_link_hold,
+        fit=md.fit,
+        rows=md.table_rows,
+        across=match md.table_rows {
+          Some(_) => @signals.untracked(fn() { (md.across_of)(md.block_at) })
+          None => @view.Scroll::across()
+        },
+        // (a table in one block measured on its own; one in pieces once for all of them)
+        tracks_kept?=match md.table_rows {
+          Some(_) => @signals.untracked(fn() { (md.tracks_of)(md.block_at) })
+          None => None
+        },
+        cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
+      )
     20 => {
       // (by what it links to, as it is now: another's card made again in its place)
       let alone = fn() {
@@ -1212,7 +1319,14 @@ fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : S
 /// the code in the code face, in the colours the core said (`colours`), 12 on 18 (on a
 /// desktop's width 12 on 1.6), scrolled across, or wrapped at its width once its wrap key (before the copy key) is
 /// pressed, till it is pressed again. Pressed, the copy key copies the code and says so copied_ms. `face`: a face
-/// tried for the code, as it is now (code_block's: None or Some(0) the code's own).
+/// tried for the code, as it is now (code_block's: None or Some(0) the code's own). `command`: a command to copy and
+/// run elsewhere (添加 station's, a profile's sign-in on its machine): on its one line, scrolled across, its copy key
+/// beside it (no bar, no language, no wrap key: the user,
+/// 2026-11-17, 「为啥上面空了那么多」). Otherwise, with a mouse, no bar: its wrap and copy keys are icons in its top right
+/// corner (code_block's tray), taking no room, shown while the pointer is on the block, or always (`keys_always`; the
+/// user, 2026-11-17: 「hover 才显示，不占空间，悬浮，可以配置成永远显示」, then the icons of GitHub's and Cursor's, 方案 2);
+/// with a finger, which hovers over nothing, on their bar over it. The app's one block of code or of a command to copy
+/// (the user, 2026-11-17: 「合成一个组件」).
 #callsite(autofill(loc))
 pub fn code_block_node(
   p : @view.View,
@@ -1220,14 +1334,23 @@ pub fn code_block_node(
   lang : () -> String,
   colours : () -> String?,
   face? : () -> Int? = fn() { None },
+  command? : Bool = false,
+  keys_always? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let over = native_input() is Mouse
   let key_inset = @ui.capsule_in(row_corner, code_key_h)
   let copied = @signals.signal(false)
-  let wrapped = @signals.signal(false)
+  // (wrapped as the message it is of has it, where its block of a list is taken for another's: the list's)
+  let wrapped = p.reused_bool()
   let copied_off : Ref[() -> Unit] = Ref(fn() {  })
   p.owns(fn() { (copied_off.val)() }) |> ignore
+  // (taken for another message's: copied said of none of it, the moment that would have said so no more)
+  p.on_reused(fn() {
+    (copied_off.val)()
+    copied_off.val = fn() {  }
+    copied.set(false)
+  })
   // (a column as wide as its room, its bar over the code)
   p
   .row(Is(false))
@@ -1236,6 +1359,83 @@ pub fn code_block_node(
   .clips(Is(true))
   .ground(By(fn() { theme().p.code_ground }))
   |> ignore
+  // (its code in a box of its own: wrapped at its width, or on its lines as written in one that scrolls across, what
+  // is over it staying)
+  let words = fn(w : @view.View, wrap : Bool) {
+    let runs = fn() {
+      let runs = match colours() {
+        Some(ink) => core_ink(code(), ink, theme().dark)
+        None => [@ui.span(code(), mono=true)]
+      }
+      // (in the face tried, where it is told one: code_block's paragraph's `face`)
+      match face() {
+        Some(f) if f != 0 => runs.map(fn(run) { { ..run, face: Some(f) } })
+        _ => runs
+      }
+    }
+    let look : @view.WordsLook = {
+      size: theme().t.caption,
+      weight: 400,
+      line: if over { code_line_wide } else { 18.0 },
+      wrap,
+      tracking: @view.letters_own,
+      balance: false,
+      max_lines: 0,
+    }
+    // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
+    w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+  }
+  // (its copy key: copies the code and says so copied_ms)
+  let copy_key = fn(b : @view.View) {
+    b.box(fn(k) {
+      k
+      .row(Is(true))
+      .height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .radius(Is(code_key_h / 2.0))
+      .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
+      |> ignore
+      pressed_node(k, fn() {
+        @ui.clipboard_set(@signals.untracked(code))
+        // (pressed again while it says so: from then)
+        (copied_off.val)()
+        copied.set(true)
+        copied_off.val = k.at_moment(k.logic_at() + copied_ms, fn() { copied.set(false) })
+      }, Is(code_key_h / 2.0), Button, fn() { md_copy_words(copied.get()) })
+      icon_node(k, "copy", 12.0, By(fn() { web().muted }), name_now=fn() { if copied.get() { "check" } else { "copy" } }) |> ignore
+      k.box(fn(n) {
+        n.words(By(fn() { md_copy_words(copied.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  // (a command: its words beside its copy key, their first line in the middle of it, wrapped at what is left of the
+  // width; no bar over them to stand empty)
+  if command {
+    let line = if over { code_line_wide } else { 18.0 }
+    let first = key_inset + (code_key_h - line) / 2.0
+    p.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    // (on its one line, scrolled across: nobody reads it whole before copying it, and who does scrolls; the user,
+    // 2026-11-17: 「不用折行，没啥人会看，要看的自己横向滚动」)
+    p.box(made_for=loc, fn(q) {
+      q.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+      q.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
+        held.padding(Is((14.0, first, 8.0, first))).lines_up(Is(Some(Start))) |> ignore
+        held.box(fn(w) { words(w, false) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    p.box(fn(k) {
+      k.padding(Is((0.0, key_inset, key_inset, key_inset))) |> ignore
+      copy_key(k)
+    })
+    |> ignore
+    return
+  }
   let bar = fn(b : @view.View) {
     b
     .row(Is(true))
@@ -1246,6 +1446,7 @@ pub fn code_block_node(
     |> ignore
     b.box(fn(l) {
       l.padding(Is((6.0, 0.0, 6.0, 0.0))) |> ignore
+      // (floating over the code: on a capsule of its own as the keys are, so the code under it does not show through)
       let size = if over { code_lang_wide } else { 10.0 }
       l.box(fn(n) {
         n.words(By(fn() { if lang() == "" { "text" } else { lang() } }), look=md_plain_look(size, 0.0)).ink(By(fn() { web().subtle })) |> ignore
@@ -1274,57 +1475,11 @@ pub fn code_block_node(
     |> ignore
     // (apart as an old view's keys are: code_keys_apart)
     b.box(fn(g) { g.width(Is(Some(code_keys_gap))) |> ignore }) |> ignore
-    b.box(fn(k) {
-      k
-      .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
-      .gap(Is(4.0))
-      .lines_up(Is(Some(Middle)))
-      .radius(Is(code_key_h / 2.0))
-      .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
-      |> ignore
-      pressed_node(k, fn() {
-        @ui.clipboard_set(@signals.untracked(code))
-        // (pressed again while it says so: from then)
-        (copied_off.val)()
-        copied.set(true)
-        copied_off.val = k.at_moment(k.logic_at() + copied_ms, fn() { copied.set(false) })
-      }, Is(code_key_h / 2.0), Button, fn() { md_copy_words(copied.get()) })
-      icon_node(k, "copy", 12.0, By(fn() { web().muted }), name_now=fn() { if copied.get() { "check" } else { "copy" } }) |> ignore
-      k.box(fn(n) {
-        n.words(By(fn() { md_copy_words(copied.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
+    copy_key(b)
   }
-  p.box(made_for=loc, bar) |> ignore
-  // (its code in a box of its own: wrapped at its width, or on its lines as written in one that scrolls across, what
-  // is over it staying)
-  let words = fn(w : @view.View, wrap : Bool) {
-    let runs = fn() {
-      let runs = match colours() {
-        Some(ink) => core_ink(code(), ink, theme().dark)
-        None => [@ui.span(code(), mono=true)]
-      }
-      // (in the face tried, where it is told one: code_block's paragraph's `face`)
-      match face() {
-        Some(f) if f != 0 => runs.map(fn(run) { { ..run, face: Some(f) } })
-        _ => runs
-      }
-    }
-    let look : @view.WordsLook = {
-      size: theme().t.caption,
-      weight: 400,
-      line: if over { code_line_wide } else { 18.0 },
-      wrap,
-      tracking: @view.letters_own,
-      balance: false,
-      max_lines: 0,
-    }
-    // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
-    w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+  // (with a mouse its keys are the tray's, after the code; with a finger, which hovers over nothing, on their bar over it)
+  if !over {
+    p.box(made_for=loc, bar) |> ignore
   }
   p.box(fn(sc) {
     sc.pick(fn() { if wrapped.get() { 1 } else { 0 } }, fn(q, kind) {
@@ -1332,6 +1487,7 @@ pub fn code_block_node(
         q.padding(Is((14.0, 12.0, 14.0, 12.0))) |> ignore
         q.box(fn(w) { words(w, true) }) |> ignore
       } else {
+        // (its bar clear of the block's round corners)
         q.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
           held.padding(Is((14.0, 12.0, 14.0, 12.0))).lines_up(Is(Some(Start))) |> ignore
           held.box(fn(w) { words(w, false) }) |> ignore
@@ -1342,7 +1498,51 @@ pub fn code_block_node(
     |> ignore
   })
   |> ignore
+  // (with a mouse: code_block's tray, its wrap and copy keys icons on the canvas within a hairline, concentric with
+  // the block's corner a step of the ladder in, as high as a line of code and its room less that step)
+  if over {
+    let in_ = row_corner - small_corner
+    let side = code_line_wide + code_room_y * 2.0 - in_ * 2.0
+    p.box(made_for=loc, fn(o) {
+      o
+      .over(Is(true), from_top=true)
+      .row(Is(true))
+      .lies_along(Is(End))
+      .padding(Is((0.0, in_, in_, 0.0)))
+      |> ignore
+      // (made only while the pointer is on the block, it says it copied, or it is said to show always)
+      o.show(at_once=true, fn() { keys_always || copied.get() || p.pointer_within() }, fn(t) {
+        t.row(Is(true)).gap(Is(code_keys_gap)) |> ignore
+        let key = fn(icon : String, said : () -> String, press : () -> Unit, icon_now : () -> String, on : () -> Bool) {
+          t.box(fn(k) {
+            style_node(k, fn() { code_tray_key_look })
+            k.radius(Is(small_corner)) |> ignore
+            icon_button_node(k, icon, said, press, size=side, icon_size=code_tray_icon, icon_now~, grounded=false, on~) |> ignore
+          })
+          |> ignore
+        }
+        key("wrap", fn() { md_wrap_words(wrapped.get()) }, fn() { wrapped.set(!wrapped.get()) }, fn() { "wrap" }, fn() { wrapped.get() })
+        key(
+          "copy",
+          fn() { md_copy_words(copied.get()) },
+          fn() {
+            @ui.clipboard_set(@signals.untracked(code))
+            (copied_off.val)()
+            copied.set(true)
+            copied_off.val = p.at_moment(p.logic_at() + copied_ms, fn() { copied.set(false) })
+          },
+          fn() { if copied.get() { "check" } else { "copy" } },
+          fn() { false },
+        )
+      })
+    })
+    |> ignore
+  }
 }
+
+///|
+/// A code block's tray key's hairline (code_block's).
+let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B1 border_color=Line")
 
 ///|
 /// How far apart a code block's keys stand (code_keys_apart's 4).

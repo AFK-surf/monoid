@@ -1,11 +1,11 @@
-// What is presented drawn as nodes of the window's tree, where a tree hosts them (presented_nodes), not on a sheet
-// (小屏's, the host's still): a confirm (confirm_node) and a question (ask_node) in the middle of the window, a menu
-// (menu_node) and a pick (short, as a menu of its choices; long, pick_node) beside what opened it, each at its place in the window's stack of layers (its serial), over or under the
-// old frame's presented as each was presented; the rest the host's (presented) still. Closed (cancel, Escape, back), it
-// closes as the host's closes it (dismissed_now: what is over it too, what it holds let go of, once); said, it closes
-// and what it says goes on, at that moment. A confirm or a question going is presented till its way out is over
-// (tree_presented: the host lets it go then); a menu is let go of as it closes, as the host's menus were. A menu's
-// items given anew where they are kept (presented_changed) are read again by its rows, keys and choices.
+// What is presented drawn as nodes of the window's tree (presented_nodes), on every screen: a panel (on 小屏 a sheet,
+// sheet_node; beside what opened it, panel_node; in the middle of the window, panel_centred_node), a stage (stage_node),
+// a confirm (confirm_node) and a question (ask_node) in the middle of the window, a menu (menu_node) and a pick (short,
+// as a menu of its choices; long, pick_node) beside what opened it, each at its place in the window's stack of layers
+// (its serial). Closed (cancel, Escape, back), it closes and what is over it, what it holds let go of, once
+// (dismissed_now); said, it closes and what it says goes on, at that moment. One going is presented till its way out is
+// over (tree_presented), let go of then (presented_left), as presented_nodes follows what is presented. A menu's items
+// given anew where they are kept (presented_changed) are read again by its rows, keys and choices.
 
 ///|
 /// The serials of what of the presented the window's tree draws, while it is drawn (made, till it has gone).
@@ -19,70 +19,16 @@ let tree_presented : Set[Int] = Set([])
 let tree_as_sheet : Map[Int, Bool] = Map([])
 
 ///|
-/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's): sheet_node, as presented_nodes picks.
+/// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's): sheet_node, as presented_nodes picks:
+/// a panel that is no stage, a confirm, a question, a menu and a pick.
 fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
-  sheet && (p.shows is Panel(x) && !x.stage && (x.nodes is Some(_) || (sheet_panel_of(x) && !over_host_sheet(p))))
+  sheet && ((p.shows is Panel(x) && !x.stage) || sheet_shows_of(p))
 }
 
 ///|
-/// Whether `p` is the window's tree's to draw (presented_nodes): a stage and a panel whose body is nodes (panel_nodes)
-/// on every screen, and a confirm, a question, a menu, a pick or a small panel not on a sheet. The rest (a sheet, a
-/// panel that goes in steps or as wide as what it holds) the host's (presented) still.
-fn tree_draws(p : Presented, sheet : Bool) -> Bool {
-  (
-    // (a stage on every screen the same, never a sheet: stage_node)
-    (p.shows is Panel(x) && x.stage) ||
-    // (what it holds nodes: the tree's alone, the host's frame having none of it to draw)
-    (p.shows is Panel(x) && x.nodes is Some(_)) ||
-    // (a panel on 小屏 that is no stage and goes in no steps of its own, whatever it holds: a sheet of the tree's, its old
-    // body an old view in it, sheet_node)
-    (sheet && p.shows is Panel(x) && sheet_panel_of(x) && !over_host_sheet(p)) ||
-    (
-      !sheet &&
-      (
-        p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _)) ||
-        p.shows is Pick(_, _, _, _, _, _) ||
-        (p.shows is Panel(x) && (panel_popover_of(x, p.from) || panel_centred_of(x, p.from)))
-      )
-    )
-  )
-}
-
-///|
-/// Whether `p` is presented over a sheet the host draws (one that goes in steps, a menu, a pick, a question) still
-/// open: an old panel over it is the host's too, a sheet over that one in the old frame's stack, never a layer of the
-/// tree's over the old frame, which its old view's words and what a screen reader is told of it would be under (the
-/// host's sheet's overlay is modal: what else of the old frame there is, its views in the tree's nodes among it, is
-/// inert to it).
-fn over_host_sheet(p : Presented) -> Bool {
-  presented_now.iter().any(fn(q) { q.serial < p.serial && q.open && !q.closed_now && !tree_draws(q, true) })
-}
-
-///|
-/// Whether panel `x` presented `from` is a small panel beside what opened it the window's tree draws (panel_node): not
-/// a stage, a form or one opened by nothing (a dialog in the middle of the window), nor (yet) one as wide as what it
-/// holds and a share of the window tall. One whose title is as it is now (`live`) heads itself with that title as it
-/// is (panel_node). One that goes in steps (`steps`) is the tree's too, its first step: its steps are its sheet's (the
-/// model's panel: all of its models a step in on 小屏, columns side by side beside what opened it), and a step told
-/// (panel_go) beside what opened it is not drawn yet.
-fn panel_popover_of(x : PanelOf, from : Anchor) -> Bool {
-  !x.stage && !x.form && from != Unanchored && !(x.fits && x.tall > 0.0)
-}
-
-///|
-/// Whether panel `x` presented `from` is a dialog in the middle of the window the window's tree draws
-/// (panel_centred_node): one opened by nothing (its title, step and what it says as they are now where `live`), or a
-/// form whatever opened it (as the host draws it: how_of; not yet one `live`); not a stage, nor (yet) one that goes in
-/// steps a share of the window tall or a form.
-fn panel_centred_of(x : PanelOf, from : Anchor) -> Bool {
-  !x.stage &&
-  (
-    if x.form {
-      !x.steps && x.live is None
-    } else {
-      from == Unanchored && (!x.steps || x.tall <= 0.0)
-    }
-  )
+/// Whether `p` is a confirm, a question, a menu or a pick: on 小屏 a sheet of the window's tree (sheet_shows_panel).
+fn sheet_shows_of(p : Presented) -> Bool {
+  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _) | Pick(_, _, _, _, _, _))
 }
 
 ///|
@@ -103,15 +49,17 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   let tips = TipLayer::new(fn() { tips_at.val })
   // (the reader's layout's panel, laid over it: under what is presented, which stands in the window's stack of layers)
   reader_layout_nodes(root)
+  // (what is presented followed as it is told, on the screen it is drawn on: how each open one is drawn, what closed
+  // unsaid let go of, what has gone let go: presented_followed)
+  root.reacts(fn() { (presented_said.val.get(), layout(root.window().0) is Small) }, fn(told) { presented_followed(told.1) })
   root.each(
     fn() {
       presented_said.val.get() |> ignore
       let (w, _) = root.window()
-      let sheet = layout(w) is Small
-      // (a panel drawn by what screen it is on, none before the window has its size: what it is drawn as, a sheet or
-      // not, is picked as it is made)
+      // (a panel, a confirm, a question, a menu or a pick drawn by what screen it is on, none before the window has its
+      // size: what it is drawn as, a sheet or not, is picked as it is made)
       presented_now
-      .filter(fn(p) { tree_draws(p, sheet) && (w > 0.0 || !(p.shows is Panel(x) && !x.stage)) })
+      .filter(fn(p) { w > 0.0 || (p.shows is Panel(x) && x.stage) })
       .map(fn(p) { PresentedItem::{ p: p } })
     },
     fn(it) { it.p.serial },
@@ -153,15 +101,51 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       let covered = fn() { dialog_covered(serial) }
       // (said: it closes, and what is over it, then what it says goes on, at that moment)
       let done = fn(f : () -> Unit) {
-        // (its field let go of first, none giving it back: before its layer goes and gives back the focus, and before
-        // what it says goes on)
-        field_let_go(p)
         p.ended = true
         p.chosen = true
         close_from_serial(serial)
-        f()
+        chosen_in(serial, f)
       }
       match p.shows {
+        // (on 小屏, a panel (no stage, no steps of its own) whatever it holds, and a confirm, a question, a menu or a
+        // pick: a sheet from the window's foot, as the host's are there)
+        _ if as_sheet => {
+          let x = sheet_panel_now(p)
+          sheet_node(
+            row,
+            open,
+            // (its own, then those a step further in from it: panel_page)
+            fn() {
+              let close = fn() { done(fn() {  }) }
+              let all : Array[SheetPage] = [{ n: 0, x, close, from: p.from }]
+              for more in p.more.get() {
+                all.push({ n: more.n, x: more.x, close, from: more.from })
+              }
+              all
+            },
+            fn() { dismissed_now(serial) },
+            shown~,
+            gone~,
+            covered_by=fn() { sheet_over(serial) },
+            // (how tall it rises, for a sheet under it pushed up out of its way so far: sheet_over's, as the host's)
+            rises=fn(h) { p.sheet_h.set(h) },
+            in_place?=p.in_place,
+            // (a step further in from another presenter's panel: back from it back to that one)
+            step_back?=if p.under is Some(_) { Some(fn() { dismissed_now(serial, back=true) }) } else { None },
+            // (a page back, where it is past its first)
+            // (where its steps follow a flow kept elsewhere, told to that flow: flow_back)
+            page_back=fn() { flow_back(p) || panel_pop(p) },
+            stood=fn() { p.stands },
+            // (how tall it stands as it closes, for what comes in its place: close_from)
+            stands_by=fn(f) { p.stands_now = Some(f) },
+            taken=fn() {
+              presented_said.val.get() |> ignore
+              p.taken_by != 0
+            },
+            // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)
+            dims=fn() { scrim_owner(true) == serial },
+          )
+        }
         Confirm(title, words, warning, action, danger, run) =>
           confirm_node(
             row,
@@ -219,43 +203,6 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
           )
         }
-        // (on 小屏, what it holds nodes or not (no stage, no steps of its own): a sheet from the window's foot, as the
-        // host's are there)
-        Panel(x) if as_sheet =>
-          sheet_node(
-            row,
-            "sf-present/\{serial}",
-            open,
-            // (its own, then those a step further in from it: panel_page)
-            fn() {
-              let close = fn() { done(fn() {  }) }
-              let all : Array[SheetPage] = [{ n: 0, x, nodes: x.nodes, close, from: p.from, lists: serial }]
-              for more in p.more.get() {
-                // (what its old body's lists say kept apart from every presented's own: measured_body's)
-                all.push({ n: more.n, x: more.x, nodes: more.x.nodes, close, from: more.from, lists: -(serial * 1000 + more.n) })
-              }
-              all
-            },
-            fn() { dismissed_now(serial) },
-            shown~,
-            gone~,
-            covered_by=fn() { sheet_over(serial) },
-            in_place?=p.in_place,
-            // (a step further in from another presenter's panel: back from it back to that one)
-            step_back?=if p.under is Some(_) { Some(fn() { dismissed_now(serial, back=true) }) } else { None },
-            // (a page back, where it is past its first)
-            // (where its steps follow a flow kept elsewhere, told to that flow: flow_back)
-            page_back=fn() { flow_back(p) || panel_pop(p) },
-            stood=fn() { p.stands },
-            // (how tall it stands as it closes, for what comes in its place: close_from)
-            stands_by=fn(f) { p.stands_now = Some(f) },
-            taken=fn() {
-              presented_said.val.get() |> ignore
-              p.taken_by != 0
-            },
-            // (dimming what is under it only where no sheet under it does, the host's sheets among them: scrim_owner)
-            dims=fn() { scrim_owner(true) == serial },
-          )
         Panel(x) if x.stage =>
           stage_node(
             row,
@@ -268,7 +215,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             covered~,
           )
         // (one of nodes that goes in steps in the middle of the window: its steps pages of one dialog)
-        Panel({ nodes: Some({ steps: true, .. }), .. } as x) if p.from == Unanchored || x.form =>
+        Panel({ nodes: { steps: true, .. }, .. } as x) if p.from == Unanchored || x.form =>
           steps_centred_node(
             row,
             open,
@@ -284,7 +231,6 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
         Panel(x) if p.from == Unanchored || x.form =>
           panel_centred_node(
             row,
-            "sf-present/\{serial}",
             open,
             x,
             fn() { done(fn() {  }) },
@@ -300,7 +246,6 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
           let (anchor, _, _, _) = @signals.untracked(fn() { menu_anchor_now(p.from) })
           panel_node(
             row,
-            "sf-present/\{serial}",
             open,
             anchor,
             x,
@@ -342,7 +287,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
               label: x.label,
               icon: if one_chosen { "" } else { x.icon },
               danger: false,
-              disabled: false,
+              disabled: x.disabled,
               chosen: if one_chosen { Some(x.key == chosen) } else { None },
               heading: false,
               further: false,

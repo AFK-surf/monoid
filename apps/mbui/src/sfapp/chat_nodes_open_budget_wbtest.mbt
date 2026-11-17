@@ -49,14 +49,32 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // that one's (sf md_block_node's pick: its node), phone up 565 made and a frame 141, wide up 698 before it; a Scroll
   // following that one's as it changes instead, its every read looked up, ran more (instrbench's table 1,743.3K a
   // frame weighted before, 1,762.0K with it, 1,744.0K with the node))
-  "phone cold": (757, 29, 830, 146, 776),
-  "phone again": (327, 17, 242, 28, 301),
-  "wide cold": (2443, 483, 3531, 557, 2634),
-  "wide again": (882, 130, 881, 123, 1049),
-  "phone up": (566, 366, 618, 96, 0),
-  "wide up": (699, 382, 910, 125, 0),
-  "phone up frame": (142, 102, 126, 28, 0),
-  "wide up frame": (137, 105, 130, 28, 0),
+  // (2026-11-17: the first frame lays out and measures its words once, in the faces and lines they are drawn in, mbui
+  // ui's on_frame and app_tree's app_looks_told, not in the system's and then all again: before it phone cold 830 laid,
+  // 146 measured, 776 bindings, wide cold 3531, 557 and 2634, the same made)
+  // (2026-11-17: a table in a block taken for another message's row the same nodes, scrolled across as that message has
+  // it, what a code block or a formula keeps the same, mbui reused_state.mbt, sf md_block_node made again for none:
+  // before it phone up 566 made, 618 laid and a frame 142, 126, wide up 699 and 910, the same at 60, 120, 24 and 7)
+  // (2026-11-17: 小屏 Home's list no longer opens under what is left up long, moved into 待处理, so the rows of a screen
+  // more are shown in its place: made with the chat's in its cold first frame, their bindings run again as the chat
+  // opens again over Home; phone cold 750 made, 527 laid, 72 measured, 751 bindings before it, again 301 bindings, the
+  // chat's own the same, at 60, 120, 24 and 7 too; again's others brought down to what is done now)
+  // (bindings 1 more in each, 2026-11-17, once a message's picture is again the end that stays of its viewer's flight
+  // (View::shared) in place of #6722's hand-made bridge (note_thumb_node): how the flight draws it there, covering its
+  // box from where or contained, one binding (message_image_node); before it 942, 320, 2446, 1049)
+  // (2026-11-17: a code block's keys over its top right with a mouse, no bar of their own over its code (the user:
+  // 「hover 才显示，不占空间」): each block 38 lower, so scrolling up brings more of the chat into what shows; wide up 697,
+  // 382, 909, 125 and a frame 137, 105, 130, 28 before it; with a spacer as tall as the bar in the keys' place a block
+  // makes fewer nodes than it did)
+  // (1 made more in each on a phone, 2026-11-17: the chat bar's 远程 key, made while it is closed)
+  "phone cold": (1014, 29, 673, 79, 943),
+  "phone again": (325, 17, 239, 27, 321),
+  "wide cold": (2443, 483, 2011, 217, 2447),
+  "wide again": (882, 130, 881, 123, 1050),
+  "phone up": (564, 366, 617, 96, 0),
+  "wide up": (721, 382, 911, 125, 0),
+  "phone up frame": (140, 102, 125, 28, 0),
+  "wide up frame": (160, 105, 146, 28, 0),
 }
 
 ///|

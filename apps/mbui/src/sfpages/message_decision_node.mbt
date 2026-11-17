@@ -19,6 +19,8 @@ priv enum Asks {
   Alone
   /// who decides, its options (or a vault item's approval in their place), 忽略, how it went
   Options
+  /// who decides, a field to write the answer in and 回复 (a text card: `decision.reply`), 忽略, how it went
+  Text
   /// a login's card, who is to finish it, 忽略 under it (where there is a core to read the login of)
   Login
 }
@@ -31,6 +33,7 @@ fn decision_asks(m : Message) -> Asks {
     None if m.options is None => if m.asked { Alone } else { Nothing }
     Some({ ask: Some(_), .. }) | Some({ phone: Some(_), .. }) | Some({ signin: Some(_), .. }) | Some({ rig: Some(_), .. }) =>
       Nothing
+    Some({ kind: "text", vault: "", .. }) => Text
     _ => Options
   }
 }
@@ -92,7 +95,7 @@ fn message_decision_node(
             ask_dismiss_node(b, src, here, fn() { m().seq }, fn() { m().asked }, fn() { false }, fn() { true }, false)
           })
           |> ignore
-        (Options, _) => decision_rooms_node(p, src, here, m, core)
+        (Options, _) | (Text, _) => decision_rooms_node(p, src, here, m, core)
         (Login, Some(core)) => decision_login_node(p, src, here, core, m)
         _ => ()
       }
@@ -215,8 +218,27 @@ fn decision_rooms_node(
               |> ignore
             })
             let vault = fn() { open_m().card.map(fn(c) { c.vault }).unwrap_or("") }
-            b.show(fn() { vault() == "" && decision_choices(open_m()).length() > 0 && decision_thread(here) is Some(_) }, fn(o) {
-              decision_options_node(o, src, here, open_m)
+            // (what it is answered with, one place: its options, or a text card's words written here (decision.reply);
+            // none for a vault item's, or where it is no thread's. One show, as the options alone were: a pick holds a
+            // box even for none, a gap more in the card than the old view drew. A card's kind is its own all along, so
+            // which of the two is read as it is shown)
+            let answered_by = fn() {
+              if vault() != "" || decision_thread(here) is None {
+                0
+              } else if decision_choices(open_m()).length() > 0 {
+                1
+              } else if decision_asks(open_m()) is Text {
+                2
+              } else {
+                0
+              }
+            }
+            b.show(fn() { answered_by() != 0 }, fn(o) {
+              if @signals.untracked(answered_by) == 1 {
+                decision_options_node(o, src, here, open_m)
+              } else {
+                decision_reply_node(o, src, here, open_m)
+              }
             })
             // (an agent's request for a vault item: approved here, not answered in words; its buttons and what is typed
             // in for them as far apart as what is in decision_box)
@@ -360,6 +382,110 @@ fn decision_options_node(v : @view.View, src : Source, here : MessageNodeHere, m
       }
     },
   )
+  |> ignore
+}
+
+///|
+/// What is written to answer each text card (by its station, thread and post: seq_key), kept while the app runs, as
+/// a draft is: its card made again (the post scrolled out of the list's rows and back) shows what was written.
+// kept across runs: put back by decision_reply_reset
+let reply_fields : Map[String, @ui.Field] = Map([])
+
+///|
+fn decision_reply_reset() -> Unit {
+  reply_fields.clear()
+}
+
+///|
+/// Post `m`'s text card (decision_options' place, as nodes: the answer written, not picked): a card of words
+/// (ask_card_node) holding a field to write it in, its hint the card's `placeholder` (else 写下你的回复), and 回复 in
+/// its foot's start corner (ask_buttons_node, concentric with the card), sending what is written (`decision.reply`,
+/// felt as something done; turning while it goes, nothing written again meanwhile; none with nothing written). In
+/// `v`, its room. Who may answer and when are the options' (decision_rooms_node shows it only where the chat's thread
+/// can be sent to); once the core says it is settled, how it went comes in its place.
+fn decision_reply_node(v : @view.View, src : Source, here : MessageNodeHere, m : () -> Message) -> Unit {
+  @sf.style_node(v, fn() { options_room })
+  // (as wide as an agent's card that is written on in a chat may be, 560, never wider than where it is: as wide all the
+  // while what is written in it grows; on the ground a post's options' card is on, under the post as they are)
+  v.box(fn(r) {
+    @sf.style_node(r, fn() { @sf.ask_card_room_most })
+    decision_reply_card_node(r, src, here, m)
+  })
+  |> ignore
+}
+
+///|
+/// decision_reply_node's card, in `v`.
+fn decision_reply_card_node(v : @view.View, src : Source, here : MessageNodeHere, m : () -> Message) -> Unit {
+  let key = match decision_thread(here) {
+    Some(thread) => seq_key(here.station, thread, @signals.untracked(m).seq)
+    None => here.station + "\u{1}" + @signals.untracked(m).seq.to_string()
+  }
+  let field = match reply_fields.get(key) {
+    Some(f) => f
+    None => {
+      let f = @ui.Field::new()
+      reply_fields[key] = f
+      f
+    }
+  }
+  let written = @signals.signal(field.text())
+  let doing = "decision.reply:" + key
+  let busy = fn() { @sfbase.doing(doing) }
+  let send = fn() {
+    let words = field.text().trim(chars=" \n\t").to_owned()
+    let now = @signals.untracked(m)
+    guard words != "" && !busy() && decision_thread(here) is Some(thread) else { return }
+    // sent, felt as something done (a no as something refused: act)
+    @ui.haptic(Confirm)
+    act(src, @sf.t("web-main.decisions.reply"), doing, "decision.reply", {
+      "station": Json::string(here.station),
+      "thread": Json::number(thread),
+      "seq": Json::number(now.seq),
+      "text": Json::string(words),
+    })
+    // (its answer said in the chat, sent from here: the list goes to its end, as for words sent)
+    @sfbase.sent_here_told(here.station + "\u{1}" + here.session, flies=false)
+  }
+  @sf.ask_card_node(v, ground=fn() { @sf.alpha(@sf.theme().p.text, 0.05) }, fn(k) {
+    // (first on the card, reaching out to its top corners as 回复 under it reaches its foot's, as far from them: the
+    // field's ends where 回复's are, its words where its are, its corner concentric with the card's)
+    k.box(fn(b) {
+      @sf.style_node(b, fn() { signin_typed.then(@sf.top_reach(@sf.button_height())) })
+      @sf.textarea_node(
+        b,
+        field,
+        rows=2,
+        most=8,
+        corner=@sf.top_reach_corner(@sf.button_height()),
+        placeholder_by=fn() {
+          match m().card {
+            Some({ placeholder, .. }) if placeholder.trim(chars=" \n\t") != "" => placeholder
+            _ => @sf.t("web-main.decisions.replyPlaceholder")
+          }
+        },
+        disabled=busy,
+        solid=true,
+        card_words=true,
+        edited=fn(w) { written.set(w) },
+      )
+      |> ignore
+    })
+    |> ignore
+    @sf.ask_buttons_node(k, fn(f) {
+      @sf.button_node(
+        f,
+        fn() { @sf.t("web-main.decisions.reply") },
+        send,
+        tone=Primary,
+        busy~,
+        disabled=fn() { busy() || written.get().trim(chars=" \n\t") == "" },
+        card_words=true,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
   |> ignore
 }
 

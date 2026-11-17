@@ -208,7 +208,14 @@ fn open_where(src : Source, p : Page) -> Unit {
   }
   match app.nav.top() {
     Chat(r) => if @sfdesk.station_page_beside(src, r, p) { return }
+    Place("remote") => if @sfdesk.remote_page_in_workbench(src, p) { return }
     _ => ()
+  }
+  // (a chat put in the page pane's place from the board (待处理's, ⌘K's, ⌘N, a row of the list beside it): the list
+  // again, so that the board shows as Home again only as 看板 is pressed; on the tape over the board in use, back
+  // coming to it again: page_goes_on's)
+  if (p is Chat(_) || p is NewChat) && !@sfdesk.page_goes_on() && @sfbase.board_on_now(src) {
+    @sfbase.board_set(src, false)
   }
   match p {
     Chat(r) => open_chat_beside(r)
@@ -330,8 +337,14 @@ fn pages_left(src : Source) -> Unit {
       // (a drive's film played: where it was kept and its player closed as its page's nodes are let go, sfpages'
       // play_page_node)
       DrivePlay(_) => ()
-      Service(station, job) => service_left(src, station, job)
-      PreviewFile(station, key, path, _) => service_left(src, station, "file:" + key + "\n" + path)
+      // (one put beside its chat as a tab, drawn there or over the whole window: the tab's, let go as it closes)
+      Service(station, job) => if !@sfdesk.service_tab_held(station, job) { service_left(src, station, job) }
+      PreviewFile(station, key, path, _) => {
+        let job = "file:" + key + "\n" + path
+        if !@sfdesk.service_tab_held(station, job) {
+          service_left(src, station, job)
+        }
+      }
       History(r, key, _) => history_left(src, r, key)
       // the drive's folders read, watched for changes while shown: let go of once no page of the drive is left on
       // the stack (a folder entered over another, its columns reading those above it, keeps them)
@@ -339,7 +352,11 @@ fn pages_left(src : Source) -> Unit {
         if !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
           @sfbase.let_go(src, @sfbase.drive_scope)
         }
-      Screen(at) => @sfpages.screen_left(src, at.station, at.screen)
+      // (shown still in its chat's side panel, its 全屏 from there gone back to it: kept for the panel)
+      Screen(at) =>
+        if !@sfdesk.side_screen_shown(src, at.station, at.screen) {
+          @sfpages.screen_left(src, at.station, at.screen)
+        }
       _ => ()
     }
   }
@@ -527,12 +544,41 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
 }
 
 ///|
+/// What the old frame (view) says each build of how everything looks and what words are set in, told the window's tree
+/// `root` as it is made and as each of it changes, before any page of nodes is made, laid out or measured: light or
+/// dark, the accent, motion and haptics (sfbase's appearance_from_prefs) and a tip's keys, as the prefs and the system
+/// say them; and, with `words_set`, the wide frame's or not as the window is first given (Tree::frame tells its size
+/// before it lays anything out), its lines set as a browser's or not and the places' faces given the host (sfbase's
+/// faces). So the first frame measures its words once, in what they are drawn in, never in the system's face and lines
+/// and then all of them again as the old frame says otherwise; the old frame saying the same after it does nothing.
+fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> Unit {
+  root.reacts(fn() { (src.topic("prefs", {}).get().value, @ui.system_dark()) }, fn(a) {
+    @sfbase.appearance_from_prefs(a.0, a.1) |> ignore
+    @sf.set_shortcuts(@sfdesk.tip_keys(src))
+  })
+  guard words_set else { return }
+  root.reacts(fn() { (src.topic("prefs", {}).get().value, root.window().0, @sf.native_able()) }, fn(a) {
+    // (none before the first frame gives the window: told as anything there would be laid out by the wide frame's
+    // being otherwise and its faces then changed with nothing measured yet)
+    if a.1 > 0.0 {
+      let wide = @sfdesk.wide_at(a.1)
+      shell_set(pages_shell(src, wide))
+      @settings.wide.val = wide
+      @ui.set_web_lines(wide)
+      faces(src, wide)
+    }
+  })
+}
+
+///|
 /// The window as a tree made once (mbui's view_host.mbt, the way there's 4: from the outside in): the
 /// state the app is in (app_is) a node picked by it, made as it comes and let go as it goes, the app in that state an old
 /// view in it, built the old way on the window's ground (`view` the old frame around it: what every state shares, the
 /// theme, the window's sides, the layers over it).
 pub fn app_tree(src : Source) -> (@view.View) -> Unit {
   fn(root) {
+    // (how it looks and what it is set in, told first of all, before any page of nodes is made: app_looks_told)
+    app_looks_told(root, src)
     // (the source the sheets show what they show of, said before one is put up: sheet.mbt)
     sheet_src.val = Some(src)
     // (the library's words, the app's catalog's, and their language as the core's prefs say it, said before any page of
@@ -552,6 +598,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         (
           p,
           @settings.feature_from(p, "chatPage"),
+          @settings.feature_from(p, "composerNodes"),
           @settings.feature_from(p, "farviewNative"),
           @settings.feature_from(p, "board"),
         )
@@ -762,8 +809,9 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   // a Farview tab, while 实验性功能's Farview 原生标签页渲染 is on: drawn here (sfpages' farview_tab_node), under the
   // window's top band, as the panel and the phone's page draw it: its page laid out at this window's width as it
   // changes, not a picture of the tab; any other station's screen (and a Farview tab with it turned off) its page,
-  // sfpages' screen_node, closing it closing the window. Made again for another page put in its place (a child
-  // popup followed, another tab chosen: sfbase's lone_page_replace)
+  // sfpages' screen_node, a terminal its own (sfpages' terminal_node), closing it closing the window. Made again for
+  // another page put in its place (a child popup followed, another tab chosen, another of the station's switched to
+  // from its bar: sfbase's lone_page_replace)
   // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
   let shown = @sfbase.lone_shown.val
   shown.set(@sfbase.lone_page.val)
@@ -772,22 +820,44 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     fn() {
       let native = @sfbase.farview_native.get()
       match shown.get() {
-        Some(Screen(at)) => Some((at, native && @sfpages.farview_screen(at.screen)))
+        Some(Screen(at)) => Some((@sfbase.Page::Screen(at), native && @sfpages.farview_screen(at.screen)))
+        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), false))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((at, true)) => {
+        Some((Screen(at), true)) => {
           // (padding's order: left, top, right, bottom)
           q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
-          @sfpages.farview_tab_node(q, src, at.station, at.screen)
+          @sfpages.farview_pane_node(
+            q,
+            src,
+            at.station,
+            at.screen,
+            title=at.title,
+            on_back=fn() { lone_closed(q) },
+            on_switch=@sfbase.lone_page_replace,
+            on_close=fn() { lone_closed(q) },
+          )
         }
-        Some((at, false)) => {
+        Some((Screen(at), false)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
         }
+        Some((Terminal(at), _)) =>
+          @sfpages.terminal_pane_node(
+            q,
+            src,
+            at,
+            back=fn() { @sf.t("common.close") },
+            on_back=fn() { lone_closed(q) },
+            top=window_band_now,
+            width=fn() { q.window().0 },
+            on_switch_page=@sfbase.lone_page_replace,
+          )
+        Some(_) => ()
         None => ()
       }
     },
@@ -817,6 +887,9 @@ fn lone_closed(q : @view.View) -> Unit {
 /// presenters: each window's apart), none of the first window's history, splash or first page.
 pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
   fn(root) {
+    // (light or dark, the accent and a tip's keys as the first window's tree tells them, before its page is made: the
+    // faces and lines its words are set in are the run's, told by the first window's (app_looks_told's `words_set`))
+    app_looks_told(root, src, words_set=false)
     @sfbase.lone_page.val = @sfbase.window_here_page(wid)
     // (the library's words and their language as the first window's tree says them: app_tree's)
     @sf.set_words(fill)

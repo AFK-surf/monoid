@@ -685,8 +685,15 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       c.box(fn(g) { @sf.style_node(g, fn() { info_card_under }) }) |> ignore
     })
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
+    let chat_cv = fn() { view_of_chat(src, r).0 }
+    let has_remote = fn() {
+      match chat_cv() {
+        Some(cv) => chat_has_remote(cv)
+        None => false
+      }
+    }
     let screens = fn() {
-      match view_of_chat(src, r).0 {
+      match chat_cv() {
         Some(cv) => cv.screens
         None => []
       }
@@ -701,7 +708,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       if station() is Some(_) {
         labels.push(tr("android-chat.agent.station"))
       }
-      if screens().length() > 0 {
+      if has_remote() {
         labels.push(tr("android-chat.agent.screen"))
       }
       if context_row() {
@@ -750,9 +757,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
           )
           |> ignore
         })
-        // the screens of that station a tap away (chat_screens.mbt): its own display named, or that an agent drives one;
-        // the one alone opened, more a menu of them, this card gone first
-        list.show(fn() { screens().length() > 0 }, fn(p) {
+        // the screens, browser and workspace terminal of that station a tap away (chat_screens.mbt)
+        list.show(has_remote, fn(p) {
           let at : Ref[@view.View?] = Ref(None)
           at.val = Some(
             agent_row_node(
@@ -763,18 +769,17 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
                 if chat_screens_driven(sc) {
                   tr("web-pages.chat.screenAgent")
                 } else {
-                  sc.get(0).map_or("", fn(x) { x.title })
+                  sc.get(0).map_or(tr("web-main.rail.remote"), fn(x) { x.title })
                 }
               },
               label_w,
               fn() {
-                let sc = @signals.untracked(screens)
-                match at.val {
-                  Some(from) => {
+                match (@signals.untracked(chat_cv), at.val) {
+                  (Some(cv), Some(from)) => {
                     close()
-                    chat_screens_open(r, sc, from=Node(from))
+                    chat_remote_open(src, r, cv, from=Node(from))
                   }
-                  None => ()
+                  _ => ()
                 }
               },
             ),
@@ -1056,7 +1061,7 @@ fn reveal_part_node(
 ) -> Unit {
   // (where it starts said as it is made, by what a reader reads: a topic read outside any reader would be held by the
   // core's client for good)
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   // (while it closes, what it holds still there, let go once it has)
   let closing = @signals.signal(false)
@@ -1089,7 +1094,7 @@ fn reveal_part_node(
       }
       // (as far as it is tall once made: what has not been laid out yet goes as a row of words does)
       let far = dmax(@signals.untracked(tall), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
       (stop.val)()
       stop.val = fn() {  }
       if !on {
@@ -1112,7 +1117,7 @@ fn swap_part_node(
   first : (@view.View) -> Unit,
   later : (@view.View) -> Unit,
 ) -> Unit {
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   parent.by_room(fn(b, room) {
     let one : Ref[@view.View?] = Ref(None)
@@ -1139,7 +1144,7 @@ fn swap_part_node(
         return
       }
       let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
     })
     one.val = Some(
       b.box(fn(i) {
@@ -2219,197 +2224,6 @@ fn open_job(src : Source, r : ChatRef, id : String) -> Unit {
     fn(v, _) { job_node(v, src, r, id) },
   )
 }
-
-///|
-/// What is left up a long while on the workspace's stations, at the top of Home's list (in node `v`): web services and
-/// background jobs, each under its heading, three of a group and the rest folded under 还有 N 个. A row leads to its
-/// chat; its stop at its end.
-fn open_jobs_node(v : @view.View, src : Source, w : Workspace) -> Unit {
-  let groups = fn() { items(src.topic("longJobs", { "scope": Json::string(w.id) }).get().value, "groups") }
-  @sf.style_node(v, fn() { open_jobs_at })
-  v.each(groups, fn(g) { text(Some(g), "key") }, fn(gb, g) {
-    let gv = fn() { Some(g.get()) }
-    let gkey = fn() { "open-jobs/" + text(gv(), "key") }
-    let list = fn() { items(gv(), "jobs") }
-    let shown = fn() {
-      let l = list()
-      if dui.opened.contains(gkey()) || l.length() <= 4 {
-        l
-      } else {
-        l[:3].to_owned()
-      }
-    }
-    @sf.style_node(gb, fn() { open_jobs_group })
-    gb.box(fn(h) {
-      @sf.style_node(h, fn() { open_jobs_head })
-      @sf.words_node(h, fn() { text(gv(), "head") }, fn() { open_jobs_head_words }) |> ignore
-    })
-    |> ignore
-    gb.each(shown, fn(j) { text(Some(j), "station") + "/" + text(Some(j), "id") }, fn(row, j) {
-      open_job_row_node(row, src, fn() { Some(j.get()) })
-    })
-    // (on a line of its own, as wide as its words)
-    gb.show(fn() { shown().length() < list().length() }, fn(line) {
-      @sf.style_node(line, fn() { open_job_line })
-      line.box(fn(m) {
-        @sf.style_node(m, fn() { open_jobs_more })
-        let more = fn() { fill("android-misc.openJobs.more", [("n", (list().length() - shown().length()).to_string())]) }
-        @sf.rippled_node(m, fn() { dui.opened[@signals.untracked(gkey)] = true }, open_jobs_more_corner, more)
-        @sf.words_node(m, more, fn() { open_jobs_more_words }) |> ignore
-      })
-      |> ignore
-    })
-  })
-}
-
-///|
-/// A job left up (in node `row`): its dot, its name over where it is and how long; the row to its chat, stop at its end.
-fn open_job_row_node(row : @view.View, src : Source, job : () -> Json?) -> Unit {
-  let station = fn() { text(job(), "station") }
-  let id = fn() { text(job(), "id") }
-  let skey = fn() { "job-stop/" + station() + "/" + id() }
-  @sf.style_node(row, fn() { open_job_row })
-  @sf.rippled_node(
-    row,
-    fn() {
-      let j = @signals.untracked(job)
-      match @sfbase.job_chat(j) {
-        Some(r) => {
-          @sfbase.history_push()
-          app.nav.push(Chat(r))
-          // a service: its page over its chat (the service is the job's station's)
-          if flag(j, "service") {
-            app.nav.push(Service(text(j, "station"), text(j, "id")))
-          }
-        }
-        None => ()
-      }
-    },
-    open_job_row_corner,
-    fn() { text(job(), "name") },
-  )
-  row.box(fn(d) {
-    @sf.style_node(d, fn() { open_job_dot })
-    job_dot_node(d, fn() { text(job(), "tone") })
-  })
-  |> ignore
-  row.box(fn(words) {
-    @sf.style_node(words, fn() { open_job_words }, in_row=true)
-    // (each on a line of its own across it, cut short where it has less room)
-    words.box(fn(line) {
-      @sf.style_node(line, fn() { open_job_line })
-      @sf.words_node(line, fn() { text(job(), "name") }, fn() { open_job_name }) |> ignore
-    })
-    |> ignore
-    words.box(fn(line) {
-      @sf.style_node(line, fn() { open_job_line })
-      @sf.words_node(line, fn() { text(job(), "whereText") + " · " + text(job(), "age") }, fn() { open_job_meta }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-  row.box(fn(s) {
-    @sf.style_node(s, fn() { open_job_stop })
-    @sf.rippled_node(
-      s,
-      fn() {
-        let j = @signals.untracked(job)
-        let key = @signals.untracked(skey)
-        if !doing(key) {
-          @ui.haptic(Confirm)
-          // a job's own stop, or a simulator's or a view's (its `stop`: 关闭, 断开)
-          let (call, params, _) = long_stop(text(j, "station"), j)
-          act(src, fill("android-misc.jobs.stopWhat", [("name", text(j, "name"))]), key, call, params)
-        }
-      },
-      open_job_stop_side / 2.0,
-      fn() {
-        match text(field(job(), "stop"), "word") {
-          "" => tr("android-misc.jobs.stop")
-          word => word
-        }
-      },
-    )
-    // (stopping, a spinner in its icon's place: one of them made, not one made and one waiting)
-    s.pick(fn() { doing(skey()) }, fn(b, stopping) {
-      if stopping {
-        @sf.spinner_node(b, size=open_job_stop_spin) |> ignore
-      } else {
-        @sf.icon_node(b, "stop", open_job_stop_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      }
-    })
-  })
-  |> ignore
-}
-
-///|
-/// 10 in at its sides, 4 over, 10 under, its groups 8 apart.
-// kept across runs: a value (no field of it changes)
-let open_jobs_at : @ui.Style = @ui.css("w=Full pl=S2_5 pr=S2_5 pt=S1 pb=S2_5 gap=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_jobs_group : @ui.Style = @ui.css("w=Full gap=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_jobs_head : @ui.Style = @ui.css("px=S2_5 py=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_jobs_head_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_jobs_more : @ui.Style = @ui.css("px=S2_5 py=S1")
-
-///|
-let open_jobs_more_corner : Double = 8.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_jobs_more_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false)
-
-///|
-/// Across, 10 in at its left, 4 at its right, 5 over and under, its parts 10 apart and on its middle.
-// kept across runs: a value (no field of it changes)
-let open_job_row : @ui.Style = @ui.css("row w=Full pl=S2_5 pr=S1 py=S1_25 gap=S2_5 align=ACenter")
-
-///|
-let open_job_row_corner : Double = 10.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_dot : @ui.Style = @ui.css("w=S4 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_words : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_line : @ui.Style = @ui.css("row w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_name : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false, w=Cut, leading=L4_75)
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_meta : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false, w=Cut, leading=L4)
-
-///|
-// kept across runs: a value (no field of it changes)
-let open_job_stop : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justify=JCenter")
-
-///|
-let open_job_stop_side : Double = 32.0
-
-///|
-let open_job_stop_spin : Double = 12.0
-
-///|
-let open_job_stop_icon : Double = 15.0
 
 ///|
 /// An info row's words (14, the ink, on one line).

@@ -163,14 +163,14 @@ pub fn offers_node(
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
       // (how far in it is, from the moment it opened; out from the moment it closed)
-      let way = EdgeWay::new(0.0)
+      let way = @motion.NodeWay::new(0.0)
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go(shown, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
           live.val = true
-          way.go(shown, 1.0, @kit.pop_ms)
+          way.go_ms(shown, 1.0, @kit.pop_ms)
         }
       })
       let look = fn() {
@@ -213,6 +213,7 @@ pub fn offers_node(
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside)
+        .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label~))))
         // (a press on it its own, not outside it: on what of it takes none, nothing)
         |> ground_node

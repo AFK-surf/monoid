@@ -23,6 +23,8 @@ pub fn det_pow(Double, Double) -> Double
 
 pub fn line(Array[(Double, Double)], width~ : Double, color~ : Int64, upto? : Double) -> Line
 
+pub fn meniscus_outline(Double, Double, Double, Double, Double, Double) -> Array[(Array[Double], Bool)]
+
 pub fn sd_box(Double, Double, Double, Double, Double) -> Double
 
 pub fn sd_clip(Double, Double, Double, Double, Double, Double, (Double, Double, Double, Double), (Double, Double, Double, Double), band? : Double) -> Double
@@ -38,6 +40,10 @@ pub fn smooth_middle(Double) -> Double
 pub let smooth_scale : Double
 
 pub fn smoothness(Double, Double) -> Double
+
+pub fn subline(Array[(Double, Double)], from~ : Double, upto~ : Double, width~ : Double, color~ : Int64) -> Line
+
+pub fn tension_line(Double, Double, Double, Double, spread? : Double) -> Array[(Double, Double)]
 
 pub fn vector_shapes(@pixels.Vector, Double, Double, tint? : Int64) -> Array[Shape]
 
@@ -89,9 +95,10 @@ pub(all) struct Glass {
   adaptive : Bool
   shares_capture : Bool
   contained : Bool
+  spot : (Double, Double)?
 }
 pub fn Glass::frosted(blur~ : Double, tint~ : Int64, solid~ : Int64, saturation? : Double, rim_edge? : Double, rim_lit? : Double, rim_back? : Double, shares_capture? : Bool, contained? : Bool) -> Self
-pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool) -> Self
+pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?) -> Self
 pub fn Glass::sharing(Self) -> Self
 
 #derive(Eq, @debug.Debug)

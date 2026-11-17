@@ -825,11 +825,15 @@ export class Jobs {
   async shutdown(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
-    await this.call("shutdown", []);
-    this.exitWatch?.close();
-    this.exitWatch = null;
-    await Effect.runPromise(Scope.close(this.scope, Exit.void));
-    if (this.own) await this.program.close();
+    // (what is let go of let go of even where the program could not be asked: a program of its own left running else)
+    try {
+      await this.call("shutdown", []);
+    } finally {
+      this.exitWatch?.close();
+      this.exitWatch = null;
+      await Effect.runPromise(Scope.close(this.scope, Exit.void));
+      if (this.own) await this.program.close();
+    }
   }
 
   /// `stillfail-job notify`: the job with this token tells its agent something.

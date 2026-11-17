@@ -1007,8 +1007,10 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
     return e.only
   }
   let look = e.look_now()
-  // (over a scrim, or the page's cover, where one is up; else in its place)
-  if (e.z == z_over_scrim && dr.scrims.is_empty()) || (e.z == z_over_cover && dr.covers.is_empty()) {
+  // (over a scrim, an old one's or the window's tree's (a sheet of it: View::scrim_under, painted at it in view_host), or the
+  // page's cover, where one is up; else in its place)
+  let scrim_up = !dr.scrims.is_empty() || (view_app.val is Some(tree) && tree.scrims_up())
+  if (e.z == z_over_scrim && !scrim_up) || (e.z == z_over_cover && dr.covers.is_empty()) {
     e.z = 0
   }
   let keep = e.keep is Some(_)

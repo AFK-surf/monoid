@@ -71,3 +71,46 @@ test "rows steady: a row's height jumping, the window as it was: a jolt; and so 
   assert_true(rows_across_resize(None, Some(300.0)) > 0)
   assert_true(rows_across_resize(Some(200.0), Some(400.0)) > 0)
 }
+
+///|
+/// A list of rows in a column 400 wide, its first row 48.782 high there and 52 at 600, as the column's edge is dragged
+/// (at `widen_at`, the window as it is): the jolts found over 640 ms of frames 16 ms apart.
+fn rows_across_column(widen_at : Double) -> Int {
+  let wide = @signals.signal(false)
+  let t = Tester::new(
+    fn(c) {
+      c.box(w=Px(if wide.get() { 600.0 } else { 400.0 }), h=Fill(1.0), fn() {
+        c.list(
+          "rows",
+          20,
+          36.0,
+          fn(k) {
+            let h = if k == 0 { if wide.get() { 52.0 } else { 48.782 } } else { 36.0 }
+            c.box(w=Fill(1.0), h=Px(h), fn() { c.text("row \{k}", wrap=false) |> ignore }) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    w=800.0,
+    h=400.0,
+  )
+  rows_steady_bars[rows_steady.file] = 99
+  let t0 = t.time()
+  let mut widened = false
+  while t.time() < t0 + 640.0 {
+    let next = t.time() + 16.0
+    if !widened && t0 + widen_at <= next {
+      widened = true
+      wide.set(true)
+    }
+    t.frame_at(next)
+  }
+  rows_steady.found.length()
+}
+
+///|
+test "rows steady: a list laid out at another width (a column its edge drags), its rows laid out anew at once: no jolt" {
+  assert_eq(rows_across_column(300.0), 0)
+}

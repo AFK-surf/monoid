@@ -166,6 +166,9 @@ report() {
       # (what a test file said of itself as it ended, before its summary: a process it left running, its station
       # ending; a file that failed whole says nothing more in the summary's last lines)
       grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
+      # (what Node's test runner and MoonBit's said failed, wherever it is: a subtest's assertion early in a long log
+      # was past the tail's 40 lines below)
+      grep -E "^✖ |AssertionError|ERR_ASSERTION|Error:" "$tmp/step.$i.log" | head -30 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
@@ -312,9 +315,17 @@ if part ts; then
   if touches '^scripts/with-timeout'; then
     step "a command's limit to the second" bash scripts/with-timeout-test.sh
   fi
+  # The station's reader's build (station/mb/build.sh): mbc's jobs by the readers built side by side, MoonBit's runtime kept.
+  if touches '^station/mb/build\.sh$|^scripts/station-mb-build-test\.sh$'; then
+    step "station reader build: mbc's jobs, the runtime kept" bash scripts/station-mb-build-test.sh
+  fi
   # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
+  fi
+  # A run attempted again goes through only where what failed before was GitHub's or the network's (pipeline.yml's gate).
+  if touches '^scripts/gate-rerun-check'; then
+    step "CI gate: a rerun only after GitHub's or the network's failure" node --test scripts/gate-rerun-check.test.mjs
   fi
   # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
   if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then
@@ -454,6 +465,12 @@ if part ts; then
   if [ $full = 1 ] && touches '^(test|client|web/src/core)/|^package\.json$'; then core_tests=1; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || touches "$ts_cloud" || [ $core_tests = 1 ]; then prep root deps .; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
+  # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
+  # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+    step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
+  fi
+  if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
   # The stable channel's release notes (scripts/changelog.ts): each one read as CI will.
   if touches '^docs/releases/|^scripts/changelog\.ts$'; then step "release notes" sh -c 'node scripts/changelog.ts --stable > /dev/null'; fi
   # Root tests also import the core's Markdown reader. Wait for its packages on a cold checkout, as the web does.

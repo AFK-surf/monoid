@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, mock, test } from "node:test";
@@ -73,7 +73,9 @@ function harness() {
   };
   return program;
 }
-after(() => {
+after(async () => {
+  // A runner's socket a case left open (it threw before closing it) would keep this file's process from ending.
+  for (const close of [...openSockets]) await close();
   program?.child.stdin.end();
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 });
@@ -90,6 +92,12 @@ const plain = (v: unknown) => (v === undefined ? null : JSON.parse(JSON.stringif
 
 // ── one world for both sides: the clock, the processes, the ids ──
 
+/// What `until` waits on, woken whenever what it looks at may have changed: a timer set, a line a runner's socket was told.
+const waiters: (() => void)[] = [];
+const wake = () => {
+  for (const w of waiters.splice(0)) w();
+};
+
 /// The machine's clock (`wall`) as the case has it: its timers run as it is moved on.
 const time = {
   now: 0,
@@ -98,6 +106,7 @@ const time = {
   after(ms: number, f: () => void) {
     const t = { at: time.now + Math.max(0, ms), seq: ++time.seq, f };
     time.timers.push(t);
+    wake();
     return () => void (time.timers = time.timers.filter((x) => x !== t));
   },
   async advance(ms: number) {
@@ -143,11 +152,11 @@ async function settle(rounds = 40) {
   for (let i = 0; i < rounds; i++) await new Promise((resolve) => setImmediate(resolve));
 }
 
-/// Turns of the loop (each polls the I/O done) until `ready` holds: what real I/O sets going is waited for by what it
-/// does, never by a time; what never comes fails saying so.
-async function until(ready: () => boolean, what: string, turns = 100_000) {
-  for (let i = 0; i < turns && !ready(); i++) await new Promise((resolve) => setImmediate(resolve));
-  if (!ready()) throw new Error(`never came: ${what}`);
+/// Until `ready` holds: what real I/O sets going (a read on libuv's threads, a line on a real socket) is waited for by
+/// what it does, woken by `wake` where that lands, never by a time or a count of turns. What never comes is the test's
+/// `timeout`, which ends it and leaves its sockets to the file's after().
+async function until(ready: () => boolean, _what: string) {
+  while (!ready()) await new Promise<void>((resolve) => waiters.push(resolve));
 }
 
 function world(c: { now?: number; alive?: number[]; startTimes?: Record<string, number>; ids?: string[] }) {
@@ -199,10 +208,18 @@ function put(path: string, text: string | Buffer, mtimeMs?: number) {
   if (mtimeMs !== undefined) utimesSync(path, mtimeMs / 1000, mtimeMs / 1000);
 }
 
-/// A runner's socket that says `script` once it is told its first line, and keeps what it is told.
-async function runnerSocket(path: string, script: string[]): Promise<{ told: Json[]; server: Server }> {
+/// The runner's sockets a case has not closed yet: closed after the file if a case threw first.
+const openSockets = new Set<() => Promise<void>>();
+
+/// A runner's socket that says `script` once it is told its first line, and keeps what it is told. `close` ends the
+/// connections it took and then stops listening: a server's own close waits for its connections, which a case that
+/// failed half way leaves open, and with them the file's process.
+async function runnerSocket(path: string, script: string[]): Promise<{ told: Json[]; close: () => Promise<void> }> {
   const told: Json[] = [];
+  const sockets = new Set<Socket>();
   const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
     let carry = "";
     let said = false;
     socket.on("data", (chunk) => {
@@ -210,7 +227,10 @@ async function runnerSocket(path: string, script: string[]): Promise<{ told: Jso
       for (let i = carry.indexOf("\n"); i >= 0; i = carry.indexOf("\n")) {
         const line = carry.slice(0, i);
         carry = carry.slice(i + 1);
-        if (line !== "") told.push(JSON.parse(line));
+        if (line !== "") {
+          told.push(JSON.parse(line));
+          wake();
+        }
         if (!said) {
           said = true;
           for (const l of script) socket.write(`${l}\n`);
@@ -220,7 +240,17 @@ async function runnerSocket(path: string, script: string[]): Promise<{ told: Jso
     socket.on("error", () => {});
   });
   await new Promise<void>((resolve) => server.listen(path, resolve));
-  return { told, server };
+  let closed: Promise<void> | undefined;
+  const close = () =>
+    (closed ??= (async () => {
+      // what the station's side ended closes by itself within a few turns; what is left is ended here
+      for (let i = 0; i < 20 && sockets.size > 0; i++) await new Promise((resolve) => setImmediate(resolve));
+      for (const s of sockets) s.destroy();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      openSockets.delete(close);
+    })());
+  openSockets.add(close);
+  return { told, close };
 }
 
 // ── the seam's words, a function at a time ──
@@ -398,21 +428,25 @@ test("a runner's connection: its lines handed on in order and acknowledged, its 
   const out = (stream: string, at: number, text: string) => JSON.stringify({ op: "out", stream, at, data: Buffer.from(text).toString("base64") });
   const script = [out("out", 100, "first\nsec"), out("err", 0, "oops\n"), out("out", 109, "ond\nthird\n"), JSON.stringify({ op: "exit", code: null, signal: "TERM" })];
   const path = join(root, "r.sock");
-  const { told, server } = await runnerSocket(path, script);
+  const { told, close } = await runnerSocket(path, script);
   const info = { id: "r", runner: 1, pid: 2, pgid: 3, startedAt: 0, program: "x", args: [], socket: path };
   world({});
   const lines: Json[] = [];
-  const conn = new RunnerConnection(info as RunnerInfo, async (stream, text, from, to) => void lines.push([stream, text, from, to]));
-  conn.keep = 42;
-  const exit = await conn.exited;
-  await settle();
-  conn.write("hello ✓\n");
-  conn.closeStdin();
-  conn.signal("INT", false);
-  conn.signal("KILL");
-  conn.done();
-  await settle();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  let exit!: Awaited<RunnerConnection["exited"]>;
+  try {
+    const conn = new RunnerConnection(info as RunnerInfo, async (stream, text, from, to) => void lines.push([stream, text, from, to]));
+    conn.keep = 42;
+    exit = await conn.exited;
+    await settle();
+    conn.write("hello ✓\n");
+    conn.closeStdin();
+    conn.signal("INT", false);
+    conn.signal("KILL");
+    conn.done();
+    await settle();
+  } finally {
+    await close();
+  }
   const said = await mb({
     op: "runnerConn",
     info,
@@ -423,7 +457,7 @@ test("a runner's connection: its lines handed on in order and acknowledged, its 
   assert.deepEqual(said, { lines, exit: plain(exit), told });
 });
 
-test("where a runner left off: its attach answered, its output's size where it says nothing, and its output read again", { skip }, async () => {
+test("where a runner left off: its attach answered, its output's size where it says nothing, and its output read again", { skip, timeout: 15_000 }, async () => {
   const root = fresh();
   const file = join(root, "o.out");
   put(file, Buffer.concat([Buffer.alloc(5, 0), Buffer.from("cut\nline one\r\n"), Buffer.from("x".repeat(30)), Buffer.from("\nlast")]));
@@ -436,19 +470,23 @@ test("where a runner left off: its attach answered, its output's size where it s
   ];
   for (const [name, script] of scripts) {
     const path = join(root, `${name}.sock`);
-    const { told, server } = await runnerSocket(path, script);
+    const { told, close } = await runnerSocket(path, script);
     const info = { id: name, runner: 1, pid: 2, pgid: 3, startedAt: 0, program: "x", args: [], socket: path };
     world({});
-    const answer = ackedOffset(info as RunnerInfo, file);
-    if (name === "quiet") {
-      // The socket's attach and the output's stat are real I/O: the clock is moved on only once each has landed.
-      await until(() => told.length > 0, "the attach");
-      await time.advance(400);
-      await until(() => time.timers.length > 0, "the quiet timer after the output's size");
-      await time.advance(150);
+    let ts: Awaited<ReturnType<typeof ackedOffset>>;
+    try {
+      const answer = ackedOffset(info as RunnerInfo, file);
+      if (name === "quiet") {
+        // The socket's attach and the output's stat are real I/O: the clock is moved on only once each has landed.
+        await until(() => told.length > 0, "the attach");
+        await time.advance(400);
+        await until(() => time.timers.length > 0, "the quiet timer after the output's size");
+        await time.advance(150);
+      }
+      ts = await answer;
+    } finally {
+      await close();
     }
-    const ts = await answer;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
     const said = await harness().next(JSON.stringify({ op: "ackedOffset", info, out: file, sockets: { [path]: script }, fs: snap(root) }));
     assert.deepEqual(said.ok, [ts.at, ts.keep], name);
     assert.deepEqual(said.told[0].told, told, `${name}: what it was told`);
@@ -465,7 +503,7 @@ test("where a runner left off: its attach answered, its output's size where it s
   }
 });
 
-test("a runner an earlier station left ended: asked to stop, killed where its group goes on, waited for", { skip }, async () => {
+test("a runner an earlier station left ended: asked to stop, killed where its group goes on, waited for", { skip, timeout: 15_000 }, async () => {
   const data = fresh();
   const dir = join(data, "run", "runners");
   const sock = join(dir, "claude-x.sock");
@@ -476,26 +514,30 @@ test("a runner an earlier station left ended: asked to stop, killed where its gr
     ["exits", [JSON.stringify({ op: "exit", code: null, signal: "TERM" })], [8001]],
     ["holds", [], [8001, -8003]],
   ] as const) {
-    const { told, server } = await runnerSocket(sock, [...script]);
+    const { told, close } = await runnerSocket(sock, [...script]);
     const c = { alive: [...others], data, fs: snap(data), sockets: { [sock]: script } };
     world(c);
-    const ended = endRunner(data, "claude-x", "label");
-    let done = false;
-    void ended.then(() => (done = true));
-    // What it reads of the runner's files and says on its socket is real I/O: the clock is moved on only once what it
-    // waits for has landed. Its TERM and attach first; a runner that holds is waited for (2 s), then KILLed (1 s more).
-    await until(() => told.length >= 2, "the TERM and the attach");
-    if (script.length === 0) {
-      await time.advance(2000);
-      await until(() => told.length >= 3, "the KILL");
-      await time.advance(1000);
+    let ts: Awaited<ReturnType<typeof endRunner>>;
+    try {
+      const ended = endRunner(data, "claude-x", "label");
+      let done = false;
+      void ended.then(() => (done = true));
+      // What it reads of the runner's files and says on its socket is real I/O: the clock is moved on only once what it
+      // waits for has landed. Its TERM and attach first; a runner that holds is waited for (2 s), then KILLed (1 s more).
+      await until(() => told.length >= 2, "the TERM and the attach");
+      if (script.length === 0) {
+        await time.advance(2000);
+        await until(() => told.length >= 3, "the KILL");
+        await time.advance(1000);
+      }
+      await until(() => told.some((m) => m.op === "done"), "the done");
+      // (its process goes once it was told to: the case's runner leaves it)
+      alive.clear();
+      while (!done) await time.advance(10);
+      ts = await ended;
+    } finally {
+      await close();
     }
-    await until(() => told.some((m) => m.op === "done"), "the done");
-    // (its process goes once it was told to: the case's runner leaves it)
-    alive.clear();
-    while (!done) await time.advance(10);
-    const ts = await ended;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
     const said = await harness().next(JSON.stringify({ ...c, op: "endRunner", id: "claude-x" }));
     assert.equal(said.ok, ts, name);
     assert.deepEqual(said.told[0].told, told, `${name}: what it was told`);
@@ -743,7 +785,8 @@ async function claudeCase(name: string, setup: (data: string) => { profiles: Jso
       throw new Error(`no such step: ${st.do}`);
     },
   );
-  for (const s of servers) await new Promise<void>((resolve) => s.server.close(() => resolve()));
+  // (a case that threw before here leaves them to the file's after())
+  for (const s of servers) await s.close();
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: the logins asked`);
@@ -962,7 +1005,8 @@ async function codexCase(name: string, setup: (data: string) => { profiles: Json
     },
   );
   void driver;
-  for (const s of servers) await new Promise<void>((resolve) => s.server.close(() => resolve()));
+  // (a case that threw before here leaves them to the file's after())
+  for (const s of servers) await s.close();
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: what the driver asked`);
@@ -1227,7 +1271,8 @@ async function agyCase(name: string, setup: (data: string) => { profiles: Json[]
       throw new Error(`no such step: ${st.do}`);
     },
   );
-  for (const s of servers) await new Promise<void>((resolve) => s.server.close(() => resolve()));
+  // (a case that threw before here leaves them to the file's after())
+  for (const s of servers) await s.close();
   const said = await runMb(c);
   compare(name, said, trace);
   assert.deepEqual(said.asked, asked, `${name}: what the driver asked`);

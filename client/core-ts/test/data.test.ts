@@ -1333,10 +1333,17 @@ test("what_agents_said_in_slack_is_read_as_their_transcripts_are_written_kept_pa
   data.putItems("transcript", "w/a", "k1", [[1, call("C0OPS/1.2", "*好了*", "c1")]]);
   await flush();
   assert.deepEqual([data.slackSaid("w/a", "k1").map((s) => s.failed), told], [[true], []]);
+  assert.deepEqual(data.slackSaid("w/a", "k1").map((s) => s.refused), [true]);
   // A core before it held the transcript only: the table is made and filled as the database opens.
   db().run("DROP TABLE slack_said", []);
-  const d = await again();
+  let d = await again();
   assert.deepEqual(d.slackSaid("w/a", "k1").map((s) => [s.i, s.failed]), [[1, true]]);
+  // One whose table had no `refused` yet: it is added and the table filled again, so what it kept says which it was.
+  db().run("DROP TABLE slack_said", []);
+  db().run("CREATE TABLE slack_said (station TEXT NOT NULL, session TEXT NOT NULL, i INTEGER NOT NULL, k INTEGER NOT NULL, out INTEGER NOT NULL, call TEXT, user TEXT, who TEXT, at INTEGER NOT NULL, dest TEXT NOT NULL, text TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session, i, k))", []);
+  db().run("INSERT INTO slack_said VALUES ('w/a', 'k1', 1, 0, 1, 'c1', NULL, NULL, 2000, 'C0OPS/1.2', '**好了**', 1)", []);
+  d = await again();
+  assert.deepEqual(d.slackSaid("w/a", "k1").map((s) => [s.i, s.failed, s.refused]), [[1, true, true]]);
   // Its transcript cut before it: it goes.
   d.putItems("transcript", "w/a", "k1", [], 0);
   await flush();
