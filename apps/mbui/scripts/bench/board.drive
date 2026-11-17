@@ -1,0 +1,16 @@
+# 大屏, a mouse, on the board's chats: Home's list to the board by the sidebar's key (the board made, the sidebar folding
+# to its bar), back to the list by the board's bar (the sidebar opening again), to the board again (kept).
+timeout 20000
+until 整理发布清单
+wait 500
+log measure
+tap icon:view-columns
+until 待派发
+wait 900
+tap icon:list
+gone 待派发
+wait 900
+tap icon:view-columns
+until 待派发
+wait 900
+exit

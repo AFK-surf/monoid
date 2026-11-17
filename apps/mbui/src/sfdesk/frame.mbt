@@ -439,6 +439,7 @@ fn dock_side_at(
   }
   {
     box: (inside + rail, top + f.mt, f.side_w, dock_h),
+    laid_w: f.side_w,
     block: (inside, top + f.mt, dock_w, dock_h),
     // (on the tape, open, a panel of its own: the ground it floats on; else where the move has its ground)
     ground: if wide.tape.get() && !bar { dock_ground(bar) } else { f.ground },
@@ -547,6 +548,10 @@ let dock_line : Double = 1.0
 /// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
 priv struct SideAt {
   box : (Double, Double, Double, Double)
+  /// how wide what the sidebar holds is laid out: `box`'s, but on a move between where it is shown and where it is not
+  /// (pane_side_at's), as wide as where it is shown all the way, `box` only cutting and placing it, so its rows are not
+  /// laid out and their words not measured again at each frame the block folds to its bar or opens from it
+  laid_w : Double
   block : (Double, Double, Double, Double)
   ground : Int64
   shadow : (Double, Double, Int64)

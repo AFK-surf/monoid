@@ -689,11 +689,21 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       let t = fold_drawn_at(n)
       let f = fold_along(t, now)
       let top = if side_full_height(r.bar) { 0.0 } else { r.top }
-      dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t))))
+      // (what it holds laid out, on a move between where it is shown and where it is not (the closed bar's, not
+      // peeking), as wide as at the end it is shown at all the way, drawn cut and placed where the move has got: not laid
+      // out and its words measured again at each frame of it, nothing of it seen to move but its edge; between two
+      // where it is shown, as wide as the move has it, what stands at its end moving with it)
+      let laid_w = match fold_goes.from {
+        Some(from) if fold_going(t) && now.showing <= 0.0 => from.side_w
+        Some(from) if fold_going(t) && from.showing <= 0.0 => now.side_w
+        _ => f.side_w
+      }
+      { ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))), laid_w, }
     }
     None =>
       {
         box: (0.0, 0.0, 0.0, 0.0),
+        laid_w: 0.0,
         block: (0.0, 0.0, 0.0, 0.0),
         ground: 0L,
         shadow: (0.0, 0.0, 0L),

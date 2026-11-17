@@ -22,7 +22,7 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     dock_round_node(cut, at)
     cut.box(fn(side) {
       side
-      .width(By(fn() { Some(at().box.2) }))
+      .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))
       .offset(By(fn() { (at().box.0 - at().block.0, at().box.1 - at().block.1) }))
       |> ignore
