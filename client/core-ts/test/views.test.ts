@@ -4232,11 +4232,12 @@ test("a terminal reminds the opener even where two members have the same name", 
   const t = setup();
   const topic = { topic: "longJobs", scope: "ws" };
   const pane = ui();
-  t.subscribe(1, topic);
   t.set(workspace(), { ...oneStation(), members: [
     { sub: "s1", name: "Ann", email: "me@x.com" },
     { sub: "s2", name: "Ann", email: "someone@x.com" },
   ] });
+  t.subscribe(1, topic);
+  assert.ok(t.started().some((source) => source.topic === "terminals" && source.station === "ws/st"));
   t.set(link("ws/st"), { state: "online" });
   const base = { by: "Ann", cwd: "/work", at: t.host.nowMs() - DAY_MS, looking: [] };
   t.set({ topic: "terminals", station: "ws/st" }, { open: true, known: true, outdated: false, terminals: [
