@@ -43,7 +43,7 @@ pub(all) struct Fixture {
   /// the first row's chat: how many older pages have come in
   mut older : Int
   /// "home-motion": how far the list's changes have gone (a chat with news to the top, a new chat, one archived,
-  /// a mark come)
+  /// a mark come); "share-card-motion": how far the card's figures have changed (fixture_fleet)
   mut step : Int
   /// each chat's side panel's tabs as kept on this device (the prefs' `chatTabs`, by `<station>:<session>` and
   /// `new:<workspace>`), changed by `chat.tabs.*` as the core's chat-tabs.ts changes them (its answers kept, src/sfkept);
@@ -2010,7 +2010,7 @@ fn made_fixture(mode : String) -> Fixture {
     tabs_shown: fixture_tabs_shown(mode),
     sidebars: {},
     windows: {},
-    share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" {
+    share_look: if mode.has_prefix("share-card-") && mode != "share-card-dark" && mode != "share-card-motion" {
       // (share-card-<key>-coming, -failed: its files of the looks on their way, not had)
       let look = mode.unsafe_substring(start="share-card-".length(), end=mode.length())
       if look.has_suffix("-coming") || look.has_suffix("-failed") {
@@ -2056,6 +2056,12 @@ pub fn fixture(mode : String) -> Source {
     // the workspace changing on its own: a person and a station come at 2 s, one of each goes at 3.6 s
     fix_later(2000.0, fn() { @settings.fixture_motion(1) })
     fix_later(3600.0, fn() { @settings.fixture_motion(2) })
+  }
+  if f.mode == "share-card-motion" {
+    // the card's figures changing on their own, a step every 1.6 s from 2 s (fixture_fleet)
+    for k in 1..=3 {
+      fix_later(2000.0 + (k - 1).to_double() * 1600.0, fn() { f.step = k })
+    }
   }
   if f.mode == "home-motion" {
     // the list changing on its own, a step every 1.6 s from MBUI_MOTION_AT ms (2000) after it starts: rows moving,
@@ -2676,7 +2682,9 @@ pub fn fixture_kept(name : String, params : Json, bytes : Bytes?) -> Result[(Jso
 /// The card shared of the agents at work (the core's `fleet` view, views/fleet.ts), as the made-up workspace has it:
 /// its one Claude subscription's tokens, Willow's one chat at work; the card to share's (share-card, share-card-…) three
 /// kinds of subscription (six Claude accounts' 2.5 亿 tokens, two ChatGPT's, two OpenCode Go's: 3.1 亿 in all, as the
-/// week's input tokens say), nine chats at work on three stations, and their week.
+/// week's input tokens say), nine chats at work on three stations, and their week. share-card-motion's changes on its
+/// own, a step at a time (Fixture's `step`): the first model's tokens and what they cost, and the week's (1); a chat
+/// archived today, one fewer at work (2); a model of ChatGPT's come (3).
 pub fn fixture_fleet(f : Fixture) -> Json {
   if !f.mode.has_prefix("share-card") {
     return {
@@ -2701,9 +2709,23 @@ pub fn fixture_fleet(f : Fixture) -> Json {
       "devices": 1,
     }
   }
-  // each day's chats archived (57 in all, 12 today), as a share of the most on a day
-  let counts = [5, 7, 4, 10, 8, 11, 12]
-  let shares = counts.map(fn(n) { n.to_double() / 12.0 })
+  // (how far the card's figures have changed, share-card-motion's)
+  let step = if f.mode == "share-card-motion" { f.step } else { 0 }
+  let (opus, opus_cost, week_tokens, week_cost, today_cost) = if step >= 1 {
+    ("2.3 亿", "$1,556", "3.3 亿", "$2,047", "$498")
+  } else {
+    ("2.1 亿", "$1,420", "3.1 亿", "$1,911", "$362")
+  }
+  // each day's chats archived (57 in all, 12 today; 58 and 13 once one more is), as a share of the most on a day
+  let counts = [5, 7, 4, 10, 8, 11, if step >= 2 { 13 } else { 12 }]
+  let most = counts[6].to_double()
+  let shares = counts.map(fn(n) { n.to_double() / most })
+  let gpt : Array[Json] = [
+    { "name": "GPT-5.5 Codex", "tokens": 47000000, "tokensText": "4700 万", "costText": "$262", "lineText": "4700 万 · $262", "of": "token，折合 $262" },
+  ]
+  if step >= 3 {
+    gpt.push({ "name": "GPT-6 Astra", "tokens": 6000000, "tokensText": "600 万", "costText": "$41", "lineText": "600 万 · $41", "of": "token，折合 $41" })
+  }
   let labels = ["10/20", "10/21", "10/22", "10/23", "10/24", "10/25", "10/26"]
   {
     "at": "10月26日 04:12",
@@ -2717,7 +2739,14 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         "share": 0.81,
         "lead": "用 6 个 Claude 订阅账号消耗了",
         "models": [
-          { "name": "Opus 5.5", "tokens": 210000000, "tokensText": "2.1 亿", "costText": "$1,420", "lineText": "2.1 亿 · $1,420", "of": "token，折合 $1,420" },
+          {
+            "name": "Opus 5.5",
+            "tokens": if step >= 1 { 230000000 } else { 210000000 },
+            "tokensText": opus,
+            "costText": opus_cost,
+            "lineText": "\{opus} · \{opus_cost}",
+            "of": "token，折合 \{opus_cost}",
+          },
           { "name": "Sonnet 5.5", "tokens": 38000000, "tokensText": "3800 万", "costText": "$171", "lineText": "3800 万 · $171", "of": "token，折合 $171" },
           { "name": "Haiku 4.5", "tokens": 4000000, "tokensText": "400 万", "costText": "$13.20", "lineText": "400 万 · $13.20", "of": "token，折合 $13.20" },
         ],
@@ -2730,9 +2759,7 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         "tokens": 47000000,
         "share": 0.15,
         "lead": "用 2 个 ChatGPT 订阅账号消耗了",
-        "models": [
-          { "name": "GPT-5.5 Codex", "tokens": 47000000, "tokensText": "4700 万", "costText": "$262", "lineText": "4700 万 · $262", "of": "token，折合 $262" },
-        ],
+        "models": Json::array(gpt),
       },
       {
         "kind": "opencode",
@@ -2748,8 +2775,8 @@ pub fn fixture_fleet(f : Fixture) -> Json {
         ],
       },
     ],
-    "chats": 9,
-    "chatsText": "9 个对话正在运行",
+    "chats": if step >= 2 { 8 } else { 9 },
+    "chatsText": if step >= 2 { "8 个对话正在运行" } else { "9 个对话正在运行" },
     "where": "今天用了 3 台设备",
     "devices": 3,
     "tasks": 312,
@@ -2757,14 +2784,17 @@ pub fn fixture_fleet(f : Fixture) -> Json {
     "tasksPer": "平均每个对话 5.2 个",
     "today": {
       "title": "今天",
-      "stats": [{ "label": "归档的对话", "value": "12 个" }, { "label": "折合费用", "value": "$362" }],
+      "stats": [
+        { "label": "归档的对话", "value": "\{counts[6]} 个" },
+        { "label": "折合费用", "value": today_cost },
+      ],
     },
     "week": {
       "title": "近 7 天",
       "stats": [
-        { "label": "归档的对话", "value": "57 个" },
-        { "label": "输入 token", "value": "3.1 亿" },
-        { "label": "折合费用", "value": "$1,911" },
+        { "label": "归档的对话", "value": if step >= 2 { "58 个" } else { "57 个" } },
+        { "label": "输入 token", "value": week_tokens },
+        { "label": "折合费用", "value": week_cost },
       ],
       "days": Json::array(
         shares.mapi(fn(i, x) {

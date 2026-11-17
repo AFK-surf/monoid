@@ -12,6 +12,12 @@ fn hero_t(key : String, args? : Array[(String, String)] = []) -> String {
 }
 
 ///|
+/// The words of `key` (hero_t's), each said apart (between spaces).
+fn hero_words(key : String) -> Array[String] {
+  hero_t(key).split(" ").map(fn(w) { w.to_owned() }).collect()
+}
+
+///|
 /// `whole`'s words as runs: each `{name}` of `marks` its own run (a figure in the look's colour, bolder, larger), the
 /// rest as written (a name not among them too), `scale` their size.
 fn hero_marked(whole : String, marks : Array[(String, @ui.Run)], scale? : Double = 1.0) -> Array[@ui.Run] {
@@ -150,10 +156,10 @@ fn hero_chars(words : String) -> Array[String] {
 
 ///|
 /// still.fail's line and when, at either end of a line.
-fn hero_foot(c : Pen, fleet : Json?, style : @ui.Style, words : @ui.TextStyle) -> Unit {
+fn hero_foot(c : Pen, fleet : () -> Json?, style : @ui.Style, words : @ui.TextStyle) -> Unit {
   c.box(style~, fn(c) {
-    c.box(style=hero_grow, fn(c) { sr_words(c, @sf.t("web-main.stations.shareTagline"), words) }) |> ignore
-    sr_words(c, text(fleet, "at"), words)
+    c.box(style=hero_grow, fn(c) { sr_words(c, fn() { @sf.t("web-main.stations.shareTagline") }, words) }) |> ignore
+    sr_words(c, fn() { text(fleet(), "at") }, words)
   })
   |> ignore
 }
@@ -197,44 +203,44 @@ let hero_grow : @ui.Style = @ui.style(w=@sf.grow)
 /// foot; the seventh day, when and where in a chip, still.fail across from it; two choices, the chats at work the one
 /// chosen; her name on its tab over the box she says the week in (the top model's tokens and cost, that no one calls
 /// her a blunt blade now); the game's menu, still.fail's line.
-fn sr_adv(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args, name), adv_gold, scale=adv_hi_scale)) }
+fn sr_adv(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args(), name), adv_gold, scale=adv_hi_scale)) }
   sr_box(c, flat, adv_ground, fn(c) {
     sr_art(c, "a1-murasame-adv", @sf.share_w_most, adv_art_h, at=0.0) |> ignore
     hero_gap(c, adv_rest_h)
     c.box(left=hero_zero, right=hero_zero, top=adv_shade_top, fn(c) { hero_fade(c, adv_ground, adv_shade_h, adv_shade) })
     |> ignore
     c.box(style=adv_chip, left=adv_edge, top=adv_edge, fn(c) {
-      sr_words(c, hero_t("adv.day"), adv_chip_day)
-      sr_words(c, sr_arg(args, "at"), adv_chip_words)
-      sr_words(c, hero_t("adv.place"), adv_chip_words)
+      sr_words(c, fn() { hero_t("adv.day") }, adv_chip_day)
+      sr_words(c, fn() { sr_arg(args(), "at") }, adv_chip_words)
+      sr_words(c, fn() { hero_t("adv.place") }, adv_chip_words)
     })
     |> ignore
     c.box(right=adv_brand_r, top=adv_brand_t, fn(c) { sr_brand(c, adv_brand) }) |> ignore
     c.box(style=adv_choices, left=adv_choices_x, right=adv_choices_x, top=adv_choices_t, fn(c) {
-      adv_choice(c, hero_t("adv.pat"), false)
-      adv_choice(c, hero_t("adv.go", args=[("chats", sr_arg(args, "chats"))]), true)
+      adv_choice(c, fn() { hero_t("adv.pat") }, false)
+      adv_choice(c, fn() { hero_t("adv.go", args=[("chats", sr_arg(args(), "chats"))]) }, true)
     })
     |> ignore
     c.box(style=adv_box, left=adv_box_x, right=adv_box_x, top=adv_box_t, fn(c) {
       c.box(style=adv_hair, left=adv_hair_x, right=adv_hair_x, top=adv_hair_t, fn(_) {  }) |> ignore
-      let plain = [("accounts", sr_arg(args, "accounts")), ("kind", sr_arg(args, "kind")), ("model", sr_arg(args, "model"))]
-      sr_rich(c, hero_said("adv.line", plain, [hi("tokens"), hi("cost")]), adv_line)
-      sr_rich(c, hero_said("adv.line2", [], [("blunt", @ui.span(hero_t("adv.blunt"), color=adv_pink))]), adv_line)
-      c.box(right=adv_next_r, bottom=adv_next_b, fn(c) { sr_words(c, "▼", adv_next) }) |> ignore
+      sr_rich(c, fn() {
+        let plain = [("accounts", sr_arg(args(), "accounts")), ("kind", sr_arg(args(), "kind")), ("model", sr_arg(args(), "model"))]
+        hero_said("adv.line", plain, [hi("tokens"), hi("cost")])
+      }, adv_line)
+      sr_rich(c, fn() { hero_said("adv.line2", [], [("blunt", @ui.span(hero_t("adv.blunt"), color=adv_pink))]) }, adv_line)
+      c.box(right=adv_next_r, bottom=adv_next_b, fn(c) { sr_words(c, fn() { "▼" }, adv_next) }) |> ignore
     })
     |> ignore
-    c.box(style=adv_name, left=adv_name_x, top=adv_name_t, fn(c) { sr_words(c, hero_t("adv.name"), adv_name_words) })
+    c.box(style=adv_name, left=adv_name_x, top=adv_name_t, fn(c) { sr_words(c, fn() { hero_t("adv.name") }, adv_name_words) })
     |> ignore
     c.box(style=adv_menu, left=hero_zero, right=hero_zero, top=adv_menu_t, fn(c) {
-      for k, w in hero_t("adv.menu").split(" ").to_array() {
-        sr_words(c, w.to_owned(), if k == adv_menu_on_at { adv_menu_on } else { adv_menu_words })
-      }
+      sr_each_words(c, fn() { hero_words("adv.menu") }, fn(k) { if k == adv_menu_on_at { adv_menu_on } else { adv_menu_words } })
     })
     |> ignore
     c.box(style=adv_foot_row, left=hero_zero, right=hero_zero, top=adv_foot_t, fn(c) {
-      sr_words(c, @sf.t("web-main.stations.shareTagline"), adv_foot)
+      sr_words(c, fn() { @sf.t("web-main.stations.shareTagline") }, adv_foot)
     })
     |> ignore
   })
@@ -242,10 +248,10 @@ fn sr_adv(c : Pen, fleet : Json?, flat : Bool) -> Pen {
 
 ///|
 /// A choice: a capsule of white (the chosen one's pink), a flower at its start, its words in its middle.
-fn adv_choice(c : Pen, words : String, on : Bool) -> Unit {
+fn adv_choice(c : Pen, words : () -> String, on : Bool) -> Unit {
   c.box(style=if on { adv_pill_on } else { adv_pill }, fn(c) {
     c.box(style=if on { adv_ring_on } else { adv_ring }, fn(c) {
-      c.box(style=adv_side, fn(c) { sr_words(c, "❀", if on { adv_flower_on } else { adv_flower }) }) |> ignore
+      c.box(style=adv_side, fn(c) { sr_words(c, fn() { "❀" }, if on { adv_flower_on } else { adv_flower }) }) |> ignore
       c.box(style=adv_choice_mid, fn(c) { sr_words(c, words, if on { adv_choice_on } else { adv_choice_words }) })
       |> ignore
       c.box(style=adv_side, fn(_) {  }) |> ignore
@@ -521,10 +527,12 @@ let adv_foot_row : @ui.Style = @ui.css("w=Full align=ACenter")
 /// slip in its red frame the shrine and the slip's number (the week's chats archived, in Chinese figures), the fortune
 /// by how many of the seven days had work (all seven 大吉), seven lines of what it says (wish, visitor, study, trade,
 /// travel, love, quarrels: the week's figures), the shrine's seal; what she says under it, still.fail's line and when.
-fn sr_omikuji(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let days = sr_days(fleet).filter(fn(d) { d.3 > 0.0 }).length()
-  let grade = if days >= 7 {
+fn sr_omikuji(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  let days = fn() { sr_days(fleet()).filter(fn(d) { d.3 > 0.0 }).length() }
+  let grade = fn() {
+    let days = days()
+    if days >= 7 {
     "7"
   } else if days >= 5 {
     "5"
@@ -532,28 +540,40 @@ fn sr_omikuji(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     "3"
   } else if days >= 1 {
     "1"
-  } else {
-    "0"
+    } else {
+      "0"
+    }
   }
-  let luck = hero_t("omikuji.luck" + grade)
-  let archived = sr_num(sr_arg(args, "archived"))
-  let n = @string.parse_int(archived) catch { _ => 0 }
+  let luck = fn() { hero_t("omikuji.luck" + grade()) }
   // (the slip's number as each language numbers it: 第五十七番, No. 57)
-  let no = hero_t("omikuji.no", args=[("no", if @sf.language() == "zh" { omi_cn(n) } else { archived })])
-  let first = items(fleet, "spent").get(0)
-  let share = (number(first, "share") * omi_percent + 0.5).to_int().to_string() + "%"
-  let kind_words : Array[String] = text(first, "name").split(" ").map(fn(w) { w.to_owned() }).collect()
-  let kind = if kind_words.length() > 1 { hero_but_last(kind_words) } else { text(first, "name") }
-  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args, name), omi_figure, scale=omi_hi_scale)) }
-  let lines = [
+  let no = fn() {
+    let archived = sr_num(sr_arg(args(), "archived"))
+    let n = @string.parse_int(archived) catch { _ => 0 }
+    hero_t("omikuji.no", args=[("no", if @sf.language() == "zh" { omi_cn(n) } else { archived })])
+  }
+  let first = fn() { items(fleet(), "spent").get(0) }
+  let share = fn() { (number(first(), "share") * omi_percent + 0.5).to_int().to_string() + "%" }
+  let kind = fn() {
+    let kind_words : Array[String] = text(first(), "name").split(" ").map(fn(w) { w.to_owned() }).collect()
+    if kind_words.length() > 1 {
+      hero_but_last(kind_words)
+    } else {
+      text(first(), "name")
+    }
+  }
+  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args(), name), omi_figure, scale=omi_hi_scale)) }
+  // (seven lines, whatever the figures: each its key and what it says of them)
+  let lines = fn() {
+    [
     ("omikuji.wishK", hero_said("omikuji.wish", [], [hi("archived")])),
-    ("omikuji.waitK", hero_said("omikuji.wait", [("model", sr_arg(args, "model"))], [hi("tokens")])),
+    ("omikuji.waitK", hero_said("omikuji.wait", [("model", sr_arg(args(), "model"))], [hi("tokens")])),
     ("omikuji.studyK", hero_said("omikuji.study", [], [hi("weekTokens")])),
     ("omikuji.tradeK", hero_said("omikuji.trade", [], [hi("weekCost")])),
     ("omikuji.travelK", hero_said("omikuji.travel", [], [hi("tasks")])),
-    ("omikuji.loveK", hero_said("omikuji.love", [("kind", kind)], [("share", hero_hi(share, omi_figure, scale=omi_hi_scale))])),
+    ("omikuji.loveK", hero_said("omikuji.love", [("kind", kind())], [("share", hero_hi(share(), omi_figure, scale=omi_hi_scale))])),
     ("omikuji.fightK", hero_said("omikuji.fight", [], [hi("chats")])),
-  ]
+    ]
+  }
   sr_box(c, flat, omi_ground, fn(c) {
     hero_top(c, "a2-yoshino-omikuji", omi_art_h, omi_art_at, omi_ground, omi_fade)
     c.box(left=omi_brand_x, top=omi_brand_y, fn(c) { sr_brand(c, omi_brand) }) |> ignore
@@ -561,28 +581,26 @@ fn sr_omikuji(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     c.box(style=omi_slip, fn(c) {
       c.box(style=omi_frame, fn(c) {
         c.box(style=omi_head, fn(c) {
-          sr_words(c, hero_t("omikuji.shrine"), omi_shrine)
+          sr_words(c, fn() { hero_t("omikuji.shrine") }, omi_shrine)
           c.box(style=hero_grow, fn(_) {  }) |> ignore
           sr_words(c, no, omi_no)
         })
         |> ignore
         c.box(style=omi_mid, fn(c) {
-          sr_words(c, hero_t("omikuji.title"), omi_title)
+          sr_words(c, fn() { hero_t("omikuji.title") }, omi_title)
           // (a fortune of a word or two as large as the slip holds; said longer, as a line)
-          if luck.length() <= omi_luck_short {
-            sr_rich(c, [@ui.span(luck, scale=omi_luck_scale)], omi_luck)
-          } else {
-            sr_words(c, luck, omi_luck_long)
-          }
-          sr_words(c, hero_t("omikuji.why" + grade, args=[("days", days.to_string())]), omi_why)
+          let short = fn() { luck().length() <= omi_luck_short }
+          c.show_rich(short, fn() { [@ui.span(luck(), scale=omi_luck_scale)] }, style=omi_luck, face=@sfbase.share_face_given())
+          c.show_rich(fn() { !short() }, fn() { [@ui.span(luck())] }, style=omi_luck_long, face=@sfbase.share_face_given())
+          sr_words(c, fn() { hero_t("omikuji.why" + grade(), args=[("days", days().to_string())]) }, omi_why)
         })
         |> ignore
         c.box(style=omi_rule, fn(_) {  }) |> ignore
         c.box(style=omi_lines, fn(c) {
-          for x in lines {
+          for i in 0..<omi_line_count {
             c.box(style=omi_line, fn(c) {
-              c.box(style=omi_key, fn(c) { sr_words(c, hero_t(x.0), omi_key_words) }) |> ignore
-              c.box(style=hero_grow, fn(c) { sr_rich(c, x.1, omi_words) }) |> ignore
+              c.box(style=omi_key, fn(c) { sr_words(c, fn() { hero_t(lines()[i].0) }, omi_key_words) }) |> ignore
+              c.box(style=hero_grow, fn(c) { sr_rich(c, fn() { lines()[i].1 }, omi_words) }) |> ignore
             })
             |> ignore
           }
@@ -591,13 +609,13 @@ fn sr_omikuji(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       })
       |> ignore
       // the shrine's seal, in its four characters two by two
-      c.box(style=omi_seal, right=omi_seal_r, top=omi_seal_t, fn(c) { hero_seal(c, hero_t("omikuji.seal"), omi_seal_words) })
+      c.box(style=omi_seal, right=omi_seal_r, top=omi_seal_t, fn(c) { hero_seal(c, fn() { hero_t("omikuji.seal") }, omi_seal_words) })
       |> ignore
     })
     |> ignore
     c.box(style=omi_say, fn(c) {
-      c.box(style=omi_who, fn(c) { sr_words(c, hero_t("omikuji.who"), omi_who_words) }) |> ignore
-      c.box(style=hero_grow, fn(c) { sr_words(c, hero_t("omikuji.say", args=[("luck", luck)]), omi_say_words) }) |> ignore
+      c.box(style=omi_who, fn(c) { sr_words(c, fn() { hero_t("omikuji.who") }, omi_who_words) }) |> ignore
+      c.box(style=hero_grow, fn(c) { sr_words(c, fn() { hero_t("omikuji.say", args=[("luck", luck())]) }, omi_say_words) }) |> ignore
     })
     |> ignore
     hero_foot(c, fleet, omi_foot, omi_foot_words)
@@ -605,10 +623,22 @@ fn sr_omikuji(c : Pen, fleet : Json?, flat : Bool) -> Pen {
 }
 
 ///|
-/// A seal's characters two to a line (建实 over 神社; 常 over 陆), in its middle.
-fn hero_seal(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
+/// A seal's characters `words` says two to a line (建实 over 神社; 常 over 陆), in its middle; each line kept by its
+/// place.
+fn hero_seal(c : Pen, words : () -> String, style : @ui.TextStyle) -> Unit {
+  sr_each_words(c, fn() { hero_seal_lines(words()) }, fn(_) { style })
+}
+
+///|
+/// How many lines the slip says (lines' in sr_omikuji).
+let omi_line_count : Int = 7
+
+///|
+/// A seal's characters `words`, two to a line where it has more than three, one where not.
+fn hero_seal_lines(words : String) -> Array[String] {
   let chars = hero_chars(words)
   let per = if chars.length() > 3 { 2 } else { 1 }
+  let out : Array[String] = []
   let mut i = 0
   while i < chars.length() {
     let line = StringBuilder()
@@ -616,9 +646,10 @@ fn hero_seal(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
     for k in i..<end {
       line.write_string(chars[k])
     }
-    sr_words(c, line.to_string(), style)
+    out.push(line.to_string())
     i = i + per
   }
+  out
 }
 
 ///|
@@ -856,23 +887,26 @@ let omi_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(omi_foo
 /// its moon; the scroll's rods over and under its paper, a band of navy and gold at its top; to 有地さん, its title, the
 /// red 极秘 stamp; five missions (the chats at work, the tasks across devices, the top model's tokens, the week's
 /// spend, the chats archived) each with its state; what she writes after, her name and seal; still.fail's line.
-fn sr_ninja(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let on = hero_t("ninja.on")
-  let ok = hero_t("ninja.ok")
-  let missions = [
-    ("chats", sr_arg(args, "chats"), hero_t("ninja.chatsN", args=[("devices", sr_arg(args, "devices"))]), on, true),
-    ("tasks", sr_arg(args, "tasks"), hero_t("ninja.tasksN", args=[("per", sr_arg(args, "tasksPer"))]), ok, false),
+fn sr_ninja(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  // (five missions, whatever the figures: each its key, its count, its note, its state and whether it is under way)
+  let missions = fn() {
+    let on = hero_t("ninja.on")
+    let ok = hero_t("ninja.ok")
+    [
+    ("chats", sr_arg(args(), "chats"), hero_t("ninja.chatsN", args=[("devices", sr_arg(args(), "devices"))]), on, true),
+    ("tasks", sr_arg(args(), "tasks"), hero_t("ninja.tasksN", args=[("per", sr_arg(args(), "tasksPer"))]), ok, false),
     (
       "intel",
-      sr_arg(args, "tokens"),
-      hero_t("ninja.intelN", args=[("model", sr_arg(args, "model")), ("cost", sr_arg(args, "cost"))]),
+      sr_arg(args(), "tokens"),
+      hero_t("ninja.intelN", args=[("model", sr_arg(args(), "model")), ("cost", sr_arg(args(), "cost"))]),
       ok,
       false,
     ),
-    ("funds", sr_arg(args, "weekCost"), hero_t("ninja.fundsN"), hero_t("ninja.claim"), true),
-    ("done", sr_num(sr_arg(args, "archived")), hero_t("ninja.doneN"), ok, false),
-  ]
+    ("funds", sr_arg(args(), "weekCost"), hero_t("ninja.fundsN"), hero_t("ninja.claim"), true),
+    ("done", sr_num(sr_arg(args(), "archived")), hero_t("ninja.doneN"), ok, false),
+    ]
+  }
   sr_box(c, flat, nin_ground, fn(c) {
     hero_top(c, "a3-mako-roof", nin_art_h, nin_art_at, nin_ground, nin_fade)
     for s in nin_stars {
@@ -890,22 +924,25 @@ fn sr_ninja(c : Pen, fleet : Json?, flat : Bool) -> Pen {
         }
       })
       |> ignore
-      sr_rich(c, hero_said("ninja.to", [], [("arichi", @ui.span(hero_t("ninja.arichi"), color=nin_navy, bold=true))]), nin_to)
-      sr_words(c, hero_t("ninja.title"), nin_title)
-      sr_words(c, hero_t("ninja.sub"), nin_sub)
+      sr_rich(c, fn() { hero_said("ninja.to", [], [("arichi", @ui.span(hero_t("ninja.arichi"), color=nin_navy, bold=true))]) }, nin_to)
+      sr_words(c, fn() { hero_t("ninja.title") }, nin_title)
+      sr_words(c, fn() { hero_t("ninja.sub") }, nin_sub)
       c.box(style=nin_rows, fn(c) {
         hero_rule(c, nin_navy, nin_rule_h)
-        for m in missions {
+        // (which mission each is and whether it is under way: the same whatever the figures)
+        for i, x in @signals.untracked(missions) {
+          let (key, under_way) = (x.0, x.4)
+          let m = fn() { missions()[i] }
           c.box(style=nin_row, fn(c) {
-            sr_words(c, "✦", nin_mark)
-            c.box(style=nin_key, fn(c) { sr_words(c, hero_t("ninja." + m.0 + "K"), nin_key_words) }) |> ignore
+            sr_words(c, fn() { "✦" }, nin_mark)
+            c.box(style=nin_key, fn(c) { sr_words(c, fn() { hero_t("ninja." + key + "K") }, nin_key_words) }) |> ignore
             c.box(style=hero_grow, fn(c) {
-              sr_rich(c, hero_said("ninja." + m.0, [], [("count", hero_hi(m.1, nin_red, scale=nin_big_scale))]), nin_value)
-              sr_words(c, m.2, nin_note)
+              sr_rich(c, fn() { hero_said("ninja." + key, [], [("count", hero_hi(m().1, nin_red, scale=nin_big_scale))]) }, nin_value)
+              sr_words(c, fn() { m().2 }, nin_note)
             })
             |> ignore
-            c.box(style=if m.4 { nin_state_on } else { nin_state_ok }, fn(c) {
-              sr_words(c, m.3, if m.4 { nin_state_on_words } else { nin_state_ok_words })
+            c.box(style=if under_way { nin_state_on } else { nin_state_ok }, fn(c) {
+              sr_words(c, fn() { m().3 }, if under_way { nin_state_on_words } else { nin_state_ok_words })
             })
             |> ignore
           })
@@ -915,17 +952,17 @@ fn sr_ninja(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       })
       |> ignore
       c.box(style=nin_ps_room, fn(c) {
-        sr_rich(c, [@ui.span(hero_t("ninja.who"), color=nin_red, bold=true), @ui.span(hero_t("ninja.ps"))], nin_ps)
+        sr_rich(c, fn() { [@ui.span(hero_t("ninja.who"), color=nin_red, bold=true), @ui.span(hero_t("ninja.ps"))] }, nin_ps)
       })
       |> ignore
       c.box(style=nin_sig, fn(c) {
-        sr_words(c, hero_t("ninja.sig"), nin_sig_words)
-        c.box(style=nin_seal, fn(c) { hero_seal(c, hero_t("ninja.seal"), nin_seal_words) }) |> ignore
+        sr_words(c, fn() { hero_t("ninja.sig") }, nin_sig_words)
+        c.box(style=nin_seal, fn(c) { hero_seal(c, fn() { hero_t("ninja.seal") }, nin_seal_words) }) |> ignore
       })
       |> ignore
       // 极秘, stamped over its corner
       c.box(style=nin_secret, right=nin_secret_r, top=nin_secret_t, fn(c) {
-        c.box(style=nin_secret_in, fn(c) { sr_words(c, hero_t("ninja.secret"), nin_secret_words) }) |> ignore
+        c.box(style=nin_secret_in, fn(c) { sr_words(c, fn() { hero_t("ninja.secret") }, nin_secret_words) }) |> ignore
       })
       |> ignore
     })
@@ -1235,13 +1272,15 @@ let nin_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(nin_foo
 /// the title, the stay (the week's days, so many nights), the inn's stamp, every model a guest (様) with its tokens and
 /// its room (cost), the total, who checked out (archived), who is in tonight (at work), the rooms (devices); what she
 /// says in her English, the corridor's notice, still.fail's line.
-fn sr_ryokan(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let days = sr_days(fleet)
-  let nights = days.length().to_string()
-  let stay = match days {
-    [first, .., last] => hero_t("ryokan.stay", args=[("from", first.0), ("to", last.0), ("nights", nights)])
-    _ => hero_t("ryokan.nights", args=[("nights", nights)])
+fn sr_ryokan(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  let days = fn() { sr_days(fleet()) }
+  let nights = fn() { days().length().to_string() }
+  let stay = fn() {
+    match days() {
+      [first, .., last] => hero_t("ryokan.stay", args=[("from", first.0), ("to", last.0), ("nights", nights())])
+      _ => hero_t("ryokan.nights", args=[("nights", nights())])
+    }
   }
   let count = fn(key : String, v : String) {
     hero_said(key, [], [("count", hero_hi(v, ryo_indigo, scale=ryo_out_scale))])
@@ -1256,55 +1295,57 @@ fn sr_ryokan(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       hero_gap(c, ryo_under_noren)
       c.box(style=ryo_paper_under, fn(c) {
         c.box(style=ryo_paper, fn(c) {
-          sr_rich(c, [@ui.span(hero_t("ryokan.title"), scale=ryo_title_scale)], ryo_title)
+          sr_rich(c, fn() { [@ui.span(hero_t("ryokan.title"), scale=ryo_title_scale)] }, ryo_title)
           sr_words(c, stay, ryo_stay)
           c.box(style=ryo_head, fn(c) {
-            c.box(style=hero_grow, fn(c) { sr_words(c, hero_t("ryokan.guest"), ryo_head_words) }) |> ignore
-            c.box(style=ryo_tk_col, fn(c) { sr_words(c, hero_t("ryokan.tokens"), ryo_head_words) }) |> ignore
-            c.box(style=ryo_ct_col, fn(c) { sr_words(c, hero_t("ryokan.room"), ryo_head_words) }) |> ignore
+            c.box(style=hero_grow, fn(c) { sr_words(c, fn() { hero_t("ryokan.guest") }, ryo_head_words) }) |> ignore
+            c.box(style=ryo_tk_col, fn(c) { sr_words(c, fn() { hero_t("ryokan.tokens") }, ryo_head_words) }) |> ignore
+            c.box(style=ryo_ct_col, fn(c) { sr_words(c, fn() { hero_t("ryokan.room") }, ryo_head_words) }) |> ignore
           })
           |> ignore
           hero_rule(c, ryo_indigo, ryo_rule_h)
-          for k, m in sr_models(fleet) {
-            let vip = k == 0
+          // (each guest its line and the dots under it, kept by its place: the first the guest of honour)
+          c.each(fn() { placed(sr_models(fleet())) }, fn(m) { m.0 }, style_of=fn(_) { sr_whole }, fn(c, m) {
+            let vip = @signals.untracked(m).0 == 0
+            let m = fn() { m().1 }
             c.box(style=ryo_guest, fn(c) {
               c.box(style=hero_grow, fn(c) {
                 sr_rich(
                   c,
-                  [@ui.span(m.0 + " "), @ui.span(hero_t("ryokan.sama"), color=ryo_purple, scale=ryo_sama_scale)],
+                  fn() { [@ui.span(m().0 + " "), @ui.span(hero_t("ryokan.sama"), color=ryo_purple, scale=ryo_sama_scale)] },
                   if vip { ryo_name_vip } else { ryo_name },
                 )
               })
               |> ignore
-              c.box(style=ryo_tk_col, fn(c) { sr_words(c, m.1, ryo_tokens) }) |> ignore
-              c.box(style=ryo_ct_col, fn(c) { sr_words(c, m.2, if vip { ryo_cost_vip } else { ryo_cost }) }) |> ignore
+              c.box(style=ryo_tk_col, fn(c) { sr_words(c, fn() { m().1 }, ryo_tokens) }) |> ignore
+              c.box(style=ryo_ct_col, fn(c) { sr_words(c, fn() { m().2 }, if vip { ryo_cost_vip } else { ryo_cost }) }) |> ignore
             })
             |> ignore
             hero_dashes(c, ryo_dots)
-          }
+          })
           c.box(style=ryo_double, fn(c) {
             hero_rule(c, ryo_indigo, ryo_rule_thin)
             hero_rule(c, ryo_indigo, ryo_rule_thin)
           })
           |> ignore
           c.box(style=ryo_sum, fn(c) {
-            sr_words(c, hero_t("ryokan.total"), ryo_sum_words)
-            c.box(style=hero_grow, fn(c) { sr_words(c, hero_t("ryokan.nights", args=[("nights", nights)]), ryo_stay) })
+            sr_words(c, fn() { hero_t("ryokan.total") }, ryo_sum_words)
+            c.box(style=hero_grow, fn(c) { sr_words(c, fn() { hero_t("ryokan.nights", args=[("nights", nights())]) }, ryo_stay) })
             |> ignore
-            sr_words(c, sr_arg(args, "weekCost"), ryo_total)
+            sr_words(c, fn() { sr_arg(args(), "weekCost") }, ryo_total)
           })
           |> ignore
           c.box(style=ryo_outs, fn(c) {
-            c.box(style=ryo_out, fn(c) { sr_rich(c, count("ryokan.out", sr_num(sr_arg(args, "archived"))), ryo_out_words) })
+            c.box(style=ryo_out, fn(c) { sr_rich(c, fn() { count("ryokan.out", sr_num(sr_arg(args(), "archived"))) }, ryo_out_words) })
             |> ignore
-            c.box(style=ryo_out, fn(c) { sr_rich(c, count("ryokan.in", sr_arg(args, "chats")), ryo_out_words) }) |> ignore
-            c.box(style=ryo_out, fn(c) { sr_rich(c, count("ryokan.rooms", sr_arg(args, "devices")), ryo_out_words) })
+            c.box(style=ryo_out, fn(c) { sr_rich(c, fn() { count("ryokan.in", sr_arg(args(), "chats")) }, ryo_out_words) }) |> ignore
+            c.box(style=ryo_out, fn(c) { sr_rich(c, fn() { count("ryokan.rooms", sr_arg(args(), "devices")) }, ryo_out_words) })
             |> ignore
           })
           |> ignore
           // the inn's stamp
           c.box(style=ryo_stamp, right=ryo_stamp_r, top=ryo_stamp_t, fn(c) {
-            c.box(style=ryo_stamp_in, fn(c) { hero_seal(c, hero_t("ryokan.stamp"), ryo_stamp_words) }) |> ignore
+            c.box(style=ryo_stamp_in, fn(c) { hero_seal(c, fn() { hero_t("ryokan.stamp") }, ryo_stamp_words) }) |> ignore
           })
           |> ignore
         })
@@ -1313,34 +1354,33 @@ fn sr_ryokan(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       |> ignore
       // the noren over the paper's top, one character of the inn on each panel
       c.box(style=ryo_noren, left=hero_zero, right=hero_zero, top=hero_zero, fn(c) {
-        for ch in hero_chars(hero_t("ryokan.noren")) {
-          c.box(style=ryo_panel, fn(c) {
-            c.box(style=ryo_panel_top, left=hero_zero, right=hero_zero, top=hero_zero, fn(_) {  }) |> ignore
-            sr_words(c, ch, ryo_panel_words)
-            c.box(style=ryo_panel_line, left=ryo_panel_in, right=ryo_panel_in, bottom=ryo_panel_in, fn(_) {  }) |> ignore
-          })
-          |> ignore
-        }
+        c.each(fn() { placed(hero_chars(hero_t("ryokan.noren"))) }, fn(ch) { ch.0 }, style_of=fn(_) { ryo_panel }, fn(c, ch) {
+          c.box(style=ryo_panel_top, left=hero_zero, right=hero_zero, top=hero_zero, fn(_) {  }) |> ignore
+          sr_words(c, fn() { ch().1 }, ryo_panel_words)
+          c.box(style=ryo_panel_line, left=ryo_panel_in, right=ryo_panel_in, bottom=ryo_panel_in, fn(_) {  }) |> ignore
+        })
       })
       |> ignore
     })
     |> ignore
     c.box(style=ryo_say_under, fn(c) {
       c.box(style=ryo_say, fn(c) {
-        let marks = [
-          ("ciallo", @ui.span(hero_t("ryokan.ciallo"), color=ryo_pink, bold=true)),
-          ("welcome", em("ryokan.welcome")),
-          ("total", em("ryokan.totalSaid")),
-          ("very", em("ryokan.very")),
-          ("cost", hero_hi(sr_arg(args, "weekCost"), ryo_red, scale=ryo_say_scale)),
-        ]
-        let who = @ui.span(" " + hero_t("ryokan.who") + " ", color=ryo_white, bg=ryo_who_bg, scale=ryo_who_scale)
-        sr_rich(c, [who, @ui.span(" "), ..hero_said("ryokan.say", [], marks)], ryo_say_words)
+        sr_rich(c, fn() {
+          let marks = [
+            ("ciallo", @ui.span(hero_t("ryokan.ciallo"), color=ryo_pink, bold=true)),
+            ("welcome", em("ryokan.welcome")),
+            ("total", em("ryokan.totalSaid")),
+            ("very", em("ryokan.very")),
+            ("cost", hero_hi(sr_arg(args(), "weekCost"), ryo_red, scale=ryo_say_scale)),
+          ]
+          let who = @ui.span(" " + hero_t("ryokan.who") + " ", color=ryo_white, bg=ryo_who_bg, scale=ryo_who_scale)
+          [who, @ui.span(" "), ..hero_said("ryokan.say", [], marks)]
+        }, ryo_say_words)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=ryo_note, fn(c) { sr_words(c, hero_t("ryokan.note"), ryo_note_words) }) |> ignore
+    c.box(style=ryo_note, fn(c) { sr_words(c, fn() { hero_t("ryokan.note") }, ryo_note_words) }) |> ignore
     hero_foot(c, fleet, ryo_foot, ryo_foot_words)
   })
 }
@@ -1673,10 +1713,16 @@ let ryo_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(ryo_sof
 /// the 招牌 matcha parfait) drawn small, its cost the price and its tokens under it; 本日售出 stamped with today's chats
 /// archived and cost, the week's takings, the guests still waiting (at work); what she says, that 廉太郎 gets no
 /// discount, still.fail's line.
-fn sr_menu(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let model_words : Array[String] = sr_arg(args, "model").split(" ").map(fn(w) { w.to_owned() }).collect()
-  let model = if model_words.length() > 0 { model_words[0] } else { "" }
+fn sr_menu(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  let model = fn() {
+    let model_words : Array[String] = sr_arg(args(), "model").split(" ").map(fn(w) { w.to_owned() }).collect()
+    if model_words.length() > 0 {
+      model_words[0]
+    } else {
+      ""
+    }
+  }
   sr_box(c, flat, menu_ground, fn(c) {
     hero_top(c, "a5-koharu-sweets", menu_art_h, menu_art_at, menu_ground, menu_fade)
     c.box(left=menu_brand_x, top=menu_brand_y, fn(c) { sr_brand(c, menu_brand) }) |> ignore
@@ -1684,69 +1730,72 @@ fn sr_menu(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     c.box(style=menu_board, fn(c) {
       c.box(style=menu_washi, fn(c) {
         c.box(style=menu_title_row, fn(c) {
-          sr_rich(c, [@ui.span(hero_t("menu.title"), scale=menu_title_scale)], menu_title)
-          sr_words(c, hero_t("menu.sub"), menu_sub)
+          sr_rich(c, fn() { [@ui.span(hero_t("menu.title"), scale=menu_title_scale)] }, menu_title)
+          sr_words(c, fn() { hero_t("menu.sub") }, menu_sub)
         })
         |> ignore
         c.box(style=menu_items, fn(c) {
           hero_rule(c, menu_ink, menu_rule_h)
-          for k, m in sr_models(fleet) {
+          // (each sweet its line and the dashes under it, kept by its place: the first the one in fashion)
+          c.each(fn() { placed(sr_models(fleet())) }, fn(m) { m.0 }, style_of=fn(_) { sr_whole }, fn(c, m) {
+            let k = @signals.untracked(m).0
             let top = k == 0
+            let m = fn() { m().1 }
             c.box(style=menu_item, fn(c) {
               menu_icon(c, k % menu_icons.length())
               c.box(style=menu_name_col, fn(c) {
                 c.box(style=menu_name_row, fn(c) {
-                  sr_words(c, hero_t("menu.sweet" + (k % menu_icons.length()).to_string()), menu_name)
+                  sr_words(c, fn() { hero_t("menu.sweet" + (k % menu_icons.length()).to_string()) }, menu_name)
                   if top {
-                    c.box(style=menu_hot, fn(c) { sr_words(c, hero_t("menu.hot"), menu_hot_words) }) |> ignore
+                    c.box(style=menu_hot, fn(c) { sr_words(c, fn() { hero_t("menu.hot") }, menu_hot_words) }) |> ignore
                   }
                 })
                 |> ignore
-                sr_words(c, m.0, menu_model)
+                sr_words(c, fn() { m().0 }, menu_model)
               })
               |> ignore
               menu_leader(c)
               c.box(style=menu_price, fn(c) {
-                sr_words(c, m.2, if top { menu_cost_top } else { menu_cost })
-                sr_words(c, hero_t("menu.tokens", args=[("count", m.1)]), menu_tokens)
+                sr_words(c, fn() { m().2 }, if top { menu_cost_top } else { menu_cost })
+                sr_words(c, fn() { hero_t("menu.tokens", args=[("count", m().1)]) }, menu_tokens)
               })
               |> ignore
             })
             |> ignore
             hero_dashes(c, menu_dash)
-          }
+          })
         })
         |> ignore
         c.box(style=menu_tally, fn(c) {
           c.box(style=menu_sold, fn(c) {
             c.box(style=menu_sold_in, fn(c) {
-              sr_words(c, hero_t("menu.sold"), menu_sold_words)
+              sr_words(c, fn() { hero_t("menu.sold") }, menu_sold_words)
               sr_rich(
                 c,
-                hero_said(
+                fn() { hero_said(
                   "menu.soldN",
                   [],
-                  [("count", hero_hi(sr_num(sr_arg(args, "todayArchived")), menu_red, scale=menu_sold_scale))],
+                  [("count", hero_hi(sr_num(sr_arg(args(), "todayArchived")), menu_red, scale=menu_sold_scale))],
                   scale=menu_unit_scale,
-                ),
+                ) },
                 menu_sold_count,
               )
-              sr_words(c, sr_arg(args, "todayCost"), menu_sold_words)
+              sr_words(c, fn() { sr_arg(args(), "todayCost") }, menu_sold_words)
             })
             |> ignore
           })
           |> ignore
           c.box(style=menu_rev, fn(c) {
-            sr_words(c, hero_t("menu.rev"), menu_rev_label)
-            sr_words(c, sr_arg(args, "weekCost"), menu_rev_value)
-            sr_words(c, hero_t("menu.waiting", args=[("chats", sr_arg(args, "chats"))]), menu_rev_label)
+            sr_words(c, fn() { hero_t("menu.rev") }, menu_rev_label)
+            sr_words(c, fn() { sr_arg(args(), "weekCost") }, menu_rev_value)
+            sr_words(c, fn() { hero_t("menu.waiting", args=[("chats", sr_arg(args(), "chats"))]) }, menu_rev_label)
           })
           |> ignore
         })
         |> ignore
         // 营业中, on its red tag
         c.box(style=menu_open_under, right=menu_open_r, top=menu_open_t, fn(c) {
-          c.box(style=menu_open, fn(c) { sr_words(c, hero_t("menu.open"), menu_open_words) }) |> ignore
+          c.box(style=menu_open, fn(c) { sr_words(c, fn() { hero_t("menu.open") }, menu_open_words) }) |> ignore
         })
         |> ignore
       })
@@ -1758,13 +1807,13 @@ fn sr_menu(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     c.box(style=menu_hook, right=menu_hook_x, top=menu_hook_t, fn(_) {  }) |> ignore
     c.box(style=menu_say_under, fn(c) {
       c.box(style=menu_say, fn(c) {
-        sr_words(c, hero_t("menu.who"), menu_who)
-        sr_rich(c, hero_said("menu.say", [], [("model", hero_hi(model, menu_green))]), menu_say_words)
+        sr_words(c, fn() { hero_t("menu.who") }, menu_who)
+        sr_rich(c, fn() { hero_said("menu.say", [], [("model", hero_hi(model(), menu_green))]) }, menu_say_words)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=menu_note, fn(c) { sr_words(c, hero_t("menu.note"), menu_note_words) }) |> ignore
+    c.box(style=menu_note, fn(c) { sr_words(c, fn() { hero_t("menu.note") }, menu_note_words) }) |> ignore
     hero_foot(c, fleet, menu_foot, menu_foot_words)
   })
 }
@@ -2173,12 +2222,14 @@ let menu_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(menu_b
 /// shop's wine; on the cream paper bound along its top, the title and the week, a line a day of the chats archived
 /// counted in 正 (five strokes a five) and in figures (today in red), the week's takings with a soroban set to them,
 /// the top regular (the top model), today's and the guests in the shop (at work); what she says, still.fail's line.
-fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let days = sr_days(fleet)
-  let range = match days {
-    [first, .., last] => first.0 + " – " + last.0
-    _ => ""
+fn sr_ledger(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
+  let days = fn() { sr_days(fleet()) }
+  let range = fn() {
+    match days() {
+      [first, .., last] => first.0 + " – " + last.0
+      _ => ""
+    }
   }
   let figure = fn(v : String, scale : Double) { hero_hi(v, led_ink, scale~) }
   sr_box(c, flat, led_ground, fn(c) {
@@ -2188,10 +2239,10 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     c.box(style=led_book, fn(c) {
       c.box(style=led_bind, left=hero_zero, right=hero_zero, top=hero_zero, fn(_) {  }) |> ignore
       c.box(style=led_head, fn(c) {
-        sr_words(c, hero_t("ledger.title"), led_title)
+        sr_words(c, fn() { hero_t("ledger.title") }, led_title)
         c.box(style=hero_grow, fn(_) {  }) |> ignore
         c.box(style=led_side, fn(c) {
-          sr_words(c, hero_t("ledger.sub"), led_sub)
+          sr_words(c, fn() { hero_t("ledger.sub") }, led_sub)
           sr_words(c, range, led_range)
         })
         |> ignore
@@ -2200,30 +2251,44 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       // the table: its heads, a line a day
       c.box(style=led_table, fn(c) {
         c.box(style=led_heads, fn(c) {
-          c.box(style=led_date, fn(c) { sr_words(c, hero_t("ledger.date"), led_head_words) }) |> ignore
+          c.box(style=led_date, fn(c) { sr_words(c, fn() { hero_t("ledger.date") }, led_head_words) }) |> ignore
           c.box(style=led_vline, fn(_) {  }) |> ignore
-          c.box(style=led_marks, fn(c) { sr_words(c, hero_t("ledger.chats"), led_head_words) }) |> ignore
+          c.box(style=led_marks, fn(c) { sr_words(c, fn() { hero_t("ledger.chats") }, led_head_words) }) |> ignore
           c.box(style=led_vline, fn(_) {  }) |> ignore
-          c.box(style=led_count, fn(c) { sr_words(c, hero_t("ledger.sum"), led_head_words) }) |> ignore
+          c.box(style=led_count, fn(c) { sr_words(c, fn() { hero_t("ledger.sum") }, led_head_words) }) |> ignore
         })
         |> ignore
         hero_rule(c, led_red_rule, led_rule_h)
-        for d in days {
-          let today = d.4
-          c.box(style=if today { led_day_today } else { led_day }, fn(c) {
+        // (each day its line and the rule under it, kept by its place in the week)
+        c.each(fn() { placed(days()) }, fn(d) { d.0 }, style_of=fn(_) { sr_whole }, fn(c, d) {
+          let d = fn() { d().1 }
+          let today = fn() { d().4 }
+          c.box(style_by=fn() { if today() { led_day_today } else { led_day } }, fn(c) {
             c.box(style=led_date, fn(c) {
-              sr_words(c, if today { hero_t("ledger.today") } else { d.0 }, if today { led_date_today } else { led_date_words })
+              sr_words(c, fn() { if today() { hero_t("ledger.today") } else { d().0 } }, led_date_words, style_by=fn() {
+                if today() {
+                  led_date_today
+                } else {
+                  led_date_words
+                }
+              })
             })
             |> ignore
             c.box(style=led_vline, fn(_) {  }) |> ignore
             c.box(style=led_marks, fn(c) {
               c.box(style=led_tally, fn(c) {
-                let n = @string.parse_int(d.2) catch { _ => 0 }
-                let mut left = if n > led_tally_most * led_five { led_tally_most * led_five } else { n }
-                while left > 0 {
-                  led_glyph(c, if left > led_five { led_five } else { left })
-                  left = left - led_five
+                // (正 a five, each written to as far as its share of the day's chats, kept by its place)
+                let glyphs = fn() {
+                  let n = @string.parse_int(d().2) catch { _ => 0 }
+                  let mut left = if n > led_tally_most * led_five { led_tally_most * led_five } else { n }
+                  let out : Array[(Int, Int)] = []
+                  while left > 0 {
+                    out.push((out.length(), if left > led_five { led_five } else { left }))
+                    left = left - led_five
+                  }
+                  out
                 }
+                c.each(glyphs, fn(g) { g.0 }, style_of=fn(_) { led_glyph_box }, fn(c, g) { led_glyph(c, fn() { g().1 }) })
               })
               |> ignore
             })
@@ -2232,41 +2297,42 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
             c.box(style=led_count, fn(c) {
               sr_rich(
                 c,
-                hero_said("ledger.count", [], [("count", hero_hi(d.2, if today { led_red } else { led_ink }))], scale=led_unit_scale),
-                if today { led_count_today } else { led_count_words },
+                fn() { hero_said("ledger.count", [], [("count", hero_hi(d().2, if today() { led_red } else { led_ink }))], scale=led_unit_scale) },
+                led_count_words,
+                style_by=fn() { if today() { led_count_today } else { led_count_words } },
               )
             })
             |> ignore
           })
           |> ignore
           hero_rule(c, led_row_rule, led_hair)
-        }
+        })
       })
       |> ignore
       c.box(style=led_sum, fn(c) {
         c.box(style=led_big, fn(c) {
-          sr_words(c, hero_t("ledger.rev"), led_label)
+          sr_words(c, fn() { hero_t("ledger.rev") }, led_label)
           c.box(style=led_under, fn(c) {
-            sr_words(c, sr_arg(args, "weekCost"), led_total)
+            sr_words(c, fn() { sr_arg(args(), "weekCost") }, led_total)
             hero_rule(c, led_red_rule, led_hair)
             hero_rule(c, led_red_rule, led_hair)
           })
           |> ignore
         })
         |> ignore
-        led_soroban(c, sr_arg(args, "weekCost"))
+        led_soroban(c, fn() { sr_arg(args(), "weekCost") })
       })
       |> ignore
       c.box(style=led_vip, fn(c) {
-        c.box(style=led_vip_tag, fn(c) { sr_words(c, hero_t("ledger.vip"), led_vip_tag_words) }) |> ignore
-        sr_words(c, sr_arg(args, "model"), led_vip_words)
+        c.box(style=led_vip_tag, fn(c) { sr_words(c, fn() { hero_t("ledger.vip") }, led_vip_tag_words) }) |> ignore
+        sr_words(c, fn() { sr_arg(args(), "model") }, led_vip_words)
         c.box(style=hero_grow, fn(_) {  }) |> ignore
         sr_rich(
           c,
-          hero_said("ledger.vipLine", [], [
-            ("tokens", figure(sr_arg(args, "tokens"), led_vip_scale)),
-            ("cost", figure(sr_arg(args, "cost"), led_vip_scale)),
-          ]),
+          fn() { hero_said("ledger.vipLine", [], [
+            ("tokens", figure(sr_arg(args(), "tokens"), led_vip_scale)),
+            ("cost", figure(sr_arg(args(), "cost"), led_vip_scale)),
+          ]) },
           led_vip_words,
         )
       })
@@ -2274,11 +2340,11 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
       hero_rule(c, led_row_rule, led_hair)
       c.box(style=led_minis, fn(c) {
         c.box(style=led_mini, fn(c) {
-          sr_rich(c, hero_said("ledger.todayCost", [], [("cost", figure(sr_arg(args, "todayCost"), led_mini_scale))]), led_mini_words)
+          sr_rich(c, fn() { hero_said("ledger.todayCost", [], [("cost", figure(sr_arg(args(), "todayCost"), led_mini_scale))]) }, led_mini_words)
         })
         |> ignore
         c.box(style=led_mini, fn(c) {
-          sr_rich(c, hero_said("ledger.guests", [], [("chats", figure(sr_arg(args, "chats"), led_mini_scale))]), led_mini_words)
+          sr_rich(c, fn() { hero_said("ledger.guests", [], [("chats", figure(sr_arg(args(), "chats"), led_mini_scale))]) }, led_mini_words)
         })
         |> ignore
       })
@@ -2291,9 +2357,11 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     }
     c.box(style=led_say_under, fn(c) {
       c.box(style=led_say, fn(c) {
-        let who = @ui.span(" " + hero_t("ledger.who") + " ", color=led_white, bg=led_who_bg, scale=led_who_scale)
-        sr_rich(c, [who, @ui.span(" " + hero_t("ledger.say"))], led_say_words)
-        sr_rich(c, hero_said("ledger.say2", [], [("love", @ui.span(hero_t("ledger.love"), color=led_red))]), led_say_words)
+        sr_rich(c, fn() {
+          let who = @ui.span(" " + hero_t("ledger.who") + " ", color=led_white, bg=led_who_bg, scale=led_who_scale)
+          [who, @ui.span(" " + hero_t("ledger.say"))]
+        }, led_say_words)
+        sr_rich(c, fn() { hero_said("ledger.say2", [], [("love", @ui.span(hero_t("ledger.love"), color=led_red))]) }, led_say_words)
       })
       |> ignore
     })
@@ -2303,46 +2371,55 @@ fn sr_ledger(c : Pen, fleet : Json?, flat : Bool) -> Pen {
 }
 
 ///|
-/// 正 written to its `k`th stroke (一, 丅, 下, 止, 正), 18 square.
-fn led_glyph(c : Pen, k : Int) -> Unit {
-  c.box(style=led_glyph_box, fn(c) {
-    for i in 0..<k {
-      let (x, y, wide, high) = led_strokes[i]
-      c.box(style=@ui.style(w=Fixed(wide), h=Fixed(high), bg=Data(led_stroke_ink), radius=Sm), left=x, top=y, fn(_) {  })
-      |> ignore
-    }
-  })
-  |> ignore
+/// What 正 holds (`c`, its square: led_glyph_box) written to its `k`th stroke (一, 丅, 下, 止, 正), each stroke kept by
+/// its place in the order written.
+fn led_glyph(c : Pen, k : () -> Int) -> Unit {
+  c.each(
+    fn() { placed(led_strokes[:k()].to_owned()) },
+    fn(s) { s.0 },
+    style_of=fn(s) {
+      let (_, (_, _, wide, high)) = s
+      @ui.style(w=Fixed(wide), h=Fixed(high), bg=Data(led_stroke_ink), radius=Sm)
+    },
+    edges_of=fn(s) { (Some(s.1.0), Some(s.1.1), None, None) },
+    fn(_, _) {  },
+  )
 }
 
 ///|
 /// A small soroban with `cost`'s figures set on its six rods (the last six: a bead over the bar five, each under it
-/// one), its frame round it.
-fn led_soroban(c : Pen, cost : String) -> Unit {
-  let digits : Array[Int] = []
-  for ch in cost {
-    if ch >= '0' && ch <= '9' {
-      digits.push(ch.to_int() - '0'.to_int())
+/// one), its frame round it: its beads the same, each moved to where its rod's figure sets it as the cost changes.
+fn led_soroban(c : Pen, cost : () -> String) -> Unit {
+  let set = fn() {
+    let digits : Array[Int] = []
+    for ch in cost() {
+      if ch >= '0' && ch <= '9' {
+        digits.push(ch.to_int() - '0'.to_int())
+      }
     }
+    while digits.length() < led_rods {
+      digits.insert(0, 0)
+    }
+    digits[digits.length() - led_rods:].to_owned()
   }
-  while digits.length() < led_rods {
-    digits.insert(0, 0)
-  }
-  let set = digits[digits.length() - led_rods:].to_owned()
   c.box(style=led_soro, fn(c) {
     c.box(style=led_soro_in, left=led_soro_edge, top=led_soro_edge, fn(_) {  }) |> ignore
-    for i, v in set {
+    for i in 0..<led_rods {
       let x = led_rod_x + i.to_double() * led_rod_gap
+      let v = fn() { set()[i] }
       c.box(style=led_rod, left=x - led_hair / 2.0, top=led_soro_edge, fn(_) {  }) |> ignore
-      let five = v >= led_five
-      led_bead(c, x, if five { led_heaven_on } else { led_heaven_off }, five)
-      let ones = v % led_five
+      led_bead(c, x, fn() {
+        let five = v() >= led_five
+        (if five { led_heaven_on } else { led_heaven_off }, five)
+      })
       for j in 0..<4 {
-        if j < ones {
-          led_bead(c, x, led_earth_on + j.to_double() * led_bead_step, true)
-        } else {
-          led_bead(c, x, led_earth_off - (3 - j).to_double() * led_bead_step, false)
-        }
+        led_bead(c, x, fn() {
+          if j < v() % led_five {
+            (led_earth_on + j.to_double() * led_bead_step, true)
+          } else {
+            (led_earth_off - (3 - j).to_double() * led_bead_step, false)
+          }
+        })
       }
     }
     c.box(style=led_bar, left=led_soro_edge, top=led_bar_t, fn(_) {  }) |> ignore
@@ -2351,9 +2428,13 @@ fn led_soroban(c : Pen, cost : String) -> Unit {
 }
 
 ///|
-/// A bead at (`x`, `y`), its middle: dark where it counts.
-fn led_bead(c : Pen, x : Double, y : Double, on : Bool) -> Unit {
-  c.box(style=if on { led_bead_on } else { led_bead_off }, left=x - led_bead_w / 2.0, top=y - led_bead_h / 2.0, fn(_) {  })
+/// A bead with its middle where `at` says (`x`, and how far down), dark where it counts.
+fn led_bead(c : Pen, x : Double, at : () -> (Double, Bool)) -> Unit {
+  c.box(
+    style_by=fn() { if at().1 { led_bead_on } else { led_bead_off } },
+    edges_by=fn() { (Some(x - led_bead_w / 2.0), Some(at().0 - led_bead_h / 2.0), None, None) },
+    fn(_) {  },
+  )
   |> ignore
 }
 
@@ -2797,23 +2878,30 @@ let led_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(led_foo
 /// still.fail across from it; under her, when as the shop says it (深夜, 夜里), the guests still in (the chats at work)
 /// large, the week's takings and today's, what was ordered most (the top model), and what she says; still.fail's line
 /// and 大人の時間 at the foot.
-fn sr_night(c : Pen, fleet : Json?, flat : Bool) -> Pen {
-  let args = sr_args(fleet)
-  let at = sr_arg(args, "at")
+fn sr_night(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let args = fn() { sr_args(fleet()) }
   // (when: its last word the clock, before it the day; the hour the clock's first figure)
-  let parts : Array[String] = at.split(" ").map(fn(w) { w.to_owned() }).collect()
-  let clock = if parts.length() > 0 { parts[parts.length() - 1] } else { "" }
-  let day = hero_but_last(parts)
-  let hour = @string.parse_int(sr_num(clock)) catch { _ => -1 }
-  let night = hour >= nite_evening || (hour >= 0 && hour < nite_dawn)
-  let when = if hour >= nite_late || (hour >= 0 && hour < nite_dawn) {
-    hero_t("night.late")
-  } else if night {
-    hero_t("night.eve")
-  } else {
-    hero_t("night.day")
+  let parts = fn() -> Array[String] { sr_arg(args(), "at").split(" ").map(fn(w) { w.to_owned() }).collect() }
+  let clock = fn() {
+    let parts = parts()
+    if parts.length() > 0 {
+      parts[parts.length() - 1]
+    } else {
+      ""
+    }
   }
-  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args, name), nite_white, scale=nite_hi_scale)) }
+  let hour = fn() { @string.parse_int(sr_num(clock())) catch { _ => -1 } }
+  let night = fn() { hour() >= nite_evening || (hour() >= 0 && hour() < nite_dawn) }
+  let when = fn() {
+    if hour() >= nite_late || (hour() >= 0 && hour() < nite_dawn) {
+      hero_t("night.late")
+    } else if night() {
+      hero_t("night.eve")
+    } else {
+      hero_t("night.day")
+    }
+  }
+  let hi = fn(name : String) -> (String, @ui.Run) { (name, hero_hi(sr_arg(args(), name), nite_white, scale=nite_hi_scale)) }
   sr_box(c, flat, nite_ground, fn(c) {
     sr_art(c, "f1-roka-night", @sf.share_w_most, nite_art_h, at=nite_art_at) |> ignore
     hero_gap(c, nite_rest_h)
@@ -2821,29 +2909,31 @@ fn sr_night(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     |> ignore
     c.box(style=nite_sign, left=nite_edge, top=nite_edge, fn(c) {
       c.box(style=nite_dot, fn(_) {  }) |> ignore
-      sr_words(c, hero_t("night.sign"), nite_sign_words)
-      sr_words(c, hero_t("night.open"), nite_sign_open)
+      sr_words(c, fn() { hero_t("night.sign") }, nite_sign_words)
+      sr_words(c, fn() { hero_t("night.open") }, nite_sign_open)
     })
     |> ignore
     c.box(right=nite_brand_r, top=nite_brand_t, fn(c) { sr_brand(c, nite_brand) }) |> ignore
     c.box(style=nite_panel, left=nite_x, right=nite_panel_r, top=nite_panel_t, fn(c) {
-      sr_words(c, when + " " + clock + (if day != "" { " · " + day } else { "" }), nite_kick)
-      let big = if night { "night.big" } else { "night.bigDay" }
+      sr_words(c, fn() {
+        let day = hero_but_last(parts())
+        when() + " " + clock() + (if day != "" { " · " + day } else { "" })
+      }, nite_kick)
       sr_rich(
         c,
-        hero_said(big, [], [("chats", hero_hi(sr_arg(args, "chats"), nite_amber, scale=nite_big_scale))], scale=nite_big_words),
+        fn() { hero_said(if night() { "night.big" } else { "night.bigDay" }, [], [("chats", hero_hi(sr_arg(args(), "chats"), nite_amber, scale=nite_big_scale))], scale=nite_big_words) },
         nite_big,
       )
       c.box(style=nite_rows, fn(c) {
-        sr_rich(c, hero_said("night.rev", [], [hi("weekCost"), hi("todayCost")]), nite_row)
-        sr_rich(c, hero_said("night.top", [("model", sr_arg(args, "model"))], [hi("tokens"), hi("cost")]), nite_row)
+        sr_rich(c, fn() { hero_said("night.rev", [], [hi("weekCost"), hi("todayCost")]) }, nite_row)
+        sr_rich(c, fn() { hero_said("night.top", [("model", sr_arg(args(), "model"))], [hi("tokens"), hi("cost")]) }, nite_row)
       })
       |> ignore
       c.box(style=nite_say, fn(c) {
         c.box(style=nite_bar, fn(_) {  }) |> ignore
         c.box(style=nite_say_words, fn(c) {
-          sr_words(c, hero_t("night.who"), nite_who)
-          sr_words(c, hero_t("night.say", args=[("chats", sr_arg(args, "chats"))]), nite_line)
+          sr_words(c, fn() { hero_t("night.who") }, nite_who)
+          sr_words(c, fn() { hero_t("night.say", args=[("chats", sr_arg(args(), "chats"))]) }, nite_line)
         })
         |> ignore
       })
@@ -2851,8 +2941,8 @@ fn sr_night(c : Pen, fleet : Json?, flat : Bool) -> Pen {
     })
     |> ignore
     c.box(style=nite_foot, left=nite_x, right=nite_x, bottom=nite_foot_b, fn(c) {
-      c.box(style=hero_grow, fn(c) { sr_words(c, @sf.t("web-main.stations.shareTagline"), nite_small) }) |> ignore
-      sr_words(c, hero_t("night.adult"), nite_small)
+      c.box(style=hero_grow, fn(c) { sr_words(c, fn() { @sf.t("web-main.stations.shareTagline") }, nite_small) }) |> ignore
+      sr_words(c, fn() { hero_t("night.adult") }, nite_small)
     })
     |> ignore
   })

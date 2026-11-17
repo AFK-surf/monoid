@@ -4429,6 +4429,30 @@ pub fn View::over(
 }
 
 ///|
+/// Laid over what holds it where `edges` says as it changes (View::over's `edges`, bound: a bead of an abacus where its
+/// rod's figure sets it): so far in from its left, top, right and foot, each said none of left to its size and the
+/// others, laid out again where it comes out otherwise, nothing made again for it.
+#callsite(autofill(loc))
+pub fn View::over_at(self : View, edges : Live[(Double?, Double?, Double?, Double?)], loc~ : SourceLoc) -> View {
+  self.bind(loc~, Over, edges, Layout, fn(e) {
+    let s = self.tree.nodes[self.at].flex.style
+    let at = fn(d : Double?) -> @flex.Dim {
+      match d {
+        Some(p) => Pt(p)
+        None => Auto
+      }
+    }
+    s.position = Absolute
+    let (l, t, r, b) = e
+    s.set_inset_left(at(l))
+    s.set_inset_top(at(t))
+    s.set_inset_right(at(r))
+    s.set_inset_bottom(at(b))
+  })
+  self
+}
+
+///|
 /// Whether what it holds is cut to it, its corners round as its own (View::radius), as an old view's box that clips is
 /// (a progress bar's track cutting its part at its round ends), as it changes: paint's. How it is drawn only: where a
 /// finger or the pointer is taken is as it was (what is past it still takes them), unlike an old view's clip.

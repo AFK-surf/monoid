@@ -209,7 +209,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone newchat-files": (451, 307, 45),
   "phone newchat-lend": (451, 307, 45),
   // (the card to share made once as nodes, 2026-11-17: its poster and its looks' strip, what its old view built, now
-  // made, laid out and measured by the window's tree; a change of `fleet` makes its picture anew)
+  // made, laid out and measured by the window's tree; a change of `fleet` bound to what shows it)
   "phone share-card": (1173, 1028, 362),
   "phone share-card-dark": (1173, 1028, 362),
   "phone newchat-model": (791, 583, 75),
@@ -438,7 +438,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-notify-off": (707, 483, 71),
   "phone settings-notify-denied": (470, 347, 62),
   // (the card to share made once as nodes, 2026-11-17: its poster and its looks' strip, what its old view built, now
-  // made, laid out and measured by the window's tree; a change of `fleet` makes its picture anew)
+  // made, laid out and measured by the window's tree; a change of `fleet` bound to what shows it)
   "phone share-card-poster": (1081, 936, 330),
   "phone share-card-receipt": (1386, 1241, 360),
   "phone share-card-terminal": (1164, 1019, 354),
@@ -606,7 +606,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide newchat-files": (1216, 811, 71),
   "wide newchat-lend": (1216, 811, 71),
   // (the card to share made once as nodes, 2026-11-17: its poster and its looks' strip, what its old view built, now
-  // made, laid out and measured by the window's tree; a change of `fleet` makes its picture anew)
+  // made, laid out and measured by the window's tree; a change of `fleet` bound to what shows it)
   "wide share-card": (1960, 1557, 388),
   "wide share-card-dark": (1960, 1557, 388),
   "wide newchat-model": (1573, 1103, 111),
@@ -831,7 +831,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-notify-off": (564, 454, 79),
   "wide settings-notify-denied": (580, 484, 97),
   // (the card to share made once as nodes, 2026-11-17: its poster and its looks' strip, what its old view built, now
-  // made, laid out and measured by the window's tree; a change of `fleet` makes its picture anew)
+  // made, laid out and measured by the window's tree; a change of `fleet` bound to what shows it)
   "wide share-card-poster": (1868, 1465, 356),
   "wide share-card-receipt": (2173, 1770, 386),
   "wide share-card-terminal": (1951, 1548, 380),

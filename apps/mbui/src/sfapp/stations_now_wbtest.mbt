@@ -535,3 +535,39 @@ fn picture_drawn_k(t : @ui.Tester) -> Double {
     1.0
   }
 }
+
+///|
+/// How long after it starts share-card-motion's made-up view has made all its changes (fixture_fleet's steps: 2 s, then
+/// one each 1.6 s), and a little more.
+let share_motion_done_ms : Double = 6000.0
+
+///|
+test "the card to share follows what the view says as it changes, made once: its figures and today's bar bound, nothing made again; a model come its own line, made alone" {
+  for look in ["夜色", "小票", "终端"] {
+    let src = fixture_app("share-card-motion")
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=430.0, h=932.0, platform=2)
+    t.run_for(@kit.presence_in_ms)
+    if look != "夜色" {
+      t.click(Button, label=look)
+      t.run_for(@kit.presence_in_ms)
+    }
+    assert_true(picture_says(t, "2.1 亿"), msg=look)
+    assert_true(!picture_says(t, "GPT-6 Astra"), msg=look)
+    t.tree_frames_from_now()
+    t.run_for(share_motion_done_ms)
+    // (the figures as the view says them now: the first model's tokens, the week's and today's chats archived)
+    assert_true(picture_says(t, "2.3 亿"), msg=look)
+    assert_true(!picture_says(t, "2.1 亿"), msg=look)
+    assert_true(picture_says(t, "GPT-6 Astra"), msg=look)
+    // (what the view's changes made: the new model's line alone, in one frame; nothing let go)
+    let frames = t.tree_frames()
+    let making = frames.filter(fn(f) { f.made > 0 })
+    assert_true(making.length() == 1 && making[0].made <= share_motion_model_nodes, msg="\{look} \{Repr(making)}")
+    assert_true(frames.iter().all(fn(f) { f.let_go == 0 }), msg=look)
+    assert_eq(t.corner_faults(), [])
+  }
+}
+
+///|
+/// The most nodes a model's line of the card is made of (its box, its dot or key, its words, what is between them).
+let share_motion_model_nodes : Int = 6
