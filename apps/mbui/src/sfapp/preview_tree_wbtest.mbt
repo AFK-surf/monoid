@@ -3329,29 +3329,32 @@ fn shaped() -> @ui.Tester raise {
 
 ///|
 /// The lines the window's tree draws over the picture (marks_shapes_node's), and the words drawn there with their place
-/// (the words and their edges, in the order drawn).
-fn shapes_drawn() -> (Array[@ui.Line], Array[(String, Double, Double, Int64)]) {
+/// (the words, each drawn once with its edge: View::words_edge).
+fn shapes_drawn() -> (Array[@ui.Line], Array[(String, Double, Double, Int64, (Double, Int64))]) {
   let lines = []
   let words = []
-  for d in @ui.view_tree().unwrap().drawn() {
+  let tree = @ui.view_tree().unwrap()
+  for d in tree.drawn() {
     lines.append(d.lines)
     if d.words == "对齐" {
-      words.push((d.words, d.x, d.y, d.ink))
+      words.push((d.words, d.x, d.y, d.ink, tree.words_edge_of(d.id)))
     }
   }
   (lines, words)
 }
 
 ///|
-test "viewer on the tree, marking: a box, an arrow, a line drawn by hand and words drawn by the window's tree, as marks_lines works them out where the picture is; the words edged in their halo, eight under the words themselves" {
+test "viewer on the tree, marking: a box, an arrow, a line drawn by hand and words drawn by the window's tree, as marks_lines works them out where the picture is; the words edged in their halo by the one node that draws them" {
   let t = shaped()
   let v = viewer.get().unwrap()
   let (lines, words) = shapes_drawn()
   let (want, _) = @sfbase.marks_lines(v.marks_rect(t.time()).unwrap(), v.zoom.nw)
   assert_eq(lines.length(), want.length(), msg="as many lines")
   assert_true(lines == want, msg="the lines as marks_lines has them")
-  assert_eq(words.length(), 9, msg="the words and their eight edges")
-  assert_eq(words[8].3, marking.color, msg="the words themselves last, in their colour")
+  assert_eq(words.length(), 1, msg="the words, one node")
+  assert_eq(words[0].3, marking.color, msg="the words in their colour")
+  let (out, edge) = words[0].4
+  assert_eq((out > 0.0, edge), (true, @sfbase.halo_of(marking.color)), msg="edged in their halo")
   marks_leave()
 }
 
@@ -3424,18 +3427,18 @@ test "viewer on the tree, marking: words written again and set otherwise (anothe
   let tree = @ui.view_tree().unwrap()
   let ids = fn() { tree.drawn().filter(fn(d) { d.words.has_prefix("对齐") }).map(fn(d) { (d.id.at, d.id.gen) }) }
   let before = ids()
-  assert_eq(before.length(), 9, msg="the words and their edges")
+  assert_eq(before.length(), 1, msg="the words, one node")
   let i = marking.shapes.search_by(fn(s) { s.kind == "words" }).unwrap()
   let m = marking.shapes[i]
   marking.shapes[i] = { ..m, text: "对齐了", color: 0x2E8B57FFL, w: m.w * 1.5 }
   @sfbase.marks_changed()
   t.draw()
   let now = tree.drawn().filter(fn(d) { d.words == "对齐了" })
-  assert_eq(now.length(), 9, msg="written again, in the next frame")
-  assert_eq(now[8].ink, 0x2E8B57FFL, msg="in its new colour")
+  assert_eq(now.length(), 1, msg="written again, in the next frame")
+  assert_eq((now[0].ink, tree.words_edge_of(now[0].id).1), (0x2E8B57FFL, @sfbase.halo_of(0x2E8B57FFL)), msg="in its new colour, edged in its halo")
   let v = viewer.get().unwrap()
   let (_, _, rw, _) = v.marks_rect(t.time()).unwrap()
-  assert_eq(now[8].words_look.size, m.w * 1.5 * rw / v.zoom.nw, msg="at its new size")
+  assert_eq(now[0].words_look.size, m.w * 1.5 * rw / v.zoom.nw, msg="at its new size")
   assert_eq(now.map(fn(d) { (d.id.at, d.id.gen) }), before, msg="by the same nodes")
   marks_leave()
 }

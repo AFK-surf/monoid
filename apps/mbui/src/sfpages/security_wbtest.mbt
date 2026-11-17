@@ -539,15 +539,13 @@ let upgrade_device : String = "等待 Ana 的设备「Pixel 8 · still.fail Andr
 let upgrade_mini : String = "等待「个人」的 station 家里的 mini：请将它更新到最新版本并保持在线；已不再使用的话，请在它的页面上选择「从 workspace 移除」"
 
 ///|
-/// Each state of the upgrade the fixture has: its mode's end, the first line it shows (its button's words where it has
-/// only that), and how many 更新 are drawn.
+/// Each state of the upgrade the fixture has: its mode's end, the first line it shows, and how many 更新 are drawn.
 let upgrade_states : Array[(String, String, Int)] = [
   ("station", upgrade_maple, 1),
   ("station-not", upgrade_maple, 0),
   ("member", upgrade_ana, 0),
   ("device", upgrade_device, 0),
   ("many", upgrade_maple, 1),
-  ("ask", "验证并完成升级", 0),
   ("other", upgrade_mini, 1),
   ("updating", upgrade_maple, 0),
 ]
@@ -555,7 +553,7 @@ let upgrade_states : Array[(String, String, Int)] = [
 ///|
 /// What `t.audit()` says of the upgrade's section: its faults that name its words.
 fn upgrade_faults(t : @ui.Tester) -> Array[String] {
-  let marks = ["安全模式有一项升级", "等待", "以及另外", "验证并完成升级"]
+  let marks = ["安全模式有一项升级", "等待", "以及另外"]
   t.audit().filter(fn(f) { marks.iter().any(fn(m) { f.contains(m) }) })
 }
 
@@ -648,25 +646,121 @@ test "安全, at each width and with either hand: 更新 sends software.update f
 }
 
 ///|
-test "安全, at each width and with either hand: only the ask lacking, its button asks lock.handOver of this workspace" {
+/// What an upgraded workspace's safe mode says to an owner who cannot turn it off or on again (the fixture's `rootText`).
+let root_said : String = "安全模式由 Ana 开启"
+
+///|
+/// The words of the page that start with `start` (a sentence's first line), drawn and shown.
+fn lock_said_from(t : @ui.Tester, start : String) -> Bool {
+  t.words().iter().any(fn(x) { x.0.has_prefix(start) && x.5 > 0.5 })
+}
+
+///|
+/// Whether `words` are drawn whole and shown (not as part of longer words: 开启安全模式 in 重新开启安全模式).
+fn drawn_whole(t : @ui.Tester, words : String) -> Bool {
+  t.words().iter().any(fn(x) { x.0 == words && x.5 > 0.5 })
+}
+
+///|
+/// The page in `mode`, safe mode's calls of this device held: each asked of the made-up core as it would be (at work),
+/// answered only as the test says (`answer`).
+fn lock_held_tester(mode : String, w : Double, platform : Int, asked : Array[(String, Json)], answers : Array[(Result[Json, Json]) -> Unit]) -> @ui.Tester {
+  setting_tester(Security, w, platform~, mode~, over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "lock.confirmSigner" || name == "lock.open" || name == "lock.pair" {
+          asked.push((name, params))
+          @settings.fixture_lock_doing(name, params) |> ignore
+          answers.push(done)
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+  })
+}
+
+///|
+test "安全, at each width and with either hand: let in by its person's own lock without its signer, 验证 asks lock.confirmSigner once, a ring on it meanwhile, then trusted; no approval asked" {
   for (w, platform) in page_cases {
     let asked : Array[(String, Json)] = []
-    let t = setting_tester(Security, w, platform~, mode="settings-security-upgrade-ask", over=fn(base) {
-      {
-        ..base,
-        call: fn(name, params, done) {
-          asked.push((name, params))
-          (base.call)(name, params, done)
-        },
-      }
-    })
+    let answers : Array[(Result[Json, Json]) -> Unit] = []
+    let t = lock_held_tester("settings-security-confirm", w, platform, asked, answers)
     t.run_for(@ui.move_most_ms)
     let at = "\{w} platform \{platform}"
-    t.click(Button, label="验证并完成升级")
+    assert_true(lock_said_from(t, "此设备需完成一次验证"), msg=at)
+    // (no approval asked: none would let it in, the core refusing it as waiting in no workspace)
+    assert_true(t.find("发送批准请求") is None, msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    scrolled_to(t, w, "验证")
+    tap_words(t, "验证")
+    t.frame()
+    // (pressed again while asked: nothing more sent)
+    tap_words(t, "验证")
     t.run_for(@ui.move_most_ms)
-    let handed = asked.filter(fn(c) { c.0 == "lock.handOver" })
-    assert_eq(handed.length(), 1, msg=at)
-    assert_eq(handed[0].1, { "workspace": "ws1" }, msg=at)
-    assert_true(t.find(upgrade_title) is None, msg=at)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(asked[0].0, "lock.confirmSigner", msg=at)
+    assert_eq(asked[0].1, { "workspace": "ws1" }, msg=at)
+    @settings.fixture_lock_done()
+    answers[0](Ok(Json::null()))
+    t.run_for(@ui.move_most_ms)
+    assert_false(lock_said_from(t, "此设备需完成一次验证"), msg=at)
+    assert_true(t.find("安全模式已开启") is Some(_), msg=at)
+  }
+}
+
+///|
+test "安全, at each width and with either hand: an upgraded workspace on by another owner alone: who and the way out, no 关闭安全模式" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~, mode="settings-security-root")
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("安全模式已开启") is Some(_), msg=at)
+    scrolled_to(t, w, root_said)
+    t.run_for(@ui.move_most_ms)
+    assert_true(lock_said_from(t, root_said), msg=at)
+    assert_false(drawn_whole(t, "关闭安全模式"), msg=at)
+  }
+}
+
+///|
+test "安全, at each width and with either hand: an upgraded workspace off by another owner alone: who and the way out, no 开启安全模式" {
+  for (w, platform) in page_cases {
+    let t = setting_tester(Security, w, platform~, mode="settings-security-root-off")
+    let at = "\{w} platform \{platform}"
+    t.run_for(@ui.move_most_ms)
+    assert_true(lock_said_from(t, root_said), msg=at)
+    assert_false(drawn_whole(t, "开启安全模式"), msg=at)
+    assert_false(drawn_whole(t, "重新开启安全模式"), msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+  }
+}
+
+///|
+test "安全, at each width and with either hand: off by this person, 重新开启安全模式 asks lock.open once with no page of its own, a ring on it meanwhile, then on" {
+  for (w, platform) in page_cases {
+    let asked : Array[(String, Json)] = []
+    let answers : Array[(Result[Json, Json]) -> Unit] = []
+    let t = lock_held_tester("settings-security-again", w, platform, asked, answers)
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_false(drawn_whole(t, "开启安全模式"), msg=at)
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    tap_words(t, "重新开启安全模式")
+    t.frame()
+    tap_words(t, "重新开启安全模式")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(asked.length(), 1, msg=at)
+    assert_eq(asked[0].0, "lock.open", msg=at)
+    assert_eq(asked[0].1, { "workspace": "ws1" }, msg=at)
+    assert_false(app.nav.pages().contains(Setting(SecurityOpen)), msg=at)
+    @settings.fixture_lock_done()
+    answers[0](Ok(Json::null()))
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("安全模式已开启") is Some(_), msg=at)
+    assert_false(drawn_whole(t, "重新开启安全模式"), msg=at)
   }
 }

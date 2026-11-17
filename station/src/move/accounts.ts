@@ -79,7 +79,7 @@ export type AccountsDeps = {
   shareMoves?: ShareMoves;
 };
 
-export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void>; lookAt(from: string, said?: { share: string; uses: number }): Promise<void> } {
+export function accountsModule(d: AccountsDeps): Module & { cameHome(share: string, from: string): Promise<void>; lookAt(from: string, said?: { share: string; uses: number }): Promise<void>; settled(): Promise<void> } {
   /// What the other station said it has, as each plan asked it: by item id, its profile there and whether it hosts the
   /// login (false: it borrows it; null: a station from before, which does not say, taken as hosting it); null: none.
   const there = new Map<string, { id: string; hosts: boolean | null } | null>();
@@ -138,6 +138,8 @@ export function accountsModule(d: AccountsDeps): Module & { cameHome(share: stri
   return {
     id: "accounts",
     needs: [],
+    /// Once what it was asked to keep of what it lent is on disk (kept.ts `settled`).
+    settled: () => lent?.settled() ?? Promise.resolve(),
     async plan(ws, to) {
       const items: Item[] = [];
       const asked: Record<string, AccountOf> = {};

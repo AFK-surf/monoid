@@ -110,6 +110,22 @@ test "into the person's own lock bound in no workspace: what approving lets it d
 }
 
 ///|
+test "someone's first device in an upgraded workspace: the role approving lets them in as, under the workspaces, starting where they do" {
+  for platform in [0, 2] {
+    new_run()
+    let t = settings_tester("home", mode="settings-lock-prompt-role", shows="settings-lock-prompt-role", platform~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting())
+    let ask = pair_word(t, "申请访问")
+    let role = pair_word(t, "「星火工作室」：批准后以管理员身份加入")
+    assert_true(role.1 > ask.1, msg="platform \{platform}: under 申请访问")
+    assert_eq(role.0, ask.0, msg="platform \{platform}: starting where 申请访问 does")
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="platform \{platform}: " + faults.join(" | "))
+  }
+}
+
+///|
 test "with keyboard and mouse on a small window, and on a wide one (a dialog in the middle): 拒绝 turns it away" {
   for wide in [false, true] {
     let t = pair_asked(platform=0, wide~)

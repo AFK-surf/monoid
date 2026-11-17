@@ -2689,6 +2689,21 @@ test "raw-effect" {
 }
 
 ///|
+test "pick-loop: in what a switch_by makes, as in a pick's" {
+  // (View::switch_by is a pick at once: what it makes made again as what it switches by changes, the same)
+  let hits =
+    #|fn lanes_node(v : @view.View, ws : () -> String, n : Int) -> Unit {
+    #|  v.switch_by(fn() { ws() }, fn(p, _) {
+    #|    for i in 0..<n {
+    #|      p.box(fn(r) { r.words(Is(i.to_string())) |> ignore }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/lanes_node.mbt", hits)], "pick-loop", 1)
+  assert_eq(lines(fs), [3])
+}
+
+///|
 test "pick-loop" {
   // a loop making nodes as it goes round, in what a pick or a show makes (or in a part made in it, given what to make
   // in): counted, at its `for`
@@ -2987,6 +3002,213 @@ test "raw-hover-ground" {
       ("src/sfpages/row_node_wbtest.mbt", hits),
     ],
     "raw-hover-ground",
+    0,
+    cfg~,
+  )
+  |> ignore
+}
+
+///|
+test "width-structure" {
+  let hits =
+    #|fn table_node(outer : @view.View, flag : () -> Bool) -> Unit {
+    #|  outer.by_room(fn(outer, given) {
+    #|    outer.show(fn() { given.width() < 300.0 }, fn(o) { o.box(fn(_) {  }) |> ignore })
+    #|    let room = fn() { given.width() - 8.0 }
+    #|    let scale = fn() { if room() < 100.0 { room() / 100.0 } else { 1.0 } }
+    #|    outer.pick(fn() { scale() < 1.0 }, at_once=true, fn(o, fitted) { if fitted { o.box(fn(_) {  }) |> ignore } })
+    #|    outer.pick(fn() { room() > 400.0 }, fn(_, _) {  })
+    #|    let fit : () -> Bool = fn() { given.width() > 3.0 }
+    #|    outer.show(fit, fn(_) {  })
+    #|    outer.by_room(fn(inner, given) {
+    #|      inner.show(when=fn() { flag() && given.width() < 10.0 }, fn(_) {  })
+    #|    })
+    #|    |> ignore
+    #|  })
+    #|  |> ignore
+    #|}
+  let fs = found([("src/sf/table_node.mbt", hits)], "width-structure", 5)
+  assert_eq(lines(fs), [3, 6, 7, 9, 11])
+  let misses =
+    #|fn table_node(outer : @view.View, open : () -> Bool, w : @view.View) -> Unit {
+    #|  w.show(fn() { w.width() < 3.0 }, fn(_) {  })
+    #|  outer.by_room(fn(outer, given) {
+    #|    let room = fn() { given.width() - 8.0 }
+    #|    let half = fn() { room() / 2.0 }
+    #|    outer.gap(By(fn() { if half() < 300.0 { 4.0 } else { 8.0 } })) |> ignore
+    #|    outer.width(By(fn() { Some(given.width()) })) |> ignore
+    #|    outer.show(open, fn(o) { o.box(fn(_) {  }) |> ignore })
+    #|    outer.pick(fn() { given.tall(4.0) > 2.0 }, fn(_, _) {  })
+    #|    outer.show(fn() { st.room > 0.0 && pad(room=1.0) > 0.0 }, fn(_) {  })
+    #|    outer.pick(fn() { open() }, fn(o, _) { o.gap(By(fn() { room() })) |> ignore })
+    #|    outer.box(fn(b) {
+    #|      b.on_press(fn() { b.show(fn() { given.width() > 3.0 }, fn(_) {  }) })
+    #|    })
+    #|    |> ignore
+    #|    outer.by_room(fn(inner, r2) {
+    #|      inner.show(fn() { r2.tall(1.0) > 0.0 }, fn(_) {  })
+    #|    })
+    #|    |> ignore
+    #|  })
+    #|  |> ignore
+    #|}
+  found(
+    [("src/sf/fine_node.mbt", misses), ("src/sf/table_node_wbtest.mbt", hits)],
+    "width-structure",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "reused-untracked-key" {
+  let hits =
+    #|fn list_node(v : @view.View, s : @view.Scroll, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  v.scrolls_window(
+    #|    s,
+    #|    keys,
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, key) {
+    #|      let k = @signals.untracked(key)
+    #|      let n = @signals.untracked(fn() { rows.get().get(key()) })
+    #|      let m = key.untracked()
+    #|      let o = untracked(fn() { key() })
+    #|      b.words(By(fn() { "\{k} \{n} \{m} \{o}" })) |> ignore
+    #|    },
+    #|    fn(b, k) { b.words(Is(k)) |> ignore },
+    #|  )
+    #|  |> ignore
+    #|}
+  let fs = found([("src/sfpages/list_node.mbt", hits)], "reused-untracked-key", 4)
+  assert_eq(lines(fs), [7, 8, 9, 10])
+  let misses =
+    #|fn list_node(v : @view.View, s : @view.Scroll, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  v.scrolls_window(
+    #|    s,
+    #|    keys,
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, key) {
+    #|      b.words(By(fn() { rows.get().get(key()).to_string() })) |> ignore
+    #|      let first = @signals.untracked(fn() { rows.get().length() })
+    #|      let held = @signals.untracked(fn() { b.key })
+    #|      b.on_press(fn() { ignore(@signals.untracked(key)) }) |> ignore
+    #|      b.gesture(tap=fn() { ignore(@signals.untracked(fn() { key() })) }) |> ignore
+    #|      ignore((first, held))
+    #|    },
+    #|    fn(b, k) { b.words(Is(@signals.untracked(fn() { k }))) |> ignore },
+    #|  )
+    #|  |> ignore
+    #|  v.scrolls_window(s, keys, make_reused=fn(b, _) { ignore(@signals.untracked(fn() { b })) }, fn(_, _) {  }) |> ignore
+    #|}
+  found(
+    [("src/sfpages/fine_node.mbt", misses), ("src/sfpages/list_node_wbtest.mbt", hits)],
+    "reused-untracked-key",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "manual-fade-way" {
+  let conf = conf_value()
+    .set("pages", @rjson.Value::Obj([("roots", Arr([Str("src/sfpages")]))]))
+    .set("library", @rjson.Value::Obj([("roots", Arr([Str("src/sf")]))]))
+  let cfg = Config::new(conf)
+  let hits =
+    #|fn key_node(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  let there = @signals.signal(false)
+    #|  v.reacts(fn() { true }, fn(on) {
+    #|    seen.go(v, 1.0, 100.0)
+    #|    if !on { v.at_moment(v.logic_at() + 100.0, fn() { there.set(false) }) |> ignore }
+    #|  })
+    #|  v.show(fn() { there.get() }, fn(_) {  })
+    #|}
+    #|
+    #|fn bar_node(v : @view.View) -> Unit {
+    #|  let way = EdgeWay::new(1.0)
+    #|  let again = EdgeWay::new(0.0)
+    #|  let gone = @signals.signal(false)
+    #|  v.at_moment(10.0, fn() { gone.set(true) }) |> ignore
+    #|  v.show(fn() { !gone.get() }, fn(_) {  })
+    #|}
+  let fs = found(
+    [("src/sf/key_node.mbt", hits), ("src/sfpages/bar_node.mbt", hits)],
+    "manual-fade-way",
+    4,
+    cfg~,
+  )
+  assert_eq(lines(fs), [2, 2, 12, 12])
+  let misses =
+    #|fn no_moment(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  v.show(fn() { true }, fn(_) {  })
+    #|}
+    #|
+    #|fn no_show(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  v.at_moment(10.0, fn() {  }) |> ignore
+    #|}
+    #|
+    #|fn no_way(v : @view.View) -> Unit {
+    #|  let gone = @signals.signal(false)
+    #|  v.at_moment(10.0, fn() { gone.set(true) }) |> ignore
+    #|  v.show(fn() { !gone.get() }, fn(_) {  })
+    #|}
+    #|
+    #|fn way_alone(v : @view.View) -> @motion.EdgeWay {
+    #|  @motion.EdgeWay::new(0.0)
+    #|}
+    #|
+    #|fn not_what_it_shows(v : @view.View, open : @signals.Signal[Bool]) -> Unit {
+    #|  let grow = @motion.EdgeWay::new(0.0)
+    #|  let landed = @signals.signal(false)
+    #|  v.at_moment(v.cause_at(), fn() { grow.go(v, 1.0, 100.0); landed.set(true) }) |> ignore
+    #|  v.show(fn() { open.get() }, fn(_) {  })
+    #|}
+  found(
+    [
+      ("src/sf/fine_node.mbt", misses),
+      ("src/sf/key_node_wbtest.mbt", hits),
+      ("src/stillfail/key_node.mbt", hits),
+    ],
+    "manual-fade-way",
+    0,
+    cfg~,
+  )
+  |> ignore
+}
+
+///|
+test "page-at-moment" {
+  // a page asking a moment of its own (View::at_moment) outside its tests: counted, at the call
+  let cfg = Config::new(@rjson.parse("{\"pages\": {\"roots\": [\"src/sfdesk\", \"src/sfpages\"]}}"))
+  let hits =
+    #|fn bar_node(v : @view.View, open : () -> Bool) -> Unit {
+    #|  let closing = @signals.signal(false)
+    #|  v.reacts(open, fn(o) {
+    #|    if !o {
+    #|      closing.set(true)
+    #|      v.at_moment(v.cause_at() + 120.0, fn() { closing.set(false) }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfdesk/bar_node.mbt", hits)], "page-at-moment", 1, cfg~)
+  assert_eq(lines(fs), [6])
+  // the same in a test, in the library (not a page), excused on its line, and a function of another name: not
+  let excused =
+    #|fn field_node(f : @view.View) -> Unit {
+    #|  // det-ok(page-at-moment): what is typed looked for that much later, the page's own timing
+    #|  f.at_moment(f.cause_at() + 120.0, fn() {  }) |> ignore
+    #|  f.at_moments(1.0) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfdesk/bar_node_wbtest.mbt", hits),
+      ("src/sf/bar_node.mbt", hits),
+      ("src/sfpages/field_node.mbt", excused),
+    ],
+    "page-at-moment",
     0,
     cfg~,
   )

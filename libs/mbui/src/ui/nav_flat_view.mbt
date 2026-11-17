@@ -213,7 +213,10 @@ pub fn[P] nav_flat_view(
       let shows = fn() { seen.get().shown.contains(k) }
       pv
         .over(Is(true))
-        .shift(By(fn() { if seen.get().stacked { nav.shift_of(k, fn() { pv.drawn_at() }) } else { (0.0, 0.0) } }))
+        .shift(
+          By(fn() { if seen.get().stacked { nav.shift_of(k, fn() { pv.drawn_at() }) } else { (0.0, 0.0) } }),
+          ends=fn() { if @signals.untracked(fn() { seen.get().stacked }) { nav.shift_ends_of(k) } else { -1.0 } },
+        )
         .presses(By(fn() { if seen.get().stacked { nav.takes(k) } else { shows() } }))
         |> ignore
       // (let go as it leaves the stack, not kept shown: what it made forgotten, the app told)

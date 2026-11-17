@@ -1,0 +1,13 @@
+# A chat on a phone (MBUI_FIXTURE=chat MBUI_WIN=390x844): its composer pressed, two lines written in it: a box, its
+# words over the row of ＋ and send (sfpages' composer_node with MBUI_CHAT_PAGE=composed, the old view's with
+# MBUI_CHAT_PAGE=nodes).
+timeout 20000
+until 发消息
+wait 600
+tap 发消息
+wait 700
+type 帮我看一下登录按钮
+key enter
+type 还有注册页
+wait 900
+exit

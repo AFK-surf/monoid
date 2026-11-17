@@ -169,3 +169,38 @@ test "how far the resources came, from a phone's ⋯: their list in a sheet as t
   t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenter_visible())
 }
+
+///|
+test "a service's page as the width moves its bar under it and back (a finger's, wide then narrow then wide): its stage and the page's view made once, never let go" {
+  @sf.presenters_reset()
+  new_run()
+  let src = fixture("service")
+  open_drive_fixture("service")
+  let now = fn() -> @sfpages.ServiceNow { { port: 3000, name: "web", restarting: false, restarts: 0, session: "s-c1" } }
+  let t = @ui.Tester::new(
+    fn(_) {  },
+    tree=fn(root) {
+      @sf.set_words(fill)
+      @sfpages.service_view_node(root, src, "ws1/st1", "j-web", now, fn() { root.window().0 })
+    },
+    w=1100.0,
+    h=800.0,
+    platform=2,
+  )
+  t.run_for(@ui.move_most_ms)
+  let reload_y = fn() { t.query(Button, label="刷新").unwrap().rect.1 }
+  let views_at_first = t.views().length()
+  let native = t.native_nodes()
+  assert_eq(native.length(), 1, msg="the page's view: \{Repr(native)}")
+  assert_true(reload_y() < 100.0, msg="wide: its bar over the page")
+  t.resize(480.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(reload_y() > 700.0, msg="narrow: its bar under the page, in a thumb's reach")
+  assert_eq(t.native_nodes(), native, msg="the same node all along")
+  t.resize(1100.0, 800.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(reload_y() < 100.0, msg="wide again: its bar over the page")
+  assert_eq(t.native_nodes(), native, msg="the same node all along")
+  let since = t.views()[views_at_first:].to_owned()
+  assert_false(since.iter().any(fn(s) { s.has_prefix("open ") || s.has_prefix("close ") }), msg="\{Repr(since)}")
+}

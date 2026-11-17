@@ -551,18 +551,18 @@ pub fn source() -> @sfapp.Source {
     read_bytes: fn(name, params, done) {
       match @sfkept.answer(name, params, None) {
         Some(Ok((v, b))) => {
-          @ui.answered_from_outside(fn() { done(Ok((v, b.unwrap_or(Bytes::new(0))))) })
+          @ui.answered_from_outside(fn() { done(Ok((v, b.unwrap_or(Bytes::make(0, b'\x00'))))) })
           return
         }
         _ => ()
       }
       @core.call_bytes(name, params~, on_done=fn(r) {
-        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::new(0))) }))
+        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::make(0, b'\x00'))) }))
       })
     },
     read_going: fn(name, params, on_value, done) {
       @core.stream_bytes(name, params~, on_value=fn(v, _) { on_value(v) }, on_done=fn(r) {
-        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::new(0))) }))
+        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::make(0, b'\x00'))) }))
       })
       |> ignore
     },

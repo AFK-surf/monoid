@@ -540,14 +540,52 @@ pub fn sees(viewer : JV, ws : JV) -> Bool {
 }
 
 ///|
-/// Whether `viewer` sees a session (one not there: the home workspace's).
+/// Whether `viewer` sees a session (one not there: the home workspace's, but another station's task its workspace's).
 pub async fn Admin::session_seen(
   self : Admin,
   viewer : JV,
   key : String,
 ) -> Bool {
   let ws = self.store("sessionWs", [js(key)])
-  sees(viewer, if nullish(ws) { Null } else { ws })
+  if !is_undef(ws) {
+    return sees(viewer, ws)
+  }
+  // (none there: the home workspace's, but another station's task its workspace's: rows.ts `seesMissing`)
+  match remote_ws(key) {
+    Some(w) =>
+      match jget(Some(viewer), "workspace") {
+        Some(Str(v)) => v == w
+        _ => false
+      }
+    None => sees(viewer, Null)
+  }
+}
+///|
+/// store/rows.ts `remoteWs` (readops `remote_ws`): the workspace another station's task runs for, by its job's session key
+/// (`remote:<workspace>:<station>:<session>`, as `/^remote:([^:/]+):[^:/]+:.+$/` reads it), none for any other key.
+fn remote_ws(key : String) -> String? {
+  guard key.has_prefix("remote:") else { return None }
+  // remote, the workspace's id, the station's, then the session's key (with colons of its own)
+  let parts = key.split(":").map(v => v.to_owned()).collect()
+  guard parts.length() >= 4 else { return None }
+  let ws = parts[1]
+  let station = parts[2]
+  if ws == "" || station == "" || ws.contains("/") || station.contains("/") {
+    return None
+  }
+  let from = 7 + ws.length() + 1 + station.length() + 1
+  let n = key.length()
+  if from >= n {
+    return None
+  }
+  for i in from..<n {
+    let c = key.unsafe_get(i).to_int()
+    // (a regular expression's `.` takes no line's end)
+    if c == 0x0a || c == 0x0d || c == 0x2028 || c == 0x2029 {
+      return None
+    }
+  }
+  Some(ws)
 }
 
 ///|

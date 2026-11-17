@@ -1308,13 +1308,26 @@ export class Hub {
     }
   }
 
-  /// A profile was deleted: the sessions on it are taken on by another of their runtime's (their process ends now if
-  /// idle, else when its turn is over); those no other profile can run are stopped, and their process ends.
+  /// A profile was deleted (disabled, moved away): a session on it with a turn under way is taken on by another of its
+  /// runtime's (its process ends when the turn is over), or stopped where no other profile can run it; one whose
+  /// process is idle only has it ended. A session with no process is left as it is: no one is using it, and its next
+  /// turn, if it ever has one, picks another account then (accounts.ts `runOn`), said in its chat as it goes on (the
+  /// user, 2026-11-17: 「没人用的 session 为啥要切」「这种系统消息不应该给很久没活跃的 thread 发」, after an account
+  /// deleted on the admin page moved every session it had ever run, 554 chats told 已切换账号 in a second, months-old
+  /// Slack and group threads among them).
   /// A chat handed to another station as this one is retired is left as it is: it goes on there, and its account moving
   /// away from here (share/index.ts `moveProfile`) says nothing in it.
   async profileGone(id: string) {
     for (const row of this.store.listSessions()) {
       if (row.profile !== id || this.handedOver(row.key)) continue;
+      const actor = this.actors.get(row.key);
+      const state = actor?.processState() ?? "cold";
+      if (!actor || state === "cold") continue;
+      if (state === "warm") {
+        log.info("hub", "profile deleted under an idle session", { session: row.key, profile: id });
+        await actor.changed();
+        continue;
+      }
       let movable = true;
       try {
         this.accounts.runOn(row.key);
@@ -1322,8 +1335,6 @@ export class Hub {
         movable = false;
       }
       log.info("hub", "profile deleted under a session", { session: row.key, profile: id, movedTo: movable ? (this.store.getSession(row.key)?.profile ?? "") : "" });
-      const actor = this.actors.get(row.key);
-      if (!actor) continue;
       if (!movable) await actor.stop();
       await actor.changed();
     }

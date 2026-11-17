@@ -10,6 +10,12 @@
 // nothing). A deleted branch's caches cannot be restored by another branch, so all of its caches are removed once
 // they have not been created or read for 30 minutes, and a live branch's once not read for 12 hours. Pull request and
 // other refs keep their own existing rules.
+// What is kept after all that is held under `repo_cache_cap_bytes`: 15 branches pushed within 12 hours kept 15.8 GB,
+// the repository 23.7 GB (2026-11-17, run 44076658048 deleted none of its 152), and GitHub's eviction took main's
+// seldom read ones again (warp-1.0.21, android-image, natives-shell-apple, mbui-tool-*). Over it, the caches of refs
+// other than the default branch (a branch's, a pull request's) go, least recently read first, till it holds: such a
+// branch's next push restores main's by restore-keys, as after 12 hours idle. The default branch's are never taken
+// for it, nor one under a megabyte.
 // (A list of the kinds by name, as .github/cache_prune.py had, missed each new one: on 2026-10-22 mbui-apk-<sha>,
 // android-lint-main-<sha>, android-build-main-<sha> and the mbui-linux-store-… ones were 4 GB of the 22.)
 // setup-gradle's parts of a Gradle home (gradle-transforms-v1-<hash>, gradle-dependencies-v1-…: by their content,
@@ -195,6 +201,43 @@ fn idle_branch_cache(c : Cache, default_head : String, now : Double) -> Bool {
 }
 
 ///|
+/// The most the caches kept may hold: GitHub's 10 GB less one for what runs save while this one has not run again.
+let repo_cache_cap_bytes : Int64 = 9_000_000_000L
+
+///|
+/// What goes of `kept` to hold it under `cap`: caches of refs other than `default_head`, a megabyte or more, least
+/// recently read first (then the oldest, then by id), till what is left is at or under `cap`. None of the default
+/// branch's, however far over it alone is.
+fn over_cap_caches(kept : Array[Cache], default_head : String, cap : Int64) -> Array[Cache] {
+  let mut bytes = kept.fold(init=0L, fn(a, c) { a + c.size })
+  let out : Array[Cache] = []
+  if bytes <= cap {
+    return out
+  }
+  let others = kept.filter(fn(c) { c.ref_ != default_head && c.size >= 1000000L })
+  others.sort_by(fn(a, b) {
+    let by_read = a.accessed.compare(b.accessed)
+    if by_read != 0 {
+      return by_read
+    }
+    let by_made = a.created.compare(b.created)
+    if by_made != 0 {
+      return by_made
+    }
+    let by_len = a.id.length().compare(b.id.length())
+    if by_len != 0 { by_len } else { a.id.compare(b.id) }
+  })
+  for c in others {
+    if bytes <= cap {
+      break
+    }
+    out.push(c)
+    bytes -= c.size
+  }
+  out
+}
+
+///|
 /// A Git ref can contain shell metacharacters, including single quotes.
 fn shell_arg(s : String) -> String {
   "'" + s.replace(old="'", new="'\\''") + "'"
@@ -375,6 +418,14 @@ fn cache_prune(args : Array[String]) -> Int {
       }
       None => ()
     }
+  }
+  let going : Map[String, Bool] = Map([])
+  for c in gone {
+    going[c.id] = true
+  }
+  let kept = caches.filter(fn(c) { !going.contains(c.id) })
+  for c in over_cap_caches(kept, default_head, repo_cache_cap_bytes) {
+    gone.push(c)
   }
   let mut freed = 0L
   for c in gone {
