@@ -150,6 +150,44 @@ pub fn composer_take_focus(drafts? : String = "") -> Unit {
 }
 
 ///|
+/// What was refused as it is (编辑 under it) taken back into draft `key` to be written again, dropped from the outbox by
+/// `discard` once it is: its words after what the draft holds already, put in its field as well as told (the core keeps
+/// no new `rev` for `composer.text`: told alone, the field's own words were told back over them as the composer was next
+/// built), its quotes the draft does not hold yet quoted again, the cursor in it.
+pub fn outbox_edit(src : Source, key : String, now : Outgoing, discard : () -> Unit) -> Unit {
+  let w = @signals.untracked(fn() { writing(src, key) })
+  let held = @signals.untracked(fn() { w.text.get() })
+  let merged = if held.trim() == "" {
+    now.text
+  } else if now.text.trim() == "" {
+    held
+  } else {
+    held.trim_end().to_owned() + "\n" + now.text
+  }
+  w.field.set(merged)
+  writing_text(src, w, merged)
+  let quoted = @signals.untracked(fn() { w.quotes.get() })
+  for q in now.quotes {
+    let there = quoted.iter().any(fn(x) {
+      let o = Some(x)
+      text(o, "ts") == q.ts && text(o, "text") == q.text && text(o, "author") == q.author
+    })
+    if !there {
+      writing_quote(src, w, {
+        "author": Json::string(q.author),
+        "text": Json::string(q.text),
+        "comment": Json::string(q.comment),
+        "ts": Json::string(q.ts),
+        "role": Json::string(q.role),
+      })
+    }
+  }
+  w.field.focus()
+  composer_take_focus()
+  discard()
+}
+
+///|
 let composing : Composing = {
   let_go: @signals.signal(false, same=fn(a, b) { a == b }),
   had_focus: false,
@@ -697,8 +735,18 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   }
   // the videos waiting that the host has no picture of: their first frames, made from their bytes
   @sfbase.writing_stills(c)
-  if !dropped.is_empty() && !no_files {
-    writing_drop(src, w, spec.station, dropped.map(dropped_of), drops_as_files(src, w.key))
+  if !dropped.is_empty() {
+    if no_files {
+      // (not taken in where none goes up now: said why, and what to do, never let go of with nothing said)
+      let why = if spec.offline {
+        @sf.t("web-main.composer.filesOffline")
+      } else {
+        @sf.t("web-main.composer.filesLocked")
+      }
+      c.tell("composer/files-refused/" + w.key, fn() { toast_later(why) })
+    } else {
+      writing_drop(src, w, spec.station, dropped.map(dropped_of), drops_as_files(src, w.key))
+    }
   }
 }
 

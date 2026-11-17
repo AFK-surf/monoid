@@ -5,15 +5,21 @@
 
 ///|
 /// A card of words in `parent` (card's, as nodes): card_pad in from every side, what is on it 14 apart, the card's
-/// corner and ground. `body` makes what is on it. The node.
+/// corner and ground (`ground`: another, where it stands among cards of another, a post's options'). `body` makes what
+/// is on it. The node.
 #callsite(autofill(loc))
-pub fn ask_card_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View {
+pub fn ask_card_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  ground? : () -> Int64 = fn() { theme().p.card },
+  loc~ : SourceLoc,
+) -> @view.View {
   parent.box(made_for=loc, fn(k) {
     k
     .padding(Is((card_pad, card_pad, card_pad, card_pad)))
     .gap(Is(ask_card_gap))
     .radius(Is(card_corner))
-    .ground(By(fn() { theme().p.card }))
+    .ground(By(ground))
     |> ignore
     body(k)
   })

@@ -262,8 +262,37 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
       offer(action_offered("chat.jobs", "web", fn() { open_jobs_pop() }))
       match view {
         Some(v) => {
-          if v.screens.length() > 0 {
-            offer(action_offered("chat.screen", "monitor", fn() { chat_screen_first(r, v.screens) }))
+          if chat_has_remote(v) {
+            offer(action_offered("chat.screen", "monitor", fn() { chat_remote_first(r, v.screens, v.can_terminal()) }))
+          }
+          if v.can_terminal() && @sfpages.terminals_here() && (src.asks_terminals)() {
+            all.push({
+              id: "chat.terminal",
+              group: "chat",
+              label: @sf.t("web-pages.remote.openChatTerminal"),
+              words: "terminal shell 终端",
+              icon: "terminal",
+              keys: "",
+              typed: true,
+              version: "",
+              station: "",
+              run: fn() { @sfbase.open_terminal(r.station, "new", "", r.session) },
+            })
+          }
+          if v.can_browser() {
+            let listed = v.screens.filter(fn(s) { s.id.has_prefix("browser:u_") }).map(fn(s) { s.id })
+            all.push({
+              id: "chat.browser",
+              group: "chat",
+              label: @sf.t("web-pages.remote.openBrowser"),
+              words: "browser 浏览器",
+              icon: "web",
+              keys: "",
+              typed: true,
+              version: "",
+              station: "",
+              run: fn() { @sfbase.open_remote_browser(src, r.station, listed) },
+            })
           }
           let chat = src.topic("chat", chat_params(r)).get().value
           let open = !v.archived && !v.offline
@@ -319,6 +348,18 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
   }
   offer(action_offered("settings", "settings", fn() { open_settings() }))
   offer(action_offered("shortcuts", "keyboard", fn() { wide.keys_open.set(true) }))
+  all.push({
+    id: "place.remote",
+    group: "global",
+    label: @sf.t("web-main.rail.remote"),
+    words: "remote desktop browser terminal 远程 桌面 浏览器 终端",
+    icon: "monitor",
+    keys: "",
+    typed: true,
+    version: "",
+    station: "",
+    run: fn() { @sfbase.go_place("remote") |> ignore },
+  })
   let routes : Array[(String, @settings.Route, String)] = [
     ("appearance", @settings.Route::Appearance, @sf.t("web-pages.settings.nav.appearance")),
     ("notifications", @settings.Route::Notifications, @sf.t("web-pages.settings.nav.notifications")),

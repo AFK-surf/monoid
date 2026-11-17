@@ -13,7 +13,8 @@ priv struct MoveFixture {
   /// how far it is: "" nothing moved; "half" some of each there, nothing under way; "mid" a chat moving, one stopped,
   /// one failed; "ended" that turn ended, the chat there; "done" all of it there; "empty" every module empty
   mut stage : String
-  /// the stations it may go to are online (Maple, Cedar); false: none
+  /// the stations it may go to are online (Maple, Cedar; Birch offline after them); false: none it may go to (Maple on
+  /// the stable release, Cedar offline), each saying why
   mut targets : Bool
   /// moving is off where it goes: a move is refused in its words
   mut off : Bool
@@ -230,13 +231,20 @@ fn fx_move_view(params : Map[String, Json]) -> Json {
   }
   // (what cannot move of the items read: 本机 Codex 登录, and 周报 once a turn moved chats)
   let cannot = if fx_move.stage == "empty" { 0 } else if mid || ended { 2 } else { 1 }
+  let target = fn(id, name, free, why) {
+    obj([("station", str(id)), ("name", str(name)), ("free", str(free)), ("why", str(why))])
+  }
   let targets = if fx_move.targets {
     [
-      obj([("station", str("st2")), ("name", str("Maple")), ("free", str(fill("core-views.move.free", [("size", "120 GB")])))]),
-      obj([("station", str("st3")), ("name", str("Cedar")), ("free", str(fill("core-views.move.free", [("size", "2.1 TB")])))]),
+      target("st2", "Maple", fill("core-views.move.free", [("size", "120 GB")]), ""),
+      target("st3", "Cedar", fill("core-views.move.free", [("size", "2.1 TB")]), ""),
+      target("st4", "Birch", "", tr("core-views.move.why.offline")),
     ]
   } else {
-    []
+    [
+      target("st2", "Maple", fill("core-views.move.free", [("size", "120 GB")]), tr("core-views.move.why.stable")),
+      target("st3", "Cedar", "", tr("core-views.move.why.offline")),
+    ]
   }
   let left = modules.fold(init=0, fn(n, m) { n + number(Some(m), "total").to_int() - number(Some(m), "done").to_int() })
   let there = modules.fold(init=0, fn(n, m) { n + number(Some(m), "done").to_int() })

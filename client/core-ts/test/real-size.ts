@@ -18,7 +18,7 @@ import { PENDING_MOST, type Pending } from "../src/lock-pending.ts";
 import type { Topic } from "../src/protocol.ts";
 import { PAGE } from "../src/station/channel-kinds.ts";
 import { localDay } from "../src/views/usage.ts";
-import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown } from "../src/move.ts";
+import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown, moveWhy } from "../src/move.ts";
 import { hostOf, link, overview, rows, sessions, threads, workspace } from "./views-rig.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -1608,7 +1608,10 @@ export function moveOf(now: number, asked: { to: string; module: string; limit?:
     stopped: [1, 2, 3].map((k) => ({ item: `chats ${keyOf(0, 30 + step + k)}`, waitsFor: "accounts i0" })),
     last: { at: now - 5 * MIN, by: PEOPLE[0]!.email, done: [], refused: [{ item: `chats ${keyOf(0, 40 + step)}`, why: "它要的连接「Slack · Acme」还没迁到 Willow：先迁连接，或用全部迁移" }], stopped: [], resumed: [], failed: null },
   };
-  const targets = STATIONS.slice(1, UP_COUNT).map((s, i) => ({ station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }) }));
+  // (the other stations up, then those down, each saying why)
+  const targets = STATIONS.slice(1).map((s, i) => (i + 1 < UP_COUNT
+    ? { station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }), why: "" }
+    : { station: s.id, name: s.name, free: "", why: moveWhy(false, undefined) }));
   return moveShown(raw, { to: asked.to, toName: asked.to === "" ? "" : "Willow", module: asked.module, targets, canMove: true });
 }
 

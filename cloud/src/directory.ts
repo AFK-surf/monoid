@@ -27,7 +27,7 @@ import { MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl
 import { RELAY_TABLES, RELAY_TOKEN_TTL_SEC, relayPut, relayTokenOf, type RelayListed, type RelayTokenInput } from "./relay-registry";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
-import type { AccountEvent, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
+import type { AccountEvent, AdminList, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
 import { apply, asEntry, entryHash, genesis, keepLockAt, LockAppendRefused, shortCode, type Entry, type LockEntry, type LockState } from "./lock";
 export type { Role };
 
@@ -75,6 +75,8 @@ const FEEDBACK_REPLIES_PER_DAY = 100;
 const FEEDBACK_SHOWN = 200;
 
 const LIST: AccountEvent = { type: "workspaces" };
+/** How long an account that opened the console is told what it shows changed (noteOperator). */
+const OPERATOR_KEPT_S = 7 * 24 * 60 * 60;
 /** The picture an account is shown with, of its row in users: the one it put up for itself (setOwnPicture), else its sign-in's. */
 const SHOWN_PICTURE = "COALESCE(own_picture, picture)";
 type Attachment = { station: string; at: number; dropped?: boolean } | { sub: string; sid?: string };
@@ -165,6 +167,7 @@ export class Directory extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key TEXT NOT NULL, body TEXT NOT NULL, tries INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS live (kind TEXT NOT NULL, key TEXT NOT NULL, gen INTEGER NOT NULL, PRIMARY KEY (kind, key));
       CREATE TABLE IF NOT EXISTS hits (hour INTEGER NOT NULL, family TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (hour, family));
+      CREATE TABLE IF NOT EXISTS operators (sub TEXT PRIMARY KEY, email TEXT NOT NULL, seen_at INTEGER NOT NULL);
     `);
     // users had neither column before invite codes, nor beta (1: let into the test channel) before it, nor blocked (1:
     // the admin blocked the account; the account's own object is what keeps it out) before the console could block,
@@ -488,8 +491,59 @@ export class Directory extends DurableObject<Env> {
    */
   tellAdmins(event: AccountEvent): void {
     this.#keepCounts();
-    if (!this.env.ADMIN_EMAIL) return;
-    this.#tell(this.#byEmail(this.env.ADMIN_EMAIL), event);
+    this.#tell(this.#adminSubs(), event);
+  }
+
+  /** When an account was last noted opening the console (noteOperator), by its sub: noted again at most hourly. */
+  #operatorsSeen = new Map<string, number>();
+
+  /**
+   * An account the console answered (api.ts: its `/v1/me` there, and each of its calls): with Cloudflare Access, anyone
+   * of the team, not ADMIN_EMAIL's alone. Kept a week from when it was last seen, to be told what the console shows
+   * changed (#adminSubs).
+   */
+  noteOperator(sub: string, email: string): void {
+    const now = nowSeconds();
+    const seen = this.#operatorsSeen.get(sub) ?? (this.#one("SELECT seen_at FROM operators WHERE sub = ?", sub)?.seen_at as number | undefined);
+    if (seen !== undefined && now - seen < 3600) return void this.#operatorsSeen.set(sub, seen);
+    this.#run("INSERT INTO operators (sub, email, seen_at) VALUES (?, ?, ?) ON CONFLICT (sub) DO UPDATE SET email = excluded.email, seen_at = excluded.seen_at", sub, email, now);
+    this.#run("DELETE FROM operators WHERE seen_at < ?", now - OPERATOR_KEPT_S);
+    this.#operatorsSeen.set(sub, now);
+  }
+
+  /** The accounts that opened the console in the last week (noteOperator). */
+  #operators(): string[] {
+    return this.#rows("SELECT sub FROM operators WHERE seen_at >= ?", nowSeconds() - OPERATOR_KEPT_S).map((r) => r.sub as string);
+  }
+
+  /** Who is told what the console shows: ADMIN_EMAIL's accounts and those that opened it (with Access, its team). */
+  #adminSubs(): string[] {
+    return [...new Set([...this.#byEmail(this.env.ADMIN_EMAIL ?? null), ...this.#operators()])];
+  }
+
+  /** Whether an account is ADMIN_EMAIL's, which no operator of the console blocks. */
+  isAdminAccount(sub: string): boolean {
+    const row = this.#one("SELECT email FROM users WHERE sub = ?", sub);
+    return !!row && isAdmin(this.env, row.email as string);
+  }
+
+  /** The console's lists that changed since this was last told, told once what changed now is done (a burst one event). */
+  #adminLists = new Set<AdminList>();
+
+  /**
+   * What the console shows changed: the accounts that opened it told which of its lists to read again (`admin`). Not
+   * ADMIN_EMAIL's that did not: no console of theirs is open to read them.
+   */
+  #adminChanged(...lists: AdminList[]): void {
+    const first = this.#adminLists.size === 0;
+    for (const list of lists) this.#adminLists.add(list);
+    if (!first) return;
+    queueMicrotask(() => {
+      const changed = [...this.#adminLists].sort();
+      this.#adminLists.clear();
+      const operators = this.#operators();
+      if (operators.length > 0 && changed.length > 0) this.#tell(operators, { type: "admin", lists: changed });
+    });
   }
 
   #members(workspace: string): string[] {
@@ -522,6 +576,8 @@ export class Directory extends DurableObject<Env> {
    */
   #changed(workspace: string, list: boolean, also: Iterable<string> = [], only: "lock" | "requests" | null = null): void {
     for (const station of this.#stationsIn(workspace)) this.#sendState(station);
+    // (its lock moving on, or its requests to be let in, are nothing the console lists)
+    if (only === null) this.#adminChanged("workspaces");
     if (only !== null) {
       const said = only === "lock" ? { lock: { head: this.#lockHead(workspace), locked: this.#locked(workspace) } } : { requests: true as const };
       this.#tell([...this.#members(workspace), ...also], { type: "workspace", id: workspace, ...said });
@@ -643,6 +699,7 @@ export class Directory extends DurableObject<Env> {
     );
     this.#joinAdded(identity.sub, identity.email);
     this.#takePending(identity.sub, identity.email);
+    if (!old || old.email !== identity.email || old.name !== identity.name || old.picture !== identity.picture) this.#adminChanged("users");
     if (!old || (old.email === identity.email && old.name === identity.name && old.picture === identity.picture)) return;
     // Members lists show them; invitations they sent show their name; a new email has other invitations.
     for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) {
@@ -910,6 +967,8 @@ export class Directory extends DurableObject<Env> {
       }
     });
     this.#tell([sub], LIST);
+    if (redeem) this.#adminChanged("workspaces", "users", "invite-codes");
+    else this.#adminChanged("workspaces", "users");
     return this.#view(sub, id);
   }
 
@@ -1318,6 +1377,7 @@ export class Directory extends DurableObject<Env> {
       this.#run("DELETE FROM workspaces WHERE id = ?", id);
     });
     this.#tell(told, LIST, { type: "workspace", id });
+    this.#adminChanged("workspaces", "users");
     // Its stations leave it; those in no other workspace are let go as before.
     for (const { station, home } of stations) this.#left(station, home!);
   }
@@ -1500,6 +1560,7 @@ export class Directory extends DurableObject<Env> {
       this.#run("DELETE FROM users WHERE sub = ?", sub);
     });
     this.#tell([sub], LIST);
+    this.#adminChanged("users", "workspaces", "feedback");
     await this.#delivered();
   }
 
@@ -1837,6 +1898,7 @@ export class Directory extends DurableObject<Env> {
   /** Each of `tables` made what another cloud's moveExport said, in one transaction (its rows taken out first); what
    * a table here does not have of a row's columns refuses the whole. How many rows each now has. */
   moveImport(tables: Record<string, Row[]>): Record<string, number> {
+    this.#fixesMarked = null;
     const here = new Set(this.#rows("SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name as string));
     return this.ctx.storage.transactionSync(() => {
       const counts: Record<string, number> = {};
@@ -1971,7 +2033,7 @@ export class Directory extends DurableObject<Env> {
     for (const station of stations) this.#sendState(station);
     this.tellAll({ type: "workspaces" }, null);
     // (the operator's console shows the list: its 中继 page read again, as the minute's sample has it)
-    if (this.env.ADMIN_EMAIL) this.#tell(this.#byEmail(this.env.ADMIN_EMAIL), { type: "relays" });
+    this.#tell(this.#adminSubs(), { type: "relays" });
   }
 
   // ── the admin's console ─────────────────────────────────────────────────
@@ -2014,6 +2076,7 @@ export class Directory extends DurableObject<Env> {
       const member = this.#one("SELECT 1 AS x FROM members WHERE sub = ? LIMIT 1", sub);
       this.#run("UPDATE users SET admitted = ? WHERE sub = ?", creator ? "free" : member ? "invitation" : null, sub);
     }
+    this.#adminChanged("users", "workspaces");
     return { sub, may_create: isAdmin(this.env, row!.email as string) || this.#standard(sub) };
   }
 
@@ -2044,18 +2107,21 @@ export class Directory extends DurableObject<Env> {
     this.#run(`INSERT INTO pending (email, beta, may_create, added_by, added_at) VALUES (?, COALESCE(?, 0), COALESCE(?, 0), ?, ?)
       ON CONFLICT (email) DO UPDATE SET beta = COALESCE(?, beta), may_create = COALESCE(?, may_create)`,
       address, on(beta), on(mayCreate), by, nowSeconds(), on(beta), on(mayCreate));
+    this.#adminChanged("users");
     return { email: address, sub: null };
   }
 
   /** Takes back the rights given to an email nobody has signed in with yet. */
   removePending(email: unknown): { ok: true } {
     this.#run("DELETE FROM pending WHERE email = ?", typeof email === "string" ? email.trim().toLowerCase() : "");
+    this.#adminChanged("users");
     return { ok: true };
   }
 
   /** Notes that the admin blocked the account or let it back (the account's own object is what keeps it out). */
   setBlocked(sub: string, on: boolean): void {
     this.#run("UPDATE users SET blocked = ? WHERE sub = ?", on ? 1 : null, sub);
+    this.#adminChanged("users");
   }
 
   /** Lets an account into the test channel (BETA_ORIGIN), or out of it. */
@@ -2065,6 +2131,7 @@ export class Directory extends DurableObject<Env> {
     this.#betaTold(sub);
     // Its `/v1/me` says so: its devices read it again (the 测试版 switch of its stations comes or goes at once).
     this.#tell([sub], LIST);
+    this.#adminChanged("users");
     return { sub, beta: on };
   }
 
@@ -2097,6 +2164,7 @@ export class Directory extends DurableObject<Env> {
     const id = ulid();
     this.#run("INSERT INTO workspaces (id, name, created_by, created_at, max_members, max_stations) VALUES (?, ?, ?, ?, ?, ?)", id, name, by, nowSeconds(), limits.members, limits.stations);
     const { joined, added } = this.#addEmails(by, id, "owner", owners);
+    this.#adminChanged("workspaces", "users");
     return { id, joined, added };
   }
 
@@ -2105,6 +2173,7 @@ export class Directory extends DurableObject<Env> {
     if (!this.#one("SELECT 1 AS x FROM workspaces WHERE id = ?", workspace)) fail(404, "workspace_not_found");
     const limits = limitsOf(input);
     this.#run("UPDATE workspaces SET max_members = ?, max_stations = ? WHERE id = ?", limits.members, limits.stations, workspace);
+    this.#adminChanged("workspaces");
     return limits;
   }
 
@@ -2228,6 +2297,7 @@ export class Directory extends DurableObject<Env> {
     const code = newCode();
     const now = nowSeconds();
     this.#run("INSERT INTO invite_codes (code, note, created_by, created_at, expires_at, beta) VALUES (?, ?, ?, ?, ?, ?)", code, clean, sub, now, now + ttl * 24 * 60 * 60, beta ? 1 : null);
+    this.#adminChanged("invite-codes");
     return this.inviteCodes().find((c) => c.code === code)!;
   }
 
@@ -2238,6 +2308,7 @@ export class Directory extends DurableObject<Env> {
     if (!row) fail(404, "invite_code_invalid");
     if (row!.used_by !== null) fail(409, "invite_code_used");
     this.#run("UPDATE invite_codes SET revoked_at = COALESCE(revoked_at, ?) WHERE code = ?", nowSeconds(), code);
+    this.#adminChanged("invite-codes");
   }
 
   // ── bug reports (feedback.ts) ───────────────────────────────────────────
@@ -2260,6 +2331,9 @@ export class Directory extends DurableObject<Env> {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
       id, number, input.key, input.channel, input.sender, input.station, workspace, input.account, input.title, input.body, input.area, input.reporter, input.context, input.logs, now, now,
     );
+    // (a changelog may name it already: markFixed runs it again)
+    this.#fixesMarked = null;
+    this.#adminChanged("feedback");
     return { id, number, duplicate: false };
   }
 
@@ -2318,6 +2392,7 @@ export class Directory extends DurableObject<Env> {
   setFeedbackStatus(id: string, status: FeedbackStatus): void {
     if (!this.#one("SELECT 1 AS found FROM feedback WHERE id = ?", id)) fail(404, "feedback_not_found");
     this.#run("UPDATE feedback SET status = ?, updated_at = ? WHERE id = ?", status, nowSeconds(), id);
+    this.#adminChanged("feedback");
   }
 
   /**
@@ -2325,15 +2400,25 @@ export class Directory extends DurableObject<Env> {
    * each, until its station is told; one the team marked won't fix stays so.
    */
   markFixed(fixes: { number: number; version: number; parts: string[] }[]): void {
+    // The same changelog as last time, and no report since: nothing more to mark (every console's list and every
+    // station's ask runs it).
+    const said = JSON.stringify(fixes);
+    if (said === this.#fixesMarked) return;
     const now = nowSeconds();
+    let marked = 0;
     for (const { number, version, parts } of fixes) {
-      this.#run(
+      marked += this.ctx.storage.sql.exec(
         `UPDATE feedback SET fixed_in = ?, fixed_parts = ?, status = CASE WHEN status = 'wontfix' THEN status ELSE 'fixed' END, updated_at = ?
          WHERE number = ? AND told_at IS NULL AND (fixed_in IS NULL OR fixed_in < ?)`,
         version, JSON.stringify(parts), now, number, version,
-      );
+      ).rowsWritten;
     }
+    this.#fixesMarked = said;
+    if (marked > 0) this.#adminChanged("feedback");
   }
+
+  /** The fixes markFixed last marked by, while no report came since (addFeedback, moveImport). */
+  #fixesMarked: string | null = null;
 
   /** A station's reports that are fixed and it has not told of yet, with where it reported each. */
   fixedUntold(station: string): { id: string; number: number; title: string; channel: "stable" | "beta"; version: number; parts: Part[]; session: string | null; thread: string | null }[] {
@@ -2384,6 +2469,7 @@ export class Directory extends DurableObject<Env> {
     this.#run("INSERT INTO feedback_replies (id, feedback, author, by, text, created_at) VALUES (?, ?, 'team', ?, ?, ?)", reply, id, by, text, now);
     this.#run("UPDATE feedback SET updated_at = ? WHERE id = ?", now, id);
     this.#tell(this.#members(workspace), { type: "feedback", workspace });
+    this.#adminChanged("feedback");
     return { id: reply, delivery: "pending" };
   }
 
@@ -2405,6 +2491,7 @@ export class Directory extends DurableObject<Env> {
     this.#run("UPDATE feedback SET updated_at = ? WHERE id = ?", now, id);
     const workspace = this.#chatWorkspace(station, context);
     if (workspace) this.#tell(this.#members(workspace), { type: "feedback", workspace });
+    this.#adminChanged("feedback");
     return reply;
   }
 
@@ -2460,7 +2547,10 @@ export class Directory extends DurableObject<Env> {
   /** The station has told these of its reports' fixes. */
   toldFixed(station: string, ids: string[]): void {
     const now = nowSeconds();
-    for (const id of ids) this.#run("UPDATE feedback SET told_at = ? WHERE id = ? AND station = ? AND fixed_in IS NOT NULL AND told_at IS NULL", now, id, station);
+    let told = 0;
+    for (const id of ids) told += this.ctx.storage.sql.exec("UPDATE feedback SET told_at = ? WHERE id = ? AND station = ? AND fixed_in IS NOT NULL AND told_at IS NULL", now, id, station).rowsWritten;
+    // (the console shows when each was told)
+    if (told > 0) this.#adminChanged("feedback");
   }
 
   // ── sockets ─────────────────────────────────────────────────────────────
@@ -2738,11 +2828,11 @@ for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWo
   "feedbackOf", "memberFeedbackReply", "setRole", "removeMember", "addMembers", "mailFailed", "removeAdded", "setRelays", "setWay", "manages", "createEnrollment", "createRigEnrollment", "updateStation", "setStationMode", "removeStation", "memberRole", "recordDevice", "devices",
   "lock", "appendLock", "clearLock", "requestLock", "lockRequests", "dropLockRequest"]) FAMILIES[name] = "workspaces";
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
-  "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad"]) FAMILIES[name] = "admin";
+  "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad", "noteOperator", "isAdminAccount"]) FAMILIES[name] = "admin";
 /** The tables that are this object's own, not moved into another cloud: its sockets' generations, the outbox to the
  * objects (made again as things change), its counts, the views as last told (`#told`: begun again by the next change,
- * at a version above any before). */
-const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told"]);
+ * at a version above any before), who opened its console (noteOperator: noted again as they open the other's). */
+const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told", "operators"]);
 for (const name of ["moveExport", "moveImport", "moveAccounts"]) FAMILIES[name] = "admin";
 // The relays' list: the operator's (a relay's counters and its enrolling are "other"); the cron's reading of it.
 for (const name of ["relayList", "relayPut", "relayRemove", "relayToken"]) FAMILIES[name] = "admin";

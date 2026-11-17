@@ -230,6 +230,25 @@ test("a report the changelog fixes is marked fixed, and its station told once th
   }
 });
 
+test("a cloud whose bucket holds no station release reads it upstream (RELEASES_UPSTREAM), and tells of a station's fix once it is out there", async () => {
+  // monoid's cloud: its bucket has the changelog and its own apps' builds, the station's releases are still.fail's.
+  const h = await harness({ upstream: (file) => (file === "station-beta.json" ? { status: 200, body: JSON.stringify({ version: "0.1.1335", build: 1335 }) } : { status: 404 }) });
+  try {
+    const { station } = await workspace(h);
+    await send(h, station, report(), { channel: "beta" });
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1330, commit: "a", at: 1, text: ["修复：chat_post 发不出去"], fixes: [1], parts: ["station"] }]));
+    const beta = (await (await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).json()) as any;
+    assert.equal(beta.released.station, 1335);
+    const out = await fixed(h, station);
+    assert.deepEqual(out.map((f) => [f.number, f.version, f.released.station]), [[1, 1330, 1335]]);
+    // Nothing upstream for the stable channel: none out there.
+    assert.equal(((await (await h.fetch("/v1/changelog")).json()) as any).released.station, null);
+  } finally {
+    await h.close();
+  }
+});
+
 test("the changelog is anyone's to read, with what each part has out on the host's channel", async () => {
   const h = await harness();
   try {
@@ -316,7 +335,8 @@ test("the team's reply is shown to the members of the chat's workspace, told on 
     const reply = (await made.json()) as any;
     assert.equal(reply.delivery, "pending");
     await h.settled();
-    assert.deepEqual(await events.take(), [{ type: "feedback", workspace: home }]);
+    // (alice opened the console: its list of reports is read again too)
+    assert.deepEqual(await events.take(), [{ type: "feedback", workspace: home }, { type: "admin", lists: ["feedback"] }]);
     assert.deepEqual(await carol.take(), [], "not a member");
     await socket.ping();
     assert.ok(!socket.frames.some((f) => f.type === "feedback" || JSON.stringify(f).includes("日志")), "nothing to the station");
@@ -368,7 +388,8 @@ test("a report from a chat of a workspace the station joined is that workspace's
     for (const f of all) assert.equal((await teamReply(h, f.id, `看看 FB-${f.number}`)).status, 201);
     await h.settled();
     assert.deepEqual(await bobEvents.take(), [{ type: "feedback", workspace: lab }, { type: "feedback", workspace: lab }]);
-    assert.deepEqual(await aliceEvents.take(), [], "the home's members are not the chat's");
+    // (alice hears only that the console's reports changed, as she opened it)
+    assert.deepEqual(await aliceEvents.take(), [{ type: "admin", lists: ["feedback"] }, { type: "admin", lists: ["feedback"] }], "the home's members are not the chat's");
     const shown = ((await (await bob("GET", `/v1/workspaces/${lab}/feedback`)).json()) as any).feedback;
     assert.deepEqual(shown.map((f: any) => [f.number, f.session]), [[2, "chat:c-8"], [1, "chat:c-9"]]);
     assert.deepEqual(((await (await h.as(aliceTokens)("GET", `/v1/workspaces/${home}/feedback`)).json()) as any).feedback, []);
@@ -421,7 +442,9 @@ test("the chat's people answer in the app, or their agent answers for them: kept
     const answered = await answer(h, station, { number: 1, text: "日志：ERROR chat_post 500", session: "chat:c-1" });
     assert.equal(answered.status, 201);
     await h.settled();
-    assert.deepEqual(await events.take(), [{ type: "feedback", workspace: home }, { type: "feedback", workspace: home }]);
+    // (and, as alice opened the console, its list of reports read again after each)
+    const admin_ = { type: "admin", lists: ["feedback"] };
+    assert.deepEqual(await events.take(), [{ type: "feedback", workspace: home }, admin_, { type: "feedback", workspace: home }, admin_]);
 
     const one = ((await (await admin("GET", "/v1/admin/feedback")).json()) as any).feedback[0];
     assert.deepEqual(one.replies.map((r: any) => [r.from, r.by, r.text]), [

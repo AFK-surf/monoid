@@ -771,3 +771,10 @@ using @sf {
 /// refused (detlint's `empty-on-done`): to the core it would be a reader, its answer awaited and the frame after it
 /// built whole for nothing. sfbase's `answer_unread` is this one.
 pub let answer_unread : (Result[Json, Json]) -> Unit = fn(_) { () }
+
+///|
+/// A station's terminal opened (`"new"` opens a new one), by station, terminal id and initial folder: the app's, set as
+/// it makes its cores (sfbase's settings_core), not a field of `Core`, whose shape every unit that reads one is
+/// compiled by.
+// kept across runs: the app's, said once as it starts
+pub let open_terminal_of : Ref[(String, String, String) -> Unit] = Ref(fn(_, _, _) {  })

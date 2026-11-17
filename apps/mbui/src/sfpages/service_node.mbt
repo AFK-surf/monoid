@@ -23,7 +23,8 @@ pub(all) struct ServiceNow {
 /// `now()`: its bar and its stage. `file`: a visualization's page, served from here (its bar names it, nowhere else to
 /// go). `close`: what closes the panel it is alone in (its bar the panel's: the × at its end, the page a card in it).
 /// `width()`: how wide it is given to be (where its bar goes: under it with touch, as narrow as a phone's). `round`: the
-/// corners of the panel it is alone in (its bar's ends and the page's corners concentric with them).
+/// corners of the panel it is alone in (its bar's ends and the page's corners concentric with them). `full`: what puts
+/// it over the whole window (its 全屏 at its bar's end, before the panel's ×: a chat's side panel's tab).
 #callsite(autofill(loc))
 pub fn service_view_node(
   parent : @view.View,
@@ -34,6 +35,7 @@ pub fn service_view_node(
   width : () -> Double,
   file? : FilePage? = None,
   close? : (() -> Unit)? = None,
+  full? : (() -> Unit)? = None,
   round? : FixedArray[@ui.CornerOf]? = None,
   tips? : @sf.TipLayer,
   loc~ : SourceLoc,
@@ -140,7 +142,7 @@ pub fn service_view_node(
     }
     v.box(fn(col) {
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, corners, tips) })
+      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, full, corners, tips) })
       col.box(fn(st) {
         st.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         if in_panel {
@@ -152,7 +154,7 @@ pub fn service_view_node(
         }
       })
       |> ignore
-      bar(col, true, fn(foot) { service_foot_bar_node(foot, src, p, site, station, fixed, close, tips) })
+      bar(col, true, fn(foot) { service_foot_bar_node(foot, src, p, site, station, fixed, close, full, tips) })
     })
     |> ignore
   })
@@ -174,7 +176,8 @@ fn load_now(src : Source, p : ServicePage, station : String, fixed : Bool) -> Js
 /// The bar over the page in `parent` (service_page_bar's, PreviewBar): back and forward, reload, how far its resources
 /// came, where it is (typed to go elsewhere) or what marking says in its place, its size, marking it; short of room
 /// what leaves first (how far it came, then its size, then reload) offered in its ⋯ at its end; the panel's × where it
-/// is alone in one (`corners`: the panel's top corners its first and last keys are concentric with).
+/// is alone in one (`corners`: the panel's top corners its first and last keys are concentric with), its 全屏 before it
+/// (`full`).
 fn service_page_bar_node(
   parent : @view.View,
   src : Source,
@@ -183,6 +186,7 @@ fn service_page_bar_node(
   station : String,
   fixed : Bool,
   close : (() -> Unit)?,
+  full : (() -> Unit)?,
   corners : FixedArray[Double]?,
   tips : @sf.TipLayer,
 ) -> Unit {
@@ -273,6 +277,7 @@ fn service_page_bar_node(
       |> ignore
     })
     |> ignore
+    full_key_node(row, full, tips)
     panel_close_key_node(row, close, tips)
   })
   |> ignore
@@ -283,7 +288,7 @@ fn service_page_bar_node(
 /// reach: back and forward, where it is with reload at its end (marking's say in its place while marking) and how far
 /// the page came along its foot, marking it, its ⋯ (its size, how far each of its resources came); while a finger
 /// moves the page, the size key in the ⋯'s place, a press stopping it. In a panel of its own the first and last keys
-/// concentric with its foot corners (@sf.foot_capsule).
+/// concentric with its foot corners (@sf.foot_capsule), its 全屏 before its × (`full`).
 fn service_foot_bar_node(
   parent : @view.View,
   src : Source,
@@ -292,6 +297,7 @@ fn service_foot_bar_node(
   station : String,
   fixed : Bool,
   close : (() -> Unit)?,
+  full : (() -> Unit)?,
   tips : @sf.TipLayer,
 ) -> Unit {
   parent.box(fn(row) {
@@ -326,6 +332,7 @@ fn service_foot_bar_node(
         foot_more_node(k, src, p, station, fixed, tips)
       }
     })
+    full_key_node(row, full, tips)
     panel_close_key_node(row, close, tips)
   })
   |> ignore
@@ -378,6 +385,16 @@ fn reload_key_node(parent : @view.View, site : @ui.NativeView, tips : @sf.TipLay
 fn panel_close_key_node(parent : @view.View, close : (() -> Unit)?, tips : @sf.TipLayer) -> Unit {
   match close {
     Some(f) => @sf.bar_key_node(parent, fn() { "close" }, fn() { @sf.t("web-pages.chat.closePanel") }, f, tips~) |> ignore
+    None => ()
+  }
+}
+
+///|
+/// 全屏 at the bar's end, in `parent` (`full`: what puts it over the whole window; none there already, or on a page of its
+/// own).
+fn full_key_node(parent : @view.View, full : (() -> Unit)?, tips : @sf.TipLayer) -> Unit {
+  match full {
+    Some(f) => @sf.bar_key_node(parent, fn() { "expand" }, fn() { @sf.t("web-main.preview.fullWindow") }, f, tips~) |> ignore
     None => ()
   }
 }
@@ -1103,7 +1120,7 @@ pub fn preview_file_page_node(
 ///|
 /// A visualization's view in `parent` (its page, or a chat's side panel's tab: file_pane's): read as it is made, the
 /// file's page served from here as its service's view (kept by its station and job while its page is in the stack),
-/// what it waits on or that it could not be read said in its place; `close` as service_view_node has it.
+/// what it waits on or that it could not be read said in its place; `close` and `full` as service_view_node has them.
 pub fn file_view_node(
   parent : @view.View,
   src : Source,
@@ -1112,6 +1129,7 @@ pub fn file_view_node(
   path : String,
   name : String,
   close : (() -> Unit)?,
+  full? : (() -> Unit)? = None,
   tips? : @sf.TipLayer,
 ) -> Unit {
   let loaded = @sfbase.viz_load_node(parent, src, station, key, path)
@@ -1152,6 +1170,7 @@ pub fn file_view_node(
             fn() { b.window().0 },
             file=Some(f),
             close~,
+            full~,
             tips?,
           )
         }

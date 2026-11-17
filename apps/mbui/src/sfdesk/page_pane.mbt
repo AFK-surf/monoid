@@ -309,6 +309,29 @@ fn pane_made(
       made("place/stations", fn(a, core, here, stint, frame, width) {
         stations_place_node(a, src, core, here, stint, frame, width, tips~)
       })
+    Place("remote") =>
+      Some(
+        (
+          "place/remote",
+          fn(v, _page, _under, _stint, k) {
+            v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
+              guard ws_id is Some(wid) else { return }
+              pane_made_host(p, src, k)
+              let ends = pane_chat_bar_ends(src, p)
+              let width = fn() { pane_w_at(src, p) }
+              @sfpages.remote_workbench_node(
+                p,
+                src,
+                fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
+                tips,
+                start_pad=fn() { dmax(12.0, (ends.start)()) },
+                end_pad=fn() { (ends.end)(false, false) },
+                width~,
+              )
+            })
+          },
+        ),
+      )
     // (a place of the rail's whose page is one of those: that page, at the stack's root (no back over it, place_page's),
     // made under its own kind)
     Place(name) =>
@@ -533,7 +556,7 @@ fn pane_made(
                 key=tape_island_key,
                 drawn=fn(serial) { pane_page_wait.draws(serial) },
                 over=fn(o, src, page, stint) {
-                  chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o), tips, stint)
+                  chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
                 // (with chat_page_nodes on: its messages nodes, its composer in their list's foot its old view)
                 body=fn(col, s, r, composer, shows) {
@@ -578,7 +601,11 @@ fn pane_made(
 /// shown a while; its end at the window's corner while no panel is open beside it (window_end_in: its buttons'
 /// corner the window's, followed), clear of a corner too square for ⌘F's field (a capsule: window_corner_past), the
 /// bar's own padding beside a panel.
-fn pane_chat_bar_ends(src : Source, n : @view.View) -> ChatBarEnds {
+fn pane_chat_bar_ends(
+  src : Source,
+  n : @view.View,
+  page? : () -> Page? = fn() { None },
+) -> ChatBarEnds {
   let look = fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
@@ -604,7 +631,26 @@ fn pane_chat_bar_ends(src : Source, n : @view.View) -> ChatBarEnds {
       }
     },
     end: fn(beside, finding) {
-      if beside {
+      let col_w = match page() {
+        Some(Chat(r)) if pane_w_at(src, n) >= side_both_least => {
+          let key = chat_key(r)
+          let _ = side_way(key)
+          if panel_own.asked.get() == key {
+            0.0
+          } else {
+            side_col(src, n, key, beside)
+          }
+        }
+        _ => 0.0
+      }
+      if col_w > 0.5 {
+        if @ui.window_keys_own() {
+          bar_in
+        } else {
+          dmax(bar_in, @sf.window_corner_past(4.0, roots=@ui.tree_corner_roots_now()) - col_w)
+        }
+      } else if beside {
+        // (beside what the pane shows next to it, not a chat's side column: a history's, as before)
         bar_in
       } else if finding {
         if @ui.window_keys_own() {

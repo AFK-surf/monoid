@@ -61,7 +61,7 @@ pub fn error_j(e : Error) -> J {
 
 ///|
 /// The part's time: milliseconds since 1970 and a wait of so many.
-pub struct Clock {
+pub(all) struct Clock {
   now : () -> Double
   sleep : async (Double) -> Unit
 }

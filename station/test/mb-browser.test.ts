@@ -70,9 +70,17 @@ const clockFibers = new Fibers("mb-browser", t.clock);
 after(() => clockFibers.close());
 const later = (ms: number, f: () => void) => clockFibers.after(ms, f); // timer: the TypeScript's tabs' own, on the test's clock
 
-/// Turns of the loop until what was set going here is done (the TypeScript's side of `quiet`).
+/// Turns of the loop until what was set going here is done (the TypeScript's side of `quiet`): `n` of them with no file
+/// request out, as hub-fakes.ts `settle`. The TypeScript's tabs read and write their files on libuv's threads (a login's
+/// state.json read as its tab opens, user-tabs.json written as it changes), and how many turns that takes is the
+/// machine's: counted alone, a CI runner compared the two sides before the TypeScript's had read it (134186072690,
+/// 2026-11-17).
 async function turns(n = 30) {
-  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+  for (let quiet = 0; quiet < n; ) {
+    await new Promise((r) => setImmediate(r));
+    // (a file handle's close, the last step of fs/promises' writeFile and readFile, is a request of its own: CloseReq)
+    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
+  }
 }
 
 // ── what both sides do, written down the same way ──
@@ -370,8 +378,21 @@ function sameSince(p: Program, what: string) {
   p.entries = [];
 }
 
+/// The browsers a case made on both sides, the TypeScript's and the program's instance of it: those a case that failed
+/// left open are closed as the next begins, so that what their timers do is not told among its entries (a case that
+/// failed at one assertion went on to fail the one after it, 134186072690, 2026-11-17). Closing one closed is nothing.
+const made: { ts: { close(): Promise<void> }; inst: string }[] = [];
+function held<T extends { close(): Promise<void> }>(ts: T, inst: string): T {
+  made.push({ ts, inst });
+  return ts;
+}
+
 /// A fresh start for a case: no entries, the connections' ids counted from 1 on both sides.
 async function begin(p: Program) {
+  for (const m of made.splice(0)) {
+    await m.ts.close().catch(() => {});
+    await p.call(m.inst, "close").catch(() => {});
+  }
   await p.quiet();
   tsEntries = [];
   p.entries = [];
@@ -1340,7 +1361,7 @@ test("the station's browser: started once however many ask, its tabs screens wit
   const worldTs = stationWorld(stateTs);
   p.world = stationWorld(stateMb);
   const both = (f: (s: Json) => void) => (f(stateTs), f(stateMb));
-  const ts = new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const ts = held(new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "st");
   await p.make("station", "st", { dir: mbDir });
   await settleBoth(p);
   sameSince(p, "made");
@@ -1429,7 +1450,7 @@ test("the station's browser: started once however many ask, its tabs screens wit
   sameFiles(tsDir, mbDir, "as the station ended");
   // the next process: the Chrome left running taken up, its tabs coming again as Chrome tells of them
   both((s) => (s.left = runningOf(3)));
-  const next = new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const next = held(new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "st2");
   await p.make("station", "st2", { dir: mbDir });
   await bothCall(p, "resume", () => next.resume(), "st2", "resume");
   const k = tsConns.length - 1;
@@ -1455,7 +1476,7 @@ test("the station's own tabs: opened behind (the browser started for it), in an 
   const stateMb: Json = { cookies: COOKIES_READ, credentials: [KEY_A] };
   const worldTs = stationWorld(stateTs);
   p.world = stationWorld(stateMb);
-  const ts = new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const ts = held(new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "own");
   await p.make("station", "own", { dir: mbDir });
   // a tab of its own context: waited for until Chrome tells of it
   const a = outcome(() => ts.openTab("https://login.test/"));
@@ -1525,7 +1546,7 @@ test("a person's own pages: opened by the app's id, asleep when unwatched, woken
   const mbDir = fresh("user-mb");
   const worldTs = stationWorld({});
   p.world = stationWorld({});
-  const ts = new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const ts = held(new StationBrowser({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "user");
   await p.make("station", "user", { dir: mbDir });
   const a = outcome(() => ts.openUserTab("mail.proton.me", "u_abc123"));
   const b = mbOutcome(() => p.call("user", "openUserTab", "mail.proton.me", "u_abc123"));
@@ -1612,7 +1633,7 @@ test("each chat's own context: made as its agent asks, its gate's parts, its sig
   const stateMb: Json = { cookies: COOKIES_READ, credentials: [KEY_A] };
   const worldTs = stationWorld(stateTs);
   p.world = stationWorld(stateMb);
-  const ts = new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const ts = held(new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "bs");
   listen(ts);
   await p.make("browsers", "bs", { dir: mbDir });
   await bothCall(p, "context", () => ts.context("chat:a"), "bs", "context", "chat:a");
@@ -1665,7 +1686,7 @@ test("each chat's own context: made as its agent asks, its gate's parts, its sig
   // the next station process: the contexts kept taken up with the Chrome left running, their passkeys put in again
   stateTs.left = runningOf(2);
   stateMb.left = runningOf(2);
-  const next = new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const next = held(new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "bs2");
   listen(next);
   await p.make("browsers", "bs2", { dir: mbDir });
   await bothCall(p, "resume", () => next.resume(), "bs2", "resume");
@@ -1683,7 +1704,7 @@ test("the browser tool: endpoint by default, tabs, status, stop, each the chat's
   const mbDir = fresh("tool-mb");
   const worldTs = stationWorld({});
   p.world = stationWorld({});
-  const ts = new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later });
+  const ts = held(new Browsers({ dir: tsDir, chrome: tsChrome(() => worldTs), screens: tsScreens(), clock: t.clock, later }), "tb");
   listen(ts);
   await p.make("browsers", "tb", { dir: mbDir });
   const door = "http://127.0.0.1:4777/mcp";

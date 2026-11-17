@@ -493,6 +493,8 @@ pub using @sfbase {
   type ChatView,
   type ChatScreen,
   chat_screens_open,
+  chat_remote_open,
+  chat_has_remote,
   chat_screens_driven,
   type ChatsView,
   type Choice,

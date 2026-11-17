@@ -144,6 +144,8 @@ pub fn viewer_bar_node(
           end.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
           end.box(fn(r) {
             r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart())) |> ignore
+            // (one hover ground for its tools, going from the one the hand left to the next: RovingHover)
+            r.lends(rove_lent, RovingHover::new()) |> ignore
             tools(r, bar_tool_corner())
           })
           |> ignore

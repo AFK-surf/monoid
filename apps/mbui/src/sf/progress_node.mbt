@@ -7,7 +7,9 @@
 ///|
 /// A progress bar in `parent`, as wide as it is given, `h` high: how far `part` says (0 to 1; None: not known), on
 /// `track` in `fill` (each as it changes). Read out as a progress bar, how far as a share and as a number of 100 (none
-/// while it is not known), as the old one is (@kit.progress). The node.
+/// while it is not known), as the old one is (@kit.progress). `finishing`: what it counts is all there and what is done
+/// with it last is under way (uploaded, being taken in): full, a soft light running along it once a period (still, full,
+/// with motion reduced), never the not-known piece. The node.
 #callsite(autofill(loc))
 pub fn progress_node(
   parent : @view.View,
@@ -16,12 +18,14 @@ pub fn progress_node(
   fill : () -> Int64,
   h? : Double = 3.0,
   period? : Double = @kit.progress_sweep_ms,
+  finishing? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
   // (how far, drawn to it as told; whether it is known, drawn into it as it becomes so: each from where it is, there
-  // at once as it is made)
+  // at once as it is made; finishing, all of it)
   // (each a motion's way: there at once with motion reduced, as the old one's Anim is)
-  let first = @signals.untracked(part)
+  let told = fn() { if finishing() { Some(1.0) } else { part() } }
+  let first = @signals.untracked(told)
   let at = @motion.NodeWay::new(first.unwrap_or(0.0))
   let known = @motion.NodeWay::new(if first is Some(_) { 1.0 } else { 0.0 })
   parent.box(made_for=loc, fn(bar) {
@@ -39,7 +43,7 @@ pub fn progress_node(
       }
     }))
     |> ignore
-    bar.reacts(part, fn(p) {
+    bar.reacts(told, fn(p) {
       match p {
         Some(k) => {
           // (known, told anew: from where it is drawn; coming from not known, there at once, what ran along it drawn
@@ -94,5 +98,42 @@ pub fn progress_node(
       |> ignore
     })
     |> ignore
+    // (finishing: a light over the full part, a band a third as wide running across it once a period, faded in as it
+    // comes on at the start and out as it leaves at the end; while it shows, a wait drawn by View::cycle, nothing of it
+    // made else)
+    bar.show(fn() { finishing() && !@ui.reduced_motion() }, at_once=true, fn(o) {
+      o.over(Is(true)).row(Is(true)) |> ignore
+      let wave = fn() -> (Double, Double, Double) {
+        let f = bar.cycle(period)
+        let start = -progress_wave_w + (1.0 + progress_wave_w) * f
+        let lo = if start > 0.0 { start } else { 0.0 }
+        let hi = if start + progress_wave_w < 1.0 { start + progress_wave_w } else { 1.0 }
+        (lo, hi, @dmath.sin(3.141592653589793 * f))
+      }
+      o.box(fn(before) { before.width_share(By(fn() { wave().0 })) |> ignore }) |> ignore
+      o.box(fn(band) {
+        band
+        .height(Is(Some(h)))
+        .radius(Is(h / 2.0))
+        .width_share(By(fn() {
+          let (lo, hi, _) = wave()
+          if hi > lo {
+            hi - lo
+          } else {
+            0.0
+          }
+        }))
+        .ground(By(fn() { alpha(0xFFFFFFFFL, progress_wave_light * wave().2) }))
+        |> ignore
+      })
+      |> ignore
+    })
   })
 }
+
+///|
+/// A finishing bar's running light: how wide a share of it, and how bright at its brightest.
+let progress_wave_w : Double = 0.35
+
+///|
+let progress_wave_light : Double = 0.45

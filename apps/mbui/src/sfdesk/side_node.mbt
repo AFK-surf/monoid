@@ -34,6 +34,8 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
           "files" => files_side_node(s, src, tips, at)
           "stations" => stations_side_node(s, src, tips, at)
           "profiles" => profiles_side_node(s, src, tips, at)
+          // (远程's: its band over the remote list, made as the chats' sidebar is)
+          "remote" => remote_side_node(s, src, tips, at)
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
@@ -434,4 +436,78 @@ fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String)] {
     ("hidden", "web-main.filter.hidden"),
     ("archive", "web-main.filter.archived"),
   ].map(fn(p) { ("sidebar/filter/" + p.0, @sf.t(p.1), p.0 == now, "") })
+}
+
+///|
+/// 远程's sidebar (lists_side_node's makings) in node `s` as wide as the sidebar, where `at` says the block has it: the
+/// remote list (sfpages' remote_list_node: each station under its heading, its ＋ there making a new view on it, its rows
+/// opening tabs of the workbench beside it) under the sidebar's top row (remote_band_node). No row of its own over the
+/// list: a new terminal or browser tab is its station's heading's ＋ (左子健, 2026-11-16).
+fn remote_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
+  let list_at = side_list_at(@signals.untracked(at))
+  let ws = fn() { @sfbase.workspace_in_view(src).0.map_or("", fn(w) { w.id }) }
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  |> ignore
+  s.box(fn(list) {
+    list.over(Is(true)) |> ignore
+    @sfpages.remote_list_node(
+      list,
+      src,
+      ws,
+      list_at,
+      tips,
+      // (under the top row: its height as the frame last said the block stands, remote_band_h; in a block round at its
+      // corners off the tape (the sidebar shown a while over the page from the folded bar) at least as far under its
+      // top as it is round, so the first station's heading and its ＋ stand clear of its top corners)
+      top=fn() {
+        let a = at()
+        lists_room.get() |> ignore
+        let h = remote_band_h()
+        // (its top right corner: its one radius, else the corner it follows, linked)
+        let corner = match a.links {
+          Some(k) => dmax(a.round, k[1].radius(@ui.tree_corner_roots_now()))
+          None => a.round
+        }
+        if a.tape { h } else { dmax(h, corner) }
+      },
+      foot=fn() { 0.0 },
+      on_pick=show_page,
+    )
+  })
+  |> ignore
+  s.box(fn(o) {
+    o.over(Is(true)) |> ignore
+    remote_band_node(o, at)
+  })
+  |> ignore
+}
+
+///|
+/// The room the remote list leaves over it (list_band_h's, with no row of a band): the sidebar's top row, and in a panel
+/// of the tape the room 新建对话's row has over it there (band_new_tape), so the first station's heading and its ＋ stand
+/// clear of the panel's top corners as the chats' first row does; the open band's all the way on the block's way.
+fn remote_band_h() -> Double {
+  let band = wide.band
+  wide.band = wide.list_band
+  let h = list_top_h() + (if wide.tape.get() { band_new_top + band_new_tape_over() } else { 0.0 })
+  wide.band = band
+  h
+}
+
+///|
+/// What covers the remote list's top (lists_band_node's ground) in `o`, where `at` says the block has it: on the
+/// sidebar's own ground, its top row (the window's buttons' row, dragging it).
+fn remote_band_node(o : @view.View, at : () -> SideAt) -> Unit {
+  o.box(fn(band) {
+    band.ground(By(fn() {
+      let a = at()
+      @sf.mix(if a.tape { a.ground } else { apart_ground() }, a.band, @sf.theme().p.sidebar)
+    }))
+    |> ignore
+    side_top_node(band, fn() { at().brand })
+  })
+  |> ignore
 }

@@ -75,7 +75,9 @@ const modeOf = (mode: number) => (mode & 0o111 ? EXEC : FILE);
 
 /// `indexed`: its id is the Git index's (a clean tracked file), not yet the hash of its bytes.
 export type Local = { path: string; hash: string; mode: string; size: number; indexed?: boolean };
-export type Listing = { files: Local[]; git: boolean; prefix: string; skipped: { path: string; why: string }[] };
+/// `submodules`: what the target checks out in the mirror (a submodule's files are not sent): path, commit, URL.
+export type Submodule = { path: string; id: string; url: string };
+export type Listing = { files: Local[]; git: boolean; prefix: string; skipped: { path: string; why: string }[]; submodules: Submodule[] };
 
 async function git(dir: string, args: string[]): Promise<string> {
   const { stdout } = await run("git", ["-C", dir, ...args], { maxBuffer: 1 << 30, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
@@ -83,6 +85,67 @@ async function git(dir: string, args: string[]): Promise<string> {
 }
 
 const entries = (out: string) => out.split("\0").filter((s) => s !== "");
+
+/// `git config -z` entries of `args` (--get-regexp's): key → value; none where git found none.
+async function gitConfig(dir: string, args: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const text = await git(dir, ["config", "-z", ...args]).catch(() => "");
+  for (const entry of text.split("\0")) {
+    const nl = entry.indexOf("\n");
+    if (nl >= 0) out.set(entry.slice(0, nl), entry.slice(nl + 1));
+    else if (entry !== "") out.set(entry, "");
+  }
+  return out;
+}
+
+/// A submodule's URL as Git takes it: one relative to the superproject's (`./`, `../`) against `base` (its origin's
+/// URL; none without one), each `../` taking off the last part of it.
+export function submoduleUrl(url: string, base: string): string {
+  if (!url.startsWith("./") && !url.startsWith("../")) return url;
+  if (base === "") return "";
+  let b = base.replace(/\/+$/, "");
+  let u = url;
+  for (;;) {
+    if (u.startsWith("./")) u = u.slice(2);
+    else if (u.startsWith("../")) {
+      u = u.slice(3);
+      // (a part goes up to its `/`, or up to the `:` of `host:path`)
+      const slash = b.lastIndexOf("/");
+      // (`host:` keeps its colon)
+      const cut = slash > 0 && !b.slice(0, slash).endsWith("/") ? slash : b.lastIndexOf(":") + 1;
+      if (cut <= 0) return "";
+      b = b.slice(0, cut);
+    } else break;
+  }
+  return b.endsWith(":") ? b + u : `${b}/${u}`;
+}
+
+/// The submodules among `links` (path, the index's commit) as the target is to check them out: the commit checked out
+/// in each, else the index's, and its URL. One with no URL is left out, said in `skipped`.
+async function submodulesOf(dir: string, prefix: string, links: [string, string][], skipped: { path: string; why: string }[]): Promise<Submodule[]> {
+  const out: Submodule[] = [];
+  if (links.length === 0) return out;
+  const listed = await gitConfig(dir, ["--blob", ":.gitmodules", "--get-regexp", "^submodule\\..*\\.(path|url)$"]);
+  const own = await gitConfig(dir, ["--get-regexp", "^submodule\\..*\\.url$"]);
+  const origin = (await git(dir, ["config", "--get", "remote.origin.url"]).catch(() => "")).trim();
+  const named = new Map<string, string>();
+  for (const [key, value] of listed) if (key.startsWith("submodule.") && key.endsWith(".path")) named.set(value, key.slice(10, -5));
+  for (const [path, indexId] of links) {
+    const name = named.get(prefix + path);
+    const url = name === undefined ? "" : submoduleUrl(own.get(`submodule.${name}.url`) ?? listed.get(`submodule.${name}.url`) ?? "", origin);
+    if (url === "") {
+      skipped.push({ path, why: "submodule with no URL in .gitmodules" });
+      continue;
+    }
+    let id = indexId;
+    if ((await lstat(join(dir, ...path.split("/"), ".git")).catch(() => null)) !== null) {
+      const head = (await git(join(dir, ...path.split("/")), ["rev-parse", "-q", "--verify", "HEAD^{commit}"]).catch(() => "")).trim();
+      if (/^[0-9a-f]{40}$/.test(head)) id = head;
+    }
+    out.push({ path, id, url });
+  }
+  return out;
+}
 
 /// A file of the directory as it is on disk; null when it is not there (or a directory), a reason when it is left out.
 async function onDisk(dir: string, path: string): Promise<Local | string | null> {
@@ -140,6 +203,7 @@ export async function listLocal(dir: string): Promise<Listing> {
     const seen = new Set<string>();
     const hash: string[] = [];
     const clean: { path: string; id: string; mode: string }[] = [];
+    const links: [string, string][] = [];
     for (const line of entries(await git(dir, ["ls-files", "-z", "-s"]))) {
       const tab = line.indexOf("\t");
       const [mode, id, stage] = line.slice(0, tab).split(" ");
@@ -147,7 +211,7 @@ export async function listLocal(dir: string): Promise<Listing> {
       if (seen.has(path)) continue;
       seen.add(path);
       if (mode === "160000") {
-        skipped.push({ path, why: "submodule" });
+        links.push([path, id!]);
         continue;
       }
       // A clean tracked file is what the index says; a changed one (or one in a conflict) is hashed.
@@ -177,7 +241,8 @@ export async function listLocal(dir: string): Promise<Listing> {
     }
     if (files.length + hash.length > MAX_FILES) throw new Error(`${dir} has more than ${MAX_FILES} files to sync`);
     await pool(hash, async (path) => take(await onDisk(dir, path), path));
-    return { files: files.sort(byPath), git: true, prefix, skipped };
+    const submodules = await submodulesOf(dir, prefix, links, skipped);
+    return { files: files.sort(byPath), git: true, prefix, skipped, submodules };
   }
   // Walked bounded (ops/walk.ts), yielding the station's thread as it goes: a directory on another file system mounted
   // in it is left out (said in `skipped`), no link followed. What would leave the listing short is an error, never a
@@ -200,7 +265,7 @@ export async function listLocal(dir: string): Promise<Listing> {
   if (walked.reason === "entries") throw new Error(`${dir} has more than ${WALK_ENTRIES} entries to walk`);
   if (walked.reason === "depth") throw new Error(`${dir} is deeper than ${WALK_DEPTH} directories`);
   await pool(found, async (path) => take(await onDisk(dir, path), path));
-  return { files: files.sort(byPath), git: false, prefix: "", skipped };
+  return { files: files.sort(byPath), git: false, prefix: "", skipped, submodules: [] };
 }
 
 const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -220,6 +285,8 @@ export type Synced = {
   /// What was left out (the first 50), and how many.
   skipped: { path: string; why: string }[];
   skippedCount: number;
+  /// The submodules the target is to check out.
+  submodules: number;
   /// The directory's place in its Git work tree ("" outside one).
   prefix: string;
   ms: number;
@@ -302,6 +369,8 @@ export async function syncDir(ask: Ask, dir: string, now: () => number = Date.no
       set: part.flatMap((p) => ("s" in p ? [p.s] : [])),
       remove: part.flatMap((p) => ("r" in p ? [p.r] : [])),
       final: i === parts.length - 1,
+      // (with the last part, what the mirror is to check out: a target from before leaves it)
+      ...(i === parts.length - 1 && listing.submodules.length > 0 ? { submodules: listing.submodules.map((s) => [s.path, s.id, s.url]) } : {}),
     });
   }
   return {
@@ -312,6 +381,7 @@ export async function syncDir(ask: Ask, dir: string, now: () => number = Date.no
     removed: Number(answer?.removed ?? 0),
     skipped: listing.skipped.slice(0, 50),
     skippedCount: listing.skipped.length,
+    submodules: listing.submodules.length,
     prefix: listing.prefix,
     ms: now() - t0,
   };

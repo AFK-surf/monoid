@@ -502,3 +502,37 @@ test "a button given a hold: under a finger, a short tap presses it, a long hold
     ((1, []), (1, ["hold"]), (1, ["hold", "lift"]), (2, ["hold", "lift"])),
   )
 }
+
+///|
+test "a button given a hold whose presses count only while it says so: asked as each press goes down, so a press that turned it as it was held is no press as it is let go; the keys press it all along" {
+  let pressed = Ref(0)
+  let counts = Ref(true)
+  let t = window(fn(root) {
+    @headless.button(
+      root,
+      fn() { "按住" },
+      fn(_) { pressed.val += 1 },
+      hold=@headless.Hold::new(@ui.touch_slop(), @ui.long_press_ms, fn() { false }, taps=fn() { counts.val }),
+      fn(v, _) {
+        v.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(c_rest)) |> ignore
+      },
+    )
+    |> ignore
+  })
+  t.tap(20.0, 20.0)
+  let counted = pressed.val
+  // (went down not counting; turned to count while held: its letting go still no press)
+  counts.val = false
+  t.press_at(20.0, 20.0)
+  counts.val = true
+  t.release(20.0, 20.0)
+  let turned_while_held = pressed.val
+  // (went down counting, turned not to while held: its letting go a press, as it went down)
+  t.press_at(20.0, 20.0)
+  counts.val = false
+  t.release(20.0, 20.0)
+  let as_it_went_down = pressed.val
+  t.tab()
+  t.enter()
+  assert_eq((counted, turned_while_held, as_it_went_down, pressed.val), (1, 1, 2, 3))
+}

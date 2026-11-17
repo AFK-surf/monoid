@@ -6,7 +6,9 @@
 // only while what it was pressed in stays as it was (the page on top's stay, Nav::top_stay: the page not left, the
 // workspace not switched; and nothing else put up by the presenters since, last_presented), and lets go of what it
 // asked when it stops waiting without opening anything. Once answered while it is so, it does what it waited for, in
-// the frame the answer comes, or at once where it is answered already.
+// the frame the answer comes, or at once where it is answered already. Pressed as a menu's item, the menu stays open as
+// it was while it waits (@sf.choice_held), and what it opens comes in its place, a level of it, as one opened at once
+// does; given up, the menu closes unsaid.
 
 ///|
 /// A press waiting for the core (press_wait): whether it still waits, and what ends it.
@@ -18,12 +20,20 @@ pub struct PressWait {
   priv let_go : () -> Unit
   priv stay : (Int, Int)
   priv shown : Int
+  /// the menu it was chosen in, held open as it was while it waits (@sf.choice_held)
+  priv mut held : @sf.ChoiceHeld?
 }
 
 ///|
-/// Whether what a press was pressed in is as it was then (`stay`, `shown`): read where it is read.
-fn press_still(stay : (Int, Int), shown : Int) -> Bool {
-  app.nav.top_stay() == stay && @sf.last_presented() == shown
+/// Whether what press `w` was pressed in is as it was then (its `stay`, `shown`, the menu it holds still held): read
+/// where it is read.
+fn PressWait::still(self : PressWait) -> Bool {
+  app.nav.top_stay() == self.stay &&
+  @sf.last_presented() == self.shown &&
+  (match self.held {
+    Some(h) => h.still()
+    None => true
+  })
 }
 
 ///|
@@ -36,7 +46,16 @@ fn press_still(stay : (Int, Int), shown : Int) -> Bool {
 /// is owned by nothing and read outside what reads now. `most`: it waits that long at most (a moment of the window's
 /// tree's timeline from now), then does `go` as it is, while what it was pressed in stays as it was: what opens where
 /// a card or a panel waits for what it reads of the device (@sf.open_hold_ms), never held longer than they are.
-pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn() {  }, most? : Double) -> PressWait {
+/// `holds`: pressed as a menu's item, that menu held open as it was while it waits (@sf.choice_held), what it opens
+/// coming in its place; not where the press switches what is shown by a choice shown at once (switch_answered: 连接's
+/// filter, the menu done with as the choice is made).
+pub fn press_wait(
+  ready : () -> Bool,
+  go : () -> Unit,
+  let_go? : () -> Unit = fn() {  },
+  most? : Double,
+  holds? : Bool = true,
+) -> PressWait {
   let w : PressWait = {
     waiting: true,
     stop: None,
@@ -45,24 +64,24 @@ pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn
     let_go,
     stay: @signals.untracked(fn() { app.nav.top_stay() }),
     shown: @sf.last_presented(),
+    held: None,
   }
   if @signals.untracked(ready) {
     w.waiting = false
     go()
     return w
   }
+  // (pressed as a menu's item: the menu held open as it was while it waits)
+  w.held = if holds { @sf.choice_held() } else { None }
   let owner = @signals.set_owner(None)
   let stop = @signals.untracked(fn() {
     @signals.effect(fn() {
       guard w.waiting else { return }
       // (what it was pressed in first: once that is gone, what it waits for is not read again)
-      if !press_still(w.stay, w.shown) {
+      if !w.still() {
         @signals.untracked(fn() { w.give_up() })
       } else if ready() {
-        @signals.untracked(fn() {
-          w.end()
-          go()
-        })
+        @signals.untracked(fn() { w.answered() })
       }
     })
   })
@@ -74,7 +93,7 @@ pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn
         let root = tree.root()
         root.at_moment(root.cause_at() + ms, fn() {
           guard w.waiting else { return }
-          if @signals.untracked(fn() { press_still(w.stay, w.shown) }) {
+          if @signals.untracked(fn() { w.still() }) {
             w.end()
             go()
           } else {
@@ -95,6 +114,38 @@ pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn
 }
 
 ///|
+/// What it waited for answered while what it was pressed in stays as it was: done now, as the answer comes. Where it
+/// holds the menu it was chosen in, done by that menu as a change of its own at that moment (@sf.ChoiceHeld::answer),
+/// never inside the answer that told it.
+fn PressWait::answered(self : PressWait) -> Unit {
+  match self.held {
+    Some(h) => {
+      // (waiting no more: what it waits for read no more, and nothing else ends it)
+      self.waiting = false
+      match self.stop {
+        Some(stop) => {
+          self.stop = None
+          @signals.after_flush(stop)
+        }
+        None => ()
+      }
+      // (the menu it holds steps on to what it opens apart from the answer that told it: @sf.ChoiceHeld::answer)
+      h.answer(fn() { self.still_pressed() }, self.go, self.let_go)
+    }
+    None => {
+      self.end()
+      (self.go)()
+    }
+  }
+}
+
+///|
+/// Whether what it was pressed in is as it was then, but for the menu it holds (PressWait::still).
+fn PressWait::still_pressed(self : PressWait) -> Bool {
+  app.nav.top_stay() == self.stay && @sf.last_presented() == self.shown
+}
+
+///|
 /// Whether it still waits.
 pub fn PressWait::waiting(self : PressWait) -> Bool {
   self.waiting
@@ -105,6 +156,11 @@ pub fn PressWait::waiting(self : PressWait) -> Bool {
 /// again, what it opened holding it), or it was done.
 pub fn PressWait::end(self : PressWait) -> Unit {
   self.waiting = false
+  // (the menu it held closed for what it opens, which comes in its place)
+  match self.held {
+    Some(h) => h.close(chosen=true)
+    None => ()
+  }
   match self.stop {
     Some(stop) => {
       self.stop = None
@@ -119,6 +175,11 @@ pub fn PressWait::end(self : PressWait) -> Unit {
 /// It waits no more and lets go of what it asked (what it was pressed in is gone, or what holds it is): nothing opens.
 pub fn PressWait::give_up(self : PressWait) -> Unit {
   guard self.waiting else { return }
+  // (the menu it held closed unsaid: nothing comes in its place)
+  match self.held {
+    Some(h) => h.close(chosen=false)
+    None => ()
+  }
   self.end()
   (self.let_go)()
 }
@@ -129,10 +190,9 @@ pub fn PressWait::give_up(self : PressWait) -> Unit {
 /// where it waits no more.
 pub fn PressWait::check(self : PressWait) -> Unit {
   guard self.waiting else { return }
-  if !@signals.untracked(fn() { press_still(self.stay, self.shown) }) {
+  if !@signals.untracked(fn() { self.still() }) {
     self.give_up()
   } else if @signals.untracked(self.ready) {
-    self.end()
-    (self.go)()
+    self.answered()
   }
 }

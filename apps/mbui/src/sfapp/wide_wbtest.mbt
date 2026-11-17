@@ -2457,13 +2457,21 @@ test "wide: a file an agent names by its path is a chip in its words, its card a
 }
 
 ///|
-test "wide: a file an agent names by its path opens itself in the preview as its chip is clicked, read by its path (FileRef open)" {
+test "wide: a file an agent names by its path opens itself in a tab beside the chat as its chip is clicked, read by its path (FileRef open)" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat-peeks")
+  let made : Ref[Source?] = Ref(None)
+  let t = wide_tester(calls, mode="chat-peeks", before=fn(s) { made.val = Some(s) })
   let (x, y) = peek_words_at(t, "src/list/place.mbt:12")
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  let v = viewer.get().unwrap()
+  assert_true(viewer.get() is None, msg="beside the chat, where there is a side panel")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
+  let tabs = match view_of_chat(made.val.unwrap(), r).0 {
+    Some(cv) => cv.tabs.open.filter(fn(k) { k.has_prefix("view:") })
+    None => []
+  }
+  assert_eq(tabs.length(), 1, msg="its tab")
+  let v = @sfbase.tab_viewer("ws1/st1:s-c1", tabs[0]).unwrap()
   assert_true(v.named)
   assert_eq(v.file.path, "src/list/place.mbt")
   assert_true(v.bytes.get() is Some(_), msg="read by its path, whole in its first part")

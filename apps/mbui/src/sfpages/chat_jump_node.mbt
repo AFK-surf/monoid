@@ -10,9 +10,14 @@
 /// as it was last in sight); its latest page asked (chat.latest), the list to its end as it comes; the first and the last
 /// key it had in sight (none before it was laid out: what waits to be decided is out of view only once it is); whether
 /// it stands where a go-to put it (1 brought, 2 there: the page before not asked till the reader moves it; 0 not) and
-/// the message that go-to went to and its top under the list's (-1 none); the
-/// message ⌘F last asked the window moved about (chat.around, -1 none); the row last gone to that flashes, the moment
-/// it was gone to and the passage of it a quote that led there quoted, where its words have it ("" none: the row lit
+/// the message that go-to went to and its top under the list's (-1 none); where the page last put the list itself (a
+/// block brought, its offset as ListPlace::bring takes it and whether what it marks sought was brought too: chat_stand)
+/// while the reader has not moved it since, whether it is still on its way there, and where that block's top then
+/// stood under what covers the list's top (none where it lies further down than the block after the first in sight:
+/// then where the first in sight stood); the message a go-to last asked the
+/// window moved about (chat.around, -1 none); the message whose ask the bell went to (-1 none)
+/// and that message's key while its ask is what a go-to brings before the eyes ("" none); the row last gone to that
+/// flashes, the moment it was gone to and the passage of it a quote that led there quoted, where its words have it ("" none: the row lit
 /// whole); the row a search opened the chat at and its words,
 /// marked there for as long as the list is; 对话目录's round button while it shows (what ⌘G opens the outline beside);
 /// where the reader is as the list last had it in sight (the message at the top of what shows, whether at the chat's
@@ -24,7 +29,12 @@ priv struct ChatJump {
   sight : @signals.Signal[(String, String)?]
   put : @signals.Signal[Int]
   mut went : (Double, Double)
+  mut stand : (String, Double, Bool)?
+  mut landing : Bool
+  mut stood : (Double?, String, Double)
   mut around : Double
+  mut ask_to : Double
+  asked_card : @signals.Signal[String]
   flashed : @signals.Signal[(String, Double, String)]
   found : @signals.Signal[(String, Array[String])]
   mut outline_at : @view.View?
@@ -41,7 +51,12 @@ fn ChatJump::new() -> ChatJump {
     sight: @signals.signal(None, same=fn(a, b) { a == b }),
     put: @signals.signal(0, same=fn(a, b) { a == b }),
     went: (-1.0, 0.0),
+    stand: None,
+    landing: false,
+    stood: (None, "", 0.0),
     around: -1.0,
+    ask_to: -1.0,
+    asked_card: @signals.signal("", same=fn(a, b) { a == b }),
     flashed: @signals.signal(("", -1.0, ""), same=fn(a, b) { a == b }),
     found: @signals.signal(("", []), same=fn(a, b) { a == b }),
     outline_at: None,
@@ -55,14 +70,168 @@ fn ChatJump::new() -> ChatJump {
 let to_newest_away : Double = 120.0
 
 ///|
-/// Chat `r`'s list (`jump` what it keeps of it, `place`, its rows `rows`, its view `view`): what it has in sight kept
+/// Block `k`'s top under what covers the list's top as `s` (what the list of rows `rs` has in sight) counts it: the first
+/// in sight's, or the one right after it's (where the first's foot is); none for one further down (none of their heights
+/// is in what is told).
+fn chat_top_in_sight(s : @view.Sight[String], rs : ChatBodyNow, k : String) -> Double? {
+  if s.first == k {
+    return Some(-s.into)
+  }
+  match rs.keys.search(s.first) {
+    Some(i) if rs.keys.get(i + 1) == Some(k) => Some(s.tall - s.into)
+    _ => None
+  }
+}
+
+///|
+/// Where the reader is in what the list of rows `rs` has in sight (`s`), as the chat's reading keeps it (sfbase's
+/// Reading's top_seq and top_off) and tells it the core (chat_read_node): the first message whose block shows under what
+/// covers the list's top (`cover` tall) more than the room the list keeps under it (`top` the two: what of a block over
+/// one gone to shows there, whatever the room over that one, is a tail of what was read; the last in sight whatever
+/// shows of it), its
+/// top as kept (sfbase's kept_place_of); past a row that is no message (the page before's row, the unread line, what is
+/// sent from here), the message after it (its top counted where the row is the first in sight's next, else the next's:
+/// how far further down is not told). One read for every way the reader's place is taken (a go-to's, ⌘F's start, the
+/// outline's, the place told the core). None where what shows holds no message.
+fn chat_reader_at(s : @view.Sight[String], rs : ChatBodyNow, cover : Double, top : Double) -> (Double, Double)? {
+  guard rs.keys.search(s.first) is Some(i) else { return None }
+  let mut j = i
+  while j < rs.keys.length() {
+    let k = rs.keys[j]
+    match rs.get(k).map(fn(row) { row.entry }) {
+      Some(Said(m)) if j > i || s.tall - s.into > top - cover + 0.5 || k == s.last => {
+        let top = if j == i { -s.into } else { s.tall - s.into }
+        return Some((m.seq, @sfbase.kept_place_of(top, cover)))
+      }
+      _ => ()
+    }
+    if k == s.last {
+      break
+    }
+    j = j + 1
+  }
+  None
+}
+
+///|
+/// The last message the list of rows `rs` has in sight (`s`; -1 none): what ⌘F starts at lies between it and the
+/// reader's (sfbase's Reading's bottom_seq).
+fn chat_bottom_in_sight(s : @view.Sight[String], rs : ChatBodyNow) -> Double {
+  guard rs.keys.search(s.last) is Some(j) else { return -1.0 }
+  let mut i = j
+  while i >= 0 {
+    match rs.get(rs.keys[i]).map(fn(row) { row.entry }) {
+      Some(Said(m)) => return m.seq
+      _ => ()
+    }
+    if rs.keys[i] == s.first {
+      break
+    }
+    i = i - 1
+  }
+  -1.0
+}
+
+///|
+/// Block `k` of chat `chat`'s list brought to its top by the page (`offset` as ListPlace::bring takes it, `sought` what it
+/// marks sought too, gliding where `glide`): where the list stands now, kept as such till the reader moves it
+/// (chat_stand_left), so that what covers its top grown meanwhile (the bar's second row measured: chat_stand_again) puts it
+/// there again.
+fn chat_stand(
+  jump : ChatJump,
+  place : @view.ListPlace[String],
+  k : String,
+  offset : Double,
+  sought? : Bool = false,
+  glide? : Bool = false,
+) -> Unit {
+  jump.stand = Some((k, offset, sought))
+  jump.landing = true
+  jump.stood = (None, "", 0.0)
+  place.bring(k, offset~, glide~, sought~)
+}
+
+///|
+/// The list put again where the page last put it (chat_stand), what covers its top coming to be `to` tall from `now`
+/// (as it is drawn now, on its way there): that block's place under it as it was meant, not under the cover's foot as
+/// it was then, gliding there as the cover goes. Nothing where the reader has moved it since.
+fn chat_stand_again(jump : ChatJump, place : @view.ListPlace[String], to : Double, now : Double) -> Unit {
+  guard jump.stand is Some((k, offset, sought)) else { return }
+  // (kept as it was meant, under the cover as it comes to be: what it comes to again is counted from it)
+  jump.landing = true
+  jump.stood = (None, "", 0.0)
+  place.bring(k, offset=offset - (to - now), glide=true, sought~)
+}
+
+///|
+/// The reader moved chat `chat`'s list (the hand on it, the wheel, a key that scrolls it, the page asked it elsewhere):
+/// no longer where the page put it, nor where a go-to put it (the page before asked as it nears it again), and what that
+/// go-to lit no longer where the reader is (sfbase's Reading's flash: reader_top's).
+fn chat_stand_left(jump : ChatJump, chat : String) -> Unit {
+  jump.stand = None
+  jump.landing = false
+  jump.stood = (None, "", 0.0)
+  if jump.put.untracked() != 0 {
+    jump.put.set(0)
+  }
+  let rd = @sfbase.reading_of(chat)
+  rd.flash = ""
+  rd.flash_passage = ""
+}
+
+///|
+/// The key of the row of chat `chat`'s message `m` (its first piece's key `k`, among the list's rows `rs`) that holds
+/// what a go-to brings before the eyes: its last piece where its ask is what is gone to (`card`); where it is drawn in
+/// pieces (chat_body_pieces), the piece the passage a quote quoted is in (`passage`), else the one where the `at`th time
+/// of `words` is (markdown_piece_with); `k` itself else.
+fn chat_piece_sought(
+  rs : ChatBodyNow,
+  k : String,
+  m : Message,
+  card : Bool,
+  passage : String,
+  words : Array[String],
+  at : Int,
+) -> String {
+  guard rs.get(k) is Some(row) && row.piece is Some(_) else { return k }
+  if card {
+    let mut last = k
+    guard rs.keys.search(k) is Some(i) else { return k }
+    let mut j = i + 1
+    while j < rs.keys.length() && chat_piece_of(rs.keys[j]) == k {
+      last = rs.keys[j]
+      j = j + 1
+    }
+    return last
+  }
+  guard passage != "" || words.length() > 0 else { return k }
+  guard chat_body_pieces(Said(m)) is Some(pieces) else { return k }
+  let b = @sf.markdown_piece_with(m.text, m.md, pieces, passage~, words~, at~)
+  let pk = chat_piece_key(k, b)
+  if rs.get(pk) is Some(_) {
+    pk
+  } else {
+    k
+  }
+}
+
+///|
+/// The message each chat's ⌘F last went to (chat_nodes_find_list's `go`), by chat: gone to without flashing, its
+/// time the reader is at brought before the eyes (find_at_in), taken as it is gone to.
+let find_goes : Map[String, Double] = Map([])
+
+///|
+/// Chat `r`'s list (`jump` what it keeps of it, `place`, its rows `rows`, its view `view`, `width` wide, `scroll` what it
+/// scrolls by): what it has in sight kept
 /// (whether it is away from its end; where the reader is, for a go-to inside the chat to keep: sfbase's Reading,
-/// keep_place_of), the kept place
-/// forgotten at its end; and the message the chat is to go to (sfbase's go_tos) brought to the list's top (`top`: the
-/// chat's bar and the room under it; places counted under what covers it, `cover` tall: the bar), or where the reader
-/// was (go_back_to's offset, as kept: sfbase's kept_place_under), once its row is among the keys, the page before asked
-/// (`older`, one at a time) while it is not and the chat has pages before, or what ⌘F found the window moved about
-/// (chat.around, `src` asked) while its bar is open here; given up where none is left. Asked as the
+/// keep_place_of: chat_reader_at), the kept place
+/// forgotten at its end; and the message the chat is to go to (sfbase's go_tos) brought to the list's top, its words
+/// (what is read in it, under the room over its block) `top` under the list's (the chat's bar and the room under it;
+/// places counted under what covers it, `cover` tall: the bar), whatever the room over its block (the list's first, one
+/// joined to the one before, one apart: chat_body_gap_room), or where the reader was (go_back_to's offset, as kept:
+/// sfbase's kept_place_under), once its row is among the keys (a notice folding it, where one does); while it is not, the
+/// window moved about it (chat.around, `src` asked) where it is before the window and the chat has more before, or
+/// after it and the chat more after; given up where none is left, said where the chat had it nowhere. Asked as the
 /// list is made, as its keys change and as the chat is told to go somewhere.
 fn chat_goes_to(
   v : @view.View,
@@ -70,34 +239,54 @@ fn chat_goes_to(
   r : ChatRef,
   jump : ChatJump,
   place : @view.ListPlace[String],
+  scroll : @view.Scroll,
   rows : ChatBodyList,
   view : () -> ChatView,
   cover : () -> Double,
   top : () -> Double,
-  older : () -> Unit,
+  width : () -> Double,
   shows : () -> Bool,
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
   place.on_sight(fn(s) {
     let cv = @signals.untracked(view)
+    let rs = @signals.untracked(fn() { rows.read() })
     jump.away.set(!s.at_foot && s.from_foot > to_newest_away)
     jump.sight.set(Some((s.first, s.last)))
-    // (where a go-to put it, then moved off it: the reader's)
-    match jump.put.untracked() {
-      1 => jump.put.set(2)
-      2 => jump.put.set(0)
+    // (where the page put it: there once what it asked is done, its block's top as it then stood; moved off it since,
+    // the reader's (a message streamed into at the foot, a page before come in over it, a row over it measured anew
+    // move none of it: the list holds what is read))
+    match jump.stand {
+      Some((k, _, _)) if !place.asking() =>
+        if jump.landing {
+          jump.landing = false
+          jump.stood = (chat_top_in_sight(s, rs, k), s.first, s.into)
+          if jump.put.untracked() == 1 {
+            jump.put.set(2)
+          }
+        } else {
+          let moved = match (jump.stood, chat_top_in_sight(s, rs, k)) {
+            ((Some(was), _, _), Some(now)) => (now - was).abs() > 0.5
+            ((Some(_), _, _), None) => true
+            ((None, first, into), _) => first != s.first || (into - s.into).abs() > 0.5
+          }
+          if moved {
+            chat_stand_left(jump, chat)
+          }
+        }
       _ => ()
     }
     // (placed while it shows: sfbase's keep_place_of)
     let rd = @sfbase.reading_of(chat)
     rd.placed = @signals.untracked(shows)
-    match @signals.untracked(fn() { (rows.row)(s.first) }).map(fn(row) { row.entry }) {
-      Some(Said(m)) => {
-        rd.top_seq = m.seq
-        rd.top_off = @sfbase.kept_place_of(-s.into, @signals.untracked(cover))
+    match chat_reader_at(s, rs, @signals.untracked(cover), @signals.untracked(top)) {
+      Some((seq, off)) => {
+        rd.top_seq = seq
+        rd.top_off = off
       }
-      _ => ()
+      None => ()
     }
+    rd.bottom_seq = chat_bottom_in_sight(s, rs)
     // (standing where a go-to put it: the reader at the message gone to, put under the bar, whatever of the one over
     // it shows under the bar too: reader_top's)
     match jump.went {
@@ -116,66 +305,113 @@ fn chat_goes_to(
     // (where the reader is, told: the rail's long tick)
     jump.reader.set((rd.top_seq, rd.at_end))
   })
+  // (the hand on it: the reader's from then)
+  v.reacts(fn() { scroll.in_hand() }, fn(held) { if held && jump.stand is Some(_) { chat_stand_left(jump, chat) } }, at_start=false)
   v.reacts(shows, fn(on) { @sfbase.reading_of(chat).placed = on && place.sight_now() is Some(_) }, at_start=false)
+  // (given up: nothing left to go to, said where the chat had messages and none is it)
+  let give_up = fn(said : Bool) {
+    @sfbase.go_tos.remove(chat)
+    @sfbase.go_to_passages.remove(chat)
+    @sfbase.go_to_words.remove(chat)
+    @sfbase.go_back_offsets.remove(chat)
+    @sfbase.go_to_around.remove(chat)
+    find_goes.remove(chat)
+    jump.around = -1.0
+    jump.ask_to = -1.0
+    if said {
+      @sfbase.toast_later(@sf.t("web-main.chat.messageGone"))
+    }
+  }
   let goes = fn() {
     guard @sfbase.go_tos.get(chat) is Some(target) else { return }
     let rs = @signals.untracked(fn() { rows.read() })
     let cv = @signals.untracked(view)
+    // (the first and the last message the window holds; the row of the one gone to, else of a notice folding it)
     let mut first = -1.0
-    let mut at : String? = None
+    let mut last = -1.0
+    let mut at : (String, Message)? = None
+    let mut folded : (String, Message)? = None
     for k in rs.keys {
       match rs.get(k).map(fn(row) { row.entry }) {
-        Some(Said(m)) => {
+        Some(Said(m)) if chat_piece_of(k) == k => {
           if first < 0.0 {
             first = m.seq
           }
-          if m.seq == target {
-            at = Some(k)
-            break
+          if m.seq > last {
+            last = m.seq
+          }
+          if m.seq == target && at is None {
+            at = Some((k, m))
+          } else if folded is None && m.seq < target && target <= m.notice_last_seq {
+            folded = Some((k, m))
           }
         }
         _ => ()
       }
     }
+    let at = match at {
+      Some(_) => at
+      None => folded
+    }
     match at {
-      Some(k) => {
+      Some((k, m)) => {
         // (the passage a quote that led here quoted, where the message's words have it: lit alone as it flashes,
         // chat_passage_lit; else the row lit whole, Chat.tsx Quotes' jump)
-        let passage = match (@sfbase.go_to_passages.get(chat), rs.get(k).map(fn(row) { row.entry })) {
-          (Some(p), Some(Said(m))) if !m.system && @sf.find_passage(m.text, p) is Some(_) => p
+        let passage = match @sfbase.go_to_passages.get(chat) {
+          Some(p) if !m.system && @sf.find_passage(m.text, p) is Some(_) => p
           _ => ""
         }
         @sfbase.go_tos.remove(chat)
         @sfbase.go_to_passages.remove(chat)
+        @sfbase.go_to_around.remove(chat)
         let back = @sfbase.go_back_offsets.get(chat)
         @sfbase.go_back_offsets.remove(chat)
         let words = @sfbase.go_to_words.get(chat).unwrap_or([])
         @sfbase.go_to_words.remove(chat)
+        // (⌘F's: no flash, the time the reader is at brought before the eyes; the bell's: its ask)
+        let finds = find_goes.get(chat) == Some(target)
+        find_goes.remove(chat)
+        let card = jump.ask_to == target
+        jump.ask_to = -1.0
         jump.around = -1.0
-        // (where it is put, as kept: a message gone to at the list's top, under the bar and its room)
+        // (the piece of a long message that holds what was meant in it: its block brought, View::sought's there)
+        let pk = if back is Some(_) {
+          k
+        } else if finds {
+          chat_piece_sought(rs, k, m, false, "", find_words_in(chat), find_k())
+        } else {
+          chat_piece_sought(rs, k, m, card, passage, words, @sf.found_all)
+        }
+        // (where it is put, as kept: a message gone to with what is read in it at the list's top, under the bar and its
+        // room, the room over its block over that)
         let c = @signals.untracked(cover)
+        let gap = match rs.get(pk) {
+          Some(row) => chat_body_gap_room(row.gap, @signals.untracked(width))
+          None => 0.0
+        }
         let off = match back {
           Some(off) => off
-          None => @sfbase.kept_place_of(0.0, @signals.untracked(top))
+          None => @sfbase.kept_place_of(@signals.untracked(top) - c - gap, c)
         }
-        jump.went = (target, off)
-        jump.put.set(1)
+        // (where the reader is: the message, where its first piece is the one brought)
+        jump.went = if pk == k { (target, off) } else { (-1.0, 0.0) }
         // (what was meant in it before the eyes too, where it lies low in a long message: a search's words, a quote's
-        // passage; not back where the reader was: ListPlace::bring's `sought`, what its words mark: View::sought. One in
-        // sight already glides there, the eyes taken along to it as it lights (what is between measured as it shows);
-        // one out of sight, its place only counted, there at once: `glide`)
+        // passage, the bell's ask; not back where the reader was: ListPlace::bring's `sought`, what its words mark:
+        // View::sought. One in sight already glides there, the eyes taken along to it as it lights (what is between
+        // measured as it shows); one out of sight, its place only counted, there at once: `glide`)
         let in_sight = match jump.sight.untracked() {
           Some((first, last)) =>
-            match (rs.keys.search(first), rs.keys.search(k), rs.keys.search(last)) {
+            match (rs.keys.search(first), rs.keys.search(pk), rs.keys.search(last)) {
               (Some(a), Some(i), Some(b)) => a <= i && i <= b
               _ => false
             }
           None => false
         }
-        place.bring(k, offset=@sfbase.kept_place_under(off, c), glide=back is None && in_sight, sought=back is None)
-        // (back where the reader was: nothing of it shown; a search's: its words marked, nothing flashing; else it
-        // flashes, from now)
-        if back is None {
+        // (what it marks said before it is brought, so the row reads what it marks sought as the list lays it out
+        // there: back where the reader was, nothing of it shown; ⌘F's, its words marked by the find, nothing flashing;
+        // a search's, its words marked, nothing flashing; else it flashes, from now)
+        jump.asked_card.set(if card { k } else { "" })
+        if back is None && !finds {
           if words.length() > 0 {
             jump.found.set((k, words))
           } else {
@@ -184,37 +420,51 @@ fn chat_goes_to(
             @sfbase.flash_rest_nodes.val = at + @sfbase.flash_ms
             // (the chat's reading told the message gone to and what of it is lit, as the old page's list tells it:
             // where the reader is, reader_top's)
-            match rs.get(k).map(fn(row) { row.entry }) {
-              Some(Said(m)) => {
-                let rd = @sfbase.reading_of(chat)
-                rd.flash = m.ts
-                rd.flash_passage = passage
-              }
-              _ => ()
-            }
+            let rd = @sfbase.reading_of(chat)
+            rd.flash = m.ts
+            rd.flash_passage = passage
           }
         }
+        jump.put.set(1)
+        chat_stand(
+          jump,
+          place,
+          pk,
+          @sfbase.kept_place_under(off, c),
+          glide=back is None && in_sight,
+          sought=back is None,
+        )
       }
-      // (what ⌘F found, or a message after an older window, not in the chat's window: the window moved about it
-      // (chat.around), once for each)
-      None if (find_chat() == chat || (cv.newer && (first < 0.0 || first < target))) && cv.thread is Some(_) =>
-        if jump.around != target {
-          jump.around = target
-          (src.call)(
-            "chat.around",
-            {
-              "station": Json::string(r.station),
-              "thread": Json::number(cv.thread.unwrap()),
-              "seq": Json::number(target),
-            },
-            fn(res) { if res is Err(_) { @sfbase.go_tos.remove(chat) } },
-          )
-        }
-      // (the page before asked while the message is before what the window holds: once for each first, as it comes)
-      None if cv.more && (first < 0.0 || first > target) => if cv.older == "" { older() }
+      None if first >= 0.0 && last >= 0.0 && target >= first && target <= last => give_up(true)
       None => {
-        @sfbase.go_tos.remove(chat)
-        @sfbase.go_back_offsets.remove(chat)
+        let before = cv.more && (first < 0.0 || target < first)
+        let after = cv.newer && (last < 0.0 || target > last)
+        match cv.thread {
+          // (not in the chat's window, the chat holding more before or after it: the window moved about it
+          // (chat.around), once for each; already moved so as it was asked (a quote's: go_to_quoted))
+          Some(th) if before || after =>
+            if @sfbase.go_to_around.get(chat) == Some(target) {
+              @sfbase.go_to_around.remove(chat)
+              jump.around = target
+            } else if jump.around != target {
+              jump.around = target
+              (src.call)(
+                "chat.around",
+                { "station": Json::string(r.station), "thread": Json::number(th), "seq": Json::number(target) },
+                fn(res) {
+                  guard @sfbase.go_tos.get(chat) == Some(target) && jump.around == target else { return }
+                  match res {
+                    // (the core holds it nowhere: none to go to)
+                    Ok(Object(o)) if o.get("seq") is Some(Null) => give_up(true)
+                    Ok(_) => ()
+                    Err(_) => give_up(false)
+                  }
+                },
+              )
+            }
+          // (none left to bring in: it is not in the chat)
+          _ => give_up(first >= 0.0)
+        }
       }
     }
   }
@@ -247,7 +497,8 @@ fn chat_to_newest(
     return
   }
   let cv = @signals.untracked(view)
-  if @sfbase.chat_latest_now(src, r, cv, @sf.t("web-main.chat.toLatest")) {
+  // (where it could not be had, the list no longer waiting for it: chat_goes_to's `newer`)
+  if @sfbase.chat_latest_now(src, r, cv, @sf.t("web-main.chat.toLatest"), failed=fn() { jump.latest = false }) {
     jump.latest = true
   } else {
     place.to_end()
@@ -630,13 +881,18 @@ let chat_rail_press : @ui.Style = @ui.style(
 
 ///|
 /// The bell to what waits to be decided in chat `r` (to_ask's: the core's `asks`) over the round buttons that show
-/// under it in the list's foot `foot`, while any of their posts is not among the rows the list has in sight (once it has
-/// any; `rows` its rows); pressed, the chat goes to the post (@sfbase.go_to), the next one's the next time (ask_turns).
+/// under it in the list's foot `foot`, while any of their asks is not among the rows the list has in sight (once it has
+/// any; `rows` its rows): a post's under its words, seen where its last piece is (a long message's ask under the last of
+/// them); pressed, the next one's the next time (ask_turns), the list (`place`) to where it is: the chat's end where it
+/// is the one the chat's end says it stands on (the line saying so, as it is seen there), else the chat to its post
+/// (@sfbase.go_to) with its ask brought before the eyes (ChatJump's ask_to: the post's last piece, the ask marked sought
+/// there), not the post's top, a long report's screens over it.
 fn chat_ask_node(
   foot : @view.View,
   r : ChatRef,
   src : Source,
   jump : ChatJump,
+  place : @view.ListPlace[String],
   view : () -> ChatView,
   rows : ChatBodyList,
   width : () -> Double,
@@ -659,8 +915,10 @@ fn chat_ask_node(
       }
       if inside {
         match rs.get(k).map(fn(row) { row.entry }) {
-          Some(Said(m)) if asks.contains(m.seq) && v.state_ask != Some(m.seq) && !seen.contains(m.seq) =>
-            seen.push(m.seq)
+          Some(Said(m)) if asks.contains(m.seq) &&
+            v.state_ask != Some(m.seq) &&
+            !seen.contains(m.seq) &&
+            rs.get(k).map(fn(row) { row.piece.map(fn(pc) { pc.last }).unwrap_or(true) }).unwrap_or(true) => seen.push(m.seq)
           Some(State(_, _, _)) =>
             match v.state_ask {
               Some(seq) if asks.contains(seq) && !seen.contains(seq) => seen.push(seq)
@@ -688,8 +946,20 @@ fn chat_ask_node(
       let asks = asks_of(@signals.untracked(view))
       guard asks.length() > 0 else { return }
       let turn = ask_turns.get(chat).unwrap_or(0)
-      @sfbase.go_to(r, asks[turn % asks.length()])
+      let seq = asks[turn % asks.length()]
       ask_turns[chat] = turn + 1
+      let cv = @signals.untracked(view)
+      if cv.state_ask == Some(seq) {
+        // (the one the chat's end stands on: the chat's end, its latest page first where the window is short of it)
+        if @sfbase.chat_latest_now(src, r, cv, @sf.t("web-main.chat.toLatest"), failed=fn() { jump.latest = false }) {
+          jump.latest = true
+        } else {
+          place.to_end()
+        }
+        return
+      }
+      jump.ask_to = seq
+      @sfbase.go_to(r, seq)
     }
     @sf.float_button_node(o, "bell", fn() { @sf.t("web-main.chat.asks.go") }, press, tips~) |> ignore
   })

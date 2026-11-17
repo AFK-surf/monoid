@@ -8,14 +8,14 @@
 import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Cause, Context, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { measure } from "../jobs/load.ts";
 import { liveMemory } from "../jobs/memory.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { accept } from "../mesh/accept.ts";
 import { lanAddrs } from "../mesh/lan.ts";
-import { applyNetwork } from "../mesh/mesh.ts";
+import { applyNetwork, keptRunning } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
@@ -271,8 +271,6 @@ export const RigMeshLive = Layer.effectDiscard(
         closing: "rig stopping",
       });
     });
-    yield* Effect.forkScoped(Effect.scoped(run).pipe(Effect.tapCause((cause) => Effect.sync(() => {
-      if (!Cause.hasInterruptsOnly(cause)) log.error("mesh", "mesh stopped", { error: Cause.pretty(cause) });
-    }))));
+    yield* Effect.forkScoped(keptRunning(run, "rig mesh"));
   }),
 );

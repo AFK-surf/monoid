@@ -1,13 +1,12 @@
-// A panel's row opening the next menu beside it (@sf.submenu_row_node, submenu_row's as nodes) set beside the old one
-// (@sf.submenu_row) in the same panel: where its rows and its menu stand, and how each opens and closes, the same.
+// A panel's row opening the next menu beside it (@sf.submenu_row_node, submenu_row's as nodes) in a panel: where its
+// rows and its menu stand (where they were beside the old one, @sf.submenu_row), and how each opens and closes.
 
 ///|
 /// The app over the fixture's chat `w` by `h` as `platform` plays it, a panel over it (`from`: Unanchored a dialog in the
 /// middle of the window on a wide one, beside what opened it else) holding words, then the row 甲 (while `shown`) and the
-/// row 乙, each opening its items beside it, then words again (no row in a dialog's foot corners); the old view's rows (`old`) or the window's tree's. What is chosen is put in
-/// `chosen` by its words.
+/// row 乙, each opening its items beside it, then words again (no row in a dialog's foot corners). What is chosen is put
+/// in `chosen` by its words.
 fn sub_panel(
-  old : Bool,
   from : @sf.Anchor,
   chosen : Array[String],
   shown : @signals.Signal[Bool],
@@ -24,31 +23,16 @@ fn sub_panel(
   let item = fn(l : String) -> @sf.MenuItem? { Some(@sf.menu_item_of(l, fn() { chosen.push(l) })) }
   let a = [item("甲一"), item("甲二")]
   let b = [item("乙一")]
-  if old {
-    @sf.panel(
-      "子菜单",
-      fn(c, _) {
-        c.text("说明文字", style=@sf.meta) |> ignore
-        if shown.get() {
-          @sf.submenu_row(c, "sub-test/a", "甲", a)
-        }
-        @sf.submenu_row(c, "sub-test/b", "乙", b)
-        c.text("末尾文字", style=@sf.meta) |> ignore
-      },
-      from~,
-    )
-  } else {
-    @sf.panel_nodes(
-      "子菜单",
-      fn(v, _) {
-        @sf.words_node(v, fn() { "说明文字" }, fn() { @sf.meta }) |> ignore
-        v.show(fn() { shown.get() }, fn(x) { @sf.submenu_row_node(x, fn() { "甲" }, fn() { a }) })
-        @sf.submenu_row_node(v, fn() { "乙" }, fn() { b })
-        @sf.words_node(v, fn() { "末尾文字" }, fn() { @sf.meta }) |> ignore
-      },
-      from~,
-    )
-  }
+  @sf.panel_nodes(
+    "子菜单",
+    fn(v, _) {
+      @sf.words_node(v, fn() { "说明文字" }, fn() { @sf.meta }) |> ignore
+      v.show(fn() { shown.get() }, fn(x) { @sf.submenu_row_node(x, fn() { "甲" }, fn() { a }) })
+      @sf.submenu_row_node(v, fn() { "乙" }, fn() { b })
+      @sf.words_node(v, fn() { "末尾文字" }, fn() { @sf.meta }) |> ignore
+    },
+    from~,
+  )
   t.run_for(@ui.move_most_ms)
   t
 }
@@ -84,114 +68,109 @@ fn sub_has(t : @ui.Tester, words : String) -> Bool {
 let sub_froms : Array[(String, @sf.Anchor)] = [("dialog", Unanchored), ("beside", At(300.0, 120.0, 80.0, 30.0))]
 
 ///|
-test "a submenu row, old and as nodes, on a wide window: the rows, and its menu pressed open beside it, at the same places" {
+test "a submenu row as nodes, on a wide window: the rows, and its menu pressed open beside it, where they were beside the old one" {
+  let seen : Array[String] = []
   for f in sub_froms {
-    let at : Array[Array[String]] = []
-    for old in [true, false] {
-      let t = sub_panel(old, f.1, [], @signals.signal(true))
-      let rows = sub_at(t, ["说明文字", "甲", "乙", "末尾文字"])
-      let (x, y) = sub_mid(t, "甲")
-      t.tap(x, y)
-      t.run_for(@ui.move_most_ms)
-      at.push(rows + sub_at(t, ["甲一", "甲二"]))
-    }
-    assert_eq(at[1], at[0], msg="\{f.0}: old \{Repr(at[0])}, nodes \{Repr(at[1])}")
-    assert_true(!at[0].iter().any(fn(s) { s.has_suffix(" -") }), msg="\{f.0}: \{Repr(at[0])}")
-  }
-}
-
-///|
-test "a submenu row, old and as nodes, on 小屏: pressed, a sheet of its items titled by it, at the same places; one chosen, done once, the sheet gone" {
-  let at : Array[Array[String]] = []
-  for old in [true, false] {
-    let chosen = []
-    let t = sub_panel(old, Unanchored, chosen, @signals.signal(true), w=390.0, h=844.0, platform=2)
+    let t = sub_panel(f.1, [], @signals.signal(true))
+    let rows = sub_at(t, ["说明文字", "甲", "乙", "末尾文字"])
     let (x, y) = sub_mid(t, "甲")
     t.tap(x, y)
     t.run_for(@ui.move_most_ms)
-    at.push(sub_at(t, ["甲一", "甲二"]))
-    let (x, y) = sub_mid(t, "甲二")
+    let at = rows + sub_at(t, ["甲一", "甲二"])
+    assert_true(!at.iter().any(fn(s) { s.has_suffix(" -") }), msg="\{f.0}: \{Repr(at)}")
+    seen.push("\{f.0}: \{at.join(" | ")}")
+  }
+  inspect(seen.join("\n"), content=(
+    #|dialog: 说明文字 (404, 347.5, 472, 18) | 甲 (404, 389.5, 450, 20) | 乙 (404, 441.5, 450, 20) | 末尾文字 (404, 485.5, 472, 18) | 甲一 (918, 396.5, 26, 18) | 甲二 (918, 432.5, 26, 18)
+    #|beside: 说明文字 (306, 192, 284, 18) | 甲 (322, 218, 230, 20) | 乙 (322, 254, 230, 20) | 末尾文字 (306, 282, 284, 18) | 甲一 (624, 225, 26, 18) | 甲二 (624, 261, 26, 18)
+  ))
+}
+
+///|
+test "a submenu row as nodes, on 小屏: pressed, a sheet of its items titled by it, where they were beside the old one; one chosen, done once, the sheet gone" {
+  let chosen = []
+  let t = sub_panel(Unanchored, chosen, @signals.signal(true), w=390.0, h=844.0, platform=2)
+  let (x, y) = sub_mid(t, "甲")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let at = sub_at(t, ["甲一", "甲二"])
+  let (x, y) = sub_mid(t, "甲二")
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen, ["甲二"])
+  assert_true(!sub_has(t, "甲一"))
+  inspect(at.join(" | "), content=(
+    #|甲一 (24, 744, 30, 20) | 甲二 (24, 788, 30, 20)
+  ))
+}
+
+///|
+test "a submenu row as nodes: the mouse's pointer onto it opens its menu at once; off it onto the panel's words, open still; onto the other row, that one's in its place" {
+  for f in sub_froms {
+    let about = f.0
+    let t = sub_panel(f.1, [], @signals.signal(true))
+    let (x, y) = sub_mid(t, "甲")
+    t.move_to(x, y)
+    t.frame()
+    // (there at once, on its way in)
+    assert_true(t.words().any(fn(w) { w.0 == "甲一" }), msg="\{about}: at once")
+    let (wx, wy) = sub_mid(t, "说明文字")
+    t.move_to(wx, wy)
+    t.run_for(@ui.move_most_ms)
+    assert_true(sub_has(t, "甲一"), msg="\{about}: open still")
+    let (bx, by) = sub_mid(t, "乙")
+    t.move_to(bx, by)
+    t.frame()
+    assert_true(t.words().any(fn(w) { w.0 == "乙一" }), msg="\{about}: the other's")
+    t.run_for(@ui.move_most_ms)
+    assert_true(!sub_has(t, "甲一"), msg="\{about}: the first's gone")
+  }
+}
+
+///|
+test "a submenu row as nodes: Escape closes its menu alone; Right, the focus back on its row, opens it again; Left closes it alone" {
+  for f in sub_froms {
+    let about = f.0
+    let t = sub_panel(f.1, [], @signals.signal(true))
+    let (x, y) = sub_mid(t, "甲")
     t.tap(x, y)
     t.run_for(@ui.move_most_ms)
-    assert_eq(chosen, ["甲二"], msg="old \{old}")
-    assert_true(!sub_has(t, "甲一"), msg="old \{old}")
-  }
-  assert_eq(at[1], at[0], msg="old \{Repr(at[0])}, nodes \{Repr(at[1])}")
-}
-
-///|
-test "a submenu row, old and as nodes: the mouse's pointer onto it opens its menu at once; off it onto the panel's words, open still; onto the other row, that one's in its place" {
-  for f in sub_froms {
-    for old in [true, false] {
-      let about = "\{f.0}, old \{old}"
-      let t = sub_panel(old, f.1, [], @signals.signal(true))
-      let (x, y) = sub_mid(t, "甲")
-      t.move_to(x, y)
-      t.frame()
-      // (there at once, on its way in)
-      assert_true(t.words().any(fn(w) { w.0 == "甲一" }), msg="\{about}: at once")
-      let (wx, wy) = sub_mid(t, "说明文字")
-      t.move_to(wx, wy)
-      t.run_for(@ui.move_most_ms)
-      assert_true(sub_has(t, "甲一"), msg="\{about}: open still")
-      let (bx, by) = sub_mid(t, "乙")
-      t.move_to(bx, by)
-      t.frame()
-      assert_true(t.words().any(fn(w) { w.0 == "乙一" }), msg="\{about}: the other's")
-      t.run_for(@ui.move_most_ms)
-      assert_true(!sub_has(t, "甲一"), msg="\{about}: the first's gone")
-    }
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+    assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: Escape: \{Repr(sub_at(t, ["甲一", "说明文字"]))}")
+    t.key(@ui.key_code_right)
+    t.run_for(@ui.move_most_ms)
+    assert_true(sub_has(t, "甲一"), msg="\{about}: Right: \{Repr(t.focused())}")
+    t.key(@ui.key_code_left)
+    t.run_for(@ui.move_most_ms)
+    assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: Left")
   }
 }
 
 ///|
-test "a submenu row, old and as nodes: Escape closes its menu alone; Right, the focus back on its row, opens it again; Left closes it alone" {
+test "a submenu row as nodes: a press on the panel's words closes its menu alone; on the other row, that one's opens in one press; an item pressed, done once, closed, the panel kept" {
   for f in sub_froms {
-    for old in [true, false] {
-      let about = "\{f.0}, old \{old}"
-      let t = sub_panel(old, f.1, [], @signals.signal(true))
-      let (x, y) = sub_mid(t, "甲")
-      t.tap(x, y)
-      t.run_for(@ui.move_most_ms)
-      t.key(@ui.key_escape)
-      t.run_for(@ui.move_most_ms)
-      assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: Escape: \{Repr(sub_at(t, ["甲一", "说明文字"]))}")
-      t.key(@ui.key_code_right)
-      t.run_for(@ui.move_most_ms)
-      assert_true(sub_has(t, "甲一"), msg="\{about}: Right: \{Repr(t.focused())}")
-      t.key(@ui.key_code_left)
-      t.run_for(@ui.move_most_ms)
-      assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: Left")
-    }
-  }
-}
-
-///|
-test "a submenu row, old and as nodes: a press on the panel's words closes its menu alone; on the other row, that one's opens in one press; an item pressed, done once, closed, the panel kept" {
-  for f in sub_froms {
-    for old in [true, false] {
-      let about = "\{f.0}, old \{old}"
-      let chosen = []
-      let t = sub_panel(old, f.1, chosen, @signals.signal(true))
-      let (x, y) = sub_mid(t, "甲")
-      t.tap(x, y)
-      t.run_for(@ui.move_most_ms)
-      let (wx, wy) = sub_mid(t, "说明文字")
-      t.tap(wx, wy)
-      t.run_for(@ui.move_most_ms)
-      assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: the words")
-      t.tap(x, y)
-      t.run_for(@ui.move_most_ms)
-      let (bx, by) = sub_mid(t, "乙")
-      t.tap(bx, by)
-      t.run_for(@ui.move_most_ms)
-      assert_true(sub_has(t, "乙一") && !sub_has(t, "甲一"), msg="\{about}: the other row: \{Repr(sub_at(t, ["甲一", "乙一"]))}")
-      let (ix, iy) = sub_mid(t, "乙一")
-      t.tap(ix, iy)
-      t.run_for(@ui.move_most_ms)
-      assert_eq(chosen, ["乙一"], msg="\{about}: \{Repr(sub_at(t, ["乙一", "说明文字"]))}")
-      assert_true(!sub_has(t, "乙一") && sub_has(t, "说明文字"), msg="\{about}: chosen")
-    }
+    let about = f.0
+    let chosen = []
+    let t = sub_panel(f.1, chosen, @signals.signal(true))
+    let (x, y) = sub_mid(t, "甲")
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    let (wx, wy) = sub_mid(t, "说明文字")
+    t.tap(wx, wy)
+    t.run_for(@ui.move_most_ms)
+    assert_true(!sub_has(t, "甲一") && sub_has(t, "说明文字"), msg="\{about}: the words")
+    t.tap(x, y)
+    t.run_for(@ui.move_most_ms)
+    let (bx, by) = sub_mid(t, "乙")
+    t.tap(bx, by)
+    t.run_for(@ui.move_most_ms)
+    assert_true(sub_has(t, "乙一") && !sub_has(t, "甲一"), msg="\{about}: the other row: \{Repr(sub_at(t, ["甲一", "乙一"]))}")
+    let (ix, iy) = sub_mid(t, "乙一")
+    t.tap(ix, iy)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(chosen, ["乙一"], msg="\{about}: \{Repr(sub_at(t, ["乙一", "说明文字"]))}")
+    assert_true(!sub_has(t, "乙一") && sub_has(t, "说明文字"), msg="\{about}: chosen")
   }
 }
 
@@ -199,7 +178,7 @@ test "a submenu row, old and as nodes: a press on the panel's words closes its m
 test "a submenu row as nodes: its row going (its room closing on a Move), its menu out of sight and out of reach from that moment" {
   for f in sub_froms {
     let shown = @signals.signal(true)
-    let t = sub_panel(false, f.1, [], shown)
+    let t = sub_panel(f.1, [], shown)
     let (x, y) = sub_mid(t, "甲")
     t.tap(x, y)
     t.run_for(@ui.move_most_ms)
@@ -226,7 +205,7 @@ let sub_back_after : Double = @ui.move_most_ms / 2.0
 /// the Tester as the row is back and its Move over.
 fn sub_called_back(f : (String, @sf.Anchor), away : Bool) -> @ui.Tester raise {
   let shown = @signals.signal(true)
-  let t = sub_panel(false, f.1, [], shown)
+  let t = sub_panel(f.1, [], shown)
   let (x, y) = sub_mid(t, "甲")
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)

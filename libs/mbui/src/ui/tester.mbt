@@ -211,6 +211,7 @@ fn reset_globals() -> Unit {
   code_clears.clear()
   bars_hand.clear()
   clock_moments.clear()
+  clock_tree_read.val = -1.0e9
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()

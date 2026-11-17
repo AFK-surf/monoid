@@ -3,10 +3,19 @@
 
 ///|
 /// `hookNode`: the Node a hook's command names, the release's own beside its file (<app>/node: bin/node, or node.exe on
-/// Windows), whichever `has`; else `exec_path` (process.execPath).
+/// Windows), whichever `has`; where a release has no Node, the station's own program beside the hook
+/// (<app>/station/stillfail-reader, .exe on Windows), which runs the hooks itself (reader/hooks.mbt); else `exec_path`
+/// (process.execPath).
 pub fn hook_node(file : String, has : (String) -> Bool, exec_path : String) -> String {
-  let node = join([dirname(dirname(file)), "node"])
-  for own in [join([node, "bin", "node"]), join([node, "node.exe"])] {
+  let app = dirname(dirname(file))
+  let node = join([app, "node"])
+  let station = join([app, "station"])
+  for own in [
+    join([node, "bin", "node"]),
+    join([node, "node.exe"]),
+    join([station, "stillfail-reader"]),
+    join([station, "stillfail-reader.exe"]),
+  ] {
     if has(own) {
       return own
     }
