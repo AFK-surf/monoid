@@ -915,29 +915,35 @@
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
-        float gr = max(min(v_rect.z, v_rect.w) * 1.65, 44.0);
-        spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));
+        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
+        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
       }
       float ndl = dot(n2, vec2(-0.6, -0.8));
       float rim = v_c2.x;
       // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
       float body_ring = r2 * (1.0 - 0.35 * r);
       c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,
-      // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of
-      // white, so a light ground does not swallow it
-      float rim_lit = rim * (1.0 + 0.42 * spot);
+      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
+      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
+      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
+      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
+      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
+      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
+      // where white on white would not show; less towards the rim, where the ridge lights)
+      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
+      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
       float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
       spec_band *= spec_band;
       float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
-      float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
-                              0.28 * fresnel * max(ndl + 0.3, 0.0)) +
-                   0.14 * spot * (0.45 + 0.55 * r);
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
+      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
+                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
+      // pointer lights the edge
       float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
       edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
       c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
