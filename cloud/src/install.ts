@@ -7,6 +7,9 @@
 // it says how to get them when they are missing.
 // On Linux the service is a systemd user service (lingering, so it runs with no one logged in); with no user systemd
 // (a container, another init) the station is started in the background, and said not to come back after a reboot.
+// In still.fail's own container (station/docker: STILLFAIL_CONTAINER set) the container's entrypoint runs the station
+// and starts it again whenever it ends, once no install holds run/install.lock: the installer starts nothing there,
+// and a restart only ends the running station (an update hands over in place as anywhere else).
 // Without a token, on a station already in a workspace, it updates the station (`stillfail update` runs it so). An update
 // does not stop the agents when it can help it: with the service's definition unchanged, the running station hands
 // over to the new release in its own process (SIGUSR2, the Rust station's main.rs), turns, runtimes and jobs going on;
@@ -550,6 +553,12 @@ else
   fi
   if [ -f "$cur/stillfail.pid" ]; then kill "$(cat "$cur/stillfail.pid")" 2>/dev/null || true; fi
   rm -f "$cur/stillfail.pid"
+  # In still.fail's container: the station is its entrypoint's, which starts the new release once this install lets
+  # go of its lock. Ended here, and waited for: the release is not swapped under a station still running on it.
+  if [ -n "\${STILLFAIL_CONTAINER:-}" ] && [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  fi
 fi
 [ -n "$swapped" ] || swap_app
 rm -rf "$app.old"
@@ -587,6 +596,9 @@ else
     systemctl --user restart "$unit"
     # Also with no one logged in (a server): the user's services start with the machine.
     loginctl enable-linger "$(id -un)" 2>/dev/null || lingering="no"
+  elif [ -n "\${STILLFAIL_CONTAINER:-}" ]; then
+    # (the container's entrypoint starts it, and again whenever it ends)
+    in_container="yes"
   else
     nohup env PATH="$agent_path" STILLFAIL_DATA="$data" "$app/bin/stillfail" start >> "$data/stillfail.log" 2>&1 &
     echo $! > "$data/stillfail.pid"
@@ -603,9 +615,11 @@ fi
 echo "  ${say("cloud.install.where.app", { app: "${app}" })}"
 echo "  ${say("cloud.install.where.data", { data: "$data" })}"
 echo "  ${say("cloud.install.where.status")}"
-[ "$os" = Linux ] && [ -z "\${no_service:-}" ] && echo "  ${say("cloud.install.where.service", { unit: "$unit" })}"
+[ "$os" = Linux ] && [ -z "\${no_service:-}" ] && [ -z "\${in_container:-}" ] && echo "  ${say("cloud.install.where.service", { unit: "$unit" })}"
 [ -n "\${lingering:-}" ] && echo "  ${say("cloud.install.where.linger", { user: "$(id -un)" })}"
-if [ -n "$wsl" ] && [ -n "\${no_service:-}" ]; then
+if [ -n "\${in_container:-}" ]; then
+  echo "  ${say("cloud.install.where.container")}"
+elif [ -n "$wsl" ] && [ -n "\${no_service:-}" ]; then
   echo "  ${say("cloud.install.where.wslSystemd")}"
 elif [ -n "\${no_service:-}" ]; then
   echo "  ${say("cloud.install.where.noService")}"

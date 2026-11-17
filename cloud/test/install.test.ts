@@ -374,6 +374,54 @@ test("a station whose launcher would not become the new release's own is restart
   }
 });
 
+// still.fail's container (station/docker): its entrypoint runs the station, starting it again whenever it ends, once
+// no install holds run/install.lock.
+test("in still.fail's container the installer starts no station, and a restart only ends the running one, the entrypoint starting the new release", () => {
+  const m = machine("linux", false);
+  const data = join(m.home, ".stillfail");
+  const container = { STILLFAIL_CONTAINER: "1" };
+  let pid = 0;
+  try {
+    const fresh = m.run(["tok"], container);
+    assert.equal(fresh.status, 0, fresh.out);
+    assert.match(fresh.said, /stillfail station enroll https:\/\/app\.still\.fail tok --stay/);
+    assert.doesNotMatch(fresh.said, /stillfail start/, "started by the entrypoint, not here");
+    assert.ok(!existsSync(join(data, "stillfail.pid")));
+    assert.match(fresh.out, /still\.fail 的容器|still\.fail's container/);
+    assert.doesNotMatch(fresh.out, /systemd/);
+
+    // A launcher from before (no renew): restarted, by ending it; the entrypoint starts the new release.
+    writeFileSync(join(data, "app", "VERSION"), "old\n");
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    const fake = join(m.root, "stillfail-station");
+    writeFileSync(
+      fake,
+      `#!/bin/sh\ntrap 'echo drain >> "${m.root}/told"; echo idle > "${data}/run/drained"' USR1\ntrap 'echo end >> "${m.root}/told"; exit 0' TERM\ntouch "${m.root}/listening"\nwhile :; do sleep 0.2; done\n`,
+      { mode: 0o755 },
+    );
+    pid = Number(execFileSync("sh", ["-c", `"${fake}" </dev/null >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }));
+    while (!existsSync(join(m.root, "listening"))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    mkdirSync(join(data, "run"), { recursive: true });
+    writeFileSync(join(data, "run", "station.json"), `{"pid": ${pid}, "startedAt": 1700000000000, "handoff": 1, "drain": 1}`);
+    writeFileSync(join(m.home, "said"), "");
+
+    const update = m.run([], container);
+    assert.equal(update.status, 0, update.out);
+    assert.equal(readFileSync(join(m.root, "told"), "utf8"), "drain\nend\n", "drained, then ended");
+    assert.doesNotMatch(update.said, /stillfail start/);
+    assert.equal(readFileSync(join(data, "app", "VERSION"), "utf8"), "new\n");
+    assert.ok(!existsSync(join(data, "run", "install.lock")), "the lock let go of, for the entrypoint to start it");
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+    m.done();
+  }
+});
+
 // Two at once (the station updating itself as CI's `stillfail update` ran, 2026-11-04) each put aside the app the other
 // had just put in, and the release that could not start was put back as the old one.
 test("an install waits for the one under way, and takes over one whose installer is gone", () => {

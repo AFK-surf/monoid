@@ -4,6 +4,14 @@
 
 从源码搭建隔离开发环境见 [development.md](development.md)。正式使用时，在 [still.fail web](https://app.still.fail) 的 workspace 设置里添加 station，按页面生成的一次性命令安装并加入 workspace。安装器把发布包放到 `~/.stillfail/app`，把 `stillfail` 链接进 `~/.local/bin`，并注册用户服务（macOS 用 launchd，Linux 用 systemd）。`stillfail update` 更新发布包，`stillfail status` 查看绑定与连接状态。
 
+用 Docker 运行：镜像 `ghcr.io/afk-surf/stillfail-station`（x64、arm64）只提供机器（系统、git、编译器等常用工具），发布包不在镜像里。挂一个卷到 `/home/stillfail`，把「添加 station」给的 token 作为参数：
+
+```sh
+docker run -d --name stillfail --restart unless-stopped -v stillfail:/home/stillfail ghcr.io/afk-surf/stillfail-station <token>
+```
+
+第一次启动时入口程序用 cloud 的安装器把发布包装进卷里（`~/.stillfail/app`）并加入 workspace，之后 station 在卷里自己更新、原地交接，turn、终端和 job 都不断；已加入 workspace 后参数里的 token 不再使用，同一条命令可以原样重启容器。数据、agent 的登录和装在 home 里的东西都在卷里，换镜像不丢；`sudo apt-get` 装的系统包只在这个容器里有效。只有系统和工具要更新时才需要 `docker pull` 后重建容器，这会打断正在跑的 agent。`STILLFAIL_ORIGIN` 指定别的 cloud，`STILLFAIL_CHANNEL=beta` 首次安装测试版。日志在 `~/.stillfail/stillfail.log`，也会输出到 `docker logs`。
+
 卸载：`stillfail uninstall` 停掉 station 并移除开机自启服务（macOS 的 launchd、Linux 的 systemd user service、WSL 的启动脚本、Windows 的计划任务）、still.fail Helper、发布包（`<数据目录>/app`）、它的 Node 和 `~/.local/bin` 里的命令；对话、记忆、密钥等数据留在数据目录，并写一个 `<数据目录>/uninstalled` 标记，app 看到它就显示「已卸载」、不再自动装回来。`stillfail uninstall --purge` 连数据目录一起删。app 的「本机 Station」⋯ 菜单里的「卸载本机 Station」做同样的事（不需要发布包还在）；Windows 上卸载 still.fail 或 youdid.wtf 桌面 app（另一个通道的 app 不在时）也会这样卸掉本机 station。重新安装或在 app 里「启动」会去掉这个标记。app 里点「停止」会同时停用自启（launchd disable、systemd disable、计划任务停用），重启电脑后不再自己起来，「启动」再打开。
 
 station 必须加入 workspace 才接 Slack、运行 agent。数据默认在 `~/.stillfail`（`STILLFAIL_DATA` 可改）。开发测试使用独立数据目录，不使用已有真实会话的 station。

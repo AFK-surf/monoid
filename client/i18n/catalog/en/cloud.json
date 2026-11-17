@@ -31,6 +31,7 @@
   "cloud.install.where.app": "Program: {app} (the stillfail command is in ~/.local/bin; its old name, ember, still works)",
   "cloud.install.where.data": "Data and logs: {data}",
   "cloud.install.where.linger": "To keep it running when no one is logged in, run: sudo loginctl enable-linger {user}",
+  "cloud.install.where.container": "This is still.fail's container: its entrypoint runs the station and starts it again whenever it ends; with a restart policy (docker run --restart unless-stopped) it starts with the machine",
   "cloud.install.where.noService": "No systemd user services on this machine: the station runs in the background now but won't start after a reboot; run stillfail start then",
   "cloud.install.where.service": "Service: systemctl --user status {unit}",
   "cloud.install.where.status": "Status: stillfail status (which workspace, whether it's online, why it isn't working)",

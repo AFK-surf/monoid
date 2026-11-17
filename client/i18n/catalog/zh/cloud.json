@@ -31,6 +31,7 @@
   "cloud.install.where.app": "程序：{app}（stillfail 命令位于 ~/.local/bin，旧名称 ember 仍可使用）",
   "cloud.install.where.data": "数据和日志：{data}",
   "cloud.install.where.linger": "如需在无人登录时保持运行，执行：sudo loginctl enable-linger {user}",
+  "cloud.install.where.container": "此机器是 still.fail 的容器：station 由容器的入口程序运行，退出后自动重新启动；容器设了重启策略（docker run --restart unless-stopped）就会随机器启动",
   "cloud.install.where.noService": "此机器没有 systemd 用户服务：station 当前在后台运行，但重启后不会自动启动，届时需执行 stillfail start",
   "cloud.install.where.service": "服务：systemctl --user status {unit}",
   "cloud.install.where.status": "状态：stillfail status（所在 workspace、是否在线、未在工作的原因）",
