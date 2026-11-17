@@ -36,7 +36,7 @@ let bench : Bench = {
   gpu: [],
   start: 0.0,
   speed: 0.0,
-  phases: [0.0, 0.0, 0.0],
+  phases: [0.0, 0.0, 0.0, 0.0],
   host: 0,
   held: false,
 }
@@ -51,7 +51,7 @@ priv struct Bench {
   gpu : Array[Double]
   mut start : Double
   mut speed : Double
-  // build, layout and paint time summed over the measured frames
+  // build, layout, paint and the window's tree's time summed over the measured frames
   phases : Array[Double]
   // the host's bench mode as the window opened (MBUI_BENCH), kept as it was (`mode` the framework's own bench's)
   mut host : Int
@@ -185,12 +185,15 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   let t4 = work_now()
   c.t_present = t4 - t3
   if bench.mode > 0 {
-    bench_step(c, t3 - t0, t4 - t3)
+    bench_step(c, t0 - tw, t3 - tw, t4 - t3)
   }
+  // (the window's tree's part of it, what frame_perf says of the frame beside the old view's, counted as the journal
+  // counts it: perf.mbt)
+  perf_tree_framed(t0 - tw)
   // (the frame into the window thread's journal, the interval it closes looked over: journal.mbt)
   journal_frame(c, tw, t0, t3, t4)
   slow_probe(c, t, t3 - t0, t4 - t3, tree=t0 - tw)
-  perf_log(c, t, t3 - t0, t4 - t3)
+  perf_log(c, t, t0 - tw, t3 - tw, t4 - t3)
   // (what the stacks the window's tree holds say of the frame, as it ends: built whole, painted alone or of its looks
   // alone, a page one of them has in the hand as the frame drew it (one in the hand moves with no clock read),
   // nav_view.mbt)
@@ -210,7 +213,10 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // meets it is as this frame left it, as for the next input). What a step gives the app asks for the frames after it
   // as an input does (input_came); what it waits for in time, a wake at that time, before what the frame asks for next
   // is said
+  let td = work_now()
   drive_frame(c)
+  // (what its steps handed the app took: the next frame's input, perf.mbt)
+  perf_input_taken(work_now() - td)
   // (a layout read back that moved: what was placed from it, placed again)
   if c.read_back_moved {
     c.wants_frame = true
@@ -826,13 +832,14 @@ fn frame_build(c : Ctx, w : Double, h : Double) -> Int {
 }
 
 ///|
-fn bench_step(c : Ctx, cpu : Double, present : Double) -> Unit {
+fn bench_step(c : Ctx, tree : Double, cpu : Double, present : Double) -> Unit {
   bench.frames = bench.frames + 1
   if bench.frames == 30 {
     bench.start = c.clock
     bench.speed = -23.0
   }
   if bench.frames > 30 {
+    bench.phases[3] = bench.phases[3] + tree
     bench.phases[0] = bench.phases[0] + c.t_build
     bench.phases[1] = bench.phases[1] + c.t_layout
     bench.phases[2] = bench.phases[2] + c.t_paint
@@ -876,7 +883,7 @@ fn bench_step(c : Ctx, cpu : Double, present : Double) -> Unit {
     h_log("BENCH slow_frames(>8ms)=\{slow} first_slow_at=\{first_slow}")
     let nd = n.to_double()
     h_log(
-      "BENCH build_avg=\{bench.phases[0] / nd} layout_avg=\{bench.phases[1] / nd} paint_avg=\{bench.phases[2] / nd} " +
+      "BENCH tree_avg=\{bench.phases[3] / nd} build_avg=\{bench.phases[0] / nd} layout_avg=\{bench.phases[1] / nd} paint_avg=\{bench.phases[2] / nd} " +
       "flex_sized=\{@flex.counters[0].to_double() / 630.0} flex_cached=\{@flex.counters[1].to_double() / 630.0} flex_measured=\{@flex.counters[2].to_double() / 630.0}",
     )
     h_log(

@@ -50,8 +50,9 @@ fn perf_touch_submitted(at : Double) -> Unit {
 
 ///|
 /// What the last frame did: the nodes its builds made (the last build's), those laid out anew, those placed elsewhere
-/// as they were and those where they were (layout.mbt's commit); the instances it drew; how long its builds, its layout
-/// and its paint took (ms, by work_now); how many times it was built (a layout read back that moved builds it again).
+/// as they were and those where they were (layout.mbt's commit); the instances it drew; how long the window's tree
+/// took to be brought before it (its nodes made, bound and laid out: view_frame), how long its builds, its layout and
+/// its paint took (ms, by work_now); how many times it was built (a layout read back that moved builds it again).
 #derive(Debug)
 pub(all) struct FramePerf {
   nodes : Int
@@ -66,6 +67,14 @@ pub(all) struct FramePerf {
   /// the lists' rows it kept as their nodes and those it built (kept_nodes.mbt)
   kept : Int
   rows : Int
+  /// the window's tree brought as the frame began (app.mbt's on_frame, `tw` to `t0`: what its nodes cost, a page made
+  /// once as nodes; the journal's Frame `tree`): before the old view's build, layout and paint below, none of them
+  tree_ms : Double
+  /// the window's tree's nodes laid out since the frame before (its Work's `laid`: an input's handler's too)
+  tree_laid : Int
+  /// what the script's steps handed the app since the frame before took (drive.mbt: a scripted run's input, a bench's
+  /// drag; run after the frame before was presented, none of its work above)
+  input_ms : Double
   build_ms : Double
   layout_ms : Double
   paint_ms : Double
@@ -76,6 +85,53 @@ pub(all) struct FramePerf {
 /// The layout's counts as the frame began, and how many builds it took (frame_body).
 // kept across runs: written by each frame before it is read
 let perf_at : FixedArray[Int] = FixedArray::make(4, 0)
+
+///|
+/// The window's tree's part of the last frame (FramePerf's `tree_ms`, `tree_laid`, `input_ms`), and where what it is
+/// counted from stood as that frame began: the tree's count of nodes laid out, the script's steps since.
+priv struct PerfTree {
+  mut ms : Double
+  mut laid : Int
+  mut input_ms : Double
+  mut laid_at : Int
+  mut input_since : Double
+}
+
+///|
+// kept across runs: put back as a run begins (perf_tree_reset)
+let perf_tree : PerfTree = { ms: 0.0, laid: 0, input_ms: 0.0, laid_at: 0, input_since: 0.0 }
+
+///|
+/// As a run begins: nothing of the run before's (its steps' time not yet taken by a frame, where its tree's count of
+/// nodes laid out stood: a tree made anew counts from none).
+fn perf_tree_reset() -> Unit {
+  perf_tree.ms = 0.0
+  perf_tree.laid = 0
+  perf_tree.input_ms = 0.0
+  perf_tree.laid_at = 0
+  perf_tree.input_since = 0.0
+}
+
+///|
+/// The frame's window's tree brought in `ms` (on_frame's `tw` to `t0`): its part of the frame (perf_tree), the script's
+/// steps since the frame before taken as its input.
+fn perf_tree_framed(ms : Double) -> Unit {
+  let laid = match view_app.val {
+    Some(tree) => tree.work().laid
+    None => 0
+  }
+  perf_tree.ms = ms
+  perf_tree.laid = journal_since(laid, perf_tree.laid_at)
+  perf_tree.laid_at = laid
+  perf_tree.input_ms = perf_tree.input_since
+  perf_tree.input_since = 0.0
+}
+
+///|
+/// A script's steps handed the app in `ms` after a frame was presented (on_frame's drive_frame): the next frame's input.
+fn perf_input_taken(ms : Double) -> Unit {
+  perf_tree.input_since = perf_tree.input_since + ms
+}
 
 ///|
 /// As a frame begins: where the layout's counts stand.
@@ -107,6 +163,9 @@ fn frame_perf() -> FramePerf {
     painted: painted_alone.val,
     kept: if looks_drawn.val || painted_alone.val { 0 } else { nodes_run.kept },
     rows: if looks_drawn.val || painted_alone.val { 0 } else { nodes_run.built },
+    tree_ms: perf_tree.ms,
+    tree_laid: perf_tree.laid,
+    input_ms: perf_tree.input_ms,
     build_ms: c.t_build,
     layout_ms: c.t_layout,
     paint_ms: c.t_paint,
@@ -317,12 +376,12 @@ pub fn Tester::bench_whole(self : Tester, on : Bool) -> Unit {
 let perf_frames_on : Ref[Int] = Ref(-1)
 
 ///|
-/// Frame at `t` presented (on_frame): what it did, its work and its presenting (ms), what of the window it drew again,
-/// the GPU's time of the last done, the rows and parts it built and kept (kept_nodes.mbt), why it was built (the
-/// last frame built's, frame_watch.mbt's built_why: what it read changed and where, a moment come, nothing for one of
-/// its looks alone), a PERF line on the log, where asked (perf_frames_on): what still.fail's scripts/appbench.sh reads
-/// of a phone.
-fn perf_log(c : Ctx, t : Double, work : Double, present : Double) -> Unit {
+/// Frame at `t` presented (on_frame): what it did, its work (the window's tree's, `tree`, part of it) and its presenting
+/// (ms), what of the window it drew again, the GPU's time of the last done, the rows and parts it built and kept
+/// (kept_nodes.mbt), why it was built (the last frame built's, frame_watch.mbt's built_why: what it read changed and
+/// where, a moment come, nothing for one of its looks alone), a PERF line on the log, where asked (perf_frames_on):
+/// what still.fail's scripts/appbench.sh reads of a phone.
+fn perf_log(c : Ctx, t : Double, tree : Double, work : Double, present : Double) -> Unit {
   if perf_frames_on.val < 0 {
     perf_frames_on.val = if @hostapi.env("MBUI_PROBE_FRAMES") == "1" { 1 } else { 0 }
   }
@@ -331,7 +390,7 @@ fn perf_log(c : Ctx, t : Double, work : Double, present : Double) -> Unit {
   }
   let p = frame_perf()
   h_log(
-    "PERF t=\{t} work=\{work} build=\{c.t_build} layout=\{c.t_layout} paint=\{c.t_paint} present=\{present} gpu=\{h_gpu_ms()} nodes=\{p.nodes} laid=\{p.laid} insts=\{p.insts} looks=\{if p.looks { 1 } else { 0 }} painted=\{if p.painted { 1 } else { 0 }} share=\{presented_share.val} passes=\{p.passes} rows=\{nodes_run.built} kept=\{nodes_run.kept} why=\{built_why.val.escape()}",
+    "PERF t=\{t} work=\{work} tree=\{tree} tree_laid=\{p.tree_laid} build=\{c.t_build} layout=\{c.t_layout} paint=\{c.t_paint} present=\{present} gpu=\{h_gpu_ms()} nodes=\{p.nodes} laid=\{p.laid} insts=\{p.insts} looks=\{if p.looks { 1 } else { 0 }} painted=\{if p.painted { 1 } else { 0 }} share=\{presented_share.val} passes=\{p.passes} rows=\{nodes_run.built} kept=\{nodes_run.kept} why=\{built_why.val.escape()}",
   )
 }
 

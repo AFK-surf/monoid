@@ -131,3 +131,58 @@ test "what reads Derived::read follows its topic as well: told as the topic chan
   assert_true(w.is_stale())
   w.stop()
 }
+
+///|
+test "a chat list's params and key are made once for each workspace and filter: the same map and key at every read, the key the one topic_key writes" {
+  for scope in ["ws-1", "", "a\"b\\c\u{1}\n中文 /?&="] {
+    for filter in ["all", "mine", "watching", "hidden", ""] {
+      let (params, said) = chats_asked_said(scope, filter)
+      let fresh = chats_params(scope, filter)
+      assert_eq(params, fresh)
+      assert_eq(said, topic_key("chats", fresh))
+      // (read again: nothing made, nothing written out)
+      let (again, said_again) = chats_asked_said(scope, filter)
+      assert_true(physical_equal(params, again) && physical_equal(said, said_again))
+    }
+  }
+  // (the key as written whole, its fields in the order they are asked)
+  assert_eq(chats_asked_said("w\"1", "watching").1, "chats\u{1}{\"scope\":\"w\\\"1\",\"mine\":false,\"watching\":true}")
+  assert_eq(chats_asked_said("w", "mine").1, "chats\u{1}{\"scope\":\"w\",\"mine\":true}")
+}
+
+///|
+test "Derived::read_said, its key given, reads what Derived::read does" {
+  kept_reset()
+  let _tester = @ui.Tester::new(fn(_) {  })
+  let value = Ref(({ "n": 2, "noise": 0 } : Json))
+  let changes = @signals.signal(0)
+  let src = same_source(value, changes)
+  let d : Derived[(Int, String)] = Derived::new("same", same_work)
+  let params : Map[String, Json] = { "k": "1", "q": "a\"b" }
+  let w = @signals.watch(fn() {  })
+  let by_key = w.read(fn() { d.read_said(src, params, topic_key("same", params)) })
+  let whole = w.read(fn() { d.read(src, params) })
+  assert_eq(by_key.0, Some((2, "n=2")))
+  assert_eq(by_key.0, whole.0)
+  assert_eq(by_key.1.version, whole.1.version)
+  w.stop()
+}
+
+///|
+test "a topic declared again is found by the key it was declared with: kept once, each with the key topic_key writes" {
+  kept_reset()
+  let _tester = @ui.Tester::new(fn(_) {  })
+  declared_reset()
+  let src = made_source(topic=fn(_, _) { Some(Json::number(1.0)) })
+  let a : Map[String, Json] = { "scope": "w", "mine": false }
+  let b : Map[String, Json] = { "scope": "w", "mine": true }
+  declare_topic(src, "chats", a) |> ignore
+  declare_topic(src, "chats", a.copy()) |> ignore
+  declare_topic(src, "chats", b) |> ignore
+  assert_eq(declared_topics.val.map(fn(d) { d.3 }), [topic_key("chats", a), topic_key("chats", b)])
+  declare_page_topic(src, "chats", b)
+  declare_page_topic(src, "chats", b.copy())
+  assert_eq(page_declared.val.map(fn(d) { d.3 }), [topic_key("chats", b)])
+  declared_reset()
+  assert_eq(declared_topics.val.length() + page_declared.val.length(), 0)
+}

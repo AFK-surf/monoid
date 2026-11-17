@@ -124,6 +124,7 @@ fn reset_globals() -> Unit {
   window_zoom_reset()
   journal_reset()
   tree_frames_reset()
+  perf_tree_reset()
   run_let_go()
   // A run can end with a frame's resource handover still queued. Finish it before resetting the next run.
   frame_afters_run()

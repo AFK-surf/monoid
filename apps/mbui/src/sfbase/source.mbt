@@ -577,9 +577,10 @@ fn topics_held() -> Array[(Source, String, Map[String, Json])] {
 }
 
 ///|
-/// What is declared (declare_topic) and not let go of: each by its source, name and parameters.
+/// What is declared (declare_topic) and not let go of: each by its source, name and parameters, and its key (topic_key,
+/// written once as it is declared: what is declared again is looked for by it).
 // kept across runs: put back as a run begins (declared_reset)
-let declared_topics : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
+let declared_topics : Ref[Array[(Source, String, Map[String, Json], String)]] = Ref([])
 
 ///|
 /// Topic `name` with `params` of `src` declared: asked of the core now, outside any build, and kept asked with no
@@ -590,11 +591,11 @@ let declared_topics : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// readers' leaving, its unsubscribe never sent.
 pub fn declare_topic(src : Source, name : String, params : Map[String, Json]) -> TopicState {
   let key = topic_key(name, params)
-  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && topic_key(d.1, d.2) == key }) {
-    declared_topics.val.push((src, name, params.copy()))
+  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
+    declared_topics.val.push((src, name, params.copy(), key))
   }
   let owner = @signals.set_owner(None)
-  let state = @signals.untracked(fn() { followed_topic(src, name, params).get() })
+  let state = @signals.untracked(fn() { followed_topic(src, name, params, said=key).get() })
   @signals.set_owner(owner) |> ignore
   state
 }
@@ -610,10 +611,9 @@ pub fn declared_let_go() -> Unit {
 
 ///|
 /// Each of `declared` that no reader took over let go of now (declared_let_go's, page_declared_let_go's).
-fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit {
+fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) -> Unit {
   for d in declared {
-    let (src, name, params) = d
-    let key = topic_key(name, params)
+    let (src, name, params, key) = d
     match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }) {
       Some(i) if !followed_topics.val[i].holder.watched() => {
         let holder = followed_topics.val[i].holder
@@ -632,9 +632,10 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit 
 }
 
 ///|
-/// What the page on top declared as it came on top (declare_page_topic) and no reader took yet.
+/// What the page on top declared as it came on top (declare_page_topic) and no reader took yet, each with its key, as
+/// declared_topics.
 // kept across runs: put back as a run begins (declared_reset)
-let page_declared : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
+let page_declared : Ref[Array[(Source, String, Map[String, Json], String)]] = Ref([])
 
 ///|
 /// Topic `name` with `params` of `src` declared as a page comes on top (page_opens_node: page_opens), as declare_topic
@@ -643,12 +644,12 @@ let page_declared : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// to is let go of as another page comes on top (page_declared_let_go), or another workspace comes in view.
 pub fn declare_page_topic(src : Source, name : String, params : Map[String, Json]) -> Unit {
   let key = topic_key(name, params)
-  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && topic_key(d.1, d.2) == key }) {
+  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
     return
   }
-  page_declared.val.push((src, name, params.copy()))
+  page_declared.val.push((src, name, params.copy(), key))
   let owner = @signals.set_owner(None)
-  @signals.untracked(fn() { followed_topic(src, name, params).get() }) |> ignore
+  @signals.untracked(fn() { followed_topic(src, name, params, said=key).get() }) |> ignore
   @signals.set_owner(owner) |> ignore
   page_declared_told.set(page_declared_told.get() + 1)
 }
@@ -682,9 +683,9 @@ pub fn page_declared_let_go() -> Unit {
 /// shown whole, none; one here is declared and not read, a fault of the declaration (sfapp's declared_read_wbtest).
 pub fn declared_unread() -> Array[String] {
   [..declared_topics.val, ..page_declared.val].filter_map(fn(d) {
-    let (src, name, params) = d
+    let (src, name, params, key) = d
     // (one no longer followed was taken by its reader and let go of as that left: read, not a fault)
-    match existing_followed_topic(src, name, params) {
+    match existing_followed_topic(src, name, params, said=key) {
       Some(h) if !h.watched() => Some(name + " " + Json::object(params).stringify())
       _ => None
     }

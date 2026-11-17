@@ -6,7 +6,8 @@
 /// The chats of workspace `scope` in list `filter` (all, mine, watching) as the core's view says them, worked out once
 /// for each version of it; what went wrong reading it.
 pub fn chats_of(src : Source, scope : String, filter : String) -> (ChatsView?, String?) {
-  let (read, topic) = chats_read.read(src, chats_params(scope, filter))
+  let (params, said) = chats_asked_said(scope, filter)
+  let (read, topic) = chats_read.read_said(src, params, said)
   let error = match topic.error {
     Some(e) => Some(text(Some(e), "message"))
     None => None
@@ -39,6 +40,28 @@ fn chats_params(scope : String, filter : String) -> Map[String, Json] {
   }
   params
 }
+
+///|
+/// List `filter` of workspace `scope` as it is asked of the core (chats_params) and its topic's key (topic_key), each
+/// made once and read again after: what reads the list reads it many times a frame (each row's binding, the bar, the
+/// list: 19-33 times a frame on Home, each a map made and written out as JSON), and what is read is the same each
+/// time. Never written into by what reads it.
+fn chats_asked_said(scope : String, filter : String) -> (Map[String, Json], String) {
+  match chats_asked_kept.get((scope, filter)) {
+    Some(k) => k
+    None => {
+      let params = chats_params(scope, filter)
+      let k = (params, topic_key("chats", params))
+      chats_asked_kept[(scope, filter)] = k
+      k
+    }
+  }
+}
+
+///|
+// kept across runs: worked out of its key alone, the same in any run; a few for each workspace (its filters)
+/// What chats_asked_said made, by workspace and filter.
+let chats_asked_kept : Map[(String, String), (Map[String, Json], String)] = Map([])
 
 ///|
 // kept across runs: put back as a run begins (reset), set by the app's tree as it is given its window (sfapp app_tree)
@@ -184,7 +207,8 @@ fn chat_told_before(topic : Json) -> Array[(String, Json)] {
 ///|
 /// How many rows list `filter` of workspace `scope` has past those the core sent (its `more`).
 pub fn chats_more(src : Source, scope : String, filter : String) -> Int {
-  match field(src.topic("chats", chats_params(scope, filter)).get().value, "more") {
+  let (params, said) = chats_asked_said(scope, filter)
+  match field(src.topic_said("chats", params, said).get().value, "more") {
     Some(Number(n, ..)) => n.to_int()
     _ => 0
   }
@@ -231,7 +255,8 @@ pub fn chats_window_for(src : Source, scope : String, filter : String, tall : Do
 /// The chats' list of workspace `scope` as it is asked (all of its chats: chats_params), for what is read of it beside
 /// its rows (its stations' trouble, its glyph).
 pub fn chats_topic(src : Source, scope : String) -> Topic {
-  src.topic("chats", chats_params(scope, "all")).get().snapshot()
+  let (params, said) = chats_asked_said(scope, "all")
+  src.topic_said("chats", params, said).get().snapshot()
 }
 
 ///|

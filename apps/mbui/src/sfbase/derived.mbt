@@ -294,7 +294,13 @@ pub fn[T] Derived::new_by(name : String, work : (Json, T?) -> T, same~ : (T, T) 
 /// written once (topic_key), for the topic and for what is kept of it. What reads it follows the topic too (its
 /// version, its error): what reads only what `work` made reads Derived::value.
 pub fn[T] Derived::read(self : Derived[T], src : Source, params : Map[String, Json]) -> (T?, Topic) {
-  let said = topic_key(self.name, params)
+  self.read_said(src, params, topic_key(self.name, params))
+}
+
+///|
+/// Derived::read, its key (topic_key of its name and `params`) worked out already: what reads the same params again
+/// and again keeps both, written once (rows.mbt's chats_asked_said).
+fn[T] Derived::read_said(self : Derived[T], src : Source, params : Map[String, Json], said : String) -> (T?, Topic) {
   let topic = src.topic_said(self.name, params, said).get().snapshot()
   (self.made(src, params, said), topic)
 }

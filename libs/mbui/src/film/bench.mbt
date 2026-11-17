@@ -1,7 +1,8 @@
 // A scripted run measured, offscreen (still.fail's scripts/appbench.sh, its src/sfbench): the app in a Tester of this
 // host's text and pictures, as a film runs it, the script's steps on the display's frames (120 a second), and a frame
 // drawn at one only where the app asks for one there, as a host draws (Tester::bench). Each frame drawn: what it did
-// (@ui.FramePerf: what was built and laid out), how long its work took by this machine's clock, what of it differs
+// (@ui.FramePerf: what was built and laid out), how long its work took by this machine's clock (the window's tree
+// brought, then the old view's build, layout and paint), what of it differs
 // from the frame before (src/damage, as a window's host is told) and how long working that out took, and that part
 // drawn by this host's renderer as a window's frame is, its uploading and encoding and its GPU time measured
 // (src/host/apple_render.m). What a run said, one line: APPBENCH and its numbers as JSON, medians and the 95th
@@ -139,7 +140,8 @@ pub fn bench(
     }
     let m : Measured = {
       perf,
-      work_ms: perf.build_ms + perf.layout_ms + perf.paint_ms,
+      // (the window's tree brought as the frame began, a page of nodes' all but its paint, with the old view's)
+      work_ms: perf.tree_ms + perf.build_ms + perf.layout_ms + perf.paint_ms,
       encode_ms: timing[0],
       gpu_ms: timing[1],
       damage: dmin(1.0, area / (w * h)),
@@ -150,7 +152,7 @@ pub fn bench(
     drawn.push(m)
     if frames_out != "" {
       lines.push(
-        "\{ticks} work=\{m.work_ms} build=\{perf.build_ms} layout=\{perf.layout_ms} paint=\{perf.paint_ms} encode=\{m.encode_ms} gpu=\{m.gpu_ms} nodes=\{perf.nodes} laid=\{perf.laid} insts=\{perf.insts} looks=\{perf.looks} painted=\{perf.painted} kept=\{perf.kept} rows=\{perf.rows} damage=\{m.damage} passes=\{perf.passes} asked=\{asked.escape()} built_why=\{t.built_why().escape()} painted_why=\{t.painted_why().escape()}",
+        "\{ticks} work=\{m.work_ms} tree=\{perf.tree_ms} tree_laid=\{perf.tree_laid} input=\{perf.input_ms} build=\{perf.build_ms} layout=\{perf.layout_ms} paint=\{perf.paint_ms} encode=\{m.encode_ms} gpu=\{m.gpu_ms} nodes=\{perf.nodes} laid=\{perf.laid} insts=\{perf.insts} looks=\{perf.looks} painted=\{perf.painted} kept=\{perf.kept} rows=\{perf.rows} damage=\{m.damage} passes=\{perf.passes} asked=\{asked.escape()} built_why=\{t.built_why().escape()} painted_why=\{t.painted_why().escape()}",
       )
     }
   })
@@ -181,6 +183,9 @@ pub fn bench(
     "rows_kept": stat(d(fn(m) { m.perf.kept.to_double() })),
     "rows_built": stat(d(fn(m) { m.perf.rows.to_double() })),
     "work_ms": stat(d(fn(m) { m.work_ms })),
+    "tree_ms": stat(d(fn(m) { m.perf.tree_ms })),
+    "tree_laid": stat(d(fn(m) { m.perf.tree_laid.to_double() })),
+    "input_ms": stat(d(fn(m) { m.perf.input_ms })),
     "build_ms": stat(d(fn(m) { m.perf.build_ms })),
     "layout_ms": stat(d(fn(m) { m.perf.layout_ms })),
     "paint_ms": stat(d(fn(m) { m.perf.paint_ms })),
@@ -209,7 +214,7 @@ pub fn bench(
   // (and a row of the table scripts/appbench.sh prints)
   let ms = fn(xs : Array[Double]) { "\{round2(centile(xs, 50))} / \{round2(centile(xs, 95))}" }
   say(
-    "APPROW | \{name} | \{drawn.length()}/\{ticks} (\{drawn.filter(fn(m) { m.perf.looks }).length()} looks, \{drawn.filter(fn(m) { m.perf.painted }).length()} painted, \{drawn.filter(fn(m) { m.perf.kept > 0 }).length()} kept rows) | \{total_ms(d(fn(m) { m.work_ms }))} | \{ms(d(fn(m) { m.work_ms }))} | \{ms(d(fn(m) { m.perf.build_ms }))} | \{ms(d(fn(m) { m.perf.layout_ms }))} | \{ms(d(fn(m) { m.perf.paint_ms }))} | \{ms(d(fn(m) { m.encode_ms }))} | \{ms(d(fn(m) { m.gpu_ms }))} | \{centile(d(fn(m) { m.perf.nodes.to_double() }), 50)} | \{centile(d(fn(m) { m.perf.laid.to_double() }), 50)} | \{centile(d(fn(m) { m.perf.insts.to_double() }), 50)} | \{round2(centile(d(fn(m) { m.damage * 100.0 }), 50))}% | \{round2(centile(d(fn(m) { m.bytes.to_double() / 1024.0 }), 50))} |",
+    "APPROW | \{name} | \{drawn.length()}/\{ticks} (\{drawn.filter(fn(m) { m.perf.looks }).length()} looks, \{drawn.filter(fn(m) { m.perf.painted }).length()} painted, \{drawn.filter(fn(m) { m.perf.kept > 0 }).length()} kept rows) | \{total_ms(d(fn(m) { m.work_ms }))} | \{ms(d(fn(m) { m.work_ms }))} (tree \{ms(d(fn(m) { m.perf.tree_ms }))}) | \{ms(d(fn(m) { m.perf.build_ms }))} | \{ms(d(fn(m) { m.perf.layout_ms }))} | \{ms(d(fn(m) { m.perf.paint_ms }))} | \{ms(d(fn(m) { m.encode_ms }))} | \{ms(d(fn(m) { m.gpu_ms }))} | \{centile(d(fn(m) { m.perf.nodes.to_double() }), 50)} | \{centile(d(fn(m) { m.perf.laid.to_double() }), 50)} | \{centile(d(fn(m) { m.perf.insts.to_double() }), 50)} | \{round2(centile(d(fn(m) { m.damage * 100.0 }), 50))}% | \{round2(centile(d(fn(m) { m.bytes.to_double() / 1024.0 }), 50))} |",
   )
   passed
 }
@@ -314,6 +319,8 @@ pub fn bench_log(name : String, log : String) -> Bool {
     "looks": ToJson::to_json(frames.filter(fn(f) { f.get("looks").unwrap_or(0.0) > 0.0 }).length()),
     "painted": ToJson::to_json(frames.filter(fn(f) { f.get("painted").unwrap_or(0.0) > 0.0 }).length()),
     "work_ms": stat(col("work")),
+    "tree_ms": stat(col("tree")),
+    "tree_laid": stat(col("tree_laid")),
     "build_ms": stat(col("build")),
     "layout_ms": stat(col("layout")),
     "paint_ms": stat(col("paint")),
@@ -329,7 +336,7 @@ pub fn bench_log(name : String, log : String) -> Bool {
   say("APPBENCH " + out.stringify())
   let ms = fn(xs : Array[Double]) { "\{round2(centile(xs, 50))} / \{round2(centile(xs, 95))}" }
   say(
-    "APPROW | \{name} | \{frames.length()} in \{round2(secs)} s (\{frames.filter(fn(f) { f.get("looks").unwrap_or(0.0) > 0.0 }).length()} looks, \{frames.filter(fn(f) { f.get("painted").unwrap_or(0.0) > 0.0 }).length()} painted) | \{total_ms(col("work"))} | \{ms(col("work"))} | \{ms(col("build"))} | \{ms(col("layout"))} | \{ms(col("paint"))} | \{ms(col("present"))} | \{if gpu.is_empty() { "-" } else { ms(gpu) }} | \{centile(col("nodes"), 50)} | \{centile(col("laid"), 50)} | \{centile(col("insts"), 50)} | \{round2(centile(col("share"), 50) * 100.0)}% | \{round2(centile(upload, 50))} |",
+    "APPROW | \{name} | \{frames.length()} in \{round2(secs)} s (\{frames.filter(fn(f) { f.get("looks").unwrap_or(0.0) > 0.0 }).length()} looks, \{frames.filter(fn(f) { f.get("painted").unwrap_or(0.0) > 0.0 }).length()} painted) | \{total_ms(col("work"))} | \{ms(col("work"))} (tree \{ms(col("tree"))}) | \{ms(col("build"))} | \{ms(col("layout"))} | \{ms(col("paint"))} | \{ms(col("present"))} | \{if gpu.is_empty() { "-" } else { ms(gpu) }} | \{centile(col("nodes"), 50)} | \{centile(col("laid"), 50)} | \{centile(col("insts"), 50)} | \{round2(centile(col("share"), 50) * 100.0)}% | \{round2(centile(upload, 50))} |",
   )
   passed
 }

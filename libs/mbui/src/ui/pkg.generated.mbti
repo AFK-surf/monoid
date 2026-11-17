@@ -1849,6 +1849,9 @@ pub(all) struct FramePerf {
   painted : Bool
   kept : Int32
   rows : Int32
+  tree_ms : Double
+  tree_laid : Int32
+  input_ms : Double
   build_ms : Double
   layout_ms : Double
   paint_ms : Double
