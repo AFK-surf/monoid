@@ -19,7 +19,7 @@
   // the numbers of an instance (src/ui/scene.mbt)
   const INST = 60;
   let f32 = new Float32Array(INST * 4096);
-  let pending = false, pendingRaf = 0;
+  let pending = false;
   window.__logs = [];
 
   // ---- frames ----
@@ -37,7 +37,6 @@
   let frames = 0, inFrame = false;
   function tick() {
     pending = false;
-    pendingRaf = 0;
     resize();
     inFrame = true;
     const t = shotAt >= 0 ? clock : performance.now();
@@ -71,18 +70,9 @@
   H.requestFrame = () => {
     if (!pending && cb && known && window.__done === undefined && window.__shot === undefined) {
       pending = true;
-      pendingRaf = requestAnimationFrame(tick);
+      requestAnimationFrame(tick);
     }
   };
-  // The frame a touch asked for, drawn while the browser still handles that touch rather than at the display's next:
-  // iOS brings its soft keyboard up for a field focused (setIme's focus) only while a person's gesture is handled, and
-  // a requestAnimationFrame later is out of it, so a field tapped took the focus with no keyboard, which came up only on
-  // a second tap (its pointerdown's focus, setupInput). The display's frame asked for is called off: drawn once.
-  function frameInGesture() {
-    if (!pending || !pendingRaf || shotAt >= 0) return;
-    cancelAnimationFrame(pendingRaf);
-    tick();
-  }
   // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
   // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
   // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
@@ -2573,38 +2563,6 @@
     if (!active && document.activeElement === ta) ta.blur();
   };
 
-  // The input method's keyboard for the field about to type (@hostapi.ime_action, said before setIme: 0 none, 1 a
-  // search's, 2 an address's, 3 a number's, 4 a secret's, 5 an email address's, 6 words taken as typed), as the phones'
-  // hosts ask theirs (ios_app.m's keyboardType, MBView's EditorInfo): the textarea's inputmode, its Enter key's word,
-  // whether the keyboard corrects, spells or capitalises. A keyboard up for another field takes them only as it comes up
-  // again, so the textarea focused is let go and focused again by setIme after (the tap that moved the field still
-  // handled, frameInGesture: iOS keeps its keyboard up).
-  const imeKinds = [
-    {},
-    { inputmode: 'search', enterkeyhint: 'search' },
-    { inputmode: 'url', enterkeyhint: 'go', autocorrect: 'off' },
-    { inputmode: 'numeric', enterkeyhint: 'done', autocorrect: 'off' },
-    { autocorrect: 'off' },
-    { inputmode: 'email', autocorrect: 'off' },
-    { autocorrect: 'off' },
-  ];
-  let imeKind = 0, imeRefocus = false;
-  H.imeAction = (k) => {
-    const kind = imeKinds[k] ? k : 0;
-    if (kind === imeKind) return;
-    imeKind = kind;
-    const want = imeKinds[kind];
-    for (const name of ['inputmode', 'enterkeyhint', 'autocorrect']) {
-      if (want[name]) ta.setAttribute(name, want[name]);
-      else ta.removeAttribute(name);
-    }
-    if (document.activeElement === ta) {
-      imeRefocus = true;
-      ta.blur();
-      imeRefocus = false;
-    }
-  };
-
   // What an edit changed of the textarea's words `was`, to `now` with the caret at `caret`: [from, to, put], the words
   // of `was` from `from` to `to` replaced by `put`. What is after the caret is what it left alone, where `was` ends so
   // (an "a" put in before "aa" is put in there, though "aaa" could be read as it after them); the halves of a surrogate
@@ -2648,16 +2606,13 @@
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
-        if (touch(e)) { ptr(10, e, e.pointerId); frameInGesture(); }
+        if (touch(e)) ptr(10, e, e.pointerId);
         else ptr(0, e, e.button);
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
       el.addEventListener('pointermove', (e) => (touch(e) ? ptr(11, e, e.pointerId) : ptr(1, e, 0)));
-      el.addEventListener('pointerup', (e) => {
-        if (touch(e)) { ptr(12, e, e.pointerId); frameInGesture(); }
-        else ptr(2, e, e.button === 2 ? 2 : 0);
-      });
+      el.addEventListener('pointerup', (e) => (touch(e) ? ptr(12, e, e.pointerId) : ptr(2, e, e.button === 2 ? 2 : 0)));
       el.addEventListener('pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
@@ -2757,7 +2712,7 @@
     // the phones' apps' do (or setIme would take the focus back and the keyboard come up again). (The page sent behind
     // blurs the textarea too, and leaves it the focused element.)
     ta.addEventListener('blur', () => {
-      if (!imeRefocus && imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
+      if (imeActive && keyboardOver() > 0 && document.activeElement !== ta) {
         cb.text(7, '', 0, 0);
         H.requestFrame();
       }
