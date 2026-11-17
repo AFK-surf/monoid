@@ -1693,3 +1693,72 @@ test "sim: a connection dialled once on a second protocol the peer takes, on an 
   assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
   assert_eq(world.close_all(), (0, 0))
 }
+
+///|
+test "sim: a connection dialled from the device's own endpoint on a second protocol the peer takes, beside the link and while it carries requests: the peer sees the device's id, streams both ways, closed: the link never touched, nothing bound anew, and nothing left behind" {
+  let world = World::new(net => ignore(net.relay(sim_r1, ms=10)), takes=[sim_alpn, "second/1"])
+  let net = world.net
+  let door = world.door
+  let a = world.link()
+  net.pass(1_000)
+  let a = given(a)
+  assert_eq(door.conns.length(), 1)
+  // Dialled on the device's endpoint while a request goes on the link: the peer takes it as its program's, from the
+  // device's own id; no endpoint was bound for it.
+  let on_a = net.go(() => a.request("GET", "/during").rest())
+  let dialling = net.go(() => world.client.connect(world.server.device_id(), "second/1"))
+  net.pass(1_000)
+  let conn = given(dialling)
+  assert_eq(@utf8.decode(given(on_a)), "ok")
+  assert_eq((conn.peer, conn.alpn), (world.server.device_id(), "second/1"))
+  assert_eq(door.others.length(), 1)
+  let theirs = door.others[0]
+  assert_eq((theirs.peer, theirs.alpn), (world.client.device_id(), "second/1"))
+  assert_eq(net.keys[0].length(), 1)
+  // A stream from here, answered; one from the peer, taken and answered back.
+  let served = net.go(() => {
+    let inbound = theirs.accept().unwrap()
+    let carry = @wire.Carry::new()
+    while inbound.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    inbound.out.write(@utf8.encode("pong " + @utf8.decode(carry.take())))
+    inbound.out.finish()
+  })
+  let asked = net.go(() => {
+    let opened = conn.open()
+    opened.out.write(b"ping")
+    opened.out.finish()
+    let carry = @wire.Carry::new()
+    while opened.take() is Some(chunk) {
+      carry.push(chunk)
+    }
+    @utf8.decode(carry.take())
+  })
+  net.pass(1_000)
+  given(served)
+  assert_eq(given(asked), "pong ping")
+  let taken = net.go(() => {
+    let inbound = conn.accept().unwrap()
+    let got = inbound.take().unwrap()
+    (@utf8.decode(got), inbound.take() is None)
+  })
+  ignore(net.go(() => push(theirs, b"news")))
+  net.pass(1_000)
+  assert_eq(given(taken), ("news", true))
+  // The link went on beside it all the while: its one connection, answering.
+  let after = net.go(() => a.request("GET", "/after").rest())
+  net.pass(1_000)
+  assert_eq(@utf8.decode(given(after)), "ok")
+  // Closed here: the peer told why, the connection let go of at both shells; the link still the one there, never
+  // ended, its peer never told an end, and the endpoint never bound anew.
+  conn.close(reason="done")
+  net.pass(1_000)
+  assert_eq(given(net.go(() => theirs.closed())).reason, "done")
+  assert_true(a.usable())
+  assert_true(physical_equal(world.client.current(world.server.device_id()).unwrap(), a))
+  assert_eq((door.conns.length(), door.ends, net.keys[0].length()), (1, [], 1))
+  assert_eq(world.client.incomings.length(), 0)
+  assert_eq((net.handles[0].length(), net.handles[1].length()), (3, 3))
+  assert_eq(world.close_all(), (0, 0))
+}

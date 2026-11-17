@@ -115,6 +115,7 @@ fn message_video_node(
           }
         }
       }
+      message_items_after(items, place.share)
       @sf.menu(items, from=@sf.at_point(x, y))
       held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
     }

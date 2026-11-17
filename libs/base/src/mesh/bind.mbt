@@ -286,12 +286,19 @@ fn Mesh::await_coming(self : Mesh) -> @effect.Deferred[Taken] {
 ///|
 /// A connection the shell brought is its program's from here: among those taken until its end is told.
 fn Mesh::took(self : Mesh, conn : Json, alpn : String) -> Incoming {
-  let shell = self.shell
-  let peer = match (shell.ask("conn.remoteId", { "id": conn }) catch { _ => Json::null() }) {
+  let peer = match (self.shell.ask("conn.remoteId", { "id": conn }) catch { _ => Json::null() }) {
     String(id) => id
     _ => ""
   }
   let alpn = self.binding.takes.iter().find_first(take => hex(take) == alpn).unwrap_or(alpn)
+  self.took_conn(conn, peer, alpn)
+}
+
+///|
+/// A connection on the endpoint, a peer's (`Mesh::took`) or dialled from here (`Mesh::connect`), is its program's
+/// from here, with its peer and its protocol as written: among those taken until its end is told.
+fn Mesh::took_conn(self : Mesh, conn : Json, peer : String, alpn : String) -> Incoming {
+  let shell = self.shell
   let incoming : Incoming = {
     peer,
     alpn,
@@ -320,6 +327,164 @@ fn Mesh::took(self : Mesh, conn : Json, alpn : String) -> Incoming {
     }),
   )
   incoming
+}
+
+///|
+/// A connection dialled from the endpoint itself to `peer` (its endpoint id) on `alpn`, a protocol of its program's
+/// that the peer's endpoint takes (this one need not): the other way of `Mesh::incoming`, and handed out as one of
+/// those, kept and let go of as they are (`Incoming`: on the endpoint while it is open, closed to be forgotten as
+/// it ends, the endpoint is bound anew or the mesh closes). Unlike `Mesh::dial_once`, no endpoint is bound for it:
+/// the peer's transport proves it is the device's (its `Incoming.peer` is `Mesh::device_id`), and nothing is put
+/// off a relay. Its `peer` and `alpn` are as given.
+///
+/// Dialled through the mesh's relays and where the peer is dialled straight: `ips` the caller gives, then what the
+/// mesh knows (`Mesh::straight_to`), each once; none where the mesh is held to relays. As a link's dial, it waits
+/// while the endpoint is being bound anew, or, taken for stuck or not on the relays told, is to be bound once what
+/// is on it ends by itself (begun here where nothing is: `Mesh::link`); its time, `within` ms, counts from when the
+/// endpoint is on a relay (`onto_max_ms` at most), at once where it has addresses; the handshake is a fiber of the
+/// mesh's, counted as on the endpoint while it lasts (`Mesh::idle`), given up at the shell (`Shell::give_up`)
+/// where this ends first. Running out of time does not take the endpoint for stuck: the peer may only be away.
+/// The endpoint bound anew or replaced under it (`Mesh::retune`, `Mesh::migrate`), it is dialled again on the one
+/// there. Fails as closed where the mesh is or closes meanwhile, as no answer where the time runs out, as
+/// unreached where the shell says so; failed, or cut, nothing of it is kept, a connection that came after closed
+/// to be forgotten.
+pub async fn Mesh::connect(
+  self : Mesh,
+  peer : String,
+  alpn : String,
+  ips? : Array[String] = [],
+  within? : Int = connect_timeout_ms,
+) -> Incoming {
+  guard !self.closed else { raise failed("closed") }
+  guard is_id(peer) else {
+    raise MeshError(code="invalid_params", message="a dial names an endpoint id (64 hex), not \"\{peer}\"", cause="")
+  }
+  guard alpn != "" else { raise MeshError(code="invalid_params", message="a dial names its protocol", cause="") }
+  // (its own from here: what its program does to the array it gave after is not the mesh's)
+  let ips = ips.copy()
+  while true {
+    guard !self.closed else { raise failed("closed") }
+    // As `Mesh::link`: an endpoint taken for stuck, or not yet on the relays told, nothing on it, is bound anew,
+    // begun in this step; nothing is dialled on one being bound anew, nor on one that is to be once what is still
+    // on it ends by itself (`Mesh::settling`). This waits to be told (`Mesh::eased`), then looks again.
+    if !self.rebinding && (self.stuck || self.retuned) && self.idle() && self.may_rebind() {
+      self.rebind()
+    }
+    if self.rebinding || ((self.stuck || self.retuned) && self.may_rebind() && self.settling()) {
+      self.hold(None)
+      continue
+    }
+    let endpoint = self.endpoint
+    let tried = attempt(() => self.connect_on(endpoint, peer, alpn, ips, within))
+    // (this waited: the endpoint bound anew or replaced meanwhile, the one there is dialled; what came on the one
+    // before is let go of, nothing being kept of that one)
+    let moved = !self.closed && (self.rebinding || self.endpoint != endpoint)
+    match tried {
+      Did(conn) =>
+        if moved {
+          self.shell.tell("conn.close", { "id": conn, "code": 0, "reason": "closed", "forget": true })
+        } else {
+          return self.took_conn(conn, peer, alpn)
+        }
+      Fell(e) => if !moved { raise e }
+    }
+  }
+  raise failed("closed")
+}
+
+///|
+/// One dial of `Mesh::connect` on `endpoint`: its connection, handed out in the step it comes back to the asker
+/// (who takes it in that step: `Mesh::took_conn`); failed, or cut, the dial is given up at the shell and a connection
+/// that came is closed to be forgotten, as `Mesh::dial_once`'s.
+async fn Mesh::connect_on(
+  self : Mesh,
+  endpoint : Json,
+  peer : String,
+  alpn : String,
+  ips : Array[String],
+  within : Int,
+) -> Json {
+  let shell = self.shell
+  let straight : Array[String] = []
+  let add = (more : Array[String]) => for ip in more {
+    if !straight.contains(ip) {
+      straight.push(ip)
+    }
+  }
+  if !self.options.relay_only {
+    add(ips)
+  }
+  add(self.straight_to(peer))
+  let addr : Map[String, Json] = { "id": Json::string(peer), "relays": strings(self.relays) }
+  if straight.length() > 0 {
+    addr["ips"] = strings(straight)
+  }
+  let addr = Json::object(addr)
+  let call : Ref[Int64?] = Ref(None)
+  let connection : Ref[Json?] = Ref(None)
+  let abandoned = Ref(false)
+  let handed = Ref(false)
+  // (on the endpoint while it lasts: it is not bound anew under the dial, `Mesh::idle`)
+  self.dialling_main += 1
+  defer {
+    self.dialling_main -= 1
+    if !handed.val {
+      abandoned.val = true
+      if call.val is Some(id) {
+        shell.give_up(id)
+      }
+      if connection.val is Some(conn) {
+        shell.tell("conn.close", { "id": conn, "code": 0, "reason": "closed", "forget": true })
+      }
+    }
+    self.eased()
+  }
+  let dialled : @effect.Deferred[Json] = @effect.Deferred::new()
+  ignore(
+    self.scope.fork(name="mesh connect", () => {
+      guard !abandoned.val else { return }
+      let made = attempt(() => shell.call(
+        "iroh.connect",
+        { "id": endpoint, "addr": addr },
+        bytes=@utf8.encode(alpn),
+        called=id => call.val = Some(id),
+      ))
+      call.val = None
+      match made {
+        Did({ json: { "id": conn, .. }, .. }) =>
+          if abandoned.val {
+            shell.tell("conn.close", { "id": conn, "code": 0, "reason": "closed", "forget": true })
+          } else {
+            connection.val = Some(conn)
+            ignore(dialled.succeed(conn))
+          }
+        Did(_) => ignore(dialled.fail(failed("unreached")))
+        Fell(e) => ignore(dialled.fail(unreached(e)))
+      }
+    }),
+  )
+  let conn = @effect.race_first(
+    () => dialled.wait(),
+    () => @effect.race_first(
+      () => {
+        for waited = 0; straight.length() == 0 && waited < onto_max_ms && !self.on_a_relay(endpoint); waited = waited + onto_recheck_ms {
+          @effect.sleep(onto_recheck_ms)
+        }
+        @effect.sleep(within)
+        raise failed("no_answer")
+      },
+      // (the mesh closed meanwhile: its close cut the dial's fiber, which says nothing then; it tells `change`)
+      () => {
+        while !self.closed {
+          self.change.wait()
+        }
+        raise failed("closed")
+      },
+    ),
+  )
+  guard !self.closed else { raise failed("closed") }
+  handed.val = true
+  conn
 }
 
 ///|

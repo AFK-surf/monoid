@@ -198,7 +198,7 @@ pub let button_h : Double
 
 pub fn button_height() -> Double
 
-pub fn button_node(@view.View, () -> String, () -> Unit, tone? : Tone, busy? : () -> Bool, disabled? : () -> Bool, across? : Bool, icon? : String) -> @view.View
+pub fn button_node(@view.View, () -> String, () -> Unit, tone? : Tone, busy? : () -> Bool, disabled? : () -> Bool, across? : Bool, icon? : String, done? : () -> Bool) -> @view.View
 pub fn button_opens_node(@view.View, () -> String, (@view.View) -> Unit, tone? : Tone, icon? : String) -> @view.View
 
 pub fn button_start_reach() -> @ui.Style
@@ -541,9 +541,9 @@ pub let edge_line_steps : Int32
 
 pub fn edge_look(@ui.Ctx, String, over~ : Bool, on~ : Bool, active~ : Bool, line? : Bool) -> Unit
 
-pub fn edge_look_node(@view.View, () -> Bool, () -> Bool, () -> Bool, line? : () -> Bool) -> @view.View
+pub fn edge_look_node(@view.View, () -> Bool, () -> Bool, () -> Bool, line? : () -> Bool, pull? : EdgePull) -> @view.View
 
-pub fn edge_node(@view.View, () -> String, () -> Double, () -> Double, () -> Double, @view.Side, (Resized, Double) -> Unit, (Bool) -> Unit, on_beside? : (Double) -> Bool, beside? : (Double) -> Unit, tips? : TipLayer, side? : @view.Side) -> @view.View
+pub fn edge_node(@view.View, () -> String, () -> Double, () -> Double, () -> Double, @view.Side, (Resized, Double) -> Unit, (Bool) -> Unit, on_beside? : (Double) -> Bool, beside? : (Double) -> Unit, tips? : TipLayer, side? : @view.Side, pull? : EdgePull) -> @view.View
 
 pub fn edge_over() -> Bool
 
@@ -784,6 +784,10 @@ pub fn held_reach() -> @ui.Style
 pub fn hex_color(String) -> Int64?
 
 pub let hint_back_ms : Double
+
+pub let hold_button_ms : Double
+
+pub fn hold_button_node(@view.View, () -> String, () -> Unit, hold_ms? : Double, danger? : Bool, disabled? : () -> Bool, undo? : (() -> Unit, Double), undo_label? : () -> String, moves? : (@motion.Moves) -> Unit) -> @view.View
 
 pub fn holds_least(Double) -> Double
 
@@ -1690,7 +1694,7 @@ pub fn presses_node(@view.View, () -> Unit, on? : () -> Bool) -> Unit
 
 pub fn progress(@ui.Ctx, String, Double?, w? : @ui.Size, color? : Int64) -> Unit
 
-pub fn progress_node(@view.View, () -> Double?, () -> Int64, () -> Int64, h? : Double, period? : Double) -> @view.View
+pub fn progress_node(@view.View, () -> Double?, () -> Int64, () -> Int64, h? : Double, period? : Double, finishing? : () -> Bool) -> @view.View
 
 pub fn progress_ring(@ui.Ctx, Double, Double, Int64) -> Int32
 
@@ -1807,9 +1811,15 @@ pub fn rings(@ui.Ctx, Array[(Double, Int64)], Double, Int64, most~ : Int32) -> I
 
 pub fn rippled_node(@view.View, () -> Unit, Double, () -> String) -> Unit
 
+pub fn rolling_number_node(@view.View, () -> Int32, format? : (Int32) -> String, style? : () -> @ui.TextStyle, rolls? : () -> Bool) -> @view.View
+
 pub fn room_of(Double) -> @ui.Space
 
 pub fn round_face() -> @ui.Style
+
+pub let rove_lent : @view.Lent[RovingHover]
+
+pub fn roving_hover_node(RovingHover, @view.View, () -> Bool, () -> Int64, @view.Live[Double], () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn round_key_node(@view.View, String, () -> String, () -> Unit, side? : Double, icon_size? : Double, ink? : () -> Int64) -> Unit
 
@@ -2271,7 +2281,7 @@ pub fn tone_of(String) -> AccentTone?
 
 pub fn tool_mark_node(@view.View, String, Double) -> Unit
 
-pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool) -> @view.View
+pub fn tool_node(@view.View, () -> ToolSaid, () -> ViewerInk, @view.Live[Double], () -> Unit, tip? : TipLayer, lights? : Bool, ripples? : Bool, roving? : RovingHover) -> @view.View
 
 pub fn tool_of(String, () -> Unit, drop? : Int32, instead? : Array[MenuItem]) -> Tool
 
@@ -2328,6 +2338,8 @@ pub let usage_plot : Double
 pub fn usage_series(Int32) -> Int64
 
 pub let value : @ui.TextStyle
+
+pub fn value_slider_node(@view.View, () -> String, () -> Double, (Double) -> Unit, min? : Double, max? : Double, step? : Double, disabled? : () -> Bool, format? : (Int32) -> String, bubble? : Bool, tips? : TipLayer) -> @view.View
 
 pub fn vector(@ui.Ctx, String, @pixels.Vector, Double) -> Int32
 
@@ -2710,6 +2722,12 @@ pub(all) struct Dial {
 }
 
 type DrawnShapes
+
+pub struct EdgePull {
+  // private fields
+}
+pub fn EdgePull::new() -> Self
+pub fn EdgePull::shown_on(Self, @view.View) -> (Double, Double, Double)
 
 pub(all) struct FileCardDone {
   removed : Bool
@@ -3184,6 +3202,11 @@ pub(all) enum RowLead {
   LeadTile((@view.View) -> Unit)
 }
 
+pub struct RovingHover {
+  // private fields
+}
+pub fn RovingHover::new() -> Self
+
 pub(all) struct Rows {
   pick : Double
   title : @ui.TextStyle
@@ -3260,6 +3283,7 @@ type TipHeld
 pub struct TipLayer {
   layer : () -> @view.View?
   mut went_at : Double
+  // private fields
 }
 pub fn TipLayer::new(() -> @view.View?) -> Self
 

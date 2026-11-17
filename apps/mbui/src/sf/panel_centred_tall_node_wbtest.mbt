@@ -1,48 +1,32 @@
-// A dialog in the middle of the window a share of it tall whose body is nodes (panel_nodes' `tall`, not `hugs`) beside
-// the old one: a list filling it (panel_list_node's `fills` and panel_list's) and a button at its foot, on windows 600,
-// 800 and 1000 tall; the dialog's top, its height, its foot's button and the list's first row where the old one's
-// are, at rest and at each moment of its way in. The list's rows are link_row_node's beside link_row's: where the first
-// row's words stand across at rest is theirs, the rows' rule in a panel's body (panel_row_at, panel_parts_node.mbt), not
-// the dialog's; a change to how far in a row's words stand there fails this too.
+// A dialog in the middle of the window a share of it tall whose body is nodes (panel_nodes' `tall`, not `hugs`): a list
+// filling it (panel_list_node's `fills`) and a button at its foot, on windows 600, 800 and 1000 tall; the dialog's top,
+// its height, its foot's button and the list's first row where they stood when they stood where the old view's did, at
+// rest and at each moment of its way in. The list's rows are link_row_node's: where the first row's words stand across
+// at rest is theirs, the rows' rule in a panel's body (panel_row_at, panel_parts_node.mbt), not the dialog's; a change to
+// how far in a row's words stand there fails this too.
 
 ///|
-/// What the dialog stood as on a window 1200 by `h`, opened by nothing: the old one (`old`) or the node one, its
-/// dialog's place and size, its button's, its first row's words, at each of `moments` after 打开 is pressed (its way
-/// in) and at rest.
-fn tall_dialog_stood(h : Double, old : Bool) -> Array[String] {
+/// What the dialog stood as on a window 1200 by `h`, opened by nothing: its dialog's place and size, its button's, its
+/// first row's words, at each of `moments` after 打开 is pressed (its way in) and at rest.
+fn tall_dialog_stood(h : Double) -> Array[String] {
   let n = 40
   let open = fn(_from : Anchor) {
-    if old {
-      panel(
-        "很长的单子",
-        from=Unanchored,
-        tall=0.86,
-        foot=fn(c, _) { button(c, "完成", key="tall/done", tone=Primary, on_press=fn() {  }) |> ignore },
-        fn(c, _) {
-          panel_list(c, "tall/rows", n, 60.0, fills=true, fn(i) {
-            link_row(c, "tall/row/\{i}", "第 \{i} 行", note="说明", on_press=fn() {  }) |> ignore
-          })
-          |> ignore
-        },
-      )
-    } else {
-      panel_nodes(
-        "很长的单子",
-        from=Unanchored,
-        tall=0.86,
-        foot=fn(v, _) { button_node(v, fn() { "完成" }, fn() {  }, tone=Primary) |> ignore },
-        fn(v, _) {
-          panel_list_node(
-            v,
-            fn() { Array::makei(n, fn(i) { i }) },
-            fn(b, i) { link_row_node(b, fn() { "第 \{i} 行" }, fn() {  }, note=fn() { "说明" }) },
-            est=60.0,
-            fills=true,
-          )
-          |> ignore
-        },
-      )
-    }
+    panel_nodes(
+      "很长的单子",
+      from=Unanchored,
+      tall=0.86,
+      foot=fn(v, _) { button_node(v, fn() { "完成" }, fn() {  }, tone=Primary) |> ignore },
+      fn(v, _) {
+        panel_list_node(
+          v,
+          fn() { Array::makei(n, fn(i) { i }) },
+          fn(b, i) { link_row_node(b, fn() { "第 \{i} 行" }, fn() {  }, note=fn() { "说明" }) },
+          est=60.0,
+          fills=true,
+        )
+        |> ignore
+      },
+    )
   }
   presenters_reset()
   let t = @ui.Tester::new(
@@ -77,22 +61,42 @@ fn tall_dialog_stood(h : Double, old : Bool) -> Array[String] {
 }
 
 ///|
-test "a dialog in the middle of the window a share of it tall, holding nodes: as tall as the old one, its foot where the old one's is, on windows 600, 800 and 1000 tall, at rest and on its way in" {
+test "a dialog in the middle of the window a share of it tall, holding nodes: its height and its foot where they stood beside the old one's, on windows 600, 800 and 1000 tall, at rest and on its way in" {
+  let seen : Array[String] = []
   for h in [600.0, 800.0, 1000.0] {
-    let old = tall_dialog_stood(h, true)
-    let new = tall_dialog_stood(h, false)
-    // (at rest: all of it the same)
-    assert_eq(new[new.length() - 1], old[old.length() - 1], msg="\{h} tall, at rest: new \{new[new.length() - 1]} old \{old[old.length() - 1]}")
-    // (on its way in: where the dialog and its foot are at each moment; its words' alpha is the tree's own reading, as
-    // the other dialogs of nodes have it, not compared)
-    let place = fn(s : String) {
-      match s.find(" first row ") {
-        Some(i) => s.exact_view(end=i).to_owned()
-        None => s
-      }
-    }
-    let (n, o) = (new.map(place), old.map(place))
-    let differs = n.mapi(fn(i, x) { if x == o[i] { "" } else { "\n  new \{x}\n  old \{o[i]}" } }).join("")
-    assert_eq(n, o, msg="\{h} tall, on its way in:\{differs}")
+    seen.push("\{h} tall:")
+    seen.append(tall_dialog_stood(h))
   }
+  inspect(seen.join("\n"), content=(
+    #|600 tall:
+    #|0: dialog [345.2,35.52 509.6x540.96] 完成 [774.44,517.68 56.84x35.28] first row [368.72,118.82 a0]
+    #|40: dialog [341.882,28.169 516.237x548.005] 完成 [776.712,516.608 57.58x35.739] first row [365.708,112.553 a0.276]
+    #|80: dialog [340.632,25.4 518.736x550.658] 完成 [777.567,516.204 57.859x35.912] first row [364.574,110.194 a0.757]
+    #|120: dialog [340.201,24.446 519.597x551.572] 完成 [777.862,516.065 57.955x35.972] first row [364.183,109.38 a0.923]
+    #|160: dialog [340.039,24.087 519.921x551.916] 完成 [777.973,516.013 57.991x35.995] first row [364.036,109.075 a0.985]
+    #|200: dialog [340,24 520x552] 完成 [778,516 58x36] first row [364,109 a1]
+    #|280: dialog [340,24 520x552] 完成 [778,516 58x36] first row [364,109 a1]
+    #|360: dialog [340,24 520x552] 完成 [778,516 58x36] first row [364,109 a1]
+    #|at rest: dialog [340,24 520x552] 完成 [778,516 58x36] first row [364,109 a1]
+    #|800 tall:
+    #|0: dialog [345.2,38.01 509.6x735.98] 完成 [774.44,715.19 56.84x35.28] first row [368.72,121.31 a0]
+    #|40: dialog [341.882,29.389 516.237x745.565] 完成 [776.712,715.388 57.58x35.739] first row [365.708,113.773 a0.276]
+    #|80: dialog [340.632,26.142 518.736x749.174] 完成 [777.567,715.462 57.859x35.912] first row [364.574,110.936 a0.757]
+    #|120: dialog [340.201,25.023 519.597x750.418] 完成 [777.862,715.488 57.955x35.972] first row [364.183,109.958 a0.923]
+    #|160: dialog [340.039,24.603 519.921x750.886] 完成 [777.973,715.498 57.991x35.995] first row [364.036,109.59 a0.985]
+    #|200: dialog [340,24.5 520x751] 完成 [778,715.5 58x36] first row [364,109.5 a1]
+    #|280: dialog [340,24.5 520x751] 完成 [778,715.5 58x36] first row [364,109.5 a1]
+    #|360: dialog [340,24.5 520x751] 完成 [778,715.5 58x36] first row [364,109.5 a1]
+    #|at rest: dialog [340,24.5 520x751] 完成 [778,715.5 58x36] first row [364,109.5 a1]
+    #|1000 tall:
+    #|0: dialog [345.2,53.73 509.6x904.54] 完成 [774.44,899.47 56.84x35.28] first row [368.72,137.03 a0]
+    #|40: dialog [341.882,44.011 516.237x916.32] 完成 [776.712,900.765 57.58x35.739] first row [365.708,128.396 a0.276]
+    #|80: dialog [340.632,40.351 518.736x920.756] 完成 [777.567,901.253 57.859x35.912] first row [364.574,125.145 a0.757]
+    #|120: dialog [340.201,39.09 519.597x922.285] 完成 [777.862,901.421 57.955x35.972] first row [364.183,124.024 a0.923]
+    #|160: dialog [340.039,38.616 519.921x922.86] 完成 [777.973,901.485 57.991x35.995] first row [364.036,123.603 a0.985]
+    #|200: dialog [340,38.5 520x923] 完成 [778,901.5 58x36] first row [364,123.5 a1]
+    #|280: dialog [340,38.5 520x923] 完成 [778,901.5 58x36] first row [364,123.5 a1]
+    #|360: dialog [340,38.5 520x923] 完成 [778,901.5 58x36] first row [364,123.5 a1]
+    #|at rest: dialog [340,38.5 520x923] 完成 [778,901.5 58x36] first row [364,123.5 a1]
+  ))
 }

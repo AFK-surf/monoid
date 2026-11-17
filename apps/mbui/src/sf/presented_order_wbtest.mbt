@@ -23,7 +23,7 @@ test "presented as it is told: what reads it as it is told finds it there, each 
 test "opened, closed and another opened with no frame between: the one closed unsaid lets go of what it holds once, the other open" {
   let gone = Ref(0)
   let t = presenting_tester(desk, fn(_) {  })
-  panel("甲", fn(c, _) { c.text("甲的") |> ignore }, from=Unanchored, gone=fn() { gone.val = gone.val + 1 })
+  panel_nodes("甲", fn(v, _) { words_node(v, fn() { "甲的" }, fn() { desk_muted }) |> ignore }, from=Unanchored, gone=fn() { gone.val = gone.val + 1 })
   close_presented()
   confirm("乙", "", "好", fn() {  })
   t.frame()

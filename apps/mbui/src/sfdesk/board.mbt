@@ -52,6 +52,12 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
             None => ww
           }
         }
+        // The window offers ⌘W to what is in use before closing; the chat beside the board closes as its × does.
+        b.on_action("window.close_panel", fn(_) {
+          @sfbase.board_pick.set(None)
+          true
+        }, can=fn() { width() >= @sfpages.board_beside_from && @sfbase.board_pick.get() is Some(_) })
+        |> ignore
         @sfpages.board_node(b, src, tips, fn() { @sfbase.workspace_in_view(src).0 }, width, beside=fn(s, r) {
           board_beside(s, src, r, tips, k)
         }, bar_frame=fn(parent, make) { board_pane_bar(parent, src, make) }, archive=fn() { board_archive_go(src) }, stint~)

@@ -1750,6 +1750,12 @@ export class Data {
     return this.of(station)?.logPutSince(table, station, id, since) ?? { rev: 0, put: null };
   }
 
+  /// The number of the message of thread `thread` said at `ts`, where the device holds it (AccountDb.messageAt).
+  messageAt(station: string, thread: number, ts: string): number | null {
+    this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
+    return this.of(station)?.messageAt(station, thread, ts) ?? null;
+  }
+
   logRange(table: LogTable, station: string, id: string, from: number, to: number): Map<number, unknown> {
     this.#readQuery({ topic: "$log", table, station, id });
     return this.of(station)?.logRange(table, station, id, from, to) ?? new Map();

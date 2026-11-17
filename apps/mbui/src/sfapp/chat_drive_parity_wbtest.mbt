@@ -1110,9 +1110,6 @@ let pa_why_timein : String = "the time under one's words: as nodes seen from the
 let pa_why_lift : String = "a picture held to quote it: its lift (the picture's own, track B's) drawn as each page draws it"
 
 ///|
-let pa_why_menu_line : String = "a picture held up for its menu, the menu a line shorter since menus drop a line where a choice is not offered (menu_clean_items, message_files' file_options): the old page kept clear of the sheet as laid out stands 4 lower, its message's last line seen over the picture's top while the menu is up and after; as nodes kept clear as drawn grown, that line under the scrim's top"
-
-///|
 let pa_why_quote_flight : String = "a quote sent with its own picture: as nodes its card flies from where it stood in the composer at its own width, from the height it stood at there to its own, and its picture from its 56 square in it (View::flies_in, sent_part_flight: the words' flight), the old flight on its own curves and a frame later; the old page holds the composer's box as tall as the card till they let go, as nodes laid out at its line at once under its ground held (sent_out_hold_ms); the video's length seen as it lands (message_video_node's marks)"
 
 
@@ -2167,6 +2164,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-picture", what: Key("old alone 「发布清单 第三项已经核对完：安装包签名正确。」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「发送到」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
+  { drive: "send-quote-picture", what: Key("old alone 「发消息」"), from: 5267.0, to: 5267.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "send-quote-picture", what: Key("old alone 「星火#发布」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「等 林 决定」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「还有深色模式也看一下」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -2713,7 +2711,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "picture-lift", what: Key("old alone 「发送到」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   // (6667: the menu's sheet of the window's tree goes from the frame of the press that closes it, the host's a frame on)
-  { drive: "picture-lift", what: Key("nodes alone 「发消息」"), from: 6667.0, to: 6667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu_line },
   { drive: "picture-lift", what: Key("old alone 「星火#发布」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("old alone 「等 林 决定」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("old alone 「还有深色模式也看一下」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
@@ -2771,11 +2768,15 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-video", what: Key("button @asks.go old alone"), from: 617.0, to: 617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "send-quote-video", what: Key("ground nodes alone"), from: 633.0, to: 633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-video", what: Key("ground alpha"), from: 650.0, to: 650.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_menu },
+  { drive: "send-quote-video", what: Key("nodes alone 「复制消息链接」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
+  { drive: "send-quote-video", what: Key("nodes alone 「多选」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
+  { drive: "send-quote-video", what: Key("picture old alone"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("nodes alone 「下载」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("nodes alone 「加载」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
-  { drive: "send-quote-video", what: Key("nodes alone 「发消息」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("nodes alone 「在侧边打开」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("nodes alone 「引用」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu },
+  { drive: "send-quote-video", what: Key("alpha 「复制消息链接」"), from: 667.0, to: 667.0, dx: 0.2, dy: 0.2, dw: 0.5, why: pa_why_menu },
+  { drive: "send-quote-video", what: Key("alpha 「多选」"), from: 667.0, to: 667.0, dx: 0.2, dy: 0.2, dw: 0.5, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("alpha 「下载」"), from: 667.0, to: 667.0, dx: 0.2, dy: 0.2, dw: 0.5, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("alpha 「加载」"), from: 667.0, to: 667.0, dx: 0.2, dy: 0.2, dw: 0.5, why: pa_why_menu },
   { drive: "send-quote-video", what: Key("alpha 「在侧边打开」"), from: 667.0, to: 667.0, dx: 0.2, dy: 0.2, dw: 0.5, why: pa_why_menu },

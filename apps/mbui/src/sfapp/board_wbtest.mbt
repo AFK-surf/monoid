@@ -199,6 +199,26 @@ test "大屏: a card pressed opens its chat beside the board; its decision made,
 }
 
 ///|
+test "大屏 Mac: ⌘W closes the chat selected on the board before the window, even with its composer focused" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  assert_false(@ui.view_action("window.close_panel"))
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.click(TextField, label="发消息")
+  // Other modifiers leave the selected chat alone.
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd | @ui.mod_shift_key)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_true(@sfbase.board_pick.get() is None)
+  assert_true(t.window_acts().is_empty())
+  t.run_for(@ui.move_most_ms)
+  assert_false(@ui.view_action("window.close_panel"))
+  assert_true(t.query(Button, label="全屏打开") is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: words in a chat opened beside the board can be picked, copied and quoted" {
   new_run()
   let calls : Array[Made] = []
@@ -232,6 +252,45 @@ test "大屏: words in a chat opened beside the board can be picked, copied and 
   assert_eq(quoted.length(), 1)
   assert_eq(text(field(Some(quoted[0].params), "quote"), "text"), selected.trim(chars=" \n\t").to_owned())
   assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏 Mac: a board chat kept behind another page is not closed by ⌘W" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  // (a page other than a chat: a chat opened from the board puts the list back in its place, the board's chat closed,
+  // sfapp's open_where)
+  @sfbase.open_page(Files)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Files)
+  assert_false(@ui.view_action("window.close_panel"))
+  assert_true(@sfbase.board_pick.get() is Some(_))
+}
+
+///|
+test "大屏 Mac: a board chat without room to show leaves ⌘W to the window, and takes it again when shown" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  t.resize(1000.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  assert_false(@ui.view_action("window.close_panel"))
+  t.resize(1440.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_true(@sfbase.board_pick.get() is None)
+}
+
+///|
+test "大屏 on another platform: ⌘W does not close a board chat" {
+  let (t, _) = board_at("board", 1440.0, 900.0, platform=3)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  assert_true(@sfbase.board_pick.get() is Some(_))
 }
 
 ///|

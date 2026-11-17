@@ -173,7 +173,7 @@ pub fn chat_list(
             // (ListRows::enter, leave); its turn over, it stays while its messages come out of its avatar (chat_tick)
             rd.fresh.remove(keys[i]) |> ignore
             let leaving = rd.rows.went(keys[i]) is Some(_)
-            let here = here_of(r, v, rk, turns, em, None, core, inline=narrow, gutter~)
+            let here = here_of(src, r, v, rk, turns, em, None, core, inline=narrow, gutter~)
             let came = rd.rows.came(keys[i])
             // (a turn begun and over between two ticks, nothing of it coming out: no room, unseen, chat_tick)
             let unseen = rd.answered_unseen.contains(a.key) ||
@@ -201,7 +201,7 @@ pub fn chat_list(
             }
             // (or the row words sent before those went to, still on their way as those were sent: they go on)
             let flying = if flies { flight } else { @sfbase.flight_to(draft, keys[i]) }
-            let here = here_of(r, v, rk, turns, em, flying, core, inline=narrow, gutter~)
+            let here = here_of(src, r, v, rk, turns, em, flying, core, inline=narrow, gutter~)
             // what it moves for where it shows: what was sent from here not in the chat yet, the newest that came in
             // over it; any other row, the newest that came in over the rows at the end as the list followed it
             let cause = match e {
@@ -428,8 +428,10 @@ let sample_messages : Array[(Bool, Array[Int])] = [
 ]
 
 ///|
-/// Where a row of chat `r`'s list is, and how it moves there.
+/// Where a row of chat `r`'s list is, and how it moves there; a quote's card pressed in it goes to what it quotes
+/// (`src` asked where the window holds it not: sfbase's go_to_quoted).
 pub fn here_of(
+  src : Source,
   r : ChatRef,
   v : ChatView,
   rk : String,
@@ -444,7 +446,10 @@ pub fn here_of(
     station: r.station,
     session: r.session,
     view: v,
-    go: Some(fn(seq, passage) { @sfbase.go_to(r, seq, passage~) }),
+    go: Some(fn(ts, passage) {
+      let shown = v.messages.iter().find_first(fn(m) { m.ts == ts }).map(fn(m) { m.seq })
+      @sfbase.go_to_quoted(src, r, v.thread, shown, ts, passage)
+    }),
     inline: inline,
     gutter: gutter,
     list: Some({ rk, turns, emits: em, flight }),
@@ -689,6 +694,8 @@ pub fn chat_find_list(r : ChatRef) -> FindList {
       go_to_words[k] = words
     },
     forget: fn() { find_forget() },
+    // (the old list's rows not counted: the core's count of each message's words)
+    drawn: fn(_, _) { Map([]) },
   }
 }
 
@@ -719,6 +726,7 @@ fn list_reset() -> Unit {
   find_around.val = -1.0
   outline_entries.clear()
   outline_presets.clear()
+  find_goes.clear()
   rail_said.set({})
   rail_asking.clear()
 }

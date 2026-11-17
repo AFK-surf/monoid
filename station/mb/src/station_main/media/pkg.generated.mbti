@@ -1,0 +1,55 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/station_main/media"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn decode_image(Bytes) -> Image?
+
+pub fn hash_of(Image) -> String
+
+pub fn links(String) -> Array[Found]
+
+pub fn made_small(Image, Double) -> (String, String, Bytes)?
+
+pub fn percent_decode(String) -> String
+
+pub fn percent_encode(String) -> String
+
+pub fn prepare_local_links(LinkWorld, String, Array[String], String) -> (String, Array[String]) raise LinkRefused
+
+pub fn rgba_to_thumb_hash(Int32, Int32, FixedArray[Byte]) -> Bytes
+
+pub let small_len : Double
+
+// Errors
+pub(all) suberror LinkRefused {
+  LinkRefused(String)
+}
+
+// Types and methods
+#derive(Eq, @debug.Debug)
+pub(all) struct Found {
+  inline : Bool
+  destination : String
+  start : Int32
+  end : Int32
+}
+
+pub(all) struct Image {
+  w : Int32
+  h : Int32
+  px : FixedArray[Byte]
+}
+
+pub(all) struct LinkWorld {
+  sep : String
+  is_file : (String) -> Bool
+  realpath : (String) -> String?
+}
+
+// Type aliases
+
+// Traits

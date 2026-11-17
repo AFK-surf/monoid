@@ -2247,6 +2247,8 @@ export interface MessageCard {
 	/** options | text | login */
 	type: string;
 	options?: DecisionOption[];
+	/** A text card: the hint its field shows while nothing is written in it, as the agent said it. */
+	placeholder?: string;
 	/**
 	 * An agent's request to use a vault item: the request's id. An app shows approving it (the options,
 	 * then the person confirms: `vault.approve` with the option's scope, `vault.deny`) rather than answering in the chat;

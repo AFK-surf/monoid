@@ -251,3 +251,16 @@ test "holds: the last let go tells, once" {
   assert_eq(holding(), 0)
   stop()
 }
+
+///|
+test "the applier apart: a checkout's delta.ts, a release's main.js, or the station's own program with no Node" {
+  assert_eq(apart_args("/r/scripts/delta.ts", "/a", "/d", "/o"), [
+    "/r/scripts/delta.ts", "apply", "--old", "/a", "--delta", "/d", "--out", "/o",
+  ])
+  assert_eq(apart_args("main.js", "/a", "/d", "/o"), [
+    "main.js", "update", "--apply-delta", "--app", "/a", "--delta", "/d", "--out", "/o",
+  ])
+  assert_eq(apart_args("", "/a", "/d", "/o"), [
+    "update", "--apply-delta", "--app", "/a", "--delta", "/d", "--out", "/o",
+  ])
+}

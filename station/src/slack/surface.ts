@@ -19,6 +19,7 @@ import { modelOptions, modelValue, newChatBlocks, newChatView, submittedChat } f
 import { ThreadStatus } from "./status.ts";
 import { type Params, SlackClient, field } from "./web.ts";
 import { wall } from "../ops/fibers.ts";
+import { connectBlocked, zipOne } from "./zip.ts";
 
 type Json = any;
 /// A message the bot posted, as it posted it.
@@ -394,10 +395,15 @@ export class SlackSurface extends ConnectedSurface {
   /// Posted as written, in a markdown block (Slack draws the agent's Markdown as still.fail does, tables too); a long
   /// message goes out in parts, the first part's ts standing for the whole. A question (`card`: options or a field), or
   /// a login's field for its page's code, is one message with its buttons (cards.ts). Files are uploaded before anything is posted (an app without
-  /// `files:write` fails there, with nothing said), then shared into the thread below the text.
+  /// `files:write` fails there, with nothing said), then shared into the thread below the text. In a channel shared
+  /// with another organization, an installer or executable Slack Connect refuses goes as `<name>.zip` (zip.ts).
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
     const uploaded: [string, string][] = [];
-    for (const file of files) uploaded.push(await this.upload(file));
+    const zipped = files.some((f) => connectBlocked(f.name)) && (await this.sharedOut(thread.channel));
+    for (const file of files) {
+      const bytes = await readFile(file.path);
+      uploaded.push(zipped && connectBlocked(file.name) ? await this.upload(`${file.name}.zip`, await zipOne(file.name, bytes)) : await this.upload(file.name, bytes));
+    }
     let first: string | null = null;
     const send = async (said: string, blocks: Json[], question = false) => {
       const posted = await this.client.api(
@@ -921,19 +927,18 @@ export class SlackSurface extends ConnectedSurface {
   }
 
   /// Sends a file's bytes to Slack (not yet shared anywhere): its file id and title.
-  private async upload(file: Attachment): Promise<[string, string]> {
-    const bytes = await readFile(file.path);
+  private async upload(name: string, bytes: Uint8Array): Promise<[string, string]> {
     const url = await this.client.api(
       "files.getUploadURLExternal",
       [
-        ["filename", file.name],
+        ["filename", name],
         ["length", String(bytes.length)],
       ],
       this.botToken,
     );
     if (typeof url?.upload_url !== "string" || typeof url?.file_id !== "string") throw new Error("slack files.getUploadURLExternal: no upload_url");
-    await this.client.upload(url.upload_url, bytes, file.name);
-    return [url.file_id, file.name];
+    await this.client.upload(url.upload_url, bytes, name);
+    return [url.file_id, name];
   }
 
   /// The ts of the message files were shared in, which Slack fills in a moment after the share.

@@ -1402,6 +1402,7 @@ pub fn View::bar_near(Self, Double, across? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::basis(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::beside(Self, NodeId, side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool) -> Self
+pub fn View::beside_by(Self, Live[NodeId], side? : Side, along? : Along, offset? : Double, padding? : Double, at_pointer? : Bool, width? : BesideWidth, piece? : (Double, Double) -> (Double, Double, Double, Double)?, along_offset? : Double, holds_side? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::bone_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::bones(Self, Live[Int64]) -> Self

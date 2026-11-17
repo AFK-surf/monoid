@@ -1,0 +1,21 @@
+import {
+  "station/host",
+  "mbui/effect",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/json",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/string",
+  "station/drive",
+  "station/nodepath",
+  "station/station_main/media",
+  "station/cloud_lock",
+  "station/updates",
+  "station/jsjson",
+  "station/sql",
+  "station/store_schema",
+  "station/store_sessions",
+}
+
+options(
+  "native-stub": ["sys.c"],
+)

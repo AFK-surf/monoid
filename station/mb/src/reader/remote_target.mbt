@@ -234,10 +234,15 @@ async fn Actors::task(
         Array(b) => Json::array(b.filter(x => x is String(_)))
         _ => Json::array([])
       }
+      // In a mirror with submodules, their checkout first (dirsync.mbt `with_submodules`).
+      let command = match (mirror, field_of(spec, "command")) {
+        (Some(_), String(c)) => match self.with_submodules(manifest_path, c) { Some(w) => jstr(w); None => jstr(c) }
+        (_, c) => c
+      }
       let started = if in_sandbox {
-        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), field_of(spec, "command"), jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), Json::null(), { "sandbox": jstr(peer.view(start_offset=8).to_string()), "session": jstr(session), "back": back }]))
+        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), command, jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), Json::null(), { "sandbox": jstr(peer.view(start_offset=8).to_string()), "session": jstr(session), "back": back }]))
       } else {
-        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), field_of(spec, "command"), jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), { "screen": jbool(field_of(spec, "screen") is True), "small": jbool(field_of(spec, "small") is True) }, Json::null()]))
+        self.locked(() => self.start_id([jstr(owner), field_of(spec, "name"), command, jstr(cwd), Json::null(), jbool(false), jstr(job_id), jbool(false), { "screen": jbool(field_of(spec, "screen") is True), "small": jbool(field_of(spec, "small") is True) }, Json::null()]))
       }
       // Where its source wants to be told of it (`push_out`): from its first start, as it is then.
       let push = text_of(request, "push")
@@ -303,8 +308,9 @@ async fn Actors::task(
         return { "key": jstr(key), "planned": jbool(true) }
       }
       refuse_busy()
+      let submodules = submodules_part(request)
       // (the plan checked against what the mirror has and written: dirsync.mbt)
-      let done = self.sync_commit(work, m, syncing, manifest_path, field_of(state, "version"), text_of(field_of(meta, "spec"), "dir"))
+      let done = self.sync_commit(work, m, syncing, manifest_path, field_of(state, "version"), text_of(field_of(meta, "spec"), "dir"), submodules)
       self.write_json(record, with_field(meta, "synced", jbool(true)))
       self.remove(syncing, recursive=true)
       self.used_mirror(workspace, peer, session, m)

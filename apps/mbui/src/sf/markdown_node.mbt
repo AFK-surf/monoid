@@ -199,6 +199,112 @@ pub fn markdown_pieces(text : String, tree : Json?) -> Array[MdPiece]? {
 }
 
 ///|
+/// Which of `pieces` (markdown_pieces' of `text` as `tree` reads it) holds what a go-to brings before the eyes: the
+/// `passage` a quote quoted, where a paragraph of it has it (find_passage, as passage_marks lights it), else the `at`th
+/// time (0 the first; less than 0, found_all among them, the first) `words` are in it as a find counts and marks them
+/// (md_found_in's: paragraphs, headings, quotes, lists' items); 0 where none does.
+pub fn markdown_piece_with(
+  text : String,
+  tree : Json?,
+  pieces : Array[MdPiece],
+  passage? : String = "",
+  words? : Array[String] = [],
+  at? : Int = -1,
+) -> Int {
+  let blocks = blocks_of(text, tree)
+  if passage != "" {
+    for i, pc in pieces {
+      for b in pc.from..<pc.upto {
+        if blocks.get(b) is Some(block) && md_has_passage(block, passage, pc.rows) {
+          return i
+        }
+      }
+    }
+    return 0
+  }
+  guard words.length() > 0 else { return 0 }
+  let want = if at < 0 { 0 } else { at }
+  let mut n = 0
+  for i, pc in pieces {
+    for b in pc.from..<pc.upto {
+      match blocks.get(b) {
+        Some(block) => n = n + md_words_in(block, words, pc.rows)
+        None => ()
+      }
+    }
+    if n > want {
+      return i
+    }
+  }
+  0
+}
+
+///|
+/// How many times `words` are in `text` as markdown_node draws it (`tree` its read) and marks them: what a find counts
+/// in a message drawn so (md_found_in's of all its blocks).
+pub fn markdown_found_count(text : String, tree : Json?, words : Array[String]) -> Int {
+  blocks_of(text, tree).fold(init=0, fn(n, b) { n + md_words_in(b, words, None) })
+}
+
+///|
+/// How many times `words` are in block `b` as md_found_in counts them, of its list's items `rows` alone where it is a
+/// piece of one (none: all).
+fn md_words_in(b : MdBlock, words : Array[String], rows : (Int, Int)?) -> Int {
+  match b {
+    Paragraph(xs) | Heading(_, xs) => find_words(md_plain(xs), words).length()
+    Quote(bs) => bs.fold(init=0, fn(n, x) { n + md_words_in(x, words, None) })
+    List(l) => {
+      let mut n = 0
+      for i, it in l.items {
+        if rows is Some((from, upto)) && (i < from || i >= upto) {
+          continue
+        }
+        n = n + it.blocks.fold(init=0, fn(k, x) { k + md_words_in(x, words, None) })
+      }
+      n
+    }
+    _ => 0
+  }
+}
+
+///|
+/// Whether a paragraph of block `b` (of its list's items or its table's rows `rows` alone where it is a piece of one)
+/// has `passage` (find_passage's).
+fn md_has_passage(b : MdBlock, passage : String, rows : (Int, Int)?) -> Bool {
+  let within = fn(i : Int) {
+    match rows {
+      Some((from, upto)) => i >= from && i < upto
+      None => true
+    }
+  }
+  match b {
+    Paragraph(xs) | Heading(_, xs) => find_passage(md_plain(xs), passage) is Some(_)
+    Quote(bs) => bs.iter().any(fn(x) { md_has_passage(x, passage, None) })
+    List(l) => {
+      for i, it in l.items {
+        if within(i) && it.blocks.iter().any(fn(x) { md_has_passage(x, passage, None) }) {
+          return true
+        }
+      }
+      false
+    }
+    Table(t) => {
+      let cells = fn(row : Array[Array[MdInline]]) { row.iter().any(fn(c) { find_passage(md_plain(c), passage) is Some(_) }) }
+      if within(0) && cells(t.head) {
+        return true
+      }
+      for i, row in t.rows {
+        if within(i + 1) && cells(row) {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+///|
 /// What every block of a markdown_node is drawn with (Md's, of the window's tree).
 priv struct MdNode {
   size : () -> Double
